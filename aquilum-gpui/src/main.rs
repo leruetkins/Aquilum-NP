@@ -20,8 +20,8 @@ fn main() {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(gpui::TitlebarOptions {
-                        title: Some("Aquilum (Native GPUI)".into()),
-                        appears_transparent: false,
+                        title: Some("Aquilum".into()),
+                        appears_transparent: true,
                         traffic_light_position: None,
                     }),
                     ..Default::default()

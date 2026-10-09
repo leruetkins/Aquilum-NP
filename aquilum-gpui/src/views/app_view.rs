@@ -2,8 +2,9 @@ use crate::icons;
 use crate::state::{AppState, FileNode};
 use crate::theme::Theme;
 use gpui::{
-    div, prelude::*, px, AnyElement, ClipboardItem, Context, FocusHandle, IntoElement,
+    div, prelude::*, px, rgb, AnyElement, ClipboardItem, Context, FocusHandle, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Render, SharedString, Window,
+    WindowControlArea,
 };
 use std::path::PathBuf;
 
@@ -634,6 +635,7 @@ impl Render for AppView {
             .unwrap_or(7.7);
 
         let viewport_w: f32 = window.viewport_size().width.into();
+        let is_maximized = window.is_maximized();
         let wrap_cols = self.compute_wrap_cols(viewport_w, line_char_width);
         self.last_wrap_cols = wrap_cols;
 
@@ -685,29 +687,30 @@ impl Render for AppView {
                 this.is_mouse_selecting = false;
                 cx.notify();
             }))
-            // ================= HEADER =================
+            // ================= WINDOW TITLEBAR & TAB BAR (CUSTOM CSD FRAME) =================
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .justify_between()
-                    .h(px(46.0))
+                    .h(px(38.0))
                     .w_full()
                     .min_w_0()
                     .overflow_hidden()
-                    .px_4()
                     .bg(theme.bg_sidebar)
                     .border_b_1()
                     .border_color(theme.border)
+                    // Left area: App logo & Sidebar toggle
                     .child(
                         div()
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap_3()
-                            .min_w_0()
-                            .overflow_hidden()
+                            .gap_2()
+                            .pl_3()
+                            .pr_1()
+                            .flex_shrink_0()
                             .child(
                                 div()
                                     .id("btn-toggle-sidebar")
@@ -731,8 +734,7 @@ impl Render for AppView {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap_2()
-                                    .flex_shrink_0()
+                                    .gap_1p5()
                                     .child(
                                         div()
                                             .px_2()
@@ -743,132 +745,180 @@ impl Render for AppView {
                                             .rounded_md()
                                             .text_xs()
                                             .child("AQUILUM"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(theme.text_muted)
-                                            .child("NATIVE GPUI EDITOR"),
                                     ),
                             )
                             .child(
                                 div()
-                                    .h(px(16.0))
+                                    .h(px(14.0))
                                     .w_px()
-                                    .flex_shrink_0()
                                     .bg(theme.border),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1p5()
-                                    .text_sm()
-                                    .text_color(theme.text_secondary)
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .child(icons::icon(icons::ICON_FOLDER, 14.0, theme.text_secondary))
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .child(self.state.workspace_name.clone()),
-                                    ),
                             ),
                     )
+                    // Browser-style Tabs Area
                     .child(
                         div()
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap_2()
+                            .gap_1()
+                            .h_full()
+                            .pt_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .when_some(self.state.active_note.as_ref(), |s, note| {
+                                let is_dirty = note.is_dirty;
+                                s.child(
+                                    div()
+                                        .id("tab-active-note")
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap_2()
+                                        .h(px(32.0))
+                                        .px_3()
+                                        .bg(theme.bg_editor)
+                                        .border_t_1()
+                                        .border_x_1()
+                                        .border_color(theme.border)
+                                        .rounded_t_md()
+                                        .cursor_pointer()
+                                        .child(icons::icon(icons::ICON_FILE_TEXT, 12.0, theme.accent))
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                .text_color(theme.text_primary)
+                                                .truncate()
+                                                .max_w(px(180.0))
+                                                .child(note.title.clone()),
+                                        )
+                                        .when(is_dirty, |tab| {
+                                            tab.child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(theme.accent)
+                                                    .child("●"),
+                                            )
+                                        })
+                                        .child(
+                                            div()
+                                                .id("btn-close-active-tab")
+                                                .p_0p5()
+                                                .rounded_sm()
+                                                .cursor_pointer()
+                                                .hover(|h| h.bg(theme.bg_hover))
+                                                .child(icons::icon(icons::ICON_CLOSE, 10.0, theme.text_muted))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.state.active_note = None;
+                                                    cx.notify();
+                                                })),
+                                        ),
+                                )
+                            })
+                            .when(self.state.active_note.is_none(), |s| {
+                                s.child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .px_2()
+                                        .py_1()
+                                        .text_xs()
+                                        .text_color(theme.text_muted)
+                                        .child(icons::icon(icons::ICON_FOLDER, 12.0, theme.text_muted))
+                                        .child(
+                                            div()
+                                                .truncate()
+                                                .child(self.state.workspace_name.clone()),
+                                        ),
+                                )
+                            })
+                            // New note button next to tabs
+                            .child(
+                                div()
+                                    .id("btn-new-tab")
+                                    .p_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .hover(|h| h.bg(theme.bg_hover))
+                                    .child(icons::icon(icons::ICON_PLUS, 12.0, theme.text_muted))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.create_new_note(window, cx);
+                                    })),
+                            ),
+                    )
+                    // Drag Area (fills the remaining titlebar space, supports dragging & double-click to maximize)
+                    .child(
+                        div()
+                            .id("titlebar-drag-region")
+                            .flex_1()
+                            .h_full()
+                            .window_control_area(WindowControlArea::Drag)
+                            .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, window, _| {
+                                if event.click_count == 2 {
+                                    window.zoom_window();
+                                }
+                            })),
+                    )
+                    // Native Windows Titlebar Control Buttons (Minimize, Maximize/Restore, Close)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .h_full()
                             .flex_shrink_0()
                             .child(
                                 div()
-                                    .id("btn-open-folder")
+                                    .id("win-ctrl-min")
                                     .flex()
-                                    .flex_row()
                                     .items_center()
-                                    .gap_1p5()
-                                    .px_2p5()
-                                    .py_1()
-                                    .bg(theme.bg_card)
-                                    .hover(|s| s.bg(theme.bg_hover))
-                                    .border_1()
-                                    .border_color(theme.border)
-                                    .rounded_md()
-                                    .text_xs()
+                                    .justify_center()
+                                    .w(px(46.0))
+                                    .h_full()
                                     .cursor_pointer()
-                                    .child(icons::icon(icons::ICON_FOLDER_OPEN, 13.0, theme.text_primary))
-                                    .child("Open")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_folder_dialog(window, cx);
+                                    .window_control_area(WindowControlArea::Min)
+                                    .hover(|h| h.bg(theme.bg_hover))
+                                    .child(icons::icon(icons::ICON_MINIMIZE, 11.0, theme.text_secondary))
+                                    .on_click(cx.listener(|_, _, window, _| {
+                                        window.minimize_window();
                                     })),
                             )
                             .child(
                                 div()
-                                    .id("btn-reload")
+                                    .id("win-ctrl-max")
                                     .flex()
-                                    .flex_row()
                                     .items_center()
-                                    .gap_1p5()
-                                    .px_2()
-                                    .py_1()
-                                    .bg(theme.bg_card)
-                                    .hover(|s| s.bg(theme.bg_hover))
-                                    .border_1()
-                                    .border_color(theme.border)
-                                    .rounded_md()
-                                    .text_xs()
+                                    .justify_center()
+                                    .w(px(46.0))
+                                    .h_full()
                                     .cursor_pointer()
-                                    .child(icons::icon(icons::ICON_REFRESH, 13.0, theme.text_primary))
-                                    .child("Reload")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.reload_files(window, cx);
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap_1()
-                                    .px_2()
-                                    .py_1()
-                                    .bg(theme.bg_card)
-                                    .border_1()
-                                    .border_color(theme.success)
-                                    .text_color(theme.success)
-                                    .rounded_md()
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child(icons::icon(icons::ICON_BOLT, 12.0, theme.success))
-                                    .child("120 FPS"),
-                            )
-                            // Settings Button (opens modal dialog)
-                            .child(
-                                div()
-                                    .id("btn-settings")
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap_1p5()
-                                    .px_2p5()
-                                    .py_1()
-                                    .bg(theme.bg_card)
-                                    .hover(|s| s.bg(theme.bg_hover))
-                                    .border_1()
-                                    .border_color(if self.is_settings_open { theme.accent } else { theme.border })
-                                    .rounded_md()
-                                    .text_xs()
-                                    .cursor_pointer()
+                                    .window_control_area(WindowControlArea::Max)
+                                    .hover(|h| h.bg(theme.bg_hover))
                                     .child(icons::icon(
-                                        icons::ICON_SETTINGS,
-                                        13.0,
-                                        if self.is_settings_open { theme.accent } else { theme.text_secondary },
+                                        if is_maximized { icons::ICON_RESTORE } else { icons::ICON_MAXIMIZE },
+                                        11.0,
+                                        theme.text_secondary,
                                     ))
-                                    .child("Settings")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.toggle_settings(cx);
+                                    .on_click(cx.listener(|_, _, window, _| {
+                                        window.zoom_window();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("win-ctrl-close")
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .w(px(46.0))
+                                    .h_full()
+                                    .cursor_pointer()
+                                    .window_control_area(WindowControlArea::Close)
+                                    .hover(|h| h.bg(rgb(0xe81123)).text_color(rgb(0xffffff)))
+                                    .child(icons::icon(icons::ICON_CLOSE, 11.0, theme.text_secondary))
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.quit();
                                     })),
                             ),
                     ),
@@ -979,6 +1029,18 @@ impl Render for AppView {
                                                     .child(icons::icon(icons::ICON_FOLDER_OPEN, 13.0, theme.text_primary))
                                                     .on_click(cx.listener(|this, _, window, cx| {
                                                         this.open_folder_dialog(window, cx);
+                                                    })),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("btn-reload-vault")
+                                                    .p_1()
+                                                    .rounded_md()
+                                                    .cursor_pointer()
+                                                    .hover(|h| h.bg(theme.bg_hover))
+                                                    .child(icons::icon(icons::ICON_REFRESH, 13.0, theme.text_primary))
+                                                    .on_click(cx.listener(|this, _, window, cx| {
+                                                        this.reload_files(window, cx);
                                                     })),
                                             ),
                                     ),

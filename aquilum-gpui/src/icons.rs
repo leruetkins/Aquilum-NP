@@ -30,6 +30,9 @@ pub const POWER: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 
 pub const ANALYSIS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/><path d="M12 12V8"/></svg>"#;
 pub const PAPERCLIP: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>"#;
 pub const CHECK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>"#;
+pub const MINIMIZE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>"#;
+pub const MAXIMIZE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><rect width="14" height="14" x="5" y="5" rx="1"/></svg>"#;
+pub const RESTORE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><rect width="11" height="11" x="8" y="5" rx="1"/><path d="M5 9v10h10"/></svg>"#;
 
 pub const ICON_CHEVRON_RIGHT: &str = "icons/chevron_right.svg";
 pub const ICON_CHEVRON_DOWN: &str = "icons/chevron_down.svg";
@@ -58,6 +61,9 @@ pub const ICON_POWER: &str = "icons/power.svg";
 pub const ICON_ANALYSIS: &str = "icons/analysis.svg";
 pub const ICON_PAPERCLIP: &str = "icons/paperclip.svg";
 pub const ICON_CHECK: &str = "icons/check.svg";
+pub const ICON_MINIMIZE: &str = "icons/minimize.svg";
+pub const ICON_MAXIMIZE: &str = "icons/maximize.svg";
+pub const ICON_RESTORE: &str = "icons/restore.svg";
 
 pub struct MemoryAssetSource;
 
@@ -92,6 +98,9 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_ANALYSIS => Some(ANALYSIS),
             ICON_PAPERCLIP => Some(PAPERCLIP),
             ICON_CHECK => Some(CHECK),
+            ICON_MINIMIZE => Some(MINIMIZE),
+            ICON_MAXIMIZE => Some(MAXIMIZE),
+            ICON_RESTORE => Some(RESTORE),
             _ => None,
         };
         Ok(svg.map(|s| Cow::Borrowed(s.as_bytes())))
@@ -127,6 +136,9 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_ANALYSIS.into(),
             ICON_PAPERCLIP.into(),
             ICON_CHECK.into(),
+            ICON_MINIMIZE.into(),
+            ICON_MAXIMIZE.into(),
+            ICON_RESTORE.into(),
         ])
     }
 }
