@@ -18,6 +18,18 @@ pub const BOLT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2
 pub const CODE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>"#;
 pub const CLOSE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>"#;
 pub const PANEL_LEFT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>"#;
+pub const SETTINGS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>"#;
+pub const MONITOR: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>"#;
+pub const TYPE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/></svg>"#;
+pub const BOOK_OPEN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>"#;
+pub const PLUG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></svg>"#;
+pub const HISTORY: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>"#;
+pub const TRASH_2: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>"#;
+pub const KEYBOARD: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.001"/><path d="M10 8h.001"/><path d="M14 8h.001"/><path d="M18 8h.001"/><path d="M6 12h.001"/><path d="M10 12h.001"/><path d="M14 12h.001"/><path d="M18 12h.001"/><path d="M7 16h10"/></svg>"#;
+pub const POWER: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></svg>"#;
+pub const ANALYSIS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/><path d="M12 12V8"/></svg>"#;
+pub const PAPERCLIP: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>"#;
+pub const CHECK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>"#;
 
 pub const ICON_CHEVRON_RIGHT: &str = "icons/chevron_right.svg";
 pub const ICON_CHEVRON_DOWN: &str = "icons/chevron_down.svg";
@@ -34,10 +46,23 @@ pub const ICON_BOLT: &str = "icons/bolt.svg";
 pub const ICON_CODE: &str = "icons/code.svg";
 pub const ICON_CLOSE: &str = "icons/close.svg";
 pub const ICON_PANEL_LEFT: &str = "icons/panel_left.svg";
+pub const ICON_SETTINGS: &str = "icons/settings.svg";
+pub const ICON_MONITOR: &str = "icons/monitor.svg";
+pub const ICON_TYPE: &str = "icons/type.svg";
+pub const ICON_BOOK_OPEN: &str = "icons/book_open.svg";
+pub const ICON_PLUG: &str = "icons/plug.svg";
+pub const ICON_HISTORY: &str = "icons/history.svg";
+pub const ICON_TRASH_2: &str = "icons/trash_2.svg";
+pub const ICON_KEYBOARD: &str = "icons/keyboard.svg";
+pub const ICON_POWER: &str = "icons/power.svg";
+pub const ICON_ANALYSIS: &str = "icons/analysis.svg";
+pub const ICON_PAPERCLIP: &str = "icons/paperclip.svg";
+pub const ICON_CHECK: &str = "icons/check.svg";
 
 pub struct MemoryAssetSource;
 
 impl gpui::AssetSource for MemoryAssetSource {
+    /// Loads the in-memory SVG asset by virtual file path.
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         let svg = match path {
             ICON_CHEVRON_RIGHT => Some(CHEVRON_RIGHT),
@@ -55,11 +80,24 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_CODE => Some(CODE),
             ICON_CLOSE => Some(CLOSE),
             ICON_PANEL_LEFT => Some(PANEL_LEFT),
+            ICON_SETTINGS => Some(SETTINGS),
+            ICON_MONITOR => Some(MONITOR),
+            ICON_TYPE => Some(TYPE),
+            ICON_BOOK_OPEN => Some(BOOK_OPEN),
+            ICON_PLUG => Some(PLUG),
+            ICON_HISTORY => Some(HISTORY),
+            ICON_TRASH_2 => Some(TRASH_2),
+            ICON_KEYBOARD => Some(KEYBOARD),
+            ICON_POWER => Some(POWER),
+            ICON_ANALYSIS => Some(ANALYSIS),
+            ICON_PAPERCLIP => Some(PAPERCLIP),
+            ICON_CHECK => Some(CHECK),
             _ => None,
         };
         Ok(svg.map(|s| Cow::Borrowed(s.as_bytes())))
     }
 
+    /// Lists all registered virtual SVG asset paths.
     fn list(&self, _path: &str) -> Result<Vec<SharedString>> {
         Ok(vec![
             ICON_CHEVRON_RIGHT.into(),
@@ -77,10 +115,23 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_CODE.into(),
             ICON_CLOSE.into(),
             ICON_PANEL_LEFT.into(),
+            ICON_SETTINGS.into(),
+            ICON_MONITOR.into(),
+            ICON_TYPE.into(),
+            ICON_BOOK_OPEN.into(),
+            ICON_PLUG.into(),
+            ICON_HISTORY.into(),
+            ICON_TRASH_2.into(),
+            ICON_KEYBOARD.into(),
+            ICON_POWER.into(),
+            ICON_ANALYSIS.into(),
+            ICON_PAPERCLIP.into(),
+            ICON_CHECK.into(),
         ])
     }
 }
 
+/// Renders an SVG icon with given dimensions and color.
 pub fn icon(path: &'static str, size: f32, color: impl Into<Hsla>) -> Svg {
     gpui::svg()
         .path(path)
@@ -89,3 +140,4 @@ pub fn icon(path: &'static str, size: f32, color: impl Into<Hsla>) -> Svg {
         .flex_shrink_0()
         .text_color(color.into())
 }
+

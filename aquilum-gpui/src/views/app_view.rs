@@ -20,12 +20,18 @@ pub struct AppView {
     pub is_resizing_sidebar: bool,
     pub word_wrap: bool,
     pub last_wrap_cols: usize,
+    pub is_settings_open: bool,
+    pub settings_tab: crate::views::settings_view::SettingsTab,
+    pub config: aquilum_core::settings::models::AppConfig,
 }
 
 impl AppView {
+    /// Creates and initializes a new AppView instance with loaded configuration.
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let state = AppState::new();
+        let config = state.core.settings.get_config();
         Self {
-            state: AppState::new(),
+            state,
             theme: Theme::default(),
             focus_handle: cx.focus_handle(),
             search_focus_handle: cx.focus_handle(),
@@ -37,15 +43,20 @@ impl AppView {
             is_resizing_sidebar: false,
             word_wrap: true,
             last_wrap_cols: 80,
+            is_settings_open: false,
+            settings_tab: crate::views::settings_view::SettingsTab::Ui,
+            config,
         }
     }
 
-    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+    /// Toggles the left sidebar visibility.
+    pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar_collapsed = !self.sidebar_collapsed;
         cx.notify();
     }
 
-    fn toggle_word_wrap(&mut self, cx: &mut Context<Self>) {
+    /// Toggles word wrapping mode in the editor.
+    pub fn toggle_word_wrap(&mut self, cx: &mut Context<Self>) {
         self.word_wrap = !self.word_wrap;
         cx.notify();
     }
@@ -464,6 +475,18 @@ impl AppView {
         let ctrl = keystroke.modifiers.control;
         let shift = keystroke.modifiers.shift;
 
+        // Escape closes settings modal if open
+        if keystroke.key == "escape" && self.is_settings_open {
+            self.close_settings(cx);
+            return;
+        }
+
+        // Ctrl + , (Toggle Settings modal)
+        if ctrl && (keystroke.key == "," || keystroke.key == "<" || keystroke.key == "б" || keystroke.key == "Б") {
+            self.toggle_settings(cx);
+            return;
+        }
+
         // Ctrl + \ или Ctrl + B (Свернуть / развернуть сайдбар)
         if ctrl && (keystroke.key == "\\" || keystroke.key.eq_ignore_ascii_case("b") || keystroke.key == "и" || keystroke.key == "И") {
             self.toggle_sidebar(cx);
@@ -600,6 +623,7 @@ impl AppView {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let cx = &*cx;
         let theme = &self.theme;
         let active_path = self.state.active_note.as_ref().map(|n| n.path.clone());
         let is_editing = self.edit_mode;
@@ -617,6 +641,7 @@ impl Render for AppView {
         div()
             .flex()
             .flex_col()
+            .relative()
             .size_full()
             .bg(theme.bg_app)
             .text_color(theme.text_primary)
@@ -795,6 +820,33 @@ impl Render for AppView {
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .child(icons::icon(icons::ICON_BOLT, 12.0, theme.success))
                                     .child("0 WebView • 120 FPS"),
+                            )
+                            // Settings Button (opens modal dialog)
+                            .child(
+                                div()
+                                    .id("btn-settings")
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .px_2p5()
+                                    .py_1()
+                                    .bg(theme.bg_card)
+                                    .hover(|s| s.bg(theme.bg_hover))
+                                    .border_1()
+                                    .border_color(if self.is_settings_open { theme.accent } else { theme.border })
+                                    .rounded_md()
+                                    .text_xs()
+                                    .cursor_pointer()
+                                    .child(icons::icon(
+                                        icons::ICON_SETTINGS,
+                                        13.0,
+                                        if self.is_settings_open { theme.accent } else { theme.text_secondary },
+                                    ))
+                                    .child("Settings")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.toggle_settings(cx);
+                                    })),
                             ),
                     ),
             )
@@ -969,6 +1021,46 @@ impl Render for AppView {
                                     .overflow_scroll()
                                     .gap_0p5()
                                     .children(tree_elements)
+                            )
+                            // Sidebar Footer (Vault display + Settings button)
+                            .child(
+                                div()
+                                    .id("sidebar-footer")
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    .px_2()
+                                    .py_1p5()
+                                    .border_t_1()
+                                    .border_color(theme.border_subtle)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap_1p5()
+                                            .text_xs()
+                                            .text_color(theme.text_secondary)
+                                            .child(icons::icon(icons::ICON_FOLDER, 12.0, theme.text_muted))
+                                            .child(self.state.workspace_name.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("btn-sidebar-settings")
+                                            .p_1()
+                                            .rounded_md()
+                                            .cursor_pointer()
+                                            .hover(|h| h.bg(theme.bg_hover))
+                                            .child(icons::icon(
+                                                icons::ICON_SETTINGS,
+                                                13.0,
+                                                if self.is_settings_open { theme.accent } else { theme.text_muted },
+                                            ))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.toggle_settings(cx);
+                                            })),
+                                    ),
                             )
                         })
                     })
@@ -1486,6 +1578,10 @@ impl Render for AppView {
                             .child("GPUI DirectX: 120 FPS"),
                     ),
             )
+            // ================= SETTINGS MODAL =================
+            .when(self.is_settings_open, |d| {
+                d.child(self.render_settings_modal(cx))
+            })
     }
 }
 
