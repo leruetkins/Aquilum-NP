@@ -266,18 +266,15 @@ impl AppView {
             .map(|s| f32::from(s.width))
             .unwrap_or(7.7);
         let current_sidebar_w = if self.sidebar_collapsed { 0.0 } else { self.sidebar_width };
-        let text_start_x = current_sidebar_w + 4.0 + 32.0 + 8.0 + 41.0;
+        let text_start_x = current_sidebar_w + 4.0 + 32.0 + 8.0 + 40.0;
         let line_h = 24.0;
 
-        let target_v_idx = if let Some(top_y) = self.editor_top_y {
-            if pos_y < top_y {
-                0
-            } else {
-                let idx = ((pos_y - top_y) / line_h).floor() as usize;
-                idx.min(visual_rows.len().saturating_sub(1))
-            }
-        } else {
+        let top_y = self.editor_top_y.unwrap_or(126.0);
+        let target_v_idx = if pos_y < top_y {
             0
+        } else {
+            let idx = ((pos_y - top_y) / line_h).floor() as usize;
+            idx.min(visual_rows.len().saturating_sub(1))
         };
 
         let v = &visual_rows[target_v_idx];
@@ -645,6 +642,7 @@ impl Render for AppView {
             .flex_col()
             .relative()
             .size_full()
+            .overflow_hidden()
             .bg(theme.bg_app)
             .text_color(theme.text_primary)
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
@@ -695,6 +693,9 @@ impl Render for AppView {
                     .items_center()
                     .justify_between()
                     .h(px(46.0))
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
                     .px_4()
                     .bg(theme.bg_sidebar)
                     .border_b_1()
@@ -705,6 +706,8 @@ impl Render for AppView {
                             .flex_row()
                             .items_center()
                             .gap_3()
+                            .min_w_0()
+                            .overflow_hidden()
                             .child(
                                 div()
                                     .id("btn-toggle-sidebar")
@@ -729,6 +732,7 @@ impl Render for AppView {
                                     .flex()
                                     .items_center()
                                     .gap_2()
+                                    .flex_shrink_0()
                                     .child(
                                         div()
                                             .px_2()
@@ -751,6 +755,7 @@ impl Render for AppView {
                                 div()
                                     .h(px(16.0))
                                     .w_px()
+                                    .flex_shrink_0()
                                     .bg(theme.border),
                             )
                             .child(
@@ -760,8 +765,14 @@ impl Render for AppView {
                                     .gap_1p5()
                                     .text_sm()
                                     .text_color(theme.text_secondary)
+                                    .min_w_0()
+                                    .overflow_hidden()
                                     .child(icons::icon(icons::ICON_FOLDER, 14.0, theme.text_secondary))
-                                    .child(self.state.workspace_name.clone()),
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .child(self.state.workspace_name.clone()),
+                                    ),
                             ),
                     )
                     .child(
@@ -770,6 +781,7 @@ impl Render for AppView {
                             .flex_row()
                             .items_center()
                             .gap_2()
+                            .flex_shrink_0()
                             .child(
                                 div()
                                     .id("btn-open-folder")
@@ -777,7 +789,7 @@ impl Render for AppView {
                                     .flex_row()
                                     .items_center()
                                     .gap_1p5()
-                                    .px_3()
+                                    .px_2p5()
                                     .py_1()
                                     .bg(theme.bg_card)
                                     .hover(|s| s.bg(theme.bg_hover))
@@ -787,7 +799,7 @@ impl Render for AppView {
                                     .text_xs()
                                     .cursor_pointer()
                                     .child(icons::icon(icons::ICON_FOLDER_OPEN, 13.0, theme.text_primary))
-                                    .child("Open Folder")
+                                    .child("Open")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.open_folder_dialog(window, cx);
                                     })),
@@ -830,7 +842,7 @@ impl Render for AppView {
                                     .text_xs()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .child(icons::icon(icons::ICON_BOLT, 12.0, theme.success))
-                                    .child("0 WebView • 120 FPS"),
+                                    .child("120 FPS"),
                             )
                             // Settings Button (opens modal dialog)
                             .child(
@@ -868,6 +880,8 @@ impl Render for AppView {
                     .flex_1()
                     .flex_row()
                     .size_full()
+                    .w_full()
+                    .min_w_0()
                     .overflow_hidden()
                     // ----- Сайдбар файлов (Дерево каталогов) -----
                     .when(!self.sidebar_collapsed, |s| {
@@ -888,6 +902,8 @@ impl Render for AppView {
                                 .flex()
                                 .flex_col()
                                 .w(px(self.sidebar_width))
+                                .flex_shrink_0()
+                                .overflow_hidden()
                                 .h_full()
                                 .bg(theme.bg_sidebar)
                                 .p_2()
@@ -1079,6 +1095,7 @@ impl Render for AppView {
                     .child(
                         div()
                             .id("sidebar-resizer")
+                            .flex_shrink_0()
                             .w(px(4.0))
                             .h_full()
                             .bg(if self.is_resizing_sidebar { theme.accent } else { theme.border })
@@ -1099,7 +1116,9 @@ impl Render for AppView {
                             .flex()
                             .flex_col()
                             .flex_1()
+                            .min_w_0()
                             .h_full()
+                            .overflow_hidden()
                             .bg(theme.bg_editor)
                             .when_some(self.state.active_note.as_ref(), |this, note| {
                                 let lines: Vec<&str> = note.content.split('\n').collect();
@@ -1127,7 +1146,8 @@ impl Render for AppView {
                                 let cursor_h = px(16.0);
                                 let cursor_top = 4.0;
                                 let current_sidebar_w = if self.sidebar_collapsed { 0.0 } else { self.sidebar_width };
-                                let text_start_x = current_sidebar_w + 4.0 + 32.0 + 8.0 + 41.0;
+                                // Sidebar + Resizer (4px) + Container Padding Left (32px) + Row Padding Left (8px) + Line Number Width (40px) = current_sidebar_w + 84px
+                                let text_start_x = current_sidebar_w + 4.0 + 32.0 + 8.0 + 40.0;
 
                                 this.child(
                                     // Верхняя панель открытой заметки
@@ -1136,6 +1156,9 @@ impl Render for AppView {
                                         .flex_row()
                                         .items_center()
                                         .justify_between()
+                                        .w_full()
+                                        .min_w_0()
+                                        .overflow_hidden()
                                         .px_8()
                                         .py_3()
                                         .border_b_1()
@@ -1146,11 +1169,14 @@ impl Render for AppView {
                                                 .flex_row()
                                                 .items_center()
                                                 .gap_2()
+                                                .min_w_0()
+                                                .overflow_hidden()
                                                 .child(
                                                     div()
                                                         .text_2xl()
                                                         .font_weight(gpui::FontWeight::BOLD)
                                                         .text_color(theme.text_primary)
+                                                        .truncate()
                                                         .child(note.title.clone()),
                                                 )
                                                 .when(is_dirty, |s| {
@@ -1158,6 +1184,7 @@ impl Render for AppView {
                                                         div()
                                                             .text_sm()
                                                             .text_color(theme.accent)
+                                                            .flex_shrink_0()
                                                             .child("● unsaved"),
                                                     )
                                                 }),
@@ -1167,12 +1194,13 @@ impl Render for AppView {
                                                 .flex()
                                                 .flex_row()
                                                 .items_center()
-                                                .gap_3()
+                                                .gap_2()
+                                                .flex_shrink_0()
                                                 .child(
                                                     div()
                                                         .text_xs()
                                                         .text_color(theme.text_muted)
-                                                        .child(format!("{} words • {} chars", words, chars)),
+                                                        .child(format!("{}w • {}c", words, chars)),
                                                 )
                                                 .child(
                                                     div()
@@ -1181,7 +1209,7 @@ impl Render for AppView {
                                                         .flex_row()
                                                         .items_center()
                                                         .gap_1p5()
-                                                        .px_3()
+                                                        .px_2p5()
                                                         .py_1()
                                                         .bg(if is_editing { theme.bg_selected } else { theme.bg_card })
                                                         .hover(|s| s.bg(theme.bg_hover))
@@ -1195,7 +1223,7 @@ impl Render for AppView {
                                                         } else {
                                                             icons::icon(icons::ICON_EYE, 12.0, theme.text_secondary)
                                                         })
-                                                        .child(if is_editing { "Edit Mode" } else { "Preview Mode" })
+                                                        .child(if is_editing { "Edit" } else { "Preview" })
                                                         .on_click(cx.listener(|this, _, _, cx| {
                                                             this.edit_mode = !this.edit_mode;
                                                             cx.notify();
@@ -1208,7 +1236,7 @@ impl Render for AppView {
                                                         .flex_row()
                                                         .items_center()
                                                         .gap_1p5()
-                                                        .px_3()
+                                                        .px_2p5()
                                                         .py_1()
                                                         .bg(if self.word_wrap { theme.bg_selected } else { theme.bg_card })
                                                         .hover(|s| s.bg(theme.bg_hover))
@@ -1218,7 +1246,7 @@ impl Render for AppView {
                                                         .text_xs()
                                                         .cursor_pointer()
                                                         .child(icons::icon(icons::ICON_CODE, 12.0, if self.word_wrap { theme.accent } else { theme.text_secondary }))
-                                                        .child(if self.word_wrap { "Wrap: On (Alt+Z)" } else { "Wrap: Off (Alt+Z)" })
+                                                        .child(if self.word_wrap { "Wrap: On" } else { "Wrap: Off" })
                                                         .on_click(cx.listener(|this, _, _, cx| {
                                                             this.toggle_word_wrap(cx);
                                                         })),
@@ -1230,7 +1258,7 @@ impl Render for AppView {
                                                         .flex_row()
                                                         .items_center()
                                                         .gap_1p5()
-                                                        .px_3()
+                                                        .px_2p5()
                                                         .py_1()
                                                         .bg(theme.accent)
                                                         .text_color(theme.bg_sidebar)
@@ -1239,7 +1267,7 @@ impl Render for AppView {
                                                         .text_xs()
                                                         .cursor_pointer()
                                                         .child(icons::icon(icons::ICON_SAVE, 13.0, theme.bg_sidebar))
-                                                        .child("Save (Ctrl+S)")
+                                                        .child("Save")
                                                         .on_click(cx.listener(|this, _, window, cx| {
                                                             this.save_note(window, cx);
                                                         })),
@@ -1255,6 +1283,8 @@ impl Render for AppView {
                                         .flex()
                                         .flex_col()
                                         .flex_1()
+                                        .w_full()
+                                        .min_w_0()
                                         .overflow_scroll()
                                         .px_8()
                                         .py_6()
@@ -1511,9 +1541,11 @@ impl Render for AppView {
                                                                         theme,
                                                                     ))
                                                             )
-                                                            // 3. Слой курсора (absolute overlay, никогда не раздвигает буквы в словах)
+                                                            // 3. Слой курсора (absolute overlay, выравнивается с визуальной строкой и выделением)
                                                             .when(is_current, |s| {
-                                                                let cursor_x = (active_col_in_row as f32) * line_char_width;
+                                                                // Convert character offset in row to visual column taking hidden markdown tokens into account
+                                                                let vis_cursor = crate::markdown::row_char_to_visual_col(&row_spans, active_col_in_row, is_active_line, hidden_prefix_len);
+                                                                let cursor_x = (vis_cursor as f32) * line_char_width;
                                                                 s.child(
                                                                     div()
                                                                         .absolute()
@@ -1569,24 +1601,33 @@ impl Render for AppView {
                     .items_center()
                     .justify_between()
                     .h(px(28.0))
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
                     .px_4()
                     .bg(theme.bg_sidebar)
                     .border_t_1()
                     .border_color(theme.border)
                     .text_xs()
                     .text_color(theme.text_muted)
-                    .child(self.state.status_text.clone())
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .child(self.state.status_text.clone()),
+                    )
                     .child(
                         div()
                             .flex()
+                            .flex_shrink_0()
                             .gap_4()
                             .when_some(self.state.active_note.as_ref(), |s, note| {
                                 let (line, col) = note.line_col();
                                 s.child(format!("Ln {}, Col {}", line + 1, col + 1))
                             })
-                            .child("SQLite WAL: Connected")
-                            .child("Tantivy: Ready")
-                            .child("GPUI DirectX: 120 FPS"),
+                            .child("SQLite WAL")
+                            .child("Tantivy")
+                            .child("120 FPS"),
                     ),
             )
             // ================= SETTINGS MODAL =================
