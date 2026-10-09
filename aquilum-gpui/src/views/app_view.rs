@@ -2,7 +2,7 @@ use crate::icons;
 use crate::state::{AppState, FileNode};
 use crate::theme::Theme;
 use gpui::{
-    div, prelude::*, px, rgba, AnyElement, ClipboardItem, Context, FocusHandle, IntoElement,
+    div, prelude::*, px, AnyElement, ClipboardItem, Context, FocusHandle, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Render, SharedString, Window,
 };
 use std::path::PathBuf;
@@ -30,9 +30,10 @@ impl AppView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let state = AppState::new();
         let config = state.core.settings.get_config();
+        let theme = Theme::from_config(&config.ui.theme, None);
         Self {
             state,
-            theme: Theme::default(),
+            theme,
             focus_handle: cx.focus_handle(),
             search_focus_handle: cx.focus_handle(),
             edit_mode: true,
@@ -623,6 +624,7 @@ impl AppView {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.theme = Theme::from_config(&self.config.ui.theme, Some(window.appearance()));
         let cx = &*cx;
         let theme = &self.theme;
         let active_path = self.state.active_note.as_ref().map(|n| n.path.clone());
@@ -1487,7 +1489,7 @@ impl Render for AppView {
                                                                         .top_0()
                                                                         .h_full()
                                                                         .w(px(sel_w))
-                                                                        .bg(rgba(0x89b4fa44))
+                                                                        .bg(theme.selection_bg)
                                                                         .rounded_xs(),
                                                                 )
                                                             })
