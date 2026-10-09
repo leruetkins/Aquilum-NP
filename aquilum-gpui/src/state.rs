@@ -118,6 +118,45 @@ impl OpenedNote {
         self.cursor_offset = self.content.len();
     }
 
+    pub fn word_range_at(&self, offset: usize) -> (usize, usize) {
+        if self.content.is_empty() {
+            return (0, 0);
+        }
+        let offset = offset.min(self.content.len());
+        let chars: Vec<(usize, char)> = self.content.char_indices().collect();
+        if chars.is_empty() {
+            return (0, 0);
+        }
+        let char_idx = chars.iter().position(|(idx, _)| *idx >= offset).unwrap_or(chars.len() - 1);
+        let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+
+        let mut start_idx = char_idx;
+        while start_idx > 0 && is_word_char(chars[start_idx - 1].1) {
+            start_idx -= 1;
+        }
+        let mut end_idx = char_idx;
+        while end_idx < chars.len() && is_word_char(chars[end_idx].1) {
+            end_idx += 1;
+        }
+        if start_idx == end_idx {
+            return (offset, offset);
+        }
+        let start_byte = chars[start_idx].0;
+        let end_byte = if end_idx < chars.len() {
+            chars[end_idx].0
+        } else {
+            self.content.len()
+        };
+        (start_byte, end_byte)
+    }
+
+    pub fn line_range_at(&self, offset: usize) -> (usize, usize) {
+        let offset = offset.min(self.content.len());
+        let start = self.content[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let end = self.content[offset..].find('\n').map(|i| offset + i + 1).unwrap_or(self.content.len());
+        (start, end)
+    }
+
     /// Возвращает (line_index, col_index) 0-indexed
     pub fn line_col(&self) -> (usize, usize) {
         let offset = self.cursor_offset.min(self.content.len());

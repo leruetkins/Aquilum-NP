@@ -70,12 +70,10 @@ impl AppView {
     }
 
     fn compute_wrap_cols(&self, window_width: f32, char_width: f32) -> usize {
-        let current_sidebar_w = if self.sidebar_collapsed { 40.0 } else { self.sidebar_width };
+        let editor_left_w = 44.0 + if self.sidebar_collapsed { 0.0 } else { self.sidebar_width + 4.0 };
         let char_w = if char_width > 1.0 { char_width } else { 7.7 };
-        // Доступная ширина текста:
-        // Ширина окна минус сайдбар, разделитель (4px), левые отступы (32px контейнер + 8px строка + 40px номера строк = 80px)
-        // и правые отступы (32px контейнер + 8px строка = 40px). Всего отступов: 124px.
-        let available_text_w = (window_width - current_sidebar_w - 124.0).max(100.0);
+        // Доступная ширина текста: ширина окна минус левые колонки и отступы (контейнер 32px + строка 8px + номера строк 40px + правые 40px)
+        let available_text_w = (window_width - editor_left_w - 120.0).max(100.0);
         ((available_text_w / char_w).floor() as usize).max(20)
     }
 
@@ -311,11 +309,11 @@ impl AppView {
             .advance(font_id, px(14.0), 'x')
             .map(|s| f32::from(s.width))
             .unwrap_or(7.7);
-        let current_sidebar_w = if self.sidebar_collapsed { 40.0 } else { self.sidebar_width };
-        let text_start_x = current_sidebar_w + 4.0 + 32.0 + 8.0 + 40.0;
+        let editor_left_x = 44.0 + if self.sidebar_collapsed { 0.0 } else { self.sidebar_width + 4.0 };
+        let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
         let line_h = 24.0;
 
-        let top_y = self.editor_top_y.unwrap_or(126.0);
+        let top_y = self.editor_top_y.unwrap_or(96.0);
         let target_v_idx = if pos_y < top_y {
             0
         } else {
@@ -1776,9 +1774,8 @@ impl Render for AppView {
                                 let line_h = px(24.0);
                                 let cursor_h = px(16.0);
                                 let cursor_top = 4.0;
-                                let current_sidebar_w = if self.sidebar_collapsed { 40.0 } else { self.sidebar_width };
-                                // Left column + Resizer (4px) + Container Padding Left (32px) + Row Padding Left (8px) + Line Number Width (40px) = current_sidebar_w + 84px
-                                let text_start_x = current_sidebar_w + 4.0 + 32.0 + 8.0 + 40.0;
+                                let editor_left_x = 44.0 + if self.sidebar_collapsed { 0.0 } else { self.sidebar_width + 4.0 };
+                                let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
 
                                 let lines_arc = Arc::new(lines);
                                 let visual_rows_arc = Arc::new(visual_rows);
@@ -1797,12 +1794,29 @@ impl Render for AppView {
                                         .flex_1()
                                         .w_full()
                                         .min_w_0()
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _event: &MouseDownEvent, window, cx| {
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
                                             if this.is_resizing_sidebar {
                                                 return;
                                             }
                                             window.focus(&this.focus_handle);
                                             this.is_mouse_selecting = true;
+                                            let click_y: f32 = event.position.y.into();
+                                            if let Some(ref mut n) = this.state.active_note {
+                                                let lines: Vec<&str> = n.content.split('\n').collect();
+                                                let visual_rows = crate::markdown::build_visual_rows(&lines, this.word_wrap, this.last_wrap_cols);
+                                                let v_count = visual_rows.len();
+                                                this.editor_top_y = Some(click_y - (v_count as f32) * 24.0);
+
+                                                let end_offset = n.content.len();
+                                                if event.modifiers.shift {
+                                                    if n.selection_anchor.is_none() {
+                                                        n.selection_anchor = Some(n.cursor_offset);
+                                                    }
+                                                } else {
+                                                    n.selection_anchor = Some(end_offset);
+                                                }
+                                                n.cursor_offset = end_offset;
+                                            }
                                             cx.notify();
                                         }))
                                         .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
@@ -1913,6 +1927,7 @@ impl Render for AppView {
                                                         items.push(
                                                             div()
                                                                 .id(gpui::ElementId::from(("v-row", v_idx)))
+                                                                .w_full()
                                                                 .flex()
                                                                 .flex_row()
                                                                 .items_center()
@@ -1920,8 +1935,10 @@ impl Render for AppView {
                                                                 .py_0()
                                                                 .px_2()
                                                                 .rounded_sm()
+                                                                .cursor(gpui::CursorStyle::IBeam)
                                                                 .when(is_current, |s| s.bg(theme.bg_hover))
                                                                 .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                                                    cx.stop_propagation();
                                                                     if this.is_resizing_sidebar {
                                                                         return;
                                                                     }
@@ -1939,14 +1956,24 @@ impl Render for AppView {
                                                                     let target_char = v_char_start + col_in_row;
                                                                     if let Some(ref mut n) = this.state.active_note {
                                                                         let offset = n.offset_for_line_col(v_line_idx, target_char);
-                                                                        if event.modifiers.shift {
+                                                                        if event.click_count == 2 {
+                                                                            let (w_start, w_end) = n.word_range_at(offset);
+                                                                            n.selection_anchor = Some(w_start);
+                                                                            n.cursor_offset = w_end;
+                                                                        } else if event.click_count >= 3 {
+                                                                            let (l_start, l_end) = n.line_range_at(offset);
+                                                                            n.selection_anchor = Some(l_start);
+                                                                            n.cursor_offset = l_end;
+                                                                        } else if event.modifiers.shift {
                                                                             if n.selection_anchor.is_none() {
                                                                                 n.selection_anchor = Some(n.cursor_offset);
                                                                             }
+                                                                            n.cursor_offset = offset;
                                                                         } else {
+                                                                            // Single click anywhere on row places cursor and CLEARS existing selection
+                                                                            n.cursor_offset = offset;
                                                                             n.selection_anchor = Some(offset);
                                                                         }
-                                                                        n.cursor_offset = offset;
                                                                     }
                                                                     window.focus(&this.focus_handle);
                                                                     cx.notify();
