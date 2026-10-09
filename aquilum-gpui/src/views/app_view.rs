@@ -66,7 +66,7 @@ impl AppView {
     }
 
     fn compute_wrap_cols(&self, window_width: f32, char_width: f32) -> usize {
-        let current_sidebar_w = if self.sidebar_collapsed { 0.0 } else { self.sidebar_width };
+        let current_sidebar_w = if self.sidebar_collapsed { 40.0 } else { self.sidebar_width };
         let char_w = if char_width > 1.0 { char_width } else { 7.7 };
         // Доступная ширина текста:
         // Ширина окна минус сайдбар, разделитель (4px), левые отступы (32px контейнер + 8px строка + 40px номера строк = 80px)
@@ -268,7 +268,7 @@ impl AppView {
             .advance(font_id, px(14.0), 'x')
             .map(|s| f32::from(s.width))
             .unwrap_or(7.7);
-        let current_sidebar_w = if self.sidebar_collapsed { 0.0 } else { self.sidebar_width };
+        let current_sidebar_w = if self.sidebar_collapsed { 40.0 } else { self.sidebar_width };
         let text_start_x = current_sidebar_w + 4.0 + 32.0 + 8.0 + 40.0;
         let line_h = 24.0;
 
@@ -719,14 +719,17 @@ impl Render for AppView {
                                 .flex_shrink_0()
                                 .h_full()
                                 .bg(theme.bg_sidebar)
-                                // Controls: button and badge (isolated from drag area)
+                                // 1. Rail header cell (44px) matching the rail below
                                 .child(
                                     div()
                                         .flex()
-                                        .flex_row()
                                         .items_center()
-                                        .gap_2()
-                                        .px_3()
+                                        .justify_center()
+                                        .w(px(44.0))
+                                        .h_full()
+                                        .flex_shrink_0()
+                                        .border_r_1()
+                                        .border_color(theme.border)
                                         .child(
                                             div()
                                                 .id("btn-toggle-sidebar")
@@ -745,7 +748,18 @@ impl Render for AppView {
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.toggle_sidebar(cx);
                                                 })),
-                                        )
+                                        ),
+                                )
+                                // 2. File tree header (AQUILUM badge and drag region)
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .justify_between()
+                                        .flex_1()
+                                        .h_full()
+                                        .px_3()
                                         .child(
                                             div()
                                                 .px_2()
@@ -756,20 +770,19 @@ impl Render for AppView {
                                                 .rounded_md()
                                                 .text_xs()
                                                 .child("AQUILUM"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("sidebar-titlebar-drag-region")
+                                                .flex_1()
+                                                .h_full()
+                                                .window_control_area(WindowControlArea::Drag)
+                                                .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, window, _| {
+                                                    if event.click_count == 2 {
+                                                        window.zoom_window();
+                                                    }
+                                                })),
                                         ),
-                                )
-                                // Drag area for the remaining space above the sidebar
-                                .child(
-                                    div()
-                                        .id("sidebar-titlebar-drag-region")
-                                        .flex_1()
-                                        .h_full()
-                                        .window_control_area(WindowControlArea::Drag)
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, window, _| {
-                                            if event.click_count == 2 {
-                                                window.zoom_window();
-                                            }
-                                        })),
                                 ),
                         )
                     })
@@ -777,12 +790,13 @@ impl Render for AppView {
                         s.child(
                             div()
                                 .flex()
-                                .flex_row()
                                 .items_center()
-                                .gap_2()
-                                .px_2()
+                                .justify_center()
+                                .w(px(44.0))
                                 .h_full()
                                 .flex_shrink_0()
+                                .border_r_1()
+                                .border_color(theme.border)
                                 .bg(theme.bg_sidebar)
                                 .child(
                                     div()
@@ -802,51 +816,42 @@ impl Render for AppView {
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.toggle_sidebar(cx);
                                         })),
-                                )
-                                .child(
-                                    div()
-                                        .px_2()
-                                        .py_0p5()
-                                        .bg(theme.accent)
-                                        .text_color(theme.bg_sidebar)
-                                        .font_weight(gpui::FontWeight::BOLD)
-                                        .rounded_md()
-                                        .text_xs()
-                                        .child("AQUILUM"),
                                 ),
                         )
                     })
                     // Vertical divider (4px hitbox) matching the sidebar-resizer below exactly
-                    .child(
-                        div()
-                            .id("titlebar-resizer-divider")
-                            .w(px(4.0))
-                            .h_full()
-                            .flex_shrink_0()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .justify_center()
-                            .cursor(gpui::CursorStyle::ResizeColumn)
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.is_hovering_resizer = *hovered;
-                                cx.notify();
-                            }))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                                if event.click_count == 2 {
-                                    this.toggle_sidebar(cx);
-                                } else {
-                                    this.is_resizing_sidebar = true;
+                    .when(!self.sidebar_collapsed, |s| {
+                        s.child(
+                            div()
+                                .id("titlebar-resizer-divider")
+                                .w(px(4.0))
+                                .h_full()
+                                .flex_shrink_0()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_center()
+                                .cursor(gpui::CursorStyle::ResizeColumn)
+                                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                    this.is_hovering_resizer = *hovered;
                                     cx.notify();
-                                }
-                            }))
-                            .child(
-                                div()
-                                    .w(px(resizer_line_w))
-                                    .h_full()
-                                    .bg(resizer_color),
-                            ),
-                    )
+                                }))
+                                .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                    if event.click_count == 2 {
+                                        this.toggle_sidebar(cx);
+                                    } else {
+                                        this.is_resizing_sidebar = true;
+                                        cx.notify();
+                                    }
+                                }))
+                                .child(
+                                    div()
+                                        .w(px(resizer_line_w))
+                                        .h_full()
+                                        .bg(resizer_color),
+                                ),
+                        )
+                    })
                     // Right area: Editor header column containing Tab Bar, Drag Area, and Window Controls
                     .child(
                         div()
@@ -1021,6 +1026,129 @@ impl Render for AppView {
                     .w_full()
                     .min_w_0()
                     .overflow_hidden()
+                    // ----- Left Action Rail / Ribbon (Obsidian-style) -----
+                    .child(
+                        div()
+                            .id("sidebar-action-rail")
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .w(px(44.0))
+                            .h_full()
+                            .flex_shrink_0()
+                            .border_r_1()
+                            .border_color(theme.border)
+                            .bg(theme.bg_sidebar)
+                            .pt_2()
+                            .pb_2()
+                            .gap_2()
+                            // 1. Create New Note
+                            .child(
+                                div()
+                                    .id("rail-btn-new-note")
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .w(px(32.0))
+                                    .h(px(32.0))
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .hover(|h| h.bg(theme.bg_hover))
+                                    .child(icons::icon(icons::ICON_NOTE_CREATE, 17.0, theme.text_secondary))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.create_new_note(window, cx);
+                                    })),
+                            )
+                            // 2. Daily Note / Calendar
+                            .child(
+                                div()
+                                    .id("rail-btn-calendar")
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .w(px(32.0))
+                                    .h(px(32.0))
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .hover(|h| h.bg(theme.bg_hover))
+                                    .child(icons::icon(icons::ICON_CALENDAR, 17.0, theme.text_secondary))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.create_new_note(window, cx);
+                                    })),
+                            )
+                            // 3. Command Palette
+                            .child(
+                                div()
+                                    .id("rail-btn-commands")
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .w(px(32.0))
+                                    .h(px(32.0))
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .hover(|h| h.bg(theme.bg_hover))
+                                    .child(icons::icon(icons::ICON_TERMINAL, 17.0, theme.text_secondary))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.toggle_settings(cx);
+                                    })),
+                            )
+                            // 4. Sync / Refresh
+                            .child(
+                                div()
+                                    .id("rail-btn-refresh")
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .w(px(32.0))
+                                    .h(px(32.0))
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .hover(|h| h.bg(theme.bg_hover))
+                                    .child(icons::icon(icons::ICON_REFRESH, 17.0, theme.text_secondary))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.state.reload_file_tree();
+                                        cx.notify();
+                                    })),
+                            )
+                            // 5. Trash
+                            .child(
+                                div()
+                                    .id("rail-btn-trash")
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .w(px(32.0))
+                                    .h(px(32.0))
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .hover(|h| h.bg(theme.bg_hover))
+                                    .child(icons::icon(icons::ICON_TRASH_2, 17.0, theme.text_secondary)),
+                            )
+                            // Spacer to push settings to bottom
+                            .child(div().flex_1())
+                            // Settings at bottom
+                            .child(
+                                div()
+                                    .id("rail-btn-settings")
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .w(px(32.0))
+                                    .h(px(32.0))
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .hover(|h| h.bg(theme.bg_hover))
+                                    .child(icons::icon(
+                                        icons::ICON_SETTINGS,
+                                        17.0,
+                                        if self.is_settings_open { theme.accent } else { theme.text_muted },
+                                    ))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.toggle_settings(cx);
+                                    })),
+                            ),
+                    )
                     // ----- Сайдбар файлов (Дерево каталогов) -----
                     .when(!self.sidebar_collapsed, |s| {
                         s.child({
@@ -1039,7 +1167,7 @@ impl Render for AppView {
                             div()
                                 .flex()
                                 .flex_col()
-                                .w(px(self.sidebar_width))
+                                .w(px((self.sidebar_width - 44.0).max(100.0)))
                                 .flex_shrink_0()
                                 .overflow_hidden()
                                 .h_full()
@@ -1242,36 +1370,38 @@ impl Render for AppView {
                         })
                     })
                     // ----- Sidebar Resizer Divider (Obsidian-style) -----
-                    .child(
-                        div()
-                            .id("sidebar-resizer")
-                            .flex_shrink_0()
-                            .w(px(4.0))
-                            .h_full()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .justify_center()
-                            .cursor(gpui::CursorStyle::ResizeColumn)
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.is_hovering_resizer = *hovered;
-                                cx.notify();
-                            }))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                                if event.click_count == 2 {
-                                    this.toggle_sidebar(cx);
-                                } else {
-                                    this.is_resizing_sidebar = true;
+                    .when(!self.sidebar_collapsed, |s| {
+                        s.child(
+                            div()
+                                .id("sidebar-resizer")
+                                .flex_shrink_0()
+                                .w(px(4.0))
+                                .h_full()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_center()
+                                .cursor(gpui::CursorStyle::ResizeColumn)
+                                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                    this.is_hovering_resizer = *hovered;
                                     cx.notify();
-                                }
-                            }))
-                            .child(
-                                div()
-                                    .w(px(resizer_line_w))
-                                    .h_full()
-                                    .bg(resizer_color),
-                            ),
-                    )
+                                }))
+                                .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                    if event.click_count == 2 {
+                                        this.toggle_sidebar(cx);
+                                    } else {
+                                        this.is_resizing_sidebar = true;
+                                        cx.notify();
+                                    }
+                                }))
+                                .child(
+                                    div()
+                                        .w(px(resizer_line_w))
+                                        .h_full()
+                                        .bg(resizer_color),
+                                ),
+                        )
+                    })
                     // ----- Центральная область редактора -----
                     .child(
                         div()
@@ -1307,8 +1437,8 @@ impl Render for AppView {
                                 let line_h = px(24.0);
                                 let cursor_h = px(16.0);
                                 let cursor_top = 4.0;
-                                let current_sidebar_w = if self.sidebar_collapsed { 0.0 } else { self.sidebar_width };
-                                // Sidebar + Resizer (4px) + Container Padding Left (32px) + Row Padding Left (8px) + Line Number Width (40px) = current_sidebar_w + 84px
+                                let current_sidebar_w = if self.sidebar_collapsed { 40.0 } else { self.sidebar_width };
+                                // Left column + Resizer (4px) + Container Padding Left (32px) + Row Padding Left (8px) + Line Number Width (40px) = current_sidebar_w + 84px
                                 let text_start_x = current_sidebar_w + 4.0 + 32.0 + 8.0 + 40.0;
 
                                 this.child(

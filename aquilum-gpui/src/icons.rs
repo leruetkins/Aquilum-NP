@@ -33,6 +33,9 @@ pub const CHECK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 
 pub const MINIMIZE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>"#;
 pub const MAXIMIZE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><rect width="14" height="14" x="5" y="5" rx="1"/></svg>"#;
 pub const RESTORE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><rect width="11" height="11" x="8" y="5" rx="1"/><path d="M5 9v10h10"/></svg>"#;
+pub const NOTE_CREATE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>"#;
+pub const CALENDAR: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></svg>"#;
+pub const TERMINAL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>"#;
 
 pub const ICON_CHEVRON_RIGHT: &str = "icons/chevron_right.svg";
 pub const ICON_CHEVRON_DOWN: &str = "icons/chevron_down.svg";
@@ -64,6 +67,9 @@ pub const ICON_CHECK: &str = "icons/check.svg";
 pub const ICON_MINIMIZE: &str = "icons/minimize.svg";
 pub const ICON_MAXIMIZE: &str = "icons/maximize.svg";
 pub const ICON_RESTORE: &str = "icons/restore.svg";
+pub const ICON_NOTE_CREATE: &str = "icons/note_create.svg";
+pub const ICON_CALENDAR: &str = "icons/calendar.svg";
+pub const ICON_TERMINAL: &str = "icons/terminal.svg";
 
 pub struct MemoryAssetSource;
 
@@ -101,6 +107,9 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_MINIMIZE => Some(MINIMIZE),
             ICON_MAXIMIZE => Some(MAXIMIZE),
             ICON_RESTORE => Some(RESTORE),
+            ICON_NOTE_CREATE => Some(NOTE_CREATE),
+            ICON_CALENDAR => Some(CALENDAR),
+            ICON_TERMINAL => Some(TERMINAL),
             _ => None,
         };
         Ok(svg.map(|s| Cow::Borrowed(s.as_bytes())))
@@ -139,6 +148,9 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_MINIMIZE.into(),
             ICON_MAXIMIZE.into(),
             ICON_RESTORE.into(),
+            ICON_NOTE_CREATE.into(),
+            ICON_CALENDAR.into(),
+            ICON_TERMINAL.into(),
         ])
     }
 }
