@@ -1206,6 +1206,7 @@ impl Render for AppView {
                                             visual_rows.into_iter().enumerate().map(move |(v_idx, v)| {
                                                 let line = lines[v.line_idx];
                                                 let is_current = is_editing && (v_idx == active_v_idx);
+                                                let is_active_line = is_editing && (v.line_idx == cursor_line);
                                                 let code_state = code_states[v.line_idx].as_ref().map(|s| (s.kind, s.lang.as_deref()));
                                                 let classified = crate::markdown::classify_line(line, code_state);
                                                 let is_opening_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: true, .. });
@@ -1213,6 +1214,18 @@ impl Render for AppView {
                                                 let is_code_line = matches!(classified, crate::markdown::LineKind::CodeLine(_));
                                                 let is_in_active_block = code_states[v.line_idx].as_ref().map(|s| Some(s.block_id) == active_block_id).unwrap_or(false);
                                                 let row_len = v.char_end.saturating_sub(v.char_start);
+
+                                                let hidden_prefix_len = if !is_active_line && v.sub_idx == 0 {
+                                                    match classified {
+                                                        crate::markdown::LineKind::Heading1(_) => 2,
+                                                        crate::markdown::LineKind::Heading2(_) => 3,
+                                                        crate::markdown::LineKind::Heading3(_) => 4,
+                                                        crate::markdown::LineKind::Heading4(_) => 5,
+                                                        _ => 0,
+                                                    }
+                                                } else {
+                                                    0
+                                                };
 
                                                 let line_number_text = if v.sub_idx == 0 {
                                                     format!("{:>3} ", v.line_idx + 1)
@@ -1234,7 +1247,13 @@ impl Render for AppView {
                                                             let intersect_s = char_s.max(v.char_start);
                                                             let intersect_e = char_e.min(v.char_end);
                                                             if intersect_s < intersect_e {
-                                                                Some((intersect_s - v.char_start, intersect_e - v.char_start))
+                                                                let vis_s = (intersect_s - v.char_start).saturating_sub(hidden_prefix_len);
+                                                                let vis_e = (intersect_e - v.char_start).saturating_sub(hidden_prefix_len);
+                                                                if vis_s < vis_e {
+                                                                    Some((vis_s, vis_e))
+                                                                } else {
+                                                                    None
+                                                                }
                                                             } else {
                                                                 None
                                                             }
@@ -1272,7 +1291,8 @@ impl Render for AppView {
                                                         this.editor_top_y = Some(click_y - (v_idx as f32) * 24.0);
 
                                                         let col_in_row = if click_x > text_start_x {
-                                                            (((click_x - text_start_x) / line_char_width).round() as usize).min(row_len)
+                                                            let raw_col = ((click_x - text_start_x) / line_char_width).round() as usize;
+                                                            (raw_col + hidden_prefix_len).min(row_len)
                                                         } else {
                                                             0
                                                         };
@@ -1310,7 +1330,8 @@ impl Render for AppView {
                                                             this.editor_top_y = Some(click_y - (v_idx as f32) * 24.0);
 
                                                             let col_in_row = if click_x > text_start_x {
-                                                                (((click_x - text_start_x) / line_char_width).round() as usize).min(row_len)
+                                                                let raw_col = ((click_x - text_start_x) / line_char_width).round() as usize;
+                                                                (raw_col + hidden_prefix_len).min(row_len)
                                                             } else {
                                                                 0
                                                             };
@@ -1381,6 +1402,7 @@ impl Render for AppView {
                                                                         v_char_start,
                                                                         v_char_end,
                                                                         v_sub_idx,
+                                                                        is_active_line,
                                                                         is_in_active_block,
                                                                         theme,
                                                                     ))
@@ -1521,6 +1543,7 @@ fn render_live_styled_row(
     char_start: usize,
     char_end: usize,
     sub_idx: usize,
+    is_active_line: bool,
     show_fences: bool,
     theme: &Theme,
 ) -> gpui::Div {
@@ -1534,18 +1557,20 @@ fn render_live_styled_row(
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(2));
-                div()
+                let mut row = div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .h_full()
-                    .child(div().text_color(theme.text_muted).child("# "))
-                    .child(
-                        div()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(theme.accent)
-                            .child(render_syntax_spans(row_spans, theme)),
-                    )
+                    .h_full();
+                if is_active_line {
+                    row = row.child(div().text_color(theme.text_muted).child("# "));
+                }
+                row.child(
+                    div()
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(theme.accent)
+                        .child(render_syntax_spans(row_spans, theme)),
+                )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -1570,18 +1595,20 @@ fn render_live_styled_row(
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(3));
-                div()
+                let mut row = div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .h_full()
-                    .child(div().text_color(theme.text_muted).child("## "))
-                    .child(
-                        div()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(theme.accent_hover)
-                            .child(render_syntax_spans(row_spans, theme)),
-                    )
+                    .h_full();
+                if is_active_line {
+                    row = row.child(div().text_color(theme.text_muted).child("## "));
+                }
+                row.child(
+                    div()
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(theme.accent_hover)
+                        .child(render_syntax_spans(row_spans, theme)),
+                )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -1606,18 +1633,20 @@ fn render_live_styled_row(
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(4));
-                div()
+                let mut row = div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .h_full()
-                    .child(div().text_color(theme.text_muted).child("### "))
-                    .child(
-                        div()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(theme.text_primary)
-                            .child(render_syntax_spans(row_spans, theme)),
-                    )
+                    .h_full();
+                if is_active_line {
+                    row = row.child(div().text_color(theme.text_muted).child("### "));
+                }
+                row.child(
+                    div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme.text_primary)
+                        .child(render_syntax_spans(row_spans, theme)),
+                )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -1642,18 +1671,20 @@ fn render_live_styled_row(
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(5));
-                div()
+                let mut row = div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .h_full()
-                    .child(div().text_color(theme.text_muted).child("#### "))
-                    .child(
-                        div()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(theme.text_secondary)
-                            .child(render_syntax_spans(row_spans, theme)),
-                    )
+                    .h_full();
+                if is_active_line {
+                    row = row.child(div().text_color(theme.text_muted).child("#### "));
+                }
+                row.child(
+                    div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme.text_secondary)
+                        .child(render_syntax_spans(row_spans, theme)),
+                )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
