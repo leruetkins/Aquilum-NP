@@ -2,17 +2,20 @@ use crate::icons;
 use crate::state::{AppState, FileNode};
 use crate::theme::Theme;
 use gpui::{
-    div, prelude::*, px, rgb, rgba, AnyElement, ClipboardItem, Context, Div, FocusHandle, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Render, SharedString, Window,
-    WindowControlArea,
+    div, prelude::*, px, rgb, rgba, uniform_list, AnyElement, ClipboardItem, Context, Div, FocusHandle,
+    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Render, ScrollStrategy,
+    SharedString, UniformListScrollHandle, Window, WindowControlArea,
 };
+use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub struct AppView {
     pub state: AppState,
     pub theme: Theme,
     pub focus_handle: FocusHandle,
     pub search_focus_handle: FocusHandle,
+    pub editor_scroll_handle: UniformListScrollHandle,
     pub edit_mode: bool,
     pub is_mouse_selecting: bool,
     pub editor_top_y: Option<f32>,
@@ -38,6 +41,7 @@ impl AppView {
             theme,
             focus_handle: cx.focus_handle(),
             search_focus_handle: cx.focus_handle(),
+            editor_scroll_handle: UniformListScrollHandle::new(),
             edit_mode: true,
             is_mouse_selecting: false,
             editor_top_y: None,
@@ -208,6 +212,17 @@ impl AppView {
         }
     }
 
+    fn scroll_cursor_into_view(&self) {
+        if let Some(ref note) = self.state.active_note {
+            let (cursor_line, cursor_col) = note.line_col();
+            let lines: Vec<&str> = note.content.split('\n').collect();
+            let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
+            if let Some((v_idx, _)) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col) {
+                self.editor_scroll_handle.scroll_to_item(v_idx, ScrollStrategy::Center);
+            }
+        }
+    }
+
     fn open_folder_dialog(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(folder) = rfd::FileDialog::new().pick_folder() {
             self.state.open_workspace(folder);
@@ -326,8 +341,10 @@ impl AppView {
 
         let target_char = v.char_start + col_in_row;
         let offset = note.offset_for_line_col(v.line_idx, target_char);
-        note.cursor_offset = offset;
-        cx.notify();
+        if note.cursor_offset != offset {
+            note.cursor_offset = offset;
+            cx.notify();
+        }
     }
 
     fn handle_search_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -668,6 +685,7 @@ impl AppView {
                 }
             }
         }
+        self.scroll_cursor_into_view();
         cx.notify();
     }
 
@@ -1735,11 +1753,13 @@ impl Render for AppView {
                             // Панель навигации (Obsidian-style) сразу под вкладками
                             .child(self.render_navigation_bar(theme, cx))
                             .when_some(self.state.active_note.as_ref(), |this, note| {
-                                let lines: Vec<&str> = note.content.split('\n').collect();
+                                let lines: Vec<String> = note.content.split('\n').map(String::from).collect();
+                                let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
                                 let (cursor_line, cursor_col) = note.line_col();
-                                let selection_range = note.selection_range();
+                                let visual_rows = crate::markdown::build_visual_rows(&line_refs, self.word_wrap, wrap_cols);
+                                let (active_v_idx, active_col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col)
+                                    .unwrap_or((0, 0));
 
-                                // Вычисляем смещения начала каждой строки
                                 let mut line_starts: Vec<usize> = Vec::with_capacity(lines.len());
                                 let mut running_offset = 0;
                                 for line in &lines {
@@ -1747,7 +1767,7 @@ impl Render for AppView {
                                     running_offset += line.len() + 1;
                                 }
 
-                                let code_states = crate::markdown::analyze_code_blocks(&lines);
+                                let code_states = crate::markdown::analyze_code_blocks(&line_refs);
                                 let active_block_id: Option<usize> = if is_editing {
                                     code_states.get(cursor_line).and_then(|s| s.as_ref()).map(|s| s.block_id)
                                 } else {
@@ -1760,8 +1780,14 @@ impl Render for AppView {
                                 // Left column + Resizer (4px) + Container Padding Left (32px) + Row Padding Left (8px) + Line Number Width (40px) = current_sidebar_w + 84px
                                 let text_start_x = current_sidebar_w + 4.0 + 32.0 + 8.0 + 40.0;
 
+                                let lines_arc = Arc::new(lines);
+                                let visual_rows_arc = Arc::new(visual_rows);
+                                let line_starts_arc = Arc::new(line_starts);
+                                let code_states_arc = Arc::new(code_states);
+                                let theme_copy = theme.clone();
+                                let visual_rows_count = visual_rows_arc.len();
+
                                 this.child(
-                                    // Область редактора
                                     div()
                                         .id("note-editor-container")
                                         .track_focus(&self.focus_handle)
@@ -1771,23 +1797,12 @@ impl Render for AppView {
                                         .flex_1()
                                         .w_full()
                                         .min_w_0()
-                                        .overflow_scroll()
-                                        .px_8()
-                                        .py_6()
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _event: &MouseDownEvent, window, cx| {
                                             if this.is_resizing_sidebar {
                                                 return;
                                             }
                                             window.focus(&this.focus_handle);
                                             this.is_mouse_selecting = true;
-                                            let x: f32 = event.position.x.into();
-                                            let y: f32 = event.position.y.into();
-                                            this.update_mouse_selection(x, y, cx);
-                                            if let Some(ref mut n) = this.state.active_note {
-                                                if !event.modifiers.shift {
-                                                    n.selection_anchor = Some(n.cursor_offset);
-                                                }
-                                            }
                                             cx.notify();
                                         }))
                                         .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
@@ -1824,228 +1839,202 @@ impl Render for AppView {
                                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                                             this.handle_key(event, window, cx);
                                         }))
-                                        .children({
-                                            let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, wrap_cols);
-                                            let (active_v_idx, active_col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col)
-                                                .unwrap_or((0, 0));
+                                        .child(
+                                            uniform_list(
+                                                "note-editor-uniform-list",
+                                                visual_rows_count,
+                                                cx.processor(move |this, range: Range<usize>, _window, cx| {
+                                                    let theme = &theme_copy;
+                                                    let is_editing = this.edit_mode;
+                                                    let selection_range = this.state.active_note.as_ref().and_then(|n| n.selection_range());
+                                                    let (cursor_line, _) = this.state.active_note.as_ref().map(|n| n.line_col()).unwrap_or((0, 0));
 
-                                            visual_rows.into_iter().enumerate().map(move |(v_idx, v)| {
-                                                let line = lines[v.line_idx];
-                                                let is_current = is_editing && (v_idx == active_v_idx);
-                                                let is_active_line = is_editing && (v.line_idx == cursor_line);
-                                                let code_state = code_states[v.line_idx].as_ref().map(|s| (s.kind, s.lang.as_deref()));
-                                                let classified = crate::markdown::classify_line(line, code_state);
-                                                let is_opening_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: true, .. });
-                                                let is_closing_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: false, .. });
-                                                let is_code_line = matches!(classified, crate::markdown::LineKind::CodeLine(_));
-                                                let is_in_active_block = code_states[v.line_idx].as_ref().map(|s| Some(s.block_id) == active_block_id).unwrap_or(false);
-                                                let row_len = v.char_end.saturating_sub(v.char_start);
+                                                    let mut items = Vec::with_capacity(range.len());
+                                                    for v_idx in range {
+                                                        let v = &visual_rows_arc[v_idx];
+                                                        let line = &lines_arc[v.line_idx];
+                                                        let is_current = is_editing && (v_idx == active_v_idx);
+                                                        let is_active_line = is_editing && (v.line_idx == cursor_line);
+                                                        let code_state = code_states_arc[v.line_idx].as_ref().map(|s| (s.kind, s.lang.as_deref()));
+                                                        let classified = crate::markdown::classify_line(line, code_state);
+                                                        let is_opening_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: true, .. });
+                                                        let is_closing_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: false, .. });
+                                                        let is_code_line = matches!(classified, crate::markdown::LineKind::CodeLine(_));
+                                                        let is_in_active_block = code_states_arc[v.line_idx].as_ref().map(|s| Some(s.block_id) == active_block_id).unwrap_or(false);
+                                                        let row_len = v.char_end.saturating_sub(v.char_start);
 
-                                                let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, &v, is_active_line);
-                                                let row_spans_down = row_spans.clone();
-                                                let row_spans_move = row_spans.clone();
+                                                        let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
+                                                        let row_spans_down = row_spans.clone();
 
-                                                let line_number_text = if v.sub_idx == 0 {
-                                                    format!("{:>3} ", v.line_idx + 1)
-                                                } else {
-                                                    "    ".to_string()
-                                                };
+                                                        let line_number_text = if v.sub_idx == 0 {
+                                                            format!("{:>3} ", v.line_idx + 1)
+                                                        } else {
+                                                            "    ".to_string()
+                                                        };
 
-                                                let line_start = line_starts[v.line_idx];
-                                                let line_end = line_start + line.len();
+                                                        let line_start = line_starts_arc[v.line_idx];
+                                                        let line_end = line_start + line.len();
 
-                                                // Проверяем, пересекается ли выделение с этой визуальной строкой
-                                                let row_sel_chars = selection_range.as_ref().and_then(|sel| {
-                                                    if sel.end > line_start && sel.start < line_end {
-                                                        let byte_s = sel.start.saturating_sub(line_start).min(line.len());
-                                                        let byte_e = sel.end.saturating_sub(line_start).min(line.len());
-                                                        if byte_s < byte_e {
-                                                            let char_s = line[..byte_s].chars().count();
-                                                            let char_e = char_s + line[byte_s..byte_e].chars().count();
-                                                            let intersect_s = char_s.max(v.char_start);
-                                                            let intersect_e = char_e.min(v.char_end);
-                                                            if intersect_s < intersect_e {
-                                                                let raw_s = intersect_s - v.char_start;
-                                                                let raw_e = intersect_e - v.char_start;
-                                                                let vis_s = crate::markdown::row_char_to_visual_col(&row_spans, raw_s, is_active_line, hidden_prefix_len);
-                                                                let vis_e = crate::markdown::row_char_to_visual_col(&row_spans, raw_e, is_active_line, hidden_prefix_len);
-                                                                if vis_s < vis_e {
-                                                                    Some((vis_s, vis_e))
+                                                        let row_sel_chars = selection_range.as_ref().and_then(|sel| {
+                                                            if sel.end > line_start && sel.start < line_end {
+                                                                let byte_s = sel.start.saturating_sub(line_start).min(line.len());
+                                                                let byte_e = sel.end.saturating_sub(line_start).min(line.len());
+                                                                if byte_s < byte_e {
+                                                                    let char_s = line[..byte_s].chars().count();
+                                                                    let char_e = char_s + line[byte_s..byte_e].chars().count();
+                                                                    let intersect_s = char_s.max(v.char_start);
+                                                                    let intersect_e = char_e.min(v.char_end);
+                                                                    if intersect_s < intersect_e {
+                                                                        let raw_s = intersect_s - v.char_start;
+                                                                        let raw_e = intersect_e - v.char_start;
+                                                                        let vis_s = crate::markdown::row_char_to_visual_col(&row_spans, raw_s, is_active_line, hidden_prefix_len);
+                                                                        let vis_e = crate::markdown::row_char_to_visual_col(&row_spans, raw_e, is_active_line, hidden_prefix_len);
+                                                                        if vis_s < vis_e {
+                                                                            Some((vis_s, vis_e))
+                                                                        } else {
+                                                                            None
+                                                                        }
+                                                                    } else {
+                                                                        None
+                                                                    }
                                                                 } else {
                                                                     None
                                                                 }
                                                             } else {
                                                                 None
                                                             }
-                                                        } else {
-                                                            None
-                                                        }
-                                                    } else {
-                                                        None
+                                                        });
+
+                                                        let v_char_start = v.char_start;
+                                                        let v_char_end = v.char_end;
+                                                        let v_line_idx = v.line_idx;
+                                                        let v_sub_idx = v.sub_idx;
+
+                                                        items.push(
+                                                            div()
+                                                                .id(gpui::ElementId::from(("v-row", v_idx)))
+                                                                .flex()
+                                                                .flex_row()
+                                                                .items_center()
+                                                                .h(line_h)
+                                                                .py_0()
+                                                                .px_2()
+                                                                .rounded_sm()
+                                                                .when(is_current, |s| s.bg(theme.bg_hover))
+                                                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                                                    if this.is_resizing_sidebar {
+                                                                        return;
+                                                                    }
+                                                                    this.is_mouse_selecting = true;
+                                                                    let click_x: f32 = event.position.x.into();
+                                                                    let click_y: f32 = event.position.y.into();
+                                                                    this.editor_top_y = Some(click_y - (v_idx as f32) * 24.0);
+
+                                                                    let col_in_row = if click_x > text_start_x {
+                                                                        let raw_col = ((click_x - text_start_x) / line_char_width).round() as usize;
+                                                                        crate::markdown::visual_col_to_row_char(&row_spans_down, raw_col, is_active_line, hidden_prefix_len).min(row_len)
+                                                                    } else {
+                                                                        0
+                                                                    };
+                                                                    let target_char = v_char_start + col_in_row;
+                                                                    if let Some(ref mut n) = this.state.active_note {
+                                                                        let offset = n.offset_for_line_col(v_line_idx, target_char);
+                                                                        if event.modifiers.shift {
+                                                                            if n.selection_anchor.is_none() {
+                                                                                n.selection_anchor = Some(n.cursor_offset);
+                                                                            }
+                                                                        } else {
+                                                                            n.selection_anchor = Some(offset);
+                                                                        }
+                                                                        n.cursor_offset = offset;
+                                                                    }
+                                                                    window.focus(&this.focus_handle);
+                                                                    cx.notify();
+                                                                }))
+                                                                .child(
+                                                                    div()
+                                                                        .id(gpui::ElementId::from(("line-num", v_idx)))
+                                                                        .w(px(40.0))
+                                                                        .h(line_h)
+                                                                        .flex()
+                                                                        .items_center()
+                                                                        .text_xs()
+                                                                        .text_color(if is_current { theme.accent } else { theme.text_muted })
+                                                                        .font_family("Consolas")
+                                                                        .child(line_number_text),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .id(gpui::ElementId::from(("line-content", v_idx)))
+                                                                        .relative()
+                                                                        .flex()
+                                                                        .flex_row()
+                                                                        .items_center()
+                                                                        .flex_1()
+                                                                        .h(line_h)
+                                                                        .py_0()
+                                                                        .font_family("Consolas")
+                                                                        .text_sm()
+                                                                        .cursor(gpui::CursorStyle::IBeam)
+                                                                        .when(is_opening_fence, |s| s.bg(theme.bg_card).rounded_t_sm())
+                                                                        .when(is_closing_fence, |s| s.bg(theme.bg_card).rounded_b_sm())
+                                                                        .when(is_code_line, |s| s.bg(theme.code_bg))
+                                                                        .when_some(row_sel_chars, |s, (sel_s, sel_e)| {
+                                                                            let sel_x = (sel_s as f32) * line_char_width;
+                                                                            let sel_w = ((sel_e - sel_s) as f32) * line_char_width;
+                                                                            s.child(
+                                                                                div()
+                                                                                    .absolute()
+                                                                                    .left(px(sel_x))
+                                                                                    .top_0()
+                                                                                    .h_full()
+                                                                                    .w(px(sel_w))
+                                                                                    .bg(theme.selection_bg)
+                                                                                    .rounded_xs(),
+                                                                            )
+                                                                        })
+                                                                        .child(
+                                                                            div()
+                                                                                .h_full()
+                                                                                .flex()
+                                                                                .flex_row()
+                                                                                .items_center()
+                                                                                .child(render_live_styled_row(
+                                                                                    line,
+                                                                                    &classified,
+                                                                                    v_char_start,
+                                                                                    v_char_end,
+                                                                                    v_sub_idx,
+                                                                                    is_active_line,
+                                                                                    is_in_active_block,
+                                                                                    theme,
+                                                                                )),
+                                                                        )
+                                                                        .when(is_current, |s| {
+                                                                            let vis_cursor = crate::markdown::row_char_to_visual_col(&row_spans, active_col_in_row, is_active_line, hidden_prefix_len);
+                                                                            let cursor_x = (vis_cursor as f32) * line_char_width;
+                                                                            s.child(
+                                                                                div()
+                                                                                    .absolute()
+                                                                                    .left(px(cursor_x))
+                                                                                    .top(px(cursor_top))
+                                                                                    .w(px(2.0))
+                                                                                    .h(cursor_h)
+                                                                                    .bg(theme.accent)
+                                                                                    .rounded_xs(),
+                                                                            )
+                                                                        }),
+                                                                ),
+                                                        );
                                                     }
-                                                });
-
-                                                let v_char_start = v.char_start;
-                                                let v_char_end = v.char_end;
-                                                let v_line_idx = v.line_idx;
-                                                let v_sub_idx = v.sub_idx;
-
-                                                div()
-                                                    .id(gpui::ElementId::from(("v-row", v_idx)))
-                                                    .flex()
-                                                    .flex_row()
-                                                    .items_center()
-                                                    .h(line_h)
-                                                    .py_0()
-                                                    .px_2()
-                                                    .rounded_sm()
-                                                    .when(is_current, |s| s.bg(theme.bg_hover))
-                                                    // Обработка начала выделения / клика мыши на всей строке
-                                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                                        if this.is_resizing_sidebar {
-                                                            return;
-                                                        }
-                                                        this.is_mouse_selecting = true;
-                                                        let click_x: f32 = event.position.x.into();
-                                                        let click_y: f32 = event.position.y.into();
-                                                        this.editor_top_y = Some(click_y - (v_idx as f32) * 24.0);
-
-                                                        let col_in_row = if click_x > text_start_x {
-                                                            let raw_col = ((click_x - text_start_x) / line_char_width).round() as usize;
-                                                            crate::markdown::visual_col_to_row_char(&row_spans_down, raw_col, is_active_line, hidden_prefix_len).min(row_len)
-                                                        } else {
-                                                            0
-                                                        };
-                                                        let target_char = v_char_start + col_in_row;
-                                                        if let Some(ref mut n) = this.state.active_note {
-                                                            let offset = n.offset_for_line_col(v_line_idx, target_char);
-                                                            if event.modifiers.shift {
-                                                                if n.selection_anchor.is_none() {
-                                                                    n.selection_anchor = Some(n.cursor_offset);
-                                                                }
-                                                            } else {
-                                                                n.selection_anchor = Some(offset);
-                                                            }
-                                                            n.cursor_offset = offset;
-                                                        }
-                                                        window.focus(&this.focus_handle);
-                                                        cx.notify();
-                                                    }))
-                                                    // Обработка протягивания мыши (Drag to Select) на всей строке (включая номера строк)
-                                                    .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                                                        if this.is_resizing_sidebar {
-                                                            let x: f32 = event.position.x.into();
-                                                            if x < 100.0 {
-                                                                this.sidebar_collapsed = true;
-                                                            } else {
-                                                                this.sidebar_collapsed = false;
-                                                                this.sidebar_width = x.clamp(160.0, 600.0);
-                                                            }
-                                                            cx.notify();
-                                                            return;
-                                                        }
-                                                        if this.is_mouse_selecting {
-                                                            let click_x: f32 = event.position.x.into();
-                                                            let click_y: f32 = event.position.y.into();
-                                                            this.editor_top_y = Some(click_y - (v_idx as f32) * 24.0);
-
-                                                            let col_in_row = if click_x > text_start_x {
-                                                                let raw_col = ((click_x - text_start_x) / line_char_width).round() as usize;
-                                                                crate::markdown::visual_col_to_row_char(&row_spans_move, raw_col, is_active_line, hidden_prefix_len).min(row_len)
-                                                            } else {
-                                                                0
-                                                            };
-                                                            let target_char = v_char_start + col_in_row;
-                                                            if let Some(ref mut n) = this.state.active_note {
-                                                                let offset = n.offset_for_line_col(v_line_idx, target_char);
-                                                                n.cursor_offset = offset;
-                                                                cx.notify();
-                                                            }
-                                                        }
-                                                    }))
-                                                    // Номер строки
-                                                    .child(
-                                                        div()
-                                                            .id(gpui::ElementId::from(("line-num", v_idx)))
-                                                            .w(px(40.0))
-                                                            .h(line_h)
-                                                            .flex()
-                                                            .items_center()
-                                                            .text_xs()
-                                                            .text_color(if is_current { theme.accent } else { theme.text_muted })
-                                                            .font_family("Consolas")
-                                                            .cursor_pointer()
-                                                            .child(line_number_text),
-                                                    )
-                                                    // Текст строки
-                                                    .child(
-                                                        div()
-                                                            .id(gpui::ElementId::from(("line-content", v_idx)))
-                                                            .relative()
-                                                            .flex()
-                                                            .flex_row()
-                                                            .items_center()
-                                                            .flex_1()
-                                                            .h(line_h)
-                                                            .py_0()
-                                                            .font_family("Consolas")
-                                                            .text_sm()
-                                                            .cursor(gpui::CursorStyle::IBeam)
-                                                            .when(is_opening_fence, |s| s.bg(theme.bg_card).rounded_t_sm())
-                                                            .when(is_closing_fence, |s| s.bg(theme.bg_card).rounded_b_sm())
-                                                            .when(is_code_line, |s| s.bg(theme.code_bg))
-                                                            // 1. Фоновый слой выделения (не ломает верстку строки)
-                                                            .when_some(row_sel_chars, |s, (sel_s, sel_e)| {
-                                                                let sel_x = (sel_s as f32) * line_char_width;
-                                                                let sel_w = ((sel_e - sel_s) as f32) * line_char_width;
-                                                                s.child(
-                                                                    div()
-                                                                        .absolute()
-                                                                        .left(px(sel_x))
-                                                                        .top_0()
-                                                                        .h_full()
-                                                                        .w(px(sel_w))
-                                                                        .bg(theme.selection_bg)
-                                                                        .rounded_xs(),
-                                                                )
-                                                            })
-                                                            // 2. Слой текста (строка рендерится целиком, не разрезается)
-                                                            .child(
-                                                                div()
-                                                                    .h_full()
-                                                                    .flex()
-                                                                    .flex_row()
-                                                                    .items_center()
-                                                                    .child(render_live_styled_row(
-                                                                        line,
-                                                                        &classified,
-                                                                        v_char_start,
-                                                                        v_char_end,
-                                                                        v_sub_idx,
-                                                                        is_active_line,
-                                                                        is_in_active_block,
-                                                                        theme,
-                                                                    ))
-                                                            )
-                                                            // 3. Слой курсора (absolute overlay, выравнивается с визуальной строкой и выделением)
-                                                            .when(is_current, |s| {
-                                                                // Convert character offset in row to visual column taking hidden markdown tokens into account
-                                                                let vis_cursor = crate::markdown::row_char_to_visual_col(&row_spans, active_col_in_row, is_active_line, hidden_prefix_len);
-                                                                let cursor_x = (vis_cursor as f32) * line_char_width;
-                                                                s.child(
-                                                                    div()
-                                                                        .absolute()
-                                                                        .left(px(cursor_x))
-                                                                        .top(px(cursor_top))
-                                                                        .w(px(2.0))
-                                                                        .h(cursor_h)
-                                                                        .bg(theme.accent)
-                                                                        .rounded_xs(),
-                                                                )
-                                                            })
-                                                    )
-                                            })
-                                        })
+                                                    items
+                                                }),
+                                            )
+                                            .track_scroll(self.editor_scroll_handle.clone())
+                                            .size_full()
+                                            .px_8()
+                                            .py_6()
+                                        )
                                 )
                             })
                             .when(self.state.active_note.is_none(), |this| {
