@@ -701,225 +701,299 @@ impl Render for AppView {
                     .bg(theme.bg_sidebar)
                     .border_b_1()
                     .border_color(theme.border)
-                    // Left area: App logo & Sidebar toggle
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
-                            .pl_3()
-                            .pr_1()
-                            .flex_shrink_0()
-                            .child(
-                                div()
-                                    .id("btn-toggle-sidebar")
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .p_1()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .hover(|h| h.bg(theme.bg_hover))
-                                    .child(icons::icon(
-                                        icons::ICON_PANEL_LEFT,
-                                        15.0,
-                                        if self.sidebar_collapsed { theme.text_muted } else { theme.accent },
-                                    ))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.toggle_sidebar(cx);
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1p5()
-                                    .child(
-                                        div()
-                                            .px_2()
-                                            .py_0p5()
-                                            .bg(theme.accent)
-                                            .text_color(theme.bg_sidebar)
-                                            .font_weight(gpui::FontWeight::BOLD)
-                                            .rounded_md()
-                                            .text_xs()
-                                            .child("AQUILUM"),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .h(px(14.0))
-                                    .w_px()
-                                    .bg(theme.border),
-                            ),
-                    )
-                    // Browser-style Tabs Area
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_1()
-                            .h_full()
-                            .pt_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .when_some(self.state.active_note.as_ref(), |s, note| {
-                                let is_dirty = note.is_dirty;
-                                s.child(
+                    // Left area: Sidebar header column in titlebar (width matches sidebar)
+                    .when(!self.sidebar_collapsed, |s| {
+                        s.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .w(px(self.sidebar_width))
+                                .flex_shrink_0()
+                                .h_full()
+                                .px_3()
+                                .bg(theme.bg_sidebar)
+                                .window_control_area(WindowControlArea::Drag)
+                                .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, window, _| {
+                                    if event.click_count == 2 {
+                                        window.zoom_window();
+                                    }
+                                }))
+                                .child(
                                     div()
-                                        .id("tab-active-note")
                                         .flex()
                                         .flex_row()
                                         .items_center()
                                         .gap_2()
-                                        .h(px(32.0))
-                                        .px_3()
-                                        .bg(theme.bg_editor)
-                                        .border_t_1()
-                                        .border_x_1()
-                                        .border_color(theme.border)
-                                        .rounded_t_md()
-                                        .cursor_pointer()
-                                        .child(icons::icon(icons::ICON_FILE_TEXT, 12.0, theme.accent))
                                         .child(
                                             div()
-                                                .text_xs()
-                                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                .text_color(theme.text_primary)
-                                                .truncate()
-                                                .max_w(px(180.0))
-                                                .child(note.title.clone()),
-                                        )
-                                        .when(is_dirty, |tab| {
-                                            tab.child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(theme.accent)
-                                                    .child("●"),
-                                            )
-                                        })
-                                        .child(
-                                            div()
-                                                .id("btn-close-active-tab")
-                                                .p_0p5()
-                                                .rounded_sm()
+                                                .id("btn-toggle-sidebar")
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .p_1()
+                                                .rounded_md()
                                                 .cursor_pointer()
                                                 .hover(|h| h.bg(theme.bg_hover))
-                                                .child(icons::icon(icons::ICON_CLOSE, 10.0, theme.text_muted))
+                                                .child(icons::icon(
+                                                    icons::ICON_PANEL_LEFT,
+                                                    15.0,
+                                                    theme.accent,
+                                                ))
                                                 .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.state.active_note = None;
-                                                    cx.notify();
+                                                    this.toggle_sidebar(cx);
                                                 })),
+                                        )
+                                        .child(
+                                            div()
+                                                .px_2()
+                                                .py_0p5()
+                                                .bg(theme.accent)
+                                                .text_color(theme.bg_sidebar)
+                                                .font_weight(gpui::FontWeight::BOLD)
+                                                .rounded_md()
+                                                .text_xs()
+                                                .child("AQUILUM"),
                                         ),
                                 )
-                            })
-                            .when(self.state.active_note.is_none(), |s| {
-                                s.child(
+                                .child(
                                     div()
                                         .flex()
                                         .flex_row()
                                         .items_center()
                                         .gap_1p5()
-                                        .px_2()
-                                        .py_1()
                                         .text_xs()
-                                        .text_color(theme.text_muted)
-                                        .child(icons::icon(icons::ICON_FOLDER, 12.0, theme.text_muted))
+                                        .text_color(theme.text_secondary)
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .child(icons::icon(icons::ICON_FOLDER, 13.0, theme.text_muted))
                                         .child(
                                             div()
                                                 .truncate()
                                                 .child(self.state.workspace_name.clone()),
                                         ),
+                                ),
+                        )
+                    })
+                    .when(self.sidebar_collapsed, |s| {
+                        s.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_2()
+                                .px_2()
+                                .h_full()
+                                .flex_shrink_0()
+                                .bg(theme.bg_sidebar)
+                                .window_control_area(WindowControlArea::Drag)
+                                .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, window, _| {
+                                    if event.click_count == 2 {
+                                        window.zoom_window();
+                                    }
+                                }))
+                                .child(
+                                    div()
+                                        .id("btn-toggle-sidebar")
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .p_1()
+                                        .rounded_md()
+                                        .cursor_pointer()
+                                        .hover(|h| h.bg(theme.bg_hover))
+                                        .child(icons::icon(
+                                            icons::ICON_PANEL_LEFT,
+                                            15.0,
+                                            theme.text_muted,
+                                        ))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.toggle_sidebar(cx);
+                                        })),
                                 )
-                            })
-                            // New note button next to tabs
-                            .child(
-                                div()
-                                    .id("btn-new-tab")
-                                    .p_1()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .hover(|h| h.bg(theme.bg_hover))
-                                    .child(icons::icon(icons::ICON_PLUS, 12.0, theme.text_muted))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.create_new_note(window, cx);
-                                    })),
-                            ),
-                    )
-                    // Drag Area (fills the remaining titlebar space, supports dragging & double-click to maximize)
+                                .child(
+                                    div()
+                                        .px_2()
+                                        .py_0p5()
+                                        .bg(theme.accent)
+                                        .text_color(theme.bg_sidebar)
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .rounded_md()
+                                        .text_xs()
+                                        .child("AQUILUM"),
+                                ),
+                        )
+                    })
+                    // Vertical divider (4px) matching the sidebar-resizer below exactly
                     .child(
                         div()
-                            .id("titlebar-drag-region")
-                            .flex_1()
+                            .w(px(4.0))
                             .h_full()
-                            .window_control_area(WindowControlArea::Drag)
-                            .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, window, _| {
-                                if event.click_count == 2 {
-                                    window.zoom_window();
-                                }
-                            })),
+                            .flex_shrink_0()
+                            .bg(if self.is_resizing_sidebar { theme.accent } else { theme.border }),
                     )
-                    // Native Windows Titlebar Control Buttons (Minimize, Maximize/Restore, Close)
+                    // Right area: Editor header column containing Tab Bar, Drag Area, and Window Controls
                     .child(
                         div()
                             .flex()
                             .flex_row()
                             .items_center()
+                            .justify_between()
+                            .flex_1()
                             .h_full()
-                            .flex_shrink_0()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .bg(theme.bg_sidebar)
+                            // Browser-style Tabs Area starting directly at the boundary
                             .child(
                                 div()
-                                    .id("win-ctrl-min")
                                     .flex()
+                                    .flex_row()
                                     .items_center()
-                                    .justify_center()
-                                    .w(px(46.0))
+                                    .gap_1()
                                     .h_full()
-                                    .cursor_pointer()
-                                    .window_control_area(WindowControlArea::Min)
-                                    .hover(|h| h.bg(theme.bg_hover))
-                                    .child(icons::icon(icons::ICON_MINIMIZE, 11.0, theme.text_secondary))
-                                    .on_click(cx.listener(|_, _, window, _| {
-                                        window.minimize_window();
+                                    .pt_1()
+                                    .pl_2()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .when_some(self.state.active_note.as_ref(), |s, note| {
+                                        let is_dirty = note.is_dirty;
+                                        s.child(
+                                            div()
+                                                .id("tab-active-note")
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .gap_2()
+                                                .h(px(32.0))
+                                                .px_3()
+                                                .bg(theme.bg_editor)
+                                                .border_t_1()
+                                                .border_x_1()
+                                                .border_color(theme.border)
+                                                .rounded_t_md()
+                                                .cursor_pointer()
+                                                .child(icons::icon(icons::ICON_FILE_TEXT, 12.0, theme.accent))
+                                                .child(
+                                                    div()
+                                                        .text_xs()
+                                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                        .text_color(theme.text_primary)
+                                                        .truncate()
+                                                        .max_w(px(200.0))
+                                                        .child(note.title.clone()),
+                                                )
+                                                .when(is_dirty, |tab| {
+                                                    tab.child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(theme.accent)
+                                                            .child("●"),
+                                                    )
+                                                })
+                                                .child(
+                                                    div()
+                                                        .id("btn-close-active-tab")
+                                                        .p_0p5()
+                                                        .rounded_sm()
+                                                        .cursor_pointer()
+                                                        .hover(|h| h.bg(theme.bg_hover))
+                                                        .child(icons::icon(icons::ICON_CLOSE, 10.0, theme.text_muted))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.state.active_note = None;
+                                                            cx.notify();
+                                                        })),
+                                                ),
+                                        )
+                                    })
+                                    // New note button '+'
+                                    .child(
+                                        div()
+                                            .id("btn-new-tab")
+                                            .p_1()
+                                            .rounded_md()
+                                            .cursor_pointer()
+                                            .hover(|h| h.bg(theme.bg_hover))
+                                            .child(icons::icon(icons::ICON_PLUS, 12.0, theme.text_muted))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.create_new_note(window, cx);
+                                            })),
+                                    ),
+                            )
+                            // Drag Area (fills remaining space between tabs and window controls)
+                            .child(
+                                div()
+                                    .id("titlebar-drag-region")
+                                    .flex_1()
+                                    .h_full()
+                                    .window_control_area(WindowControlArea::Drag)
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, window, _| {
+                                        if event.click_count == 2 {
+                                            window.zoom_window();
+                                        }
                                     })),
                             )
+                            // Native Windows Titlebar Control Buttons (Minimize, Maximize/Restore, Close)
                             .child(
                                 div()
-                                    .id("win-ctrl-max")
                                     .flex()
+                                    .flex_row()
                                     .items_center()
-                                    .justify_center()
-                                    .w(px(46.0))
                                     .h_full()
-                                    .cursor_pointer()
-                                    .window_control_area(WindowControlArea::Max)
-                                    .hover(|h| h.bg(theme.bg_hover))
-                                    .child(icons::icon(
-                                        if is_maximized { icons::ICON_RESTORE } else { icons::ICON_MAXIMIZE },
-                                        11.0,
-                                        theme.text_secondary,
-                                    ))
-                                    .on_click(cx.listener(|_, _, window, _| {
-                                        window.zoom_window();
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .id("win-ctrl-close")
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .w(px(46.0))
-                                    .h_full()
-                                    .cursor_pointer()
-                                    .window_control_area(WindowControlArea::Close)
-                                    .hover(|h| h.bg(rgb(0xe81123)).text_color(rgb(0xffffff)))
-                                    .child(icons::icon(icons::ICON_CLOSE, 11.0, theme.text_secondary))
-                                    .on_click(cx.listener(|_, _, _, cx| {
-                                        cx.quit();
-                                    })),
+                                    .flex_shrink_0()
+                                    .child(
+                                        div()
+                                            .id("win-ctrl-min")
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .w(px(46.0))
+                                            .h_full()
+                                            .cursor_pointer()
+                                            .window_control_area(WindowControlArea::Min)
+                                            .hover(|h| h.bg(theme.bg_hover))
+                                            .child(icons::icon(icons::ICON_MINIMIZE, 11.0, theme.text_secondary))
+                                            .on_click(cx.listener(|_, _, window, _| {
+                                                window.minimize_window();
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("win-ctrl-max")
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .w(px(46.0))
+                                            .h_full()
+                                            .cursor_pointer()
+                                            .window_control_area(WindowControlArea::Max)
+                                            .hover(|h| h.bg(theme.bg_hover))
+                                            .child(icons::icon(
+                                                if is_maximized { icons::ICON_RESTORE } else { icons::ICON_MAXIMIZE },
+                                                11.0,
+                                                theme.text_secondary,
+                                            ))
+                                            .on_click(cx.listener(|_, _, window, _| {
+                                                window.zoom_window();
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("win-ctrl-close")
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .w(px(46.0))
+                                            .h_full()
+                                            .cursor_pointer()
+                                            .window_control_area(WindowControlArea::Close)
+                                            .hover(|h| h.bg(rgb(0xe81123)).text_color(rgb(0xffffff)))
+                                            .child(icons::icon(icons::ICON_CLOSE, 11.0, theme.text_secondary))
+                                            .on_click(cx.listener(|_, _, _, cx| {
+                                                cx.quit();
+                                            })),
+                                    ),
                             ),
                     ),
             )

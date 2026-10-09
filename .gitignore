@@ -49,3 +49,4 @@ aquilum-app/tmp-fm.*
 /*debug/
 /aquilum-gpui/target/debug
 /aquilum-native/target/debug
+/operator-panel
