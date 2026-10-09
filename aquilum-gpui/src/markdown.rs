@@ -508,3 +508,124 @@ pub fn slice_syntax_spans(
 
     result
 }
+
+pub fn visual_col_to_row_char(
+    row_spans: &[SyntaxSpan],
+    vis_col: usize,
+    is_active_line: bool,
+    hidden_heading_prefix: usize,
+) -> usize {
+    if is_active_line {
+        return vis_col;
+    }
+    let mut remaining_vis = vis_col;
+    let mut raw_offset = hidden_heading_prefix;
+
+    for span in row_spans {
+        let (is_marker, text) = match span {
+            SyntaxSpan::Marker(t) => (true, t),
+            SyntaxSpan::Text(t) => (false, t),
+            SyntaxSpan::Bold(t) => (false, t),
+            SyntaxSpan::Italic(t) => (false, t),
+            SyntaxSpan::BoldItalic(t) => (false, t),
+            SyntaxSpan::InlineCode(t) => (false, t),
+            SyntaxSpan::Strikethrough(t) => (false, t),
+        };
+        let span_len = text.chars().count();
+        if is_marker {
+            raw_offset += span_len;
+        } else {
+            if remaining_vis <= span_len {
+                return raw_offset + remaining_vis;
+            }
+            remaining_vis -= span_len;
+            raw_offset += span_len;
+        }
+    }
+    raw_offset + remaining_vis
+}
+
+pub fn row_char_to_visual_col(
+    row_spans: &[SyntaxSpan],
+    raw_char: usize,
+    is_active_line: bool,
+    hidden_heading_prefix: usize,
+) -> usize {
+    if is_active_line {
+        return raw_char;
+    }
+    let mut target_raw = raw_char.saturating_sub(hidden_heading_prefix);
+    let mut vis_col = 0;
+
+    for span in row_spans {
+        let (is_marker, text) = match span {
+            SyntaxSpan::Marker(t) => (true, t),
+            SyntaxSpan::Text(t) => (false, t),
+            SyntaxSpan::Bold(t) => (false, t),
+            SyntaxSpan::Italic(t) => (false, t),
+            SyntaxSpan::BoldItalic(t) => (false, t),
+            SyntaxSpan::InlineCode(t) => (false, t),
+            SyntaxSpan::Strikethrough(t) => (false, t),
+        };
+        let span_len = text.chars().count();
+        if is_marker {
+            target_raw = target_raw.saturating_sub(span_len);
+        } else {
+            if target_raw <= span_len {
+                return vis_col + target_raw;
+            }
+            target_raw -= span_len;
+            vis_col += span_len;
+        }
+    }
+    vis_col + target_raw
+}
+
+pub fn row_spans_and_hidden_prefix(
+    line: &str,
+    classified: &LineKind<'_>,
+    v: &VisualRow,
+    is_active_line: bool,
+) -> (Vec<SyntaxSpan>, usize) {
+    let (text_to_parse, prefix_offset, hidden_heading) = match classified {
+        LineKind::Heading1(_) => (line.strip_prefix("# ").unwrap_or(line), 2, if !is_active_line && v.sub_idx == 0 { 2 } else { 0 }),
+        LineKind::Heading2(_) => (line.strip_prefix("## ").unwrap_or(line), 3, if !is_active_line && v.sub_idx == 0 { 3 } else { 0 }),
+        LineKind::Heading3(_) => (line.strip_prefix("### ").unwrap_or(line), 4, if !is_active_line && v.sub_idx == 0 { 4 } else { 0 }),
+        LineKind::Heading4(_) => (line.strip_prefix("#### ").unwrap_or(line), 5, if !is_active_line && v.sub_idx == 0 { 5 } else { 0 }),
+        LineKind::Quote(_) => (line.strip_prefix("> ").unwrap_or(line), 2, 0),
+        LineKind::Task { .. } => {
+            let p_len = if line.starts_with("- [ ] ")
+                || line.starts_with("* [ ] ")
+                || line.starts_with("- [x] ")
+                || line.starts_with("- [X] ")
+                || line.starts_with("* [x] ")
+                || line.starts_with("* [X] ")
+            {
+                6
+            } else {
+                0
+            };
+            (if line.len() >= p_len { &line[p_len..] } else { "" }, p_len, 0)
+        }
+        LineKind::BulletList { .. } => {
+            let trimmed = line.trim_start();
+            let indent_len = line.len() - trimmed.len();
+            let bullet_len = if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") { 2 } else { 0 };
+            let p_len = indent_len + bullet_len;
+            (if line.len() >= p_len { &line[p_len..] } else { "" }, p_len, 0)
+        }
+        LineKind::NumberedList { num, .. } => {
+            let trimmed = line.trim_start();
+            let indent_len = line.len() - trimmed.len();
+            let num_p_len = num.len() + 2;
+            let p_len = indent_len + if trimmed.len() >= num_p_len { num_p_len } else { 0 };
+            (if line.len() >= p_len { &line[p_len..] } else { "" }, p_len, 0)
+        }
+        _ => (line, 0, 0),
+    };
+    let spans = parse_inline_syntax_spans(text_to_parse);
+    let s = v.char_start.saturating_sub(prefix_offset);
+    let e = v.char_end.saturating_sub(prefix_offset);
+    let sliced = slice_syntax_spans(&spans, s, e);
+    (sliced, hidden_heading)
+}

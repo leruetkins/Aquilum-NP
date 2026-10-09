@@ -271,8 +271,15 @@ impl AppView {
         let v = &visual_rows[target_v_idx];
         let v_len = v.char_end.saturating_sub(v.char_start);
 
+        let (cursor_line, _) = note.line_col();
+        let is_active_line = v.line_idx == cursor_line;
+        let line = lines[v.line_idx];
+        let classified = crate::markdown::classify_line(line, None);
+        let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
+
         let col_in_row = if pos_x > text_start_x {
-            (((pos_x - text_start_x) / line_char_width).round() as usize).min(v_len)
+            let raw_col = ((pos_x - text_start_x) / line_char_width).round() as usize;
+            crate::markdown::visual_col_to_row_char(&row_spans, raw_col, is_active_line, hidden_prefix_len).min(v_len)
         } else {
             0
         };
@@ -1215,17 +1222,9 @@ impl Render for AppView {
                                                 let is_in_active_block = code_states[v.line_idx].as_ref().map(|s| Some(s.block_id) == active_block_id).unwrap_or(false);
                                                 let row_len = v.char_end.saturating_sub(v.char_start);
 
-                                                let hidden_prefix_len = if !is_active_line && v.sub_idx == 0 {
-                                                    match classified {
-                                                        crate::markdown::LineKind::Heading1(_) => 2,
-                                                        crate::markdown::LineKind::Heading2(_) => 3,
-                                                        crate::markdown::LineKind::Heading3(_) => 4,
-                                                        crate::markdown::LineKind::Heading4(_) => 5,
-                                                        _ => 0,
-                                                    }
-                                                } else {
-                                                    0
-                                                };
+                                                let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, &v, is_active_line);
+                                                let row_spans_down = row_spans.clone();
+                                                let row_spans_move = row_spans.clone();
 
                                                 let line_number_text = if v.sub_idx == 0 {
                                                     format!("{:>3} ", v.line_idx + 1)
@@ -1247,8 +1246,10 @@ impl Render for AppView {
                                                             let intersect_s = char_s.max(v.char_start);
                                                             let intersect_e = char_e.min(v.char_end);
                                                             if intersect_s < intersect_e {
-                                                                let vis_s = (intersect_s - v.char_start).saturating_sub(hidden_prefix_len);
-                                                                let vis_e = (intersect_e - v.char_start).saturating_sub(hidden_prefix_len);
+                                                                let raw_s = intersect_s - v.char_start;
+                                                                let raw_e = intersect_e - v.char_start;
+                                                                let vis_s = crate::markdown::row_char_to_visual_col(&row_spans, raw_s, is_active_line, hidden_prefix_len);
+                                                                let vis_e = crate::markdown::row_char_to_visual_col(&row_spans, raw_e, is_active_line, hidden_prefix_len);
                                                                 if vis_s < vis_e {
                                                                     Some((vis_s, vis_e))
                                                                 } else {
@@ -1292,7 +1293,7 @@ impl Render for AppView {
 
                                                         let col_in_row = if click_x > text_start_x {
                                                             let raw_col = ((click_x - text_start_x) / line_char_width).round() as usize;
-                                                            (raw_col + hidden_prefix_len).min(row_len)
+                                                            crate::markdown::visual_col_to_row_char(&row_spans_down, raw_col, is_active_line, hidden_prefix_len).min(row_len)
                                                         } else {
                                                             0
                                                         };
@@ -1331,7 +1332,7 @@ impl Render for AppView {
 
                                                             let col_in_row = if click_x > text_start_x {
                                                                 let raw_col = ((click_x - text_start_x) / line_char_width).round() as usize;
-                                                                (raw_col + hidden_prefix_len).min(row_len)
+                                                                crate::markdown::visual_col_to_row_char(&row_spans_move, raw_col, is_active_line, hidden_prefix_len).min(row_len)
                                                             } else {
                                                                 0
                                                             };
@@ -1488,50 +1489,64 @@ impl Render for AppView {
     }
 }
 
-fn render_syntax_spans(spans: Vec<crate::markdown::SyntaxSpan>, theme: &Theme) -> gpui::Div {
+fn render_syntax_spans(spans: Vec<crate::markdown::SyntaxSpan>, is_active_line: bool, theme: &Theme) -> gpui::Div {
     div()
         .flex()
         .flex_row()
         .items_center()
-        .children(spans.into_iter().map(|span| {
+        .children(spans.into_iter().filter_map(|span| {
             match span {
                 crate::markdown::SyntaxSpan::Marker(m) => {
-                    div().text_color(theme.text_muted).child(m)
+                    if is_active_line {
+                        Some(div().text_color(theme.text_muted).child(m))
+                    } else {
+                        None
+                    }
                 }
                 crate::markdown::SyntaxSpan::Text(t) => {
-                    div().text_color(theme.text_primary).child(t)
+                    Some(div().text_color(theme.text_primary).child(t))
                 }
                 crate::markdown::SyntaxSpan::Bold(b) => {
-                    div()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .text_color(theme.text_primary)
-                        .child(b)
+                    Some(
+                        div()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(theme.text_primary)
+                            .child(b),
+                    )
                 }
                 crate::markdown::SyntaxSpan::Italic(i) => {
-                    div()
-                        .italic()
-                        .text_color(theme.text_primary)
-                        .child(i)
+                    Some(
+                        div()
+                            .italic()
+                            .text_color(theme.text_primary)
+                            .child(i),
+                    )
                 }
                 crate::markdown::SyntaxSpan::BoldItalic(bi) => {
-                    div()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .italic()
-                        .text_color(theme.text_primary)
-                        .child(bi)
+                    Some(
+                        div()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .italic()
+                            .text_color(theme.text_primary)
+                            .child(bi),
+                    )
                 }
                 crate::markdown::SyntaxSpan::InlineCode(c) => {
-                    div()
-                        .text_color(theme.success)
-                        .bg(theme.code_bg)
-                        .rounded_xs()
-                        .child(c)
+                    Some(
+                        div()
+                            .text_color(theme.success)
+                            .bg(theme.code_bg)
+                            .rounded_xs()
+                            .child(c),
+                    )
                 }
                 crate::markdown::SyntaxSpan::Strikethrough(s) => {
-                    div()
-                        .line_through()
-                        .text_color(theme.text_muted)
-                        .child(s)
+                    Some(
+                        div()
+                            .line_through()
+                            .text_color(theme.text_muted)
+                            .child(s),
+                    )
                 }
             }
         }))
@@ -1569,7 +1584,7 @@ fn render_live_styled_row(
                     div()
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_color(theme.accent)
-                        .child(render_syntax_spans(row_spans, theme)),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme)),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -1586,7 +1601,7 @@ fn render_live_styled_row(
                         div()
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(theme.accent)
-                            .child(render_syntax_spans(row_spans, theme)),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme)),
                     )
             }
         }
@@ -1607,7 +1622,7 @@ fn render_live_styled_row(
                     div()
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_color(theme.accent_hover)
-                        .child(render_syntax_spans(row_spans, theme)),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme)),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -1624,7 +1639,7 @@ fn render_live_styled_row(
                         div()
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(theme.accent_hover)
-                            .child(render_syntax_spans(row_spans, theme)),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme)),
                     )
             }
         }
@@ -1645,7 +1660,7 @@ fn render_live_styled_row(
                     div()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(theme.text_primary)
-                        .child(render_syntax_spans(row_spans, theme)),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme)),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -1662,7 +1677,7 @@ fn render_live_styled_row(
                         div()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(theme.text_primary)
-                            .child(render_syntax_spans(row_spans, theme)),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme)),
                     )
             }
         }
@@ -1683,7 +1698,7 @@ fn render_live_styled_row(
                     div()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(theme.text_secondary)
-                        .child(render_syntax_spans(row_spans, theme)),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme)),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -1700,7 +1715,7 @@ fn render_live_styled_row(
                         div()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(theme.text_secondary)
-                            .child(render_syntax_spans(row_spans, theme)),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme)),
                     )
             }
         }
@@ -1716,7 +1731,7 @@ fn render_live_styled_row(
                     .h_full()
                     .italic()
                     .child(div().text_color(theme.accent).child("> "))
-                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, theme)))
+                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, is_active_line, theme)))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -1730,7 +1745,7 @@ fn render_live_styled_row(
                     .h_full()
                     .italic()
                     .child(div().text_color(theme.border_subtle).child("  "))
-                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, theme)))
+                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, is_active_line, theme)))
             }
         }
         crate::markdown::LineKind::Task { checked, .. } => {
@@ -1761,7 +1776,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .when(*checked, |s| s.text_color(theme.text_muted).line_through())
-                            .child(render_syntax_spans(row_spans, theme)),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme)),
                     )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -1778,7 +1793,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .when(*checked, |s| s.text_color(theme.text_muted).line_through())
-                            .child(render_syntax_spans(row_spans, theme)),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme)),
                     )
             }
         }
@@ -1803,7 +1818,7 @@ fn render_live_styled_row(
                     .h_full()
                     .child(div().child(indent.to_string()))
                     .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(bullet.to_string()))
-                    .child(render_syntax_spans(row_spans, theme))
+                    .child(render_syntax_spans(row_spans, is_active_line, theme))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -1816,7 +1831,7 @@ fn render_live_styled_row(
                     .items_center()
                     .h_full()
                     .child(div().child(format!("{}  ", indent)))
-                    .child(render_syntax_spans(row_spans, theme))
+                    .child(render_syntax_spans(row_spans, is_active_line, theme))
             }
         }
         crate::markdown::LineKind::NumberedList { num, .. } => {
@@ -1841,7 +1856,7 @@ fn render_live_styled_row(
                     .h_full()
                     .child(div().child(indent.to_string()))
                     .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(num_part.to_string()))
-                    .child(render_syntax_spans(row_spans, theme))
+                    .child(render_syntax_spans(row_spans, is_active_line, theme))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -1855,7 +1870,7 @@ fn render_live_styled_row(
                     .items_center()
                     .h_full()
                     .child(div().child(spaces))
-                    .child(render_syntax_spans(row_spans, theme))
+                    .child(render_syntax_spans(row_spans, is_active_line, theme))
             }
         }
         crate::markdown::LineKind::HorizontalRule => {
@@ -1929,7 +1944,7 @@ fn render_live_styled_row(
                 .flex_row()
                 .items_center()
                 .h_full()
-                .child(render_syntax_spans(row_spans, theme))
+                .child(render_syntax_spans(row_spans, is_active_line, theme))
         }
     }
 }
