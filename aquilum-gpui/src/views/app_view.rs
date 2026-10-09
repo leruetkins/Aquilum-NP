@@ -31,6 +31,9 @@ pub struct AppView {
     pub scrollbar_drag_start_y: f32,
     pub scrollbar_drag_start_scroll_y: f32,
     pub config: aquilum_core::settings::models::AppConfig,
+    pub last_saved_geometry: Option<(f32, f32, Option<f32>, Option<f32>, bool)>,
+    pub initial_scroll_done: bool,
+    pub initial_scroll_top: f32,
 }
 
 impl AppView {
@@ -39,20 +42,34 @@ impl AppView {
         let state = AppState::new();
         let config = state.core.settings.get_config();
         let theme = Theme::from_config(&config.ui.theme, None);
+        let ws = crate::state::WindowState::load(&crate::state::app_data_dir());
+        let last_saved_geometry = Some((ws.width, ws.height, ws.x, ws.y, ws.maximized));
+
+        let mut edit_mode = true;
+        let mut word_wrap = true;
+        let mut initial_scroll_top = 0.0;
+        if let Some(ref note) = state.active_note {
+            if let Some(settings) = state.note_states.get(&note.path) {
+                edit_mode = settings.edit_mode;
+                word_wrap = settings.word_wrap;
+                initial_scroll_top = settings.scroll_top;
+            }
+        }
+
         Self {
             state,
             theme,
             focus_handle: cx.focus_handle(),
             search_focus_handle: cx.focus_handle(),
             editor_scroll_handle: UniformListScrollHandle::new(),
-            edit_mode: true,
+            edit_mode,
             is_mouse_selecting: false,
             editor_top_y: None,
             sidebar_width: 260.0,
             sidebar_collapsed: false,
             is_resizing_sidebar: false,
             is_hovering_resizer: false,
-            word_wrap: true,
+            word_wrap,
             last_wrap_cols: 80,
             is_settings_open: false,
             settings_tab: crate::views::settings_view::SettingsTab::Ui,
@@ -60,7 +77,51 @@ impl AppView {
             scrollbar_drag_start_y: 0.0,
             scrollbar_drag_start_scroll_y: 0.0,
             config,
+            last_saved_geometry,
+            initial_scroll_done: false,
+            initial_scroll_top,
         }
+    }
+
+    pub fn current_scroll_top(&self) -> f32 {
+        let offset = self.editor_scroll_handle.0.borrow().base_handle.offset();
+        f32::from(-offset.y).max(0.0)
+    }
+
+    pub fn apply_note_settings_for_path(&mut self, path: &Path) {
+        if let Some(settings) = self.state.note_states.get(path).cloned() {
+            self.edit_mode = settings.edit_mode;
+            self.word_wrap = settings.word_wrap;
+            if settings.scroll_top > 0.0 {
+                self.set_editor_scroll_top(settings.scroll_top);
+            } else if settings.cursor_offset > 0 {
+                self.scroll_cursor_into_view();
+            } else {
+                self.set_editor_scroll_top(0.0);
+            }
+        } else {
+            self.edit_mode = true;
+            self.word_wrap = true;
+            self.set_editor_scroll_top(0.0);
+        }
+    }
+
+    pub fn save_on_exit(&mut self, window: &Window) {
+        let is_maximized = window.is_maximized();
+        let bounds = window.bounds();
+        let mut window_state = crate::state::WindowState::load(&crate::state::app_data_dir());
+        window_state.maximized = is_maximized;
+        if !is_maximized {
+            window_state.x = Some(bounds.origin.x.into());
+            window_state.y = Some(bounds.origin.y.into());
+            window_state.width = bounds.size.width.into();
+            window_state.height = bounds.size.height.into();
+        }
+        window_state.save(&crate::state::app_data_dir());
+
+        let current_scroll = self.current_scroll_top();
+        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+        self.state.save_session_state();
     }
 
     /// Toggles the left sidebar visibility.
@@ -72,6 +133,8 @@ impl AppView {
     /// Toggles word wrapping mode in the editor.
     pub fn toggle_word_wrap(&mut self, cx: &mut Context<Self>) {
         self.word_wrap = !self.word_wrap;
+        let current_scroll = self.current_scroll_top();
+        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         cx.notify();
     }
 
@@ -263,6 +326,11 @@ impl AppView {
     fn open_folder_dialog(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(folder) = rfd::FileDialog::new().pick_folder() {
             self.state.open_workspace(folder);
+            if self.state.active_note.is_none() {
+                if let Some(first_file) = AppState::first_file_in_tree(&self.state.file_tree) {
+                    self.state.open_note(first_file);
+                }
+            }
             cx.notify();
         }
     }
@@ -271,7 +339,12 @@ impl AppView {
         if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
         }
+        let current_scroll = self.current_scroll_top();
+        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         if let Some(_) = self.state.create_new_note() {
+            self.edit_mode = true;
+            self.word_wrap = true;
+            self.set_editor_scroll_top(0.0);
             window.focus(&self.focus_handle);
             cx.notify();
         }
@@ -281,7 +354,10 @@ impl AppView {
         if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
         }
-        self.state.open_note(path);
+        let current_scroll = self.current_scroll_top();
+        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+        self.state.open_note(path.clone());
+        self.apply_note_settings_for_path(&path);
         window.focus(&self.focus_handle);
         cx.notify();
     }
@@ -290,7 +366,16 @@ impl AppView {
         if self.state.active_note.as_ref().map(|n| n.is_dirty && n.path == path).unwrap_or(false) {
             self.state.save_active_note();
         }
+        let is_closing_active = self.state.active_note.as_ref().map(|n| n.path == path).unwrap_or(false);
+        if is_closing_active {
+            let current_scroll = self.current_scroll_top();
+            self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+        }
         self.state.close_tab(path);
+        if let Some(ref note) = self.state.active_note {
+            let target_path = note.path.clone();
+            self.apply_note_settings_for_path(&target_path);
+        }
         cx.notify();
     }
 
@@ -298,7 +383,10 @@ impl AppView {
         if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
         }
-        if let Some(_) = self.state.navigate_back() {
+        let current_scroll = self.current_scroll_top();
+        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+        if let Some(target) = self.state.navigate_back() {
+            self.apply_note_settings_for_path(&target);
             window.focus(&self.focus_handle);
             cx.notify();
         }
@@ -308,7 +396,10 @@ impl AppView {
         if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
         }
-        if let Some(_) = self.state.navigate_forward() {
+        let current_scroll = self.current_scroll_top();
+        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+        if let Some(target) = self.state.navigate_forward() {
+            self.apply_note_settings_for_path(&target);
             window.focus(&self.focus_handle);
             cx.notify();
         }
@@ -923,6 +1014,8 @@ impl AppView {
                             ))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.edit_mode = !this.edit_mode;
+                                let current_scroll = this.current_scroll_top();
+                                this.state.snapshot_active_note_settings(current_scroll, this.edit_mode, this.word_wrap);
                                 cx.notify();
                             })),
                     )
@@ -949,6 +1042,37 @@ impl AppView {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.initial_scroll_done {
+            self.initial_scroll_done = true;
+            if self.initial_scroll_top > 0.0 {
+                self.set_editor_scroll_top(self.initial_scroll_top);
+            } else {
+                self.scroll_cursor_into_view();
+            }
+        }
+
+        let is_maximized = window.is_maximized();
+        let bounds = window.bounds();
+        let geom = (
+            f32::from(bounds.size.width),
+            f32::from(bounds.size.height),
+            Some(f32::from(bounds.origin.x)),
+            Some(f32::from(bounds.origin.y)),
+            is_maximized,
+        );
+        if self.last_saved_geometry != Some(geom) {
+            self.last_saved_geometry = Some(geom);
+            let mut ws = crate::state::WindowState::load(&crate::state::app_data_dir());
+            ws.maximized = is_maximized;
+            if !is_maximized {
+                ws.width = geom.0;
+                ws.height = geom.1;
+                ws.x = geom.2;
+                ws.y = geom.3;
+            }
+            ws.save(&crate::state::app_data_dir());
+        }
+
         self.theme = Theme::from_config(&self.config.ui.theme, Some(window.appearance()));
         let cx = &*cx;
         let theme = &self.theme;
@@ -962,7 +1086,6 @@ impl Render for AppView {
             .unwrap_or(7.7);
 
         let viewport_w: f32 = window.viewport_size().width.into();
-        let is_maximized = window.is_maximized();
         let wrap_cols = self.compute_wrap_cols(viewport_w, line_char_width);
         self.last_wrap_cols = wrap_cols;
 
@@ -1389,7 +1512,8 @@ impl Render for AppView {
                                             .window_control_area(WindowControlArea::Close)
                                             .hover(|h| h.bg(rgb(0xe81123)).text_color(rgb(0xffffff)))
                                             .child(icons::icon(icons::ICON_CLOSE, 11.0, theme.text_secondary))
-                                            .on_click(cx.listener(|_, _, _, cx| {
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.save_on_exit(window);
                                                 cx.quit();
                                             })),
                                     ),

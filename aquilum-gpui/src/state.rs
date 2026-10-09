@@ -1,10 +1,166 @@
 use aquilum_core::app_core::{Core, CoreEvent, EventSink};
 use aquilum_core::files::models::FileItem;
 use aquilum_core::files::workspace::read_directory_impl;
-use std::collections::HashSet;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+pub fn app_data_dir() -> PathBuf {
+    dirs::data_dir()
+        .map(|d| d.join("com.dmitriy.aquilum-app"))
+        .unwrap_or_else(|| PathBuf::from("./data"))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowState {
+    pub width: f32,
+    pub height: f32,
+    #[serde(default)]
+    pub x: Option<f32>,
+    #[serde(default)]
+    pub y: Option<f32>,
+    #[serde(default)]
+    pub maximized: bool,
+}
+
+impl Default for WindowState {
+    fn default() -> Self {
+        Self {
+            width: 1200.0,
+            height: 800.0,
+            x: None,
+            y: None,
+            maximized: false,
+        }
+    }
+}
+
+impl WindowState {
+    pub fn load(dir: &Path) -> Self {
+        let path = dir.join("window-state.json");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(state) = serde_json::from_str::<WindowState>(&content) {
+                return state;
+            }
+        }
+        Self::default()
+    }
+
+    pub fn save(&self, dir: &Path) {
+        let _ = std::fs::create_dir_all(dir);
+        let path = dir.join("window-state.json");
+        if let Ok(json) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+
+    pub fn to_window_bounds(&self, cx: &gpui::App) -> gpui::WindowBounds {
+        use gpui::{px, size, Bounds, Point};
+        let w = if self.width >= 300.0 { self.width } else { 1200.0 };
+        let h = if self.height >= 200.0 { self.height } else { 800.0 };
+        let sz = size(px(w), px(h));
+
+        let has_valid_coords = match (self.x, self.y) {
+            (Some(x), Some(y)) if x.is_finite() && y.is_finite() => true,
+            _ => false,
+        };
+
+        let bounds = if has_valid_coords {
+            Bounds {
+                origin: Point {
+                    x: px(self.x.unwrap()),
+                    y: px(self.y.unwrap()),
+                },
+                size: sz,
+            }
+        } else {
+            Bounds::centered(None, sz, cx)
+        };
+
+        if self.maximized {
+            gpui::WindowBounds::Maximized(bounds)
+        } else {
+            gpui::WindowBounds::Windowed(bounds)
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteSettings {
+    pub cursor_offset: usize,
+    #[serde(default)]
+    pub selection_anchor: Option<usize>,
+    #[serde(default)]
+    pub scroll_top: f32,
+    #[serde(default = "default_true")]
+    pub edit_mode: bool,
+    #[serde(default = "default_true")]
+    pub word_wrap: bool,
+}
+
+impl Default for NoteSettings {
+    fn default() -> Self {
+        Self {
+            cursor_offset: 0,
+            selection_anchor: None,
+            scroll_top: 0.0,
+            edit_mode: true,
+            word_wrap: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionState {
+    #[serde(default)]
+    pub workspace_path: Option<PathBuf>,
+    #[serde(default)]
+    pub open_tabs: Vec<PathBuf>,
+    #[serde(default)]
+    pub active_note: Option<PathBuf>,
+    #[serde(default)]
+    pub cursor_positions: HashMap<PathBuf, usize>,
+    #[serde(default)]
+    pub note_states: HashMap<PathBuf, NoteSettings>,
+}
+
+impl SessionState {
+    pub fn load(dir: &Path) -> Self {
+        let path = dir.join("session-state.json");
+        let mut state = if let Ok(content) = std::fs::read_to_string(&path) {
+            serde_json::from_str::<SessionState>(&content).unwrap_or_default()
+        } else {
+            Self::default()
+        };
+
+        // Populate note_states from cursor_positions if note_states is empty
+        for (p, &pos) in &state.cursor_positions {
+            state.note_states.entry(p.clone()).or_insert_with(|| NoteSettings {
+                cursor_offset: pos,
+                selection_anchor: None,
+                scroll_top: 0.0,
+                edit_mode: true,
+                word_wrap: true,
+            });
+        }
+
+        state
+    }
+
+    pub fn save(&self, dir: &Path) {
+        let _ = std::fs::create_dir_all(dir);
+        let path = dir.join("session-state.json");
+        if let Ok(json) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum FileNode {
@@ -422,6 +578,8 @@ pub struct AppState {
     pub nav_history: Vec<PathBuf>,
     pub nav_history_index: usize,
     pub status_text: String,
+    pub session: SessionState,
+    pub note_states: HashMap<PathBuf, NoteSettings>,
 }
 
 struct CoreEventSink;
@@ -436,13 +594,11 @@ const DEFAULT_WELCOME_NOTE: &str = "# Welcome to Aquilum (GPUI Live Preview)\n\n
 
 impl AppState {
     pub fn new() -> Self {
-        let app_data_dir = dirs::data_dir()
-            .map(|d| d.join("com.dmitriy.aquilum-app"))
-            .unwrap_or_else(|| PathBuf::from("./data"));
-
+        let app_data_dir = app_data_dir();
         let _ = std::fs::create_dir_all(&app_data_dir);
         let sink: Arc<dyn EventSink> = Arc::new(CoreEventSink);
         let core = Core::open(&app_data_dir, sink);
+        let session = SessionState::load(&app_data_dir);
 
         let mut state = Self {
             core,
@@ -457,18 +613,62 @@ impl AppState {
             nav_history: Vec::new(),
             nav_history_index: 0,
             status_text: "GPUI Ready • 0 WebView Processes".to_owned(),
+            note_states: session.note_states.clone(),
+            session,
         };
 
-        if let Ok(workspaces) = state.core.ui_state.list_workspaces() {
-            if let Some(first) = workspaces.into_iter().next() {
-                let path = PathBuf::from(&first.path);
-                if path.exists() {
-                    state.open_workspace(path);
+        // Determine workspace to open
+        let mut ws_to_open = None;
+        if let Some(ref ws) = state.session.workspace_path {
+            if ws.exists() {
+                ws_to_open = Some(ws.clone());
+            }
+        }
+        if ws_to_open.is_none() {
+            if let Ok(workspaces) = state.core.ui_state.list_workspaces() {
+                if let Some(first) = workspaces.into_iter().next() {
+                    let path = PathBuf::from(&first.path);
+                    if path.exists() {
+                        ws_to_open = Some(path);
+                    }
                 }
             }
         }
 
-        if state.active_note.is_none() {
+        if let Some(ws) = ws_to_open {
+            state.open_workspace(ws);
+        }
+
+        // Restore open tabs from session (filter valid files)
+        let valid_tabs: Vec<PathBuf> = state
+            .session
+            .open_tabs
+            .iter()
+            .filter(|p| p.exists() || p.to_string_lossy() == "Welcome.md")
+            .cloned()
+            .collect();
+
+        if !valid_tabs.is_empty() {
+            state.open_tabs = valid_tabs;
+        }
+
+        // Restore active note
+        let mut note_to_open = None;
+        if let Some(ref active) = state.session.active_note {
+            if active.exists() || active.to_string_lossy() == "Welcome.md" {
+                note_to_open = Some(active.clone());
+            }
+        }
+        if note_to_open.is_none() && !state.open_tabs.is_empty() {
+            note_to_open = Some(state.open_tabs.last().unwrap().clone());
+        }
+        if note_to_open.is_none() {
+            note_to_open = Self::first_file_in_tree(&state.file_tree);
+        }
+
+        if let Some(path) = note_to_open {
+            state.open_note(path);
+        } else {
             let welcome_path = PathBuf::from("Welcome.md");
             state.open_tabs.push(welcome_path.clone());
             state.nav_history.push(welcome_path.clone());
@@ -492,15 +692,11 @@ impl AppState {
 
         self.workspace_name = name;
         self.workspace_path = Some(path.clone());
-        self.expanded_folders.insert(path.clone());
+        self.session.workspace_path = Some(path.clone());
+        self.expanded_folders.insert(path);
         self.reload_file_tree();
         self.status_text = format!("Workspace: {}", self.workspace_name);
-
-        if self.active_note.is_none() {
-            if let Some(first_file) = Self::first_file_in_tree(&self.file_tree) {
-                self.open_note(first_file);
-            }
-        }
+        self.save_session_state();
     }
 
     pub fn build_tree(dir: &Path) -> Vec<FileNode> {
@@ -618,11 +814,14 @@ impl AppState {
                     self.open_note(target);
                 } else {
                     self.active_note = None;
+                    self.session.active_note = None;
                 }
             }
         } else if self.active_note.as_ref().map(|n| &n.path == path).unwrap_or(false) {
             self.active_note = None;
+            self.session.active_note = None;
         }
+        self.save_session_state();
     }
 
     pub fn reload_files(&mut self) {
@@ -714,6 +913,15 @@ impl AppState {
     }
 
     pub fn open_note_internal(&mut self, path: PathBuf) {
+        // Save current note's cursor and selection before switching
+        if let Some(ref current) = self.active_note {
+            let entry = self.note_states.entry(current.path.clone()).or_default();
+            entry.cursor_offset = current.cursor_offset;
+            entry.selection_anchor = current.selection_anchor;
+            self.session.cursor_positions.insert(current.path.clone(), current.cursor_offset);
+            self.session.note_states.insert(current.path.clone(), entry.clone());
+        }
+
         if !self.open_tabs.iter().any(|p| p == &path) {
             self.open_tabs.push(path.clone());
         }
@@ -722,27 +930,74 @@ impl AppState {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Untitled".to_owned());
 
-        match self.core.documents.open(&self.core, &path, 0) {
-            Ok(opened) => {
-                self.active_note = Some(OpenedNote::new(
-                    path.clone(),
-                    title,
-                    opened.text,
-                    opened.version,
-                ));
-                self.status_text = format!("Opened: {}", path.file_name().unwrap_or_default().to_string_lossy());
-            }
-            Err(_) => {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    self.active_note = Some(OpenedNote::new(
+        let mut opened_note = None;
+        if path.to_string_lossy() == "Welcome.md" {
+            opened_note = Some(OpenedNote::new(
+                path.clone(),
+                "Welcome to Aquilum".to_owned(),
+                DEFAULT_WELCOME_NOTE.to_owned(),
+                0,
+            ));
+        } else {
+            match self.core.documents.open(&self.core, &path, 0) {
+                Ok(opened) => {
+                    opened_note = Some(OpenedNote::new(
                         path.clone(),
-                        title,
-                        content,
-                        0,
+                        title.clone(),
+                        opened.text,
+                        opened.version,
                     ));
-                    self.status_text = format!("Read: {}", path.file_name().unwrap_or_default().to_string_lossy());
+                    self.status_text = format!("Opened: {}", path.file_name().unwrap_or_default().to_string_lossy());
+                }
+                Err(_) => {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        opened_note = Some(OpenedNote::new(
+                            path.clone(),
+                            title.clone(),
+                            content,
+                            0,
+                        ));
+                        self.status_text = format!("Read: {}", path.file_name().unwrap_or_default().to_string_lossy());
+                    }
                 }
             }
+        }
+
+        if let Some(mut note) = opened_note {
+            // Restore saved settings (cursor and selection) for this note
+            if let Some(settings) = self.note_states.get(&path) {
+                let mut offset = settings.cursor_offset.min(note.content.len());
+                while offset > 0 && !note.content.is_char_boundary(offset) {
+                    offset -= 1;
+                }
+                note.cursor_offset = offset;
+
+                note.selection_anchor = settings.selection_anchor.map(|anchor| {
+                    let mut a = anchor.min(note.content.len());
+                    while a > 0 && !note.content.is_char_boundary(a) {
+                        a -= 1;
+                    }
+                    a
+                });
+            }
+            self.active_note = Some(note);
+            self.session.active_note = Some(path);
+            self.save_session_state();
+        }
+    }
+
+    pub fn snapshot_active_note_settings(&mut self, scroll_top: f32, edit_mode: bool, word_wrap: bool) {
+        if let Some(ref note) = self.active_note {
+            let settings = NoteSettings {
+                cursor_offset: note.cursor_offset,
+                selection_anchor: note.selection_anchor,
+                scroll_top,
+                edit_mode,
+                word_wrap,
+            };
+            self.note_states.insert(note.path.clone(), settings.clone());
+            self.session.note_states.insert(note.path.clone(), settings);
+            self.session.cursor_positions.insert(note.path.clone(), note.cursor_offset);
         }
     }
 
@@ -755,5 +1010,21 @@ impl AppState {
                 self.status_text = format!("Saved: {}", note.title);
             }
         }
+        self.save_session_state();
+    }
+
+    pub fn save_session_state(&mut self) {
+        if let Some(ref note) = self.active_note {
+            let entry = self.note_states.entry(note.path.clone()).or_default();
+            entry.cursor_offset = note.cursor_offset;
+            entry.selection_anchor = note.selection_anchor;
+            self.session.note_states.insert(note.path.clone(), entry.clone());
+            self.session.cursor_positions.insert(note.path.clone(), note.cursor_offset);
+            self.session.active_note = Some(note.path.clone());
+        }
+        self.session.open_tabs = self.open_tabs.clone();
+        self.session.workspace_path = self.workspace_path.clone();
+        let dir = app_data_dir();
+        self.session.save(&dir);
     }
 }

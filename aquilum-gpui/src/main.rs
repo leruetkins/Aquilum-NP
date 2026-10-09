@@ -6,19 +6,20 @@ pub mod state;
 pub mod theme;
 pub mod views;
 
-use gpui::{
-    App, AppContext, Application, Bounds, WindowBounds, WindowOptions, px, size,
-};
+use gpui::{App, AppContext, Application, WindowOptions};
 use views::app_view::AppView;
 
 fn main() {
     Application::new()
         .with_assets(icons::MemoryAssetSource)
         .run(|cx: &mut App| {
-            let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
+            let app_data_dir = state::app_data_dir();
+            let window_state = state::WindowState::load(&app_data_dir);
+            let window_bounds = window_state.to_window_bounds(cx);
+
             cx.open_window(
                 WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_bounds: Some(window_bounds),
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some("Aquilum".into()),
                         appears_transparent: true,
@@ -26,7 +27,19 @@ fn main() {
                     }),
                     ..Default::default()
                 },
-                |_, cx| cx.new(|cx| AppView::new(cx)),
+                |window, cx| {
+                    let view = cx.new(|cx| AppView::new(cx));
+                    let weak = view.downgrade();
+                    window.on_window_should_close(cx, move |window, cx| {
+                        if let Some(view) = weak.upgrade() {
+                            let _ = view.update(cx, |app, _cx| {
+                                app.save_on_exit(window);
+                            });
+                        }
+                        true
+                    });
+                    view
+                },
             )
             .unwrap();
             cx.activate(true);
