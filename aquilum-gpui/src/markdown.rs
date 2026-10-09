@@ -364,3 +364,147 @@ pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
 
     spans
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisualRow {
+    pub line_idx: usize,
+    pub sub_idx: usize,
+    pub is_last_sub: bool,
+    pub char_start: usize,
+    pub char_end: usize,
+}
+
+pub fn wrap_line_ranges(line: &str, max_cols: usize) -> Vec<(usize, usize)> {
+    let char_count = line.chars().count();
+    if char_count == 0 {
+        return vec![(0, 0)];
+    }
+    if max_cols == 0 || char_count <= max_cols {
+        return vec![(0, char_count)];
+    }
+
+    let chars: Vec<char> = line.chars().collect();
+    let mut ranges = Vec::new();
+    let mut start = 0;
+
+    while start < char_count {
+        let remaining = char_count - start;
+        if remaining <= max_cols {
+            ranges.push((start, char_count));
+            break;
+        }
+
+        let limit = start + max_cols;
+        // Check if there is whitespace right at limit
+        let next_start = if limit < char_count && chars[limit].is_whitespace() {
+            limit + 1
+        } else {
+            // Look backwards for whitespace between start + 1 and limit
+            let mut found = None;
+            for i in (start + 1..limit).rev() {
+                if chars[i].is_whitespace() {
+                    found = Some(i + 1);
+                    break;
+                }
+            }
+            found.unwrap_or(limit)
+        };
+
+        let next_start = next_start.max(start + 1).min(char_count);
+        ranges.push((start, next_start));
+        start = next_start;
+    }
+
+    ranges
+}
+
+pub fn build_visual_rows(lines: &[&str], word_wrap: bool, wrap_cols: usize) -> Vec<VisualRow> {
+    let mut visual_rows = Vec::new();
+    for (line_idx, line) in lines.iter().enumerate() {
+        let ranges = if word_wrap && wrap_cols > 0 {
+            wrap_line_ranges(line, wrap_cols)
+        } else {
+            vec![(0, line.chars().count())]
+        };
+        let count = ranges.len();
+        for (sub_idx, (char_start, char_end)) in ranges.into_iter().enumerate() {
+            visual_rows.push(VisualRow {
+                line_idx,
+                sub_idx,
+                is_last_sub: sub_idx + 1 == count,
+                char_start,
+                char_end,
+            });
+        }
+    }
+    visual_rows
+}
+
+pub fn find_visual_row_for_cursor(
+    visual_rows: &[VisualRow],
+    cursor_line: usize,
+    cursor_col: usize,
+) -> Option<(usize, usize)> {
+    for (v_idx, v) in visual_rows.iter().enumerate() {
+        if v.line_idx == cursor_line {
+            if cursor_col >= v.char_start && (cursor_col < v.char_end || v.is_last_sub) {
+                let col_in_row = cursor_col.saturating_sub(v.char_start);
+                return Some((v_idx, col_in_row));
+            }
+        }
+    }
+    visual_rows.first().map(|_| (0, 0))
+}
+
+pub fn slice_syntax_spans(
+    spans: &[SyntaxSpan],
+    start_char: usize,
+    end_char: usize,
+) -> Vec<SyntaxSpan> {
+    if start_char >= end_char {
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+    let mut curr_char = 0;
+
+    for span in spans {
+        let (kind, text) = match span {
+            SyntaxSpan::Marker(t) => (0, t),
+            SyntaxSpan::Text(t) => (1, t),
+            SyntaxSpan::Bold(t) => (2, t),
+            SyntaxSpan::Italic(t) => (3, t),
+            SyntaxSpan::BoldItalic(t) => (4, t),
+            SyntaxSpan::InlineCode(t) => (5, t),
+            SyntaxSpan::Strikethrough(t) => (6, t),
+        };
+
+        let span_len = text.chars().count();
+        let span_end = curr_char + span_len;
+
+        if span_end > start_char && curr_char < end_char {
+            let s = start_char.saturating_sub(curr_char);
+            let e = (end_char - curr_char).min(span_len);
+            if s < e {
+                let sliced_str: String = text.chars().skip(s).take(e - s).collect();
+                let sliced_span = match kind {
+                    0 => SyntaxSpan::Marker(sliced_str),
+                    1 => SyntaxSpan::Text(sliced_str),
+                    2 => SyntaxSpan::Bold(sliced_str),
+                    3 => SyntaxSpan::Italic(sliced_str),
+                    4 => SyntaxSpan::BoldItalic(sliced_str),
+                    5 => SyntaxSpan::InlineCode(sliced_str),
+                    6 => SyntaxSpan::Strikethrough(sliced_str),
+                    _ => SyntaxSpan::Text(sliced_str),
+                };
+                result.push(sliced_span);
+            }
+        }
+
+        curr_char = span_end;
+        if curr_char >= end_char {
+            break;
+        }
+    }
+
+    result
+}

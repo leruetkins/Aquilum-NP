@@ -17,6 +17,7 @@ pub const SEARCH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0
 pub const BOLT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>"#;
 pub const CODE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>"#;
 pub const CLOSE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>"#;
+pub const PANEL_LEFT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>"#;
 
 pub const ICON_CHEVRON_RIGHT: &str = "icons/chevron_right.svg";
 pub const ICON_CHEVRON_DOWN: &str = "icons/chevron_down.svg";
@@ -32,6 +33,7 @@ pub const ICON_SEARCH: &str = "icons/search.svg";
 pub const ICON_BOLT: &str = "icons/bolt.svg";
 pub const ICON_CODE: &str = "icons/code.svg";
 pub const ICON_CLOSE: &str = "icons/close.svg";
+pub const ICON_PANEL_LEFT: &str = "icons/panel_left.svg";
 
 pub struct MemoryAssetSource;
 
@@ -52,6 +54,7 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_BOLT => Some(BOLT),
             ICON_CODE => Some(CODE),
             ICON_CLOSE => Some(CLOSE),
+            ICON_PANEL_LEFT => Some(PANEL_LEFT),
             _ => None,
         };
         Ok(svg.map(|s| Cow::Borrowed(s.as_bytes())))
@@ -73,6 +76,7 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_BOLT.into(),
             ICON_CODE.into(),
             ICON_CLOSE.into(),
+            ICON_PANEL_LEFT.into(),
         ])
     }
 }

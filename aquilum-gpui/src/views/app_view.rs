@@ -15,6 +15,11 @@ pub struct AppView {
     pub edit_mode: bool,
     pub is_mouse_selecting: bool,
     pub editor_top_y: Option<f32>,
+    pub sidebar_width: f32,
+    pub sidebar_collapsed: bool,
+    pub is_resizing_sidebar: bool,
+    pub word_wrap: bool,
+    pub last_wrap_cols: usize,
 }
 
 impl AppView {
@@ -27,6 +32,164 @@ impl AppView {
             edit_mode: true,
             is_mouse_selecting: false,
             editor_top_y: None,
+            sidebar_width: 260.0,
+            sidebar_collapsed: false,
+            is_resizing_sidebar: false,
+            word_wrap: true,
+            last_wrap_cols: 80,
+        }
+    }
+
+    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_collapsed = !self.sidebar_collapsed;
+        cx.notify();
+    }
+
+    fn toggle_word_wrap(&mut self, cx: &mut Context<Self>) {
+        self.word_wrap = !self.word_wrap;
+        cx.notify();
+    }
+
+    fn compute_wrap_cols(&self, window_width: f32, char_width: f32) -> usize {
+        let current_sidebar_w = if self.sidebar_collapsed { 0.0 } else { self.sidebar_width };
+        let char_w = if char_width > 1.0 { char_width } else { 7.7 };
+        // Доступная ширина текста:
+        // Ширина окна минус сайдбар, разделитель (4px), левые отступы (32px контейнер + 8px строка + 40px номера строк = 80px)
+        // и правые отступы (32px контейнер + 8px строка = 40px). Всего отступов: 124px.
+        let available_text_w = (window_width - current_sidebar_w - 124.0).max(100.0);
+        ((available_text_w / char_w).floor() as usize).max(20)
+    }
+
+    fn move_cursor_up_visual(&mut self, shift: bool) {
+        let Some(ref mut note) = self.state.active_note else {
+            return;
+        };
+        let lines: Vec<&str> = note.content.split('\n').collect();
+        let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
+        if visual_rows.is_empty() {
+            return;
+        }
+
+        let (cursor_line, cursor_col) = note.line_col();
+        let (curr_v_idx, col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col)
+            .unwrap_or((0, 0));
+
+        if shift && note.selection_anchor.is_none() {
+            note.selection_anchor = Some(note.cursor_offset);
+        }
+
+        if curr_v_idx == 0 {
+            note.cursor_offset = 0;
+            if !shift {
+                note.selection_anchor = None;
+            }
+            return;
+        }
+
+        let target_v = &visual_rows[curr_v_idx - 1];
+        let target_len = target_v.char_end.saturating_sub(target_v.char_start);
+        let target_col = col_in_row.min(target_len);
+        let target_char = target_v.char_start + target_col;
+        let offset = note.offset_for_line_col(target_v.line_idx, target_char);
+        note.cursor_offset = offset;
+        if !shift {
+            note.selection_anchor = None;
+        }
+    }
+
+    fn move_cursor_down_visual(&mut self, shift: bool) {
+        let Some(ref mut note) = self.state.active_note else {
+            return;
+        };
+        let lines: Vec<&str> = note.content.split('\n').collect();
+        let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
+        if visual_rows.is_empty() {
+            return;
+        }
+
+        let (cursor_line, cursor_col) = note.line_col();
+        let (curr_v_idx, col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col)
+            .unwrap_or((0, 0));
+
+        if shift && note.selection_anchor.is_none() {
+            note.selection_anchor = Some(note.cursor_offset);
+        }
+
+        if curr_v_idx + 1 >= visual_rows.len() {
+            note.cursor_offset = note.content.len();
+            if !shift {
+                note.selection_anchor = None;
+            }
+            return;
+        }
+
+        let target_v = &visual_rows[curr_v_idx + 1];
+        let target_len = target_v.char_end.saturating_sub(target_v.char_start);
+        let target_col = col_in_row.min(target_len);
+        let target_char = target_v.char_start + target_col;
+        let offset = note.offset_for_line_col(target_v.line_idx, target_char);
+        note.cursor_offset = offset;
+        if !shift {
+            note.selection_anchor = None;
+        }
+    }
+
+    fn move_cursor_home_visual(&mut self, shift: bool) {
+        let Some(ref mut note) = self.state.active_note else {
+            return;
+        };
+        let lines: Vec<&str> = note.content.split('\n').collect();
+        let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
+        if visual_rows.is_empty() {
+            return;
+        }
+        let (cursor_line, cursor_col) = note.line_col();
+        let (curr_v_idx, _) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col)
+            .unwrap_or((0, 0));
+        let v = &visual_rows[curr_v_idx];
+
+        if shift && note.selection_anchor.is_none() {
+            note.selection_anchor = Some(note.cursor_offset);
+        }
+
+        let target_char = if cursor_col == v.char_start && v.sub_idx > 0 {
+            0
+        } else {
+            v.char_start
+        };
+        note.cursor_offset = note.offset_for_line_col(v.line_idx, target_char);
+        if !shift {
+            note.selection_anchor = None;
+        }
+    }
+
+    fn move_cursor_end_visual(&mut self, shift: bool) {
+        let Some(ref mut note) = self.state.active_note else {
+            return;
+        };
+        let lines: Vec<&str> = note.content.split('\n').collect();
+        let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
+        if visual_rows.is_empty() {
+            return;
+        }
+        let (cursor_line, cursor_col) = note.line_col();
+        let (curr_v_idx, _) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col)
+            .unwrap_or((0, 0));
+        let v = &visual_rows[curr_v_idx];
+
+        if shift && note.selection_anchor.is_none() {
+            note.selection_anchor = Some(note.cursor_offset);
+        }
+
+        let line_len = lines.get(v.line_idx).map(|l| l.chars().count()).unwrap_or(0);
+        let target_char = if cursor_col == v.char_end && !v.is_last_sub {
+            line_len
+        } else {
+            v.char_end
+        };
+        note.cursor_offset = note.offset_for_line_col(v.line_idx, target_char);
+        if !shift {
+            note.selection_anchor = None;
         }
     }
 
@@ -79,36 +242,43 @@ impl AppView {
             return;
         }
 
+        let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
+        if visual_rows.is_empty() {
+            return;
+        }
+
         let font_id = cx.text_system().resolve_font(&gpui::font("Consolas"));
         let line_char_width = cx
             .text_system()
             .advance(font_id, px(14.0), 'x')
             .map(|s| f32::from(s.width))
-            .unwrap_or(8.42);
-        let text_start_x = 341.0;
+            .unwrap_or(7.7);
+        let current_sidebar_w = if self.sidebar_collapsed { 0.0 } else { self.sidebar_width };
+        let text_start_x = current_sidebar_w + 4.0 + 32.0 + 8.0 + 41.0;
         let line_h = 24.0;
 
-        let target_line = if let Some(top_y) = self.editor_top_y {
+        let target_v_idx = if let Some(top_y) = self.editor_top_y {
             if pos_y < top_y {
                 0
             } else {
                 let idx = ((pos_y - top_y) / line_h).floor() as usize;
-                idx.min(lines.len().saturating_sub(1))
+                idx.min(visual_rows.len().saturating_sub(1))
             }
         } else {
             0
         };
 
-        let line_text = lines.get(target_line).copied().unwrap_or("");
-        let char_count = line_text.chars().count();
+        let v = &visual_rows[target_v_idx];
+        let v_len = v.char_end.saturating_sub(v.char_start);
 
-        let col = if pos_x > text_start_x {
-            (((pos_x - text_start_x) / line_char_width).round() as usize).min(char_count)
+        let col_in_row = if pos_x > text_start_x {
+            (((pos_x - text_start_x) / line_char_width).round() as usize).min(v_len)
         } else {
             0
         };
 
-        let offset = note.offset_for_line_col(target_line, col);
+        let target_char = v.char_start + col_in_row;
+        let offset = note.offset_for_line_col(v.line_idx, target_char);
         note.cursor_offset = offset;
         cx.notify();
     }
@@ -287,6 +457,12 @@ impl AppView {
         let ctrl = keystroke.modifiers.control;
         let shift = keystroke.modifiers.shift;
 
+        // Ctrl + \ или Ctrl + B (Свернуть / развернуть сайдбар)
+        if ctrl && (keystroke.key == "\\" || keystroke.key.eq_ignore_ascii_case("b") || keystroke.key == "и" || keystroke.key == "И") {
+            self.toggle_sidebar(cx);
+            return;
+        }
+
         // Ctrl + S (Сохранение)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("s") || keystroke.key == "ы" || keystroke.key == "Ы") {
             self.state.save_active_note();
@@ -364,6 +540,12 @@ impl AppView {
             return;
         }
 
+        // Alt + Z (Переключение переноса строк)
+        if keystroke.modifiers.alt && (keystroke.key.eq_ignore_ascii_case("z") || keystroke.key == "я" || keystroke.key == "Я") {
+            self.toggle_word_wrap(cx);
+            return;
+        }
+
         // Ctrl + V (Вставить)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("v") || keystroke.key == "м" || keystroke.key == "М") {
             if let Some(item) = cx.read_from_clipboard() {
@@ -377,28 +559,30 @@ impl AppView {
             return;
         }
 
-        let Some(ref mut note) = self.state.active_note else {
+        if self.state.active_note.is_none() {
             return;
-        };
+        }
 
         match keystroke.key.as_str() {
-            "backspace" => note.delete_backwards(),
-            "delete" => note.delete_forwards(),
-            "enter" => note.insert_newline_auto_indent(),
-            "tab" => note.insert_text("    "),
-            "space" => note.insert_text(" "),
-            "left" => note.move_cursor_left(shift),
-            "right" => note.move_cursor_right(shift),
-            "up" => note.move_cursor_up(shift),
-            "down" => note.move_cursor_down(shift),
-            "home" => note.home(shift),
-            "end" => note.end(shift),
+            "backspace" => { if let Some(ref mut n) = self.state.active_note { n.delete_backwards(); } }
+            "delete" => { if let Some(ref mut n) = self.state.active_note { n.delete_forwards(); } }
+            "enter" => { if let Some(ref mut n) = self.state.active_note { n.insert_newline_auto_indent(); } }
+            "tab" => { if let Some(ref mut n) = self.state.active_note { n.insert_text("    "); } }
+            "space" => { if let Some(ref mut n) = self.state.active_note { n.insert_text(" "); } }
+            "left" => { if let Some(ref mut n) = self.state.active_note { n.move_cursor_left(shift); } }
+            "right" => { if let Some(ref mut n) = self.state.active_note { n.move_cursor_right(shift); } }
+            "up" => self.move_cursor_up_visual(shift),
+            "down" => self.move_cursor_down_visual(shift),
+            "home" => self.move_cursor_home_visual(shift),
+            "end" => self.move_cursor_end_visual(shift),
             _ => {
                 if !ctrl && !keystroke.modifiers.alt && !keystroke.modifiers.platform {
-                    if let Some(ch) = &keystroke.key_char {
-                        note.insert_text(ch);
-                    } else if keystroke.key.chars().count() == 1 {
-                        note.insert_text(&keystroke.key);
+                    if let Some(ref mut n) = self.state.active_note {
+                        if let Some(ch) = &keystroke.key_char {
+                            n.insert_text(ch);
+                        } else if keystroke.key.chars().count() == 1 {
+                            n.insert_text(&keystroke.key);
+                        }
                     }
                 }
             }
@@ -412,6 +596,16 @@ impl Render for AppView {
         let theme = &self.theme;
         let active_path = self.state.active_note.as_ref().map(|n| n.path.clone());
         let is_editing = self.edit_mode;
+        let font_id = cx.text_system().resolve_font(&gpui::font("Consolas"));
+        let line_char_width = cx
+            .text_system()
+            .advance(font_id, px(14.0), 'x')
+            .map(|s| f32::from(s.width))
+            .unwrap_or(7.7);
+
+        let viewport_w: f32 = window.viewport_size().width.into();
+        let wrap_cols = self.compute_wrap_cols(viewport_w, line_char_width);
+        self.last_wrap_cols = wrap_cols;
 
         div()
             .flex()
@@ -420,13 +614,23 @@ impl Render for AppView {
             .bg(theme.bg_app)
             .text_color(theme.text_primary)
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                if this.is_mouse_selecting {
+                if this.is_resizing_sidebar {
+                    let x: f32 = event.position.x.into();
+                    if x < 100.0 {
+                        this.sidebar_collapsed = true;
+                    } else {
+                        this.sidebar_collapsed = false;
+                        this.sidebar_width = x.clamp(160.0, 600.0);
+                    }
+                    cx.notify();
+                } else if this.is_mouse_selecting {
                     let x: f32 = event.position.x.into();
                     let y: f32 = event.position.y.into();
                     this.update_mouse_selection(x, y, cx);
                 }
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                this.is_resizing_sidebar = false;
                 this.is_mouse_selecting = false;
                 if let Some(ref mut n) = this.state.active_note {
                     if n.selection_anchor == Some(n.cursor_offset) {
@@ -436,6 +640,7 @@ impl Render for AppView {
                 cx.notify();
             }))
             .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                this.is_resizing_sidebar = false;
                 this.is_mouse_selecting = false;
                 cx.notify();
             }))
@@ -457,6 +662,25 @@ impl Render for AppView {
                             .flex_row()
                             .items_center()
                             .gap_3()
+                            .child(
+                                div()
+                                    .id("btn-toggle-sidebar")
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .p_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .hover(|h| h.bg(theme.bg_hover))
+                                    .child(icons::icon(
+                                        icons::ICON_PANEL_LEFT,
+                                        15.0,
+                                        if self.sidebar_collapsed { theme.text_muted } else { theme.accent },
+                                    ))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.toggle_sidebar(cx);
+                                    })),
+                            )
                             .child(
                                 div()
                                     .flex()
@@ -576,29 +800,46 @@ impl Render for AppView {
                     .size_full()
                     .overflow_hidden()
                     // ----- Сайдбар файлов (Дерево каталогов) -----
-                    .child({
-                        let mut tree_elements = Vec::new();
-                        self.render_tree_nodes(
-                            &self.state.file_tree,
-                            0,
-                            active_path.as_ref(),
-                            theme,
-                            &mut tree_elements,
-                            cx,
-                        );
+                    .when(!self.sidebar_collapsed, |s| {
+                        s.child({
+                            let mut tree_elements = Vec::new();
+                            self.render_tree_nodes(
+                                &self.state.file_tree,
+                                0,
+                                active_path.as_ref(),
+                                theme,
+                                &mut tree_elements,
+                                cx,
+                            );
 
-                        let is_search_focused = self.search_focus_handle.is_focused(window);
+                            let is_search_focused = self.search_focus_handle.is_focused(window);
 
-                        div()
-                            .flex()
-                            .flex_col()
-                            .w(px(260.0))
-                            .h_full()
-                            .bg(theme.bg_sidebar)
-                            .border_r_1()
-                            .border_color(theme.border)
-                            .p_2()
-                            .gap_2()
+                            div()
+                                .flex()
+                                .flex_col()
+                                .w(px(self.sidebar_width))
+                                .h_full()
+                                .bg(theme.bg_sidebar)
+                                .p_2()
+                                .gap_2()
+                                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                                    if this.is_resizing_sidebar {
+                                        let x: f32 = event.position.x.into();
+                                        if x < 100.0 {
+                                            this.sidebar_collapsed = true;
+                                        } else {
+                                            this.sidebar_collapsed = false;
+                                            this.sidebar_width = x.clamp(160.0, 600.0);
+                                        }
+                                        cx.notify();
+                                    }
+                                }))
+                                .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                    if this.is_resizing_sidebar {
+                                        this.is_resizing_sidebar = false;
+                                        cx.notify();
+                                    }
+                                }))
                             // Vault Header
                             .child(
                                 div()
@@ -722,7 +963,26 @@ impl Render for AppView {
                                     .gap_0p5()
                                     .children(tree_elements)
                             )
+                        })
                     })
+                    // ----- Разделитель / Ресайзер сайдбара (как в Obsidian) -----
+                    .child(
+                        div()
+                            .id("sidebar-resizer")
+                            .w(px(4.0))
+                            .h_full()
+                            .bg(if self.is_resizing_sidebar { theme.accent } else { theme.border })
+                            .hover(|h| h.bg(theme.accent))
+                            .cursor(gpui::CursorStyle::ResizeColumn)
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                if event.click_count == 2 {
+                                    this.toggle_sidebar(cx);
+                                } else {
+                                    this.is_resizing_sidebar = true;
+                                    cx.notify();
+                                }
+                            }))
+                    )
                     // ----- Центральная область редактора -----
                     .child(
                         div()
@@ -753,16 +1013,11 @@ impl Render for AppView {
                                 } else {
                                     None
                                 };
-                                let font_id = cx.text_system().resolve_font(&gpui::font("Consolas"));
-                                let line_char_width = cx
-                                    .text_system()
-                                    .advance(font_id, px(14.0), 'x')
-                                    .map(|s| f32::from(s.width))
-                                    .unwrap_or(8.42);
                                 let line_h = px(24.0);
                                 let cursor_h = px(16.0);
                                 let cursor_top = 4.0;
-                                let text_start_x = 341.0;
+                                let current_sidebar_w = if self.sidebar_collapsed { 0.0 } else { self.sidebar_width };
+                                let text_start_x = current_sidebar_w + 4.0 + 32.0 + 8.0 + 41.0;
 
                                 this.child(
                                     // Верхняя панель открытой заметки
@@ -838,6 +1093,28 @@ impl Render for AppView {
                                                 )
                                                 .child(
                                                     div()
+                                                        .id("btn-toggle-wrap")
+                                                        .flex()
+                                                        .flex_row()
+                                                        .items_center()
+                                                        .gap_1p5()
+                                                        .px_3()
+                                                        .py_1()
+                                                        .bg(if self.word_wrap { theme.bg_selected } else { theme.bg_card })
+                                                        .hover(|s| s.bg(theme.bg_hover))
+                                                        .border_1()
+                                                        .border_color(theme.border)
+                                                        .rounded_md()
+                                                        .text_xs()
+                                                        .cursor_pointer()
+                                                        .child(icons::icon(icons::ICON_CODE, 12.0, if self.word_wrap { theme.accent } else { theme.text_secondary }))
+                                                        .child(if self.word_wrap { "Wrap: On (Alt+Z)" } else { "Wrap: Off (Alt+Z)" })
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.toggle_word_wrap(cx);
+                                                        })),
+                                                )
+                                                .child(
+                                                    div()
                                                         .id("btn-save-note")
                                                         .flex()
                                                         .flex_row()
@@ -872,6 +1149,9 @@ impl Render for AppView {
                                         .px_8()
                                         .py_6()
                                         .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                            if this.is_resizing_sidebar {
+                                                return;
+                                            }
                                             window.focus(&this.focus_handle);
                                             this.is_mouse_selecting = true;
                                             let x: f32 = event.position.x.into();
@@ -885,13 +1165,23 @@ impl Render for AppView {
                                             cx.notify();
                                         }))
                                         .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                                            if this.is_mouse_selecting {
+                                            if this.is_resizing_sidebar {
+                                                let x: f32 = event.position.x.into();
+                                                if x < 100.0 {
+                                                    this.sidebar_collapsed = true;
+                                                } else {
+                                                    this.sidebar_collapsed = false;
+                                                    this.sidebar_width = x.clamp(160.0, 600.0);
+                                                }
+                                                cx.notify();
+                                            } else if this.is_mouse_selecting {
                                                 let x: f32 = event.position.x.into();
                                                 let y: f32 = event.position.y.into();
                                                 this.update_mouse_selection(x, y, cx);
                                             }
                                         }))
                                         .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                            this.is_resizing_sidebar = false;
                                             this.is_mouse_selecting = false;
                                             if let Some(ref mut n) = this.state.active_note {
                                                 if n.selection_anchor == Some(n.cursor_offset) {
@@ -901,35 +1191,53 @@ impl Render for AppView {
                                             cx.notify();
                                         }))
                                         .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                            this.is_resizing_sidebar = false;
                                             this.is_mouse_selecting = false;
                                             cx.notify();
                                         }))
                                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                                             this.handle_key(event, window, cx);
                                         }))
-                                        .children(lines.into_iter().enumerate().map(|(line_idx, line)| {
-                                                let is_current = is_editing && (line_idx == cursor_line);
-                                                let code_state = code_states[line_idx].as_ref().map(|s| (s.kind, s.lang.as_deref()));
+                                        .children({
+                                            let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, wrap_cols);
+                                            let (active_v_idx, active_col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col)
+                                                .unwrap_or((0, 0));
+
+                                            visual_rows.into_iter().enumerate().map(move |(v_idx, v)| {
+                                                let line = lines[v.line_idx];
+                                                let is_current = is_editing && (v_idx == active_v_idx);
+                                                let code_state = code_states[v.line_idx].as_ref().map(|s| (s.kind, s.lang.as_deref()));
                                                 let classified = crate::markdown::classify_line(line, code_state);
                                                 let is_opening_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: true, .. });
                                                 let is_closing_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: false, .. });
                                                 let is_code_line = matches!(classified, crate::markdown::LineKind::CodeLine(_));
-                                                let is_in_active_block = code_states[line_idx].as_ref().map(|s| Some(s.block_id) == active_block_id).unwrap_or(false);
-                                                let char_count = line.chars().count();
+                                                let is_in_active_block = code_states[v.line_idx].as_ref().map(|s| Some(s.block_id) == active_block_id).unwrap_or(false);
+                                                let row_len = v.char_end.saturating_sub(v.char_start);
 
-                                                let line_number = line_idx + 1;
-                                                let line_start = line_starts[line_idx];
+                                                let line_number_text = if v.sub_idx == 0 {
+                                                    format!("{:>3} ", v.line_idx + 1)
+                                                } else {
+                                                    "    ".to_string()
+                                                };
+
+                                                let line_start = line_starts[v.line_idx];
                                                 let line_end = line_start + line.len();
 
-                                                // Проверяем, пересекается ли выделение с этой строкой (в символах, а не байтах)
-                                                let line_sel_chars = selection_range.as_ref().and_then(|sel| {
+                                                // Проверяем, пересекается ли выделение с этой визуальной строкой
+                                                let row_sel_chars = selection_range.as_ref().and_then(|sel| {
                                                     if sel.end > line_start && sel.start < line_end {
                                                         let byte_s = sel.start.saturating_sub(line_start).min(line.len());
                                                         let byte_e = sel.end.saturating_sub(line_start).min(line.len());
                                                         if byte_s < byte_e {
                                                             let char_s = line[..byte_s].chars().count();
                                                             let char_e = char_s + line[byte_s..byte_e].chars().count();
-                                                            Some((char_s, char_e))
+                                                            let intersect_s = char_s.max(v.char_start);
+                                                            let intersect_e = char_e.min(v.char_end);
+                                                            if intersect_s < intersect_e {
+                                                                Some((intersect_s - v.char_start, intersect_e - v.char_start))
+                                                            } else {
+                                                                None
+                                                            }
                                                         } else {
                                                             None
                                                         }
@@ -938,8 +1246,13 @@ impl Render for AppView {
                                                     }
                                                 });
 
+                                                let v_char_start = v.char_start;
+                                                let v_char_end = v.char_end;
+                                                let v_line_idx = v.line_idx;
+                                                let v_sub_idx = v.sub_idx;
+
                                                 div()
-                                                    .id(line_idx)
+                                                    .id(gpui::ElementId::from(("v-row", v_idx)))
                                                     .flex()
                                                     .flex_row()
                                                     .items_center()
@@ -950,18 +1263,22 @@ impl Render for AppView {
                                                     .when(is_current, |s| s.bg(theme.bg_hover))
                                                     // Обработка начала выделения / клика мыши на всей строке
                                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                                        if this.is_resizing_sidebar {
+                                                            return;
+                                                        }
                                                         this.is_mouse_selecting = true;
                                                         let click_x: f32 = event.position.x.into();
                                                         let click_y: f32 = event.position.y.into();
-                                                        this.editor_top_y = Some(click_y - (line_idx as f32) * 24.0);
+                                                        this.editor_top_y = Some(click_y - (v_idx as f32) * 24.0);
 
-                                                        let col = if click_x > text_start_x {
-                                                            (((click_x - text_start_x) / line_char_width).round() as usize).min(char_count)
+                                                        let col_in_row = if click_x > text_start_x {
+                                                            (((click_x - text_start_x) / line_char_width).round() as usize).min(row_len)
                                                         } else {
                                                             0
                                                         };
+                                                        let target_char = v_char_start + col_in_row;
                                                         if let Some(ref mut n) = this.state.active_note {
-                                                            let offset = n.offset_for_line_col(line_idx, col);
+                                                            let offset = n.offset_for_line_col(v_line_idx, target_char);
                                                             if event.modifiers.shift {
                                                                 if n.selection_anchor.is_none() {
                                                                     n.selection_anchor = Some(n.cursor_offset);
@@ -976,18 +1293,30 @@ impl Render for AppView {
                                                     }))
                                                     // Обработка протягивания мыши (Drag to Select) на всей строке (включая номера строк)
                                                     .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                                                        if this.is_resizing_sidebar {
+                                                            let x: f32 = event.position.x.into();
+                                                            if x < 100.0 {
+                                                                this.sidebar_collapsed = true;
+                                                            } else {
+                                                                this.sidebar_collapsed = false;
+                                                                this.sidebar_width = x.clamp(160.0, 600.0);
+                                                            }
+                                                            cx.notify();
+                                                            return;
+                                                        }
                                                         if this.is_mouse_selecting {
                                                             let click_x: f32 = event.position.x.into();
                                                             let click_y: f32 = event.position.y.into();
-                                                            this.editor_top_y = Some(click_y - (line_idx as f32) * 24.0);
+                                                            this.editor_top_y = Some(click_y - (v_idx as f32) * 24.0);
 
-                                                            let col = if click_x > text_start_x {
-                                                                (((click_x - text_start_x) / line_char_width).round() as usize).min(char_count)
+                                                            let col_in_row = if click_x > text_start_x {
+                                                                (((click_x - text_start_x) / line_char_width).round() as usize).min(row_len)
                                                             } else {
                                                                 0
                                                             };
+                                                            let target_char = v_char_start + col_in_row;
                                                             if let Some(ref mut n) = this.state.active_note {
-                                                                let offset = n.offset_for_line_col(line_idx, col);
+                                                                let offset = n.offset_for_line_col(v_line_idx, target_char);
                                                                 n.cursor_offset = offset;
                                                                 cx.notify();
                                                             }
@@ -996,7 +1325,7 @@ impl Render for AppView {
                                                     // Номер строки
                                                     .child(
                                                         div()
-                                                            .id(gpui::ElementId::from(("line-num", line_idx)))
+                                                            .id(gpui::ElementId::from(("line-num", v_idx)))
                                                             .w(px(40.0))
                                                             .h(line_h)
                                                             .flex()
@@ -1005,12 +1334,12 @@ impl Render for AppView {
                                                             .text_color(if is_current { theme.accent } else { theme.text_muted })
                                                             .font_family("Consolas")
                                                             .cursor_pointer()
-                                                            .child(format!("{:>3} ", line_number)),
+                                                            .child(line_number_text),
                                                     )
                                                     // Текст строки
                                                     .child(
                                                         div()
-                                                            .id(gpui::ElementId::from(("line-content", line_idx)))
+                                                            .id(gpui::ElementId::from(("line-content", v_idx)))
                                                             .relative()
                                                             .flex()
                                                             .flex_row()
@@ -1025,7 +1354,7 @@ impl Render for AppView {
                                                             .when(is_closing_fence, |s| s.bg(theme.bg_card).rounded_b_sm())
                                                             .when(is_code_line, |s| s.bg(theme.code_bg))
                                                             // 1. Фоновый слой выделения (не ломает верстку строки)
-                                                            .when_some(line_sel_chars, |s, (sel_s, sel_e)| {
+                                                            .when_some(row_sel_chars, |s, (sel_s, sel_e)| {
                                                                 let sel_x = (sel_s as f32) * line_char_width;
                                                                 let sel_w = ((sel_e - sel_s) as f32) * line_char_width;
                                                                 s.child(
@@ -1046,13 +1375,19 @@ impl Render for AppView {
                                                                     .flex()
                                                                     .flex_row()
                                                                     .items_center()
-                                                                    .child(render_live_styled_line(line, &classified, is_in_active_block, theme))
+                                                                    .child(render_live_styled_row(
+                                                                        line,
+                                                                        &classified,
+                                                                        v_char_start,
+                                                                        v_char_end,
+                                                                        v_sub_idx,
+                                                                        is_in_active_block,
+                                                                        theme,
+                                                                    ))
                                                             )
                                                             // 3. Слой курсора (absolute overlay, никогда не раздвигает буквы в словах)
                                                             .when(is_current, |s| {
-                                                                let char_count = line.chars().count();
-                                                                let col = cursor_col.min(char_count);
-                                                                let cursor_x = (col as f32) * line_char_width;
+                                                                let cursor_x = (active_col_in_row as f32) * line_char_width;
                                                                 s.child(
                                                                     div()
                                                                         .absolute()
@@ -1065,7 +1400,8 @@ impl Render for AppView {
                                                                 )
                                                             })
                                                     )
-                                            })),
+                                            })
+                                        })
                                 )
                             })
                             .when(self.state.active_note.is_none(), |this| {
@@ -1179,107 +1515,192 @@ fn render_syntax_spans(spans: Vec<crate::markdown::SyntaxSpan>, theme: &Theme) -
         }))
 }
 
-fn render_live_styled_line(
+fn render_live_styled_row(
     line: &str,
     classified: &crate::markdown::LineKind<'_>,
+    char_start: usize,
+    char_end: usize,
+    sub_idx: usize,
     show_fences: bool,
     theme: &Theme,
 ) -> gpui::Div {
-    if line.is_empty() {
+    if line.is_empty() || char_start >= char_end {
         return div().h_full().flex().items_center().child(" ");
     }
 
     match classified {
         crate::markdown::LineKind::Heading1(_) => {
-            let (prefix, rest) = if let Some(stripped) = line.strip_prefix("# ") {
-                ("# ", stripped)
+            let rest = line.strip_prefix("# ").unwrap_or(line);
+            let spans = crate::markdown::parse_inline_syntax_spans(rest);
+            if sub_idx == 0 {
+                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(2));
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .child(div().text_color(theme.text_muted).child("# "))
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(theme.accent)
+                            .child(render_syntax_spans(row_spans, theme)),
+                    )
             } else {
-                ("", line)
-            };
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .h_full()
-                .child(div().text_color(theme.text_muted).child(prefix.to_string()))
-                .child(
-                    div()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .text_color(theme.accent)
-                        .child(render_syntax_spans(crate::markdown::parse_inline_syntax_spans(rest), theme))
-                )
+                let row_spans = crate::markdown::slice_syntax_spans(
+                    &spans,
+                    char_start.saturating_sub(2),
+                    char_end.saturating_sub(2),
+                );
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(theme.accent)
+                            .child(render_syntax_spans(row_spans, theme)),
+                    )
+            }
         }
         crate::markdown::LineKind::Heading2(_) => {
-            let (prefix, rest) = if let Some(stripped) = line.strip_prefix("## ") {
-                ("## ", stripped)
+            let rest = line.strip_prefix("## ").unwrap_or(line);
+            let spans = crate::markdown::parse_inline_syntax_spans(rest);
+            if sub_idx == 0 {
+                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(3));
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .child(div().text_color(theme.text_muted).child("## "))
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(theme.accent_hover)
+                            .child(render_syntax_spans(row_spans, theme)),
+                    )
             } else {
-                ("", line)
-            };
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .h_full()
-                .child(div().text_color(theme.text_muted).child(prefix.to_string()))
-                .child(
-                    div()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .text_color(theme.accent_hover)
-                        .child(render_syntax_spans(crate::markdown::parse_inline_syntax_spans(rest), theme))
-                )
+                let row_spans = crate::markdown::slice_syntax_spans(
+                    &spans,
+                    char_start.saturating_sub(3),
+                    char_end.saturating_sub(3),
+                );
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(theme.accent_hover)
+                            .child(render_syntax_spans(row_spans, theme)),
+                    )
+            }
         }
         crate::markdown::LineKind::Heading3(_) => {
-            let (prefix, rest) = if let Some(stripped) = line.strip_prefix("### ") {
-                ("### ", stripped)
+            let rest = line.strip_prefix("### ").unwrap_or(line);
+            let spans = crate::markdown::parse_inline_syntax_spans(rest);
+            if sub_idx == 0 {
+                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(4));
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .child(div().text_color(theme.text_muted).child("### "))
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.text_primary)
+                            .child(render_syntax_spans(row_spans, theme)),
+                    )
             } else {
-                ("", line)
-            };
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .h_full()
-                .child(div().text_color(theme.text_muted).child(prefix.to_string()))
-                .child(
-                    div()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(theme.text_primary)
-                        .child(render_syntax_spans(crate::markdown::parse_inline_syntax_spans(rest), theme))
-                )
+                let row_spans = crate::markdown::slice_syntax_spans(
+                    &spans,
+                    char_start.saturating_sub(4),
+                    char_end.saturating_sub(4),
+                );
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.text_primary)
+                            .child(render_syntax_spans(row_spans, theme)),
+                    )
+            }
         }
         crate::markdown::LineKind::Heading4(_) => {
-            let (prefix, rest) = if let Some(stripped) = line.strip_prefix("#### ") {
-                ("#### ", stripped)
+            let rest = line.strip_prefix("#### ").unwrap_or(line);
+            let spans = crate::markdown::parse_inline_syntax_spans(rest);
+            if sub_idx == 0 {
+                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(5));
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .child(div().text_color(theme.text_muted).child("#### "))
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.text_secondary)
+                            .child(render_syntax_spans(row_spans, theme)),
+                    )
             } else {
-                ("", line)
-            };
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .h_full()
-                .child(div().text_color(theme.text_muted).child(prefix.to_string()))
-                .child(
-                    div()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(theme.text_secondary)
-                        .child(render_syntax_spans(crate::markdown::parse_inline_syntax_spans(rest), theme))
-                )
+                let row_spans = crate::markdown::slice_syntax_spans(
+                    &spans,
+                    char_start.saturating_sub(5),
+                    char_end.saturating_sub(5),
+                );
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.text_secondary)
+                            .child(render_syntax_spans(row_spans, theme)),
+                    )
+            }
         }
         crate::markdown::LineKind::Quote(_) => {
-            let (prefix, rest) = if let Some(stripped) = line.strip_prefix("> ") {
-                ("> ", stripped)
+            let rest = line.strip_prefix("> ").unwrap_or(line);
+            let spans = crate::markdown::parse_inline_syntax_spans(rest);
+            if sub_idx == 0 {
+                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(2));
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .italic()
+                    .child(div().text_color(theme.accent).child("> "))
+                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, theme)))
             } else {
-                ("", line)
-            };
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .h_full()
-                .italic()
-                .child(div().text_color(theme.accent).child(prefix.to_string()))
-                .child(div().text_color(theme.text_secondary).child(render_syntax_spans(crate::markdown::parse_inline_syntax_spans(rest), theme)))
+                let row_spans = crate::markdown::slice_syntax_spans(
+                    &spans,
+                    char_start.saturating_sub(2),
+                    char_end.saturating_sub(2),
+                );
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .italic()
+                    .child(div().text_color(theme.border_subtle).child("  "))
+                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, theme)))
+            }
         }
         crate::markdown::LineKind::Task { checked, .. } => {
             let prefix_len = if line.starts_with("- [ ] ")
@@ -1293,19 +1714,42 @@ fn render_live_styled_line(
             } else {
                 0
             };
-            let (prefix, rest) = line.split_at(prefix_len);
+            let rest = if line.len() >= prefix_len { &line[prefix_len..] } else { "" };
+            let spans = crate::markdown::parse_inline_syntax_spans(rest);
             let prefix_color = if *checked { theme.success } else { theme.text_muted };
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .h_full()
-                .child(div().font_weight(gpui::FontWeight::BOLD).text_color(prefix_color).child(prefix.to_string()))
-                .child(
-                    div()
-                        .when(*checked, |s| s.text_color(theme.text_muted).line_through())
-                        .child(render_syntax_spans(crate::markdown::parse_inline_syntax_spans(rest), theme))
-                )
+            let prefix_str = if line.len() >= prefix_len { &line[..prefix_len] } else { "" };
+
+            if sub_idx == 0 {
+                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(prefix_len));
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .child(div().font_weight(gpui::FontWeight::BOLD).text_color(prefix_color).child(prefix_str.to_string()))
+                    .child(
+                        div()
+                            .when(*checked, |s| s.text_color(theme.text_muted).line_through())
+                            .child(render_syntax_spans(row_spans, theme)),
+                    )
+            } else {
+                let row_spans = crate::markdown::slice_syntax_spans(
+                    &spans,
+                    char_start.saturating_sub(prefix_len),
+                    char_end.saturating_sub(prefix_len),
+                );
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .child(div().child("      "))
+                    .child(
+                        div()
+                            .when(*checked, |s| s.text_color(theme.text_muted).line_through())
+                            .child(render_syntax_spans(row_spans, theme)),
+                    )
+            }
         }
         crate::markdown::LineKind::BulletList { .. } => {
             let trimmed = line.trim_start();
@@ -1316,14 +1760,33 @@ fn render_live_styled_line(
             } else {
                 ("", trimmed)
             };
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .h_full()
-                .child(div().child(indent.to_string()))
-                .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(bullet.to_string()))
-                .child(render_syntax_spans(crate::markdown::parse_inline_syntax_spans(rest), theme))
+            let prefix_len = indent_len + bullet.len();
+            let spans = crate::markdown::parse_inline_syntax_spans(rest);
+
+            if sub_idx == 0 {
+                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(prefix_len));
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .child(div().child(indent.to_string()))
+                    .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(bullet.to_string()))
+                    .child(render_syntax_spans(row_spans, theme))
+            } else {
+                let row_spans = crate::markdown::slice_syntax_spans(
+                    &spans,
+                    char_start.saturating_sub(prefix_len),
+                    char_end.saturating_sub(prefix_len),
+                );
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .child(div().child(format!("{}  ", indent)))
+                    .child(render_syntax_spans(row_spans, theme))
+            }
         }
         crate::markdown::LineKind::NumberedList { num, .. } => {
             let trimmed = line.trim_start();
@@ -1335,14 +1798,34 @@ fn render_live_styled_line(
             } else {
                 ("", trimmed)
             };
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .h_full()
-                .child(div().child(indent.to_string()))
-                .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(num_part.to_string()))
-                .child(render_syntax_spans(crate::markdown::parse_inline_syntax_spans(rest), theme))
+            let prefix_len = indent_len + num_part.len();
+            let spans = crate::markdown::parse_inline_syntax_spans(rest);
+
+            if sub_idx == 0 {
+                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(prefix_len));
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .child(div().child(indent.to_string()))
+                    .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(num_part.to_string()))
+                    .child(render_syntax_spans(row_spans, theme))
+            } else {
+                let row_spans = crate::markdown::slice_syntax_spans(
+                    &spans,
+                    char_start.saturating_sub(prefix_len),
+                    char_end.saturating_sub(prefix_len),
+                );
+                let spaces = " ".repeat(prefix_len);
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .child(div().child(spaces))
+                    .child(render_syntax_spans(row_spans, theme))
+            }
         }
         crate::markdown::LineKind::HorizontalRule => {
             div()
@@ -1383,12 +1866,10 @@ fn render_live_styled_line(
                                     .text_xs()
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .text_color(theme.accent)
-                                    .child(lang_label)
-                            )
+                                    .child(lang_label),
+                            ),
                     )
-                    .child(
-                        icons::icon(icons::ICON_CODE, 12.0, theme.text_muted)
-                    )
+                    .child(icons::icon(icons::ICON_CODE, 12.0, theme.text_muted))
             } else {
                 div()
                     .flex()
@@ -1396,30 +1877,28 @@ fn render_live_styled_line(
                     .items_center()
                     .w_full()
                     .h_full()
-                    .child(
-                        div()
-                            .h_px()
-                            .w_full()
-                            .bg(theme.border_subtle)
-                    )
+                    .child(div().h_px().w_full().bg(theme.border_subtle))
             }
         }
         crate::markdown::LineKind::CodeLine(_) => {
+            let row_slice: String = line.chars().skip(char_start).take(char_end - char_start).collect();
             div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .h_full()
                 .text_color(theme.success)
-                .child(line.to_string())
+                .child(row_slice)
         }
         crate::markdown::LineKind::Paragraph(_) => {
+            let spans = crate::markdown::parse_inline_syntax_spans(line);
+            let row_spans = crate::markdown::slice_syntax_spans(&spans, char_start, char_end);
             div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .h_full()
-                .child(render_syntax_spans(crate::markdown::parse_inline_syntax_spans(line), theme))
+                .child(render_syntax_spans(row_spans, theme))
         }
     }
 }
