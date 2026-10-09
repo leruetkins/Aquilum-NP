@@ -45,3 +45,7 @@ aquilum-app/tmp-fm.*
 
 # Рабочая копия публичного репозитория релизов
 /release-repo-update/
+
+/*debug/
+/aquilum-gpui/target/debug
+/aquilum-native/target/debug

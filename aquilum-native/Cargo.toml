@@ -1,0 +1,10 @@
+[package]
+name = "aquilum-native"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+iced = { version = "0.14.0", features = ["highlighter", "markdown", "wgpu", "svg", "advanced"] }
+aquilum-core = { path = "../aquilum-app/core" }
+rfd = "0.15"
+dirs = "6.0"
