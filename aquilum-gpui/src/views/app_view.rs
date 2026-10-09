@@ -19,6 +19,7 @@ pub struct AppView {
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
     pub is_resizing_sidebar: bool,
+    pub is_hovering_resizer: bool,
     pub word_wrap: bool,
     pub last_wrap_cols: usize,
     pub is_settings_open: bool,
@@ -43,6 +44,7 @@ impl AppView {
             sidebar_width: 260.0,
             sidebar_collapsed: false,
             is_resizing_sidebar: false,
+            is_hovering_resizer: false,
             word_wrap: true,
             last_wrap_cols: 80,
             is_settings_open: false,
@@ -639,6 +641,10 @@ impl Render for AppView {
         let wrap_cols = self.compute_wrap_cols(viewport_w, line_char_width);
         self.last_wrap_cols = wrap_cols;
 
+        let is_resizer_active = self.is_resizing_sidebar || self.is_hovering_resizer;
+        let resizer_line_w = if is_resizer_active { 3.0 } else { 1.0 };
+        let resizer_color = if is_resizer_active { theme.accent } else { theme.border };
+
         div()
             .flex()
             .flex_col()
@@ -684,6 +690,7 @@ impl Render for AppView {
                     return;
                 }
                 this.is_resizing_sidebar = false;
+                this.is_hovering_resizer = false;
                 this.is_mouse_selecting = false;
                 cx.notify();
             }))
@@ -708,24 +715,18 @@ impl Render for AppView {
                                 .flex()
                                 .flex_row()
                                 .items_center()
-                                .justify_between()
                                 .w(px(self.sidebar_width))
                                 .flex_shrink_0()
                                 .h_full()
-                                .px_3()
                                 .bg(theme.bg_sidebar)
-                                .window_control_area(WindowControlArea::Drag)
-                                .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, window, _| {
-                                    if event.click_count == 2 {
-                                        window.zoom_window();
-                                    }
-                                }))
+                                // Controls: button and badge (isolated from drag area)
                                 .child(
                                     div()
                                         .flex()
                                         .flex_row()
                                         .items_center()
                                         .gap_2()
+                                        .px_3()
                                         .child(
                                             div()
                                                 .id("btn-toggle-sidebar")
@@ -757,22 +758,18 @@ impl Render for AppView {
                                                 .child("AQUILUM"),
                                         ),
                                 )
+                                // Drag area for the remaining space above the sidebar
                                 .child(
                                     div()
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .gap_1p5()
-                                        .text_xs()
-                                        .text_color(theme.text_secondary)
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .child(icons::icon(icons::ICON_FOLDER, 13.0, theme.text_muted))
-                                        .child(
-                                            div()
-                                                .truncate()
-                                                .child(self.state.workspace_name.clone()),
-                                        ),
+                                        .id("sidebar-titlebar-drag-region")
+                                        .flex_1()
+                                        .h_full()
+                                        .window_control_area(WindowControlArea::Drag)
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, window, _| {
+                                            if event.click_count == 2 {
+                                                window.zoom_window();
+                                            }
+                                        })),
                                 ),
                         )
                     })
@@ -787,12 +784,6 @@ impl Render for AppView {
                                 .h_full()
                                 .flex_shrink_0()
                                 .bg(theme.bg_sidebar)
-                                .window_control_area(WindowControlArea::Drag)
-                                .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, window, _| {
-                                    if event.click_count == 2 {
-                                        window.zoom_window();
-                                    }
-                                }))
                                 .child(
                                     div()
                                         .id("btn-toggle-sidebar")
@@ -825,13 +816,36 @@ impl Render for AppView {
                                 ),
                         )
                     })
-                    // Vertical divider (4px) matching the sidebar-resizer below exactly
+                    // Vertical divider (4px hitbox) matching the sidebar-resizer below exactly
                     .child(
                         div()
+                            .id("titlebar-resizer-divider")
                             .w(px(4.0))
                             .h_full()
                             .flex_shrink_0()
-                            .bg(if self.is_resizing_sidebar { theme.accent } else { theme.border }),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_center()
+                            .cursor(gpui::CursorStyle::ResizeColumn)
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.is_hovering_resizer = *hovered;
+                                cx.notify();
+                            }))
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                if event.click_count == 2 {
+                                    this.toggle_sidebar(cx);
+                                } else {
+                                    this.is_resizing_sidebar = true;
+                                    cx.notify();
+                                }
+                            }))
+                            .child(
+                                div()
+                                    .w(px(resizer_line_w))
+                                    .h_full()
+                                    .bg(resizer_color),
+                            ),
                     )
                     // Right area: Editor header column containing Tab Bar, Drag Area, and Window Controls
                     .child(
@@ -1227,16 +1241,22 @@ impl Render for AppView {
                             )
                         })
                     })
-                    // ----- Разделитель / Ресайзер сайдбара (как в Obsidian) -----
+                    // ----- Sidebar Resizer Divider (Obsidian-style) -----
                     .child(
                         div()
                             .id("sidebar-resizer")
                             .flex_shrink_0()
                             .w(px(4.0))
                             .h_full()
-                            .bg(if self.is_resizing_sidebar { theme.accent } else { theme.border })
-                            .hover(|h| h.bg(theme.accent))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_center()
                             .cursor(gpui::CursorStyle::ResizeColumn)
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.is_hovering_resizer = *hovered;
+                                cx.notify();
+                            }))
                             .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
                                 if event.click_count == 2 {
                                     this.toggle_sidebar(cx);
@@ -1245,6 +1265,12 @@ impl Render for AppView {
                                     cx.notify();
                                 }
                             }))
+                            .child(
+                                div()
+                                    .w(px(resizer_line_w))
+                                    .h_full()
+                                    .bg(resizer_color),
+                            ),
                     )
                     // ----- Центральная область редактора -----
                     .child(
