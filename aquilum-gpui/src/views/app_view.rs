@@ -18,7 +18,6 @@ pub struct AppView {
     pub editor_scroll_handle: UniformListScrollHandle,
     pub edit_mode: bool,
     pub is_mouse_selecting: bool,
-    pub editor_top_y: Option<f32>,
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
     pub is_resizing_sidebar: bool,
@@ -64,7 +63,6 @@ impl AppView {
             editor_scroll_handle: UniformListScrollHandle::new(),
             edit_mode,
             is_mouse_selecting: false,
-            editor_top_y: None,
             sidebar_width: 260.0,
             sidebar_collapsed: false,
             is_resizing_sidebar: false,
@@ -139,7 +137,7 @@ impl AppView {
     }
 
     fn compute_wrap_cols(&self, window_width: f32, char_width: f32) -> usize {
-        let editor_left_w = 44.0 + if self.sidebar_collapsed { 0.0 } else { self.sidebar_width + 4.0 };
+        let editor_left_w = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 4.0 };
         let char_w = if char_width > 1.0 { char_width } else { 7.7 };
         // Доступная ширина текста: ширина окна минус левые колонки и отступы (контейнер 32px + строка 8px + номера строк 40px + правые 40px)
         let available_text_w = (window_width - editor_left_w - 120.0).max(100.0);
@@ -415,10 +413,43 @@ impl AppView {
         cx.notify();
     }
 
-    fn update_mouse_selection(&mut self, pos_x: f32, pos_y: f32, cx: &mut Context<Self>) {
+    fn update_mouse_selection(&mut self, pos_x: f32, pos_y: f32, viewport_h: f32, cx: &mut Context<Self>) {
         if !self.is_mouse_selecting {
             return;
         }
+        if self.state.active_note.is_none() {
+            return;
+        }
+
+        // Top of rows area: Titlebar (38px) + Nav bar (34px) + list py_6 (24px * 2) = 120px
+        let editor_rows_top_y = 120.0;
+        let editor_bottom_y = (viewport_h - 28.0).max(editor_rows_top_y + 100.0);
+        let scroll_y = self.current_scroll_top();
+
+        // Edge autoscroll when dragging outside or near the top/bottom bounds
+        if pos_y < editor_rows_top_y && scroll_y > 0.0 {
+            let step = ((editor_rows_top_y - pos_y).max(1.0) * 0.8).min(30.0);
+            self.set_editor_scroll_top((scroll_y - step).max(0.0));
+        } else if pos_y > editor_bottom_y - 16.0 {
+            let step = ((pos_y - (editor_bottom_y - 16.0)).max(1.0) * 0.8).min(30.0);
+            self.set_editor_scroll_top(scroll_y + step);
+        }
+
+        let current_scroll_y = self.current_scroll_top();
+        let rel_y = pos_y - editor_rows_top_y + current_scroll_y;
+
+        let font_id = cx.text_system().resolve_font(&gpui::font("Consolas"));
+        let line_char_width = cx
+            .text_system()
+            .advance(font_id, px(14.0), 'x')
+            .map(|s| f32::from(s.width))
+            .unwrap_or(7.7);
+        let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 4.0 };
+        let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
+        let line_h = 24.0;
+        let word_wrap = self.word_wrap;
+        let wrap_cols = self.last_wrap_cols;
+
         let Some(ref mut note) = self.state.active_note else {
             return;
         };
@@ -428,26 +459,15 @@ impl AppView {
             return;
         }
 
-        let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
+        let visual_rows = crate::markdown::build_visual_rows(&lines, word_wrap, wrap_cols);
         if visual_rows.is_empty() {
             return;
         }
 
-        let font_id = cx.text_system().resolve_font(&gpui::font("Consolas"));
-        let line_char_width = cx
-            .text_system()
-            .advance(font_id, px(14.0), 'x')
-            .map(|s| f32::from(s.width))
-            .unwrap_or(7.7);
-        let editor_left_x = 44.0 + if self.sidebar_collapsed { 0.0 } else { self.sidebar_width + 4.0 };
-        let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
-        let line_h = 24.0;
-
-        let top_y = self.editor_top_y.unwrap_or(96.0);
-        let target_v_idx = if pos_y < top_y {
+        let target_v_idx = if rel_y <= 0.0 {
             0
         } else {
-            let idx = ((pos_y - top_y) / line_h).floor() as usize;
+            let idx = (rel_y / line_h).floor() as usize;
             idx.min(visual_rows.len().saturating_sub(1))
         };
 
@@ -1120,7 +1140,8 @@ impl Render for AppView {
                 } else if this.is_mouse_selecting {
                     let x: f32 = event.position.x.into();
                     let y: f32 = event.position.y.into();
-                    this.update_mouse_selection(x, y, cx);
+                    let viewport_h: f32 = window.viewport_size().height.into();
+                    this.update_mouse_selection(x, y, viewport_h, cx);
                 }
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
@@ -1942,7 +1963,7 @@ impl Render for AppView {
                                 let line_h = px(24.0);
                                 let cursor_h = px(16.0);
                                 let cursor_top = 4.0;
-                                let editor_left_x = 44.0 + if self.sidebar_collapsed { 0.0 } else { self.sidebar_width + 4.0 };
+                                let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 4.0 };
                                 let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
 
                                 let lines_arc = Arc::new(lines);
@@ -1996,13 +2017,7 @@ impl Render for AppView {
                                             }
                                             window.focus(&this.focus_handle);
                                             this.is_mouse_selecting = true;
-                                            let click_y: f32 = event.position.y.into();
                                             if let Some(ref mut n) = this.state.active_note {
-                                                let lines: Vec<&str> = n.content.split('\n').collect();
-                                                let visual_rows = crate::markdown::build_visual_rows(&lines, this.word_wrap, this.last_wrap_cols);
-                                                let v_count = visual_rows.len();
-                                                this.editor_top_y = Some(click_y - (v_count as f32) * 24.0);
-
                                                 let end_offset = n.content.len();
                                                 if event.modifiers.shift {
                                                     if n.selection_anchor.is_none() {
@@ -2031,7 +2046,8 @@ impl Render for AppView {
                                             } else if this.is_mouse_selecting {
                                                 let x: f32 = event.position.x.into();
                                                 let y: f32 = event.position.y.into();
-                                                this.update_mouse_selection(x, y, cx);
+                                                let viewport_h: f32 = window.viewport_size().height.into();
+                                                this.update_mouse_selection(x, y, viewport_h, cx);
                                             }
                                         }))
                                         .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
@@ -2145,8 +2161,6 @@ impl Render for AppView {
                                                                     }
                                                                     this.is_mouse_selecting = true;
                                                                     let click_x: f32 = event.position.x.into();
-                                                                    let click_y: f32 = event.position.y.into();
-                                                                    this.editor_top_y = Some(click_y - (v_idx as f32) * 24.0);
 
                                                                     let col_in_row = if click_x > text_start_x {
                                                                         let raw_col = ((click_x - text_start_x) / line_char_width).round() as usize;
