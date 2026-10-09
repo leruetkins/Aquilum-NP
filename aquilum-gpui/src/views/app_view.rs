@@ -14,6 +14,7 @@ pub struct AppView {
     pub search_focus_handle: FocusHandle,
     pub edit_mode: bool,
     pub is_mouse_selecting: bool,
+    pub editor_top_y: Option<f32>,
 }
 
 impl AppView {
@@ -25,6 +26,7 @@ impl AppView {
             search_focus_handle: cx.focus_handle(),
             edit_mode: true,
             is_mouse_selecting: false,
+            editor_top_y: None,
         }
     }
 
@@ -61,6 +63,53 @@ impl AppView {
 
     fn save_note(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.state.save_active_note();
+        cx.notify();
+    }
+
+    fn update_mouse_selection(&mut self, pos_x: f32, pos_y: f32, cx: &mut Context<Self>) {
+        if !self.is_mouse_selecting {
+            return;
+        }
+        let Some(ref mut note) = self.state.active_note else {
+            return;
+        };
+
+        let lines: Vec<&str> = note.content.split('\n').collect();
+        if lines.is_empty() {
+            return;
+        }
+
+        let font_id = cx.text_system().resolve_font(&gpui::font("Consolas"));
+        let line_char_width = cx
+            .text_system()
+            .advance(font_id, px(14.0), 'x')
+            .map(|s| f32::from(s.width))
+            .unwrap_or(8.42);
+        let text_start_x = 341.0;
+        let line_h = 24.0;
+
+        let target_line = if let Some(top_y) = self.editor_top_y {
+            if pos_y < top_y {
+                0
+            } else {
+                let idx = ((pos_y - top_y) / line_h).floor() as usize;
+                idx.min(lines.len().saturating_sub(1))
+            }
+        } else {
+            0
+        };
+
+        let line_text = lines.get(target_line).copied().unwrap_or("");
+        let char_count = line_text.chars().count();
+
+        let col = if pos_x > text_start_x {
+            (((pos_x - text_start_x) / line_char_width).round() as usize).min(char_count)
+        } else {
+            0
+        };
+
+        let offset = note.offset_for_line_col(target_line, col);
+        note.cursor_offset = offset;
         cx.notify();
     }
 
@@ -370,6 +419,26 @@ impl Render for AppView {
             .size_full()
             .bg(theme.bg_app)
             .text_color(theme.text_primary)
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if this.is_mouse_selecting {
+                    let x: f32 = event.position.x.into();
+                    let y: f32 = event.position.y.into();
+                    this.update_mouse_selection(x, y, cx);
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                this.is_mouse_selecting = false;
+                if let Some(ref mut n) = this.state.active_note {
+                    if n.selection_anchor == Some(n.cursor_offset) {
+                        n.selection_anchor = None;
+                    }
+                }
+                cx.notify();
+            }))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                this.is_mouse_selecting = false;
+                cx.notify();
+            }))
             // ================= HEADER =================
             .child(
                 div()
@@ -802,9 +871,25 @@ impl Render for AppView {
                                         .overflow_scroll()
                                         .px_8()
                                         .py_6()
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
                                             window.focus(&this.focus_handle);
+                                            this.is_mouse_selecting = true;
+                                            let x: f32 = event.position.x.into();
+                                            let y: f32 = event.position.y.into();
+                                            this.update_mouse_selection(x, y, cx);
+                                            if let Some(ref mut n) = this.state.active_note {
+                                                if !event.modifiers.shift {
+                                                    n.selection_anchor = Some(n.cursor_offset);
+                                                }
+                                            }
                                             cx.notify();
+                                        }))
+                                        .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                                            if this.is_mouse_selecting {
+                                                let x: f32 = event.position.x.into();
+                                                let y: f32 = event.position.y.into();
+                                                this.update_mouse_selection(x, y, cx);
+                                            }
                                         }))
                                         .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                             this.is_mouse_selecting = false;
@@ -863,7 +948,52 @@ impl Render for AppView {
                                                     .px_2()
                                                     .rounded_sm()
                                                     .when(is_current, |s| s.bg(theme.bg_hover))
-                                                    // Номер строки (клик по нему ставит курсор в начало строки)
+                                                    // Обработка начала выделения / клика мыши на всей строке
+                                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                                        this.is_mouse_selecting = true;
+                                                        let click_x: f32 = event.position.x.into();
+                                                        let click_y: f32 = event.position.y.into();
+                                                        this.editor_top_y = Some(click_y - (line_idx as f32) * 24.0);
+
+                                                        let col = if click_x > text_start_x {
+                                                            (((click_x - text_start_x) / line_char_width).round() as usize).min(char_count)
+                                                        } else {
+                                                            0
+                                                        };
+                                                        if let Some(ref mut n) = this.state.active_note {
+                                                            let offset = n.offset_for_line_col(line_idx, col);
+                                                            if event.modifiers.shift {
+                                                                if n.selection_anchor.is_none() {
+                                                                    n.selection_anchor = Some(n.cursor_offset);
+                                                                }
+                                                            } else {
+                                                                n.selection_anchor = Some(offset);
+                                                            }
+                                                            n.cursor_offset = offset;
+                                                        }
+                                                        window.focus(&this.focus_handle);
+                                                        cx.notify();
+                                                    }))
+                                                    // Обработка протягивания мыши (Drag to Select) на всей строке (включая номера строк)
+                                                    .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                                                        if this.is_mouse_selecting {
+                                                            let click_x: f32 = event.position.x.into();
+                                                            let click_y: f32 = event.position.y.into();
+                                                            this.editor_top_y = Some(click_y - (line_idx as f32) * 24.0);
+
+                                                            let col = if click_x > text_start_x {
+                                                                (((click_x - text_start_x) / line_char_width).round() as usize).min(char_count)
+                                                            } else {
+                                                                0
+                                                            };
+                                                            if let Some(ref mut n) = this.state.active_note {
+                                                                let offset = n.offset_for_line_col(line_idx, col);
+                                                                n.cursor_offset = offset;
+                                                                cx.notify();
+                                                            }
+                                                        }
+                                                    }))
+                                                    // Номер строки
                                                     .child(
                                                         div()
                                                             .id(gpui::ElementId::from(("line-num", line_idx)))
@@ -875,16 +1005,9 @@ impl Render for AppView {
                                                             .text_color(if is_current { theme.accent } else { theme.text_muted })
                                                             .font_family("Consolas")
                                                             .cursor_pointer()
-                                                            .child(format!("{:>3} ", line_number))
-                                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                                if let Some(ref mut n) = this.state.active_note {
-                                                                    n.set_cursor_to_line_start(line_idx);
-                                                                }
-                                                                window.focus(&this.focus_handle);
-                                                                cx.notify();
-                                                            })),
+                                                            .child(format!("{:>3} ", line_number)),
                                                     )
-                                                    // Текст строки с попиксельным позиционированием клика мыши и drag-to-select
+                                                    // Текст строки
                                                     .child(
                                                         div()
                                                             .id(gpui::ElementId::from(("line-content", line_idx)))
@@ -901,45 +1024,6 @@ impl Render for AppView {
                                                             .when(is_opening_fence, |s| s.bg(theme.bg_card).rounded_t_sm())
                                                             .when(is_closing_fence, |s| s.bg(theme.bg_card).rounded_b_sm())
                                                             .when(is_code_line, |s| s.bg(theme.code_bg))
-                                                            // Обработка начала выделения / клика мыши
-                                                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                                                this.is_mouse_selecting = true;
-                                                                let click_x: f32 = event.position.x.into();
-                                                                let col = if click_x > text_start_x {
-                                                                    (((click_x - text_start_x) / line_char_width).round() as usize).min(char_count)
-                                                                } else {
-                                                                    0
-                                                                };
-                                                                if let Some(ref mut n) = this.state.active_note {
-                                                                    let offset = n.offset_for_line_col(line_idx, col);
-                                                                    if event.modifiers.shift {
-                                                                        if n.selection_anchor.is_none() {
-                                                                            n.selection_anchor = Some(n.cursor_offset);
-                                                                        }
-                                                                    } else {
-                                                                        n.selection_anchor = Some(offset);
-                                                                    }
-                                                                    n.cursor_offset = offset;
-                                                                }
-                                                                window.focus(&this.focus_handle);
-                                                                cx.notify();
-                                                            }))
-                                                            // Обработка протягивания мыши (Drag to Select)
-                                                            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                                                                if this.is_mouse_selecting {
-                                                                    let click_x: f32 = event.position.x.into();
-                                                                    let col = if click_x > text_start_x {
-                                                                        (((click_x - text_start_x) / line_char_width).round() as usize).min(char_count)
-                                                                    } else {
-                                                                        0
-                                                                    };
-                                                                    if let Some(ref mut n) = this.state.active_note {
-                                                                        let offset = n.offset_for_line_col(line_idx, col);
-                                                                        n.cursor_offset = offset;
-                                                                        cx.notify();
-                                                                    }
-                                                                }
-                                                            }))
                                                             // 1. Фоновый слой выделения (не ломает верстку строки)
                                                             .when_some(line_sel_chars, |s, (sel_s, sel_e)| {
                                                                 let sel_x = (sel_s as f32) * line_char_width;
