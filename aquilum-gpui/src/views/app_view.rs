@@ -1,9 +1,9 @@
-use crate::state::AppState;
+use crate::icons;
+use crate::state::{AppState, FileNode};
 use crate::theme::Theme;
-use aquilum_core::files::models::FileItemType;
 use gpui::{
-    div, prelude::*, px, rgba, ClipboardItem, Context, FocusHandle, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, Render, Window,
+    div, prelude::*, px, rgba, AnyElement, ClipboardItem, Context, FocusHandle, IntoElement,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Render, SharedString, Window,
 };
 use std::path::PathBuf;
 
@@ -11,6 +11,7 @@ pub struct AppView {
     pub state: AppState,
     pub theme: Theme,
     pub focus_handle: FocusHandle,
+    pub search_focus_handle: FocusHandle,
     pub edit_mode: bool,
     pub is_mouse_selecting: bool,
 }
@@ -21,6 +22,7 @@ impl AppView {
             state: AppState::new(),
             theme: Theme::default(),
             focus_handle: cx.focus_handle(),
+            search_focus_handle: cx.focus_handle(),
             edit_mode: true,
             is_mouse_selecting: false,
         }
@@ -33,14 +35,27 @@ impl AppView {
         }
     }
 
+    fn create_new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
+            self.state.save_active_note();
+        }
+        if let Some(_) = self.state.create_new_note() {
+            window.focus(&self.focus_handle);
+            cx.notify();
+        }
+    }
+
     fn select_note(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
+            self.state.save_active_note();
+        }
         self.state.open_note(path);
         window.focus(&self.focus_handle);
         cx.notify();
     }
 
     fn reload_files(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.state.reload_files();
+        self.state.reload_file_tree();
         cx.notify();
     }
 
@@ -49,20 +64,208 @@ impl AppView {
         cx.notify();
     }
 
+    fn handle_search_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = &event.keystroke.key;
+        if key == "backspace" {
+            self.state.search_query.pop();
+            cx.notify();
+        } else if key == "escape" {
+            self.state.search_query.clear();
+            window.focus(&self.focus_handle);
+            cx.notify();
+        } else if key == "enter" {
+            if let Some(first_match) = self.first_matching_file(&self.state.file_tree) {
+                self.select_note(first_match, window, cx);
+            }
+        } else if event.keystroke.modifiers.control {
+            if key.eq_ignore_ascii_case("s") || key == "ы" || key == "Ы" {
+                self.save_note(window, cx);
+            } else if key.eq_ignore_ascii_case("o") || key == "щ" || key == "Щ" {
+                self.open_folder_dialog(window, cx);
+            } else if key.eq_ignore_ascii_case("n") || key == "т" || key == "Т" {
+                self.create_new_note(window, cx);
+            }
+        } else {
+            if let Some(ch) = &event.keystroke.key_char {
+                self.state.search_query.push_str(ch);
+                cx.notify();
+            } else if key.chars().count() == 1 {
+                self.state.search_query.push_str(key);
+                cx.notify();
+            }
+        }
+    }
+
+    fn first_matching_file(&self, nodes: &[FileNode]) -> Option<PathBuf> {
+        for node in nodes {
+            match node {
+                FileNode::File { name, path } => {
+                    if self.state.search_query.is_empty()
+                        || name.to_lowercase().contains(&self.state.search_query.to_lowercase())
+                    {
+                        return Some(path.clone());
+                    }
+                }
+                FileNode::Folder { children, .. } => {
+                    if let Some(p) = self.first_matching_file(children) {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn render_tree_nodes(
+        &self,
+        nodes: &[FileNode],
+        depth: usize,
+        active_path: Option<&PathBuf>,
+        theme: &Theme,
+        acc: &mut Vec<AnyElement>,
+        cx: &Context<Self>,
+    ) {
+        for node in nodes {
+            match node {
+                FileNode::Folder {
+                    name,
+                    path,
+                    children,
+                } => {
+                    let is_expanded = self.state.expanded_folders.contains(path);
+                    let chevron = if is_expanded {
+                        icons::icon(icons::ICON_CHEVRON_DOWN, 12.0, theme.text_muted)
+                    } else {
+                        icons::icon(icons::ICON_CHEVRON_RIGHT, 12.0, theme.text_muted)
+                    };
+                    let folder_svg = if is_expanded {
+                        icons::icon(icons::ICON_FOLDER_OPEN, 14.0, theme.accent)
+                    } else {
+                        icons::icon(icons::ICON_FOLDER, 14.0, theme.accent)
+                    };
+                    let indent = (depth * 14) as f32 + 4.0;
+                    let folder_path = path.clone();
+
+                    let folder_row = div()
+                        .id(SharedString::from(format!("fld-{}", folder_path.to_string_lossy())))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1p5()
+                        .pl(px(indent))
+                        .pr_2()
+                        .py_1()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|h| h.bg(theme.bg_hover))
+                        .child(chevron)
+                        .child(folder_svg)
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.text_primary)
+                                .truncate()
+                                .child(name.clone()),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.state.toggle_folder(folder_path.clone());
+                            cx.notify();
+                        }));
+
+                    acc.push(folder_row.into_any_element());
+
+                    if is_expanded {
+                        self.render_tree_nodes(children, depth + 1, active_path, theme, acc, cx);
+                    }
+                }
+                FileNode::File { name, path } => {
+                    if !self.state.search_query.is_empty()
+                        && !name.to_lowercase().contains(&self.state.search_query.to_lowercase())
+                    {
+                        continue;
+                    }
+
+                    let is_selected = active_path.map(|p| p == path).unwrap_or(false);
+                    let indent = (depth * 14 + 18) as f32 + 4.0;
+                    let file_path = path.clone();
+                    let display_name = name.strip_suffix(".md").unwrap_or(name).to_string();
+
+                    let file_svg = icons::icon(
+                        icons::ICON_FILE_TEXT,
+                        13.0,
+                        if is_selected { theme.accent } else { theme.text_muted },
+                    );
+
+                    let file_row = div()
+                        .id(SharedString::from(format!("fil-{}", file_path.to_string_lossy())))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1p5()
+                        .pl(px(indent))
+                        .pr_2()
+                        .py_1()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .when(is_selected, |s| {
+                            s.bg(theme.bg_selected)
+                                .text_color(theme.accent)
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                        })
+                        .when(!is_selected, |s| {
+                            s.hover(|h| h.bg(theme.bg_hover))
+                                .text_color(theme.text_primary)
+                        })
+                        .child(file_svg)
+                        .child(
+                            div()
+                                .text_xs()
+                                .truncate()
+                                .child(display_name),
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.select_note(file_path.clone(), window, cx);
+                        }));
+
+                    acc.push(file_row.into_any_element());
+                }
+            }
+        }
+    }
+
     fn handle_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         let ctrl = keystroke.modifiers.control;
         let shift = keystroke.modifiers.shift;
 
         // Ctrl + S (Сохранение)
-        if ctrl && keystroke.key.eq_ignore_ascii_case("s") {
+        if ctrl && (keystroke.key.eq_ignore_ascii_case("s") || keystroke.key == "ы" || keystroke.key == "Ы") {
             self.state.save_active_note();
             cx.notify();
             return;
         }
 
+        // Ctrl + O (Открыть хранилище)
+        if ctrl && (keystroke.key.eq_ignore_ascii_case("o") || keystroke.key == "щ" || keystroke.key == "Щ") {
+            self.open_folder_dialog(_window, cx);
+            return;
+        }
+
+        // Ctrl + N (Новая заметка)
+        if ctrl && (keystroke.key.eq_ignore_ascii_case("n") || keystroke.key == "т" || keystroke.key == "Т") {
+            self.create_new_note(_window, cx);
+            return;
+        }
+
+        // Ctrl + F (Поиск / фильтр)
+        if ctrl && (keystroke.key.eq_ignore_ascii_case("f") || keystroke.key == "а" || keystroke.key == "А") {
+            _window.focus(&self.search_focus_handle);
+            cx.notify();
+            return;
+        }
+
         // Ctrl + Z (Undo)
-        if ctrl && !shift && keystroke.key.eq_ignore_ascii_case("z") {
+        if ctrl && !shift && (keystroke.key.eq_ignore_ascii_case("z") || keystroke.key == "я" || keystroke.key == "Я") {
             if let Some(ref mut note) = self.state.active_note {
                 note.undo();
                 cx.notify();
@@ -71,8 +274,8 @@ impl AppView {
         }
 
         // Ctrl + Y или Ctrl + Shift + Z (Redo)
-        if (ctrl && keystroke.key.eq_ignore_ascii_case("y"))
-            || (ctrl && shift && keystroke.key.eq_ignore_ascii_case("z"))
+        if (ctrl && (keystroke.key.eq_ignore_ascii_case("y") || keystroke.key == "н" || keystroke.key == "Н"))
+            || (ctrl && shift && (keystroke.key.eq_ignore_ascii_case("z") || keystroke.key == "я" || keystroke.key == "Я"))
         {
             if let Some(ref mut note) = self.state.active_note {
                 note.redo();
@@ -82,7 +285,7 @@ impl AppView {
         }
 
         // Ctrl + A (Выделить всё)
-        if ctrl && keystroke.key.eq_ignore_ascii_case("a") {
+        if ctrl && (keystroke.key.eq_ignore_ascii_case("a") || keystroke.key == "ф" || keystroke.key == "Ф") {
             if let Some(ref mut note) = self.state.active_note {
                 note.select_all();
                 cx.notify();
@@ -91,7 +294,7 @@ impl AppView {
         }
 
         // Ctrl + C (Копировать)
-        if ctrl && keystroke.key.eq_ignore_ascii_case("c") {
+        if ctrl && (keystroke.key.eq_ignore_ascii_case("c") || keystroke.key == "с" || keystroke.key == "С") {
             if let Some(ref note) = self.state.active_note {
                 if let Some(text) = note.selected_text() {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -101,7 +304,7 @@ impl AppView {
         }
 
         // Ctrl + X (Вырезать)
-        if ctrl && keystroke.key.eq_ignore_ascii_case("x") {
+        if ctrl && (keystroke.key.eq_ignore_ascii_case("x") || keystroke.key == "ч" || keystroke.key == "Ч") {
             if let Some(ref mut note) = self.state.active_note {
                 if let Some(text) = note.selected_text() {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -113,7 +316,7 @@ impl AppView {
         }
 
         // Ctrl + V (Вставить)
-        if ctrl && keystroke.key.eq_ignore_ascii_case("v") {
+        if ctrl && (keystroke.key.eq_ignore_ascii_case("v") || keystroke.key == "м" || keystroke.key == "М") {
             if let Some(item) = cx.read_from_clipboard() {
                 if let Some(text) = item.text() {
                     if let Some(ref mut note) = self.state.active_note {
@@ -156,7 +359,7 @@ impl AppView {
 }
 
 impl Render for AppView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
         let active_path = self.state.active_note.as_ref().map(|n| n.path.clone());
         let is_editing = self.edit_mode;
@@ -218,10 +421,10 @@ impl Render for AppView {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap_1()
+                                    .gap_1p5()
                                     .text_sm()
                                     .text_color(theme.text_secondary)
-                                    .child("📁")
+                                    .child(icons::icon(icons::ICON_FOLDER, 14.0, theme.text_secondary))
                                     .child(self.state.workspace_name.clone()),
                             ),
                     )
@@ -234,6 +437,10 @@ impl Render for AppView {
                             .child(
                                 div()
                                     .id("btn-open-folder")
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_1p5()
                                     .px_3()
                                     .py_1()
                                     .bg(theme.bg_card)
@@ -243,7 +450,8 @@ impl Render for AppView {
                                     .rounded_md()
                                     .text_xs()
                                     .cursor_pointer()
-                                    .child("📂 Open Folder")
+                                    .child(icons::icon(icons::ICON_FOLDER_OPEN, 13.0, theme.text_primary))
+                                    .child("Open Folder")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.open_folder_dialog(window, cx);
                                     })),
@@ -251,6 +459,10 @@ impl Render for AppView {
                             .child(
                                 div()
                                     .id("btn-reload")
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_1p5()
                                     .px_2()
                                     .py_1()
                                     .bg(theme.bg_card)
@@ -260,13 +472,18 @@ impl Render for AppView {
                                     .rounded_md()
                                     .text_xs()
                                     .cursor_pointer()
-                                    .child("🔄 Reload")
+                                    .child(icons::icon(icons::ICON_REFRESH, 13.0, theme.text_primary))
+                                    .child("Reload")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.reload_files(window, cx);
                                     })),
                             )
                             .child(
                                 div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_1()
                                     .px_2()
                                     .py_1()
                                     .bg(theme.bg_card)
@@ -276,7 +493,8 @@ impl Render for AppView {
                                     .rounded_md()
                                     .text_xs()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child("⚡ 0 WebView • 120 FPS"),
+                                    .child(icons::icon(icons::ICON_BOLT, 12.0, theme.success))
+                                    .child("0 WebView • 120 FPS"),
                             ),
                     ),
             )
@@ -288,8 +506,20 @@ impl Render for AppView {
                     .flex_row()
                     .size_full()
                     .overflow_hidden()
-                    // ----- Сайдбар файлов -----
-                    .child(
+                    // ----- Сайдбар файлов (Дерево каталогов) -----
+                    .child({
+                        let mut tree_elements = Vec::new();
+                        self.render_tree_nodes(
+                            &self.state.file_tree,
+                            0,
+                            active_path.as_ref(),
+                            theme,
+                            &mut tree_elements,
+                            cx,
+                        );
+
+                        let is_search_focused = self.search_focus_handle.is_focused(window);
+
                         div()
                             .flex()
                             .flex_col()
@@ -298,72 +528,132 @@ impl Render for AppView {
                             .bg(theme.bg_sidebar)
                             .border_r_1()
                             .border_color(theme.border)
+                            .p_2()
+                            .gap_2()
+                            // Vault Header
                             .child(
                                 div()
-                                    .px_4()
-                                    .py_2()
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .text_color(theme.text_muted)
-                                    .child(format!("NOTES & FILES ({})", self.state.files.len())),
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    .px_2()
+                                    .py_1()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(icons::icon(icons::ICON_FOLDER, 15.0, theme.accent))
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                    .text_color(theme.text_primary)
+                                                    .truncate()
+                                                    .child(self.state.workspace_name.clone()),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .id("btn-new-note")
+                                                    .p_1()
+                                                    .rounded_md()
+                                                    .cursor_pointer()
+                                                    .hover(|h| h.bg(theme.bg_hover))
+                                                    .child(icons::icon(icons::ICON_PLUS, 13.0, theme.text_primary))
+                                                    .on_click(cx.listener(|this, _, window, cx| {
+                                                        this.create_new_note(window, cx);
+                                                    })),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("btn-open-vault")
+                                                    .p_1()
+                                                    .rounded_md()
+                                                    .cursor_pointer()
+                                                    .hover(|h| h.bg(theme.bg_hover))
+                                                    .child(icons::icon(icons::ICON_FOLDER_OPEN, 13.0, theme.text_primary))
+                                                    .on_click(cx.listener(|this, _, window, cx| {
+                                                        this.open_folder_dialog(window, cx);
+                                                    })),
+                                            ),
+                                    ),
                             )
+                            // Search Filter Bar
                             .child(
                                 div()
-                                    .id("sidebar-file-list")
+                                    .id("search-filter-box")
+                                    .track_focus(&self.search_focus_handle)
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_2()
+                                    .py_1p5()
+                                    .bg(theme.bg_card)
+                                    .border_1()
+                                    .border_color(if is_search_focused { theme.accent } else { theme.border })
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                        window.focus(&this.search_focus_handle);
+                                        cx.notify();
+                                    }))
+                                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                                        this.handle_search_key(event, window, cx);
+                                    }))
+                                    .child(icons::icon(icons::ICON_SEARCH, 12.0, theme.text_muted))
+                                    .child(
+                                        if self.state.search_query.is_empty() {
+                                            div()
+                                                .flex_1()
+                                                .text_xs()
+                                                .text_color(theme.text_muted)
+                                                .child("Quick filter...")
+                                        } else {
+                                            div()
+                                                .flex_1()
+                                                .text_xs()
+                                                .text_color(theme.text_primary)
+                                                .child(self.state.search_query.clone())
+                                        }
+                                    )
+                                    .when(!self.state.search_query.is_empty(), |s| {
+                                        s.child(
+                                            div()
+                                                .id("btn-clear-search")
+                                                .cursor_pointer()
+                                                .p_0p5()
+                                                .hover(|h| h.bg(theme.bg_hover))
+                                                .rounded_xs()
+                                                .child(icons::icon(icons::ICON_CLOSE, 10.0, theme.text_muted))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.state.search_query.clear();
+                                                    cx.notify();
+                                                }))
+                                        )
+                                    })
+                            )
+                            // Tree Scroll
+                            .child(
+                                div()
+                                    .id("sidebar-tree-scroll")
                                     .flex()
                                     .flex_col()
                                     .flex_1()
                                     .overflow_scroll()
-                                    .px_2()
                                     .gap_0p5()
-                                    .children(self.state.files.iter().map(|item| {
-                                        let item_path = PathBuf::from(&item.id);
-                                        let is_active = active_path
-                                            .as_ref()
-                                            .map(|p| p == &item_path)
-                                            .unwrap_or(false);
-
-                                        let icon = match item.item_type {
-                                            FileItemType::Folder => "📁 ",
-                                            FileItemType::File => "📝 ",
-                                        };
-
-                                        let target_path = item_path.clone();
-                                        let is_folder = item.item_type == FileItemType::Folder;
-
-                                        div()
-                                            .id(gpui::SharedString::from(item.id.clone()))
-                                            .flex()
-                                            .flex_row()
-                                            .items_center()
-                                            .px_2()
-                                            .py_1()
-                                            .rounded_md()
-                                            .text_sm()
-                                            .cursor_pointer()
-                                            .when(is_active, |s| {
-                                                s.bg(theme.bg_selected)
-                                                    .text_color(theme.accent)
-                                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                            })
-                                            .when(!is_active, |s| {
-                                                s.hover(|h| h.bg(theme.bg_hover))
-                                                    .text_color(if is_folder {
-                                                        theme.text_secondary
-                                                    } else {
-                                                        theme.text_primary
-                                                    })
-                                            })
-                                            .child(icon)
-                                            .child(item.name.clone())
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                if !is_folder {
-                                                    this.select_note(target_path.clone(), window, cx);
-                                                }
-                                            }))
-                                    })),
-                            ),
-                    )
+                                    .children(tree_elements)
+                            )
+                    })
                     // ----- Центральная область редактора -----
                     .child(
                         div()
@@ -453,6 +743,10 @@ impl Render for AppView {
                                                 .child(
                                                     div()
                                                         .id("btn-toggle-mode")
+                                                        .flex()
+                                                        .flex_row()
+                                                        .items_center()
+                                                        .gap_1p5()
                                                         .px_3()
                                                         .py_1()
                                                         .bg(if is_editing { theme.bg_selected } else { theme.bg_card })
@@ -462,7 +756,12 @@ impl Render for AppView {
                                                         .rounded_md()
                                                         .text_xs()
                                                         .cursor_pointer()
-                                                        .child(if is_editing { "✏️ Edit Mode" } else { "👁️ Preview Mode" })
+                                                        .child(if is_editing {
+                                                            icons::icon(icons::ICON_PENCIL, 12.0, theme.accent)
+                                                        } else {
+                                                            icons::icon(icons::ICON_EYE, 12.0, theme.text_secondary)
+                                                        })
+                                                        .child(if is_editing { "Edit Mode" } else { "Preview Mode" })
                                                         .on_click(cx.listener(|this, _, _, cx| {
                                                             this.edit_mode = !this.edit_mode;
                                                             cx.notify();
@@ -471,6 +770,10 @@ impl Render for AppView {
                                                 .child(
                                                     div()
                                                         .id("btn-save-note")
+                                                        .flex()
+                                                        .flex_row()
+                                                        .items_center()
+                                                        .gap_1p5()
                                                         .px_3()
                                                         .py_1()
                                                         .bg(theme.accent)
@@ -479,7 +782,8 @@ impl Render for AppView {
                                                         .rounded_md()
                                                         .text_xs()
                                                         .cursor_pointer()
-                                                        .child("💾 Save (Ctrl+S)")
+                                                        .child(icons::icon(icons::ICON_SAVE, 13.0, theme.bg_sidebar))
+                                                        .child("Save (Ctrl+S)")
                                                         .on_click(cx.listener(|this, _, window, cx| {
                                                             this.save_note(window, cx);
                                                         })),
@@ -999,10 +1303,7 @@ fn render_live_styled_line(
                             )
                     )
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.text_muted)
-                            .child("‹/›")
+                        icons::icon(icons::ICON_CODE, 12.0, theme.text_muted)
                     )
             } else {
                 div()

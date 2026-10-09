@@ -1,9 +1,32 @@
 use aquilum_core::app_core::{Core, CoreEvent, EventSink};
-use aquilum_core::files::models::{FileItem, FileItemType};
+use aquilum_core::files::models::FileItem;
 use aquilum_core::files::workspace::read_directory_impl;
+use std::collections::HashSet;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+#[derive(Debug, Clone)]
+pub enum FileNode {
+    Folder {
+        name: String,
+        path: PathBuf,
+        children: Vec<FileNode>,
+    },
+    File {
+        name: String,
+        path: PathBuf,
+    },
+}
+
+impl FileNode {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Folder { name, .. } => name,
+            Self::File { name, .. } => name,
+        }
+    }
+}
 
 pub struct OpenedNote {
     pub path: PathBuf,
@@ -351,6 +374,9 @@ pub struct AppState {
     pub core: Arc<Core>,
     pub workspace_path: Option<PathBuf>,
     pub workspace_name: String,
+    pub file_tree: Vec<FileNode>,
+    pub expanded_folders: HashSet<PathBuf>,
+    pub search_query: String,
     pub files: Vec<FileItem>,
     pub active_note: Option<OpenedNote>,
     pub status_text: String,
@@ -380,6 +406,9 @@ impl AppState {
             core,
             workspace_path: None,
             workspace_name: "No Workspace".to_owned(),
+            file_tree: Vec::new(),
+            expanded_folders: HashSet::new(),
+            search_query: String::new(),
             files: Vec::new(),
             active_note: None,
             status_text: "GPUI Ready • 0 WebView Processes".to_owned(),
@@ -414,15 +443,112 @@ impl AppState {
 
         self.workspace_name = name;
         self.workspace_path = Some(path.clone());
-        self.reload_files();
+        self.expanded_folders.insert(path.clone());
+        self.reload_file_tree();
         self.status_text = format!("Workspace: {}", self.workspace_name);
 
         if self.active_note.is_none() {
-            if let Some(first_md) = self.files.iter().find(|f| f.item_type == FileItemType::File) {
-                let note_path = PathBuf::from(&first_md.id);
-                self.open_note(note_path);
+            if let Some(first_file) = Self::first_file_in_tree(&self.file_tree) {
+                self.open_note(first_file);
             }
         }
+    }
+
+    pub fn build_tree(dir: &Path) -> Vec<FileNode> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+
+        let mut folders = Vec::new();
+        let mut files = Vec::new();
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+
+            if name.starts_with('.') || name == "node_modules" || name == "target" || name == ".git" {
+                continue;
+            }
+
+            if path.is_dir() {
+                let children = Self::build_tree(&path);
+                folders.push(FileNode::Folder {
+                    name,
+                    path,
+                    children,
+                });
+            } else if path.is_file() {
+                if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                    if ext.eq_ignore_ascii_case("md")
+                        || ext.eq_ignore_ascii_case("markdown")
+                        || ext.eq_ignore_ascii_case("txt")
+                    {
+                        files.push(FileNode::File { name, path });
+                    }
+                }
+            }
+        }
+
+        folders.sort_by(|a, b| a.name().to_lowercase().cmp(&b.name().to_lowercase()));
+        files.sort_by(|a, b| a.name().to_lowercase().cmp(&b.name().to_lowercase()));
+
+        let mut all = folders;
+        all.extend(files);
+        all
+    }
+
+    pub fn first_file_in_tree(nodes: &[FileNode]) -> Option<PathBuf> {
+        for node in nodes {
+            match node {
+                FileNode::File { path, .. } => return Some(path.clone()),
+                FileNode::Folder { children, .. } => {
+                    if let Some(p) = Self::first_file_in_tree(children) {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn reload_file_tree(&mut self) {
+        let Some(ws) = &self.workspace_path else {
+            self.file_tree.clear();
+            return;
+        };
+        self.file_tree = Self::build_tree(ws);
+        self.reload_files();
+        self.status_text = format!("Vault: {}", self.workspace_name);
+    }
+
+    pub fn toggle_folder(&mut self, path: PathBuf) {
+        if self.expanded_folders.contains(&path) {
+            self.expanded_folders.remove(&path);
+        } else {
+            self.expanded_folders.insert(path);
+        }
+    }
+
+    pub fn create_new_note(&mut self) -> Option<PathBuf> {
+        let ws = self.workspace_path.clone()?;
+        let mut i = 1;
+        let mut new_path;
+        loop {
+            let name = format!("Untitled {}.md", i);
+            new_path = ws.join(&name);
+            if !new_path.exists() {
+                break;
+            }
+            i += 1;
+        }
+        let default_text = format!(
+            "# {}\n\nStart writing here...",
+            new_path.file_stem().unwrap().to_string_lossy()
+        );
+        let _ = std::fs::write(&new_path, &default_text);
+        self.reload_file_tree();
+        self.open_note(new_path.clone());
+        Some(new_path)
     }
 
     pub fn reload_files(&mut self) {
