@@ -2,7 +2,7 @@ use crate::icons;
 use crate::state::{AppState, FileNode};
 use crate::theme::Theme;
 use gpui::{
-    div, prelude::*, px, rgb, rgba, AnyElement, ClipboardItem, Context, FocusHandle, IntoElement,
+    div, prelude::*, px, rgb, rgba, AnyElement, ClipboardItem, Context, Div, FocusHandle, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Render, SharedString, Window,
     WindowControlArea,
 };
@@ -240,6 +240,26 @@ impl AppView {
         }
         self.state.close_tab(path);
         cx.notify();
+    }
+
+    fn navigate_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
+            self.state.save_active_note();
+        }
+        if let Some(_) = self.state.navigate_back() {
+            window.focus(&self.focus_handle);
+            cx.notify();
+        }
+    }
+
+    fn navigate_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
+            self.state.save_active_note();
+        }
+        if let Some(_) = self.state.navigate_forward() {
+            window.focus(&self.focus_handle);
+            cx.notify();
+        }
     }
 
     fn reload_files(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -482,7 +502,20 @@ impl AppView {
     fn handle_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         let ctrl = keystroke.modifiers.control;
+        let alt = keystroke.modifiers.alt;
         let shift = keystroke.modifiers.shift;
+
+        // Alt + Left (Navigate Back in note history)
+        if alt && keystroke.key == "left" {
+            self.navigate_back(_window, cx);
+            return;
+        }
+
+        // Alt + Right (Navigate Forward in note history)
+        if alt && keystroke.key == "right" {
+            self.navigate_forward(_window, cx);
+            return;
+        }
 
         // Escape closes settings modal if open
         if keystroke.key == "escape" && self.is_settings_open {
@@ -636,6 +669,226 @@ impl AppView {
             }
         }
         cx.notify();
+    }
+
+    fn render_navigation_bar(&self, theme: &Theme, cx: &Context<Self>) -> gpui::Stateful<Div> {
+        let can_go_back = self.state.can_navigate_back();
+        let can_go_forward = self.state.can_navigate_forward();
+        let breadcrumbs = self.state.note_breadcrumbs();
+        let is_dirty = self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false);
+        let is_editing = self.edit_mode;
+
+        div()
+            .id("editor-navigation-bar")
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .w_full()
+            .h(px(34.0))
+            .min_w_0()
+            .overflow_hidden()
+            .px_3()
+            .border_b_1()
+            .border_color(theme.border)
+            .bg(theme.bg_editor)
+            // Left: Back/Forward buttons + Breadcrumbs
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    // Back button
+                    .child(
+                        div()
+                            .id("btn-nav-back")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(24.0))
+                            .h(px(24.0))
+                            .rounded_sm()
+                            .when(can_go_back, |d| {
+                                d.cursor_pointer()
+                                    .hover(|h| h.bg(theme.bg_hover))
+                                    .child(icons::icon(icons::ICON_ARROW_LEFT, 13.0, theme.text_secondary))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.navigate_back(window, cx);
+                                    }))
+                            })
+                            .when(!can_go_back, |d| {
+                                d.cursor_default()
+                                    .child(icons::icon(icons::ICON_ARROW_LEFT, 13.0, theme.border))
+                            }),
+                    )
+                    // Forward button
+                    .child(
+                        div()
+                            .id("btn-nav-forward")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(24.0))
+                            .h(px(24.0))
+                            .rounded_sm()
+                            .when(can_go_forward, |d| {
+                                d.cursor_pointer()
+                                    .hover(|h| h.bg(theme.bg_hover))
+                                    .child(icons::icon(icons::ICON_ARROW_RIGHT, 13.0, theme.text_secondary))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.navigate_forward(window, cx);
+                                    }))
+                            })
+                            .when(!can_go_forward, |d| {
+                                d.cursor_default()
+                                    .child(icons::icon(icons::ICON_ARROW_RIGHT, 13.0, theme.border))
+                            }),
+                    )
+                    // Spacer between arrows and breadcrumbs
+                    .child(div().w(px(8.0)))
+                    // Breadcrumbs trail
+                    .child({
+                        let mut crumbs_bar = div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .min_w_0()
+                            .overflow_hidden();
+
+                        let count = breadcrumbs.len();
+                        for (idx, part) in breadcrumbs.iter().enumerate() {
+                            if idx > 0 {
+                                crumbs_bar = crumbs_bar.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.text_muted)
+                                        .px_1p5()
+                                        .flex_shrink_0()
+                                        .child("/"),
+                                );
+                            }
+                            let is_last = idx == count.saturating_sub(1);
+                            crumbs_bar = crumbs_bar.child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(if is_last {
+                                        gpui::FontWeight::SEMIBOLD
+                                    } else {
+                                        gpui::FontWeight::NORMAL
+                                    })
+                                    .text_color(if is_last {
+                                        theme.text_primary
+                                    } else {
+                                        theme.text_muted
+                                    })
+                                    .truncate()
+                                    .hover(|h| {
+                                        if !is_last {
+                                            h.text_color(theme.text_secondary)
+                                        } else {
+                                            h
+                                        }
+                                    })
+                                    .child(part.clone()),
+                            );
+                        }
+
+                        if is_dirty {
+                            crumbs_bar = crumbs_bar.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.accent)
+                                    .ml_1p5()
+                                    .child("●"),
+                            );
+                        }
+
+                        crumbs_bar
+                    }),
+            )
+            // Right: Info and Obsidian-style action buttons
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .flex_shrink_0()
+                    .when_some(self.state.active_note.as_ref(), |r, note| {
+                        let words: usize = note.content.split_whitespace().count();
+                        let chars = note.content.chars().count();
+                        r.child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.text_muted)
+                                .mr_2()
+                                .child(format!("{}w • {}c", words, chars)),
+                        )
+                    })
+                    // Toggle wrap
+                    .child(
+                        div()
+                            .id("btn-toggle-wrap")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(24.0))
+                            .h(px(24.0))
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .hover(|h| h.bg(theme.bg_hover))
+                            .child(icons::icon(
+                                icons::ICON_CODE,
+                                12.0,
+                                if self.word_wrap { theme.accent } else { theme.text_muted },
+                            ))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.toggle_word_wrap(cx);
+                            })),
+                    )
+                    // Toggle reader / edit view
+                    .child(
+                        div()
+                            .id("btn-toggle-reading-mode")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(24.0))
+                            .h(px(24.0))
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .hover(|h| h.bg(theme.bg_hover))
+                            .child(icons::icon(
+                                icons::ICON_BOOK_OPEN,
+                                13.0,
+                                if !is_editing { theme.accent } else { theme.text_muted },
+                            ))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.edit_mode = !this.edit_mode;
+                                cx.notify();
+                            })),
+                    )
+                    // More options (3 vertical dots - saves active note)
+                    .child(
+                        div()
+                            .id("btn-more-options")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(24.0))
+                            .h(px(24.0))
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .hover(|h| h.bg(theme.bg_hover))
+                            .child(icons::icon(icons::ICON_MORE_VERTICAL, 13.0, theme.text_muted))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.save_note(window, cx);
+                            })),
+                    ),
+            )
     }
 }
 
@@ -1479,12 +1732,11 @@ impl Render for AppView {
                             .h_full()
                             .overflow_hidden()
                             .bg(theme.bg_editor)
+                            // Панель навигации (Obsidian-style) сразу под вкладками
+                            .child(self.render_navigation_bar(theme, cx))
                             .when_some(self.state.active_note.as_ref(), |this, note| {
                                 let lines: Vec<&str> = note.content.split('\n').collect();
                                 let (cursor_line, cursor_col) = note.line_col();
-                                let words: usize = note.content.split_whitespace().count();
-                                let chars = note.content.chars().count();
-                                let is_dirty = note.is_dirty;
                                 let selection_range = note.selection_range();
 
                                 // Вычисляем смещения начала каждой строки
@@ -1509,131 +1761,6 @@ impl Render for AppView {
                                 let text_start_x = current_sidebar_w + 4.0 + 32.0 + 8.0 + 40.0;
 
                                 this.child(
-                                    // Верхняя панель открытой заметки
-                                    div()
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .justify_between()
-                                        .w_full()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .px_8()
-                                        .py_3()
-                                        .border_b_1()
-                                        .border_color(theme.border_subtle)
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_row()
-                                                .items_center()
-                                                .gap_2()
-                                                .min_w_0()
-                                                .overflow_hidden()
-                                                .child(
-                                                    div()
-                                                        .text_2xl()
-                                                        .font_weight(gpui::FontWeight::BOLD)
-                                                        .text_color(theme.text_primary)
-                                                        .truncate()
-                                                        .child(note.title.clone()),
-                                                )
-                                                .when(is_dirty, |s| {
-                                                    s.child(
-                                                        div()
-                                                            .text_sm()
-                                                            .text_color(theme.accent)
-                                                            .flex_shrink_0()
-                                                            .child("● unsaved"),
-                                                    )
-                                                }),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_row()
-                                                .items_center()
-                                                .gap_2()
-                                                .flex_shrink_0()
-                                                .child(
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(theme.text_muted)
-                                                        .child(format!("{}w • {}c", words, chars)),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .id("btn-toggle-mode")
-                                                        .flex()
-                                                        .flex_row()
-                                                        .items_center()
-                                                        .gap_1p5()
-                                                        .px_2p5()
-                                                        .py_1()
-                                                        .bg(if is_editing { theme.bg_selected } else { theme.bg_card })
-                                                        .hover(|s| s.bg(theme.bg_hover))
-                                                        .border_1()
-                                                        .border_color(theme.border)
-                                                        .rounded_md()
-                                                        .text_xs()
-                                                        .cursor_pointer()
-                                                        .child(if is_editing {
-                                                            icons::icon(icons::ICON_PENCIL, 12.0, theme.accent)
-                                                        } else {
-                                                            icons::icon(icons::ICON_EYE, 12.0, theme.text_secondary)
-                                                        })
-                                                        .child(if is_editing { "Edit" } else { "Preview" })
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            this.edit_mode = !this.edit_mode;
-                                                            cx.notify();
-                                                        })),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .id("btn-toggle-wrap")
-                                                        .flex()
-                                                        .flex_row()
-                                                        .items_center()
-                                                        .gap_1p5()
-                                                        .px_2p5()
-                                                        .py_1()
-                                                        .bg(if self.word_wrap { theme.bg_selected } else { theme.bg_card })
-                                                        .hover(|s| s.bg(theme.bg_hover))
-                                                        .border_1()
-                                                        .border_color(theme.border)
-                                                        .rounded_md()
-                                                        .text_xs()
-                                                        .cursor_pointer()
-                                                        .child(icons::icon(icons::ICON_CODE, 12.0, if self.word_wrap { theme.accent } else { theme.text_secondary }))
-                                                        .child(if self.word_wrap { "Wrap: On" } else { "Wrap: Off" })
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            this.toggle_word_wrap(cx);
-                                                        })),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .id("btn-save-note")
-                                                        .flex()
-                                                        .flex_row()
-                                                        .items_center()
-                                                        .gap_1p5()
-                                                        .px_2p5()
-                                                        .py_1()
-                                                        .bg(theme.accent)
-                                                        .text_color(theme.bg_sidebar)
-                                                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                        .rounded_md()
-                                                        .text_xs()
-                                                        .cursor_pointer()
-                                                        .child(icons::icon(icons::ICON_SAVE, 13.0, theme.bg_sidebar))
-                                                        .child("Save")
-                                                        .on_click(cx.listener(|this, _, window, cx| {
-                                                            this.save_note(window, cx);
-                                                        })),
-                                                ),
-                                        ),
-                                )
-                                .child(
                                     // Область редактора
                                     div()
                                         .id("note-editor-container")

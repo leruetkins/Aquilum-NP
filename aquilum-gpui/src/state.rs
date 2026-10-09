@@ -380,6 +380,8 @@ pub struct AppState {
     pub files: Vec<FileItem>,
     pub active_note: Option<OpenedNote>,
     pub open_tabs: Vec<PathBuf>,
+    pub nav_history: Vec<PathBuf>,
+    pub nav_history_index: usize,
     pub status_text: String,
 }
 
@@ -413,6 +415,8 @@ impl AppState {
             files: Vec::new(),
             active_note: None,
             open_tabs: Vec::new(),
+            nav_history: Vec::new(),
+            nav_history_index: 0,
             status_text: "GPUI Ready • 0 WebView Processes".to_owned(),
         };
 
@@ -428,6 +432,8 @@ impl AppState {
         if state.active_note.is_none() {
             let welcome_path = PathBuf::from("Welcome.md");
             state.open_tabs.push(welcome_path.clone());
+            state.nav_history.push(welcome_path.clone());
+            state.nav_history_index = 0;
             state.active_note = Some(OpenedNote::new(
                 welcome_path,
                 "Welcome to Aquilum".to_owned(),
@@ -589,7 +595,86 @@ impl AppState {
         }
     }
 
+    pub fn push_nav_history(&mut self, path: PathBuf) {
+        if let Some(current) = self.nav_history.get(self.nav_history_index) {
+            if current == &path {
+                return;
+            }
+        }
+        if !self.nav_history.is_empty() && self.nav_history_index + 1 < self.nav_history.len() {
+            self.nav_history.truncate(self.nav_history_index + 1);
+        }
+        self.nav_history.push(path);
+        if self.nav_history.len() > 100 {
+            self.nav_history.remove(0);
+        }
+        self.nav_history_index = self.nav_history.len().saturating_sub(1);
+    }
+
+    pub fn can_navigate_back(&self) -> bool {
+        self.nav_history_index > 0 && !self.nav_history.is_empty()
+    }
+
+    pub fn can_navigate_forward(&self) -> bool {
+        !self.nav_history.is_empty() && self.nav_history_index + 1 < self.nav_history.len()
+    }
+
+    pub fn navigate_back(&mut self) -> Option<PathBuf> {
+        if self.can_navigate_back() {
+            self.nav_history_index -= 1;
+            let target = self.nav_history[self.nav_history_index].clone();
+            self.open_note_internal(target.clone());
+            Some(target)
+        } else {
+            None
+        }
+    }
+
+    pub fn navigate_forward(&mut self) -> Option<PathBuf> {
+        if self.can_navigate_forward() {
+            self.nav_history_index += 1;
+            let target = self.nav_history[self.nav_history_index].clone();
+            self.open_note_internal(target.clone());
+            Some(target)
+        } else {
+            None
+        }
+    }
+
+    pub fn note_breadcrumbs(&self) -> Vec<String> {
+        let Some(ref note) = self.active_note else {
+            return Vec::new();
+        };
+        if let Some(ref ws) = self.workspace_path {
+            if let Ok(rel) = note.path.strip_prefix(ws) {
+                let mut parts = Vec::new();
+                for comp in rel.components() {
+                    let comp_str = comp.as_os_str().to_string_lossy().to_string();
+                    if !comp_str.is_empty() {
+                        parts.push(comp_str);
+                    }
+                }
+                if let Some(last) = parts.last_mut() {
+                    if let Some(stripped) = last.strip_suffix(".md") {
+                        *last = stripped.to_string();
+                    } else if let Some(stripped) = last.strip_suffix(".markdown") {
+                        *last = stripped.to_string();
+                    }
+                }
+                if !parts.is_empty() {
+                    return parts;
+                }
+            }
+        }
+        vec![note.title.clone()]
+    }
+
     pub fn open_note(&mut self, path: PathBuf) {
+        self.push_nav_history(path.clone());
+        self.open_note_internal(path);
+    }
+
+    pub fn open_note_internal(&mut self, path: PathBuf) {
         if !self.open_tabs.iter().any(|p| p == &path) {
             self.open_tabs.push(path.clone());
         }
