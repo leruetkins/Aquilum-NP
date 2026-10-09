@@ -646,6 +646,9 @@ impl Render for AppView {
             .bg(theme.bg_app)
             .text_color(theme.text_primary)
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if this.is_settings_open {
+                    return;
+                }
                 if this.is_resizing_sidebar {
                     let x: f32 = event.position.x.into();
                     if x < 100.0 {
@@ -662,6 +665,9 @@ impl Render for AppView {
                 }
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if this.is_settings_open {
+                    return;
+                }
                 this.is_resizing_sidebar = false;
                 this.is_mouse_selecting = false;
                 if let Some(ref mut n) = this.state.active_note {
@@ -672,6 +678,9 @@ impl Render for AppView {
                 cx.notify();
             }))
             .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if this.is_settings_open {
+                    return;
+                }
                 this.is_resizing_sidebar = false;
                 this.is_mouse_selecting = false;
                 cx.notify();

@@ -114,47 +114,72 @@ impl AppView {
         let theme = &self.theme;
 
         div()
-            .id("settings-modal-backdrop")
+            .id("settings-modal-root")
             .absolute()
             .top_0()
             .left_0()
             .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(rgba(0x000000aa))
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                this.close_settings(cx);
-            }))
+            .cursor(gpui::CursorStyle::Arrow)
+            // 1. Semi-transparent backdrop overlay: clicking here closes the modal
             .child(
                 div()
-                    .id("settings-modal-dialog")
+                    .id("settings-modal-backdrop")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(rgba(0x000000aa))
+                    .cursor(gpui::CursorStyle::Arrow)
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.close_settings(cx);
+                    })),
+            )
+            // 2. Centered dialog layout container (non-blocking sibling)
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
                     .flex()
-                    .flex_col()
-                    .w(px(880.0))
-                    .h(px(620.0))
-                    .max_w(px(960.0))
-                    .max_h(px(720.0))
-                    .rounded_xl()
-                    .bg(theme.bg_sidebar)
-                    .border_1()
-                    .border_color(theme.border)
-                    .shadow_lg()
-                    .on_mouse_down(MouseButton::Left, |_, _, _| {})
-                    // Dialog Header
-                    .child(self.render_dialog_header(cx))
-                    // Dialog Body: Sidebar + Main Content Area
+                    .items_center()
+                    .justify_center()
+                    .cursor(gpui::CursorStyle::Arrow)
                     .child(
                         div()
+                            .id("settings-modal-dialog")
                             .flex()
-                            .flex_row()
-                            .flex_1()
-                            .min_h_0()
-                            .w_full()
-                            // Left navigation panel
-                            .child(self.render_settings_nav(cx))
-                            // Right scrollable content panel
-                            .child(self.render_settings_content(cx)),
+                            .flex_col()
+                            .w(px(880.0))
+                            .h(px(620.0))
+                            .max_w(px(960.0))
+                            .max_h(px(720.0))
+                            .rounded_xl()
+                            .bg(theme.bg_sidebar)
+                            .border_1()
+                            .border_color(theme.border)
+                            .shadow_lg()
+                            .cursor(gpui::CursorStyle::Arrow)
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            // Dialog Header
+                            .child(self.render_dialog_header(cx))
+                            // Dialog Body: Sidebar + Main Content Area
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .w_full()
+                                    .cursor(gpui::CursorStyle::Arrow)
+                                    // Left navigation panel
+                                    .child(self.render_settings_nav(cx))
+                                    // Right scrollable content panel
+                                    .child(self.render_settings_content(cx)),
+                            ),
                     ),
             )
     }
@@ -171,6 +196,7 @@ impl AppView {
             .py_3()
             .border_b_1()
             .border_color(theme.border_subtle)
+            .cursor(gpui::CursorStyle::Arrow)
             .child(
                 div()
                     .flex()
@@ -216,6 +242,7 @@ impl AppView {
             .h_full()
             .border_r_1()
             .border_color(theme.border_subtle)
+            .cursor(gpui::CursorStyle::Arrow)
             .p_2()
             .gap_1()
             .children(SettingsTab::all().iter().map(|&tab| {
@@ -263,6 +290,7 @@ impl AppView {
             .h_full()
             .overflow_scroll()
             .bg(theme.bg_editor)
+            .cursor(gpui::CursorStyle::Arrow)
             .p_6()
             .gap_5()
             .child(match self.settings_tab {
