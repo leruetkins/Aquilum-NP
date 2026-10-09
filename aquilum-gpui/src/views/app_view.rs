@@ -2,7 +2,7 @@ use crate::icons;
 use crate::state::{AppState, FileNode};
 use crate::theme::Theme;
 use gpui::{
-    div, prelude::*, px, rgb, rgba, uniform_list, AnyElement, ClipboardItem, Context, Div, FocusHandle,
+    div, point, prelude::*, px, rgb, rgba, uniform_list, AnyElement, ClipboardItem, Context, Div, FocusHandle,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Render, ScrollStrategy,
     SharedString, UniformListScrollHandle, Window, WindowControlArea,
 };
@@ -27,6 +27,9 @@ pub struct AppView {
     pub last_wrap_cols: usize,
     pub is_settings_open: bool,
     pub settings_tab: crate::views::settings_view::SettingsTab,
+    pub is_dragging_scrollbar: bool,
+    pub scrollbar_drag_start_y: f32,
+    pub scrollbar_drag_start_scroll_y: f32,
     pub config: aquilum_core::settings::models::AppConfig,
 }
 
@@ -53,6 +56,9 @@ impl AppView {
             last_wrap_cols: 80,
             is_settings_open: false,
             settings_tab: crate::views::settings_view::SettingsTab::Ui,
+            is_dragging_scrollbar: false,
+            scrollbar_drag_start_y: 0.0,
+            scrollbar_drag_start_scroll_y: 0.0,
             config,
         }
     }
@@ -219,6 +225,39 @@ impl AppView {
                 self.editor_scroll_handle.scroll_to_item(v_idx, ScrollStrategy::Center);
             }
         }
+    }
+
+    fn set_editor_scroll_top(&self, scroll_y: f32) {
+        let mut state = self.editor_scroll_handle.0.borrow_mut();
+        state.deferred_scroll_to_item = None;
+        let base = &state.base_handle;
+        let offset_x = base.offset().x;
+        base.set_offset(point(offset_x, px(-scroll_y)));
+    }
+
+    fn handle_scrollbar_drag(&mut self, current_y: f32, window: &Window, cx: &mut Context<Self>) {
+        if !self.is_dragging_scrollbar {
+            return;
+        }
+        let Some(ref note) = self.state.active_note else {
+            return;
+        };
+        let lines: Vec<&str> = note.content.split('\n').collect();
+        let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
+        let total_lines = visual_rows.len().max(1);
+        let viewport_h: f32 = window.viewport_size().height.into();
+        let editor_h = (viewport_h - 100.0).max(100.0);
+        let total_content_h = (total_lines as f32) * 24.0 + 48.0;
+        let ratio = (editor_h / total_content_h).clamp(0.04, 1.0);
+        let thumb_h = (editor_h * ratio).max(28.0);
+        let max_scroll_content = (total_content_h - editor_h).max(1.0);
+        let track_scrollable = (editor_h - thumb_h).max(1.0);
+
+        let delta_y = current_y - self.scrollbar_drag_start_y;
+        let delta_fraction = delta_y / track_scrollable;
+        let new_scroll_y = (self.scrollbar_drag_start_scroll_y + delta_fraction * max_scroll_content).clamp(0.0, max_scroll_content);
+        self.set_editor_scroll_top(new_scroll_y);
+        cx.notify();
     }
 
     fn open_folder_dialog(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -939,7 +978,7 @@ impl Render for AppView {
             .overflow_hidden()
             .bg(theme.bg_app)
             .text_color(theme.text_primary)
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 if this.is_settings_open {
                     return;
                 }
@@ -952,6 +991,9 @@ impl Render for AppView {
                         this.sidebar_width = x.clamp(160.0, 600.0);
                     }
                     cx.notify();
+                } else if this.is_dragging_scrollbar {
+                    let y: f32 = event.position.y.into();
+                    this.handle_scrollbar_drag(y, window, cx);
                 } else if this.is_mouse_selecting {
                     let x: f32 = event.position.x.into();
                     let y: f32 = event.position.y.into();
@@ -964,6 +1006,7 @@ impl Render for AppView {
                 }
                 this.is_resizing_sidebar = false;
                 this.is_mouse_selecting = false;
+                this.is_dragging_scrollbar = false;
                 if let Some(ref mut n) = this.state.active_note {
                     if n.selection_anchor == Some(n.cursor_offset) {
                         n.selection_anchor = None;
@@ -978,6 +1021,7 @@ impl Render for AppView {
                 this.is_resizing_sidebar = false;
                 this.is_hovering_resizer = false;
                 this.is_mouse_selecting = false;
+                this.is_dragging_scrollbar = false;
                 cx.notify();
             }))
             // ================= WINDOW TITLEBAR & TAB BAR (CUSTOM CSD FRAME) =================
@@ -1358,9 +1402,9 @@ impl Render for AppView {
                     .flex()
                     .flex_1()
                     .flex_row()
-                    .size_full()
                     .w_full()
                     .min_w_0()
+                    .min_h_0()
                     .overflow_hidden()
                     // ----- Left Action Rail / Ribbon (Obsidian-style) -----
                     .child(
@@ -1745,7 +1789,7 @@ impl Render for AppView {
                             .flex_col()
                             .flex_1()
                             .min_w_0()
-                            .h_full()
+                            .min_h_0()
                             .overflow_hidden()
                             .bg(theme.bg_editor)
                             // Панель навигации (Obsidian-style) сразу под вкладками
@@ -1782,11 +1826,37 @@ impl Render for AppView {
                                 let line_starts_arc = Arc::new(line_starts);
                                 let code_states_arc = Arc::new(code_states);
                                 let theme_copy = theme.clone();
+                                let theme_scrollbar = theme.clone();
                                 let visual_rows_count = visual_rows_arc.len();
+
+                                let viewport_h: f32 = window.viewport_size().height.into();
+                                let editor_h = (viewport_h - 100.0).max(100.0);
+                                let total_content_h = (visual_rows_count as f32) * 24.0 + 48.0;
+                                let show_scrollbar = total_content_h > editor_h;
+                                let max_scroll_content = (total_content_h - editor_h).max(1.0);
+                                let (thumb_top, thumb_h) = if show_scrollbar {
+                                    let ratio = (editor_h / total_content_h).clamp(0.04, 1.0);
+                                    let th = (editor_h * ratio).max(28.0);
+                                    let scroll_y = {
+                                        let offset = self.editor_scroll_handle.0.borrow().base_handle.offset();
+                                        f32::from(-offset.y).max(0.0)
+                                    };
+                                    let scroll_fraction = (scroll_y / max_scroll_content).clamp(0.0, 1.0);
+                                    let tt = scroll_fraction * (editor_h - th);
+                                    (tt, th)
+                                } else {
+                                    (0.0, 28.0)
+                                };
+                                let is_scrollbar_dragging = self.is_dragging_scrollbar;
+                                let scroll_y_current = {
+                                    let offset = self.editor_scroll_handle.0.borrow().base_handle.offset();
+                                    f32::from(-offset.y).max(0.0)
+                                };
 
                                 this.child(
                                     div()
                                         .id("note-editor-container")
+                                        .relative()
                                         .track_focus(&self.focus_handle)
                                         .cursor(gpui::CursorStyle::IBeam)
                                         .flex()
@@ -1794,6 +1864,8 @@ impl Render for AppView {
                                         .flex_1()
                                         .w_full()
                                         .min_w_0()
+                                        .min_h_0()
+                                        .overflow_hidden()
                                         .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
                                             if this.is_resizing_sidebar {
                                                 return;
@@ -1819,7 +1891,7 @@ impl Render for AppView {
                                             }
                                             cx.notify();
                                         }))
-                                        .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                                        .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                                             if this.is_resizing_sidebar {
                                                 let x: f32 = event.position.x.into();
                                                 if x < 100.0 {
@@ -1829,6 +1901,9 @@ impl Render for AppView {
                                                     this.sidebar_width = x.clamp(160.0, 600.0);
                                                 }
                                                 cx.notify();
+                                            } else if this.is_dragging_scrollbar {
+                                                let y: f32 = event.position.y.into();
+                                                this.handle_scrollbar_drag(y, window, cx);
                                             } else if this.is_mouse_selecting {
                                                 let x: f32 = event.position.x.into();
                                                 let y: f32 = event.position.y.into();
@@ -1837,6 +1912,7 @@ impl Render for AppView {
                                         }))
                                         .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                             this.is_resizing_sidebar = false;
+                                            this.is_dragging_scrollbar = false;
                                             this.is_mouse_selecting = false;
                                             if let Some(ref mut n) = this.state.active_note {
                                                 if n.selection_anchor == Some(n.cursor_offset) {
@@ -1847,6 +1923,7 @@ impl Render for AppView {
                                         }))
                                         .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                             this.is_resizing_sidebar = false;
+                                            this.is_dragging_scrollbar = false;
                                             this.is_mouse_selecting = false;
                                             cx.notify();
                                         }))
@@ -2062,6 +2139,53 @@ impl Render for AppView {
                                             .px_8()
                                             .py_6()
                                         )
+                                        .when(show_scrollbar, |c| {
+                                            c.child(
+                                                div()
+                                                    .id("editor-scrollbar-track")
+                                                    .absolute()
+                                                    .top_0()
+                                                    .bottom_0()
+                                                    .right_0()
+                                                    .w(px(14.0))
+                                                    .h_full()
+                                                    .cursor_pointer()
+                                                    .hover(|h| h.bg(rgba(0x00000015)))
+                                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                                        cx.stop_propagation();
+                                                        let click_y: f32 = event.position.y.into();
+                                                        let click_rel_y = (click_y - 72.0).max(0.0);
+                                                        let target_fraction = (click_rel_y / editor_h).clamp(0.0, 1.0);
+                                                        let target_scroll_y = target_fraction * max_scroll_content;
+                                                        this.set_editor_scroll_top(target_scroll_y);
+                                                        cx.notify();
+                                                    }))
+                                                    .child(
+                                                        div()
+                                                            .id("editor-scrollbar-thumb")
+                                                            .absolute()
+                                                            .top(px(thumb_top))
+                                                            .right(px(3.0))
+                                                            .w(px(if is_scrollbar_dragging { 8.0 } else { 6.0 }))
+                                                            .h(px(thumb_h))
+                                                            .rounded_full()
+                                                            .bg(if is_scrollbar_dragging {
+                                                                theme_scrollbar.accent
+                                                            } else {
+                                                                theme_scrollbar.border
+                                                            })
+                                                            .hover(|h| h.bg(theme_scrollbar.text_secondary).w(px(8.0)))
+                                                            .cursor_pointer()
+                                                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                                                cx.stop_propagation();
+                                                                this.is_dragging_scrollbar = true;
+                                                                this.scrollbar_drag_start_y = event.position.y.into();
+                                                                this.scrollbar_drag_start_scroll_y = scroll_y_current;
+                                                                cx.notify();
+                                                            }))
+                                                    )
+                                            )
+                                        })
                                 )
                             })
                             .when(self.state.active_note.is_none(), |this| {
@@ -2098,7 +2222,9 @@ impl Render for AppView {
             // ================= FOOTER / STATUS BAR =================
             .child(
                 div()
+                    .id("app-status-bar")
                     .flex()
+                    .flex_shrink_0()
                     .flex_row()
                     .items_center()
                     .justify_between()
