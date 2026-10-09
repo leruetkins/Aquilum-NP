@@ -379,6 +379,7 @@ pub struct AppState {
     pub search_query: String,
     pub files: Vec<FileItem>,
     pub active_note: Option<OpenedNote>,
+    pub open_tabs: Vec<PathBuf>,
     pub status_text: String,
 }
 
@@ -411,6 +412,7 @@ impl AppState {
             search_query: String::new(),
             files: Vec::new(),
             active_note: None,
+            open_tabs: Vec::new(),
             status_text: "GPUI Ready • 0 WebView Processes".to_owned(),
         };
 
@@ -424,8 +426,10 @@ impl AppState {
         }
 
         if state.active_note.is_none() {
+            let welcome_path = PathBuf::from("Welcome.md");
+            state.open_tabs.push(welcome_path.clone());
             state.active_note = Some(OpenedNote::new(
-                PathBuf::from("Welcome.md"),
+                welcome_path,
                 "Welcome to Aquilum".to_owned(),
                 DEFAULT_WELCOME_NOTE.to_owned(),
                 0,
@@ -542,13 +546,38 @@ impl AppState {
             i += 1;
         }
         let default_text = format!(
-            "# {}\n\nStart writing here...",
+            "# {}\n\n",
             new_path.file_stem().unwrap().to_string_lossy()
         );
         let _ = std::fs::write(&new_path, &default_text);
         self.reload_file_tree();
         self.open_note(new_path.clone());
+        if let Some(ref mut note) = self.active_note {
+            note.cursor_offset = note.content.len();
+        }
         Some(new_path)
+    }
+
+    pub fn close_tab(&mut self, path: &Path) {
+        if let Some(pos) = self.open_tabs.iter().position(|p| p == path) {
+            self.open_tabs.remove(pos);
+            if self.active_note.as_ref().map(|n| &n.path == path).unwrap_or(false) {
+                let next_path = if pos < self.open_tabs.len() {
+                    Some(self.open_tabs[pos].clone())
+                } else if !self.open_tabs.is_empty() {
+                    Some(self.open_tabs[self.open_tabs.len() - 1].clone())
+                } else {
+                    None
+                };
+                if let Some(target) = next_path {
+                    self.open_note(target);
+                } else {
+                    self.active_note = None;
+                }
+            }
+        } else if self.active_note.as_ref().map(|n| &n.path == path).unwrap_or(false) {
+            self.active_note = None;
+        }
     }
 
     pub fn reload_files(&mut self) {
@@ -561,6 +590,9 @@ impl AppState {
     }
 
     pub fn open_note(&mut self, path: PathBuf) {
+        if !self.open_tabs.iter().any(|p| p == &path) {
+            self.open_tabs.push(path.clone());
+        }
         let title = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())

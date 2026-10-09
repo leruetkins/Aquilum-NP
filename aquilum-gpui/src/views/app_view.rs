@@ -2,11 +2,11 @@ use crate::icons;
 use crate::state::{AppState, FileNode};
 use crate::theme::Theme;
 use gpui::{
-    div, prelude::*, px, rgb, AnyElement, ClipboardItem, Context, FocusHandle, IntoElement,
+    div, prelude::*, px, rgb, rgba, AnyElement, ClipboardItem, Context, FocusHandle, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Render, SharedString, Window,
     WindowControlArea,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct AppView {
     pub state: AppState,
@@ -231,6 +231,14 @@ impl AppView {
         }
         self.state.open_note(path);
         window.focus(&self.focus_handle);
+        cx.notify();
+    }
+
+    fn close_tab(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if self.state.active_note.as_ref().map(|n| n.is_dirty && n.path == path).unwrap_or(false) {
+            self.state.save_active_note();
+        }
+        self.state.close_tab(path);
         cx.notify();
     }
 
@@ -510,6 +518,15 @@ impl AppView {
         // Ctrl + N (Новая заметка)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("n") || keystroke.key == "т" || keystroke.key == "Т") {
             self.create_new_note(_window, cx);
+            return;
+        }
+
+        // Ctrl + W (Закрыть текущую вкладку)
+        if ctrl && (keystroke.key.eq_ignore_ascii_case("w") || keystroke.key == "ц" || keystroke.key == "Ц") {
+            if let Some(ref note) = self.state.active_note {
+                let path = note.path.clone();
+                self.close_tab(&path, cx);
+            }
             return;
         }
 
@@ -865,8 +882,8 @@ impl Render for AppView {
                             .overflow_hidden()
                             .bg(theme.bg_sidebar)
                             // Browser-style Tabs Area starting directly at the boundary
-                            .child(
-                                div()
+                            .child({
+                                let mut tabs_bar = div()
                                     .flex()
                                     .flex_row()
                                     .items_center()
@@ -875,71 +892,121 @@ impl Render for AppView {
                                     .pt_1()
                                     .pl_2()
                                     .min_w_0()
-                                    .overflow_hidden()
-                                    .when_some(self.state.active_note.as_ref(), |s, note| {
-                                        let is_dirty = note.is_dirty;
-                                        s.child(
-                                            div()
-                                                .id("tab-active-note")
-                                                .flex()
-                                                .flex_row()
-                                                .items_center()
-                                                .gap_2()
-                                                .h(px(32.0))
-                                                .px_3()
-                                                .bg(theme.bg_editor)
-                                                .border_t_1()
-                                                .border_x_1()
-                                                .border_color(theme.border)
-                                                .rounded_t_md()
-                                                .cursor_pointer()
-                                                .child(icons::icon(icons::ICON_FILE_TEXT, 12.0, theme.accent))
-                                                .child(
-                                                    div()
-                                                        .text_xs()
-                                                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                        .text_color(theme.text_primary)
-                                                        .truncate()
-                                                        .max_w(px(200.0))
-                                                        .child(note.title.clone()),
-                                                )
-                                                .when(is_dirty, |tab| {
-                                                    tab.child(
+                                    .overflow_hidden();
+
+                                let active_path = self.state.active_note.as_ref().map(|n| n.path.clone());
+                                let is_active_dirty = self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false);
+
+                                for (idx, tab_path) in self.state.open_tabs.iter().enumerate() {
+                                    let is_active = active_path.as_ref() == Some(tab_path);
+                                    let title = tab_path
+                                        .file_stem()
+                                        .map(|s| s.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| "Untitled".to_owned());
+                                    let tab_path_for_select = tab_path.clone();
+                                    let tab_path_for_close = tab_path.clone();
+
+                                    tabs_bar = tabs_bar.child(
+                                        div()
+                                            .id(gpui::ElementId::from(("tab-item", idx)))
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .h(px(32.0))
+                                            .bg(if is_active { theme.bg_editor } else { theme.bg_sidebar })
+                                            .border_t_1()
+                                            .border_x_1()
+                                            .border_color(if is_active { theme.border } else { rgba(0x00000000) })
+                                            .rounded_t_md()
+                                            .hover(|h| {
+                                                if !is_active {
+                                                    h.bg(theme.bg_hover)
+                                                } else {
+                                                    h
+                                                }
+                                            })
+                                            // Tab selection area (icon + title + dirty dot)
+                                            .child(
+                                                div()
+                                                    .id(gpui::ElementId::from(("tab-select", idx)))
+                                                    .flex()
+                                                    .flex_row()
+                                                    .items_center()
+                                                    .gap_1p5()
+                                                    .h_full()
+                                                    .pl_2p5()
+                                                    .pr_1()
+                                                    .cursor_pointer()
+                                                    .child(icons::icon(
+                                                        icons::ICON_FILE_TEXT,
+                                                        12.0,
+                                                        if is_active { theme.accent } else { theme.text_muted },
+                                                    ))
+                                                    .child(
                                                         div()
                                                             .text_xs()
-                                                            .text_color(theme.accent)
-                                                            .child("●"),
+                                                            .font_weight(if is_active {
+                                                                gpui::FontWeight::SEMIBOLD
+                                                            } else {
+                                                                gpui::FontWeight::NORMAL
+                                                            })
+                                                            .text_color(if is_active {
+                                                                theme.text_primary
+                                                            } else {
+                                                                theme.text_secondary
+                                                            })
+                                                            .truncate()
+                                                            .max_w(px(160.0))
+                                                            .child(title),
                                                     )
-                                                })
-                                                .child(
-                                                    div()
-                                                        .id("btn-close-active-tab")
-                                                        .p_0p5()
-                                                        .rounded_sm()
-                                                        .cursor_pointer()
-                                                        .hover(|h| h.bg(theme.bg_hover))
-                                                        .child(icons::icon(icons::ICON_CLOSE, 10.0, theme.text_muted))
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            this.state.active_note = None;
-                                                            cx.notify();
-                                                        })),
-                                                ),
-                                        )
-                                    })
-                                    // New note button '+'
-                                    .child(
-                                        div()
-                                            .id("btn-new-tab")
-                                            .p_1()
-                                            .rounded_md()
-                                            .cursor_pointer()
-                                            .hover(|h| h.bg(theme.bg_hover))
-                                            .child(icons::icon(icons::ICON_PLUS, 12.0, theme.text_muted))
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.create_new_note(window, cx);
-                                            })),
-                                    ),
-                            )
+                                                    .when(is_active && is_active_dirty, |tab| {
+                                                        tab.child(
+                                                            div()
+                                                                .text_xs()
+                                                                .text_color(theme.accent)
+                                                                .child("●"),
+                                                        )
+                                                    })
+                                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                                        if this.state.active_note.as_ref().map(|n| &n.path != &tab_path_for_select).unwrap_or(true) {
+                                                            this.select_note(tab_path_for_select.clone(), window, cx);
+                                                        }
+                                                    })),
+                                            )
+                                            // Tab close button (isolated sibling)
+                                            .child(
+                                                div()
+                                                    .id(gpui::ElementId::from(("btn-close-tab", idx)))
+                                                    .p_0p5()
+                                                    .mr_1p5()
+                                                    .rounded_sm()
+                                                    .cursor_pointer()
+                                                    .hover(|h| h.bg(theme.bg_hover))
+                                                    .child(icons::icon(icons::ICON_CLOSE, 10.0, theme.text_muted))
+                                                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                                        cx.stop_propagation();
+                                                    })
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        cx.stop_propagation();
+                                                        this.close_tab(&tab_path_for_close, cx);
+                                                    })),
+                                            ),
+                                    );
+                                }
+
+                                tabs_bar.child(
+                                    div()
+                                        .id("btn-new-tab")
+                                        .p_1()
+                                        .rounded_md()
+                                        .cursor_pointer()
+                                        .hover(|h| h.bg(theme.bg_hover))
+                                        .child(icons::icon(icons::ICON_PLUS, 12.0, theme.text_muted))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.create_new_note(window, cx);
+                                        })),
+                                )
+                            })
                             // Drag Area (fills remaining space between tabs and window controls)
                             .child(
                                 div()
