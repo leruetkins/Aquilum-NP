@@ -39,6 +39,11 @@ pub struct AppView {
     pub title_editing_path: Option<PathBuf>,
     pub title_cursor_pos: usize,
     pub was_title_focused: bool,
+    pub title_selection_anchor: Option<usize>,
+    pub title_is_mouse_selecting: bool,
+    pub title_is_focused: bool,
+    pub title_cursor_visible: bool,
+    pub title_cursor_blink_epoch: usize,
 }
 
 impl AppView {
@@ -94,33 +99,48 @@ impl AppView {
             title_editing_path,
             title_cursor_pos,
             was_title_focused: false,
+            title_selection_anchor: None,
+            title_is_mouse_selecting: false,
+            title_is_focused: false,
+            title_cursor_visible: true,
+            title_cursor_blink_epoch: 0,
         }
     }
 
-    pub const TAB_BAR_HEIGHT: f32 = 38.0;
-    pub const NAV_BAR_HEIGHT: f32 = 40.0;
-    pub const NOTE_TITLE_HEIGHT: f32 = 46.0;
-    pub const STATUS_BAR_HEIGHT: f32 = 28.0;
-
-    #[inline]
-    pub fn editor_top_y(&self) -> f32 {
-        Self::TAB_BAR_HEIGHT + Self::NAV_BAR_HEIGHT + if self.state.active_note.is_some() { Self::NOTE_TITLE_HEIGHT } else { 0.0 }
+    pub fn title_selection_range(&self) -> Option<(usize, usize)> {
+        if let Some(anchor) = self.title_selection_anchor {
+            let pos = self.title_cursor_pos;
+            if anchor != pos {
+                return Some((anchor.min(pos), anchor.max(pos)));
+            }
+        }
+        None
     }
 
-    #[inline]
-    pub fn editor_bottom_y(&self, viewport_h: f32) -> f32 {
-        (viewport_h - Self::STATUS_BAR_HEIGHT).max(self.editor_top_y() + 50.0)
-    }
-
-    #[inline]
-    pub fn editor_height(&self, viewport_h: f32) -> f32 {
-        (viewport_h - self.editor_top_y() - Self::STATUS_BAR_HEIGHT).max(100.0)
-    }
-
-    #[inline]
-    pub fn editor_text_start_x(&self) -> f32 {
-        let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
-        editor_left_x + 32.0 + 8.0 + 40.0
+    pub fn reset_title_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.title_cursor_visible = true;
+        self.title_cursor_blink_epoch = self.title_cursor_blink_epoch.wrapping_add(1);
+        let epoch = self.title_cursor_blink_epoch;
+        let entity = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let timer_executor = cx.background_executor().clone();
+        cx.foreground_executor().spawn(async move {
+            loop {
+                timer_executor.timer(std::time::Duration::from_millis(530)).await;
+                let should_continue = entity.update(&mut async_cx, |this, cx| {
+                    if this.title_cursor_blink_epoch != epoch || !this.title_is_focused {
+                        false
+                    } else {
+                        this.title_cursor_visible = !this.title_cursor_visible;
+                        cx.notify();
+                        true
+                    }
+                }).unwrap_or(false);
+                if !should_continue {
+                    break;
+                }
+            }
+        }).detach();
     }
 
     pub fn current_scroll_top(&self) -> f32 {
@@ -349,7 +369,7 @@ impl AppView {
         let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
         let total_lines = visual_rows.len().max(1);
         let viewport_h: f32 = window.viewport_size().height.into();
-        let editor_h = self.editor_height(viewport_h);
+        let editor_h = (viewport_h - 106.0).max(100.0);
         let total_content_h = (total_lines as f32) * 24.0 + 48.0;
         let ratio = (editor_h / total_content_h).clamp(0.04, 1.0);
         let thumb_h = (editor_h * ratio).max(28.0);
@@ -387,6 +407,8 @@ impl AppView {
                 self.title_editing_path = Some(note.path.clone());
                 self.title_edit_text = note.title.clone();
                 self.title_cursor_pos = self.title_edit_text.chars().count();
+                self.title_selection_anchor = None;
+                self.title_is_mouse_selecting = false;
             }
             self.edit_mode = true;
             self.word_wrap = true;
@@ -409,6 +431,8 @@ impl AppView {
             self.title_editing_path = Some(note.path.clone());
             self.title_edit_text = note.title.clone();
             self.title_cursor_pos = self.title_edit_text.chars().count();
+            self.title_selection_anchor = None;
+            self.title_is_mouse_selecting = false;
         }
         window.focus(&self.focus_handle);
         cx.notify();
@@ -432,10 +456,14 @@ impl AppView {
             self.title_editing_path = Some(target_path);
             self.title_edit_text = title;
             self.title_cursor_pos = self.title_edit_text.chars().count();
+            self.title_selection_anchor = None;
+            self.title_is_mouse_selecting = false;
         } else {
             self.title_editing_path = None;
             self.title_edit_text.clear();
             self.title_cursor_pos = 0;
+            self.title_selection_anchor = None;
+            self.title_is_mouse_selecting = false;
         }
         cx.notify();
     }
@@ -453,6 +481,8 @@ impl AppView {
                 self.title_editing_path = Some(note.path.clone());
                 self.title_edit_text = note.title.clone();
                 self.title_cursor_pos = self.title_edit_text.chars().count();
+                self.title_selection_anchor = None;
+                self.title_is_mouse_selecting = false;
             }
             window.focus(&self.focus_handle);
             cx.notify();
@@ -472,6 +502,8 @@ impl AppView {
                 self.title_editing_path = Some(note.path.clone());
                 self.title_edit_text = note.title.clone();
                 self.title_cursor_pos = self.title_edit_text.chars().count();
+                self.title_selection_anchor = None;
+                self.title_is_mouse_selecting = false;
             }
             window.focus(&self.focus_handle);
             cx.notify();
@@ -496,8 +528,9 @@ impl AppView {
             return;
         }
 
-        let editor_rows_top_y = self.editor_top_y();
-        let editor_bottom_y = self.editor_bottom_y(viewport_h);
+        // Top of rows area: Titlebar (38px) + Nav bar (40px) + list py_6 (24px * 2) = 126px
+        let editor_rows_top_y = 126.0;
+        let editor_bottom_y = (viewport_h - 28.0).max(editor_rows_top_y + 100.0);
         let scroll_y = self.current_scroll_top();
 
         // Edge autoscroll when dragging outside or near the top/bottom bounds
@@ -518,7 +551,8 @@ impl AppView {
             .advance(font_id, px(14.0), 'x')
             .map(|s| f32::from(s.width))
             .unwrap_or(7.7);
-        let text_start_x = self.editor_text_start_x();
+        let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
+        let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
         let line_h = 24.0;
         let word_wrap = self.word_wrap;
         let wrap_cols = self.last_wrap_cols;
@@ -611,6 +645,8 @@ impl AppView {
         if new_title.is_empty() {
             self.title_edit_text = current_title;
             self.title_cursor_pos = self.title_edit_text.chars().count();
+            self.title_selection_anchor = None;
+            self.title_is_mouse_selecting = false;
             return false;
         }
 
@@ -620,16 +656,22 @@ impl AppView {
                     self.title_editing_path = Some(new_path);
                     self.title_edit_text = new_title.to_string();
                     self.title_cursor_pos = self.title_edit_text.chars().count();
+                    self.title_selection_anchor = None;
+                    self.title_is_mouse_selecting = false;
                     return true;
                 }
                 Err(err) => {
                     self.state.status_text = format!("Rename failed: {}", err);
                     self.title_edit_text = current_title;
                     self.title_cursor_pos = self.title_edit_text.chars().count();
+                    self.title_selection_anchor = None;
+                    self.title_is_mouse_selecting = false;
                     return false;
                 }
             }
         }
+        self.title_selection_anchor = None;
+        self.title_is_mouse_selecting = false;
         false
     }
 
@@ -642,8 +684,11 @@ impl AppView {
     fn handle_title_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = &event.keystroke.key;
         let ctrl = event.keystroke.modifiers.control;
+        let shift = event.keystroke.modifiers.shift;
+        let alt = event.keystroke.modifiers.alt;
 
         if key == "enter" || key == "tab" {
+            self.title_selection_anchor = None;
             self.commit_title_rename(window, cx);
             window.focus(&self.focus_handle);
             cx.notify();
@@ -651,6 +696,7 @@ impl AppView {
         }
 
         if key == "escape" {
+            self.title_selection_anchor = None;
             if let Some(ref note) = self.state.active_note {
                 self.title_edit_text = note.title.clone();
                 self.title_cursor_pos = self.title_edit_text.chars().count();
@@ -661,6 +707,7 @@ impl AppView {
         }
 
         if key == "down" {
+            self.title_selection_anchor = None;
             self.commit_title_rename(window, cx);
             if let Some(ref mut note) = self.state.active_note {
                 note.cursor_offset = 0;
@@ -671,60 +718,48 @@ impl AppView {
             return;
         }
 
-        if key == "backspace" {
-            let mut chars: Vec<char> = self.title_edit_text.chars().collect();
-            let pos = self.title_cursor_pos.min(chars.len());
-            if pos > 0 {
-                chars.remove(pos - 1);
-                self.title_cursor_pos = pos - 1;
-                self.title_edit_text = chars.into_iter().collect();
-                cx.notify();
-            }
-            return;
-        }
-
-        if key == "delete" {
-            let mut chars: Vec<char> = self.title_edit_text.chars().collect();
-            let pos = self.title_cursor_pos.min(chars.len());
-            if pos < chars.len() {
-                chars.remove(pos);
-                self.title_edit_text = chars.into_iter().collect();
-                cx.notify();
-            }
-            return;
-        }
-
-        if key == "left" {
-            self.title_cursor_pos = self.title_cursor_pos.saturating_sub(1);
-            cx.notify();
-            return;
-        }
-
-        if key == "right" {
-            let count = self.title_edit_text.chars().count();
-            self.title_cursor_pos = (self.title_cursor_pos + 1).min(count);
-            cx.notify();
-            return;
-        }
-
-        if key == "home" {
-            self.title_cursor_pos = 0;
-            cx.notify();
-            return;
-        }
-
-        if key == "end" {
+        // Ctrl + A (Select All)
+        if ctrl && (key.eq_ignore_ascii_case("a") || key == "ф" || key == "Ф") {
+            self.title_selection_anchor = Some(0);
             self.title_cursor_pos = self.title_edit_text.chars().count();
+            self.reset_title_cursor_blink(cx);
             cx.notify();
             return;
         }
 
+        // Ctrl + C (Copy selected text)
+        if ctrl && (key.eq_ignore_ascii_case("c") || key == "с" || key == "С") {
+            if let Some((s_start, s_end)) = self.title_selection_range() {
+                let selected: String = self.title_edit_text.chars().skip(s_start).take(s_end - s_start).collect();
+                cx.write_to_clipboard(ClipboardItem::new_string(selected));
+            }
+            return;
+        }
+
+        // Ctrl + X (Cut selected text)
+        if ctrl && (key.eq_ignore_ascii_case("x") || key == "ч" || key == "Ч") {
+            if let Some((s_start, s_end)) = self.title_selection_range() {
+                let selected: String = self.title_edit_text.chars().skip(s_start).take(s_end - s_start).collect();
+                cx.write_to_clipboard(ClipboardItem::new_string(selected));
+                let mut chars: Vec<char> = self.title_edit_text.chars().collect();
+                chars.drain(s_start..s_end);
+                self.title_edit_text = chars.into_iter().collect();
+                self.title_cursor_pos = s_start;
+                self.title_selection_anchor = None;
+                self.reset_title_cursor_blink(cx);
+                cx.notify();
+            }
+            return;
+        }
+
+        // Ctrl + S (Save note)
         if ctrl && (key.eq_ignore_ascii_case("s") || key == "ы" || key == "Ы") {
             self.commit_title_rename(window, cx);
             self.save_note(window, cx);
             return;
         }
 
+        // Ctrl + V (Paste over selection or at cursor)
         if ctrl && (key.eq_ignore_ascii_case("v") || key == "м" || key == "М") {
             if let Some(item) = cx.read_from_clipboard() {
                 if let Some(text) = item.text() {
@@ -735,12 +770,19 @@ impl AppView {
                         .collect();
                     if !filtered.is_empty() {
                         let mut chars: Vec<char> = self.title_edit_text.chars().collect();
-                        let pos = self.title_cursor_pos.min(chars.len());
+                        let pos = if let Some((s_start, s_end)) = self.title_selection_range() {
+                            chars.drain(s_start..s_end);
+                            self.title_selection_anchor = None;
+                            s_start
+                        } else {
+                            self.title_cursor_pos.min(chars.len())
+                        };
                         for (i, c) in filtered.chars().enumerate() {
                             chars.insert(pos + i, c);
                         }
                         self.title_cursor_pos = pos + filtered.chars().count();
                         self.title_edit_text = chars.into_iter().collect();
+                        self.reset_title_cursor_blink(cx);
                         cx.notify();
                     }
                 }
@@ -748,7 +790,131 @@ impl AppView {
             return;
         }
 
-        if !ctrl && !event.keystroke.modifiers.alt && !event.keystroke.modifiers.platform {
+        // Left Arrow
+        if key == "left" {
+            if shift {
+                if self.title_selection_anchor.is_none() {
+                    self.title_selection_anchor = Some(self.title_cursor_pos);
+                }
+                if self.title_cursor_pos > 0 {
+                    self.title_cursor_pos -= 1;
+                }
+            } else {
+                if let Some((s_start, _)) = self.title_selection_range() {
+                    self.title_cursor_pos = s_start;
+                    self.title_selection_anchor = None;
+                } else if self.title_cursor_pos > 0 {
+                    self.title_cursor_pos -= 1;
+                }
+            }
+            self.reset_title_cursor_blink(cx);
+            cx.notify();
+            return;
+        }
+
+        // Right Arrow
+        if key == "right" {
+            let total_chars = self.title_edit_text.chars().count();
+            if shift {
+                if self.title_selection_anchor.is_none() {
+                    self.title_selection_anchor = Some(self.title_cursor_pos);
+                }
+                if self.title_cursor_pos < total_chars {
+                    self.title_cursor_pos += 1;
+                }
+            } else {
+                if let Some((_, s_end)) = self.title_selection_range() {
+                    self.title_cursor_pos = s_end;
+                    self.title_selection_anchor = None;
+                } else if self.title_cursor_pos < total_chars {
+                    self.title_cursor_pos += 1;
+                }
+            }
+            self.reset_title_cursor_blink(cx);
+            cx.notify();
+            return;
+        }
+
+        // Home
+        if key == "home" {
+            if shift {
+                if self.title_selection_anchor.is_none() {
+                    self.title_selection_anchor = Some(self.title_cursor_pos);
+                }
+                self.title_cursor_pos = 0;
+            } else {
+                self.title_selection_anchor = None;
+                self.title_cursor_pos = 0;
+            }
+            self.reset_title_cursor_blink(cx);
+            cx.notify();
+            return;
+        }
+
+        // End
+        if key == "end" {
+            let total_chars = self.title_edit_text.chars().count();
+            if shift {
+                if self.title_selection_anchor.is_none() {
+                    self.title_selection_anchor = Some(self.title_cursor_pos);
+                }
+                self.title_cursor_pos = total_chars;
+            } else {
+                self.title_selection_anchor = None;
+                self.title_cursor_pos = total_chars;
+            }
+            self.reset_title_cursor_blink(cx);
+            cx.notify();
+            return;
+        }
+
+        // Backspace
+        if key == "backspace" {
+            let mut chars: Vec<char> = self.title_edit_text.chars().collect();
+            if let Some((s_start, s_end)) = self.title_selection_range() {
+                chars.drain(s_start..s_end);
+                self.title_cursor_pos = s_start;
+                self.title_selection_anchor = None;
+                self.title_edit_text = chars.into_iter().collect();
+                self.reset_title_cursor_blink(cx);
+                cx.notify();
+            } else {
+                let pos = self.title_cursor_pos.min(chars.len());
+                if pos > 0 {
+                    chars.remove(pos - 1);
+                    self.title_cursor_pos = pos - 1;
+                    self.title_edit_text = chars.into_iter().collect();
+                    self.reset_title_cursor_blink(cx);
+                    cx.notify();
+                }
+            }
+            return;
+        }
+
+        // Delete
+        if key == "delete" {
+            let mut chars: Vec<char> = self.title_edit_text.chars().collect();
+            if let Some((s_start, s_end)) = self.title_selection_range() {
+                chars.drain(s_start..s_end);
+                self.title_cursor_pos = s_start;
+                self.title_selection_anchor = None;
+                self.title_edit_text = chars.into_iter().collect();
+                self.reset_title_cursor_blink(cx);
+                cx.notify();
+            } else {
+                let pos = self.title_cursor_pos.min(chars.len());
+                if pos < chars.len() {
+                    chars.remove(pos);
+                    self.title_edit_text = chars.into_iter().collect();
+                    self.reset_title_cursor_blink(cx);
+                    cx.notify();
+                }
+            }
+            return;
+        }
+
+        // Normal character input
+        if !ctrl && !alt && !event.keystroke.modifiers.platform {
             let invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*', '\n', '\r', '\t'];
             let text_to_insert = if let Some(ch) = &event.keystroke.key_char {
                 Some(ch.as_str())
@@ -765,12 +931,19 @@ impl AppView {
                     .collect();
                 if !filtered.is_empty() {
                     let mut chars: Vec<char> = self.title_edit_text.chars().collect();
-                    let pos = self.title_cursor_pos.min(chars.len());
+                    let pos = if let Some((s_start, s_end)) = self.title_selection_range() {
+                        chars.drain(s_start..s_end);
+                        self.title_selection_anchor = None;
+                        s_start
+                    } else {
+                        self.title_cursor_pos.min(chars.len())
+                    };
                     for (i, c) in filtered.chars().enumerate() {
                         chars.insert(pos + i, c);
                     }
                     self.title_cursor_pos = pos + filtered.chars().count();
                     self.title_edit_text = chars.into_iter().collect();
+                    self.reset_title_cursor_blink(cx);
                     cx.notify();
                 }
             }
@@ -1342,6 +1515,15 @@ impl Render for AppView {
         }
 
         let is_title_focused = self.title_focus_handle.is_focused(window);
+        if !self.title_is_focused && is_title_focused {
+            self.title_is_focused = true;
+            self.reset_title_cursor_blink(cx);
+        } else if self.title_is_focused && !is_title_focused {
+            self.title_is_focused = false;
+            self.title_selection_anchor = None;
+            self.title_is_mouse_selecting = false;
+        }
+
         if self.was_title_focused && !is_title_focused {
             self.commit_title_rename_internal();
         }
@@ -1352,11 +1534,15 @@ impl Render for AppView {
                 self.title_editing_path = Some(note.path.clone());
                 self.title_edit_text = note.title.clone();
                 self.title_cursor_pos = self.title_edit_text.chars().count();
+                self.title_selection_anchor = None;
+                self.title_is_mouse_selecting = false;
             }
         } else {
             self.title_editing_path = None;
             self.title_edit_text.clear();
             self.title_cursor_pos = 0;
+            self.title_selection_anchor = None;
+            self.title_is_mouse_selecting = false;
         }
 
         self.theme = Theme::from_config(&self.config.ui.theme, Some(window.appearance()));
@@ -1402,6 +1588,36 @@ impl Render for AppView {
                 } else if this.is_dragging_scrollbar {
                     let y: f32 = event.position.y.into();
                     this.handle_scrollbar_drag(y, window, cx);
+                } else if this.title_is_mouse_selecting {
+                    let x: f32 = event.position.x.into();
+                    let editor_left_x = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
+                    let title_left_x = editor_left_x + 48.0;
+                    let rel_x = (x - title_left_x).max(0.0);
+                    let new_pos = if this.title_edit_text.is_empty() {
+                        0
+                    } else {
+                        let run = gpui::TextRun {
+                            len: this.title_edit_text.len(),
+                            font: gpui::font("Segoe UI").bold(),
+                            color: Default::default(),
+                            underline: Default::default(),
+                            strikethrough: None,
+                            background_color: None,
+                        };
+                        let shaped = window.text_system().shape_line(
+                            SharedString::from(this.title_edit_text.clone()),
+                            px(28.0),
+                            &[run],
+                            None,
+                        );
+                        let byte_idx = shaped.closest_index_for_x(px(rel_x));
+                        this.title_edit_text[..byte_idx.min(this.title_edit_text.len())].chars().count()
+                    };
+                    if this.title_cursor_pos != new_pos {
+                        this.title_cursor_pos = new_pos;
+                        this.title_cursor_visible = true;
+                        cx.notify();
+                    }
                 } else if this.is_mouse_selecting {
                     let x: f32 = event.position.x.into();
                     let y: f32 = event.position.y.into();
@@ -1412,6 +1628,13 @@ impl Render for AppView {
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
                 if this.is_settings_open {
                     return;
+                }
+                if this.title_is_mouse_selecting {
+                    this.title_is_mouse_selecting = false;
+                    if this.title_selection_anchor == Some(this.title_cursor_pos) {
+                        this.title_selection_anchor = None;
+                    }
+                    cx.notify();
                 }
                 this.is_resizing_sidebar = false;
                 this.is_mouse_selecting = false;
@@ -1426,6 +1649,13 @@ impl Render for AppView {
             .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
                 if this.is_settings_open {
                     return;
+                }
+                if this.title_is_mouse_selecting {
+                    this.title_is_mouse_selecting = false;
+                    if this.title_selection_anchor == Some(this.title_cursor_pos) {
+                        this.title_selection_anchor = None;
+                    }
+                    cx.notify();
                 }
                 this.is_resizing_sidebar = false;
                 this.is_hovering_resizer = false;
@@ -2363,7 +2593,8 @@ impl Render for AppView {
                                 let line_h = px(24.0);
                                 let cursor_h = px(16.0);
                                 let cursor_top = 4.0;
-                                let text_start_x = self.editor_text_start_x();
+                                let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
+                                let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
 
                                 let lines_arc = Arc::new(lines);
                                 let visual_rows_arc = Arc::new(visual_rows);
@@ -2374,8 +2605,7 @@ impl Render for AppView {
                                 let visual_rows_count = visual_rows_arc.len();
 
                                 let viewport_h: f32 = window.viewport_size().height.into();
-                                let editor_h = self.editor_height(viewport_h);
-                                let editor_top_y = self.editor_top_y();
+                                let editor_h = (viewport_h - 154.0).max(100.0);
                                 let total_content_h = (visual_rows_count as f32) * 24.0 + 48.0;
                                 let show_scrollbar = total_content_h > editor_h;
                                 let max_scroll_content = (total_content_h - editor_h).max(1.0);
@@ -2402,71 +2632,176 @@ impl Render for AppView {
                                 let title_text = &self.title_edit_text;
                                 let title_chars: Vec<char> = title_text.chars().collect();
                                 let cursor_pos = self.title_cursor_pos.min(title_chars.len());
-                                let title_before: String = title_chars[..cursor_pos].iter().collect();
-                                let title_after: String = title_chars[cursor_pos..].iter().collect();
+                                let selection_range = self.title_selection_range();
+
+                                let run = gpui::TextRun {
+                                    len: title_text.len(),
+                                    font: gpui::font("Segoe UI").bold(),
+                                    color: Default::default(),
+                                    underline: Default::default(),
+                                    strikethrough: None,
+                                    background_color: None,
+                                };
+                                let shaped = window.text_system().shape_line(
+                                    SharedString::from(title_text.clone()),
+                                    px(28.0),
+                                    &[run],
+                                    None,
+                                );
+
+                                let cursor_x = if title_text.is_empty() {
+                                    0.0
+                                } else {
+                                    let byte_index: usize = title_chars[..cursor_pos].iter().map(|c| c.len_utf8()).sum();
+                                    f32::from(shaped.x_for_index(byte_index))
+                                };
+
+                                let (sel_x1, sel_w) = if let Some((s_start, s_end)) = selection_range {
+                                    if !title_text.is_empty() {
+                                        let b1: usize = title_chars[..s_start.min(title_chars.len())].iter().map(|c| c.len_utf8()).sum();
+                                        let b2: usize = title_chars[..s_end.min(title_chars.len())].iter().map(|c| c.len_utf8()).sum();
+                                        let x1 = f32::from(shaped.x_for_index(b1));
+                                        let x2 = f32::from(shaped.x_for_index(b2));
+                                        (x1, (x2 - x1).max(0.0))
+                                    } else {
+                                        (0.0, 0.0)
+                                    }
+                                } else {
+                                    (0.0, 0.0)
+                                };
+
+                                let display_title = if title_text.is_empty() {
+                                    if is_title_focused {
+                                        String::new()
+                                    } else {
+                                        note_title.clone()
+                                    }
+                                } else {
+                                    title_text.clone()
+                                };
 
                                 this.child(
                                     div()
                                         .id("note-title-panel")
-                                        .h(px(Self::NOTE_TITLE_HEIGHT))
                                         .w_full()
                                         .flex()
                                         .flex_row()
                                         .items_center()
-                                        .pl(px(80.0))
+                                        .pl(px(48.0))
                                         .pr_4()
+                                        .pt(px(2.0))
+                                        .pb(px(0.0))
                                         .bg(theme.bg_editor)
                                         .child(
                                             div()
                                                 .id("note-title-input")
+                                                .relative()
+                                                .h(px(36.0))
                                                 .track_focus(&self.title_focus_handle)
                                                 .cursor(gpui::CursorStyle::IBeam)
                                                 .flex()
                                                 .flex_row()
                                                 .items_center()
-                                                .text_size(px(28.0))
-                                                .font_weight(gpui::FontWeight::BOLD)
-                                                .text_color(rgb(0xf44336))
-                                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                                .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                                    cx.stop_propagation();
                                                     window.focus(&this.title_focus_handle);
-                                                    this.title_cursor_pos = this.title_edit_text.chars().count();
+                                                    this.title_is_focused = true;
+                                                    this.reset_title_cursor_blink(cx);
+
+                                                    let click_x: f32 = event.position.x.into();
+                                                    let editor_left_x = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
+                                                    let title_left_x = editor_left_x + 48.0;
+                                                    let rel_x = (click_x - title_left_x).max(0.0);
+
+                                                    let clicked_pos = if this.title_edit_text.is_empty() {
+                                                        0
+                                                    } else {
+                                                        let run = gpui::TextRun {
+                                                            len: this.title_edit_text.len(),
+                                                            font: gpui::font("Segoe UI").bold(),
+                                                            color: Default::default(),
+                                                            underline: Default::default(),
+                                                            strikethrough: None,
+                                                            background_color: None,
+                                                        };
+                                                        let shaped = window.text_system().shape_line(
+                                                            SharedString::from(this.title_edit_text.clone()),
+                                                            px(28.0),
+                                                            &[run],
+                                                            None,
+                                                        );
+                                                        let byte_idx = shaped.closest_index_for_x(px(rel_x));
+                                                        this.title_edit_text[..byte_idx.min(this.title_edit_text.len())].chars().count()
+                                                    };
+
+                                                    if event.click_count == 2 {
+                                                        this.title_selection_anchor = Some(0);
+                                                        this.title_cursor_pos = this.title_edit_text.chars().count();
+                                                        this.title_is_mouse_selecting = false;
+                                                    } else if event.modifiers.shift {
+                                                        if this.title_selection_anchor.is_none() {
+                                                            this.title_selection_anchor = Some(this.title_cursor_pos);
+                                                        }
+                                                        this.title_cursor_pos = clicked_pos;
+                                                        this.title_is_mouse_selecting = true;
+                                                    } else {
+                                                        this.title_cursor_pos = clicked_pos;
+                                                        this.title_selection_anchor = Some(clicked_pos);
+                                                        this.title_is_mouse_selecting = true;
+                                                    }
                                                     cx.notify();
                                                 }))
                                                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                                                    cx.stop_propagation();
                                                     this.handle_title_key(event, window, cx);
                                                 }))
-                                                .when(is_title_focused, |s| {
-                                                    if title_chars.is_empty() {
-                                                        s.child(
-                                                            div()
-                                                                .w(px(2.5))
-                                                                .h(px(28.0))
-                                                                .bg(rgb(0xf44336))
-                                                                .rounded_xs(),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .text_color(rgba(0xf4433666))
-                                                                .child("Untitled"),
-                                                        )
-                                                    } else {
-                                                        s.child(title_before)
-                                                            .child(
-                                                                div()
-                                                                    .w(px(2.5))
-                                                                    .h(px(28.0))
-                                                                    .bg(rgb(0xf44336))
-                                                                    .rounded_xs(),
-                                                            )
-                                                            .child(title_after)
-                                                    }
+                                                .when(selection_range.is_some() && sel_w > 0.0, |s| {
+                                                    s.child(
+                                                        div()
+                                                            .absolute()
+                                                            .left(px(sel_x1))
+                                                            .top(px(4.0))
+                                                            .w(px(sel_w))
+                                                            .h(px(28.0))
+                                                            .bg(theme.selection_bg)
+                                                            .rounded_xs(),
+                                                    )
                                                 })
-                                                .when(!is_title_focused, |s| {
-                                                    s.child(if title_text.is_empty() {
-                                                        note_title.clone()
-                                                    } else {
-                                                        title_text.clone()
-                                                    })
+                                                .child(
+                                                    div()
+                                                        .font_family("Segoe UI")
+                                                        .font_weight(gpui::FontWeight::BOLD)
+                                                        .text_size(px(28.0))
+                                                        .line_height(px(36.0))
+                                                        .text_color(rgb(0xf44336))
+                                                        .child(display_title),
+                                                )
+                                                .when(title_text.is_empty() && is_title_focused, |s| {
+                                                    s.child(
+                                                        div()
+                                                            .absolute()
+                                                            .left_0()
+                                                            .top_0()
+                                                            .h(px(36.0))
+                                                            .font_family("Segoe UI")
+                                                            .font_weight(gpui::FontWeight::BOLD)
+                                                            .text_size(px(28.0))
+                                                            .line_height(px(36.0))
+                                                            .text_color(rgba(0xf4433666))
+                                                            .child("Untitled"),
+                                                    )
+                                                })
+                                                .when(is_title_focused && self.title_cursor_visible && selection_range.is_none(), |s| {
+                                                    s.child(
+                                                        div()
+                                                            .absolute()
+                                                            .left(px(cursor_x))
+                                                            .top(px(5.0))
+                                                            .w(px(2.0))
+                                                            .h(px(26.0))
+                                                            .bg(rgb(0xf44336))
+                                                            .rounded_xs(),
+                                                    )
                                                 }),
                                         ),
                                 )
@@ -2748,7 +3083,7 @@ impl Render for AppView {
                                             .track_scroll(self.editor_scroll_handle.clone())
                                             .size_full()
                                             .px_8()
-                                            .pt_0()
+                                            .pt(px(4.0))
                                             .pb_6()
                                         )
                                         .when(show_scrollbar, |c| {
@@ -2766,7 +3101,7 @@ impl Render for AppView {
                                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                                                         cx.stop_propagation();
                                                         let click_y: f32 = event.position.y.into();
-                                                        let click_rel_y = (click_y - editor_top_y).max(0.0);
+                                                        let click_rel_y = (click_y - 78.0).max(0.0);
                                                         let target_fraction = (click_rel_y / editor_h).clamp(0.0, 1.0);
                                                         let target_scroll_y = target_fraction * max_scroll_content;
                                                         this.set_editor_scroll_top(target_scroll_y);
