@@ -52,6 +52,14 @@ pub struct AppView {
     pub active_color_picker: Option<&'static str>,
     pub custom_hex_input: String,
     pub custom_hex_focus_handle: FocusHandle,
+    pub hex_is_focused: bool,
+    pub hex_cursor_visible: bool,
+    pub hex_cursor_blink_epoch: usize,
+    pub hex_cursor_pos: usize,
+    pub hex_selection_anchor: Option<usize>,
+    pub hex_is_mouse_selecting: bool,
+    pub hex_mouse_drag_start_x: Option<f32>,
+    pub hex_box_origin_x: std::rc::Rc<Cell<f32>>,
 }
 
 impl AppView {
@@ -119,7 +127,51 @@ impl AppView {
             active_color_picker: None,
             custom_hex_input: String::new(),
             custom_hex_focus_handle: cx.focus_handle(),
+            hex_is_focused: false,
+            hex_cursor_visible: true,
+            hex_cursor_blink_epoch: 0,
+            hex_cursor_pos: 0,
+            hex_selection_anchor: None,
+            hex_is_mouse_selecting: false,
+            hex_mouse_drag_start_x: None,
+            hex_box_origin_x: std::rc::Rc::new(Cell::new(0.0)),
         }
+    }
+
+    pub fn hex_selection_range(&self) -> Option<(usize, usize)> {
+        if let Some(anchor) = self.hex_selection_anchor {
+            let pos = self.hex_cursor_pos;
+            if anchor != pos {
+                return Some((anchor.min(pos), anchor.max(pos)));
+            }
+        }
+        None
+    }
+
+    pub fn reset_hex_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.hex_cursor_visible = true;
+        self.hex_cursor_blink_epoch = self.hex_cursor_blink_epoch.wrapping_add(1);
+        let epoch = self.hex_cursor_blink_epoch;
+        let entity = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let timer_executor = cx.background_executor().clone();
+        cx.foreground_executor().spawn(async move {
+            loop {
+                timer_executor.timer(std::time::Duration::from_millis(530)).await;
+                let should_continue = entity.update(&mut async_cx, |this, cx| {
+                    if this.hex_cursor_blink_epoch != epoch || this.active_color_picker.is_none() || !this.hex_is_focused {
+                        false
+                    } else {
+                        this.hex_cursor_visible = !this.hex_cursor_visible;
+                        cx.notify();
+                        true
+                    }
+                }).unwrap_or(false);
+                if !should_continue {
+                    break;
+                }
+            }
+        }).detach();
     }
 
     pub fn title_selection_range(&self) -> Option<(usize, usize)> {
@@ -734,40 +786,186 @@ impl AppView {
     }
 
     pub fn handle_custom_hex_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        self.reset_hex_cursor_blink(cx);
         let key = &event.keystroke.key;
+        let total_chars = self.custom_hex_input.chars().count();
+        let sel_range = self.hex_selection_range();
+
+        if event.keystroke.modifiers.control && (key.eq_ignore_ascii_case("a") || key == "ф" || key == "Ф") {
+            self.hex_selection_anchor = Some(0);
+            self.hex_cursor_pos = total_chars;
+            cx.notify();
+            return;
+        }
+
+        if event.keystroke.modifiers.control && (key.eq_ignore_ascii_case("c") || key == "с" || key == "С") {
+            let text_to_copy = if let Some((start, end)) = sel_range {
+                self.custom_hex_input.chars().skip(start).take(end - start).collect::<String>()
+            } else {
+                self.custom_hex_input.clone()
+            };
+            if !text_to_copy.is_empty() {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text_to_copy));
+            }
+            return;
+        }
+
+        if key == "escape" {
+            self.active_color_picker = None;
+            self.hex_is_focused = false;
+            self.hex_selection_anchor = None;
+            cx.notify();
+            return;
+        }
+
+        if key == "enter" {
+            self.apply_custom_hex_if_valid(cx);
+            self.active_color_picker = None;
+            self.hex_is_focused = false;
+            self.hex_selection_anchor = None;
+            cx.notify();
+            return;
+        }
+
+        if key == "arrowleft" || key == "left" {
+            if event.keystroke.modifiers.shift {
+                if self.hex_selection_anchor.is_none() {
+                    self.hex_selection_anchor = Some(self.hex_cursor_pos);
+                }
+                self.hex_cursor_pos = self.hex_cursor_pos.saturating_sub(1);
+            } else if let Some((start, _)) = sel_range {
+                self.hex_selection_anchor = None;
+                self.hex_cursor_pos = start;
+            } else {
+                self.hex_selection_anchor = None;
+                self.hex_cursor_pos = self.hex_cursor_pos.saturating_sub(1);
+            }
+            cx.notify();
+            return;
+        }
+
+        if key == "arrowright" || key == "right" {
+            if event.keystroke.modifiers.shift {
+                if self.hex_selection_anchor.is_none() {
+                    self.hex_selection_anchor = Some(self.hex_cursor_pos);
+                }
+                self.hex_cursor_pos = (self.hex_cursor_pos + 1).min(total_chars);
+            } else if let Some((_, end)) = sel_range {
+                self.hex_selection_anchor = None;
+                self.hex_cursor_pos = end;
+            } else {
+                self.hex_selection_anchor = None;
+                self.hex_cursor_pos = (self.hex_cursor_pos + 1).min(total_chars);
+            }
+            cx.notify();
+            return;
+        }
+
+        if key == "home" {
+            if event.keystroke.modifiers.shift {
+                if self.hex_selection_anchor.is_none() {
+                    self.hex_selection_anchor = Some(self.hex_cursor_pos);
+                }
+            } else {
+                self.hex_selection_anchor = None;
+            }
+            self.hex_cursor_pos = 0;
+            cx.notify();
+            return;
+        }
+
+        if key == "end" {
+            if event.keystroke.modifiers.shift {
+                if self.hex_selection_anchor.is_none() {
+                    self.hex_selection_anchor = Some(self.hex_cursor_pos);
+                }
+            } else {
+                self.hex_selection_anchor = None;
+            }
+            self.hex_cursor_pos = total_chars;
+            cx.notify();
+            return;
+        }
+
+        let delete_selection = |input: &mut String, start: usize, end: usize| {
+            let before: String = input.chars().take(start).collect();
+            let after: String = input.chars().skip(end).collect();
+            *input = format!("{before}{after}");
+        };
+
         if key == "backspace" {
-            self.custom_hex_input.pop();
-            self.apply_custom_hex_if_valid(cx);
-            cx.notify();
-        } else if key == "escape" {
-            self.active_color_picker = None;
-            cx.notify();
-        } else if key == "enter" {
-            self.apply_custom_hex_if_valid(cx);
-            self.active_color_picker = None;
-            cx.notify();
-        } else if event.keystroke.modifiers.control && (key.eq_ignore_ascii_case("v") || key == "м" || key == "М") {
+            if let Some((start, end)) = sel_range {
+                delete_selection(&mut self.custom_hex_input, start, end);
+                self.hex_cursor_pos = start;
+                self.hex_selection_anchor = None;
+                self.apply_custom_hex_if_valid(cx);
+                cx.notify();
+            } else if self.hex_cursor_pos > 0 {
+                let mut chars: Vec<char> = self.custom_hex_input.chars().collect();
+                chars.remove(self.hex_cursor_pos - 1);
+                self.custom_hex_input = chars.into_iter().collect();
+                self.hex_cursor_pos -= 1;
+                self.apply_custom_hex_if_valid(cx);
+                cx.notify();
+            }
+            return;
+        }
+
+        if key == "delete" {
+            if let Some((start, end)) = sel_range {
+                delete_selection(&mut self.custom_hex_input, start, end);
+                self.hex_cursor_pos = start;
+                self.hex_selection_anchor = None;
+                self.apply_custom_hex_if_valid(cx);
+                cx.notify();
+            } else if self.hex_cursor_pos < total_chars {
+                let mut chars: Vec<char> = self.custom_hex_input.chars().collect();
+                chars.remove(self.hex_cursor_pos);
+                self.custom_hex_input = chars.into_iter().collect();
+                self.apply_custom_hex_if_valid(cx);
+                cx.notify();
+            }
+            return;
+        }
+
+        if event.keystroke.modifiers.control && (key.eq_ignore_ascii_case("v") || key == "м" || key == "М") {
             if let Some(item) = cx.read_from_clipboard() {
                 if let Some(text) = item.text() {
                     let filtered: String = text.trim().chars().filter(|c| c.is_ascii_hexdigit() || *c == '#').take(7).collect();
                     if !filtered.is_empty() {
-                        self.custom_hex_input = if filtered.starts_with('#') { filtered } else { format!("#{filtered}") };
+                        let formatted = if filtered.starts_with('#') { filtered } else { format!("#{filtered}") };
+                        self.custom_hex_input = formatted;
+                        self.hex_cursor_pos = self.custom_hex_input.chars().count();
+                        self.hex_selection_anchor = None;
                         self.apply_custom_hex_if_valid(cx);
                         cx.notify();
                     }
                 }
             }
+            return;
+        }
+
+        let ch = if let Some(c) = &event.keystroke.key_char {
+            c.as_str()
+        } else if key.chars().count() == 1 {
+            key.as_str()
         } else {
-            let ch = if let Some(c) = &event.keystroke.key_char {
-                c.as_str()
-            } else if key.chars().count() == 1 {
-                key.as_str()
-            } else {
-                ""
-            };
-            for c in ch.chars() {
-                if (c.is_ascii_hexdigit() || (c == '#' && self.custom_hex_input.is_empty())) && self.custom_hex_input.len() < 7 {
-                    self.custom_hex_input.push(c.to_ascii_uppercase());
+            ""
+        };
+
+        for c in ch.chars() {
+            if c.is_ascii_hexdigit() || c == '#' {
+                let upper = c.to_ascii_uppercase();
+                if let Some((start, end)) = sel_range {
+                    delete_selection(&mut self.custom_hex_input, start, end);
+                    self.hex_cursor_pos = start;
+                    self.hex_selection_anchor = None;
+                }
+                if self.custom_hex_input.chars().count() < 7 {
+                    let mut chars: Vec<char> = self.custom_hex_input.chars().collect();
+                    chars.insert(self.hex_cursor_pos, upper);
+                    self.custom_hex_input = chars.into_iter().collect();
+                    self.hex_cursor_pos += 1;
                     self.apply_custom_hex_if_valid(cx);
                     cx.notify();
                 }

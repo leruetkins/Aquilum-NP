@@ -1,7 +1,8 @@
 use crate::icons;
 use super::app_view::AppView;
 use gpui::{
-    div, prelude::*, px, rgba, Context, IntoElement, KeyDownEvent, MouseButton,
+    div, prelude::*, px, rgba, Context, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent,
 };
 
 /// Represents the navigation tabs available in the Settings modal window.
@@ -514,8 +515,11 @@ impl AppView {
                     .on_click(cx.listener(move |this: &mut AppView, _, window, cx| {
                         if this.active_color_picker == Some(picker_id) {
                             this.active_color_picker = None;
+                            this.hex_is_focused = false;
                         } else {
                             this.active_color_picker = Some(picker_id);
+                            this.hex_is_focused = true;
+                            this.reset_hex_cursor_blink(cx);
                             let curr = match picker_id {
                                 "h1-color" => this.config.editor.headings.h1.color_name.as_str(),
                                 "h2-color" => this.config.editor.headings.h2.color_name.as_str(),
@@ -526,6 +530,8 @@ impl AppView {
                                 _ => "blue",
                             };
                             this.custom_hex_input = crate::markdown::heading_color_to_hex(curr);
+                            this.hex_selection_anchor = None;
+                            this.hex_cursor_pos = this.custom_hex_input.chars().count();
                             window.focus(&this.custom_hex_focus_handle);
                         }
                         cx.notify();
@@ -550,6 +556,12 @@ impl AppView {
         let theme = &self.theme;
         let preview_rgb = crate::markdown::parse_hex_color(&self.custom_hex_input)
             .unwrap_or_else(|| crate::markdown::heading_color_to_rgb(active_color));
+        let font_id = cx.text_system().resolve_font(&gpui::font("Consolas"));
+        let char_w = cx
+            .text_system()
+            .advance(font_id, px(13.0), '0')
+            .map(|s| f32::from(s.width))
+            .unwrap_or(7.15);
 
         div()
             .id(gpui::ElementId::from((picker_id, 1usize)))
@@ -575,6 +587,7 @@ impl AppView {
             })
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.active_color_picker = None;
+                this.hex_is_focused = false;
                 cx.notify();
             }))
             // 1. Okabe-Ito colors matrix in a row (no borders!)
@@ -603,6 +616,7 @@ impl AppView {
                             .hover(|h| h.opacity(0.85))
                             .on_click(cx.listener(move |this: &mut AppView, _, _, cx| {
                                 this.active_color_picker = None;
+                                this.hex_is_focused = false;
                                 this.custom_hex_input = phex.to_string();
                                 match picker_id {
                                     "h1-color" => this.config.editor.headings.h1.color_name = pid.to_string(),
@@ -649,39 +663,127 @@ impl AppView {
                         div()
                             .id("custom-hex-input-box")
                             .track_focus(&self.custom_hex_focus_handle)
-                            .flex()
-                            .flex_row()
-                            .items_center()
+                            .relative()
                             .flex_1()
                             .min_w_0()
                             .h(px(26.0))
-                            .px_2()
                             .bg(theme.bg_sidebar)
                             .border_1()
                             .border_color(theme.border)
                             .focus(|f| f.border_color(theme.accent))
                             .rounded_md()
                             .cursor(gpui::CursorStyle::IBeam)
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                            .overflow_hidden()
+                            .child(
+                                gpui::canvas(
+                                    {
+                                        let cell = self.hex_box_origin_x.clone();
+                                        move |bounds, _, _| {
+                                            cell.set(f32::from(bounds.origin.x));
+                                        }
+                                    },
+                                    |_, _, _, _| {},
+                                )
+                                .absolute()
+                                .size_full(),
+                            )
+                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                                 window.focus(&this.custom_hex_focus_handle);
+                                this.hex_is_focused = true;
+                                this.reset_hex_cursor_blink(cx);
+
+                                let box_x = this.hex_box_origin_x.get();
+                                let click_x: f32 = event.position.x.into();
+                                let rel_x = (click_x - box_x - 8.0).max(0.0);
+                                let total_len = this.custom_hex_input.chars().count();
+                                let clicked_pos = ((rel_x / char_w).round() as usize).min(total_len);
+
+                                if event.click_count == 2 {
+                                    this.hex_selection_anchor = Some(0);
+                                    this.hex_cursor_pos = total_len;
+                                    this.hex_is_mouse_selecting = false;
+                                } else {
+                                    this.hex_cursor_pos = clicked_pos;
+                                    this.hex_selection_anchor = Some(clicked_pos);
+                                    this.hex_mouse_drag_start_x = Some(click_x);
+                                    this.hex_is_mouse_selecting = true;
+                                }
+                                cx.notify();
+                            }))
+                            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                                if !this.hex_is_mouse_selecting {
+                                    return;
+                                }
+                                let box_x = this.hex_box_origin_x.get();
+                                let curr_x: f32 = event.position.x.into();
+                                let rel_x = (curr_x - box_x - 8.0).max(0.0);
+                                let total_len = this.custom_hex_input.chars().count();
+                                let target_pos = ((rel_x / char_w).round() as usize).min(total_len);
+
+                                if this.hex_cursor_pos != target_pos {
+                                    this.hex_cursor_pos = target_pos;
+                                    cx.notify();
+                                }
+                            }))
+                            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                this.hex_is_mouse_selecting = false;
+                                this.hex_mouse_drag_start_x = None;
+                                if this.hex_selection_anchor == Some(this.hex_cursor_pos) {
+                                    this.hex_selection_anchor = None;
+                                }
                                 cx.notify();
                             }))
                             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                                 this.handle_custom_hex_key(event, cx);
                             }))
+                            // 1. Selection background
+                            .when_some(self.hex_selection_range(), |s, (start, end)| {
+                                let sel_x = 8.0 + (start as f32) * char_w;
+                                let sel_w = ((end - start) as f32) * char_w;
+                                s.child(
+                                    div()
+                                        .absolute()
+                                        .left(px(sel_x))
+                                        .top(px(4.0))
+                                        .w(px(sel_w))
+                                        .h(px(18.0))
+                                        .bg(theme.selection_bg)
+                                        .rounded_xs()
+                                )
+                            })
+                            // 2. Text or placeholder
                             .child(
                                 div()
-                                    .text_xs()
-                                    .font_family("JetBrains Mono")
+                                    .absolute()
+                                    .left(px(8.0))
+                                    .top(px(4.0))
+                                    .h(px(18.0))
+                                    .font_family("Consolas")
+                                    .text_size(px(13.0))
+                                    .line_height(px(18.0))
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(if self.custom_hex_input.is_empty() { theme.text_muted } else { theme.text_primary })
                                     .child(if self.custom_hex_input.is_empty() { "#HEX".to_string() } else { self.custom_hex_input.clone() })
                             )
+                            // 3. Caret (only shown when focused and not selecting)
+                            .when(self.hex_is_focused && self.hex_cursor_visible && self.hex_selection_range().is_none(), |s| {
+                                let cursor_x = 8.0 + (self.hex_cursor_pos as f32) * char_w;
+                                s.child(
+                                    div()
+                                        .absolute()
+                                        .left(px(cursor_x))
+                                        .top(px(4.0))
+                                        .w(px(1.5))
+                                        .h(px(18.0))
+                                        .bg(theme.accent)
+                                        .rounded_xs()
+                                )
+                            })
                     )
-                    // Paste from clipboard button
+                    // Eyedropper / Color Picker (Пипетка) button
                     .child(
                         div()
-                            .id("btn-paste-hex")
+                            .id("btn-eyedropper-picker")
                             .flex()
                             .items_center()
                             .justify_center()
@@ -693,38 +795,20 @@ impl AppView {
                             .rounded_md()
                             .cursor_pointer()
                             .hover(|h| h.bg(theme.bg_hover))
-                            .child(icons::icon(icons::ICON_PAPERCLIP, 12.0, theme.text_muted))
+                            .child(icons::icon(icons::ICON_PIPETTE, 13.0, theme.text_secondary))
                             .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(item) = cx.read_from_clipboard() {
-                                    if let Some(text) = item.text() {
-                                        let filtered: String = text.trim().chars().filter(|c| c.is_ascii_hexdigit() || *c == '#').take(7).collect();
-                                        if !filtered.is_empty() {
-                                            this.custom_hex_input = if filtered.starts_with('#') { filtered } else { format!("#{filtered}") };
-                                            this.apply_custom_hex_if_valid(cx);
-                                            cx.notify();
-                                        }
-                                    }
+                                if let Some(chosen_hex) = crate::markdown::open_system_color_picker(&this.custom_hex_input) {
+                                    this.custom_hex_input = chosen_hex;
+                                    this.apply_custom_hex_if_valid(cx);
+                                    cx.notify();
                                 }
                             }))
-                    )
-                    // Apply check button
-                    .child(
-                        div()
-                            .id("btn-apply-hex")
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .w(px(26.0))
-                            .h(px(26.0))
-                            .bg(theme.accent)
-                            .rounded_md()
-                            .cursor_pointer()
-                            .hover(|h| h.opacity(0.9))
-                            .child(icons::icon(icons::ICON_CHECK, 13.0, theme.text_on_accent))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.apply_custom_hex_if_valid(cx);
-                                this.active_color_picker = None;
-                                cx.notify();
+                            .on_mouse_down(MouseButton::Right, cx.listener(|this, _, _, cx| {
+                                if let Some(sampled_hex) = crate::markdown::sample_screen_color_at_cursor() {
+                                    this.custom_hex_input = sampled_hex;
+                                    this.apply_custom_hex_if_valid(cx);
+                                    cx.notify();
+                                }
                             }))
                     )
             )
