@@ -1191,11 +1191,6 @@ impl AppView {
         let ctrl = keystroke.modifiers.control;
         let alt = keystroke.modifiers.alt;
         let shift = keystroke.modifiers.shift;
-
-        let is_arrow = matches!(keystroke.key.as_str(), "up" | "down" | "left" | "right" | "home" | "end");
-        let t_start = if is_arrow { Some(std::time::Instant::now()) } else { None };
-
-        // Alt + Left (Navigate Back in note history)
         if alt && keystroke.key == "left" {
             self.navigate_back(_window, cx);
             return;
@@ -1367,17 +1362,6 @@ impl AppView {
         }
         self.scroll_cursor_into_view();
         cx.notify();
-        if let Some(t) = t_start {
-            crate::perf::PERF.notify_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let (v_row, v_col, line, col, offset) = if let Some(ref note) = self.state.active_note {
-                let (l, c) = note.line_col();
-                let (vr, vc) = crate::markdown::find_visual_row_for_cursor(&note.cached_visual_rows, l, c).unwrap_or((0, 0));
-                (vr, vc, l, c, note.cursor_offset)
-            } else {
-                (0, 0, 0, 0, 0)
-            };
-            crate::perf::PERF.log_key_navigation(keystroke.key.as_str(), t.elapsed(), v_row, v_col, line, col, offset);
-        }
     }
 
     fn render_navigation_bar(&self, theme: &Theme, cx: &Context<Self>) -> gpui::Stateful<Div> {
@@ -1603,7 +1587,6 @@ impl AppView {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let render_start = std::time::Instant::now();
         if !self.initial_scroll_done {
             self.initial_scroll_done = true;
             if self.initial_scroll_top > 0.0 {
@@ -3043,8 +3026,6 @@ impl Render for AppView {
                                                     let selection_range = this.state.active_note.as_ref().and_then(|n| n.selection_range());
                                                     let (cursor_line, _) = this.state.active_note.as_ref().map(|n| n.line_col()).unwrap_or((0, 0));
 
-                                                    let range_start = range.start;
-                                                    let range_end = range.end;
                                                     crate::perf::PERF.shape_calls.fetch_add(range.len() as u64, std::sync::atomic::Ordering::Relaxed);
                                                     let mut items = Vec::with_capacity(range.len());
                                                     for v_idx in range {
@@ -3236,16 +3217,6 @@ impl Render for AppView {
                                                                 ),
                                                         );
                                                     }
-                                                    let active_cursor_x = (active_col_in_row as f32) * line_char_width;
-                                                    crate::perf::PERF.log_render_frame(
-                                                        active_v_idx,
-                                                        active_col_in_row,
-                                                        active_cursor_x,
-                                                        range_start,
-                                                        range_end,
-                                                        visual_rows_count,
-                                                        render_start.elapsed(),
-                                                    );
                                                     items
                                                 }),
                                             )
@@ -3440,6 +3411,32 @@ fn render_syntax_spans(spans: Vec<crate::markdown::SyntaxSpan>, is_active_line: 
                             .child(s),
                     )
                 }
+                crate::markdown::SyntaxSpan::LinkText(l) => {
+                    Some(
+                        div()
+                            .underline()
+                            .text_color(theme.accent)
+                            .child(l),
+                    )
+                }
+                crate::markdown::SyntaxSpan::Underline(u) => {
+                    Some(
+                        div()
+                            .underline()
+                            .text_color(theme.text_primary)
+                            .child(u),
+                    )
+                }
+                crate::markdown::SyntaxSpan::Highlight(h) => {
+                    let hl_bg = if theme.is_dark { gpui::rgba(0xf9e2af44) } else { gpui::rgba(0xdf8e1d33) };
+                    Some(
+                        div()
+                            .bg(hl_bg)
+                            .text_color(theme.text_primary)
+                            .rounded_xs()
+                            .child(h),
+                    )
+                }
             }
         }))
 }
@@ -3611,6 +3608,82 @@ fn render_live_styled_row(
                     )
             }
         }
+        crate::markdown::LineKind::Heading5(_) => {
+            let rest = line.strip_prefix("##### ").unwrap_or(line);
+            let spans = crate::markdown::parse_inline_syntax_spans(rest);
+            if sub_idx == 0 {
+                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(6));
+                let mut row = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full();
+                if is_active_line {
+                    row = row.child(div().text_color(theme.text_muted).child("##### "));
+                }
+                row.child(
+                    div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme.text_secondary)
+                        .child(render_syntax_spans(row_spans, is_active_line, theme)),
+                )
+            } else {
+                let row_spans = crate::markdown::slice_syntax_spans(
+                    &spans,
+                    char_start.saturating_sub(6),
+                    char_end.saturating_sub(6),
+                );
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.text_secondary)
+                            .child(render_syntax_spans(row_spans, is_active_line, theme)),
+                    )
+            }
+        }
+        crate::markdown::LineKind::Heading6(_) => {
+            let rest = line.strip_prefix("###### ").unwrap_or(line);
+            let spans = crate::markdown::parse_inline_syntax_spans(rest);
+            if sub_idx == 0 {
+                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(7));
+                let mut row = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full();
+                if is_active_line {
+                    row = row.child(div().text_color(theme.text_muted).child("###### "));
+                }
+                row.child(
+                    div()
+                        .italic()
+                        .text_color(theme.text_muted)
+                        .child(render_syntax_spans(row_spans, is_active_line, theme)),
+                )
+            } else {
+                let row_spans = crate::markdown::slice_syntax_spans(
+                    &spans,
+                    char_start.saturating_sub(7),
+                    char_end.saturating_sub(7),
+                );
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .child(
+                        div()
+                            .italic()
+                            .text_color(theme.text_muted)
+                            .child(render_syntax_spans(row_spans, is_active_line, theme)),
+                    )
+            }
+        }
         crate::markdown::LineKind::Quote(_) => {
             let rest = line.strip_prefix("> ").unwrap_or(line);
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
@@ -3766,13 +3839,28 @@ fn render_live_styled_row(
             }
         }
         crate::markdown::LineKind::HorizontalRule => {
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .h_full()
-                .text_color(theme.border)
-                .child(line.to_string())
+            if is_active_line {
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .text_color(theme.text_muted)
+                    .child(line.to_string())
+            } else {
+                div()
+                    .w_full()
+                    .h_full()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(
+                        div()
+                            .h(px(1.0))
+                            .w_full()
+                            .bg(theme.border_subtle),
+                    )
+            }
         }
         crate::markdown::LineKind::CodeFence { is_opening, lang } => {
             if show_fences {

@@ -62,6 +62,8 @@ pub enum LineKind<'a> {
     Heading2(&'a str),
     Heading3(&'a str),
     Heading4(&'a str),
+    Heading5(&'a str),
+    Heading6(&'a str),
     Quote(&'a str),
     Task { checked: bool, text: &'a str },
     BulletList { indent: usize, text: &'a str },
@@ -101,6 +103,10 @@ pub fn classify_line<'a>(
         LineKind::Heading3(rest)
     } else if let Some(rest) = trimmed_start.strip_prefix("#### ") {
         LineKind::Heading4(rest)
+    } else if let Some(rest) = trimmed_start.strip_prefix("##### ") {
+        LineKind::Heading5(rest)
+    } else if let Some(rest) = trimmed_start.strip_prefix("###### ") {
+        LineKind::Heading6(rest)
     } else if let Some(rest) = trimmed_start.strip_prefix("> ") {
         LineKind::Quote(rest)
     } else if let Some(rest) = trimmed_start.strip_prefix("- [ ] ") {
@@ -266,6 +272,9 @@ pub enum SyntaxSpan {
     BoldItalic(String),
     InlineCode(String),
     Strikethrough(String),
+    LinkText(String),
+    Underline(String),
+    Highlight(String),
 }
 
 pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
@@ -273,6 +282,59 @@ pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
     let mut plain_accum = String::new();
 
     while !s.is_empty() {
+        // Link: [label](url)
+        if s.starts_with('[') {
+            if let Some(close_bracket) = s[1..].find(']') {
+                let after_bracket = &s[1 + close_bracket + 1..];
+                if after_bracket.starts_with('(') {
+                    if let Some(close_paren) = after_bracket[1..].find(')') {
+                        if !plain_accum.is_empty() {
+                            spans.push(SyntaxSpan::Text(std::mem::take(&mut plain_accum)));
+                        }
+                        let label = &s[1..1 + close_bracket];
+                        let url = &after_bracket[1..1 + close_paren];
+                        spans.push(SyntaxSpan::Marker("[".to_string()));
+                        spans.push(SyntaxSpan::LinkText(label.to_string()));
+                        let close_marker = format!("]({})", url);
+                        spans.push(SyntaxSpan::Marker(close_marker));
+                        let total_consumed = 1 + close_bracket + 1 + 1 + close_paren + 1;
+                        s = &s[total_consumed..];
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // HTML Underline tag: <u>...</u>
+        if s.starts_with("<u>") {
+            if let Some(end_idx) = s[3..].find("</u>") {
+                if !plain_accum.is_empty() {
+                    spans.push(SyntaxSpan::Text(std::mem::take(&mut plain_accum)));
+                }
+                spans.push(SyntaxSpan::Marker("<u>".to_string()));
+                let content = &s[3..3 + end_idx];
+                spans.push(SyntaxSpan::Underline(content.to_string()));
+                spans.push(SyntaxSpan::Marker("</u>".to_string()));
+                s = &s[3 + end_idx + 4..];
+                continue;
+            }
+        }
+
+        // Highlight: ==...==
+        if s.starts_with("==") {
+            if let Some(end_idx) = s[2..].find("==") {
+                if !plain_accum.is_empty() {
+                    spans.push(SyntaxSpan::Text(std::mem::take(&mut plain_accum)));
+                }
+                spans.push(SyntaxSpan::Marker("==".to_string()));
+                let content = &s[2..2 + end_idx];
+                spans.push(SyntaxSpan::Highlight(content.to_string()));
+                spans.push(SyntaxSpan::Marker("==".to_string()));
+                s = &s[4 + end_idx..];
+                continue;
+            }
+        }
+
         // Inline code: `...`
         if s.starts_with('`') {
             if let Some(end_idx) = s[1..].find('`') {
@@ -476,6 +538,9 @@ pub fn slice_syntax_spans(
             SyntaxSpan::BoldItalic(t) => (4, t),
             SyntaxSpan::InlineCode(t) => (5, t),
             SyntaxSpan::Strikethrough(t) => (6, t),
+            SyntaxSpan::LinkText(t) => (7, t),
+            SyntaxSpan::Underline(t) => (8, t),
+            SyntaxSpan::Highlight(t) => (9, t),
         };
 
         let span_len = text.chars().count();
@@ -494,6 +559,9 @@ pub fn slice_syntax_spans(
                     4 => SyntaxSpan::BoldItalic(sliced_str),
                     5 => SyntaxSpan::InlineCode(sliced_str),
                     6 => SyntaxSpan::Strikethrough(sliced_str),
+                    7 => SyntaxSpan::LinkText(sliced_str),
+                    8 => SyntaxSpan::Underline(sliced_str),
+                    9 => SyntaxSpan::Highlight(sliced_str),
                     _ => SyntaxSpan::Text(sliced_str),
                 };
                 result.push(sliced_span);
@@ -524,12 +592,15 @@ pub fn visual_col_to_row_char(
     for span in row_spans {
         let (is_marker, text) = match span {
             SyntaxSpan::Marker(t) => (true, t),
-            SyntaxSpan::Text(t) => (false, t),
-            SyntaxSpan::Bold(t) => (false, t),
-            SyntaxSpan::Italic(t) => (false, t),
-            SyntaxSpan::BoldItalic(t) => (false, t),
-            SyntaxSpan::InlineCode(t) => (false, t),
-            SyntaxSpan::Strikethrough(t) => (false, t),
+            SyntaxSpan::Text(t)
+            | SyntaxSpan::Bold(t)
+            | SyntaxSpan::Italic(t)
+            | SyntaxSpan::BoldItalic(t)
+            | SyntaxSpan::InlineCode(t)
+            | SyntaxSpan::Strikethrough(t)
+            | SyntaxSpan::LinkText(t)
+            | SyntaxSpan::Underline(t)
+            | SyntaxSpan::Highlight(t) => (false, t),
         };
         let span_len = text.chars().count();
         if is_marker {
@@ -560,12 +631,15 @@ pub fn row_char_to_visual_col(
     for span in row_spans {
         let (is_marker, text) = match span {
             SyntaxSpan::Marker(t) => (true, t),
-            SyntaxSpan::Text(t) => (false, t),
-            SyntaxSpan::Bold(t) => (false, t),
-            SyntaxSpan::Italic(t) => (false, t),
-            SyntaxSpan::BoldItalic(t) => (false, t),
-            SyntaxSpan::InlineCode(t) => (false, t),
-            SyntaxSpan::Strikethrough(t) => (false, t),
+            SyntaxSpan::Text(t)
+            | SyntaxSpan::Bold(t)
+            | SyntaxSpan::Italic(t)
+            | SyntaxSpan::BoldItalic(t)
+            | SyntaxSpan::InlineCode(t)
+            | SyntaxSpan::Strikethrough(t)
+            | SyntaxSpan::LinkText(t)
+            | SyntaxSpan::Underline(t)
+            | SyntaxSpan::Highlight(t) => (false, t),
         };
         let span_len = text.chars().count();
         if is_marker {
@@ -592,6 +666,8 @@ pub fn row_spans_and_hidden_prefix(
         LineKind::Heading2(_) => (line.strip_prefix("## ").unwrap_or(line), 3, if !is_active_line && v.sub_idx == 0 { 3 } else { 0 }),
         LineKind::Heading3(_) => (line.strip_prefix("### ").unwrap_or(line), 4, if !is_active_line && v.sub_idx == 0 { 4 } else { 0 }),
         LineKind::Heading4(_) => (line.strip_prefix("#### ").unwrap_or(line), 5, if !is_active_line && v.sub_idx == 0 { 5 } else { 0 }),
+        LineKind::Heading5(_) => (line.strip_prefix("##### ").unwrap_or(line), 6, if !is_active_line && v.sub_idx == 0 { 6 } else { 0 }),
+        LineKind::Heading6(_) => (line.strip_prefix("###### ").unwrap_or(line), 7, if !is_active_line && v.sub_idx == 0 { 7 } else { 0 }),
         LineKind::Quote(_) => (line.strip_prefix("> ").unwrap_or(line), 2, 0),
         LineKind::Task { .. } => {
             let p_len = if line.starts_with("- [ ] ")
@@ -628,4 +704,45 @@ pub fn row_spans_and_hidden_prefix(
     let e = v.char_end.saturating_sub(prefix_offset);
     let sliced = slice_syntax_spans(&spans, s, e);
     (sliced, hidden_heading)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_classify_all_headings() {
+        assert_eq!(classify_line("# H1", None), LineKind::Heading1("H1"));
+        assert_eq!(classify_line("## H2", None), LineKind::Heading2("H2"));
+        assert_eq!(classify_line("### H3", None), LineKind::Heading3("H3"));
+        assert_eq!(classify_line("#### H4", None), LineKind::Heading4("H4"));
+        assert_eq!(classify_line("##### H5", None), LineKind::Heading5("H5"));
+        assert_eq!(classify_line("###### H6", None), LineKind::Heading6("H6"));
+        assert_eq!(classify_line("---", None), LineKind::HorizontalRule);
+    }
+
+    #[test]
+    fn test_parse_link_and_underline_and_highlight() {
+        let input = "Обычный абзац с **жирным**, <u>HTML-подчёркиванием</u> и [ссылкой](https://example.com).";
+        let spans = parse_inline_syntax_spans(input);
+
+        assert!(spans.iter().any(|s| matches!(s, SyntaxSpan::Bold(b) if b == "жирным")));
+        assert!(spans.iter().any(|s| matches!(s, SyntaxSpan::Underline(u) if u == "HTML-подчёркиванием")));
+        assert!(spans.iter().any(|s| matches!(s, SyntaxSpan::LinkText(l) if l == "ссылкой")));
+        assert!(spans.iter().any(|s| matches!(s, SyntaxSpan::Marker(m) if m == "](https://example.com)")));
+    }
+
+    #[test]
+    fn test_visual_col_roundtrip_with_links_and_tags() {
+        let line = "A [link](https://example.com) B";
+        let spans = parse_inline_syntax_spans(line);
+        // В неактивной строке отображается "A link B" (длина: 1 + 1 + 4 + 1 + 1 = 8 символов)
+        // Исходная строка: 31 символ
+        let raw_char = 2; // Символ 'l' в "link" (в исходной строке после "A [")
+        let vis_col = row_char_to_visual_col(&spans, raw_char, false, 0);
+        assert_eq!(vis_col, 2); // 'l' в визуальной строке "A link B"
+
+        let recovered_raw = visual_col_to_row_char(&spans, vis_col, false, 0);
+        assert_eq!(recovered_raw, raw_char);
+    }
 }
