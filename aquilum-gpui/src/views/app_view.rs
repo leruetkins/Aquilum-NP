@@ -1251,12 +1251,7 @@ impl Render for AppView {
                                                 .id("sidebar-titlebar-drag-region")
                                                 .flex_1()
                                                 .h_full()
-                                                .window_control_area(WindowControlArea::Drag)
-                                                .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, window, _| {
-                                                    if event.click_count == 2 {
-                                                        window.zoom_window();
-                                                    }
-                                                })),
+                                                .window_control_area(WindowControlArea::Drag),
                                         ),
                                 ),
                         )
@@ -1587,12 +1582,7 @@ impl Render for AppView {
                                     .id("titlebar-drag-region")
                                     .flex_1()
                                     .h_full()
-                                    .window_control_area(WindowControlArea::Drag)
-                                    .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, window, _| {
-                                        if event.click_count == 2 {
-                                            window.zoom_window();
-                                        }
-                                    })),
+                                    .window_control_area(WindowControlArea::Drag),
                             )
                             // Native Windows Titlebar Control Buttons (Minimize, Maximize/Restore, Close)
                             .child(
