@@ -1395,19 +1395,38 @@ impl Render for AppView {
                                         .flex_row()
                                         .items_center()
                                         .h(px(34.0))
-                                        .rounded_t_md()
-                                        .when(is_active, |tab| {
-                                            tab.bg(theme.bg_editor)
-                                        })
                                         .when(!is_active, |tab| {
                                             tab.bg(theme.bg_sidebar)
+                                                .rounded_t_md()
                                                 .border_b_1()
                                                 .border_color(theme.border)
                                                 .hover(|h| h.bg(theme.bg_hover))
                                         });
 
                                     if is_active {
-                                        // Continuous top border between corner curves (from x=5.5 to x=W-5.5)
+                                        // 1. Solid center body fill (stops 5px before tab edges so it never bleeds into corners/vertical borders)
+                                        tab_item = tab_item.child(
+                                            div()
+                                                .id("tab-body-fill")
+                                                .absolute()
+                                                .top_0()
+                                                .bottom_0()
+                                                .left(px(5.0))
+                                                .right(px(5.0))
+                                                .bg(theme.bg_editor),
+                                        );
+                                        // 2. Solid fill mask at the baseline connecting active tab into the editor
+                                        tab_item = tab_item.child(
+                                            div()
+                                                .id("tab-bottom-cover")
+                                                .absolute()
+                                                .bottom(px(-2.0))
+                                                .left(px(5.0))
+                                                .right(px(5.0))
+                                                .h(px(3.0))
+                                                .bg(theme.bg_editor),
+                                        );
+                                        // 3. Continuous top border between corner curves (from x=5.5 to x=W-5.5)
                                         tab_item = tab_item.child(
                                             div()
                                                 .id("tab-border-top")
@@ -1418,18 +1437,7 @@ impl Render for AppView {
                                                 .h(px(1.0))
                                                 .bg(theme.border),
                                         );
-                                        // Solid fill mask at the baseline connecting active tab into the editor
-                                        tab_item = tab_item.child(
-                                            div()
-                                                .id("tab-bottom-cover")
-                                                .absolute()
-                                                .bottom(px(-2.0))
-                                                .left_0()
-                                                .right_0()
-                                                .h(px(3.0))
-                                                .bg(theme.bg_editor),
-                                        );
-                                        // Left cap (bottom concave flair + vertical line + top convex corner)
+                                        // 4. Left cap (bottom concave flair + vertical line + top convex corner)
                                         tab_item = tab_item.child(
                                             div()
                                                 .id("tab-cap-left")
@@ -1448,7 +1456,7 @@ impl Render for AppView {
                                                         .child(icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_STROKE, 14.0, 36.0, theme.border)),
                                                 ),
                                         );
-                                        // Right cap (top convex corner + vertical line + bottom concave flair)
+                                        // 5. Right cap (top convex corner + vertical line + bottom concave flair)
                                         tab_item = tab_item.child(
                                             div()
                                                 .id("tab-cap-right")
