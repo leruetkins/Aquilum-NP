@@ -857,8 +857,6 @@ impl AppView {
             .min_w_0()
             .overflow_hidden()
             .px_3()
-            .border_b_1()
-            .border_color(theme.border)
             .bg(theme.bg_editor)
             // Left: Back/Forward buttons + Breadcrumbs
             .child(
