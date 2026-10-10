@@ -2691,11 +2691,22 @@ impl Render for AppView {
                                         .pr_4()
                                         .pt(px(2.0))
                                         .pb(px(0.0))
+                                        .cursor(gpui::CursorStyle::IBeam)
                                         .bg(theme.bg_editor)
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                            window.focus(&this.title_focus_handle);
+                                            this.title_is_focused = true;
+                                            this.reset_title_cursor_blink(cx);
+                                            this.title_cursor_pos = 0;
+                                            this.title_selection_anchor = None;
+                                            cx.notify();
+                                        }))
                                         .child(
                                             div()
                                                 .id("note-title-input")
                                                 .relative()
+                                                .flex_1()
+                                                .min_w_0()
                                                 .h(px(36.0))
                                                 .track_focus(&self.title_focus_handle)
                                                 .cursor(gpui::CursorStyle::IBeam)
