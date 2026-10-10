@@ -613,6 +613,13 @@ impl AppState {
         let core = Core::open(&app_data_dir, sink);
         let session = SessionState::load(&app_data_dir);
 
+        let valid_tabs: Vec<PathBuf> = session
+            .open_tabs
+            .iter()
+            .filter(|p| p.exists() || p.to_string_lossy() == "Welcome.md")
+            .cloned()
+            .collect();
+
         let mut state = Self {
             core,
             workspace_path: None,
@@ -622,7 +629,7 @@ impl AppState {
             search_query: String::new(),
             files: Vec::new(),
             active_note: None,
-            open_tabs: Vec::new(),
+            open_tabs: valid_tabs,
             nav_history: Vec::new(),
             nav_history_index: 0,
             status_text: "GPUI Ready • 0 WebView Processes".to_owned(),
@@ -650,19 +657,6 @@ impl AppState {
 
         if let Some(ws) = ws_to_open {
             state.open_workspace(ws);
-        }
-
-        // Restore open tabs from session (filter valid files)
-        let valid_tabs: Vec<PathBuf> = state
-            .session
-            .open_tabs
-            .iter()
-            .filter(|p| p.exists() || p.to_string_lossy() == "Welcome.md")
-            .cloned()
-            .collect();
-
-        if !valid_tabs.is_empty() {
-            state.open_tabs = valid_tabs;
         }
 
         // Restore active note
@@ -707,7 +701,8 @@ impl AppState {
         self.workspace_name = name;
         self.workspace_path = Some(path.clone());
         self.session.workspace_path = Some(path.clone());
-        self.expanded_folders.insert(path);
+        self.expanded_folders.insert(path.clone());
+        self.open_tabs.retain(|p| p.starts_with(&path) || p.to_string_lossy() == "Welcome.md");
         self.reload_file_tree();
         self.status_text = format!("Workspace: {}", self.workspace_name);
         self.save_session_state();

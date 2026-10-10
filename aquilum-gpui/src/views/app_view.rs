@@ -81,7 +81,7 @@ impl AppView {
             search_focus_handle: cx.focus_handle(),
             editor_scroll_handle: UniformListScrollHandle::new(),
             sidebar_scroll_handle: ScrollHandle::new(),
-            need_scroll_sidebar_to_active: Cell::new(true),
+            need_scroll_sidebar_to_active: Cell::new(false),
             initial_sidebar_scroll_done: Cell::new(false),
             edit_mode,
             is_mouse_selecting: false,
@@ -429,7 +429,7 @@ impl AppView {
         }
     }
 
-    fn select_note(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    fn select_note(&mut self, path: PathBuf, center_in_sidebar: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_title_rename_internal();
         if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
@@ -447,7 +447,9 @@ impl AppView {
             self.title_selection_anchor = None;
             self.title_is_mouse_selecting = false;
         }
-        self.need_scroll_sidebar_to_active.set(true);
+        if center_in_sidebar {
+            self.need_scroll_sidebar_to_active.set(true);
+        }
         window.focus(&self.focus_handle);
         cx.notify();
     }
@@ -630,7 +632,7 @@ impl AppView {
             cx.notify();
         } else if key == "enter" {
             if let Some(first_match) = self.first_matching_file(&self.state.file_tree) {
-                self.select_note(first_match, window, cx);
+                self.select_note(first_match, true, window, cx);
             }
         } else if event.keystroke.modifiers.control {
             if key.eq_ignore_ascii_case("s") || key == "ы" || key == "Ы" {
@@ -1099,7 +1101,7 @@ impl AppView {
                                 .child(display_name),
                         )
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.select_note(file_path.clone(), window, cx);
+                            this.select_note(file_path.clone(), false, window, cx);
                         }));
 
                     acc.push(file_row.into_any_element());
@@ -2041,7 +2043,7 @@ impl Render for AppView {
                                                     })
                                                     .on_click(cx.listener(move |this, _, window, cx| {
                                                         if this.state.active_note.as_ref().map(|n| &n.path != &tab_path_for_select).unwrap_or(true) {
-                                                            this.select_note(tab_path_for_select.clone(), window, cx);
+                                                            this.select_note(tab_path_for_select.clone(), true, window, cx);
                                                         } else {
                                                             this.need_scroll_sidebar_to_active.set(true);
                                                             this.state.reveal_path_in_tree(&tab_path_for_select);
@@ -2330,14 +2332,21 @@ impl Render for AppView {
                                 self.initial_sidebar_scroll_done.set(true);
                                 if self.state.session.sidebar_scroll_top < 0.0 {
                                     self.sidebar_scroll_handle.set_offset(point(px(0.0), px(self.state.session.sidebar_scroll_top)));
-                                }
-                                if let Some(ix) = selected_tree_index {
-                                    self.sidebar_scroll_handle.scroll_to_item(ix);
+                                } else if let Some(ix) = selected_tree_index {
+                                    let tree_viewport_h = (f32::from(window.bounds().size.height) - 144.0).max(100.0);
+                                    let visible_items = (tree_viewport_h / 26.0).floor() as usize;
+                                    let half = (visible_items / 2).max(1);
+                                    let target_top_ix = ix.saturating_sub(half);
+                                    self.sidebar_scroll_handle.scroll_to_top_of_item(target_top_ix);
                                 }
                             } else if self.need_scroll_sidebar_to_active.get() {
                                 self.need_scroll_sidebar_to_active.set(false);
                                 if let Some(ix) = selected_tree_index {
-                                    self.sidebar_scroll_handle.scroll_to_item(ix);
+                                    let tree_viewport_h = (f32::from(window.bounds().size.height) - 144.0).max(100.0);
+                                    let visible_items = (tree_viewport_h / 26.0).floor() as usize;
+                                    let half = (visible_items / 2).max(1);
+                                    let target_top_ix = ix.saturating_sub(half);
+                                    self.sidebar_scroll_handle.scroll_to_top_of_item(target_top_ix);
                                 }
                             }
 
