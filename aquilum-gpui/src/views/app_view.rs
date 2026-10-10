@@ -34,6 +34,11 @@ pub struct AppView {
     pub initial_scroll_done: bool,
     pub initial_scroll_top: f32,
     pub is_hovering_close: bool,
+    pub title_focus_handle: FocusHandle,
+    pub title_edit_text: String,
+    pub title_editing_path: Option<PathBuf>,
+    pub title_cursor_pos: usize,
+    pub was_title_focused: bool,
 }
 
 impl AppView {
@@ -55,6 +60,10 @@ impl AppView {
                 initial_scroll_top = settings.scroll_top;
             }
         }
+
+        let title_editing_path = state.active_note.as_ref().map(|n| n.path.clone());
+        let title_edit_text = state.active_note.as_ref().map(|n| n.title.clone()).unwrap_or_default();
+        let title_cursor_pos = title_edit_text.chars().count();
 
         Self {
             state,
@@ -80,7 +89,38 @@ impl AppView {
             initial_scroll_done: false,
             initial_scroll_top,
             is_hovering_close: false,
+            title_focus_handle: cx.focus_handle(),
+            title_edit_text,
+            title_editing_path,
+            title_cursor_pos,
+            was_title_focused: false,
         }
+    }
+
+    pub const TAB_BAR_HEIGHT: f32 = 38.0;
+    pub const NAV_BAR_HEIGHT: f32 = 40.0;
+    pub const NOTE_TITLE_HEIGHT: f32 = 46.0;
+    pub const STATUS_BAR_HEIGHT: f32 = 28.0;
+
+    #[inline]
+    pub fn editor_top_y(&self) -> f32 {
+        Self::TAB_BAR_HEIGHT + Self::NAV_BAR_HEIGHT + if self.state.active_note.is_some() { Self::NOTE_TITLE_HEIGHT } else { 0.0 }
+    }
+
+    #[inline]
+    pub fn editor_bottom_y(&self, viewport_h: f32) -> f32 {
+        (viewport_h - Self::STATUS_BAR_HEIGHT).max(self.editor_top_y() + 50.0)
+    }
+
+    #[inline]
+    pub fn editor_height(&self, viewport_h: f32) -> f32 {
+        (viewport_h - self.editor_top_y() - Self::STATUS_BAR_HEIGHT).max(100.0)
+    }
+
+    #[inline]
+    pub fn editor_text_start_x(&self) -> f32 {
+        let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
+        editor_left_x + 32.0 + 8.0 + 40.0
     }
 
     pub fn current_scroll_top(&self) -> f32 {
@@ -309,7 +349,7 @@ impl AppView {
         let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
         let total_lines = visual_rows.len().max(1);
         let viewport_h: f32 = window.viewport_size().height.into();
-        let editor_h = (viewport_h - 106.0).max(100.0);
+        let editor_h = self.editor_height(viewport_h);
         let total_content_h = (total_lines as f32) * 24.0 + 48.0;
         let ratio = (editor_h / total_content_h).clamp(0.04, 1.0);
         let thumb_h = (editor_h * ratio).max(28.0);
@@ -336,12 +376,18 @@ impl AppView {
     }
 
     fn create_new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_title_rename_internal();
         if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
         }
         let current_scroll = self.current_scroll_top();
         self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         if let Some(_) = self.state.create_new_note() {
+            if let Some(ref note) = self.state.active_note {
+                self.title_editing_path = Some(note.path.clone());
+                self.title_edit_text = note.title.clone();
+                self.title_cursor_pos = self.title_edit_text.chars().count();
+            }
             self.edit_mode = true;
             self.word_wrap = true;
             self.set_editor_scroll_top(0.0);
@@ -351,6 +397,7 @@ impl AppView {
     }
 
     fn select_note(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_title_rename_internal();
         if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
         }
@@ -358,11 +405,19 @@ impl AppView {
         self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         self.state.open_note(path.clone());
         self.apply_note_settings_for_path(&path);
+        if let Some(ref note) = self.state.active_note {
+            self.title_editing_path = Some(note.path.clone());
+            self.title_edit_text = note.title.clone();
+            self.title_cursor_pos = self.title_edit_text.chars().count();
+        }
         window.focus(&self.focus_handle);
         cx.notify();
     }
 
     fn close_tab(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if self.state.active_note.as_ref().map(|n| n.path == path).unwrap_or(false) {
+            self.commit_title_rename_internal();
+        }
         if self.state.active_note.as_ref().map(|n| n.is_dirty && n.path == path).unwrap_or(false) {
             self.state.save_active_note();
         }
@@ -372,14 +427,21 @@ impl AppView {
             self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         }
         self.state.close_tab(path);
-        if let Some(ref note) = self.state.active_note {
-            let target_path = note.path.clone();
+        if let Some((target_path, title)) = self.state.active_note.as_ref().map(|n| (n.path.clone(), n.title.clone())) {
             self.apply_note_settings_for_path(&target_path);
+            self.title_editing_path = Some(target_path);
+            self.title_edit_text = title;
+            self.title_cursor_pos = self.title_edit_text.chars().count();
+        } else {
+            self.title_editing_path = None;
+            self.title_edit_text.clear();
+            self.title_cursor_pos = 0;
         }
         cx.notify();
     }
 
     fn navigate_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_title_rename_internal();
         if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
         }
@@ -387,12 +449,18 @@ impl AppView {
         self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         if let Some(target) = self.state.navigate_back() {
             self.apply_note_settings_for_path(&target);
+            if let Some(ref note) = self.state.active_note {
+                self.title_editing_path = Some(note.path.clone());
+                self.title_edit_text = note.title.clone();
+                self.title_cursor_pos = self.title_edit_text.chars().count();
+            }
             window.focus(&self.focus_handle);
             cx.notify();
         }
     }
 
     fn navigate_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_title_rename_internal();
         if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
         }
@@ -400,6 +468,11 @@ impl AppView {
         self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         if let Some(target) = self.state.navigate_forward() {
             self.apply_note_settings_for_path(&target);
+            if let Some(ref note) = self.state.active_note {
+                self.title_editing_path = Some(note.path.clone());
+                self.title_edit_text = note.title.clone();
+                self.title_cursor_pos = self.title_edit_text.chars().count();
+            }
             window.focus(&self.focus_handle);
             cx.notify();
         }
@@ -423,9 +496,8 @@ impl AppView {
             return;
         }
 
-        // Top of rows area: Titlebar (38px) + Nav bar (40px) + list py_6 (24px * 2) = 126px
-        let editor_rows_top_y = 126.0;
-        let editor_bottom_y = (viewport_h - 28.0).max(editor_rows_top_y + 100.0);
+        let editor_rows_top_y = self.editor_top_y();
+        let editor_bottom_y = self.editor_bottom_y(viewport_h);
         let scroll_y = self.current_scroll_top();
 
         // Edge autoscroll when dragging outside or near the top/bottom bounds
@@ -446,8 +518,7 @@ impl AppView {
             .advance(font_id, px(14.0), 'x')
             .map(|s| f32::from(s.width))
             .unwrap_or(7.7);
-        let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
-        let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
+        let text_start_x = self.editor_text_start_x();
         let line_h = 24.0;
         let word_wrap = self.word_wrap;
         let wrap_cols = self.last_wrap_cols;
@@ -525,6 +596,183 @@ impl AppView {
             } else if key.chars().count() == 1 {
                 self.state.search_query.push_str(key);
                 cx.notify();
+            }
+        }
+    }
+
+    fn commit_title_rename_internal(&mut self) -> bool {
+        let Some(ref note) = self.state.active_note else {
+            return false;
+        };
+        let current_path = note.path.clone();
+        let current_title = note.title.clone();
+        let new_title = self.title_edit_text.trim();
+
+        if new_title.is_empty() {
+            self.title_edit_text = current_title;
+            self.title_cursor_pos = self.title_edit_text.chars().count();
+            return false;
+        }
+
+        if new_title != current_title {
+            match self.state.rename_note(&current_path, new_title) {
+                Ok(new_path) => {
+                    self.title_editing_path = Some(new_path);
+                    self.title_edit_text = new_title.to_string();
+                    self.title_cursor_pos = self.title_edit_text.chars().count();
+                    return true;
+                }
+                Err(err) => {
+                    self.state.status_text = format!("Rename failed: {}", err);
+                    self.title_edit_text = current_title;
+                    self.title_cursor_pos = self.title_edit_text.chars().count();
+                    return false;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn commit_title_rename(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.commit_title_rename_internal() {
+            cx.notify();
+        }
+    }
+
+    fn handle_title_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = &event.keystroke.key;
+        let ctrl = event.keystroke.modifiers.control;
+
+        if key == "enter" || key == "tab" {
+            self.commit_title_rename(window, cx);
+            window.focus(&self.focus_handle);
+            cx.notify();
+            return;
+        }
+
+        if key == "escape" {
+            if let Some(ref note) = self.state.active_note {
+                self.title_edit_text = note.title.clone();
+                self.title_cursor_pos = self.title_edit_text.chars().count();
+            }
+            window.focus(&self.focus_handle);
+            cx.notify();
+            return;
+        }
+
+        if key == "down" {
+            self.commit_title_rename(window, cx);
+            if let Some(ref mut note) = self.state.active_note {
+                note.cursor_offset = 0;
+                note.selection_anchor = None;
+            }
+            window.focus(&self.focus_handle);
+            cx.notify();
+            return;
+        }
+
+        if key == "backspace" {
+            let mut chars: Vec<char> = self.title_edit_text.chars().collect();
+            let pos = self.title_cursor_pos.min(chars.len());
+            if pos > 0 {
+                chars.remove(pos - 1);
+                self.title_cursor_pos = pos - 1;
+                self.title_edit_text = chars.into_iter().collect();
+                cx.notify();
+            }
+            return;
+        }
+
+        if key == "delete" {
+            let mut chars: Vec<char> = self.title_edit_text.chars().collect();
+            let pos = self.title_cursor_pos.min(chars.len());
+            if pos < chars.len() {
+                chars.remove(pos);
+                self.title_edit_text = chars.into_iter().collect();
+                cx.notify();
+            }
+            return;
+        }
+
+        if key == "left" {
+            self.title_cursor_pos = self.title_cursor_pos.saturating_sub(1);
+            cx.notify();
+            return;
+        }
+
+        if key == "right" {
+            let count = self.title_edit_text.chars().count();
+            self.title_cursor_pos = (self.title_cursor_pos + 1).min(count);
+            cx.notify();
+            return;
+        }
+
+        if key == "home" {
+            self.title_cursor_pos = 0;
+            cx.notify();
+            return;
+        }
+
+        if key == "end" {
+            self.title_cursor_pos = self.title_edit_text.chars().count();
+            cx.notify();
+            return;
+        }
+
+        if ctrl && (key.eq_ignore_ascii_case("s") || key == "ы" || key == "Ы") {
+            self.commit_title_rename(window, cx);
+            self.save_note(window, cx);
+            return;
+        }
+
+        if ctrl && (key.eq_ignore_ascii_case("v") || key == "м" || key == "М") {
+            if let Some(item) = cx.read_from_clipboard() {
+                if let Some(text) = item.text() {
+                    let invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*', '\n', '\r', '\t'];
+                    let filtered: String = text
+                        .chars()
+                        .filter(|c| !invalid_chars.contains(c) && !c.is_control())
+                        .collect();
+                    if !filtered.is_empty() {
+                        let mut chars: Vec<char> = self.title_edit_text.chars().collect();
+                        let pos = self.title_cursor_pos.min(chars.len());
+                        for (i, c) in filtered.chars().enumerate() {
+                            chars.insert(pos + i, c);
+                        }
+                        self.title_cursor_pos = pos + filtered.chars().count();
+                        self.title_edit_text = chars.into_iter().collect();
+                        cx.notify();
+                    }
+                }
+            }
+            return;
+        }
+
+        if !ctrl && !event.keystroke.modifiers.alt && !event.keystroke.modifiers.platform {
+            let invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*', '\n', '\r', '\t'];
+            let text_to_insert = if let Some(ch) = &event.keystroke.key_char {
+                Some(ch.as_str())
+            } else if key.chars().count() == 1 {
+                Some(key.as_str())
+            } else {
+                None
+            };
+
+            if let Some(text) = text_to_insert {
+                let filtered: String = text
+                    .chars()
+                    .filter(|c| !invalid_chars.contains(c) && !c.is_control())
+                    .collect();
+                if !filtered.is_empty() {
+                    let mut chars: Vec<char> = self.title_edit_text.chars().collect();
+                    let pos = self.title_cursor_pos.min(chars.len());
+                    for (i, c) in filtered.chars().enumerate() {
+                        chars.insert(pos + i, c);
+                    }
+                    self.title_cursor_pos = pos + filtered.chars().count();
+                    self.title_edit_text = chars.into_iter().collect();
+                    cx.notify();
+                }
             }
         }
     }
@@ -1091,6 +1339,24 @@ impl Render for AppView {
                 ws.y = geom.3;
             }
             ws.save(&crate::state::app_data_dir());
+        }
+
+        let is_title_focused = self.title_focus_handle.is_focused(window);
+        if self.was_title_focused && !is_title_focused {
+            self.commit_title_rename_internal();
+        }
+        self.was_title_focused = is_title_focused;
+
+        if let Some(ref note) = self.state.active_note {
+            if self.title_editing_path.as_ref() != Some(&note.path) {
+                self.title_editing_path = Some(note.path.clone());
+                self.title_edit_text = note.title.clone();
+                self.title_cursor_pos = self.title_edit_text.chars().count();
+            }
+        } else {
+            self.title_editing_path = None;
+            self.title_edit_text.clear();
+            self.title_cursor_pos = 0;
         }
 
         self.theme = Theme::from_config(&self.config.ui.theme, Some(window.appearance()));
@@ -2068,6 +2334,12 @@ impl Render for AppView {
                             // Панель навигации (Obsidian-style) сразу под вкладками
                             .child(self.render_navigation_bar(theme, cx))
                             .when_some(self.state.active_note.as_ref(), |this, note| {
+                                let note_title = note
+                                    .path
+                                    .file_stem()
+                                    .map(|s| s.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| "Untitled".to_string());
+
                                 let lines: Vec<String> = note.content.split('\n').map(String::from).collect();
                                 let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
                                 let (cursor_line, cursor_col) = note.line_col();
@@ -2085,14 +2357,13 @@ impl Render for AppView {
                                 let code_states = crate::markdown::analyze_code_blocks(&line_refs);
                                 let active_block_id: Option<usize> = if is_editing {
                                     code_states.get(cursor_line).and_then(|s| s.as_ref()).map(|s| s.block_id)
-                                } else {
+                                    } else {
                                     None
                                 };
                                 let line_h = px(24.0);
                                 let cursor_h = px(16.0);
                                 let cursor_top = 4.0;
-                                let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
-                                let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
+                                let text_start_x = self.editor_text_start_x();
 
                                 let lines_arc = Arc::new(lines);
                                 let visual_rows_arc = Arc::new(visual_rows);
@@ -2103,7 +2374,8 @@ impl Render for AppView {
                                 let visual_rows_count = visual_rows_arc.len();
 
                                 let viewport_h: f32 = window.viewport_size().height.into();
-                                let editor_h = (viewport_h - 106.0).max(100.0);
+                                let editor_h = self.editor_height(viewport_h);
+                                let editor_top_y = self.editor_top_y();
                                 let total_content_h = (visual_rows_count as f32) * 24.0 + 48.0;
                                 let show_scrollbar = total_content_h > editor_h;
                                 let max_scroll_content = (total_content_h - editor_h).max(1.0);
@@ -2126,7 +2398,79 @@ impl Render for AppView {
                                     f32::from(-offset.y).max(0.0)
                                 };
 
+                                let is_title_focused = self.title_focus_handle.is_focused(window);
+                                let title_text = &self.title_edit_text;
+                                let title_chars: Vec<char> = title_text.chars().collect();
+                                let cursor_pos = self.title_cursor_pos.min(title_chars.len());
+                                let title_before: String = title_chars[..cursor_pos].iter().collect();
+                                let title_after: String = title_chars[cursor_pos..].iter().collect();
+
                                 this.child(
+                                    div()
+                                        .id("note-title-panel")
+                                        .h(px(Self::NOTE_TITLE_HEIGHT))
+                                        .w_full()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .pl(px(80.0))
+                                        .pr_4()
+                                        .bg(theme.bg_editor)
+                                        .child(
+                                            div()
+                                                .id("note-title-input")
+                                                .track_focus(&self.title_focus_handle)
+                                                .cursor(gpui::CursorStyle::IBeam)
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .text_size(px(28.0))
+                                                .font_weight(gpui::FontWeight::BOLD)
+                                                .text_color(rgb(0xf44336))
+                                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                                    window.focus(&this.title_focus_handle);
+                                                    this.title_cursor_pos = this.title_edit_text.chars().count();
+                                                    cx.notify();
+                                                }))
+                                                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                                                    this.handle_title_key(event, window, cx);
+                                                }))
+                                                .when(is_title_focused, |s| {
+                                                    if title_chars.is_empty() {
+                                                        s.child(
+                                                            div()
+                                                                .w(px(2.5))
+                                                                .h(px(28.0))
+                                                                .bg(rgb(0xf44336))
+                                                                .rounded_xs(),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_color(rgba(0xf4433666))
+                                                                .child("Untitled"),
+                                                        )
+                                                    } else {
+                                                        s.child(title_before)
+                                                            .child(
+                                                                div()
+                                                                    .w(px(2.5))
+                                                                    .h(px(28.0))
+                                                                    .bg(rgb(0xf44336))
+                                                                    .rounded_xs(),
+                                                            )
+                                                            .child(title_after)
+                                                    }
+                                                })
+                                                .when(!is_title_focused, |s| {
+                                                    s.child(if title_text.is_empty() {
+                                                        note_title.clone()
+                                                    } else {
+                                                        title_text.clone()
+                                                    })
+                                                }),
+                                        ),
+                                )
+                                .child(
                                     div()
                                         .id("note-editor-container")
                                         .relative()
@@ -2143,6 +2487,7 @@ impl Render for AppView {
                                             if this.is_resizing_sidebar {
                                                 return;
                                             }
+                                            this.commit_title_rename(window, cx);
                                             window.focus(&this.focus_handle);
                                             this.is_mouse_selecting = true;
                                             if let Some(ref mut n) = this.state.active_note {
@@ -2403,7 +2748,8 @@ impl Render for AppView {
                                             .track_scroll(self.editor_scroll_handle.clone())
                                             .size_full()
                                             .px_8()
-                                            .py_6()
+                                            .pt_0()
+                                            .pb_6()
                                         )
                                         .when(show_scrollbar, |c| {
                                             c.child(
@@ -2420,7 +2766,7 @@ impl Render for AppView {
                                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                                                         cx.stop_propagation();
                                                         let click_y: f32 = event.position.y.into();
-                                                        let click_rel_y = (click_y - 78.0).max(0.0);
+                                                        let click_rel_y = (click_y - editor_top_y).max(0.0);
                                                         let target_fraction = (click_rel_y / editor_h).clamp(0.0, 1.0);
                                                         let target_scroll_y = target_fraction * max_scroll_content;
                                                         this.set_editor_scroll_top(target_scroll_y);

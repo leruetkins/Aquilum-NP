@@ -795,10 +795,7 @@ impl AppState {
             }
             i += 1;
         }
-        let default_text = format!(
-            "# {}\n\n",
-            new_path.file_stem().unwrap().to_string_lossy()
-        );
+        let default_text = String::new();
         let _ = std::fs::write(&new_path, &default_text);
         self.reload_file_tree();
         self.open_note(new_path.clone());
@@ -1035,5 +1032,104 @@ impl AppState {
         self.session.workspace_path = self.workspace_path.clone();
         let dir = app_data_dir();
         self.session.save(&dir);
+    }
+
+    pub fn rename_note(&mut self, old_path: &Path, new_title: &str) -> Result<PathBuf, String> {
+        let trimmed = new_title.trim();
+        if trimmed.is_empty() {
+            return Err("Note title cannot be empty".to_string());
+        }
+
+        let invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
+        if trimmed.chars().any(|c| invalid_chars.contains(&c) || c.is_control()) {
+            return Err("Title contains invalid characters (< > : \" / \\ | ? *)".to_string());
+        }
+
+        let ext = old_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("md");
+
+        let parent = match old_path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => {
+                if let Some(ref ws) = self.workspace_path {
+                    ws.clone()
+                } else {
+                    PathBuf::from(".")
+                }
+            }
+        };
+
+        let new_filename = format!("{}.{}", trimmed, ext);
+        let new_path = parent.join(&new_filename);
+
+        if new_path == old_path {
+            return Ok(old_path.to_path_buf());
+        }
+
+        if new_path.exists() {
+            return Err(format!("File '{}' already exists", new_filename));
+        }
+
+        // If currently open and dirty, save it before rename
+        if let Some(ref mut note) = self.active_note {
+            if note.path == old_path && note.is_dirty {
+                let _ = std::fs::write(old_path, &note.content);
+                note.is_dirty = false;
+            }
+        }
+
+        // Rename on disk if the old file exists
+        if old_path.exists() {
+            std::fs::rename(old_path, &new_path)
+                .map_err(|e| format!("Failed to rename file: {}", e))?;
+        }
+
+        // Update active note if it is the renamed note
+        if let Some(ref mut note) = self.active_note {
+            if note.path == old_path {
+                note.path = new_path.clone();
+                note.title = trimmed.to_string();
+            }
+        }
+
+        // Update open tabs
+        for tab in &mut self.open_tabs {
+            if tab == old_path {
+                *tab = new_path.clone();
+            }
+        }
+
+        // Update navigation history
+        for nav in &mut self.nav_history {
+            if nav == old_path {
+                *nav = new_path.clone();
+            }
+        }
+
+        // Update note states map
+        if let Some(settings) = self.note_states.remove(old_path) {
+            self.note_states.insert(new_path.clone(), settings);
+        }
+
+        // Update session
+        self.session.open_tabs = self.open_tabs.clone();
+        if self.session.active_note.as_deref() == Some(old_path) {
+            self.session.active_note = Some(new_path.clone());
+        }
+        if let Some(cursor) = self.session.cursor_positions.remove(old_path) {
+            self.session.cursor_positions.insert(new_path.clone(), cursor);
+        }
+        if let Some(st) = self.session.note_states.remove(old_path) {
+            self.session.note_states.insert(new_path.clone(), st);
+        }
+
+        self.reload_file_tree();
+        self.reload_files();
+        self.save_session_state();
+        self.status_text = format!("Renamed to: {}", trimmed);
+
+        Ok(new_path)
     }
 }
