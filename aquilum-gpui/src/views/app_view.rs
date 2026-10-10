@@ -1359,7 +1359,7 @@ impl Render for AppView {
                                     .flex()
                                     .flex_row()
                                     .items_end()
-                                    .gap_1()
+                                    .gap_2()
                                     .h_full()
                                     .pl_2()
                                     .min_w_0()
@@ -1377,26 +1377,80 @@ impl Render for AppView {
                                     let tab_path_for_select = tab_path.clone();
                                     let tab_path_for_close = tab_path.clone();
 
+                                    let mut tab_item = div()
+                                        .id(gpui::ElementId::from(("tab-item", idx)))
+                                        .relative()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .h(px(34.0))
+                                        .rounded_t_md()
+                                        .when(is_active, |tab| {
+                                            tab.bg(theme.bg_editor)
+                                        })
+                                        .when(!is_active, |tab| {
+                                            tab.bg(theme.bg_sidebar)
+                                                .border_b_1()
+                                                .border_color(theme.border)
+                                                .hover(|h| h.bg(theme.bg_hover))
+                                        });
+
+                                    if is_active {
+                                        // Continuous top border between corner curves (from x=5.5 to x=W-5.5)
+                                        tab_item = tab_item.child(
+                                            div()
+                                                .id("tab-border-top")
+                                                .absolute()
+                                                .top_0()
+                                                .left(px(5.5))
+                                                .right(px(5.5))
+                                                .h(px(1.0))
+                                                .bg(theme.border),
+                                        );
+                                        // Left cap (bottom concave flair + vertical line + top convex corner)
+                                        tab_item = tab_item.child(
+                                            div()
+                                                .id("tab-cap-left")
+                                                .absolute()
+                                                .top_0()
+                                                .bottom_0()
+                                                .left(px(-8.0))
+                                                .w(px(14.0))
+                                                .h(px(34.0))
+                                                .child(icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_FILL, 14.0, 34.0, theme.bg_editor))
+                                                .child(
+                                                    div()
+                                                        .absolute()
+                                                        .top_0()
+                                                        .left_0()
+                                                        .size_full()
+                                                        .child(icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_STROKE, 14.0, 34.0, theme.border)),
+                                                ),
+                                        );
+                                        // Right cap (top convex corner + vertical line + bottom concave flair)
+                                        tab_item = tab_item.child(
+                                            div()
+                                                .id("tab-cap-right")
+                                                .absolute()
+                                                .top_0()
+                                                .bottom_0()
+                                                .right(px(-8.0))
+                                                .w(px(14.0))
+                                                .h(px(34.0))
+                                                .child(icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_FILL, 14.0, 34.0, theme.bg_editor))
+                                                .child(
+                                                    div()
+                                                        .absolute()
+                                                        .top_0()
+                                                        .left_0()
+                                                        .size_full()
+                                                        .child(icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_STROKE, 14.0, 34.0, theme.border)),
+                                                ),
+                                        );
+                                    }
+
                                     tabs_bar = tabs_bar.child(
-                                        div()
-                                            .id(gpui::ElementId::from(("tab-item", idx)))
-                                            .flex()
-                                            .flex_row()
-                                            .items_center()
-                                            .h(px(34.0))
-                                            .rounded_t_md()
-                                            .when(is_active, |tab| {
-                                                tab.bg(theme.bg_editor)
-                                                    .border_t_1()
-                                                    .border_x_1()
-                                                    .border_color(theme.border)
-                                            })
-                                            .when(!is_active, |tab| {
-                                                tab.bg(theme.bg_sidebar)
-                                                    .border_b_1()
-                                                    .border_color(theme.border)
-                                                    .hover(|h| h.bg(theme.bg_hover))
-                                            })
+                                        tab_item
                                             // Tab selection area (icon + title + dirty dot)
                                             .child(
                                                 div()

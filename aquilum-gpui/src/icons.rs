@@ -39,10 +39,18 @@ pub const TERMINAL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0
 pub const ARROW_LEFT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>"#;
 pub const ARROW_RIGHT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>"#;
 pub const MORE_VERTICAL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>"#;
+pub const TAB_ACTIVE_LEFT_FILL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 34" width="14" height="34"><path d="M 14 0 C 10.686 0 8 2.686 8 6 V 26 C 8 30.418 4.418 34 0 34 H 14 Z" fill="currentColor"/></svg>"#;
+pub const TAB_ACTIVE_LEFT_STROKE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 34" width="14" height="34" fill="none"><path d="M 0.5 33.5 C 4.918 33.5 8.5 30.142 8.5 26 V 6 C 8.5 2.962 10.962 0.5 14 0.5" stroke="currentColor" stroke-width="1"/></svg>"#;
+pub const TAB_ACTIVE_RIGHT_FILL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 34" width="14" height="34"><path d="M 0 0 C 3.314 0 6 2.686 6 6 V 26 C 6 30.418 9.582 34 14 34 H 0 Z" fill="currentColor"/></svg>"#;
+pub const TAB_ACTIVE_RIGHT_STROKE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 34" width="14" height="34" fill="none"><path d="M 0 0.5 C 3.038 0.5 5.5 2.962 5.5 6 V 26 C 5.5 30.142 9.082 33.5 13.5 33.5" stroke="currentColor" stroke-width="1"/></svg>"#;
 
 pub const ICON_ARROW_LEFT: &str = "icons/arrow_left.svg";
 pub const ICON_ARROW_RIGHT: &str = "icons/arrow_right.svg";
 pub const ICON_MORE_VERTICAL: &str = "icons/more_vertical.svg";
+pub const ICON_TAB_ACTIVE_LEFT_FILL: &str = "icons/tab_active_left_fill.svg";
+pub const ICON_TAB_ACTIVE_LEFT_STROKE: &str = "icons/tab_active_left_stroke.svg";
+pub const ICON_TAB_ACTIVE_RIGHT_FILL: &str = "icons/tab_active_right_fill.svg";
+pub const ICON_TAB_ACTIVE_RIGHT_STROKE: &str = "icons/tab_active_right_stroke.svg";
 
 pub const ICON_CHEVRON_RIGHT: &str = "icons/chevron_right.svg";
 pub const ICON_CHEVRON_DOWN: &str = "icons/chevron_down.svg";
@@ -120,6 +128,10 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_ARROW_LEFT => Some(ARROW_LEFT),
             ICON_ARROW_RIGHT => Some(ARROW_RIGHT),
             ICON_MORE_VERTICAL => Some(MORE_VERTICAL),
+            ICON_TAB_ACTIVE_LEFT_FILL => Some(TAB_ACTIVE_LEFT_FILL),
+            ICON_TAB_ACTIVE_LEFT_STROKE => Some(TAB_ACTIVE_LEFT_STROKE),
+            ICON_TAB_ACTIVE_RIGHT_FILL => Some(TAB_ACTIVE_RIGHT_FILL),
+            ICON_TAB_ACTIVE_RIGHT_STROKE => Some(TAB_ACTIVE_RIGHT_STROKE),
             _ => None,
         };
         Ok(svg.map(|s| Cow::Borrowed(s.as_bytes())))
@@ -164,16 +176,30 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_ARROW_LEFT.into(),
             ICON_ARROW_RIGHT.into(),
             ICON_MORE_VERTICAL.into(),
+            ICON_TAB_ACTIVE_LEFT_FILL.into(),
+            ICON_TAB_ACTIVE_LEFT_STROKE.into(),
+            ICON_TAB_ACTIVE_RIGHT_FILL.into(),
+            ICON_TAB_ACTIVE_RIGHT_STROKE.into(),
         ])
     }
 }
 
-/// Renders an SVG icon with given dimensions and color.
+/// Renders an SVG icon with given dimensions (square) and color.
 pub fn icon(path: &'static str, size: f32, color: impl Into<Hsla>) -> Svg {
     gpui::svg()
         .path(path)
         .w(px(size))
         .h(px(size))
+        .flex_shrink_0()
+        .text_color(color.into())
+}
+
+/// Renders an SVG icon with explicit width, height and color.
+pub fn svg_sized(path: &'static str, width: f32, height: f32, color: impl Into<Hsla>) -> Svg {
+    gpui::svg()
+        .path(path)
+        .w(px(width))
+        .h(px(height))
         .flex_shrink_0()
         .text_color(color.into())
 }
