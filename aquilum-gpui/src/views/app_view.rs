@@ -3528,6 +3528,75 @@ impl Render for AppView {
                                                 );
                                             }
 
+                                            let calc_v_row_sel_range = |target_v_idx: usize| -> Option<(usize, usize)> {
+                                                let sel = selection_range.as_ref()?;
+                                                if sel.start >= sel.end {
+                                                    return None;
+                                                }
+                                                let v = visual_rows_arc.get(target_v_idx)?;
+                                                let line = &lines_arc[v.line_idx];
+                                                let line_start = line_starts_arc[v.line_idx];
+                                                let line_end = line_start + line.len();
+
+                                                if line.is_empty() {
+                                                    if sel.start <= line_start && sel.end > line_start {
+                                                        return Some((0, 1));
+                                                    } else {
+                                                        return None;
+                                                    }
+                                                }
+
+                                                let is_line_in_sel = if sel.start == sel.end {
+                                                    false
+                                                } else if line_start == line_end {
+                                                    sel.start <= line_start && sel.end > line_start
+                                                } else {
+                                                    sel.end > line_start && sel.start < line_end
+                                                };
+                                                let is_in_act_block = code_states_arc[v.line_idx]
+                                                    .as_ref()
+                                                    .map(|s| active_block_ids.contains(&s.block_id))
+                                                    .unwrap_or(false);
+                                                let is_act_line = is_editing && (v.line_idx == cursor_line || is_line_in_sel || is_in_act_block);
+                                                let code_state = code_states_arc[v.line_idx].as_ref().map(|s| (s.kind, s.lang.as_deref()));
+                                                let classified = crate::markdown::classify_line(line, code_state);
+                                                let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_act_line);
+
+                                                let byte_s = sel.start.saturating_sub(line_start).min(line.len());
+                                                let byte_e = sel.end.saturating_sub(line_start).min(line.len());
+                                                let char_s = line[..byte_s].chars().count();
+                                                let char_e = char_s + line[byte_s..byte_e].chars().count();
+
+                                                let includes_newline = v.is_last_sub && sel.end > line_end && sel.start <= line_end;
+
+                                                if byte_s < byte_e {
+                                                    let intersect_s = char_s.max(v.char_start);
+                                                    let intersect_e = char_e.min(v.char_end);
+                                                    if intersect_s <= intersect_e {
+                                                        let raw_s = intersect_s - v.char_start;
+                                                        let raw_e = intersect_e - v.char_start;
+                                                        let vis_s = crate::markdown::row_char_to_visual_col(&row_spans, raw_s, is_act_line, hidden_prefix_len);
+                                                        let mut vis_e = crate::markdown::row_char_to_visual_col(&row_spans, raw_e, is_act_line, hidden_prefix_len);
+                                                        if includes_newline {
+                                                            vis_e += 1;
+                                                        }
+                                                        if vis_s < vis_e {
+                                                            Some((vis_s, vis_e))
+                                                        } else {
+                                                            None
+                                                        }
+                                                    } else {
+                                                        None
+                                                    }
+                                                } else if includes_newline && char_s == v.char_end {
+                                                    let raw_s = v.char_end - v.char_start;
+                                                    let vis_s = crate::markdown::row_char_to_visual_col(&row_spans, raw_s, is_act_line, hidden_prefix_len);
+                                                    Some((vis_s, vis_s + 1))
+                                                } else {
+                                                    None
+                                                }
+                                            };
+
                                             for v_idx in visible_range {
                                                 let v = &visual_rows_arc[v_idx];
                                                 let line = &lines_arc[v.line_idx];
@@ -3537,7 +3606,7 @@ impl Render for AppView {
                                                     if sel.start == sel.end {
                                                         false
                                                     } else if line_start == line_end {
-                                                        sel.start <= line_start && sel.end >= line_end
+                                                        sel.start <= line_start && sel.end > line_start
                                                     } else {
                                                         sel.end > line_start && sel.start < line_end
                                                     }
@@ -3568,54 +3637,7 @@ impl Render for AppView {
                                                     "    ".to_string()
                                                 };
 
-                                                let row_sel_chars = selection_range.as_ref().and_then(|sel| {
-                                                    if sel.start >= sel.end {
-                                                        return None;
-                                                    }
-
-                                                    if line.is_empty() {
-                                                        // Пустая строка: если выделение пересекает её перевод строки, выделяем 1 фиктивный пробел (0..1)
-                                                        if sel.start <= line_start && sel.end > line_start {
-                                                            Some((0, 1))
-                                                        } else {
-                                                            None
-                                                        }
-                                                    } else {
-                                                        let byte_s = sel.start.saturating_sub(line_start).min(line.len());
-                                                        let byte_e = sel.end.saturating_sub(line_start).min(line.len());
-                                                        let char_s = line[..byte_s].chars().count();
-                                                        let char_e = char_s + line[byte_s..byte_e].chars().count();
-
-                                                        let includes_newline = v.is_last_sub && sel.end > line_end && sel.start <= line_end;
-
-                                                        if byte_s < byte_e {
-                                                            let intersect_s = char_s.max(v.char_start);
-                                                            let intersect_e = char_e.min(v.char_end);
-                                                            if intersect_s <= intersect_e {
-                                                                let raw_s = intersect_s - v.char_start;
-                                                                let raw_e = intersect_e - v.char_start;
-                                                                let vis_s = crate::markdown::row_char_to_visual_col(&row_spans, raw_s, is_active_line, hidden_prefix_len);
-                                                                let mut vis_e = crate::markdown::row_char_to_visual_col(&row_spans, raw_e, is_active_line, hidden_prefix_len);
-                                                                if includes_newline {
-                                                                    vis_e += 1;
-                                                                }
-                                                                if vis_s < vis_e {
-                                                                    Some((vis_s, vis_e))
-                                                                } else {
-                                                                    None
-                                                                }
-                                                            } else {
-                                                                None
-                                                            }
-                                                        } else if includes_newline && char_s == v.char_end {
-                                                            let raw_s = v.char_end - v.char_start;
-                                                            let vis_s = crate::markdown::row_char_to_visual_col(&row_spans, raw_s, is_active_line, hidden_prefix_len);
-                                                            Some((vis_s, vis_s + 1))
-                                                        } else {
-                                                            None
-                                                        }
-                                                    }
-                                                });
+                                                let row_sel_chars = calc_v_row_sel_range(v_idx);
 
                                                 let v_char_start = v.char_start;
                                                 let v_char_end = v.char_end;
@@ -3730,18 +3752,38 @@ impl Render for AppView {
                                                                 .when(is_closing_fence && !is_in_active_block, |s| s.bg(theme.bg_card).rounded_b_sm())
                                                                 .when(is_code_line && !is_in_active_block, |s| s.bg(theme.code_bg))
                                                                 .when_some(row_sel_chars, |s, (sel_s, sel_e)| {
+                                                                    let sel_above = if v_idx > 0 { calc_v_row_sel_range(v_idx - 1) } else { None };
+                                                                    let sel_below = if v_idx + 1 < visual_rows_arc.len() { calc_v_row_sel_range(v_idx + 1) } else { None };
+
+                                                                    let round_tl = sel_above.map_or(true, |(as_s, as_e)| sel_s < as_s || sel_s >= as_e);
+                                                                    let round_tr = sel_above.map_or(true, |(as_s, as_e)| sel_e > as_e || sel_e <= as_s);
+                                                                    let round_bl = sel_below.map_or(true, |(bs_s, bs_e)| sel_s < bs_s || sel_s >= bs_e);
+                                                                    let round_br = sel_below.map_or(true, |(bs_s, bs_e)| sel_e > bs_e || sel_e <= bs_s);
+
                                                                     let sel_x = (sel_s as f32) * row_char_w;
                                                                     let sel_w = ((sel_e - sel_s) as f32) * row_char_w;
-                                                                    s.child(
-                                                                        div()
-                                                                            .absolute()
-                                                                            .left(px(sel_x))
-                                                                            .top_0()
-                                                                            .h_full()
-                                                                            .w(px(sel_w))
-                                                                            .bg(theme.selection_bg)
-                                                                            .rounded_xs(),
-                                                                    )
+                                                                    let mut sel_rect = div()
+                                                                        .absolute()
+                                                                        .left(px(sel_x))
+                                                                        .top_0()
+                                                                        .h_full()
+                                                                        .w(px(sel_w))
+                                                                        .bg(theme.selection_bg);
+
+                                                                    if round_tl {
+                                                                        sel_rect = sel_rect.rounded_tl_xs();
+                                                                    }
+                                                                    if round_tr {
+                                                                        sel_rect = sel_rect.rounded_tr_xs();
+                                                                    }
+                                                                    if round_bl {
+                                                                        sel_rect = sel_rect.rounded_bl_xs();
+                                                                    }
+                                                                    if round_br {
+                                                                        sel_rect = sel_rect.rounded_br_xs();
+                                                                    }
+
+                                                                    s.child(sel_rect)
                                                                 })
                                                                 .child(
                                                                     div()
