@@ -33,6 +33,7 @@ pub struct AppView {
     pub last_saved_geometry: Option<(f32, f32, Option<f32>, Option<f32>, bool)>,
     pub initial_scroll_done: bool,
     pub initial_scroll_top: f32,
+    pub is_hovering_close: bool,
 }
 
 impl AppView {
@@ -78,6 +79,7 @@ impl AppView {
             last_saved_geometry,
             initial_scroll_done: false,
             initial_scroll_top,
+            is_hovering_close: false,
         }
     }
 
@@ -1611,7 +1613,7 @@ impl Render for AppView {
                                             .cursor_pointer()
                                             .window_control_area(WindowControlArea::Min)
                                             .hover(|h| h.bg(theme.bg_hover))
-                                            .child(icons::icon(icons::ICON_MINIMIZE, 11.0, theme.text_secondary))
+                                            .child(icons::icon(icons::ICON_MINIMIZE, 12.0, theme.text_secondary))
                                             .on_click(cx.listener(|_, _, window, _| {
                                                 window.minimize_window();
                                             })),
@@ -1629,14 +1631,15 @@ impl Render for AppView {
                                             .hover(|h| h.bg(theme.bg_hover))
                                             .child(icons::icon(
                                                 if is_maximized { icons::ICON_RESTORE } else { icons::ICON_MAXIMIZE },
-                                                11.0,
+                                                12.0,
                                                 theme.text_secondary,
                                             ))
                                             .on_click(cx.listener(|_, _, window, _| {
                                                 window.zoom_window();
                                             })),
                                     )
-                                    .child(
+                                    .child({
+                                        let is_hovering_close = self.is_hovering_close;
                                         div()
                                             .id("win-ctrl-close")
                                             .flex()
@@ -1646,13 +1649,23 @@ impl Render for AppView {
                                             .h_full()
                                             .cursor_pointer()
                                             .window_control_area(WindowControlArea::Close)
-                                            .hover(|h| h.bg(rgb(0xe81123)).text_color(rgb(0xffffff)))
-                                            .child(icons::icon(icons::ICON_CLOSE, 11.0, theme.text_secondary))
+                                            .hover(|h| h.bg(rgb(0xe81123)))
+                                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                                if this.is_hovering_close != *hovered {
+                                                    this.is_hovering_close = *hovered;
+                                                    cx.notify();
+                                                }
+                                            }))
+                                            .child(icons::icon(
+                                                icons::ICON_WINDOW_CLOSE,
+                                                12.0,
+                                                if is_hovering_close { rgb(0xffffff) } else { theme.text_secondary },
+                                            ))
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.save_on_exit(window);
                                                 cx.quit();
-                                            })),
-                                    ),
+                                            }))
+                                    }),
                             ),
                     ),
             )

@@ -30,9 +30,10 @@ pub const POWER: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 
 pub const ANALYSIS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/><path d="M12 12V8"/></svg>"#;
 pub const PAPERCLIP: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>"#;
 pub const CHECK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>"#;
-pub const MINIMIZE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>"#;
-pub const MAXIMIZE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><rect width="14" height="14" x="5" y="5" rx="1"/></svg>"#;
-pub const RESTORE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><rect width="11" height="11" x="8" y="5" rx="1"/><path d="M5 9v10h10"/></svg>"#;
+pub const MINIMIZE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><rect fill="currentColor" width="10" height="1" x="1" y="6"/></svg>"#;
+pub const MAXIMIZE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="none"><rect width="9" height="9" x="1.5" y="1.5" stroke="currentColor" stroke-width="1"/></svg>"#;
+pub const RESTORE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="none"><path d="M1.5 3.5H8.5V10.5H1.5V3.5Z" stroke="currentColor" stroke-width="1"/><path d="M4 2H10V8H9V9H11V1H3V3H4V2Z" fill="currentColor"/></svg>"#;
+pub const WINDOW_CLOSE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><path fill="currentColor" fill-rule="evenodd" d="M10.052 10.968 1.03 1.93l.849-.848 9.023 9.037-.849.848Z"/><path fill="currentColor" fill-rule="evenodd" d="M1.023 10.112 10.06 1.09l.848.85-9.037 9.023-.848-.85Z"/></svg>"#;
 pub const NOTE_CREATE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>"#;
 pub const CALENDAR: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></svg>"#;
 pub const TERMINAL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>"#;
@@ -85,6 +86,7 @@ pub const ICON_RESTORE: &str = "icons/restore.svg";
 pub const ICON_NOTE_CREATE: &str = "icons/note_create.svg";
 pub const ICON_CALENDAR: &str = "icons/calendar.svg";
 pub const ICON_TERMINAL: &str = "icons/terminal.svg";
+pub const ICON_WINDOW_CLOSE: &str = "icons/window_close.svg";
 
 pub struct MemoryAssetSource;
 
@@ -132,6 +134,7 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_TAB_ACTIVE_LEFT_STROKE => Some(TAB_ACTIVE_LEFT_STROKE),
             ICON_TAB_ACTIVE_RIGHT_FILL => Some(TAB_ACTIVE_RIGHT_FILL),
             ICON_TAB_ACTIVE_RIGHT_STROKE => Some(TAB_ACTIVE_RIGHT_STROKE),
+            ICON_WINDOW_CLOSE => Some(WINDOW_CLOSE),
             _ => None,
         };
         Ok(svg.map(|s| Cow::Borrowed(s.as_bytes())))
@@ -180,6 +183,7 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_TAB_ACTIVE_LEFT_STROKE.into(),
             ICON_TAB_ACTIVE_RIGHT_FILL.into(),
             ICON_TAB_ACTIVE_RIGHT_STROKE.into(),
+            ICON_WINDOW_CLOSE.into(),
         ])
     }
 }
