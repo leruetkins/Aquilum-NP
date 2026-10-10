@@ -2,12 +2,11 @@ use crate::icons;
 use crate::state::{AppState, FileNode};
 use crate::theme::Theme;
 use gpui::{
-    div, point, prelude::*, px, rgb, rgba, uniform_list, AnyElement, ClipboardItem, Context, Div, FocusHandle,
+    div, point, prelude::*, px, rgb, rgba, AnyElement, ClipboardItem, Context, Div, FocusHandle,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Render, ScrollHandle, ScrollStrategy,
-    SharedString, UniformListScrollHandle, Window, WindowControlArea,
+    SharedString, Window, WindowControlArea,
 };
 use std::cell::Cell;
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -16,7 +15,7 @@ pub struct AppView {
     pub theme: Theme,
     pub focus_handle: FocusHandle,
     pub search_focus_handle: FocusHandle,
-    pub editor_scroll_handle: UniformListScrollHandle,
+    pub editor_scroll_handle: ScrollHandle,
     pub sidebar_scroll_handle: ScrollHandle,
     pub need_scroll_sidebar_to_active: Cell<bool>,
     pub initial_sidebar_scroll_done: Cell<bool>,
@@ -91,7 +90,7 @@ impl AppView {
             theme,
             focus_handle: cx.focus_handle(),
             search_focus_handle: cx.focus_handle(),
-            editor_scroll_handle: UniformListScrollHandle::new(),
+            editor_scroll_handle: ScrollHandle::new(),
             sidebar_scroll_handle: ScrollHandle::new(),
             need_scroll_sidebar_to_active: Cell::new(false),
             initial_sidebar_scroll_done: Cell::new(false),
@@ -230,7 +229,7 @@ impl AppView {
     }
 
     pub fn current_scroll_top(&self) -> f32 {
-        let offset = self.editor_scroll_handle.0.borrow().base_handle.offset();
+        let offset = self.editor_scroll_handle.offset();
         f32::from(-offset.y).max(0.0)
     }
 
@@ -453,12 +452,38 @@ impl AppView {
         }
     }
 
-    pub fn scroll_cursor_into_view_with_strategy(&self, strategy: ScrollStrategy) {
+    pub fn heading_typography_metrics(
+        classified: &crate::markdown::LineKind<'_>,
+        headings: &aquilum_core::settings::HeadingsSettings,
+        base_line_h: f32,
+        base_char_w: f32,
+    ) -> (f32, f32, f32, f32, f32) {
+        let (h_size, is_heading) = match classified {
+            crate::markdown::LineKind::Heading1(_) => (headings.h1.font_size as f32, true),
+            crate::markdown::LineKind::Heading2(_) => (headings.h2.font_size as f32, true),
+            crate::markdown::LineKind::Heading3(_) => (headings.h3.font_size as f32, true),
+            crate::markdown::LineKind::Heading4(_) => (headings.h4.font_size as f32, true),
+            crate::markdown::LineKind::Heading5(_) => (headings.h5.font_size as f32, true),
+            crate::markdown::LineKind::Heading6(_) => (headings.h6.font_size as f32, true),
+            _ => (14.0, false),
+        };
+        if is_heading {
+            let row_h = (h_size * 1.35).round().max(base_line_h);
+            let char_w = base_char_w * (h_size / 14.0);
+            let cursor_h = (h_size * 0.88).round().max(16.0);
+            let cursor_top = ((row_h - cursor_h) / 2.0).round().max(2.0);
+            (row_h, char_w, h_size, cursor_h, cursor_top)
+        } else {
+            (base_line_h, base_char_w, 14.0, 16.0, 4.0)
+        }
+    }
+
+    pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         if let Some(ref note) = self.state.active_note {
             let (cursor_line, cursor_col) = note.line_col();
             let visual_rows = &note.cached_visual_rows;
             if let Some((v_idx, _)) = crate::markdown::find_visual_row_for_cursor(visual_rows, cursor_line, cursor_col) {
-                self.editor_scroll_handle.scroll_to_item(v_idx, strategy);
+                self.editor_scroll_handle.scroll_to_item(v_idx);
             }
         }
     }
@@ -468,36 +493,14 @@ impl AppView {
             let (cursor_line, cursor_col) = note.line_col();
             let visual_rows = &note.cached_visual_rows;
             if let Some((v_idx, _)) = crate::markdown::find_visual_row_for_cursor(visual_rows, cursor_line, cursor_col) {
-                let state = self.editor_scroll_handle.0.borrow();
-                let scroll_y = f32::from(-state.base_handle.offset().y).max(0.0);
-                let viewport_h = state.last_item_size.map(|s| f32::from(s.item.height)).unwrap_or(600.0).max(100.0);
-                drop(state);
-
-                let item_height = 24.0;
-                let first_visible_v_idx = (scroll_y / item_height).floor().max(0.0) as usize;
-                let visible_count = (viewport_h / item_height).floor().max(1.0) as usize;
-                let last_visible_v_idx = first_visible_v_idx + visible_count.saturating_sub(1);
-
-                // Если каретка уже внутри видимой области экрана (с запасом 1 строки), скролл не требуется!
-                if v_idx > first_visible_v_idx && v_idx < last_visible_v_idx {
-                    return;
-                }
-
-                if v_idx <= first_visible_v_idx {
-                    self.editor_scroll_handle.scroll_to_item(v_idx, ScrollStrategy::Top);
-                } else if v_idx >= last_visible_v_idx {
-                    self.editor_scroll_handle.scroll_to_item(v_idx, ScrollStrategy::Bottom);
-                }
+                self.editor_scroll_handle.scroll_to_item(v_idx);
             }
         }
     }
 
     fn set_editor_scroll_top(&self, scroll_y: f32) {
-        let mut state = self.editor_scroll_handle.0.borrow_mut();
-        state.deferred_scroll_to_item = None;
-        let base = &state.base_handle;
-        let offset_x = base.offset().x;
-        base.set_offset(point(offset_x, px(-scroll_y)));
+        let offset_x = self.editor_scroll_handle.offset().x;
+        self.editor_scroll_handle.set_offset(point(offset_x, px(-scroll_y)));
     }
 
     fn handle_scrollbar_drag(&mut self, current_y: f32, window: &Window, cx: &mut Context<Self>) {
@@ -508,10 +511,19 @@ impl AppView {
             return;
         };
         note.ensure_visual_cache(self.word_wrap, self.last_wrap_cols);
-        let total_lines = note.cached_visual_rows.len().max(1);
         let viewport_h: f32 = window.viewport_size().height.into();
         let editor_h = (viewport_h - 170.0).max(100.0);
-        let total_content_h = (total_lines as f32) * 24.0 + 48.0;
+        let total_content_h = {
+            let mut sum = 48.0f32;
+            let headings = &self.config.editor.headings;
+            for v in note.cached_visual_rows.iter() {
+                let line = &note.cached_lines[v.line_idx];
+                let classified = crate::markdown::classify_line(line, None);
+                let (rh, _, _, _, _) = Self::heading_typography_metrics(&classified, headings, 24.0, 7.7);
+                sum += rh;
+            }
+            sum
+        };
         let ratio = (editor_h / total_content_h).clamp(0.04, 1.0);
         let thumb_h = (editor_h * ratio).max(28.0);
         let max_scroll_content = (total_content_h - editor_h).max(1.0);
@@ -704,7 +716,6 @@ impl AppView {
             .unwrap_or(7.7);
         let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
         let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
-        let line_h = 24.0;
         let word_wrap = self.word_wrap;
         let wrap_cols = self.last_wrap_cols;
 
@@ -721,8 +732,20 @@ impl AppView {
         let target_v_idx = if rel_y <= 0.0 {
             0
         } else {
-            let idx = (rel_y / line_h).floor() as usize;
-            idx.min(visual_rows.len().saturating_sub(1))
+            let mut accumulated_y = 0.0;
+            let mut found_idx = visual_rows.len().saturating_sub(1);
+            let headings = &self.config.editor.headings;
+            for (i, v) in visual_rows.iter().enumerate() {
+                let line = &note.cached_lines[v.line_idx];
+                let classified = crate::markdown::classify_line(line, None);
+                let (rh, _, _, _, _) = Self::heading_typography_metrics(&classified, headings, 24.0, line_char_width);
+                if rel_y < accumulated_y + rh {
+                    found_idx = i;
+                    break;
+                }
+                accumulated_y += rh;
+            }
+            found_idx
         };
 
         let v = &visual_rows[target_v_idx];
@@ -733,9 +756,10 @@ impl AppView {
         let line = &note.cached_lines[v.line_idx];
         let classified = crate::markdown::classify_line(line, None);
         let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
+        let (_, row_char_w, _, _, _) = Self::heading_typography_metrics(&classified, &self.config.editor.headings, 24.0, line_char_width);
 
         let col_in_row = if pos_x > text_start_x {
-            let raw_col = ((pos_x - text_start_x) / line_char_width).round() as usize;
+            let raw_col = ((pos_x - text_start_x) / row_char_w).round() as usize;
             crate::markdown::visual_col_to_row_char(&row_spans, raw_col, is_active_line, hidden_prefix_len).min(v_len)
         } else {
             0
@@ -2990,9 +3014,6 @@ impl Render for AppView {
                                 } else {
                                     None
                                 };
-                                let line_h = px(24.0);
-                                let cursor_h = px(16.0);
-                                let cursor_top = 4.0;
                                 let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
                                 let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
 
@@ -3001,14 +3022,24 @@ impl Render for AppView {
 
                                 let viewport_h: f32 = window.viewport_size().height.into();
                                 let editor_h = (viewport_h - 170.0).max(100.0);
-                                let total_content_h = (visual_rows_count as f32) * 24.0 + 48.0;
+                                let total_content_h = {
+                                    let mut sum = 48.0f32;
+                                    let headings = &self.config.editor.headings;
+                                    for v in visual_rows_arc.iter() {
+                                        let line = &lines_arc[v.line_idx];
+                                        let classified = crate::markdown::classify_line(line, None);
+                                        let (row_h, _, _, _, _) = Self::heading_typography_metrics(&classified, headings, 24.0, line_char_width);
+                                        sum += row_h;
+                                    }
+                                    sum
+                                };
                                 let show_scrollbar = total_content_h > editor_h;
                                 let max_scroll_content = (total_content_h - editor_h).max(1.0);
                                 let (thumb_top, thumb_h) = if show_scrollbar {
                                     let ratio = (editor_h / total_content_h).clamp(0.04, 1.0);
                                     let th = (editor_h * ratio).max(28.0);
                                     let scroll_y = {
-                                        let offset = self.editor_scroll_handle.0.borrow().base_handle.offset();
+                                        let offset = self.editor_scroll_handle.offset();
                                         f32::from(-offset.y).max(0.0)
                                     };
                                     let scroll_fraction = (scroll_y / max_scroll_content).clamp(0.0, 1.0);
@@ -3019,7 +3050,7 @@ impl Render for AppView {
                                 };
                                 let is_scrollbar_dragging = self.is_dragging_scrollbar;
                                 let scroll_y_current = {
-                                    let offset = self.editor_scroll_handle.0.borrow().base_handle.offset();
+                                    let offset = self.editor_scroll_handle.offset();
                                     f32::from(-offset.y).max(0.0)
                                 };
 
@@ -3290,218 +3321,220 @@ impl Render for AppView {
                                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                                             this.handle_key(event, window, cx);
                                         }))
-                                        .child(
-                                            uniform_list(
-                                                "note-editor-uniform-list",
-                                                visual_rows_count,
-                                                cx.processor(move |this, range: Range<usize>, _window, cx| {
-                                                    let theme = &theme_copy;
-                                                    let is_editing = this.edit_mode;
-                                                    let selection_range = this.state.active_note.as_ref().and_then(|n| n.selection_range());
-                                                    let (cursor_line, _) = this.state.active_note.as_ref().map(|n| n.line_col()).unwrap_or((0, 0));
-                                                    let headings = &this.config.editor.headings;
+                                        .child({
+                                            let theme = &theme_copy;
+                                            let is_editing = self.edit_mode;
+                                            let selection_range = self.state.active_note.as_ref().and_then(|n| n.selection_range());
+                                            let (cursor_line, _) = self.state.active_note.as_ref().map(|n| n.line_col()).unwrap_or((0, 0));
+                                            let headings = &self.config.editor.headings;
 
-                                                    crate::perf::PERF.shape_calls.fetch_add(range.len() as u64, std::sync::atomic::Ordering::Relaxed);
-                                                    let mut items = Vec::with_capacity(range.len());
-                                                    for v_idx in range {
-                                                        let v = &visual_rows_arc[v_idx];
-                                                        let line = &lines_arc[v.line_idx];
-                                                        let is_current = is_editing && (v_idx == active_v_idx);
-                                                        let is_active_line = is_editing && (v.line_idx == cursor_line);
-                                                        let code_state = code_states_arc[v.line_idx].as_ref().map(|s| (s.kind, s.lang.as_deref()));
-                                                        let classified = crate::markdown::classify_line(line, code_state);
-                                                        let is_opening_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: true, .. });
-                                                        let is_closing_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: false, .. });
-                                                        let is_code_line = matches!(classified, crate::markdown::LineKind::CodeLine(_));
-                                                        let is_in_active_block = code_states_arc[v.line_idx].as_ref().map(|s| Some(s.block_id) == active_block_id).unwrap_or(false);
-                                                        let row_len = v.char_end.saturating_sub(v.char_start);
+                                            crate::perf::PERF.shape_calls.fetch_add(visual_rows_count as u64, std::sync::atomic::Ordering::Relaxed);
+                                            let mut items = Vec::with_capacity(visual_rows_count);
+                                            for v_idx in 0..visual_rows_count {
+                                                let v = &visual_rows_arc[v_idx];
+                                                let line = &lines_arc[v.line_idx];
+                                                let is_current = is_editing && (v_idx == active_v_idx);
+                                                let is_active_line = is_editing && (v.line_idx == cursor_line);
+                                                let code_state = code_states_arc[v.line_idx].as_ref().map(|s| (s.kind, s.lang.as_deref()));
+                                                let classified = crate::markdown::classify_line(line, code_state);
+                                                let is_opening_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: true, .. });
+                                                let is_closing_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: false, .. });
+                                                let is_code_line = matches!(classified, crate::markdown::LineKind::CodeLine(_));
+                                                let is_in_active_block = code_states_arc[v.line_idx].as_ref().map(|s| Some(s.block_id) == active_block_id).unwrap_or(false);
+                                                let row_len = v.char_end.saturating_sub(v.char_start);
 
-                                                        let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
-                                                        let row_spans_down = row_spans.clone();
+                                                let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
+                                                let row_spans_down = row_spans.clone();
 
-                                                        let line_number_text = if v.sub_idx == 0 {
-                                                            format!("{:>3} ", v.line_idx + 1)
-                                                        } else {
-                                                            "    ".to_string()
-                                                        };
+                                                let (row_h, row_char_w, _row_font_size, cursor_h, cursor_top) =
+                                                    Self::heading_typography_metrics(&classified, headings, 24.0, line_char_width);
 
-                                                        let line_start = line_starts_arc[v.line_idx];
-                                                        let line_end = line_start + line.len();
+                                                let line_number_text = if v.sub_idx == 0 {
+                                                    format!("{:>3} ", v.line_idx + 1)
+                                                } else {
+                                                    "    ".to_string()
+                                                };
 
-                                                        let row_sel_chars = selection_range.as_ref().and_then(|sel| {
-                                                            if sel.end > line_start && sel.start < line_end {
-                                                                let byte_s = sel.start.saturating_sub(line_start).min(line.len());
-                                                                let byte_e = sel.end.saturating_sub(line_start).min(line.len());
-                                                                if byte_s < byte_e {
-                                                                    let char_s = line[..byte_s].chars().count();
-                                                                    let char_e = char_s + line[byte_s..byte_e].chars().count();
-                                                                    let intersect_s = char_s.max(v.char_start);
-                                                                    let intersect_e = char_e.min(v.char_end);
-                                                                    if intersect_s < intersect_e {
-                                                                        let raw_s = intersect_s - v.char_start;
-                                                                        let raw_e = intersect_e - v.char_start;
-                                                                        let vis_s = crate::markdown::row_char_to_visual_col(&row_spans, raw_s, is_active_line, hidden_prefix_len);
-                                                                        let vis_e = crate::markdown::row_char_to_visual_col(&row_spans, raw_e, is_active_line, hidden_prefix_len);
-                                                                        if vis_s < vis_e {
-                                                                            Some((vis_s, vis_e))
-                                                                        } else {
-                                                                            None
-                                                                        }
-                                                                    } else {
-                                                                        None
-                                                                    }
+                                                let line_start = line_starts_arc[v.line_idx];
+                                                let line_end = line_start + line.len();
+
+                                                let row_sel_chars = selection_range.as_ref().and_then(|sel| {
+                                                    if sel.end > line_start && sel.start < line_end {
+                                                        let byte_s = sel.start.saturating_sub(line_start).min(line.len());
+                                                        let byte_e = sel.end.saturating_sub(line_start).min(line.len());
+                                                        if byte_s < byte_e {
+                                                            let char_s = line[..byte_s].chars().count();
+                                                            let char_e = char_s + line[byte_s..byte_e].chars().count();
+                                                            let intersect_s = char_s.max(v.char_start);
+                                                            let intersect_e = char_e.min(v.char_end);
+                                                            if intersect_s < intersect_e {
+                                                                let raw_s = intersect_s - v.char_start;
+                                                                let raw_e = intersect_e - v.char_start;
+                                                                let vis_s = crate::markdown::row_char_to_visual_col(&row_spans, raw_s, is_active_line, hidden_prefix_len);
+                                                                let vis_e = crate::markdown::row_char_to_visual_col(&row_spans, raw_e, is_active_line, hidden_prefix_len);
+                                                                if vis_s < vis_e {
+                                                                    Some((vis_s, vis_e))
                                                                 } else {
                                                                     None
                                                                 }
                                                             } else {
                                                                 None
                                                             }
-                                                        });
+                                                        } else {
+                                                            None
+                                                        }
+                                                    } else {
+                                                        None
+                                                    }
+                                                });
 
-                                                        let v_char_start = v.char_start;
-                                                        let v_char_end = v.char_end;
-                                                        let v_line_idx = v.line_idx;
-                                                        let v_sub_idx = v.sub_idx;
+                                                let v_char_start = v.char_start;
+                                                let v_char_end = v.char_end;
+                                                let v_line_idx = v.line_idx;
+                                                let v_sub_idx = v.sub_idx;
 
-                                                        items.push(
+                                                items.push(
+                                                    div()
+                                                        .id(gpui::ElementId::from(("v-row", v_idx)))
+                                                        .w_full()
+                                                        .flex()
+                                                        .flex_row()
+                                                        .items_center()
+                                                        .h(px(row_h))
+                                                        .py_0()
+                                                        .px_2()
+                                                        .rounded_sm()
+                                                        .cursor(gpui::CursorStyle::IBeam)
+                                                        .when(is_current, |s| s.bg(theme.bg_hover))
+                                                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                                            cx.stop_propagation();
+                                                            if this.is_resizing_sidebar {
+                                                                return;
+                                                            }
+                                                            this.is_mouse_selecting = true;
+                                                            let click_x: f32 = event.position.x.into();
+
+                                                            let col_in_row = if click_x > text_start_x {
+                                                                let raw_col = ((click_x - text_start_x) / row_char_w).round() as usize;
+                                                                crate::markdown::visual_col_to_row_char(&row_spans_down, raw_col, is_active_line, hidden_prefix_len).min(row_len)
+                                                            } else {
+                                                                0
+                                                            };
+                                                            let target_char = v_char_start + col_in_row;
+                                                            if let Some(ref mut n) = this.state.active_note {
+                                                                let offset = n.offset_for_line_col(v_line_idx, target_char);
+                                                                if event.click_count == 2 {
+                                                                    let (w_start, w_end) = n.word_range_at(offset);
+                                                                    n.selection_anchor = Some(w_start);
+                                                                    n.cursor_offset = w_end;
+                                                                } else if event.click_count >= 3 {
+                                                                    let (l_start, l_end) = n.line_range_at(offset);
+                                                                    n.selection_anchor = Some(l_start);
+                                                                    n.cursor_offset = l_end;
+                                                                } else if event.modifiers.shift {
+                                                                    if n.selection_anchor.is_none() {
+                                                                        n.selection_anchor = Some(n.cursor_offset);
+                                                                    }
+                                                                    n.cursor_offset = offset;
+                                                                } else {
+                                                                    // Single click anywhere on row places cursor and CLEARS existing selection
+                                                                    n.cursor_offset = offset;
+                                                                    n.selection_anchor = Some(offset);
+                                                                }
+                                                                n.sync_cursor();
+                                                            }
+                                                            window.focus(&this.focus_handle);
+                                                            cx.notify();
+                                                        }))
+                                                        .child(
                                                             div()
-                                                                .id(gpui::ElementId::from(("v-row", v_idx)))
-                                                                .w_full()
+                                                                .id(gpui::ElementId::from(("line-num", v_idx)))
+                                                                .w(px(40.0))
+                                                                .h(px(row_h))
+                                                                .flex()
+                                                                .items_center()
+                                                                .text_xs()
+                                                                .text_color(if is_current { theme.accent } else { theme.text_muted })
+                                                                .font_family("Consolas")
+                                                                .child(line_number_text),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .id(gpui::ElementId::from(("line-content", v_idx)))
+                                                                .relative()
                                                                 .flex()
                                                                 .flex_row()
                                                                 .items_center()
-                                                                .h(line_h)
+                                                                .flex_1()
+                                                                .h(px(row_h))
                                                                 .py_0()
-                                                                .px_2()
-                                                                .rounded_sm()
+                                                                .font_family("Consolas")
+                                                                .text_sm()
                                                                 .cursor(gpui::CursorStyle::IBeam)
-                                                                .when(is_current, |s| s.bg(theme.bg_hover))
-                                                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                                                    cx.stop_propagation();
-                                                                    if this.is_resizing_sidebar {
-                                                                        return;
-                                                                    }
-                                                                    this.is_mouse_selecting = true;
-                                                                    let click_x: f32 = event.position.x.into();
-
-                                                                    let col_in_row = if click_x > text_start_x {
-                                                                        let raw_col = ((click_x - text_start_x) / line_char_width).round() as usize;
-                                                                        crate::markdown::visual_col_to_row_char(&row_spans_down, raw_col, is_active_line, hidden_prefix_len).min(row_len)
-                                                                    } else {
-                                                                        0
-                                                                    };
-                                                                    let target_char = v_char_start + col_in_row;
-                                                                    if let Some(ref mut n) = this.state.active_note {
-                                                                        let offset = n.offset_for_line_col(v_line_idx, target_char);
-                                                                        if event.click_count == 2 {
-                                                                            let (w_start, w_end) = n.word_range_at(offset);
-                                                                            n.selection_anchor = Some(w_start);
-                                                                            n.cursor_offset = w_end;
-                                                                        } else if event.click_count >= 3 {
-                                                                            let (l_start, l_end) = n.line_range_at(offset);
-                                                                            n.selection_anchor = Some(l_start);
-                                                                            n.cursor_offset = l_end;
-                                                                        } else if event.modifiers.shift {
-                                                                            if n.selection_anchor.is_none() {
-                                                                                n.selection_anchor = Some(n.cursor_offset);
-                                                                            }
-                                                                            n.cursor_offset = offset;
-                                                                        } else {
-                                                                            // Single click anywhere on row places cursor and CLEARS existing selection
-                                                                            n.cursor_offset = offset;
-                                                                            n.selection_anchor = Some(offset);
-                                                                        }
-                                                                        n.sync_cursor();
-                                                                    }
-                                                                    window.focus(&this.focus_handle);
-                                                                    cx.notify();
-                                                                }))
+                                                                .when(is_opening_fence, |s| s.bg(theme.bg_card).rounded_t_sm())
+                                                                .when(is_closing_fence, |s| s.bg(theme.bg_card).rounded_b_sm())
+                                                                .when(is_code_line, |s| s.bg(theme.code_bg))
+                                                                .when_some(row_sel_chars, |s, (sel_s, sel_e)| {
+                                                                    let sel_x = (sel_s as f32) * row_char_w;
+                                                                    let sel_w = ((sel_e - sel_s) as f32) * row_char_w;
+                                                                    s.child(
+                                                                        div()
+                                                                            .absolute()
+                                                                            .left(px(sel_x))
+                                                                            .top_0()
+                                                                            .h_full()
+                                                                            .w(px(sel_w))
+                                                                            .bg(theme.selection_bg)
+                                                                            .rounded_xs(),
+                                                                    )
+                                                                })
                                                                 .child(
                                                                     div()
-                                                                        .id(gpui::ElementId::from(("line-num", v_idx)))
-                                                                        .w(px(40.0))
-                                                                        .h(line_h)
-                                                                        .flex()
-                                                                        .items_center()
-                                                                        .text_xs()
-                                                                        .text_color(if is_current { theme.accent } else { theme.text_muted })
-                                                                        .font_family("Consolas")
-                                                                        .child(line_number_text),
-                                                                )
-                                                                .child(
-                                                                    div()
-                                                                        .id(gpui::ElementId::from(("line-content", v_idx)))
-                                                                        .relative()
+                                                                        .h_full()
                                                                         .flex()
                                                                         .flex_row()
                                                                         .items_center()
-                                                                        .flex_1()
-                                                                        .h(line_h)
-                                                                        .py_0()
-                                                                        .font_family("Consolas")
-                                                                        .text_sm()
-                                                                        .cursor(gpui::CursorStyle::IBeam)
-                                                                        .when(is_opening_fence, |s| s.bg(theme.bg_card).rounded_t_sm())
-                                                                        .when(is_closing_fence, |s| s.bg(theme.bg_card).rounded_b_sm())
-                                                                        .when(is_code_line, |s| s.bg(theme.code_bg))
-                                                                        .when_some(row_sel_chars, |s, (sel_s, sel_e)| {
-                                                                            let sel_x = (sel_s as f32) * line_char_width;
-                                                                            let sel_w = ((sel_e - sel_s) as f32) * line_char_width;
-                                                                            s.child(
-                                                                                div()
-                                                                                    .absolute()
-                                                                                    .left(px(sel_x))
-                                                                                    .top_0()
-                                                                                    .h_full()
-                                                                                    .w(px(sel_w))
-                                                                                    .bg(theme.selection_bg)
-                                                                                    .rounded_xs(),
-                                                                            )
-                                                                        })
-                                                                        .child(
-                                                                            div()
-                                                                                .h_full()
-                                                                                .flex()
-                                                                                .flex_row()
-                                                                                .items_center()
-                                                                                .child(render_live_styled_row(
-                                                                                    line,
-                                                                                    &classified,
-                                                                                    v_char_start,
-                                                                                    v_char_end,
-                                                                                    v_sub_idx,
-                                                                                    is_active_line,
-                                                                                    is_in_active_block,
-                                                                                    headings,
-                                                                                    theme,
-                                                                                )),
-                                                                        )
-                                                                        .when(is_current, |s| {
-                                                                            let vis_cursor = crate::markdown::row_char_to_visual_col(&row_spans, active_col_in_row, is_active_line, hidden_prefix_len);
-                                                                            let cursor_x = (vis_cursor as f32) * line_char_width;
-                                                                            s.child(
-                                                                                div()
-                                                                                    .absolute()
-                                                                                    .left(px(cursor_x))
-                                                                                    .top(px(cursor_top))
-                                                                                    .w(px(2.0))
-                                                                                    .h(cursor_h)
-                                                                                    .bg(theme.accent)
-                                                                                    .rounded_xs(),
-                                                                            )
-                                                                        }),
-                                                                ),
-                                                        );
-                                                    }
-                                                    items
-                                                }),
-                                            )
-                                            .track_scroll(self.editor_scroll_handle.clone())
-                                            .size_full()
-                                            .px_8()
-                                            .pt_0()
-                                            .pb_6()
-                                        )
+                                                                        .child(render_live_styled_row(
+                                                                            line,
+                                                                            &classified,
+                                                                            v_char_start,
+                                                                            v_char_end,
+                                                                            v_sub_idx,
+                                                                            is_active_line,
+                                                                            is_in_active_block,
+                                                                            headings,
+                                                                            theme,
+                                                                        )),
+                                                                )
+                                                                .when(is_current, |s| {
+                                                                    let vis_cursor = crate::markdown::row_char_to_visual_col(&row_spans, active_col_in_row, is_active_line, hidden_prefix_len);
+                                                                    let cursor_x = (vis_cursor as f32) * row_char_w;
+                                                                    s.child(
+                                                                        div()
+                                                                            .absolute()
+                                                                            .left(px(cursor_x))
+                                                                            .top(px(cursor_top))
+                                                                            .w(px(2.0))
+                                                                            .h(px(cursor_h))
+                                                                            .bg(theme.accent)
+                                                                            .rounded_xs(),
+                                                                    )
+                                                                }),
+                                                        ),
+                                                );
+                                            }
+                                            div()
+                                                .id("note-editor-list")
+                                                .track_scroll(&self.editor_scroll_handle)
+                                                .flex()
+                                                .flex_col()
+                                                .overflow_y_scroll()
+                                                .size_full()
+                                                .px_8()
+                                                .pt_0()
+                                                .pb_6()
+                                                .children(items)
+                                        })
                                         .when(show_scrollbar, |c| {
                                             c.child(
                                                 div()
@@ -3751,14 +3784,14 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_size(px(h_size))
                     .h_full();
                 if is_active_line {
                     row = row.child(div().text_color(theme.text_muted).child("# "));
                 }
                 row.child(
                     div()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .text_size(px(h_size))
                         .text_color(h_color)
                         .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
                 )
@@ -3772,11 +3805,11 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_size(px(h_size))
                     .h_full()
                     .child(
                         div()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_size(px(h_size))
                             .text_color(h_color)
                             .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
                     )
@@ -3794,14 +3827,14 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_size(px(h_size))
                     .h_full();
                 if is_active_line {
                     row = row.child(div().text_color(theme.text_muted).child("## "));
                 }
                 row.child(
                     div()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .text_size(px(h_size))
                         .text_color(h_color)
                         .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
                 )
@@ -3815,11 +3848,11 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_size(px(h_size))
                     .h_full()
                     .child(
                         div()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_size(px(h_size))
                             .text_color(h_color)
                             .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
                     )
@@ -3837,14 +3870,14 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_size(px(h_size))
                     .h_full();
                 if is_active_line {
                     row = row.child(div().text_color(theme.text_muted).child("### "));
                 }
                 row.child(
                     div()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_size(px(h_size))
                         .text_color(h_color)
                         .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
                 )
@@ -3858,11 +3891,11 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_size(px(h_size))
                     .h_full()
                     .child(
                         div()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_size(px(h_size))
                             .text_color(h_color)
                             .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
                     )
@@ -3880,14 +3913,14 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_size(px(h_size))
                     .h_full();
                 if is_active_line {
                     row = row.child(div().text_color(theme.text_muted).child("#### "));
                 }
                 row.child(
                     div()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_size(px(h_size))
                         .text_color(h_color)
                         .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
                 )
@@ -3901,11 +3934,11 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_size(px(h_size))
                     .h_full()
                     .child(
                         div()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_size(px(h_size))
                             .text_color(h_color)
                             .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
                     )
@@ -3923,14 +3956,14 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_size(px(h_size))
                     .h_full();
                 if is_active_line {
                     row = row.child(div().text_color(theme.text_muted).child("##### "));
                 }
                 row.child(
                     div()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_size(px(h_size))
                         .text_color(h_color)
                         .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
                 )
@@ -3944,11 +3977,11 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_size(px(h_size))
                     .h_full()
                     .child(
                         div()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_size(px(h_size))
                             .text_color(h_color)
                             .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
                     )
@@ -3966,14 +3999,14 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_size(px(h_size))
                     .h_full();
                 if is_active_line {
                     row = row.child(div().text_color(theme.text_muted).child("###### "));
                 }
                 row.child(
                     div()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_size(px(h_size))
                         .text_color(h_color)
                         .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
                 )
@@ -3987,11 +4020,11 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_size(px(h_size))
                     .h_full()
                     .child(
                         div()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_size(px(h_size))
                             .text_color(h_color)
                             .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
                     )
