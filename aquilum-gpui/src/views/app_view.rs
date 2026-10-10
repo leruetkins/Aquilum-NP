@@ -3498,6 +3498,8 @@ impl Render for AppView {
                                             let selection_range = self.state.active_note.as_ref().and_then(|n| n.selection_range());
                                             let (cursor_line, _) = self.state.active_note.as_ref().map(|n| n.line_col()).unwrap_or((0, 0));
                                             let headings = &self.config.editor.headings;
+                                            let hide_current_line_on_selection = self.config.editor.hide_current_line_on_selection;
+                                            let has_selection = selection_range.as_ref().map_or(false, |sel| sel.start < sel.end);
 
                                             let scroll_y = self.current_scroll_top();
                                             let visible_range = height_index_arc.visible_range(scroll_y, editor_h, 300.0);
@@ -3612,6 +3614,7 @@ impl Render for AppView {
                                                     }
                                                 });
                                                 let is_current = is_editing && (v_idx == active_v_idx);
+                                                let show_current_line_highlight = is_current && !(hide_current_line_on_selection && has_selection);
                                                 let is_in_active_block = code_states_arc[v.line_idx]
                                                     .as_ref()
                                                     .map(|s| active_block_ids.contains(&s.block_id))
@@ -3657,7 +3660,7 @@ impl Render for AppView {
                                                         .px_2()
                                                         .rounded_sm()
                                                         .cursor(gpui::CursorStyle::IBeam)
-                                                        .when(is_current, |s| s.bg(theme.bg_hover))
+                                                        .when(show_current_line_highlight, |s| s.bg(theme.bg_hover))
                                                         .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                                                             cx.stop_propagation();
                                                             if this.is_resizing_sidebar {

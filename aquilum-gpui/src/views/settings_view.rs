@@ -1321,6 +1321,17 @@ impl AppView {
                     })),
             ),
             self.render_setting_row(
+                "Скрывать подсветку строки при выделении",
+                Some("Отключать подсветку текущей строки при наличии выделения текста (как в Zed)"),
+                div()
+                    .id("row-hide-current-line-on-selection")
+                    .child(self.render_toggle_switch(config.editor.hide_current_line_on_selection))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.config.editor.hide_current_line_on_selection = !this.config.editor.hide_current_line_on_selection;
+                        this.save_settings(cx);
+                    })),
+            ),
+            self.render_setting_row(
                 "Задержка автосохранения",
                 Some("Таймаут после ввода текста перед записью на диск"),
                 self.render_stepper(

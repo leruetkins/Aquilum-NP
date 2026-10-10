@@ -134,6 +134,7 @@ pub struct EditorSettings {
     pub link_suggest: bool,
     pub link_suggest_min_chars: u32,
     pub headings: HeadingsSettings,
+    pub hide_current_line_on_selection: bool,
     #[serde(flatten)]
     pub font: FontSettings,
 }
@@ -151,6 +152,7 @@ impl Default for EditorSettings {
             link_suggest: true,
             link_suggest_min_chars: 2,
             headings: HeadingsSettings::default(),
+            hide_current_line_on_selection: true,
             font: FontSettings {
                 font_family: "iA Writer Mono".to_string(),
                 font_weight: 400,
