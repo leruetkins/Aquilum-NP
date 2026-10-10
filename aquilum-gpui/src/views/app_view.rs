@@ -137,7 +137,7 @@ impl AppView {
     }
 
     fn compute_wrap_cols(&self, window_width: f32, char_width: f32) -> usize {
-        let editor_left_w = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 4.0 };
+        let editor_left_w = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
         let char_w = if char_width > 1.0 { char_width } else { 7.7 };
         // Доступная ширина текста: ширина окна минус левые колонки и отступы (контейнер 32px + строка 8px + номера строк 40px + правые 40px)
         let available_text_w = (window_width - editor_left_w - 120.0).max(100.0);
@@ -444,7 +444,7 @@ impl AppView {
             .advance(font_id, px(14.0), 'x')
             .map(|s| f32::from(s.width))
             .unwrap_or(7.7);
-        let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 4.0 };
+        let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
         let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
         let line_h = 24.0;
         let word_wrap = self.word_wrap;
@@ -1110,7 +1110,6 @@ impl Render for AppView {
         self.last_wrap_cols = wrap_cols;
 
         let is_resizer_active = self.is_resizing_sidebar || self.is_hovering_resizer;
-        let resizer_line_w = if is_resizer_active { 3.0 } else { 1.0 };
         let resizer_color = if is_resizer_active { theme.accent } else { theme.border };
 
         div()
@@ -1294,38 +1293,50 @@ impl Render for AppView {
                                 ),
                         )
                     })
-                    // Vertical divider (4px hitbox) matching the sidebar-resizer below exactly
+                    // Vertical divider (1px border line + 7px transparent hitbox) matching the sidebar-resizer below exactly
                     .when(!self.sidebar_collapsed, |s| {
                         s.child(
                             div()
                                 .id("titlebar-resizer-divider")
-                                .w(px(4.0))
+                                .relative()
+                                .w(px(1.0))
                                 .h_full()
                                 .flex_shrink_0()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .justify_center()
+                                .bg(resizer_color)
                                 .border_b_1()
                                 .border_color(theme.border)
-                                .cursor(gpui::CursorStyle::ResizeColumn)
-                                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                    this.is_hovering_resizer = *hovered;
-                                    cx.notify();
-                                }))
-                                .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                                    if event.click_count == 2 {
-                                        this.toggle_sidebar(cx);
-                                    } else {
-                                        this.is_resizing_sidebar = true;
-                                        cx.notify();
-                                    }
-                                }))
+                                .when(is_resizer_active, |this| {
+                                    this.child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .bottom_0()
+                                            .left(px(-1.0))
+                                            .w(px(3.0))
+                                            .bg(theme.accent),
+                                    )
+                                })
                                 .child(
                                     div()
-                                        .w(px(resizer_line_w))
-                                        .h_full()
-                                        .bg(resizer_color),
+                                        .id("titlebar-resizer-hitbox")
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .left(px(-3.0))
+                                        .w(px(7.0))
+                                        .cursor(gpui::CursorStyle::ResizeColumn)
+                                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                            this.is_hovering_resizer = *hovered;
+                                            cx.notify();
+                                        }))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                            if event.click_count == 2 {
+                                                this.toggle_sidebar(cx);
+                                            } else {
+                                                this.is_resizing_sidebar = true;
+                                                cx.notify();
+                                            }
+                                        })),
                                 ),
                         )
                     })
@@ -1964,36 +1975,48 @@ impl Render for AppView {
                             )
                         })
                     })
-                    // ----- Sidebar Resizer Divider (Obsidian-style) -----
+                    // ----- Sidebar Resizer Divider (1px border line + 7px transparent hitbox) -----
                     .when(!self.sidebar_collapsed, |s| {
                         s.child(
                             div()
                                 .id("sidebar-resizer")
+                                .relative()
                                 .flex_shrink_0()
-                                .w(px(4.0))
+                                .w(px(1.0))
                                 .h_full()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .justify_center()
-                                .cursor(gpui::CursorStyle::ResizeColumn)
-                                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                    this.is_hovering_resizer = *hovered;
-                                    cx.notify();
-                                }))
-                                .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                                    if event.click_count == 2 {
-                                        this.toggle_sidebar(cx);
-                                    } else {
-                                        this.is_resizing_sidebar = true;
-                                        cx.notify();
-                                    }
-                                }))
+                                .bg(resizer_color)
+                                .when(is_resizer_active, |this| {
+                                    this.child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .bottom_0()
+                                            .left(px(-1.0))
+                                            .w(px(3.0))
+                                            .bg(theme.accent),
+                                    )
+                                })
                                 .child(
                                     div()
-                                        .w(px(resizer_line_w))
-                                        .h_full()
-                                        .bg(resizer_color),
+                                        .id("sidebar-resizer-hitbox")
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .left(px(-3.0))
+                                        .w(px(7.0))
+                                        .cursor(gpui::CursorStyle::ResizeColumn)
+                                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                            this.is_hovering_resizer = *hovered;
+                                            cx.notify();
+                                        }))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                            if event.click_count == 2 {
+                                                this.toggle_sidebar(cx);
+                                            } else {
+                                                this.is_resizing_sidebar = true;
+                                                cx.notify();
+                                            }
+                                        })),
                                 ),
                         )
                     })
@@ -2033,7 +2056,7 @@ impl Render for AppView {
                                 let line_h = px(24.0);
                                 let cursor_h = px(16.0);
                                 let cursor_top = 4.0;
-                                let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 4.0 };
+                                let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
                                 let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
 
                                 let lines_arc = Arc::new(lines);
