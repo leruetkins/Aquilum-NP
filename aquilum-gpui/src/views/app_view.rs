@@ -1556,16 +1556,27 @@ impl Render for AppView {
 
                                 tabs_bar.child(
                                     div()
-                                        .id("btn-new-tab")
-                                        .mb_1()
-                                        .p_1()
-                                        .rounded_md()
-                                        .cursor_pointer()
-                                        .hover(|h| h.bg(theme.bg_hover))
-                                        .child(icons::icon(icons::ICON_PLUS, 12.0, theme.text_muted))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.create_new_note(window, cx);
-                                        })),
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .h(px(34.0))
+                                        .ml_1()
+                                        .child(
+                                            div()
+                                                .id("btn-new-tab")
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .w(px(28.0))
+                                                .h(px(28.0))
+                                                .rounded_md()
+                                                .cursor_pointer()
+                                                .hover(|h| h.bg(theme.bg_hover))
+                                                .child(icons::icon(icons::ICON_PLUS, 16.0, theme.text_muted))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.create_new_note(window, cx);
+                                                })),
+                                        ),
                                 )
                             })
                             // Drag Area (fills remaining space between tabs and window controls)
