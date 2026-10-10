@@ -1418,24 +1418,34 @@ impl Render for AppView {
                                                 .h(px(1.0))
                                                 .bg(theme.border),
                                         );
+                                        // Solid fill mask at the baseline connecting active tab into the editor
+                                        tab_item = tab_item.child(
+                                            div()
+                                                .id("tab-bottom-cover")
+                                                .absolute()
+                                                .bottom(px(-2.0))
+                                                .left_0()
+                                                .right_0()
+                                                .h(px(3.0))
+                                                .bg(theme.bg_editor),
+                                        );
                                         // Left cap (bottom concave flair + vertical line + top convex corner)
                                         tab_item = tab_item.child(
                                             div()
                                                 .id("tab-cap-left")
                                                 .absolute()
                                                 .top_0()
-                                                .bottom_0()
                                                 .left(px(-8.0))
                                                 .w(px(14.0))
-                                                .h(px(34.0))
-                                                .child(icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_FILL, 14.0, 34.0, theme.bg_editor))
+                                                .h(px(36.0))
+                                                .child(icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_FILL, 14.0, 36.0, theme.bg_editor))
                                                 .child(
                                                     div()
                                                         .absolute()
                                                         .top_0()
                                                         .left_0()
                                                         .size_full()
-                                                        .child(icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_STROKE, 14.0, 34.0, theme.border)),
+                                                        .child(icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_STROKE, 14.0, 36.0, theme.border)),
                                                 ),
                                         );
                                         // Right cap (top convex corner + vertical line + bottom concave flair)
@@ -1444,18 +1454,17 @@ impl Render for AppView {
                                                 .id("tab-cap-right")
                                                 .absolute()
                                                 .top_0()
-                                                .bottom_0()
                                                 .right(px(-8.0))
                                                 .w(px(14.0))
-                                                .h(px(34.0))
-                                                .child(icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_FILL, 14.0, 34.0, theme.bg_editor))
+                                                .h(px(36.0))
+                                                .child(icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_FILL, 14.0, 36.0, theme.bg_editor))
                                                 .child(
                                                     div()
                                                         .absolute()
                                                         .top_0()
                                                         .left_0()
                                                         .size_full()
-                                                        .child(icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_STROKE, 14.0, 34.0, theme.border)),
+                                                        .child(icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_STROKE, 14.0, 36.0, theme.border)),
                                                 ),
                                         );
                                     }
