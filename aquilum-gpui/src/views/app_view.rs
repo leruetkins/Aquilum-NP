@@ -753,8 +753,14 @@ impl AppView {
         let v_len = v.char_end.saturating_sub(v.char_start);
 
         let (cursor_line, _) = note.line_col();
-        let is_active_line = v.line_idx == cursor_line;
+        let selection_range = note.selection_range();
         let line = &note.cached_lines[v.line_idx];
+        let line_start = note.cached_line_starts.get(v.line_idx).copied().unwrap_or(0);
+        let line_end = line_start + line.len();
+        let is_line_in_selection = selection_range.as_ref().map_or(false, |sel| {
+            sel.end > line_start && sel.start < line_end
+        });
+        let is_active_line = v.line_idx == cursor_line || is_line_in_selection;
         let classified = crate::markdown::classify_line(line, None);
         let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
         let (_, row_char_w, _, _, _) = Self::heading_typography_metrics(&classified, &self.config.editor.headings, 24.0, line_char_width);
@@ -847,8 +853,14 @@ impl AppView {
         let v_len = v.char_end.saturating_sub(v.char_start);
 
         let (cursor_line, _) = note.line_col();
-        let is_active_line = v.line_idx == cursor_line;
+        let selection_range = note.selection_range();
         let line = &note.cached_lines[v.line_idx];
+        let line_start = note.cached_line_starts.get(v.line_idx).copied().unwrap_or(0);
+        let line_end = line_start + line.len();
+        let is_line_in_selection = selection_range.as_ref().map_or(false, |sel| {
+            sel.end > line_start && sel.start < line_end
+        });
+        let is_active_line = v.line_idx == cursor_line || is_line_in_selection;
         let classified = crate::markdown::classify_line(line, None);
         let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
         let (_, row_char_w, _, _, _) = Self::heading_typography_metrics(&classified, &self.config.editor.headings, 24.0, line_char_width);
@@ -3443,8 +3455,13 @@ impl Render for AppView {
                                             for v_idx in visible_range {
                                                 let v = &visual_rows_arc[v_idx];
                                                 let line = &lines_arc[v.line_idx];
+                                                let line_start = line_starts_arc[v.line_idx];
+                                                let line_end = line_start + line.len();
+                                                let is_line_in_selection = selection_range.as_ref().map_or(false, |sel| {
+                                                    sel.end > line_start && sel.start < line_end
+                                                });
                                                 let is_current = is_editing && (v_idx == active_v_idx);
-                                                let is_active_line = is_editing && (v.line_idx == cursor_line);
+                                                let is_active_line = is_editing && (v.line_idx == cursor_line || is_line_in_selection);
                                                 let code_state = code_states_arc[v.line_idx].as_ref().map(|s| (s.kind, s.lang.as_deref()));
                                                 let classified = crate::markdown::classify_line(line, code_state);
                                                 let is_opening_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: true, .. });
@@ -3465,9 +3482,6 @@ impl Render for AppView {
                                                 } else {
                                                     "    ".to_string()
                                                 };
-
-                                                let line_start = line_starts_arc[v.line_idx];
-                                                let line_end = line_start + line.len();
 
                                                 let row_sel_chars = selection_range.as_ref().and_then(|sel| {
                                                     if sel.end > line_start && sel.start < line_end {
