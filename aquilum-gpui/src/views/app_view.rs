@@ -3318,7 +3318,7 @@ impl Render for AppView {
                                                             .child("Untitled"),
                                                     )
                                                 })
-                                                .when(is_title_focused && self.title_cursor_visible && selection_range.is_none(), |s| {
+                                                .when(is_title_focused && self.title_cursor_visible, |s| {
                                                     s.child(
                                                         div()
                                                             .absolute()
@@ -3643,7 +3643,7 @@ impl Render for AppView {
                                                                             theme,
                                                                         )),
                                                                 )
-                                                                .when(is_current && is_editor_focused && self.editor_cursor_visible && selection_range.is_none(), |s| {
+                                                                .when(is_current && is_editor_focused && self.editor_cursor_visible, |s| {
                                                                     let vis_cursor = crate::markdown::row_char_to_visual_col(&row_spans, active_col_in_row, is_active_line, hidden_prefix_len);
                                                                     let cursor_x = (vis_cursor as f32) * row_char_w;
                                                                     s.child(
