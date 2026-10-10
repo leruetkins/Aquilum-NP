@@ -1,4 +1,130 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeadingPresetColor {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub hex: &'static str,
+    pub desc: &'static str,
+    pub rgb: (u8, u8, u8),
+}
+
+pub const HEADING_COLOR_PRESETS: &[HeadingPresetColor] = &[
+    HeadingPresetColor {
+        id: "orange",
+        label: "Оранжевый",
+        hex: "#E69F00",
+        desc: "Хорошо сочетается с синим",
+        rgb: (230, 159, 0),
+    },
+    HeadingPresetColor {
+        id: "sky_blue",
+        label: "Голубой",
+        hex: "#56B4E9",
+        desc: "Высокая различимость",
+        rgb: (86, 180, 233),
+    },
+    HeadingPresetColor {
+        id: "bluish_green",
+        label: "Сине-зелёный",
+        hex: "#009E73",
+        desc: "Четвёртый ряд; teal",
+        rgb: (0, 158, 115),
+    },
+    HeadingPresetColor {
+        id: "yellow",
+        label: "Жёлтый",
+        hex: "#F0E442",
+        desc: "Выделение и заливка",
+        rgb: (240, 228, 66),
+    },
+    HeadingPresetColor {
+        id: "blue",
+        label: "Синий",
+        hex: "#0072B2",
+        desc: "Сильный акцент",
+        rgb: (0, 114, 178),
+    },
+    HeadingPresetColor {
+        id: "vermilion",
+        label: "Алый",
+        hex: "#D55E00",
+        desc: "Планки погрешностей, акцент",
+        rgb: (213, 94, 0),
+    },
+    HeadingPresetColor {
+        id: "reddish_purple",
+        label: "Розово-фиолетовый",
+        hex: "#CC79A7",
+        desc: "Предел для категорий",
+        rgb: (204, 121, 167),
+    },
+];
+
+pub fn find_heading_preset(name: &str) -> &'static HeadingPresetColor {
+    for preset in HEADING_COLOR_PRESETS {
+        if preset.id.eq_ignore_ascii_case(name) || preset.label.eq_ignore_ascii_case(name) {
+            return preset;
+        }
+    }
+    match name.to_ascii_lowercase().as_str() {
+        "orange" => &HEADING_COLOR_PRESETS[0],
+        "sky_blue" | "slate" => &HEADING_COLOR_PRESETS[1],
+        "teal" | "emerald" | "bluish_green" => &HEADING_COLOR_PRESETS[2],
+        "yellow" => &HEADING_COLOR_PRESETS[3],
+        "blue" | "indigo" => &HEADING_COLOR_PRESETS[4],
+        "red" | "rose" | "vermilion" => &HEADING_COLOR_PRESETS[5],
+        "purple" | "violet" | "fuchsia" | "reddish_purple" => &HEADING_COLOR_PRESETS[6],
+        _ => &HEADING_COLOR_PRESETS[4], // Default to blue
+    }
+}
+
+pub fn parse_hex_color(hex: &str) -> Option<gpui::Rgba> {
+    let clean = hex.trim().trim_start_matches('#');
+    if clean.len() == 6 {
+        if let Ok(val) = u32::from_str_radix(clean, 16) {
+            let r = ((val >> 16) & 0xff) as u8;
+            let g = ((val >> 8) & 0xff) as u8;
+            let b = (val & 0xff) as u8;
+            return Some(gpui::rgb(((r as u32) << 16) | ((g as u32) << 8) | (b as u32)));
+        }
+    } else if clean.len() == 3 {
+        if let Ok(val) = u32::from_str_radix(clean, 16) {
+            let r = ((val >> 8) & 0xf) as u8;
+            let g = ((val >> 4) & 0xf) as u8;
+            let b = (val & 0xf) as u8;
+            let r = (r << 4) | r;
+            let g = (g << 4) | g;
+            let b = (b << 4) | b;
+            return Some(gpui::rgb(((r as u32) << 16) | ((g as u32) << 8) | (b as u32)));
+        }
+    }
+    None
+}
+
+pub fn heading_color_to_rgb(name: &str) -> gpui::Rgba {
+    if let Some(rgba) = parse_hex_color(name) {
+        return rgba;
+    }
+    let preset = find_heading_preset(name);
+    let (r, g, b) = preset.rgb;
+    gpui::rgb(((r as u32) << 16) | ((g as u32) << 8) | (b as u32))
+}
+
+pub fn heading_color_to_hex(name: &str) -> String {
+    let clean = name.trim().trim_start_matches('#');
+    if parse_hex_color(name).is_some() {
+        if clean.len() == 6 {
+            return format!("#{}", clean.to_ascii_uppercase());
+        } else if clean.len() == 3 {
+            let r = &clean[0..1];
+            let g = &clean[1..2];
+            let b = &clean[2..3];
+            return format!("#{r}{r}{g}{g}{b}{b}").to_ascii_uppercase();
+        }
+    }
+    find_heading_preset(name).hex.to_string()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeBlockKind {
     OpeningFence,
     InsideCode,
@@ -744,5 +870,44 @@ mod tests {
 
         let recovered_raw = visual_col_to_row_char(&spans, vis_col, false, 0);
         assert_eq!(recovered_raw, raw_char);
+    }
+
+    #[test]
+    fn test_okabe_ito_colors() {
+        assert_eq!(HEADING_COLOR_PRESETS.len(), 7);
+
+        // Verify all 7 Okabe-Ito colors and exact RGB values requested by user
+        let orange = find_heading_preset("orange");
+        assert_eq!(orange.label, "Оранжевый");
+        assert_eq!(orange.rgb, (230, 159, 0));
+
+        let sky_blue = find_heading_preset("sky_blue");
+        assert_eq!(sky_blue.label, "Голубой");
+        assert_eq!(sky_blue.rgb, (86, 180, 233));
+
+        let bluish_green = find_heading_preset("bluish_green");
+        assert_eq!(bluish_green.label, "Сине-зелёный");
+        assert_eq!(bluish_green.rgb, (0, 158, 115));
+
+        let yellow = find_heading_preset("yellow");
+        assert_eq!(yellow.label, "Жёлтый");
+        assert_eq!(yellow.rgb, (240, 228, 66));
+
+        let blue = find_heading_preset("blue");
+        assert_eq!(blue.label, "Синий");
+        assert_eq!(blue.rgb, (0, 114, 178));
+
+        let vermilion = find_heading_preset("vermilion");
+        assert_eq!(vermilion.label, "Алый");
+        assert_eq!(vermilion.rgb, (213, 94, 0));
+
+        let reddish_purple = find_heading_preset("reddish_purple");
+        assert_eq!(reddish_purple.label, "Розово-фиолетовый");
+        assert_eq!(reddish_purple.rgb, (204, 121, 167));
+
+        // Backward compatibility mappings
+        assert_eq!(find_heading_preset("indigo").id, "blue");
+        assert_eq!(find_heading_preset("violet").id, "reddish_purple");
+        assert_eq!(find_heading_preset("teal").id, "bluish_green");
     }
 }

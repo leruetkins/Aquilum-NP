@@ -49,6 +49,9 @@ pub struct AppView {
     pub title_cursor_visible: bool,
     pub title_cursor_blink_epoch: usize,
     pub auto_save_epoch: usize,
+    pub active_color_picker: Option<&'static str>,
+    pub custom_hex_input: String,
+    pub custom_hex_focus_handle: FocusHandle,
 }
 
 impl AppView {
@@ -113,6 +116,9 @@ impl AppView {
             title_cursor_visible: true,
             title_cursor_blink_epoch: 0,
             auto_save_epoch: 0,
+            active_color_picker: None,
+            custom_hex_input: String::new(),
+            custom_hex_focus_handle: cx.focus_handle(),
         }
     }
 
@@ -724,6 +730,71 @@ impl AppView {
                 self.state.search_query.push_str(key);
                 cx.notify();
             }
+        }
+    }
+
+    pub fn handle_custom_hex_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let key = &event.keystroke.key;
+        if key == "backspace" {
+            self.custom_hex_input.pop();
+            self.apply_custom_hex_if_valid(cx);
+            cx.notify();
+        } else if key == "escape" {
+            self.active_color_picker = None;
+            cx.notify();
+        } else if key == "enter" {
+            self.apply_custom_hex_if_valid(cx);
+            self.active_color_picker = None;
+            cx.notify();
+        } else if event.keystroke.modifiers.control && (key.eq_ignore_ascii_case("v") || key == "м" || key == "М") {
+            if let Some(item) = cx.read_from_clipboard() {
+                if let Some(text) = item.text() {
+                    let filtered: String = text.trim().chars().filter(|c| c.is_ascii_hexdigit() || *c == '#').take(7).collect();
+                    if !filtered.is_empty() {
+                        self.custom_hex_input = if filtered.starts_with('#') { filtered } else { format!("#{filtered}") };
+                        self.apply_custom_hex_if_valid(cx);
+                        cx.notify();
+                    }
+                }
+            }
+        } else {
+            let ch = if let Some(c) = &event.keystroke.key_char {
+                c.as_str()
+            } else if key.chars().count() == 1 {
+                key.as_str()
+            } else {
+                ""
+            };
+            for c in ch.chars() {
+                if (c.is_ascii_hexdigit() || (c == '#' && self.custom_hex_input.is_empty())) && self.custom_hex_input.len() < 7 {
+                    self.custom_hex_input.push(c.to_ascii_uppercase());
+                    self.apply_custom_hex_if_valid(cx);
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    pub fn apply_custom_hex_if_valid(&mut self, cx: &mut Context<Self>) {
+        let Some(picker_id) = self.active_color_picker else {
+            return;
+        };
+        if crate::markdown::parse_hex_color(&self.custom_hex_input).is_some() {
+            let hex_val = if self.custom_hex_input.starts_with('#') {
+                self.custom_hex_input.clone()
+            } else {
+                format!("#{}", self.custom_hex_input)
+            };
+            match picker_id {
+                "h1-color" => self.config.editor.headings.h1.color_name = hex_val,
+                "h2-color" => self.config.editor.headings.h2.color_name = hex_val,
+                "h3-color" => self.config.editor.headings.h3.color_name = hex_val,
+                "h4-color" => self.config.editor.headings.h4.color_name = hex_val,
+                "h5-color" => self.config.editor.headings.h5.color_name = hex_val,
+                "h6-color" => self.config.editor.headings.h6.color_name = hex_val,
+                _ => {}
+            }
+            self.save_settings(cx);
         }
     }
 
@@ -2955,6 +3026,11 @@ impl Render for AppView {
                                         .min_w_0()
                                         .min_h_0()
                                         .overflow_hidden()
+                                        .when(self.is_settings_open, |d| {
+                                            d.on_scroll_wheel(|_, _, cx| {
+                                                cx.stop_propagation();
+                                            })
+                                        })
                                         .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
                                             if this.is_resizing_sidebar {
                                                 return;
@@ -3025,6 +3101,7 @@ impl Render for AppView {
                                                     let is_editing = this.edit_mode;
                                                     let selection_range = this.state.active_note.as_ref().and_then(|n| n.selection_range());
                                                     let (cursor_line, _) = this.state.active_note.as_ref().map(|n| n.line_col()).unwrap_or((0, 0));
+                                                    let headings = &this.config.editor.headings;
 
                                                     crate::perf::PERF.shape_calls.fetch_add(range.len() as u64, std::sync::atomic::Ordering::Relaxed);
                                                     let mut items = Vec::with_capacity(range.len());
@@ -3197,6 +3274,7 @@ impl Render for AppView {
                                                                                     v_sub_idx,
                                                                                     is_active_line,
                                                                                     is_in_active_block,
+                                                                                    headings,
                                                                                     theme,
                                                                                 )),
                                                                         )
@@ -3449,6 +3527,7 @@ fn render_live_styled_row(
     sub_idx: usize,
     is_active_line: bool,
     show_fences: bool,
+    headings: &aquilum_core::settings::HeadingsSettings,
     theme: &Theme,
 ) -> gpui::Div {
     if line.is_empty() || char_start >= char_end {
@@ -3459,6 +3538,9 @@ fn render_live_styled_row(
         crate::markdown::LineKind::Heading1(_) => {
             let rest = line.strip_prefix("# ").unwrap_or(line);
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
+            let h_size = headings.h1.font_size as f32;
+            let h_color = crate::markdown::heading_color_to_rgb(&headings.h1.color_name);
+
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(2));
                 let mut row = div()
@@ -3472,7 +3554,8 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .font_weight(gpui::FontWeight::BOLD)
-                        .text_color(theme.accent)
+                        .text_size(px(h_size))
+                        .text_color(h_color)
                         .child(render_syntax_spans(row_spans, is_active_line, theme)),
                 )
             } else {
@@ -3489,7 +3572,8 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(theme.accent)
+                            .text_size(px(h_size))
+                            .text_color(h_color)
                             .child(render_syntax_spans(row_spans, is_active_line, theme)),
                     )
             }
@@ -3497,6 +3581,9 @@ fn render_live_styled_row(
         crate::markdown::LineKind::Heading2(_) => {
             let rest = line.strip_prefix("## ").unwrap_or(line);
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
+            let h_size = headings.h2.font_size as f32;
+            let h_color = crate::markdown::heading_color_to_rgb(&headings.h2.color_name);
+
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(3));
                 let mut row = div()
@@ -3510,7 +3597,8 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .font_weight(gpui::FontWeight::BOLD)
-                        .text_color(theme.accent_hover)
+                        .text_size(px(h_size))
+                        .text_color(h_color)
                         .child(render_syntax_spans(row_spans, is_active_line, theme)),
                 )
             } else {
@@ -3527,7 +3615,8 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(theme.accent_hover)
+                            .text_size(px(h_size))
+                            .text_color(h_color)
                             .child(render_syntax_spans(row_spans, is_active_line, theme)),
                     )
             }
@@ -3535,6 +3624,9 @@ fn render_live_styled_row(
         crate::markdown::LineKind::Heading3(_) => {
             let rest = line.strip_prefix("### ").unwrap_or(line);
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
+            let h_size = headings.h3.font_size as f32;
+            let h_color = crate::markdown::heading_color_to_rgb(&headings.h3.color_name);
+
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(4));
                 let mut row = div()
@@ -3548,7 +3640,8 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(theme.text_primary)
+                        .text_size(px(h_size))
+                        .text_color(h_color)
                         .child(render_syntax_spans(row_spans, is_active_line, theme)),
                 )
             } else {
@@ -3565,7 +3658,8 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(theme.text_primary)
+                            .text_size(px(h_size))
+                            .text_color(h_color)
                             .child(render_syntax_spans(row_spans, is_active_line, theme)),
                     )
             }
@@ -3573,6 +3667,9 @@ fn render_live_styled_row(
         crate::markdown::LineKind::Heading4(_) => {
             let rest = line.strip_prefix("#### ").unwrap_or(line);
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
+            let h_size = headings.h4.font_size as f32;
+            let h_color = crate::markdown::heading_color_to_rgb(&headings.h4.color_name);
+
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(5));
                 let mut row = div()
@@ -3586,7 +3683,8 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(theme.text_secondary)
+                        .text_size(px(h_size))
+                        .text_color(h_color)
                         .child(render_syntax_spans(row_spans, is_active_line, theme)),
                 )
             } else {
@@ -3603,7 +3701,8 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(theme.text_secondary)
+                            .text_size(px(h_size))
+                            .text_color(h_color)
                             .child(render_syntax_spans(row_spans, is_active_line, theme)),
                     )
             }
@@ -3611,6 +3710,9 @@ fn render_live_styled_row(
         crate::markdown::LineKind::Heading5(_) => {
             let rest = line.strip_prefix("##### ").unwrap_or(line);
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
+            let h_size = headings.h5.font_size as f32;
+            let h_color = crate::markdown::heading_color_to_rgb(&headings.h5.color_name);
+
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(6));
                 let mut row = div()
@@ -3624,7 +3726,8 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(theme.text_secondary)
+                        .text_size(px(h_size))
+                        .text_color(h_color)
                         .child(render_syntax_spans(row_spans, is_active_line, theme)),
                 )
             } else {
@@ -3641,7 +3744,8 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(theme.text_secondary)
+                            .text_size(px(h_size))
+                            .text_color(h_color)
                             .child(render_syntax_spans(row_spans, is_active_line, theme)),
                     )
             }
@@ -3649,6 +3753,9 @@ fn render_live_styled_row(
         crate::markdown::LineKind::Heading6(_) => {
             let rest = line.strip_prefix("###### ").unwrap_or(line);
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
+            let h_size = headings.h6.font_size as f32;
+            let h_color = crate::markdown::heading_color_to_rgb(&headings.h6.color_name);
+
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(7));
                 let mut row = div()
@@ -3661,8 +3768,9 @@ fn render_live_styled_row(
                 }
                 row.child(
                     div()
-                        .italic()
-                        .text_color(theme.text_muted)
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_size(px(h_size))
+                        .text_color(h_color)
                         .child(render_syntax_spans(row_spans, is_active_line, theme)),
                 )
             } else {
@@ -3678,8 +3786,9 @@ fn render_live_styled_row(
                     .h_full()
                     .child(
                         div()
-                            .italic()
-                            .text_color(theme.text_muted)
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_size(px(h_size))
+                            .text_color(h_color)
                             .child(render_syntax_spans(row_spans, is_active_line, theme)),
                     )
             }

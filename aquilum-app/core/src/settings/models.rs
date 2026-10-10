@@ -72,6 +72,55 @@ impl Default for FontSettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HeadingStyle {
+    pub font_size: u32,
+    pub color_name: String,
+}
+
+impl HeadingStyle {
+    pub fn new(font_size: u32, color_name: &str) -> Self {
+        Self {
+            font_size,
+            color_name: color_name.to_string(),
+        }
+    }
+}
+
+impl Default for HeadingStyle {
+    fn default() -> Self {
+        Self {
+            font_size: 16,
+            color_name: "blue".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HeadingsSettings {
+    pub h1: HeadingStyle,
+    pub h2: HeadingStyle,
+    pub h3: HeadingStyle,
+    pub h4: HeadingStyle,
+    pub h5: HeadingStyle,
+    pub h6: HeadingStyle,
+}
+
+impl Default for HeadingsSettings {
+    fn default() -> Self {
+        Self {
+            h1: HeadingStyle::new(22, "blue"),
+            h2: HeadingStyle::new(19, "sky_blue"),
+            h3: HeadingStyle::new(17, "bluish_green"),
+            h4: HeadingStyle::new(15, "orange"),
+            h5: HeadingStyle::new(14, "vermilion"),
+            h6: HeadingStyle::new(13, "reddish_purple"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct EditorSettings {
@@ -84,6 +133,7 @@ pub struct EditorSettings {
     pub live_tabs: u32,
     pub link_suggest: bool,
     pub link_suggest_min_chars: u32,
+    pub headings: HeadingsSettings,
     #[serde(flatten)]
     pub font: FontSettings,
 }
@@ -100,6 +150,7 @@ impl Default for EditorSettings {
             live_tabs: 3,
             link_suggest: true,
             link_suggest_min_chars: 2,
+            headings: HeadingsSettings::default(),
             font: FontSettings {
                 font_family: "iA Writer Mono".to_string(),
                 font_weight: 400,

@@ -1,7 +1,7 @@
 use crate::icons;
 use super::app_view::AppView;
 use gpui::{
-    div, prelude::*, px, rgba, Context, IntoElement, MouseButton,
+    div, prelude::*, px, rgba, Context, IntoElement, KeyDownEvent, MouseButton,
 };
 
 /// Represents the navigation tabs available in the Settings modal window.
@@ -100,6 +100,7 @@ impl AppView {
     /// Closes the Settings modal window and restores editor focus.
     pub fn close_settings(&mut self, cx: &mut Context<Self>) {
         self.is_settings_open = false;
+        self.active_color_picker = None;
         cx.notify();
     }
 
@@ -120,6 +121,9 @@ impl AppView {
             .left_0()
             .size_full()
             .cursor(gpui::CursorStyle::Arrow)
+            .on_scroll_wheel(|_, _, cx| {
+                cx.stop_propagation();
+            })
             // 1. Semi-transparent backdrop overlay: clicking here closes the modal
             .child(
                 div()
@@ -132,8 +136,16 @@ impl AppView {
                     .cursor(gpui::CursorStyle::Arrow)
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                         cx.stop_propagation();
-                        this.close_settings(cx);
-                    })),
+                        if this.active_color_picker.is_some() {
+                            this.active_color_picker = None;
+                            cx.notify();
+                        } else {
+                            this.close_settings(cx);
+                        }
+                    }))
+                    .on_scroll_wheel(|_, _, cx| {
+                        cx.stop_propagation();
+                    }),
             )
             // 2. Centered dialog layout container (non-blocking sibling)
             .child(
@@ -146,6 +158,9 @@ impl AppView {
                     .items_center()
                     .justify_center()
                     .cursor(gpui::CursorStyle::Arrow)
+                    .on_scroll_wheel(|_, _, cx| {
+                        cx.stop_propagation();
+                    })
                     .child(
                         div()
                             .id("settings-modal-dialog")
@@ -163,6 +178,9 @@ impl AppView {
                             .shadow_lg()
                             .cursor(gpui::CursorStyle::Arrow)
                             .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .on_scroll_wheel(|_, _, cx| {
                                 cx.stop_propagation();
                             })
                             // Dialog Header
@@ -472,6 +490,246 @@ impl AppView {
             )
     }
 
+    /// Renders a compact borderless color dot widget with an attached deferred context menu.
+    fn render_color_picker_button(
+        &self,
+        picker_id: &'static str,
+        active_color: &str,
+        cx: &Context<Self>,
+    ) -> gpui::Div {
+        let is_open = self.active_color_picker == Some(picker_id);
+        let current_color_rgb = crate::markdown::heading_color_to_rgb(active_color);
+
+        div()
+            .relative()
+            .child(
+                div()
+                    .id(gpui::ElementId::from((picker_id, 0usize)))
+                    .w(px(22.0))
+                    .h(px(22.0))
+                    .rounded_full()
+                    .bg(current_color_rgb)
+                    .cursor_pointer()
+                    .hover(|h| h.opacity(0.85))
+                    .on_click(cx.listener(move |this: &mut AppView, _, window, cx| {
+                        if this.active_color_picker == Some(picker_id) {
+                            this.active_color_picker = None;
+                        } else {
+                            this.active_color_picker = Some(picker_id);
+                            let curr = match picker_id {
+                                "h1-color" => this.config.editor.headings.h1.color_name.as_str(),
+                                "h2-color" => this.config.editor.headings.h2.color_name.as_str(),
+                                "h3-color" => this.config.editor.headings.h3.color_name.as_str(),
+                                "h4-color" => this.config.editor.headings.h4.color_name.as_str(),
+                                "h5-color" => this.config.editor.headings.h5.color_name.as_str(),
+                                "h6-color" => this.config.editor.headings.h6.color_name.as_str(),
+                                _ => "blue",
+                            };
+                            this.custom_hex_input = crate::markdown::heading_color_to_hex(curr);
+                            window.focus(&this.custom_hex_focus_handle);
+                        }
+                        cx.notify();
+                    }))
+            )
+            .when(is_open, |d| {
+                d.child(
+                    gpui::deferred(
+                        self.render_color_context_menu(picker_id, active_color, cx)
+                    ).with_priority(999)
+                )
+            })
+    }
+
+    /// Renders a context menu palette right below the color circle with Okabe-Ito matrix & Hex input.
+    fn render_color_context_menu(
+        &self,
+        picker_id: &'static str,
+        active_color: &str,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let theme = &self.theme;
+        let preview_rgb = crate::markdown::parse_hex_color(&self.custom_hex_input)
+            .unwrap_or_else(|| crate::markdown::heading_color_to_rgb(active_color));
+
+        div()
+            .id(gpui::ElementId::from((picker_id, 1usize)))
+            .absolute()
+            .top(px(28.0))
+            .right_0()
+            .w(px(226.0))
+            .bg(theme.bg_card)
+            .border_1()
+            .border_color(theme.border)
+            .rounded_xl()
+            .shadow_lg()
+            .p_2p5()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .cursor(gpui::CursorStyle::Arrow)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation();
+            })
+            .on_scroll_wheel(|_, _, cx| {
+                cx.stop_propagation();
+            })
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.active_color_picker = None;
+                cx.notify();
+            }))
+            // 1. Okabe-Ito colors matrix in a row (no borders!)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .children(crate::markdown::HEADING_COLOR_PRESETS.iter().enumerate().map(|(idx, preset)| {
+                        let is_sel = preset.id.eq_ignore_ascii_case(active_color)
+                            || preset.label.eq_ignore_ascii_case(active_color)
+                            || preset.hex.eq_ignore_ascii_case(active_color);
+                        let (pr, pg, pb) = preset.rgb;
+                        let prgb = gpui::rgb(((pr as u32) << 16) | ((pg as u32) << 8) | (pb as u32));
+                        let pid = preset.id;
+                        let phex = preset.hex;
+
+                        div()
+                            .id(gpui::ElementId::from((picker_id, 10usize + idx)))
+                            .w(px(20.0))
+                            .h(px(20.0))
+                            .rounded_full()
+                            .bg(prgb)
+                            .cursor_pointer()
+                            .hover(|h| h.opacity(0.85))
+                            .on_click(cx.listener(move |this: &mut AppView, _, _, cx| {
+                                this.active_color_picker = None;
+                                this.custom_hex_input = phex.to_string();
+                                match picker_id {
+                                    "h1-color" => this.config.editor.headings.h1.color_name = pid.to_string(),
+                                    "h2-color" => this.config.editor.headings.h2.color_name = pid.to_string(),
+                                    "h3-color" => this.config.editor.headings.h3.color_name = pid.to_string(),
+                                    "h4-color" => this.config.editor.headings.h4.color_name = pid.to_string(),
+                                    "h5-color" => this.config.editor.headings.h5.color_name = pid.to_string(),
+                                    "h6-color" => this.config.editor.headings.h6.color_name = pid.to_string(),
+                                    _ => {}
+                                }
+                                this.save_settings(cx);
+                                cx.notify();
+                            }))
+                            .when(is_sel, |s| {
+                                s.flex().items_center().justify_center().child(
+                                    icons::icon(icons::ICON_CHECK, 12.0, theme.text_on_accent)
+                                )
+                            })
+                    }))
+            )
+            // 2. Divider
+            .child(
+                div().h_px().w_full().bg(theme.border_subtle)
+            )
+            // 3. Hex input & custom color picker row
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1p5()
+                    // Preview circle of custom hex (no borders!)
+                    .child(
+                        div()
+                            .w(px(20.0))
+                            .h(px(20.0))
+                            .rounded_full()
+                            .bg(preview_rgb)
+                            .shadow_sm()
+                            .flex_shrink_0()
+                    )
+                    // Hex text input box
+                    .child(
+                        div()
+                            .id("custom-hex-input-box")
+                            .track_focus(&self.custom_hex_focus_handle)
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .flex_1()
+                            .min_w_0()
+                            .h(px(26.0))
+                            .px_2()
+                            .bg(theme.bg_sidebar)
+                            .border_1()
+                            .border_color(theme.border)
+                            .focus(|f| f.border_color(theme.accent))
+                            .rounded_md()
+                            .cursor(gpui::CursorStyle::IBeam)
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                window.focus(&this.custom_hex_focus_handle);
+                                cx.notify();
+                            }))
+                            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                                this.handle_custom_hex_key(event, cx);
+                            }))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_family("JetBrains Mono")
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(if self.custom_hex_input.is_empty() { theme.text_muted } else { theme.text_primary })
+                                    .child(if self.custom_hex_input.is_empty() { "#HEX".to_string() } else { self.custom_hex_input.clone() })
+                            )
+                    )
+                    // Paste from clipboard button
+                    .child(
+                        div()
+                            .id("btn-paste-hex")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(26.0))
+                            .h(px(26.0))
+                            .bg(theme.bg_sidebar)
+                            .border_1()
+                            .border_color(theme.border)
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(|h| h.bg(theme.bg_hover))
+                            .child(icons::icon(icons::ICON_PAPERCLIP, 12.0, theme.text_muted))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(item) = cx.read_from_clipboard() {
+                                    if let Some(text) = item.text() {
+                                        let filtered: String = text.trim().chars().filter(|c| c.is_ascii_hexdigit() || *c == '#').take(7).collect();
+                                        if !filtered.is_empty() {
+                                            this.custom_hex_input = if filtered.starts_with('#') { filtered } else { format!("#{filtered}") };
+                                            this.apply_custom_hex_if_valid(cx);
+                                            cx.notify();
+                                        }
+                                    }
+                                }
+                            }))
+                    )
+                    // Apply check button
+                    .child(
+                        div()
+                            .id("btn-apply-hex")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(26.0))
+                            .h(px(26.0))
+                            .bg(theme.accent)
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(|h| h.opacity(0.9))
+                            .child(icons::icon(icons::ICON_CHECK, 13.0, theme.text_on_accent))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.apply_custom_hex_if_valid(cx);
+                                this.active_color_picker = None;
+                                cx.notify();
+                            }))
+                    )
+            )
+    }
+
     /// Renders a clickable styled pill dropdown or selector button.
     fn render_select_pill(&self, label: &str) -> gpui::Div {
         let theme = &self.theme;
@@ -647,6 +905,195 @@ impl AppView {
     fn render_editor_tab(&self, cx: &Context<Self>) -> gpui::Div {
         let config = &self.config;
 
+        let heading_rows = vec![
+            self.render_setting_row(
+                "H1 — Главный заголовок",
+                Some("Размер шрифта и цвет для '# Заголовок'"),
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(self.render_stepper(
+                        "h1-size",
+                        &format!("{} px", config.editor.headings.h1.font_size),
+                        |this, cx| {
+                            if this.config.editor.headings.h1.font_size > 14 {
+                                this.config.editor.headings.h1.font_size -= 1;
+                                this.save_settings(cx);
+                            }
+                        },
+                        |this, cx| {
+                            if this.config.editor.headings.h1.font_size < 40 {
+                                this.config.editor.headings.h1.font_size += 1;
+                                this.save_settings(cx);
+                            }
+                        },
+                        cx,
+                    ))
+                    .child(self.render_color_picker_button(
+                        "h1-color",
+                        &config.editor.headings.h1.color_name,
+                        cx,
+                    )),
+            ),
+            self.render_setting_row(
+                "H2 — Секция второго уровня",
+                Some("Размер шрифта и цвет для '## Заголовок'"),
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(self.render_stepper(
+                        "h2-size",
+                        &format!("{} px", config.editor.headings.h2.font_size),
+                        |this, cx| {
+                            if this.config.editor.headings.h2.font_size > 13 {
+                                this.config.editor.headings.h2.font_size -= 1;
+                                this.save_settings(cx);
+                            }
+                        },
+                        |this, cx| {
+                            if this.config.editor.headings.h2.font_size < 36 {
+                                this.config.editor.headings.h2.font_size += 1;
+                                this.save_settings(cx);
+                            }
+                        },
+                        cx,
+                    ))
+                    .child(self.render_color_picker_button(
+                        "h2-color",
+                        &config.editor.headings.h2.color_name,
+                        cx,
+                    )),
+            ),
+            self.render_setting_row(
+                "H3 — Подсекция",
+                Some("Размер шрифта и цвет для '### Заголовок'"),
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(self.render_stepper(
+                        "h3-size",
+                        &format!("{} px", config.editor.headings.h3.font_size),
+                        |this, cx| {
+                            if this.config.editor.headings.h3.font_size > 12 {
+                                this.config.editor.headings.h3.font_size -= 1;
+                                this.save_settings(cx);
+                            }
+                        },
+                        |this, cx| {
+                            if this.config.editor.headings.h3.font_size < 32 {
+                                this.config.editor.headings.h3.font_size += 1;
+                                this.save_settings(cx);
+                            }
+                        },
+                        cx,
+                    ))
+                    .child(self.render_color_picker_button(
+                        "h3-color",
+                        &config.editor.headings.h3.color_name,
+                        cx,
+                    )),
+            ),
+            self.render_setting_row(
+                "H4 — Подраздел",
+                Some("Размер шрифта и цвет для '#### Заголовок'"),
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(self.render_stepper(
+                        "h4-size",
+                        &format!("{} px", config.editor.headings.h4.font_size),
+                        |this, cx| {
+                            if this.config.editor.headings.h4.font_size > 11 {
+                                this.config.editor.headings.h4.font_size -= 1;
+                                this.save_settings(cx);
+                            }
+                        },
+                        |this, cx| {
+                            if this.config.editor.headings.h4.font_size < 28 {
+                                this.config.editor.headings.h4.font_size += 1;
+                                this.save_settings(cx);
+                            }
+                        },
+                        cx,
+                    ))
+                    .child(self.render_color_picker_button(
+                        "h4-color",
+                        &config.editor.headings.h4.color_name,
+                        cx,
+                    )),
+            ),
+            self.render_setting_row(
+                "H5 — Мелкий заголовок",
+                Some("Размер шрифта и цвет для '##### Заголовок'"),
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(self.render_stepper(
+                        "h5-size",
+                        &format!("{} px", config.editor.headings.h5.font_size),
+                        |this, cx| {
+                            if this.config.editor.headings.h5.font_size > 10 {
+                                this.config.editor.headings.h5.font_size -= 1;
+                                this.save_settings(cx);
+                            }
+                        },
+                        |this, cx| {
+                            if this.config.editor.headings.h5.font_size < 26 {
+                                this.config.editor.headings.h5.font_size += 1;
+                                this.save_settings(cx);
+                            }
+                        },
+                        cx,
+                    ))
+                    .child(self.render_color_picker_button(
+                        "h5-color",
+                        &config.editor.headings.h5.color_name,
+                        cx,
+                    )),
+            ),
+            self.render_setting_row(
+                "H6 — Минимальный заголовок",
+                Some("Размер шрифта и цвет для '###### Заголовок'"),
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(self.render_stepper(
+                        "h6-size",
+                        &format!("{} px", config.editor.headings.h6.font_size),
+                        |this, cx| {
+                            if this.config.editor.headings.h6.font_size > 9 {
+                                this.config.editor.headings.h6.font_size -= 1;
+                                this.save_settings(cx);
+                            }
+                        },
+                        |this, cx| {
+                            if this.config.editor.headings.h6.font_size < 24 {
+                                this.config.editor.headings.h6.font_size += 1;
+                                this.save_settings(cx);
+                            }
+                        },
+                        cx,
+                    ))
+                    .child(self.render_color_picker_button(
+                        "h6-color",
+                        &config.editor.headings.h6.color_name,
+                        cx,
+                    )),
+            ),
+        ];
+
         let font_rows = vec![
             self.render_setting_row(
                 "Шрифт редактора",
@@ -813,6 +1260,7 @@ impl AppView {
             .flex()
             .flex_col()
             .gap_5()
+            .child(self.render_settings_card("Стилизация заголовков (H1–H6)", heading_rows))
             .child(self.render_settings_card("Шрифты редактора", font_rows))
             .child(self.render_settings_card("Разметка и строки", layout_rows))
             .child(self.render_settings_card("Ввод и поведение", input_rows))
