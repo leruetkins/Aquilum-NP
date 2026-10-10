@@ -20,6 +20,8 @@ pub struct AppView {
     pub need_scroll_sidebar_to_active: Cell<bool>,
     pub initial_sidebar_scroll_done: Cell<bool>,
     pub edit_mode: bool,
+    pub editor_cursor_visible: bool,
+    pub editor_cursor_blink_epoch: usize,
     pub is_mouse_selecting: bool,
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
@@ -85,7 +87,7 @@ impl AppView {
         let title_edit_text = state.active_note.as_ref().map(|n| n.title.clone()).unwrap_or_default();
         let title_cursor_pos = title_edit_text.chars().count();
 
-        Self {
+        let mut this = Self {
             state,
             theme,
             focus_handle: cx.focus_handle(),
@@ -95,6 +97,8 @@ impl AppView {
             need_scroll_sidebar_to_active: Cell::new(false),
             initial_sidebar_scroll_done: Cell::new(false),
             edit_mode,
+            editor_cursor_visible: true,
+            editor_cursor_blink_epoch: 0,
             is_mouse_selecting: false,
             sidebar_width: 260.0,
             sidebar_collapsed: false,
@@ -134,7 +138,9 @@ impl AppView {
             hex_is_mouse_selecting: false,
             hex_mouse_drag_start_x: None,
             hex_box_origin_x: std::rc::Rc::new(Cell::new(0.0)),
-        }
+        };
+        this.reset_editor_cursor_blink(cx);
+        this
     }
 
     pub fn hex_selection_range(&self) -> Option<(usize, usize)> {
@@ -198,6 +204,32 @@ impl AppView {
                         false
                     } else {
                         this.title_cursor_visible = !this.title_cursor_visible;
+                        cx.notify();
+                        true
+                    }
+                }).unwrap_or(false);
+                if !should_continue {
+                    break;
+                }
+            }
+        }).detach();
+    }
+
+    pub fn reset_editor_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.editor_cursor_visible = true;
+        self.editor_cursor_blink_epoch = self.editor_cursor_blink_epoch.wrapping_add(1);
+        let epoch = self.editor_cursor_blink_epoch;
+        let entity = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let timer_executor = cx.background_executor().clone();
+        cx.foreground_executor().spawn(async move {
+            loop {
+                timer_executor.timer(std::time::Duration::from_millis(530)).await;
+                let should_continue = entity.update(&mut async_cx, |this, cx| {
+                    if this.editor_cursor_blink_epoch != epoch || !this.edit_mode || this.state.active_note.is_none() {
+                        false
+                    } else {
+                        this.editor_cursor_visible = !this.editor_cursor_visible;
                         cx.notify();
                         true
                     }
@@ -569,6 +601,7 @@ impl AppView {
             self.set_editor_scroll_top(0.0);
             self.need_scroll_sidebar_to_active.set(true);
             window.focus(&self.focus_handle);
+            self.reset_editor_cursor_blink(cx);
             cx.notify();
         }
     }
@@ -595,6 +628,7 @@ impl AppView {
             self.need_scroll_sidebar_to_active.set(true);
         }
         window.focus(&self.focus_handle);
+        self.reset_editor_cursor_blink(cx);
         cx.notify();
     }
 
@@ -1480,6 +1514,7 @@ impl AppView {
     }
 
     fn handle_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        self.reset_editor_cursor_blink(cx);
         let keystroke = &event.keystroke;
         let ctrl = keystroke.modifiers.control;
         let alt = keystroke.modifiers.alt;
@@ -1854,6 +1889,9 @@ impl AppView {
                                 this.edit_mode = !this.edit_mode;
                                 let current_scroll = this.current_scroll_top();
                                 this.state.snapshot_active_note_settings(current_scroll, this.edit_mode, this.word_wrap);
+                                if this.edit_mode {
+                                    this.reset_editor_cursor_blink(cx);
+                                }
                                 cx.notify();
                             })),
                     )
@@ -3266,6 +3304,7 @@ impl Render for AppView {
                                             }
                                             this.commit_title_rename(window, cx);
                                             window.focus(&this.focus_handle);
+                                            this.reset_editor_cursor_blink(cx);
                                             this.is_mouse_selecting = true;
                                             if let Some(ref mut n) = this.state.active_note {
                                                 let end_offset = n.content.len();
@@ -3324,6 +3363,9 @@ impl Render for AppView {
                                         .child({
                                             let theme = &theme_copy;
                                             let is_editing = self.edit_mode;
+                                            let is_editor_focused = !self.title_focus_handle.is_focused(window)
+                                                && !self.search_focus_handle.is_focused(window)
+                                                && !self.custom_hex_focus_handle.is_focused(window);
                                             let selection_range = self.state.active_note.as_ref().and_then(|n| n.selection_range());
                                             let (cursor_line, _) = self.state.active_note.as_ref().map(|n| n.line_col()).unwrap_or((0, 0));
                                             let headings = &self.config.editor.headings;
@@ -3346,7 +3388,7 @@ impl Render for AppView {
                                                 let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
                                                 let row_spans_down = row_spans.clone();
 
-                                                let (row_h, row_char_w, _row_font_size, cursor_h, cursor_top) =
+                                                let (row_h, row_char_w, _row_font_size, _cursor_h, _cursor_top) =
                                                     Self::heading_typography_metrics(&classified, headings, 24.0, line_char_width);
 
                                                 let line_number_text = if v.sub_idx == 0 {
@@ -3444,6 +3486,7 @@ impl Render for AppView {
                                                                 n.sync_cursor();
                                                             }
                                                             window.focus(&this.focus_handle);
+                                                            this.reset_editor_cursor_blink(cx);
                                                             cx.notify();
                                                         }))
                                                         .child(
@@ -3506,16 +3549,16 @@ impl Render for AppView {
                                                                             theme,
                                                                         )),
                                                                 )
-                                                                .when(is_current, |s| {
+                                                                .when(is_current && is_editor_focused && self.editor_cursor_visible && selection_range.is_none(), |s| {
                                                                     let vis_cursor = crate::markdown::row_char_to_visual_col(&row_spans, active_col_in_row, is_active_line, hidden_prefix_len);
                                                                     let cursor_x = (vis_cursor as f32) * row_char_w;
                                                                     s.child(
                                                                         div()
                                                                             .absolute()
                                                                             .left(px(cursor_x))
-                                                                            .top(px(cursor_top))
+                                                                            .top_0()
+                                                                            .h_full()
                                                                             .w(px(2.0))
-                                                                            .h(px(cursor_h))
                                                                             .bg(theme.accent)
                                                                             .rounded_xs(),
                                                                     )
