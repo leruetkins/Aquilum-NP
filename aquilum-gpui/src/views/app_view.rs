@@ -758,10 +758,34 @@ impl AppView {
         let line_start = note.cached_line_starts.get(v.line_idx).copied().unwrap_or(0);
         let line_end = line_start + line.len();
         let is_line_in_selection = selection_range.as_ref().map_or(false, |sel| {
-            sel.end > line_start && sel.start < line_end
+            if sel.start == sel.end {
+                false
+            } else if line_start == line_end {
+                sel.start <= line_start && sel.end >= line_end
+            } else {
+                sel.end > line_start && sel.start < line_end
+            }
         });
-        let is_active_line = v.line_idx == cursor_line || is_line_in_selection;
-        let classified = crate::markdown::classify_line(line, None);
+        let is_in_active_block = note.cached_code_states.get(v.line_idx).and_then(|s| s.as_ref()).map_or(false, |s| {
+            let cursor_in_block = note.cached_code_states.get(cursor_line).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id);
+            let sel_in_block = selection_range.as_ref().map_or(false, |sel| {
+                let sel_start_l = match note.cached_line_starts.binary_search(&sel.start) {
+                    Ok(idx) => idx,
+                    Err(idx) => idx.saturating_sub(1),
+                };
+                let sel_end_l = match note.cached_line_starts.binary_search(&sel.end) {
+                    Ok(idx) => idx,
+                    Err(idx) => idx.saturating_sub(1),
+                };
+                (sel_start_l..=sel_end_l.min(note.cached_code_states.len().saturating_sub(1))).any(|l_idx| {
+                    note.cached_code_states.get(l_idx).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id)
+                })
+            });
+            cursor_in_block || sel_in_block
+        });
+        let is_active_line = v.line_idx == cursor_line || is_line_in_selection || is_in_active_block;
+        let code_state = note.cached_code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
+        let classified = crate::markdown::classify_line(line, code_state);
         let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
         let (_, row_char_w, _, _, _) = Self::heading_typography_metrics(&classified, &self.config.editor.headings, 24.0, line_char_width);
 
@@ -858,10 +882,34 @@ impl AppView {
         let line_start = note.cached_line_starts.get(v.line_idx).copied().unwrap_or(0);
         let line_end = line_start + line.len();
         let is_line_in_selection = selection_range.as_ref().map_or(false, |sel| {
-            sel.end > line_start && sel.start < line_end
+            if sel.start == sel.end {
+                false
+            } else if line_start == line_end {
+                sel.start <= line_start && sel.end >= line_end
+            } else {
+                sel.end > line_start && sel.start < line_end
+            }
         });
-        let is_active_line = v.line_idx == cursor_line || is_line_in_selection;
-        let classified = crate::markdown::classify_line(line, None);
+        let is_in_active_block = note.cached_code_states.get(v.line_idx).and_then(|s| s.as_ref()).map_or(false, |s| {
+            let cursor_in_block = note.cached_code_states.get(cursor_line).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id);
+            let sel_in_block = selection_range.as_ref().map_or(false, |sel| {
+                let sel_start_l = match note.cached_line_starts.binary_search(&sel.start) {
+                    Ok(idx) => idx,
+                    Err(idx) => idx.saturating_sub(1),
+                };
+                let sel_end_l = match note.cached_line_starts.binary_search(&sel.end) {
+                    Ok(idx) => idx,
+                    Err(idx) => idx.saturating_sub(1),
+                };
+                (sel_start_l..=sel_end_l.min(note.cached_code_states.len().saturating_sub(1))).any(|l_idx| {
+                    note.cached_code_states.get(l_idx).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id)
+                })
+            });
+            cursor_in_block || sel_in_block
+        });
+        let is_active_line = v.line_idx == cursor_line || is_line_in_selection || is_in_active_block;
+        let code_state = note.cached_code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
+        let classified = crate::markdown::classify_line(line, code_state);
         let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
         let (_, row_char_w, _, _, _) = Self::heading_typography_metrics(&classified, &self.config.editor.headings, 24.0, line_char_width);
 
@@ -3120,11 +3168,39 @@ impl Render for AppView {
                                 let (active_v_idx, active_col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows_arc, cursor_line, cursor_col)
                                     .unwrap_or((0, 0));
 
-                                let active_block_id: Option<usize> = if is_editing {
-                                    code_states_arc.get(cursor_line).and_then(|s| s.as_ref()).map(|s| s.block_id)
-                                } else {
-                                    None
-                                };
+                                let selection_range = note.selection_range();
+                                let mut active_block_ids: std::collections::HashSet<usize> = std::collections::HashSet::new();
+                                if is_editing {
+                                    if let Some(s) = code_states_arc.get(cursor_line).and_then(|s| s.as_ref()) {
+                                        active_block_ids.insert(s.block_id);
+                                    }
+                                    if let Some(ref sel) = selection_range {
+                                        let sel_start_line = match line_starts_arc.binary_search(&sel.start) {
+                                            Ok(idx) => idx,
+                                            Err(idx) => idx.saturating_sub(1),
+                                        };
+                                        let sel_end_line = match line_starts_arc.binary_search(&sel.end) {
+                                            Ok(idx) => idx,
+                                            Err(idx) => idx.saturating_sub(1),
+                                        };
+                                        for l_idx in sel_start_line..=sel_end_line.min(code_states_arc.len().saturating_sub(1)) {
+                                            let l_start = line_starts_arc[l_idx];
+                                            let l_end = l_start + lines_arc[l_idx].len();
+                                            let is_in_sel = if sel.start == sel.end {
+                                                false
+                                            } else if l_start == l_end {
+                                                sel.start <= l_start && sel.end >= l_end
+                                            } else {
+                                                sel.end > l_start && sel.start < l_end
+                                            };
+                                            if is_in_sel {
+                                                if let Some(s) = code_states_arc.get(l_idx).and_then(|s| s.as_ref()) {
+                                                    active_block_ids.insert(s.block_id);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
                                 let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
 
@@ -3458,16 +3534,25 @@ impl Render for AppView {
                                                 let line_start = line_starts_arc[v.line_idx];
                                                 let line_end = line_start + line.len();
                                                 let is_line_in_selection = selection_range.as_ref().map_or(false, |sel| {
-                                                    sel.end > line_start && sel.start < line_end
+                                                    if sel.start == sel.end {
+                                                        false
+                                                    } else if line_start == line_end {
+                                                        sel.start <= line_start && sel.end >= line_end
+                                                    } else {
+                                                        sel.end > line_start && sel.start < line_end
+                                                    }
                                                 });
                                                 let is_current = is_editing && (v_idx == active_v_idx);
-                                                let is_active_line = is_editing && (v.line_idx == cursor_line || is_line_in_selection);
+                                                let is_in_active_block = code_states_arc[v.line_idx]
+                                                    .as_ref()
+                                                    .map(|s| active_block_ids.contains(&s.block_id))
+                                                    .unwrap_or(false);
+                                                let is_active_line = is_editing && (v.line_idx == cursor_line || is_line_in_selection || is_in_active_block);
                                                 let code_state = code_states_arc[v.line_idx].as_ref().map(|s| (s.kind, s.lang.as_deref()));
                                                 let classified = crate::markdown::classify_line(line, code_state);
                                                 let is_opening_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: true, .. });
                                                 let is_closing_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: false, .. });
                                                 let is_code_line = matches!(classified, crate::markdown::LineKind::CodeLine(_));
-                                                let is_in_active_block = code_states_arc[v.line_idx].as_ref().map(|s| Some(s.block_id) == active_block_id).unwrap_or(false);
                                                 let row_len = v.char_end.saturating_sub(v.char_start);
 
                                                 let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
@@ -3622,9 +3707,9 @@ impl Render for AppView {
                                                                 .font_family("Consolas")
                                                                 .text_sm()
                                                                 .cursor(gpui::CursorStyle::IBeam)
-                                                                .when(is_opening_fence, |s| s.bg(theme.bg_card).rounded_t_sm())
-                                                                .when(is_closing_fence, |s| s.bg(theme.bg_card).rounded_b_sm())
-                                                                .when(is_code_line, |s| s.bg(theme.code_bg))
+                                                                .when(is_opening_fence && !is_in_active_block, |s| s.bg(theme.bg_card).rounded_t_sm())
+                                                                .when(is_closing_fence && !is_in_active_block, |s| s.bg(theme.bg_card).rounded_b_sm())
+                                                                .when(is_code_line && !is_in_active_block, |s| s.bg(theme.code_bg))
                                                                 .when_some(row_sel_chars, |s, (sel_s, sel_e)| {
                                                                     let sel_x = (sel_s as f32) * row_char_w;
                                                                     let sel_w = ((sel_e - sel_s) as f32) * row_char_w;
@@ -4490,14 +4575,13 @@ fn render_live_styled_row(
             }
         }
         crate::markdown::LineKind::CodeFence { is_opening, lang } => {
-            if show_fences {
+            if show_fences || is_active_line {
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .h_full()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(theme.accent)
+                    .text_color(theme.text_muted)
                     .child(line.to_string())
             } else if *is_opening {
                 let lang_label = lang.unwrap_or("CODE").to_uppercase();
@@ -4535,12 +4619,13 @@ fn render_live_styled_row(
         }
         crate::markdown::LineKind::CodeLine(_) => {
             let row_slice: String = line.chars().skip(char_start).take(char_end - char_start).collect();
+            let text_color = if is_active_line { theme.text_primary } else { theme.success };
             div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .h_full()
-                .text_color(theme.success)
+                .text_color(text_color)
                 .child(row_slice)
         }
         crate::markdown::LineKind::Paragraph(_) => {
