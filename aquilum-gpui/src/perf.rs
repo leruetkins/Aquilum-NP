@@ -316,4 +316,72 @@ mod tests {
         }
         println!("===================================================================\n");
     }
+
+    #[test]
+    fn benchmark_visual_row_virtualization_20k_50k() {
+        use crate::markdown::{build_visual_rows, find_visual_row_for_cursor, VisualRowHeightIndex};
+
+        println!("\n=== БЕНЧМАРК ВИРТУАЛИЗАЦИИ РЕДАКТОРА (20 000 и 50 000 СТРОК) ===");
+        println!(
+            "{:<12} | {:<16} | {:<16} | {:<16} | {:<16}",
+            "Строк", "Индекс высот", "visible_range", "v_idx_at_y", "find_cursor"
+        );
+        println!("{:-<12}-+-{:-<16}-+-{:-<16}-+-{:-<16}-+-{:-<16}", "", "", "", "", "");
+
+        for &count in &[20_000usize, 50_000usize] {
+            let lines: Vec<String> = (0..count)
+                .map(|i| {
+                    if i % 20 == 0 {
+                        format!("## Heading 2 for line {}", i)
+                    } else if i % 10 == 0 {
+                        format!("# Heading 1 for line {}", i)
+                    } else {
+                        format!("Regular paragraph line content for item {}", i)
+                    }
+                })
+                .collect();
+            let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+            let visual_rows = build_visual_rows(&line_refs, false, 0);
+
+            let t0 = Instant::now();
+            let index = VisualRowHeightIndex::from_rows(&lines, &visual_rows, None);
+            let index_time = t0.elapsed();
+
+            let iters = 10_000;
+            let t1 = Instant::now();
+            for i in 0..iters {
+                let scroll_y = ((i % 1000) as f32) * 50.0;
+                let _ = index.visible_range(scroll_y, 800.0, 300.0);
+            }
+            let range_time = t1.elapsed() / (iters as u32);
+
+            let t2 = Instant::now();
+            for i in 0..iters {
+                let y = ((i % 1000) as f32) * 60.0;
+                let _ = index.v_idx_at_y(y);
+            }
+            let lookup_time = t2.elapsed() / (iters as u32);
+
+            let t3 = Instant::now();
+            for i in 0..iters {
+                let cursor_line = (i * 7) % count;
+                let _ = find_visual_row_for_cursor(&visual_rows, cursor_line, 10);
+            }
+            let cursor_time = t3.elapsed() / (iters as u32);
+
+            println!(
+                "{:<12} | {:<16?} | {:<16?} | {:<16?} | {:<16?}",
+                count, index_time, range_time, lookup_time, cursor_time
+            );
+
+            // Assert performance requirements:
+            // 1. Range lookup must be < 1 microsecond (1000ns)
+            assert!(range_time.as_nanos() < 10_000, "visible_range took too long: {:?}", range_time);
+            // 2. Y lookup must be < 1 microsecond
+            assert!(lookup_time.as_nanos() < 10_000, "v_idx_at_y took too long: {:?}", lookup_time);
+            // 3. Cursor lookup must be < 1 microsecond
+            assert!(cursor_time.as_nanos() < 10_000, "find_visual_row_for_cursor took too long: {:?}", cursor_time);
+        }
+        println!("===================================================================\n");
+    }
 }

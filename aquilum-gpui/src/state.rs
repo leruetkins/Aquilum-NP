@@ -219,6 +219,7 @@ pub struct OpenedNote {
     pub cached_line_starts: Arc<Vec<usize>>,
     pub cached_visual_rows: Arc<Vec<crate::markdown::VisualRow>>,
     pub cached_code_states: Arc<Vec<Option<crate::markdown::CodeBlockState>>>,
+    pub cached_height_index: Arc<crate::markdown::VisualRowHeightIndex>,
     pub cached_wrap_cols: usize,
     pub cached_word_wrap: bool,
     pub visual_cache_dirty: bool,
@@ -246,6 +247,7 @@ impl OpenedNote {
             cached_line_starts: Arc::new(Vec::new()),
             cached_visual_rows: Arc::new(Vec::new()),
             cached_code_states: Arc::new(Vec::new()),
+            cached_height_index: Arc::new(crate::markdown::VisualRowHeightIndex::default()),
             cached_wrap_cols: 0,
             cached_word_wrap: true,
             visual_cache_dirty: true,
@@ -257,6 +259,15 @@ impl OpenedNote {
     }
 
     pub fn rebuild_visual_cache(&mut self, word_wrap: bool, wrap_cols: usize) {
+        self.rebuild_visual_cache_with_headings(word_wrap, wrap_cols, None);
+    }
+
+    pub fn rebuild_visual_cache_with_headings(
+        &mut self,
+        word_wrap: bool,
+        wrap_cols: usize,
+        headings: Option<&aquilum_core::settings::HeadingsSettings>,
+    ) {
         crate::perf::PERF.parse_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let lines: Vec<String> = self.content.split('\n').map(String::from).collect();
         crate::perf::PERF.span_rebuilds.fetch_add(lines.len() as u64, std::sync::atomic::Ordering::Relaxed);
@@ -269,23 +280,34 @@ impl OpenedNote {
             running_offset += line.len() + 1;
         }
         let code_states = crate::markdown::analyze_code_blocks(&line_refs);
+        let height_index = crate::markdown::VisualRowHeightIndex::from_rows(&lines, &visual_rows, headings);
 
         self.cached_lines = Arc::new(lines);
         self.cached_line_starts = Arc::new(line_starts);
         self.cached_visual_rows = Arc::new(visual_rows);
         self.cached_code_states = Arc::new(code_states);
+        self.cached_height_index = Arc::new(height_index);
         self.cached_word_wrap = word_wrap;
         self.cached_wrap_cols = wrap_cols;
         self.visual_cache_dirty = false;
     }
 
     pub fn ensure_visual_cache(&mut self, word_wrap: bool, wrap_cols: usize) {
+        self.ensure_visual_cache_with_headings(word_wrap, wrap_cols, None);
+    }
+
+    pub fn ensure_visual_cache_with_headings(
+        &mut self,
+        word_wrap: bool,
+        wrap_cols: usize,
+        headings: Option<&aquilum_core::settings::HeadingsSettings>,
+    ) {
         if self.visual_cache_dirty
             || self.cached_lines.is_empty()
             || self.cached_word_wrap != word_wrap
             || self.cached_wrap_cols != wrap_cols
         {
-            self.rebuild_visual_cache(word_wrap, wrap_cols);
+            self.rebuild_visual_cache_with_headings(word_wrap, wrap_cols, headings);
         }
     }
 

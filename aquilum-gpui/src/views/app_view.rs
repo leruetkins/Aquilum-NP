@@ -34,6 +34,7 @@ pub struct AppView {
     pub is_dragging_scrollbar: bool,
     pub scrollbar_drag_start_y: f32,
     pub scrollbar_drag_start_scroll_y: f32,
+    pub last_editor_h: Cell<f32>,
     pub config: aquilum_core::settings::models::AppConfig,
     pub last_saved_geometry: Option<(f32, f32, Option<f32>, Option<f32>, bool)>,
     pub initial_scroll_done: bool,
@@ -111,6 +112,7 @@ impl AppView {
             is_dragging_scrollbar: false,
             scrollbar_drag_start_y: 0.0,
             scrollbar_drag_start_scroll_y: 0.0,
+            last_editor_h: Cell::new(600.0),
             config,
             last_saved_geometry,
             initial_scroll_done: false,
@@ -334,7 +336,7 @@ impl AppView {
         let Some(ref mut note) = self.state.active_note else {
             return;
         };
-        note.ensure_visual_cache(self.word_wrap, self.last_wrap_cols);
+        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings));
         let visual_rows = Arc::clone(&note.cached_visual_rows);
         if visual_rows.is_empty() {
             return;
@@ -378,7 +380,7 @@ impl AppView {
         let Some(ref mut note) = self.state.active_note else {
             return;
         };
-        note.ensure_visual_cache(self.word_wrap, self.last_wrap_cols);
+        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings));
         let visual_rows = Arc::clone(&note.cached_visual_rows);
         if visual_rows.is_empty() {
             return;
@@ -422,7 +424,7 @@ impl AppView {
         let Some(ref mut note) = self.state.active_note else {
             return;
         };
-        note.ensure_visual_cache(self.word_wrap, self.last_wrap_cols);
+        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings));
         let visual_rows = Arc::clone(&note.cached_visual_rows);
         if visual_rows.is_empty() {
             return;
@@ -452,7 +454,7 @@ impl AppView {
         let Some(ref mut note) = self.state.active_note else {
             return;
         };
-        note.ensure_visual_cache(self.word_wrap, self.last_wrap_cols);
+        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings));
         let visual_rows = Arc::clone(&note.cached_visual_rows);
         if visual_rows.is_empty() {
             return;
@@ -515,19 +517,23 @@ impl AppView {
             let (cursor_line, cursor_col) = note.line_col();
             let visual_rows = &note.cached_visual_rows;
             if let Some((v_idx, _)) = crate::markdown::find_visual_row_for_cursor(visual_rows, cursor_line, cursor_col) {
-                self.editor_scroll_handle.scroll_to_item(v_idx);
+                let row_top = note.cached_height_index.top_of(v_idx);
+                let row_h = note.cached_height_index.height_of(v_idx);
+                let row_bottom = row_top + row_h;
+                let current_scroll = self.current_scroll_top();
+                let editor_h = self.last_editor_h.get().max(100.0);
+
+                if row_top < current_scroll {
+                    self.set_editor_scroll_top((row_top - 24.0).max(0.0));
+                } else if row_bottom > current_scroll + editor_h {
+                    self.set_editor_scroll_top(row_bottom + 24.0 - editor_h);
+                }
             }
         }
     }
 
     fn scroll_cursor_into_view(&self) {
-        if let Some(ref note) = self.state.active_note {
-            let (cursor_line, cursor_col) = note.line_col();
-            let visual_rows = &note.cached_visual_rows;
-            if let Some((v_idx, _)) = crate::markdown::find_visual_row_for_cursor(visual_rows, cursor_line, cursor_col) {
-                self.editor_scroll_handle.scroll_to_item(v_idx);
-            }
-        }
+        self.scroll_cursor_into_view_with_strategy(ScrollStrategy::Top);
     }
 
     fn set_editor_scroll_top(&self, scroll_y: f32) {
@@ -542,20 +548,10 @@ impl AppView {
         let Some(ref mut note) = self.state.active_note else {
             return;
         };
-        note.ensure_visual_cache(self.word_wrap, self.last_wrap_cols);
+        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings));
         let viewport_h: f32 = window.viewport_size().height.into();
         let editor_h = (viewport_h - 170.0).max(100.0);
-        let total_content_h = {
-            let mut sum = 48.0f32;
-            let headings = &self.config.editor.headings;
-            for v in note.cached_visual_rows.iter() {
-                let line = &note.cached_lines[v.line_idx];
-                let classified = crate::markdown::classify_line(line, None);
-                let (rh, _, _, _, _) = Self::heading_typography_metrics(&classified, headings, 24.0, 7.7);
-                sum += rh;
-            }
-            sum
-        };
+        let total_content_h = note.cached_height_index.total() + 48.0;
         let ratio = (editor_h / total_content_h).clamp(0.04, 1.0);
         let thumb_h = (editor_h * ratio).max(28.0);
         let max_scroll_content = (total_content_h - editor_h).max(1.0);
@@ -717,6 +713,84 @@ impl AppView {
         cx.notify();
     }
 
+    fn handle_editor_mouse_down(&mut self, click_x: f32, click_y: f32, shift: bool, click_count: usize, cx: &mut Context<Self>) {
+        if self.state.active_note.is_none() {
+            return;
+        }
+
+        let editor_rows_top_y = 132.0;
+        let current_scroll_y = self.current_scroll_top();
+        let rel_y = click_y - editor_rows_top_y + current_scroll_y;
+
+        let font_id = cx.text_system().resolve_font(&gpui::font("Consolas"));
+        let line_char_width = cx
+            .text_system()
+            .advance(font_id, px(14.0), 'x')
+            .map(|s| f32::from(s.width))
+            .unwrap_or(7.7);
+        let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
+        let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
+        let word_wrap = self.word_wrap;
+        let wrap_cols = self.last_wrap_cols;
+
+        let Some(ref mut note) = self.state.active_note else {
+            return;
+        };
+
+        note.ensure_visual_cache_with_headings(word_wrap, wrap_cols, Some(&self.config.editor.headings));
+        let visual_rows = Arc::clone(&note.cached_visual_rows);
+        if visual_rows.is_empty() {
+            return;
+        }
+
+        let target_v_idx = if rel_y <= 0.0 {
+            0
+        } else {
+            note.cached_height_index.v_idx_at_y(rel_y)
+        };
+
+        let v = &visual_rows[target_v_idx];
+        let v_len = v.char_end.saturating_sub(v.char_start);
+
+        let (cursor_line, _) = note.line_col();
+        let is_active_line = v.line_idx == cursor_line;
+        let line = &note.cached_lines[v.line_idx];
+        let classified = crate::markdown::classify_line(line, None);
+        let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
+        let (_, row_char_w, _, _, _) = Self::heading_typography_metrics(&classified, &self.config.editor.headings, 24.0, line_char_width);
+
+        let col_in_row = if click_x > text_start_x {
+            let raw_col = ((click_x - text_start_x) / row_char_w).round() as usize;
+            crate::markdown::visual_col_to_row_char(&row_spans, raw_col, is_active_line, hidden_prefix_len).min(v_len)
+        } else {
+            0
+        };
+
+        let target_char = v.char_start + col_in_row;
+        let offset = note.offset_for_line_col(v.line_idx, target_char);
+
+        if click_count == 2 {
+            let (w_start, w_end) = note.word_range_at(offset);
+            note.selection_anchor = Some(w_start);
+            note.cursor_offset = w_end;
+        } else if click_count >= 3 {
+            let (l_start, l_end) = note.line_range_at(offset);
+            note.selection_anchor = Some(l_start);
+            note.cursor_offset = l_end;
+        } else if shift {
+            if note.selection_anchor.is_none() {
+                note.selection_anchor = Some(note.cursor_offset);
+            }
+            note.cursor_offset = offset;
+        } else {
+            note.cursor_offset = offset;
+            note.selection_anchor = Some(offset);
+        }
+        note.sync_cursor();
+        self.reset_editor_cursor_blink(cx);
+        cx.notify();
+    }
+
     fn update_mouse_selection(&mut self, pos_x: f32, pos_y: f32, viewport_h: f32, cx: &mut Context<Self>) {
         if !self.is_mouse_selecting {
             return;
@@ -757,7 +831,7 @@ impl AppView {
             return;
         };
 
-        note.ensure_visual_cache(word_wrap, wrap_cols);
+        note.ensure_visual_cache_with_headings(word_wrap, wrap_cols, Some(&self.config.editor.headings));
         let visual_rows = Arc::clone(&note.cached_visual_rows);
         if visual_rows.is_empty() {
             return;
@@ -766,20 +840,7 @@ impl AppView {
         let target_v_idx = if rel_y <= 0.0 {
             0
         } else {
-            let mut accumulated_y = 0.0;
-            let mut found_idx = visual_rows.len().saturating_sub(1);
-            let headings = &self.config.editor.headings;
-            for (i, v) in visual_rows.iter().enumerate() {
-                let line = &note.cached_lines[v.line_idx];
-                let classified = crate::markdown::classify_line(line, None);
-                let (rh, _, _, _, _) = Self::heading_typography_metrics(&classified, headings, 24.0, line_char_width);
-                if rel_y < accumulated_y + rh {
-                    found_idx = i;
-                    break;
-                }
-                accumulated_y += rh;
-            }
-            found_idx
+            note.cached_height_index.v_idx_at_y(rel_y)
         };
 
         let v = &visual_rows[target_v_idx];
@@ -1996,7 +2057,7 @@ impl Render for AppView {
         let wrap_cols = self.compute_wrap_cols(viewport_w, line_char_width);
         self.last_wrap_cols = wrap_cols;
         if let Some(ref mut note) = self.state.active_note {
-            note.ensure_visual_cache(self.word_wrap, wrap_cols);
+            note.ensure_visual_cache_with_headings(self.word_wrap, wrap_cols, Some(&self.config.editor.headings));
         }
 
         let is_resizer_active = self.is_resizing_sidebar || self.is_hovering_resizer;
@@ -3041,7 +3102,7 @@ impl Render for AppView {
                                 let visual_rows_arc = Arc::clone(&note.cached_visual_rows);
                                 let line_starts_arc = Arc::clone(&note.cached_line_starts);
                                 let code_states_arc = Arc::clone(&note.cached_code_states);
-                                let visual_rows_count = visual_rows_arc.len();
+                                let height_index_arc = Arc::clone(&note.cached_height_index);
 
                                 let (cursor_line, cursor_col) = note.line_col();
                                 let (active_v_idx, active_col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows_arc, cursor_line, cursor_col)
@@ -3060,17 +3121,8 @@ impl Render for AppView {
 
                                 let viewport_h: f32 = window.viewport_size().height.into();
                                 let editor_h = (viewport_h - 170.0).max(100.0);
-                                let total_content_h = {
-                                    let mut sum = 48.0f32;
-                                    let headings = &self.config.editor.headings;
-                                    for v in visual_rows_arc.iter() {
-                                        let line = &lines_arc[v.line_idx];
-                                        let classified = crate::markdown::classify_line(line, None);
-                                        let (row_h, _, _, _, _) = Self::heading_typography_metrics(&classified, headings, 24.0, line_char_width);
-                                        sum += row_h;
-                                    }
-                                    sum
-                                };
+                                self.last_editor_h.set(editor_h);
+                                let total_content_h = height_index_arc.total() + 48.0;
                                 let show_scrollbar = total_content_h > editor_h;
                                 let max_scroll_content = (total_content_h - editor_h).max(1.0);
                                 let (thumb_top, thumb_h) = if show_scrollbar {
@@ -3304,21 +3356,10 @@ impl Render for AppView {
                                             }
                                             this.commit_title_rename(window, cx);
                                             window.focus(&this.focus_handle);
-                                            this.reset_editor_cursor_blink(cx);
                                             this.is_mouse_selecting = true;
-                                            if let Some(ref mut n) = this.state.active_note {
-                                                let end_offset = n.content.len();
-                                                if event.modifiers.shift {
-                                                    if n.selection_anchor.is_none() {
-                                                        n.selection_anchor = Some(n.cursor_offset);
-                                                    }
-                                                } else {
-                                                    n.selection_anchor = Some(end_offset);
-                                                }
-                                                n.cursor_offset = end_offset;
-                                                n.sync_cursor();
-                                            }
-                                            cx.notify();
+                                            let click_x: f32 = event.position.x.into();
+                                            let click_y: f32 = event.position.y.into();
+                                            this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, cx);
                                         }))
                                         .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                                             if this.is_resizing_sidebar {
@@ -3370,9 +3411,36 @@ impl Render for AppView {
                                             let (cursor_line, _) = self.state.active_note.as_ref().map(|n| n.line_col()).unwrap_or((0, 0));
                                             let headings = &self.config.editor.headings;
 
-                                            crate::perf::PERF.shape_calls.fetch_add(visual_rows_count as u64, std::sync::atomic::Ordering::Relaxed);
-                                            let mut items = Vec::with_capacity(visual_rows_count);
-                                            for v_idx in 0..visual_rows_count {
+                                            let scroll_y = self.current_scroll_top();
+                                            let visible_range = height_index_arc.visible_range(scroll_y, editor_h, 300.0);
+                                            let top_spacer_h = height_index_arc.top_of(visible_range.start);
+                                            let rendered_bottom = height_index_arc.top_of(visible_range.end);
+                                            let bottom_spacer_h = (height_index_arc.total() - rendered_bottom).max(0.0);
+
+                                            crate::perf::PERF.shape_calls.fetch_add(visible_range.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                                            let mut items = Vec::with_capacity(visible_range.len() + 2);
+
+                                            if top_spacer_h > 0.0 {
+                                                items.push(
+                                                    div()
+                                                        .id("top-spacer")
+                                                        .w_full()
+                                                        .h(px(top_spacer_h))
+                                                        .flex_shrink_0()
+                                                        .cursor(gpui::CursorStyle::IBeam)
+                                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                                            cx.stop_propagation();
+                                                            this.commit_title_rename(window, cx);
+                                                            window.focus(&this.focus_handle);
+                                                            this.is_mouse_selecting = true;
+                                                            let click_x: f32 = event.position.x.into();
+                                                            let click_y: f32 = event.position.y.into();
+                                                            this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, cx);
+                                                        }))
+                                                );
+                                            }
+
+                                            for v_idx in visible_range {
                                                 let v = &visual_rows_arc[v_idx];
                                                 let line = &lines_arc[v.line_idx];
                                                 let is_current = is_editing && (v_idx == active_v_idx);
@@ -3387,6 +3455,7 @@ impl Render for AppView {
 
                                                 let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
                                                 let row_spans_down = row_spans.clone();
+                                                let row_spans_move = row_spans.clone();
 
                                                 let (row_h, row_char_w, _row_font_size, _cursor_h, _cursor_top) =
                                                     Self::heading_typography_metrics(&classified, headings, 24.0, line_char_width);
@@ -3439,6 +3508,7 @@ impl Render for AppView {
                                                     div()
                                                         .id(gpui::ElementId::from(("v-row", v_idx)))
                                                         .w_full()
+                                                        .flex_shrink_0()
                                                         .flex()
                                                         .flex_row()
                                                         .items_center()
@@ -3488,6 +3558,30 @@ impl Render for AppView {
                                                             window.focus(&this.focus_handle);
                                                             this.reset_editor_cursor_blink(cx);
                                                             cx.notify();
+                                                        }))
+                                                        .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                                                            if this.is_mouse_selecting {
+                                                                cx.stop_propagation();
+                                                                let click_x: f32 = event.position.x.into();
+                                                                let col_in_row = if click_x > text_start_x {
+                                                                    let raw_col = ((click_x - text_start_x) / row_char_w).round() as usize;
+                                                                    crate::markdown::visual_col_to_row_char(&row_spans_move, raw_col, is_active_line, hidden_prefix_len).min(row_len)
+                                                                } else {
+                                                                    0
+                                                                };
+                                                                let target_char = v_char_start + col_in_row;
+                                                                if let Some(ref mut n) = this.state.active_note {
+                                                                    let new_offset = n.offset_for_line_col(v_line_idx, target_char);
+                                                                    if n.selection_anchor.is_none() {
+                                                                        n.selection_anchor = Some(n.cursor_offset);
+                                                                    }
+                                                                    if n.cursor_offset != new_offset {
+                                                                        n.cursor_offset = new_offset;
+                                                                        n.sync_cursor();
+                                                                        cx.notify();
+                                                                    }
+                                                                }
+                                                            }
                                                         }))
                                                         .child(
                                                             div()
@@ -3566,6 +3660,27 @@ impl Render for AppView {
                                                         ),
                                                 );
                                             }
+
+                                            if bottom_spacer_h > 0.0 {
+                                                items.push(
+                                                    div()
+                                                        .id("bottom-spacer")
+                                                        .w_full()
+                                                        .h(px(bottom_spacer_h))
+                                                        .flex_shrink_0()
+                                                        .cursor(gpui::CursorStyle::IBeam)
+                                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                                            cx.stop_propagation();
+                                                            this.commit_title_rename(window, cx);
+                                                            window.focus(&this.focus_handle);
+                                                            this.is_mouse_selecting = true;
+                                                            let click_x: f32 = event.position.x.into();
+                                                            let click_y: f32 = event.position.y.into();
+                                                            this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, cx);
+                                                        }))
+                                                );
+                                            }
+
                                             div()
                                                 .id("note-editor-list")
                                                 .track_scroll(&self.editor_scroll_handle)
@@ -3576,6 +3691,15 @@ impl Render for AppView {
                                                 .px_8()
                                                 .pt_0()
                                                 .pb_6()
+                                                .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.commit_title_rename(window, cx);
+                                                    window.focus(&this.focus_handle);
+                                                    this.is_mouse_selecting = true;
+                                                    let click_x: f32 = event.position.x.into();
+                                                    let click_y: f32 = event.position.y.into();
+                                                    this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, cx);
+                                                }))
                                                 .children(items)
                                         })
                                         .when(show_scrollbar, |c| {

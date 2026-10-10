@@ -107,6 +107,9 @@ impl AppView {
 
     /// Persists the modified AppConfig to disk via Core SettingsManager.
     pub fn save_settings(&mut self, cx: &mut Context<Self>) {
+        if let Some(ref mut note) = self.state.active_note {
+            note.visual_cache_dirty = true;
+        }
         let _ = self.state.core.settings.update_config(self.config.clone());
         cx.notify();
     }

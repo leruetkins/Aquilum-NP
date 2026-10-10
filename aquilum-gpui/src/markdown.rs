@@ -747,15 +747,132 @@ pub fn find_visual_row_for_cursor(
     cursor_line: usize,
     cursor_col: usize,
 ) -> Option<(usize, usize)> {
-    for (v_idx, v) in visual_rows.iter().enumerate() {
-        if v.line_idx == cursor_line {
+    if visual_rows.is_empty() {
+        return None;
+    }
+    let start_idx = visual_rows.partition_point(|v| v.line_idx < cursor_line);
+    if start_idx < visual_rows.len() && visual_rows[start_idx].line_idx == cursor_line {
+        let mut last_sub = (start_idx, 0);
+        for v_idx in start_idx..visual_rows.len() {
+            let v = &visual_rows[v_idx];
+            if v.line_idx != cursor_line {
+                break;
+            }
             if cursor_col >= v.char_start && (cursor_col < v.char_end || v.is_last_sub) {
                 let col_in_row = cursor_col.saturating_sub(v.char_start);
                 return Some((v_idx, col_in_row));
             }
+            last_sub = (v_idx, cursor_col.saturating_sub(v.char_start));
         }
+        return Some(last_sub);
+    }
+    if start_idx >= visual_rows.len() {
+        return visual_rows.last().map(|v| (visual_rows.len() - 1, cursor_col.saturating_sub(v.char_start)));
     }
     visual_rows.first().map(|_| (0, 0))
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VisualRowHeightIndex {
+    heights: Vec<f32>,
+    /// prefix[i] = cumulative sum of heights for rows 0..i, length = heights.len() + 1
+    prefix: Vec<f32>,
+}
+
+impl VisualRowHeightIndex {
+    pub fn new(heights: Vec<f32>) -> Self {
+        let mut prefix = Vec::with_capacity(heights.len() + 1);
+        prefix.push(0.0);
+        let mut running = 0.0;
+        for &h in &heights {
+            running += h;
+            prefix.push(running);
+        }
+        Self { heights, prefix }
+    }
+
+    pub fn from_rows(
+        lines: &[impl AsRef<str>],
+        visual_rows: &[VisualRow],
+        headings: Option<&aquilum_core::settings::HeadingsSettings>,
+    ) -> Self {
+        let mut heights = Vec::with_capacity(visual_rows.len());
+        let default_headings = aquilum_core::settings::HeadingsSettings::default();
+        let h_settings = headings.unwrap_or(&default_headings);
+
+        for v in visual_rows {
+            let line_str = lines.get(v.line_idx).map(|s| s.as_ref()).unwrap_or("");
+            let classified = classify_line(line_str, None);
+            let h_size = match classified {
+                LineKind::Heading1(_) => h_settings.h1.font_size as f32,
+                LineKind::Heading2(_) => h_settings.h2.font_size as f32,
+                LineKind::Heading3(_) => h_settings.h3.font_size as f32,
+                LineKind::Heading4(_) => h_settings.h4.font_size as f32,
+                LineKind::Heading5(_) => h_settings.h5.font_size as f32,
+                LineKind::Heading6(_) => h_settings.h6.font_size as f32,
+                _ => 14.0,
+            };
+            let row_h = if matches!(
+                classified,
+                LineKind::Heading1(_)
+                    | LineKind::Heading2(_)
+                    | LineKind::Heading3(_)
+                    | LineKind::Heading4(_)
+                    | LineKind::Heading5(_)
+                    | LineKind::Heading6(_)
+            ) {
+                (h_size * 1.35).round().max(24.0)
+            } else {
+                24.0
+            };
+            heights.push(row_h);
+        }
+
+        Self::new(heights)
+    }
+
+    pub fn len(&self) -> usize {
+        self.heights.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.heights.is_empty()
+    }
+
+    pub fn total(&self) -> f32 {
+        *self.prefix.last().unwrap_or(&0.0)
+    }
+
+    pub fn top_of(&self, v_idx: usize) -> f32 {
+        if v_idx < self.prefix.len() {
+            self.prefix[v_idx]
+        } else {
+            self.total()
+        }
+    }
+
+    pub fn height_of(&self, v_idx: usize) -> f32 {
+        self.heights.get(v_idx).copied().unwrap_or(0.0)
+    }
+
+    pub fn v_idx_at_y(&self, y: f32) -> usize {
+        if self.heights.is_empty() || y <= 0.0 {
+            return 0;
+        }
+        let i = self.prefix.partition_point(|&p| p <= y);
+        i.saturating_sub(1).min(self.heights.len().saturating_sub(1))
+    }
+
+    pub fn visible_range(&self, scroll_top: f32, viewport_h: f32, overscan_px: f32) -> std::ops::Range<usize> {
+        if self.heights.is_empty() {
+            return 0..0;
+        }
+        let top = (scroll_top - overscan_px).max(0.0);
+        let bottom = scroll_top + viewport_h + overscan_px;
+        let first = self.v_idx_at_y(top);
+        let last = (self.v_idx_at_y(bottom) + 1).min(self.heights.len());
+        first..last.max(first)
+    }
 }
 
 pub fn slice_syntax_spans(
@@ -1023,6 +1140,66 @@ mod tests {
         assert_eq!(find_heading_preset("indigo").id, "blue");
         assert_eq!(find_heading_preset("violet").id, "reddish_purple");
         assert_eq!(find_heading_preset("teal").id, "bluish_green");
+    }
+
+    #[test]
+    fn test_visual_row_height_index_basic() {
+        let index = VisualRowHeightIndex::new(vec![24.0, 38.0, 24.0]);
+        assert_eq!(index.len(), 3);
+        assert_eq!(index.total(), 86.0);
+        assert_eq!(index.top_of(0), 0.0);
+        assert_eq!(index.top_of(1), 24.0);
+        assert_eq!(index.top_of(2), 62.0);
+        assert_eq!(index.top_of(3), 86.0);
+        assert_eq!(index.height_of(0), 24.0);
+        assert_eq!(index.height_of(1), 38.0);
+        assert_eq!(index.height_of(2), 24.0);
+    }
+
+    #[test]
+    fn test_visual_row_height_index_v_idx_at_y() {
+        let index = VisualRowHeightIndex::new(vec![24.0, 38.0, 24.0]);
+        assert_eq!(index.v_idx_at_y(0.0), 0);
+        assert_eq!(index.v_idx_at_y(10.0), 0);
+        assert_eq!(index.v_idx_at_y(23.9), 0);
+        assert_eq!(index.v_idx_at_y(24.0), 1);
+        assert_eq!(index.v_idx_at_y(50.0), 1);
+        assert_eq!(index.v_idx_at_y(61.9), 1);
+        assert_eq!(index.v_idx_at_y(62.0), 2);
+        assert_eq!(index.v_idx_at_y(85.9), 2);
+        assert_eq!(index.v_idx_at_y(100.0), 2); // clamped to last row
+    }
+
+    #[test]
+    fn test_visual_row_height_index_visible_range() {
+        let heights = vec![24.0; 100];
+        let index = VisualRowHeightIndex::new(heights);
+        assert_eq!(index.total(), 2400.0);
+
+        // scroll_top = 240.0 (row 10), viewport_h = 240.0 (10 rows), overscan = 0
+        let range = index.visible_range(240.0, 240.0, 0.0);
+        assert_eq!(range, 10..21);
+
+        // with overscan of 48.0 (2 rows above and below)
+        let range_overscan = index.visible_range(240.0, 240.0, 48.0);
+        assert_eq!(range_overscan, 8..23);
+    }
+
+    #[test]
+    fn test_find_visual_row_for_cursor_large_doc() {
+        let visual_rows: Vec<VisualRow> = (0..20_000)
+            .map(|i| VisualRow {
+                line_idx: i,
+                sub_idx: 0,
+                is_last_sub: true,
+                char_start: 0,
+                char_end: 20,
+            })
+            .collect();
+
+        let (v_idx, col) = find_visual_row_for_cursor(&visual_rows, 15_432, 5).unwrap();
+        assert_eq!(v_idx, 15_432);
+        assert_eq!(col, 5);
     }
 }
 
