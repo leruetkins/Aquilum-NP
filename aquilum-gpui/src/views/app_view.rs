@@ -369,7 +369,7 @@ impl AppView {
         let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
         let total_lines = visual_rows.len().max(1);
         let viewport_h: f32 = window.viewport_size().height.into();
-        let editor_h = (viewport_h - 106.0).max(100.0);
+        let editor_h = (viewport_h - 170.0).max(100.0);
         let total_content_h = (total_lines as f32) * 24.0 + 48.0;
         let ratio = (editor_h / total_content_h).clamp(0.04, 1.0);
         let thumb_h = (editor_h * ratio).max(28.0);
@@ -528,8 +528,8 @@ impl AppView {
             return;
         }
 
-        // Top of rows area: Titlebar (38px) + Nav bar (40px) + list py_6 (24px * 2) = 126px
-        let editor_rows_top_y = 126.0;
+        // Top of rows area: Titlebar (38px) + Nav bar (40px) + note-title-panel (54px) = 132px
+        let editor_rows_top_y = 132.0;
         let editor_bottom_y = (viewport_h - 28.0).max(editor_rows_top_y + 100.0);
         let scroll_y = self.current_scroll_top();
 
@@ -2605,7 +2605,7 @@ impl Render for AppView {
                                 let visual_rows_count = visual_rows_arc.len();
 
                                 let viewport_h: f32 = window.viewport_size().height.into();
-                                let editor_h = (viewport_h - 154.0).max(100.0);
+                                let editor_h = (viewport_h - 170.0).max(100.0);
                                 let total_content_h = (visual_rows_count as f32) * 24.0 + 48.0;
                                 let show_scrollbar = total_content_h > editor_h;
                                 let max_scroll_content = (total_content_h - editor_h).max(1.0);
@@ -2686,18 +2686,18 @@ impl Render for AppView {
                                         .w_full()
                                         .flex()
                                         .flex_row()
-                                        .items_center()
+                                        .items_start()
                                         .pl(px(48.0))
                                         .pr_4()
                                         .pt(px(2.0))
-                                        .pb(px(0.0))
+                                        .pb(px(16.0))
                                         .cursor(gpui::CursorStyle::IBeam)
                                         .bg(theme.bg_editor)
                                         .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
                                             window.focus(&this.title_focus_handle);
                                             this.title_is_focused = true;
                                             this.reset_title_cursor_blink(cx);
-                                            this.title_cursor_pos = 0;
+                                            this.title_cursor_pos = this.title_edit_text.chars().count();
                                             this.title_selection_anchor = None;
                                             cx.notify();
                                         }))
@@ -3094,7 +3094,7 @@ impl Render for AppView {
                                             .track_scroll(self.editor_scroll_handle.clone())
                                             .size_full()
                                             .px_8()
-                                            .pt(px(4.0))
+                                            .pt_0()
                                             .pb_6()
                                         )
                                         .when(show_scrollbar, |c| {
@@ -3112,7 +3112,7 @@ impl Render for AppView {
                                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                                                         cx.stop_propagation();
                                                         let click_y: f32 = event.position.y.into();
-                                                        let click_rel_y = (click_y - 78.0).max(0.0);
+                                                        let click_rel_y = (click_y - 132.0).max(0.0);
                                                         let target_fraction = (click_rel_y / editor_h).clamp(0.0, 1.0);
                                                         let target_scroll_y = target_fraction * max_scroll_content;
                                                         this.set_editor_scroll_top(target_scroll_y);
