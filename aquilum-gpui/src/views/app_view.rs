@@ -3709,94 +3709,193 @@ fn render_syntax_spans(
     is_active_line: bool,
     theme: &Theme,
     text_color_override: Option<gpui::Rgba>,
-) -> gpui::Div {
+    base_weight: Option<gpui::FontWeight>,
+) -> gpui::StyledText {
     let main_color = text_color_override.unwrap_or(theme.text_primary);
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .children(spans.into_iter().filter_map(|span| {
-            match span {
-                crate::markdown::SyntaxSpan::Marker(m) => {
-                    if is_active_line {
-                        Some(div().text_color(theme.text_muted).child(m))
-                    } else {
-                        None
-                    }
-                }
-                crate::markdown::SyntaxSpan::Text(t) => {
-                    Some(div().text_color(main_color).child(t))
-                }
-                crate::markdown::SyntaxSpan::Bold(b) => {
-                    Some(
-                        div()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(main_color)
-                            .child(b),
-                    )
-                }
-                crate::markdown::SyntaxSpan::Italic(i) => {
-                    Some(
-                        div()
-                            .italic()
-                            .text_color(main_color)
-                            .child(i),
-                    )
-                }
-                crate::markdown::SyntaxSpan::BoldItalic(bi) => {
-                    Some(
-                        div()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .italic()
-                            .text_color(main_color)
-                            .child(bi),
-                    )
-                }
-                crate::markdown::SyntaxSpan::InlineCode(c) => {
-                    Some(
-                        div()
-                            .text_color(theme.success)
-                            .bg(theme.code_bg)
-                            .rounded_xs()
-                            .child(c),
-                    )
-                }
-                crate::markdown::SyntaxSpan::Strikethrough(s) => {
-                    Some(
-                        div()
-                            .line_through()
-                            .text_color(theme.text_muted)
-                            .child(s),
-                    )
-                }
-                crate::markdown::SyntaxSpan::LinkText(l) => {
-                    Some(
-                        div()
-                            .underline()
-                            .text_color(theme.accent)
-                            .child(l),
-                    )
-                }
-                crate::markdown::SyntaxSpan::Underline(u) => {
-                    Some(
-                        div()
-                            .underline()
-                            .text_color(main_color)
-                            .child(u),
-                    )
-                }
-                crate::markdown::SyntaxSpan::Highlight(h) => {
-                    let hl_bg = if theme.is_dark { gpui::rgba(0xf9e2af44) } else { gpui::rgba(0xdf8e1d33) };
-                    Some(
-                        div()
-                            .bg(hl_bg)
-                            .text_color(main_color)
-                            .rounded_xs()
-                            .child(h),
-                    )
+    let base_weight = base_weight.unwrap_or(gpui::FontWeight::NORMAL);
+    let mut full_text = String::new();
+    let mut runs = Vec::new();
+
+    let reg_font = gpui::Font {
+        family: "Consolas".into(),
+        weight: base_weight,
+        style: gpui::FontStyle::Normal,
+        features: Default::default(),
+        fallbacks: None,
+    };
+    let bold_font = gpui::Font {
+        family: "Consolas".into(),
+        weight: gpui::FontWeight::BOLD,
+        style: gpui::FontStyle::Normal,
+        features: Default::default(),
+        fallbacks: None,
+    };
+    let italic_font = gpui::Font {
+        family: "Consolas".into(),
+        weight: base_weight,
+        style: gpui::FontStyle::Italic,
+        features: Default::default(),
+        fallbacks: None,
+    };
+    let bold_italic_font = gpui::Font {
+        family: "Consolas".into(),
+        weight: gpui::FontWeight::BOLD,
+        style: gpui::FontStyle::Italic,
+        features: Default::default(),
+        fallbacks: None,
+    };
+
+    for span in spans {
+        match span {
+            crate::markdown::SyntaxSpan::Marker(m) => {
+                if is_active_line {
+                    let len = m.len();
+                    full_text.push_str(&m);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: reg_font.clone(),
+                        color: theme.text_muted.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
                 }
             }
-        }))
+            crate::markdown::SyntaxSpan::Text(t) => {
+                let len = t.len();
+                full_text.push_str(&t);
+                runs.push(gpui::TextRun {
+                    len,
+                    font: reg_font.clone(),
+                    color: main_color.into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                });
+            }
+            crate::markdown::SyntaxSpan::Bold(b) => {
+                let len = b.len();
+                full_text.push_str(&b);
+                runs.push(gpui::TextRun {
+                    len,
+                    font: bold_font.clone(),
+                    color: main_color.into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                });
+            }
+            crate::markdown::SyntaxSpan::Italic(i) => {
+                let len = i.len();
+                full_text.push_str(&i);
+                runs.push(gpui::TextRun {
+                    len,
+                    font: italic_font.clone(),
+                    color: main_color.into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                });
+            }
+            crate::markdown::SyntaxSpan::BoldItalic(bi) => {
+                let len = bi.len();
+                full_text.push_str(&bi);
+                runs.push(gpui::TextRun {
+                    len,
+                    font: bold_italic_font.clone(),
+                    color: main_color.into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                });
+            }
+            crate::markdown::SyntaxSpan::InlineCode(c) => {
+                let len = c.len();
+                full_text.push_str(&c);
+                runs.push(gpui::TextRun {
+                    len,
+                    font: reg_font.clone(),
+                    color: theme.success.into(),
+                    background_color: Some(theme.code_bg.into()),
+                    underline: None,
+                    strikethrough: None,
+                });
+            }
+            crate::markdown::SyntaxSpan::Strikethrough(s) => {
+                let len = s.len();
+                full_text.push_str(&s);
+                runs.push(gpui::TextRun {
+                    len,
+                    font: reg_font.clone(),
+                    color: theme.text_muted.into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: Some(gpui::StrikethroughStyle {
+                        thickness: px(1.0),
+                        color: Some(theme.text_muted.into()),
+                    }),
+                });
+            }
+            crate::markdown::SyntaxSpan::LinkText(l) => {
+                let len = l.len();
+                full_text.push_str(&l);
+                runs.push(gpui::TextRun {
+                    len,
+                    font: reg_font.clone(),
+                    color: theme.accent.into(),
+                    background_color: None,
+                    underline: Some(gpui::UnderlineStyle {
+                        thickness: px(1.0),
+                        color: Some(theme.accent.into()),
+                        wavy: false,
+                    }),
+                    strikethrough: None,
+                });
+            }
+            crate::markdown::SyntaxSpan::Underline(u) => {
+                let len = u.len();
+                full_text.push_str(&u);
+                runs.push(gpui::TextRun {
+                    len,
+                    font: reg_font.clone(),
+                    color: main_color.into(),
+                    background_color: None,
+                    underline: Some(gpui::UnderlineStyle {
+                        thickness: px(1.0),
+                        color: Some(main_color.into()),
+                        wavy: false,
+                    }),
+                    strikethrough: None,
+                });
+            }
+            crate::markdown::SyntaxSpan::Highlight(h) => {
+                let hl_bg = if theme.is_dark { gpui::rgba(0xf9e2af44) } else { gpui::rgba(0xdf8e1d33) };
+                let len = h.len();
+                full_text.push_str(&h);
+                runs.push(gpui::TextRun {
+                    len,
+                    font: reg_font.clone(),
+                    color: main_color.into(),
+                    background_color: Some(hl_bg.into()),
+                    underline: None,
+                    strikethrough: None,
+                });
+            }
+        }
+    }
+
+    if full_text.is_empty() {
+        gpui::StyledText::new(" ").with_runs(vec![gpui::TextRun {
+            len: 1,
+            font: reg_font,
+            color: gpui::rgba(0x00000000).into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }])
+    } else {
+        gpui::StyledText::new(full_text).with_runs(runs)
+    }
 }
 
 fn render_live_styled_row(
@@ -3836,7 +3935,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::BOLD))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -3854,7 +3953,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::BOLD))),
                     )
             }
         }
@@ -3879,7 +3978,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::BOLD))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -3897,7 +3996,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::BOLD))),
                     )
             }
         }
@@ -3922,7 +4021,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::SEMIBOLD))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -3940,7 +4039,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::SEMIBOLD))),
                     )
             }
         }
@@ -3965,7 +4064,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::SEMIBOLD))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -3983,7 +4082,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::SEMIBOLD))),
                     )
             }
         }
@@ -4008,7 +4107,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::SEMIBOLD))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -4026,7 +4125,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::SEMIBOLD))),
                     )
             }
         }
@@ -4051,7 +4150,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::SEMIBOLD))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -4069,7 +4168,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::SEMIBOLD))),
                     )
             }
         }
@@ -4085,7 +4184,7 @@ fn render_live_styled_row(
                     .h_full()
                     .italic()
                     .child(div().text_color(theme.accent).child("> "))
-                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, is_active_line, theme, Some(theme.text_secondary))))
+                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, is_active_line, theme, Some(theme.text_secondary), None)))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -4099,7 +4198,7 @@ fn render_live_styled_row(
                     .h_full()
                     .italic()
                     .child(div().text_color(theme.border_subtle).child("  "))
-                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, is_active_line, theme, Some(theme.text_secondary))))
+                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, is_active_line, theme, Some(theme.text_secondary), None)))
             }
         }
         crate::markdown::LineKind::Task { checked, .. } => {
@@ -4131,7 +4230,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .when(*checked, |s| s.text_color(theme.text_muted).line_through())
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, task_color)),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, task_color, None)),
                     )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -4148,7 +4247,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .when(*checked, |s| s.text_color(theme.text_muted).line_through())
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, task_color)),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, task_color, None)),
                     )
             }
         }
@@ -4173,7 +4272,7 @@ fn render_live_styled_row(
                     .h_full()
                     .child(div().child(indent.to_string()))
                     .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(bullet.to_string()))
-                    .child(render_syntax_spans(row_spans, is_active_line, theme, None))
+                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -4186,7 +4285,7 @@ fn render_live_styled_row(
                     .items_center()
                     .h_full()
                     .child(div().child(format!("{}  ", indent)))
-                    .child(render_syntax_spans(row_spans, is_active_line, theme, None))
+                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None))
             }
         }
         crate::markdown::LineKind::NumberedList { num, .. } => {
@@ -4211,7 +4310,7 @@ fn render_live_styled_row(
                     .h_full()
                     .child(div().child(indent.to_string()))
                     .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(num_part.to_string()))
-                    .child(render_syntax_spans(row_spans, is_active_line, theme, None))
+                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -4225,7 +4324,7 @@ fn render_live_styled_row(
                     .items_center()
                     .h_full()
                     .child(div().child(spaces))
-                    .child(render_syntax_spans(row_spans, is_active_line, theme, None))
+                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None))
             }
         }
         crate::markdown::LineKind::HorizontalRule => {
@@ -4314,7 +4413,7 @@ fn render_live_styled_row(
                 .flex_row()
                 .items_center()
                 .h_full()
-                .child(render_syntax_spans(row_spans, is_active_line, theme, None))
+                .child(render_syntax_spans(row_spans, is_active_line, theme, None, None))
         }
     }
 }
