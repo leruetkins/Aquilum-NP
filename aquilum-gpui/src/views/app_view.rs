@@ -307,7 +307,7 @@ impl AppView {
         let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
         let total_lines = visual_rows.len().max(1);
         let viewport_h: f32 = window.viewport_size().height.into();
-        let editor_h = (viewport_h - 100.0).max(100.0);
+        let editor_h = (viewport_h - 106.0).max(100.0);
         let total_content_h = (total_lines as f32) * 24.0 + 48.0;
         let ratio = (editor_h / total_content_h).clamp(0.04, 1.0);
         let thumb_h = (editor_h * ratio).max(28.0);
@@ -421,8 +421,8 @@ impl AppView {
             return;
         }
 
-        // Top of rows area: Titlebar (38px) + Nav bar (34px) + list py_6 (24px * 2) = 120px
-        let editor_rows_top_y = 120.0;
+        // Top of rows area: Titlebar (38px) + Nav bar (40px) + list py_6 (24px * 2) = 126px
+        let editor_rows_top_y = 126.0;
         let editor_bottom_y = (viewport_h - 28.0).max(editor_rows_top_y + 100.0);
         let scroll_y = self.current_scroll_top();
 
@@ -851,7 +851,7 @@ impl AppView {
             .items_center()
             .justify_between()
             .w_full()
-            .h(px(34.0))
+            .h(px(40.0))
             .min_w_0()
             .overflow_hidden()
             .px_3()
@@ -864,7 +864,7 @@ impl AppView {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap_1()
+                    .gap_1p5()
                     .min_w_0()
                     .overflow_hidden()
                     // Back button
@@ -874,20 +874,20 @@ impl AppView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .w(px(24.0))
-                            .h(px(24.0))
-                            .rounded_sm()
+                            .w(px(28.0))
+                            .h(px(28.0))
+                            .rounded_md()
                             .when(can_go_back, |d| {
                                 d.cursor_pointer()
                                     .hover(|h| h.bg(theme.bg_hover))
-                                    .child(icons::icon(icons::ICON_ARROW_LEFT, 13.0, theme.text_secondary))
+                                    .child(icons::icon(icons::ICON_ARROW_LEFT, 16.0, theme.text_secondary))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.navigate_back(window, cx);
                                     }))
                             })
                             .when(!can_go_back, |d| {
                                 d.cursor_default()
-                                    .child(icons::icon(icons::ICON_ARROW_LEFT, 13.0, theme.border))
+                                    .child(icons::icon(icons::ICON_ARROW_LEFT, 16.0, theme.border))
                             }),
                     )
                     // Forward button
@@ -897,24 +897,24 @@ impl AppView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .w(px(24.0))
-                            .h(px(24.0))
-                            .rounded_sm()
+                            .w(px(28.0))
+                            .h(px(28.0))
+                            .rounded_md()
                             .when(can_go_forward, |d| {
                                 d.cursor_pointer()
                                     .hover(|h| h.bg(theme.bg_hover))
-                                    .child(icons::icon(icons::ICON_ARROW_RIGHT, 13.0, theme.text_secondary))
+                                    .child(icons::icon(icons::ICON_ARROW_RIGHT, 16.0, theme.text_secondary))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.navigate_forward(window, cx);
                                     }))
                             })
                             .when(!can_go_forward, |d| {
                                 d.cursor_default()
-                                    .child(icons::icon(icons::ICON_ARROW_RIGHT, 13.0, theme.border))
+                                    .child(icons::icon(icons::ICON_ARROW_RIGHT, 16.0, theme.border))
                             }),
                     )
                     // Spacer between arrows and breadcrumbs
-                    .child(div().w(px(8.0)))
+                    .child(div().w(px(10.0)))
                     // Breadcrumbs trail
                     .child({
                         let mut crumbs_bar = div()
@@ -929,7 +929,7 @@ impl AppView {
                             if idx > 0 {
                                 crumbs_bar = crumbs_bar.child(
                                     div()
-                                        .text_xs()
+                                        .text_sm()
                                         .text_color(theme.text_muted)
                                         .px_1p5()
                                         .flex_shrink_0()
@@ -939,7 +939,7 @@ impl AppView {
                             let is_last = idx == count.saturating_sub(1);
                             crumbs_bar = crumbs_bar.child(
                                 div()
-                                    .text_xs()
+                                    .text_sm()
                                     .font_weight(if is_last {
                                         gpui::FontWeight::SEMIBOLD
                                     } else {
@@ -965,7 +965,7 @@ impl AppView {
                         if is_dirty {
                             crumbs_bar = crumbs_bar.child(
                                 div()
-                                    .text_xs()
+                                    .text_sm()
                                     .text_color(theme.accent)
                                     .ml_1p5()
                                     .child("●"),
@@ -981,14 +981,14 @@ impl AppView {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap_1()
+                    .gap_1p5()
                     .flex_shrink_0()
                     .when_some(self.state.active_note.as_ref(), |r, note| {
                         let words: usize = note.content.split_whitespace().count();
                         let chars = note.content.chars().count();
                         r.child(
                             div()
-                                .text_xs()
+                                .text_sm()
                                 .text_color(theme.text_muted)
                                 .mr_2()
                                 .child(format!("{}w • {}c", words, chars)),
@@ -1001,14 +1001,14 @@ impl AppView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .w(px(24.0))
-                            .h(px(24.0))
-                            .rounded_sm()
+                            .w(px(28.0))
+                            .h(px(28.0))
+                            .rounded_md()
                             .cursor_pointer()
                             .hover(|h| h.bg(theme.bg_hover))
                             .child(icons::icon(
                                 icons::ICON_CODE,
-                                12.0,
+                                15.0,
                                 if self.word_wrap { theme.accent } else { theme.text_muted },
                             ))
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -1022,14 +1022,14 @@ impl AppView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .w(px(24.0))
-                            .h(px(24.0))
-                            .rounded_sm()
+                            .w(px(28.0))
+                            .h(px(28.0))
+                            .rounded_md()
                             .cursor_pointer()
                             .hover(|h| h.bg(theme.bg_hover))
                             .child(icons::icon(
                                 icons::ICON_BOOK_OPEN,
-                                13.0,
+                                16.0,
                                 if !is_editing { theme.accent } else { theme.text_muted },
                             ))
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -1046,12 +1046,12 @@ impl AppView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .w(px(24.0))
-                            .h(px(24.0))
-                            .rounded_sm()
+                            .w(px(28.0))
+                            .h(px(28.0))
+                            .rounded_md()
                             .cursor_pointer()
                             .hover(|h| h.bg(theme.bg_hover))
-                            .child(icons::icon(icons::ICON_MORE_VERTICAL, 13.0, theme.text_muted))
+                            .child(icons::icon(icons::ICON_MORE_VERTICAL, 16.0, theme.text_muted))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.save_note(window, cx);
                             })),
@@ -1975,7 +1975,7 @@ impl Render for AppView {
                                 let visual_rows_count = visual_rows_arc.len();
 
                                 let viewport_h: f32 = window.viewport_size().height.into();
-                                let editor_h = (viewport_h - 100.0).max(100.0);
+                                let editor_h = (viewport_h - 106.0).max(100.0);
                                 let total_content_h = (visual_rows_count as f32) * 24.0 + 48.0;
                                 let show_scrollbar = total_content_h > editor_h;
                                 let max_scroll_content = (total_content_h - editor_h).max(1.0);
@@ -2292,7 +2292,7 @@ impl Render for AppView {
                                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                                                         cx.stop_propagation();
                                                         let click_y: f32 = event.position.y.into();
-                                                        let click_rel_y = (click_y - 72.0).max(0.0);
+                                                        let click_rel_y = (click_y - 78.0).max(0.0);
                                                         let target_fraction = (click_rel_y / editor_h).clamp(0.0, 1.0);
                                                         let target_scroll_y = target_fraction * max_scroll_content;
                                                         this.set_editor_scroll_top(target_scroll_y);
