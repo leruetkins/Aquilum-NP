@@ -1180,8 +1180,6 @@ impl Render for AppView {
                     .min_w_0()
                     .overflow_hidden()
                     .bg(theme.bg_sidebar)
-                    .border_b_1()
-                    .border_color(theme.border)
                     // Left area: Sidebar header column in titlebar (width matches sidebar)
                     .when(!self.sidebar_collapsed, |s| {
                         s.child(
@@ -1193,6 +1191,8 @@ impl Render for AppView {
                                 .flex_shrink_0()
                                 .h_full()
                                 .bg(theme.bg_sidebar)
+                                .border_b_1()
+                                .border_color(theme.border)
                                 // 1. Rail header cell (44px) matching the rail below
                                 .child(
                                     div()
@@ -1270,6 +1270,7 @@ impl Render for AppView {
                                 .h_full()
                                 .flex_shrink_0()
                                 .border_r_1()
+                                .border_b_1()
                                 .border_color(theme.border)
                                 .bg(theme.bg_sidebar)
                                 .child(
@@ -1305,6 +1306,8 @@ impl Render for AppView {
                                 .flex_row()
                                 .items_center()
                                 .justify_center()
+                                .border_b_1()
+                                .border_color(theme.border)
                                 .cursor(gpui::CursorStyle::ResizeColumn)
                                 .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                     this.is_hovering_resizer = *hovered;
@@ -1329,6 +1332,7 @@ impl Render for AppView {
                     // Right area: Editor header column containing Tab Bar, Drag Area, and Window Controls
                     .child(
                         div()
+                            .relative()
                             .flex()
                             .flex_row()
                             .items_center()
@@ -1338,15 +1342,25 @@ impl Render for AppView {
                             .min_w_0()
                             .overflow_hidden()
                             .bg(theme.bg_sidebar)
+                            // Continuous bottom border line running across the editor header column
+                            .child(
+                                div()
+                                    .id("titlebar-editor-bottom-border")
+                                    .absolute()
+                                    .bottom_0()
+                                    .left_0()
+                                    .right_0()
+                                    .h(px(1.0))
+                                    .bg(theme.border),
+                            )
                             // Browser-style Tabs Area starting directly at the boundary
                             .child({
                                 let mut tabs_bar = div()
                                     .flex()
                                     .flex_row()
-                                    .items_center()
+                                    .items_end()
                                     .gap_1()
                                     .h_full()
-                                    .pt_1()
                                     .pl_2()
                                     .min_w_0()
                                     .overflow_hidden();
@@ -1369,18 +1383,19 @@ impl Render for AppView {
                                             .flex()
                                             .flex_row()
                                             .items_center()
-                                            .h(px(32.0))
-                                            .bg(if is_active { theme.bg_editor } else { theme.bg_sidebar })
-                                            .border_t_1()
-                                            .border_x_1()
-                                            .border_color(if is_active { theme.border } else { rgba(0x00000000) })
+                                            .h(px(34.0))
                                             .rounded_t_md()
-                                            .hover(|h| {
-                                                if !is_active {
-                                                    h.bg(theme.bg_hover)
-                                                } else {
-                                                    h
-                                                }
+                                            .when(is_active, |tab| {
+                                                tab.bg(theme.bg_editor)
+                                                    .border_t_1()
+                                                    .border_x_1()
+                                                    .border_color(theme.border)
+                                            })
+                                            .when(!is_active, |tab| {
+                                                tab.bg(theme.bg_sidebar)
+                                                    .border_b_1()
+                                                    .border_color(theme.border)
+                                                    .hover(|h| h.bg(theme.bg_hover))
                                             })
                                             // Tab selection area (icon + title + dirty dot)
                                             .child(
@@ -1454,6 +1469,7 @@ impl Render for AppView {
                                 tabs_bar.child(
                                     div()
                                         .id("btn-new-tab")
+                                        .mb_1()
                                         .p_1()
                                         .rounded_md()
                                         .cursor_pointer()
