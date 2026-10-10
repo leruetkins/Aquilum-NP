@@ -1123,7 +1123,7 @@ impl AppView {
         let history_rows = vec![
             self.render_setting_row(
                 "Срок хранения версий",
-                Some("Период хранения снимков заметок в скрытой папке .aquilum/history"),
+                Some("Период хранения снимков заметок в скрытой папке .vibecodium/history"),
                 div()
                     .id("row-history-retention")
                     .cursor_pointer()

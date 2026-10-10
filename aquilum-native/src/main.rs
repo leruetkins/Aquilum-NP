@@ -206,7 +206,7 @@ const TEXT_MUTED: Color = Color::from_rgb(0.478, 0.514, 0.624); // #7f849c
 const ACCENT_BLUE: Color = Color::from_rgb(0.537, 0.706, 0.980); // #89b4fa
 const BORDER_COLOR: Color = Color::from_rgb(0.192, 0.196, 0.267); // #313244
 
-const INITIAL_NOTE: &str = "# Welcome to Aquilum Native\n\nYour fast, distraction-free markdown knowledge base with **Live Preview**!\n\n## Inline Live Preview Demo\n- Click any code block to edit it inline with pixel-perfect alignment\n- Regular text can be freely selected, copied, and edited across multiple lines\n\n### Interactive Features\n- [x] Native Rust GUI with zero Chromium overhead (~45 MB RAM)\n- [x] Lucide SVG vector icons\n- [x] Unified text editing with multi-line selection\n- [x] Dedicated Obsidian-style code blocks\n\n```powershell\nping -t 5.180.82.115 | ForEach-Object {\n    \"$((Get-Date -Format 'HH:mm:ss'))  $_\"\n}\n```\n\n> Regular text and code blocks are cleanly organized without line-by-line boundaries.\n";
+const INITIAL_NOTE: &str = "# Welcome to Vibecodium Native\n\nYour fast, distraction-free markdown knowledge base with **Live Preview**!\n\n## Inline Live Preview Demo\n- Click any code block to edit it inline with pixel-perfect alignment\n- Regular text can be freely selected, copied, and edited across multiple lines\n\n### Interactive Features\n- [x] Native Rust GUI with zero Chromium overhead (~45 MB RAM)\n- [x] Lucide SVG vector icons\n- [x] Unified text editing with multi-line selection\n- [x] Dedicated Obsidian-style code blocks\n\n```powershell\nping -t 5.180.82.115 | ForEach-Object {\n    \"$((Get-Date -Format 'HH:mm:ss'))  $_\"\n}\n```\n\n> Regular text and code blocks are cleanly organized without line-by-line boundaries.\n";
 
 impl App {
     fn boot() -> (Self, Task<Message>) {
@@ -257,7 +257,7 @@ impl App {
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Aquilum".to_owned());
+            .unwrap_or_else(|| "Vibecodium".to_owned());
 
         format!("{}{} — {} {}", dirty_mark, note_name, self.workspace_name, mode_mark)
     }

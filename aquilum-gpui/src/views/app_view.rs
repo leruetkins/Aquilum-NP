@@ -1225,7 +1225,7 @@ impl Render for AppView {
                                                 })),
                                         ),
                                 )
-                                // 2. File tree header (AQUILUM badge and drag region)
+                                // 2. File tree header (VIBECODIUM badge and drag region)
                                 .child(
                                     div()
                                         .flex()
@@ -1244,7 +1244,7 @@ impl Render for AppView {
                                                 .font_weight(gpui::FontWeight::BOLD)
                                                 .rounded_md()
                                                 .text_xs()
-                                                .child("AQUILUM"),
+                                                .child("VIBECODIUM"),
                                         )
                                         .child(
                                             div()
@@ -2475,7 +2475,7 @@ impl Render for AppView {
                                                 .text_xl()
                                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                                 .text_color(theme.text_primary)
-                                                .child("Welcome to Aquilum Native"),
+                                                .child("Welcome to Vibecodium"),
                                         )
                                         .child(
                                             div()

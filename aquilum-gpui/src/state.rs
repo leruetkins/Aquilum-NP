@@ -9,7 +9,16 @@ use std::sync::Arc;
 
 pub fn app_data_dir() -> PathBuf {
     dirs::data_dir()
-        .map(|d| d.join("com.dmitriy.aquilum-app"))
+        .map(|d| {
+            let vibe = d.join("com.dmitriy.vibecodium");
+            if !vibe.exists() {
+                let old = d.join("com.dmitriy.aquilum-app");
+                if old.exists() {
+                    return old;
+                }
+            }
+            vibe
+        })
         .unwrap_or_else(|| PathBuf::from("./data"))
 }
 
@@ -590,7 +599,7 @@ impl EventSink for CoreEventSink {
     }
 }
 
-const DEFAULT_WELCOME_NOTE: &str = "# Welcome to Aquilum (GPUI Live Preview)\n\nYour fast, distraction-free markdown knowledge base with **true Obsidian Live Preview**!\n\n## Inline Live Preview Demo\n- Click any line or block to edit raw markdown inline\n- Move cursor away (or click another line) to see rendered styling\n- Regular text and code blocks are fully selectable across the entire page with `Ctrl+A`\n\n### Interactive Features\n- [x] Zero Electron / Chromium overhead (~40 MB RAM, 120 FPS)\n- [x] Full document continuous text selection\n- [x] Dedicated Obsidian-style code blocks with syntax styling\n- [ ] Auto-saving and instant search\n\n```rust\nfn main() {\n    println!(\"Hello from Aquilum GPUI Live Preview!\");\n}\n```\n\n> Regular text and code blocks are cleanly organized with seamless Live Preview transitions.\n";
+const DEFAULT_WELCOME_NOTE: &str = "# Welcome to Vibecodium (GPUI Live Preview)\n\nYour fast, distraction-free markdown knowledge base with **true Obsidian Live Preview**!\n\n## Inline Live Preview Demo\n- Click any line or block to edit raw markdown inline\n- Move cursor away (or click another line) to see rendered styling\n- Regular text and code blocks are fully selectable across the entire page with `Ctrl+A`\n\n### Interactive Features\n- [x] Zero Electron / Chromium overhead (~40 MB RAM, 120 FPS)\n- [x] Full document continuous text selection\n- [x] Dedicated Obsidian-style code blocks with syntax styling\n- [ ] Auto-saving and instant search\n\n```rust\nfn main() {\n    println!(\"Hello from Vibecodium GPUI Live Preview!\");\n}\n```\n\n> Regular text and code blocks are cleanly organized with seamless Live Preview transitions.\n";
 
 impl AppState {
     pub fn new() -> Self {
@@ -675,7 +684,7 @@ impl AppState {
             state.nav_history_index = 0;
             state.active_note = Some(OpenedNote::new(
                 welcome_path,
-                "Welcome to Aquilum".to_owned(),
+                "Welcome to Vibecodium".to_owned(),
                 DEFAULT_WELCOME_NOTE.to_owned(),
                 0,
             ));
@@ -934,7 +943,7 @@ impl AppState {
         if path.to_string_lossy() == "Welcome.md" {
             opened_note = Some(OpenedNote::new(
                 path.clone(),
-                "Welcome to Aquilum".to_owned(),
+                "Welcome to Vibecodium".to_owned(),
                 DEFAULT_WELCOME_NOTE.to_owned(),
                 0,
             ));

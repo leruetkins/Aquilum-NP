@@ -42,11 +42,13 @@ aquilum-app/tmp-fm.*
 
 # История заметок Aquilum: локальная, в git не идёт
 .aquilum/
+.vibecodium/
 
 # Рабочая копия публичного репозитория релизов
 /release-repo-update/
 
 /*debug/
 /aquilum-gpui/target/debug
+/vibecodium/target/debug
 /aquilum-native/target/debug
 /operator-panel

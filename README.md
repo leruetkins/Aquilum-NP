@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="Aquilum-logo.png" alt="Aquilum" width="120">
+  <img src="Vibecodium-logo.png" alt="Vibecodium" width="120">
 </p>
 
-<h1 align="center">Aquilum</h1>
+<h1 align="center">Vibecodium</h1>
 
 <p align="center">
   A fast, local-first knowledge base for Windows.<br>
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Freaction/Aquilum/releases/latest"><b>Download the latest version</b></a>
+  <a href="https://github.com/Freaction/Vibecodium/releases/latest"><b>Download the latest version</b></a>
   · <a href="#installation">Installation</a>
   · <a href="README.ru.md">Русский</a>
 </p>
@@ -19,27 +19,27 @@
 
 ## Your knowledge stays yours
 
-Aquilum opens a folder you choose and works directly with the `.md` files inside it. There is no required account, proprietary note format, or cloud database. Notes and attachments remain usable in other tools, and you can back them up or synchronize them with any service you trust.
+Vibecodium opens a folder you choose and works directly with the `.md` files inside it. There is no required account, proprietary note format, or cloud database. Notes and attachments remain usable in other tools, and you can back them up or synchronize them with any service you trust.
 
 The desktop interface is built with Tauri and React; disk access, indexing, search, and queries run in Rust. The result is a responsive workspace that keeps its source of truth on your computer.
 
-## A tour of Aquilum
+## A tour of Vibecodium
 
 ### 1. Return to the same workspace
 
-Aquilum restores the working context around your notes, not just the last open file. Reorderable tabs, back and forward navigation, and the document tree let you move between several lines of thought without losing your place. You can choose any note as the vault home page and turn it into a dashboard that mixes ordinary Markdown with live `TABLE`, `LIST`, and `TASK` queries.
+Vibecodium restores the working context around your notes, not just the last open file. Reorderable tabs, back and forward navigation, and the document tree let you move between several lines of thought without losing your place. You can choose any note as the vault home page and turn it into a dashboard that mixes ordinary Markdown with live `TABLE`, `LIST`, and `TASK` queries.
 
-The history panel shown on the right records how a note changed and where each edit came from. You can inspect a visual diff, create named versions at meaningful milestones, restore a complete earlier version, or reverse one selected change. This history complements the files on disk: the current document is still an ordinary `.md` file that remains usable outside Aquilum.
+The history panel shown on the right records how a note changed and where each edit came from. You can inspect a visual diff, create named versions at meaningful milestones, restore a complete earlier version, or reverse one selected change. This history complements the files on disk: the current document is still an ordinary `.md` file that remains usable outside Vibecodium.
 
-![Aquilum home workspace with note history](screenshots/overview-history.jpg)
+![Vibecodium home workspace with note history](screenshots/overview-history.jpg)
 
 ### 2. Search the entire vault while you type
 
 Global search is backed by a local full-text index and returns matching notes as you type. Every result includes surrounding text, so you can judge a match before opening it; keyboard navigation makes it practical to move through a long result list quickly. Search indexes are maintained separately for each vault and updated when files change, including changes made by another editor.
 
-![Full-text search across an Aquilum vault](screenshots/global-search.jpg)
+![Full-text search across an Vibecodium vault](screenshots/global-search.jpg)
 
-For a narrower task, search inside the current note highlights matches without leaving the editor. Aquilum also indexes typed frontmatter fields, which lets live queries filter and organize notes by structured metadata rather than text alone.
+For a narrower task, search inside the current note highlights matches without leaving the editor. Vibecodium also indexes typed frontmatter fields, which lets live queries filter and organize notes by structured metadata rather than text alone.
 
 ### 3. Explore links as a knowledge graph
 
@@ -47,7 +47,7 @@ The graph turns wiki links between notes into a navigable map. Pan and zoom acro
 
 The graph is part of the same navigation system as backlinks, outgoing links, and related-note suggestions. It therefore works both as a broad overview and as a way to answer a focused question: what supports this note, where does it lead, and which nearby ideas have not yet been connected explicitly?
 
-![Interactive knowledge graph in Aquilum](screenshots/graph-overview.jpg)
+![Interactive knowledge graph in Vibecodium](screenshots/graph-overview.jpg)
 
 ### 4. Write with live Markdown preview
 
@@ -63,23 +63,23 @@ Tasks remain ordinary Markdown checkboxes in the notes where they belong, but be
 
 A live `TASK` query can collect matching items from many notes into one dashboard. Completing an item in the query result updates the original source note, so the rollup and the underlying project page cannot silently drift apart.
 
-![Interactive tasks and project rollups in Aquilum](screenshots/tasks.jpg)
+![Interactive tasks and project rollups in Vibecodium](screenshots/tasks.jpg)
 
 ### 6. Edit structured tables visually
 
 Tables stay readable as Markdown but gain spreadsheet-like interaction where it matters. You can resize columns, select a rectangular range, merge cells, and move rows or columns from visual controls instead of manually repairing separators after every change. Keyboard navigation keeps editing efficient when a table contains many fields.
 
-The editor keeps the visual grid and Markdown source synchronized. That means the table can still be read and versioned as text, while Aquilum handles the error-prone structural edits for you.
+The editor keeps the visual grid and Markdown source synchronized. That means the table can still be read and versioned as text, while Vibecodium handles the error-prone structural edits for you.
 
-![A structured Markdown table in Aquilum](screenshots/tables.jpg)
+![A structured Markdown table in Vibecodium](screenshots/tables.jpg)
 
 ### 7. Keep media, references, and context together
 
-Paste an image from the clipboard or import an image or video file and Aquilum stores it as a local attachment in the vault. Images can be cropped inside the editor, so preparing a diagram, scan, or illustration does not require a separate round trip through another application. PDFs and other source files can live beside the notes that interpret them.
+Paste an image from the clipboard or import an image or video file and Vibecodium stores it as a local attachment in the vault. Images can be cropped inside the editor, so preparing a diagram, scan, or illustration does not require a separate round trip through another application. PDFs and other source files can live beside the notes that interpret them.
 
 The link panels below the document show both directions of context: outgoing links reveal what the note cites, while backlinks reveal which other notes depend on it. Related-note suggestions help surface nearby material even before you add an explicit link. Together, media and links make a note a working research surface rather than an isolated page.
 
-![Image editing and backlinks in an Aquilum note](screenshots/media-backlinks.jpg)
+![Image editing and backlinks in an Vibecodium note](screenshots/media-backlinks.jpg)
 
 ### 8. Build a local book library
 
@@ -93,13 +93,13 @@ The built-in reader provides a focused two-column layout and controls for typefa
 
 Selected passages can be saved as quotes in the corresponding book note. From there they become ordinary knowledge-base material: you can annotate them, link them to ideas and projects, find them through search, and include them in queries.
 
-![Two-column book reader in Aquilum](screenshots/book-reader.jpg)
+![Two-column book reader in Vibecodium](screenshots/book-reader.jpg)
 
 ### 10. Reuse structure with templates and metadata
 
 Templates turn recurring note structures into a repeatable workflow. Search for a template, apply it to the current note, or create a new document from it; date and time placeholders are resolved when the template is used. Starter templates cover ordinary notes and books, while your own templates can represent meetings, research sources, people, projects, or any other repeated format.
 
-The book example shows YAML frontmatter as editable fields rather than an opaque block: cover, author, status, dates, rating, tags, and source file remain structured and searchable. Because the metadata is still stored in the Markdown file, other tools can read it and Aquilum's queries can use it immediately.
+The book example shows YAML frontmatter as editable fields rather than an opaque block: cover, author, status, dates, rating, tags, and source file remain structured and searchable. Because the metadata is still stored in the Markdown file, other tools can read it and Vibecodium's queries can use it immediately.
 
 ![Book note template with structured metadata](screenshots/book-template.jpg)
 
@@ -107,13 +107,13 @@ The book example shows YAML frontmatter as editable fields rather than an opaque
 
 Appearance settings cover the whole working environment rather than a single editor theme. Choose light or dark mode, the interface language, accent color, UI scale, editor and reader fonts, line height, and content width. You can also choose the home note and tune reading separately from writing, so a dense research workspace and a calm book layout do not have to share the same typography.
 
-![Aquilum interface and appearance settings](screenshots/appearance-settings.jpg)
+![Vibecodium interface and appearance settings](screenshots/appearance-settings.jpg)
 
 ### 12. Recover deleted notes and folders
 
-Deleting content does not immediately erase it. Notes and whole folders move to Aquilum's trash, where you can see what was removed and restore it to its previous location. The retention period is configurable, so temporary cleanup and long-term safety can be balanced for the size of your vault.
+Deleting content does not immediately erase it. Notes and whole folders move to Vibecodium's trash, where you can see what was removed and restore it to its previous location. The retention period is configurable, so temporary cleanup and long-term safety can be balanced for the size of your vault.
 
-Trash is one layer of a broader recovery model. Note history handles edits inside a document, while external-change detection protects work made by another editor or an AI agent; if competing changes cannot be merged safely, Aquilum preserves the disputed material in a conflict copy instead of silently discarding it.
+Trash is one layer of a broader recovery model. Note history handles edits inside a document, while external-change detection protects work made by another editor or an AI agent; if competing changes cannot be merged safely, Vibecodium preserves the disputed material in a conflict copy instead of silently discarding it.
 
 ![Trash with restorable notes and folders](screenshots/trash-restore.jpg)
 
@@ -130,7 +130,7 @@ Trash is one layer of a broader recovery model. Note history handles edits insid
 - Multiple independent vaults, each with its own index.
 - Note history with edit sources, visual diffs, named versions, full-version restore, and reversal of an individual change.
 - Trash with configurable retention and restoration of notes and folders to their previous location.
-- External changes are detected and merged safely; when an unambiguous merge is impossible, Aquilum preserves the disputed content in a conflict copy.
+- External changes are detected and merged safely; when an unambiguous merge is impossible, Vibecodium preserves the disputed content in a conflict copy.
 
 ### Search and discovery
 
@@ -143,7 +143,7 @@ Trash is one layer of a broader recovery model. Note history handles edits insid
 
 ### Local-first collaboration with agents
 
-Aquilum exposes an optional local MCP server. Compatible AI tools can search and read content, create or precisely edit notes, and work with links, metadata, version history, and trash. An agent can access another connected vault in the background without switching the user's active window or tabs. Documents use a Yjs CRDT model: changes are applied as small edits instead of replacing the entire note, allowing your typing and an agent's work to merge safely. The Markdown file on disk remains the durable source of truth.
+Vibecodium exposes an optional local MCP server. Compatible AI tools can search and read content, create or precisely edit notes, and work with links, metadata, version history, and trash. An agent can access another connected vault in the background without switching the user's active window or tabs. Documents use a Yjs CRDT model: changes are applied as small edits instead of replacing the entire note, allowing your typing and an agent's work to merge safely. The Markdown file on disk remains the durable source of truth.
 
 ### Export and portability
 
@@ -153,35 +153,35 @@ Aquilum exposes an optional local MCP server. Compatible AI tools can search and
 
 ## Installation
 
-1. Open the [latest release](https://github.com/Freaction/Aquilum/releases/latest).
-2. Download `aquilum-app_<version>_x64-setup.exe`.
+1. Open the [latest release](https://github.com/Freaction/Vibecodium/releases/latest).
+2. Download `Vibecodium-app_<version>_x64-setup.exe`.
 3. Run the installer and choose a new or existing folder for your vault.
 
-Aquilum installs for the current user and does not require administrator rights. The installer is not currently signed with a Windows code-signing certificate, so SmartScreen may show a warning. Choose **More info → Run anyway** if you downloaded it from this repository.
+Vibecodium installs for the current user and does not require administrator rights. The installer is not currently signed with a Windows code-signing certificate, so SmartScreen may show a warning. Choose **More info → Run anyway** if you downloaded it from this repository.
 
 ### macOS (Apple Silicon and Intel)
 
-Download the `.dmg` from the [latest release](https://github.com/Freaction/Aquilum/releases/latest), or install it from Terminal:
+Download the `.dmg` from the [latest release](https://github.com/Freaction/Vibecodium/releases/latest), or install it from Terminal:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Freaction/Aquilum/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Freaction/Vibecodium/main/scripts/install.sh | bash
 ```
 
 To remove the app:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Freaction/Aquilum/main/scripts/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Freaction/Vibecodium/main/scripts/uninstall.sh | bash
 ```
 
-The uninstall script removes `Aquilum.app` from `~/Applications`. Vault folders, Markdown files, and app settings remain untouched.
+The uninstall script removes `Vibecodium.app` from `~/Applications`. Vault folders, Markdown files, and app settings remain untouched.
 
 ### Linux (Ubuntu 24, x86_64)
 
-Download the `.deb` package or AppImage from the [latest release](https://github.com/Freaction/Aquilum/releases/latest).
+Download the `.deb` package or AppImage from the [latest release](https://github.com/Freaction/Vibecodium/releases/latest).
 
 ## Updates
 
-Aquilum checks this public repository for updates at launch. When a newer version is available, it can download it, show progress, verify the signed update package, install it, and restart. Without a network connection, the app starts normally and your local vault remains available.
+Vibecodium checks this public repository for updates at launch. When a newer version is available, it can download it, show progress, verify the signed update package, install it, and restart. Without a network connection, the app starts normally and your local vault remains available.
 
 ## Requirements
 
@@ -196,20 +196,20 @@ Your content remains on your computer:
 
 - notes are `.md` files in the vault folder you selected;
 - attachments and books live in that vault;
-- settings, window state, search indexes, and other rebuildable application data live in Aquilum's application-data directory.
+- settings, window state, search indexes, and other rebuildable application data live in Vibecodium's application-data directory.
 
-Aquilum does not require a cloud account. Network access is used for update checks and, only when you explicitly use source analysis, for retrieving Wikipedia material. The optional MCP server is local and starts only when enabled.
+Vibecodium does not require a cloud account. Network access is used for update checks and, only when you explicitly use source analysis, for retrieving Wikipedia material. The optional MCP server is local and starts only when enabled.
 
 ## Feedback
 
-Report bugs and suggest improvements in [Issues](https://github.com/Freaction/Aquilum/issues). Please include the Aquilum version from **Settings → System → About**, what you expected, what happened, and the steps that reproduce it. Screenshots and a small example vault are useful when they do not contain private information.
+Report bugs and suggest improvements in [Issues](https://github.com/Freaction/Vibecodium/issues). Please include the Vibecodium version from **Settings → System → About**, what you expected, what happened, and the steps that reproduce it. Screenshots and a small example vault are useful when they do not contain private information.
 
 ## Source code and license
 
-This repository contains the Aquilum source code, Windows installers, update manifests, and screenshots. Build instructions are in [DEVELOPMENT.md](DEVELOPMENT.md) (Russian) and [aquilum-app/README.md](aquilum-app/README.md); architecture notes live in [knowledge base](knowledge%20base).
+This repository contains the Vibecodium source code, Windows installers, update manifests, and screenshots. Build instructions are in [DEVELOPMENT.md](DEVELOPMENT.md) (Russian) and [Vibecodium-app/README.md](Vibecodium-app/README.md); architecture notes live in [knowledge base](knowledge%20base).
 
 Copyright © 2026 Dmitriy Chaplinskiy.
 
-Aquilum is free software licensed under the [GNU Affero General Public License v3.0 only](LICENSE). You may use, study, modify, and share it, but any distributed version — and any modified version offered to users over a network — must be released under the same license with its complete source code. For use under other terms, such as a commercial license, contact the author.
+Vibecodium is free software licensed under the [GNU Affero General Public License v3.0 only](LICENSE). You may use, study, modify, and share it, but any distributed version — and any modified version offered to users over a network — must be released under the same license with its complete source code. For use under other terms, such as a commercial license, contact the author.
 
-The name “Aquilum” and its logo identify the original project and are not licensed for use by modified versions.
+The name “Vibecodium” and its logo identify the original project and are not licensed for use by modified versions.

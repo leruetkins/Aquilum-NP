@@ -21,7 +21,7 @@ fn main() {
                 WindowOptions {
                     window_bounds: Some(window_bounds),
                     titlebar: Some(gpui::TitlebarOptions {
-                        title: Some("Aquilum".into()),
+                        title: Some("Vibecodium".into()),
                         appears_transparent: true,
                         traffic_light_position: None,
                     }),

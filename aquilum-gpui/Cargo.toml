@@ -1,5 +1,5 @@
 [package]
-name = "aquilum-gpui"
+name = "vibecodium"
 version = "0.1.0"
 edition = "2021"
 
@@ -11,3 +11,6 @@ serde_json = "1"
 dirs = "6.0"
 rfd = "0.15"
 uuid = { version = "1.23", features = ["v4"] }
+
+[build-dependencies]
+winres = "0.1"
