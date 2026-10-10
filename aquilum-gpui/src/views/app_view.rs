@@ -48,6 +48,7 @@ pub struct AppView {
     pub title_is_focused: bool,
     pub title_cursor_visible: bool,
     pub title_cursor_blink_epoch: usize,
+    pub auto_save_epoch: usize,
 }
 
 impl AppView {
@@ -111,6 +112,7 @@ impl AppView {
             title_is_focused: false,
             title_cursor_visible: true,
             title_cursor_blink_epoch: 0,
+            auto_save_epoch: 0,
         }
     }
 
@@ -150,6 +152,25 @@ impl AppView {
         }).detach();
     }
 
+    pub fn schedule_auto_save(&mut self, cx: &mut Context<Self>) {
+        self.auto_save_epoch = self.auto_save_epoch.wrapping_add(1);
+        let epoch = self.auto_save_epoch;
+        let entity = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let timer_executor = cx.background_executor().clone();
+        cx.foreground_executor().spawn(async move {
+            timer_executor.timer(std::time::Duration::from_millis(500)).await;
+            let _ = entity.update(&mut async_cx, |this, cx| {
+                if this.auto_save_epoch == epoch {
+                    if this.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
+                        this.state.save_active_note();
+                        cx.notify();
+                    }
+                }
+            });
+        }).detach();
+    }
+
     pub fn current_scroll_top(&self) -> f32 {
         let offset = self.editor_scroll_handle.0.borrow().base_handle.offset();
         f32::from(-offset.y).max(0.0)
@@ -185,6 +206,11 @@ impl AppView {
             window_state.height = bounds.size.height.into();
         }
         window_state.save(&crate::state::app_data_dir());
+
+        self.commit_title_rename_internal();
+        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
+            self.state.save_active_note();
+        }
 
         let current_scroll = self.current_scroll_top();
         self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
@@ -643,7 +669,10 @@ impl AppView {
                 self.create_new_note(window, cx);
             }
         } else {
-            if let Some(ch) = &event.keystroke.key_char {
+            if key == "space" {
+                self.state.search_query.push(' ');
+                cx.notify();
+            } else if let Some(ch) = &event.keystroke.key_char {
                 self.state.search_query.push_str(ch);
                 cx.notify();
             } else if key.chars().count() == 1 {
@@ -935,7 +964,9 @@ impl AppView {
         // Normal character input
         if !ctrl && !alt && !event.keystroke.modifiers.platform {
             let invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*', '\n', '\r', '\t'];
-            let text_to_insert = if let Some(ch) = &event.keystroke.key_char {
+            let text_to_insert = if key == "space" {
+                Some(" ")
+            } else if let Some(ch) = &event.keystroke.key_char {
                 Some(ch.as_str())
             } else if key.chars().count() == 1 {
                 Some(key.as_str())
@@ -1187,6 +1218,7 @@ impl AppView {
                 note.undo();
                 cx.notify();
             }
+            self.schedule_auto_save(cx);
             return;
         }
 
@@ -1198,6 +1230,7 @@ impl AppView {
                 note.redo();
                 cx.notify();
             }
+            self.schedule_auto_save(cx);
             return;
         }
 
@@ -1229,6 +1262,7 @@ impl AppView {
                     cx.notify();
                 }
             }
+            self.schedule_auto_save(cx);
             return;
         }
 
@@ -1248,6 +1282,7 @@ impl AppView {
                     }
                 }
             }
+            self.schedule_auto_save(cx);
             return;
         }
 
@@ -1278,6 +1313,9 @@ impl AppView {
                     }
                 }
             }
+        }
+        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
+            self.schedule_auto_save(cx);
         }
         self.scroll_cursor_into_view();
         cx.notify();
