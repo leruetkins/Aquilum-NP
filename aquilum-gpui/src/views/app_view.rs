@@ -1404,15 +1404,15 @@ impl Render for AppView {
                                         });
 
                                     if is_active {
-                                        // 1. Solid center body fill (stops 5px before tab edges so it never bleeds into corners/vertical borders)
+                                        // 1. Solid center body fill (stops 7px before tab edges so it never bleeds into corners/vertical borders, and starts at top 1px below top border)
                                         tab_item = tab_item.child(
                                             div()
                                                 .id("tab-body-fill")
                                                 .absolute()
-                                                .top_0()
+                                                .top(px(1.0))
                                                 .bottom_0()
-                                                .left(px(5.0))
-                                                .right(px(5.0))
+                                                .left(px(7.0))
+                                                .right(px(7.0))
                                                 .bg(theme.bg_editor),
                                         );
                                         // 2. Solid fill mask at the baseline connecting active tab into the editor
@@ -1421,58 +1421,64 @@ impl Render for AppView {
                                                 .id("tab-bottom-cover")
                                                 .absolute()
                                                 .bottom(px(-2.0))
-                                                .left(px(5.0))
-                                                .right(px(5.0))
+                                                .left(px(7.0))
+                                                .right(px(7.0))
                                                 .h(px(3.0))
                                                 .bg(theme.bg_editor),
                                         );
-                                        // 3. Continuous top border between corner curves (from x=5.5 to x=W-5.5)
+                                        // 3. Continuous top border between corner curves (from x=7.0 to x=W-7.0)
                                         tab_item = tab_item.child(
                                             div()
                                                 .id("tab-border-top")
                                                 .absolute()
                                                 .top_0()
-                                                .left(px(5.5))
-                                                .right(px(5.5))
+                                                .left(px(7.0))
+                                                .right(px(7.0))
                                                 .h(px(1.0))
                                                 .bg(theme.border),
                                         );
-                                        // 4. Left cap (bottom concave flair + vertical line + top convex corner)
+                                        // 4. Left cap (bottom concave flair + vertical line + top convex corner + 2px horizontal top extension)
                                         tab_item = tab_item.child(
                                             div()
                                                 .id("tab-cap-left")
                                                 .absolute()
                                                 .top_0()
                                                 .left(px(-8.0))
-                                                .w(px(14.0))
+                                                .w(px(16.0))
                                                 .h(px(36.0))
-                                                .child(icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_FILL, 14.0, 36.0, theme.bg_editor))
                                                 .child(
-                                                    div()
+                                                    icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_FILL, 16.0, 36.0, theme.bg_editor)
                                                         .absolute()
                                                         .top_0()
-                                                        .left_0()
-                                                        .size_full()
-                                                        .child(icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_STROKE, 14.0, 36.0, theme.border)),
+                                                        .left_0(),
+                                                )
+                                                .child(
+                                                    icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_STROKE, 16.0, 36.0, theme.border)
+                                                        .absolute()
+                                                        .top_0()
+                                                        .left_0(),
                                                 ),
                                         );
-                                        // 5. Right cap (top convex corner + vertical line + bottom concave flair)
+                                        // 5. Right cap (2px horizontal top extension + top convex corner + vertical line + bottom concave flair)
                                         tab_item = tab_item.child(
                                             div()
                                                 .id("tab-cap-right")
                                                 .absolute()
                                                 .top_0()
                                                 .right(px(-8.0))
-                                                .w(px(14.0))
+                                                .w(px(16.0))
                                                 .h(px(36.0))
-                                                .child(icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_FILL, 14.0, 36.0, theme.bg_editor))
                                                 .child(
-                                                    div()
+                                                    icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_FILL, 16.0, 36.0, theme.bg_editor)
                                                         .absolute()
                                                         .top_0()
-                                                        .left_0()
-                                                        .size_full()
-                                                        .child(icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_STROKE, 14.0, 36.0, theme.border)),
+                                                        .left_0(),
+                                                )
+                                                .child(
+                                                    icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_STROKE, 16.0, 36.0, theme.border)
+                                                        .absolute()
+                                                        .top_0()
+                                                        .left_0(),
                                                 ),
                                         );
                                     }
