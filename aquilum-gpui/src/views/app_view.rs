@@ -3,9 +3,10 @@ use crate::state::{AppState, FileNode};
 use crate::theme::Theme;
 use gpui::{
     div, point, prelude::*, px, rgb, rgba, uniform_list, AnyElement, ClipboardItem, Context, Div, FocusHandle,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Render, ScrollStrategy,
+    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Render, ScrollHandle, ScrollStrategy,
     SharedString, UniformListScrollHandle, Window, WindowControlArea,
 };
+use std::cell::Cell;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,6 +17,9 @@ pub struct AppView {
     pub focus_handle: FocusHandle,
     pub search_focus_handle: FocusHandle,
     pub editor_scroll_handle: UniformListScrollHandle,
+    pub sidebar_scroll_handle: ScrollHandle,
+    pub need_scroll_sidebar_to_active: Cell<bool>,
+    pub initial_sidebar_scroll_done: Cell<bool>,
     pub edit_mode: bool,
     pub is_mouse_selecting: bool,
     pub sidebar_width: f32,
@@ -76,6 +80,9 @@ impl AppView {
             focus_handle: cx.focus_handle(),
             search_focus_handle: cx.focus_handle(),
             editor_scroll_handle: UniformListScrollHandle::new(),
+            sidebar_scroll_handle: ScrollHandle::new(),
+            need_scroll_sidebar_to_active: Cell::new(true),
+            initial_sidebar_scroll_done: Cell::new(false),
             edit_mode,
             is_mouse_selecting: false,
             sidebar_width: 260.0,
@@ -181,6 +188,8 @@ impl AppView {
 
         let current_scroll = self.current_scroll_top();
         self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+        let sidebar_offset_y: f32 = self.sidebar_scroll_handle.offset().y.into();
+        self.state.session.sidebar_scroll_top = sidebar_offset_y;
         self.state.save_session_state();
     }
 
@@ -391,6 +400,7 @@ impl AppView {
                     self.state.open_note(first_file);
                 }
             }
+            self.need_scroll_sidebar_to_active.set(true);
             cx.notify();
         }
     }
@@ -413,6 +423,7 @@ impl AppView {
             self.edit_mode = true;
             self.word_wrap = true;
             self.set_editor_scroll_top(0.0);
+            self.need_scroll_sidebar_to_active.set(true);
             window.focus(&self.focus_handle);
             cx.notify();
         }
@@ -425,6 +436,8 @@ impl AppView {
         }
         let current_scroll = self.current_scroll_top();
         self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+        let sidebar_offset_y: f32 = self.sidebar_scroll_handle.offset().y.into();
+        self.state.session.sidebar_scroll_top = sidebar_offset_y;
         self.state.open_note(path.clone());
         self.apply_note_settings_for_path(&path);
         if let Some(ref note) = self.state.active_note {
@@ -434,6 +447,7 @@ impl AppView {
             self.title_selection_anchor = None;
             self.title_is_mouse_selecting = false;
         }
+        self.need_scroll_sidebar_to_active.set(true);
         window.focus(&self.focus_handle);
         cx.notify();
     }
@@ -458,6 +472,7 @@ impl AppView {
             self.title_cursor_pos = self.title_edit_text.chars().count();
             self.title_selection_anchor = None;
             self.title_is_mouse_selecting = false;
+            self.need_scroll_sidebar_to_active.set(true);
         } else {
             self.title_editing_path = None;
             self.title_edit_text.clear();
@@ -484,6 +499,7 @@ impl AppView {
                 self.title_selection_anchor = None;
                 self.title_is_mouse_selecting = false;
             }
+            self.need_scroll_sidebar_to_active.set(true);
             window.focus(&self.focus_handle);
             cx.notify();
         }
@@ -505,6 +521,7 @@ impl AppView {
                 self.title_selection_anchor = None;
                 self.title_is_mouse_selecting = false;
             }
+            self.need_scroll_sidebar_to_active.set(true);
             window.focus(&self.focus_handle);
             cx.notify();
         }
@@ -977,6 +994,7 @@ impl AppView {
         active_path: Option<&PathBuf>,
         theme: &Theme,
         acc: &mut Vec<AnyElement>,
+        selected_index: &mut Option<usize>,
         cx: &Context<Self>,
     ) {
         for node in nodes {
@@ -1029,7 +1047,7 @@ impl AppView {
                     acc.push(folder_row.into_any_element());
 
                     if is_expanded {
-                        self.render_tree_nodes(children, depth + 1, active_path, theme, acc, cx);
+                        self.render_tree_nodes(children, depth + 1, active_path, theme, acc, selected_index, cx);
                     }
                 }
                 FileNode::File { name, path } => {
@@ -1040,6 +1058,9 @@ impl AppView {
                     }
 
                     let is_selected = active_path.map(|p| p == path).unwrap_or(false);
+                    if is_selected {
+                        *selected_index = Some(acc.len());
+                    }
                     let indent = (depth * 14 + 18) as f32 + 4.0;
                     let file_path = path.clone();
                     let display_name = name.strip_suffix(".md").unwrap_or(name).to_string();
@@ -2021,6 +2042,10 @@ impl Render for AppView {
                                                     .on_click(cx.listener(move |this, _, window, cx| {
                                                         if this.state.active_note.as_ref().map(|n| &n.path != &tab_path_for_select).unwrap_or(true) {
                                                             this.select_note(tab_path_for_select.clone(), window, cx);
+                                                        } else {
+                                                            this.need_scroll_sidebar_to_active.set(true);
+                                                            this.state.reveal_path_in_tree(&tab_path_for_select);
+                                                            cx.notify();
                                                         }
                                                     })),
                                             )
@@ -2290,14 +2315,31 @@ impl Render for AppView {
                     .when(!self.sidebar_collapsed, |s| {
                         s.child({
                             let mut tree_elements = Vec::new();
+                            let mut selected_tree_index = None;
                             self.render_tree_nodes(
                                 &self.state.file_tree,
                                 0,
                                 active_path.as_ref(),
                                 theme,
                                 &mut tree_elements,
+                                &mut selected_tree_index,
                                 cx,
                             );
+
+                            if !self.initial_sidebar_scroll_done.get() {
+                                self.initial_sidebar_scroll_done.set(true);
+                                if self.state.session.sidebar_scroll_top < 0.0 {
+                                    self.sidebar_scroll_handle.set_offset(point(px(0.0), px(self.state.session.sidebar_scroll_top)));
+                                }
+                                if let Some(ix) = selected_tree_index {
+                                    self.sidebar_scroll_handle.scroll_to_item(ix);
+                                }
+                            } else if self.need_scroll_sidebar_to_active.get() {
+                                self.need_scroll_sidebar_to_active.set(false);
+                                if let Some(ix) = selected_tree_index {
+                                    self.sidebar_scroll_handle.scroll_to_item(ix);
+                                }
+                            }
 
                             let is_search_focused = self.search_focus_handle.is_focused(window);
 
@@ -2457,6 +2499,7 @@ impl Render for AppView {
                             .child(
                                 div()
                                     .id("sidebar-tree-scroll")
+                                    .track_scroll(&self.sidebar_scroll_handle)
                                     .flex()
                                     .flex_col()
                                     .flex_1()

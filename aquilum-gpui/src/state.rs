@@ -137,6 +137,10 @@ pub struct SessionState {
     pub cursor_positions: HashMap<PathBuf, usize>,
     #[serde(default)]
     pub note_states: HashMap<PathBuf, NoteSettings>,
+    #[serde(default)]
+    pub expanded_folders: HashSet<PathBuf>,
+    #[serde(default)]
+    pub sidebar_scroll_top: f32,
 }
 
 impl SessionState {
@@ -614,7 +618,7 @@ impl AppState {
             workspace_path: None,
             workspace_name: "No Workspace".to_owned(),
             file_tree: Vec::new(),
-            expanded_folders: HashSet::new(),
+            expanded_folders: session.expanded_folders.clone(),
             search_query: String::new(),
             files: Vec::new(),
             active_note: None,
@@ -676,6 +680,7 @@ impl AppState {
         }
 
         if let Some(path) = note_to_open {
+            state.reveal_path_in_tree(&path);
             state.open_note(path);
         } else {
             let welcome_path = PathBuf::from("Welcome.md");
@@ -780,6 +785,23 @@ impl AppState {
             self.expanded_folders.remove(&path);
         } else {
             self.expanded_folders.insert(path);
+        }
+        self.save_session_state();
+    }
+
+    pub fn reveal_path_in_tree(&mut self, target: &Path) {
+        let Some(ref ws) = self.workspace_path else { return; };
+        let mut current = target.parent();
+        while let Some(parent) = current {
+            if parent.starts_with(ws) {
+                self.expanded_folders.insert(parent.to_path_buf());
+                if parent == ws {
+                    break;
+                }
+                current = parent.parent();
+            } else {
+                break;
+            }
         }
     }
 
@@ -919,6 +941,8 @@ impl AppState {
     }
 
     pub fn open_note_internal(&mut self, path: PathBuf) {
+        self.reveal_path_in_tree(&path);
+
         // Save current note's cursor and selection before switching
         if let Some(ref current) = self.active_note {
             let entry = self.note_states.entry(current.path.clone()).or_default();
@@ -1030,6 +1054,7 @@ impl AppState {
         }
         self.session.open_tabs = self.open_tabs.clone();
         self.session.workspace_path = self.workspace_path.clone();
+        self.session.expanded_folders = self.expanded_folders.clone();
         let dir = app_data_dir();
         self.session.save(&dir);
     }
@@ -1127,6 +1152,7 @@ impl AppState {
 
         self.reload_file_tree();
         self.reload_files();
+        self.reveal_path_in_tree(&new_path);
         self.save_session_state();
         self.status_text = format!("Renamed to: {}", trimmed);
 
