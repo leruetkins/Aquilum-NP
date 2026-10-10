@@ -245,8 +245,8 @@ impl AppView {
         let Some(ref mut note) = self.state.active_note else {
             return;
         };
-        let lines: Vec<&str> = note.content.split('\n').collect();
-        let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
+        note.ensure_visual_cache(self.word_wrap, self.last_wrap_cols);
+        let visual_rows = Arc::clone(&note.cached_visual_rows);
         if visual_rows.is_empty() {
             return;
         }
@@ -261,6 +261,7 @@ impl AppView {
 
         if curr_v_idx == 0 {
             note.cursor_offset = 0;
+            note.sync_cursor();
             if !shift {
                 note.selection_anchor = None;
             }
@@ -269,10 +270,16 @@ impl AppView {
 
         let target_v = &visual_rows[curr_v_idx - 1];
         let target_len = target_v.char_end.saturating_sub(target_v.char_start);
-        let target_col = col_in_row.min(target_len);
+        let max_col = if target_v.is_last_sub {
+            target_len
+        } else {
+            target_len.saturating_sub(1)
+        };
+        let target_col = col_in_row.min(max_col);
         let target_char = target_v.char_start + target_col;
         let offset = note.offset_for_line_col(target_v.line_idx, target_char);
         note.cursor_offset = offset;
+        note.sync_cursor();
         if !shift {
             note.selection_anchor = None;
         }
@@ -282,8 +289,8 @@ impl AppView {
         let Some(ref mut note) = self.state.active_note else {
             return;
         };
-        let lines: Vec<&str> = note.content.split('\n').collect();
-        let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
+        note.ensure_visual_cache(self.word_wrap, self.last_wrap_cols);
+        let visual_rows = Arc::clone(&note.cached_visual_rows);
         if visual_rows.is_empty() {
             return;
         }
@@ -298,6 +305,7 @@ impl AppView {
 
         if curr_v_idx + 1 >= visual_rows.len() {
             note.cursor_offset = note.content.len();
+            note.sync_cursor();
             if !shift {
                 note.selection_anchor = None;
             }
@@ -306,10 +314,16 @@ impl AppView {
 
         let target_v = &visual_rows[curr_v_idx + 1];
         let target_len = target_v.char_end.saturating_sub(target_v.char_start);
-        let target_col = col_in_row.min(target_len);
+        let max_col = if target_v.is_last_sub {
+            target_len
+        } else {
+            target_len.saturating_sub(1)
+        };
+        let target_col = col_in_row.min(max_col);
         let target_char = target_v.char_start + target_col;
         let offset = note.offset_for_line_col(target_v.line_idx, target_char);
         note.cursor_offset = offset;
+        note.sync_cursor();
         if !shift {
             note.selection_anchor = None;
         }
@@ -319,8 +333,8 @@ impl AppView {
         let Some(ref mut note) = self.state.active_note else {
             return;
         };
-        let lines: Vec<&str> = note.content.split('\n').collect();
-        let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
+        note.ensure_visual_cache(self.word_wrap, self.last_wrap_cols);
+        let visual_rows = Arc::clone(&note.cached_visual_rows);
         if visual_rows.is_empty() {
             return;
         }
@@ -339,6 +353,7 @@ impl AppView {
             v.char_start
         };
         note.cursor_offset = note.offset_for_line_col(v.line_idx, target_char);
+        note.sync_cursor();
         if !shift {
             note.selection_anchor = None;
         }
@@ -348,8 +363,8 @@ impl AppView {
         let Some(ref mut note) = self.state.active_note else {
             return;
         };
-        let lines: Vec<&str> = note.content.split('\n').collect();
-        let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
+        note.ensure_visual_cache(self.word_wrap, self.last_wrap_cols);
+        let visual_rows = Arc::clone(&note.cached_visual_rows);
         if visual_rows.is_empty() {
             return;
         }
@@ -362,25 +377,59 @@ impl AppView {
             note.selection_anchor = Some(note.cursor_offset);
         }
 
-        let line_len = lines.get(v.line_idx).map(|l| l.chars().count()).unwrap_or(0);
-        let target_char = if cursor_col == v.char_end && !v.is_last_sub {
+        let line_len = note.cached_lines.get(v.line_idx).map(|l| l.chars().count()).unwrap_or(0);
+        let sub_end = if v.is_last_sub {
+            v.char_end
+        } else {
+            v.char_end.saturating_sub(1)
+        };
+        let target_char = if cursor_col >= sub_end && !v.is_last_sub {
             line_len
         } else {
-            v.char_end
+            sub_end
         };
         note.cursor_offset = note.offset_for_line_col(v.line_idx, target_char);
+        note.sync_cursor();
         if !shift {
             note.selection_anchor = None;
+        }
+    }
+
+    pub fn scroll_cursor_into_view_with_strategy(&self, strategy: ScrollStrategy) {
+        if let Some(ref note) = self.state.active_note {
+            let (cursor_line, cursor_col) = note.line_col();
+            let visual_rows = &note.cached_visual_rows;
+            if let Some((v_idx, _)) = crate::markdown::find_visual_row_for_cursor(visual_rows, cursor_line, cursor_col) {
+                self.editor_scroll_handle.scroll_to_item(v_idx, strategy);
+            }
         }
     }
 
     fn scroll_cursor_into_view(&self) {
         if let Some(ref note) = self.state.active_note {
             let (cursor_line, cursor_col) = note.line_col();
-            let lines: Vec<&str> = note.content.split('\n').collect();
-            let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
-            if let Some((v_idx, _)) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col) {
-                self.editor_scroll_handle.scroll_to_item(v_idx, ScrollStrategy::Center);
+            let visual_rows = &note.cached_visual_rows;
+            if let Some((v_idx, _)) = crate::markdown::find_visual_row_for_cursor(visual_rows, cursor_line, cursor_col) {
+                let state = self.editor_scroll_handle.0.borrow();
+                let scroll_y = f32::from(-state.base_handle.offset().y).max(0.0);
+                let viewport_h = state.last_item_size.map(|s| f32::from(s.item.height)).unwrap_or(600.0).max(100.0);
+                drop(state);
+
+                let item_height = 24.0;
+                let first_visible_v_idx = (scroll_y / item_height).floor().max(0.0) as usize;
+                let visible_count = (viewport_h / item_height).floor().max(1.0) as usize;
+                let last_visible_v_idx = first_visible_v_idx + visible_count.saturating_sub(1);
+
+                // Если каретка уже внутри видимой области экрана (с запасом 1 строки), скролл не требуется!
+                if v_idx > first_visible_v_idx && v_idx < last_visible_v_idx {
+                    return;
+                }
+
+                if v_idx <= first_visible_v_idx {
+                    self.editor_scroll_handle.scroll_to_item(v_idx, ScrollStrategy::Top);
+                } else if v_idx >= last_visible_v_idx {
+                    self.editor_scroll_handle.scroll_to_item(v_idx, ScrollStrategy::Bottom);
+                }
             }
         }
     }
@@ -397,12 +446,11 @@ impl AppView {
         if !self.is_dragging_scrollbar {
             return;
         }
-        let Some(ref note) = self.state.active_note else {
+        let Some(ref mut note) = self.state.active_note else {
             return;
         };
-        let lines: Vec<&str> = note.content.split('\n').collect();
-        let visual_rows = crate::markdown::build_visual_rows(&lines, self.word_wrap, self.last_wrap_cols);
-        let total_lines = visual_rows.len().max(1);
+        note.ensure_visual_cache(self.word_wrap, self.last_wrap_cols);
+        let total_lines = note.cached_visual_rows.len().max(1);
         let viewport_h: f32 = window.viewport_size().height.into();
         let editor_h = (viewport_h - 170.0).max(100.0);
         let total_content_h = (total_lines as f32) * 24.0 + 48.0;
@@ -606,12 +654,8 @@ impl AppView {
             return;
         };
 
-        let lines: Vec<&str> = note.content.split('\n').collect();
-        if lines.is_empty() {
-            return;
-        }
-
-        let visual_rows = crate::markdown::build_visual_rows(&lines, word_wrap, wrap_cols);
+        note.ensure_visual_cache(word_wrap, wrap_cols);
+        let visual_rows = Arc::clone(&note.cached_visual_rows);
         if visual_rows.is_empty() {
             return;
         }
@@ -628,7 +672,7 @@ impl AppView {
 
         let (cursor_line, _) = note.line_col();
         let is_active_line = v.line_idx == cursor_line;
-        let line = lines[v.line_idx];
+        let line = &note.cached_lines[v.line_idx];
         let classified = crate::markdown::classify_line(line, None);
         let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
 
@@ -643,6 +687,7 @@ impl AppView {
         let offset = note.offset_for_line_col(v.line_idx, target_char);
         if note.cursor_offset != offset {
             note.cursor_offset = offset;
+            note.sync_cursor();
             cx.notify();
         }
     }
@@ -1147,6 +1192,9 @@ impl AppView {
         let alt = keystroke.modifiers.alt;
         let shift = keystroke.modifiers.shift;
 
+        let is_arrow = matches!(keystroke.key.as_str(), "up" | "down" | "left" | "right" | "home" | "end");
+        let t_start = if is_arrow { Some(std::time::Instant::now()) } else { None };
+
         // Alt + Left (Navigate Back in note history)
         if alt && keystroke.key == "left" {
             self.navigate_back(_window, cx);
@@ -1319,6 +1367,17 @@ impl AppView {
         }
         self.scroll_cursor_into_view();
         cx.notify();
+        if let Some(t) = t_start {
+            crate::perf::PERF.notify_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let (v_row, v_col, line, col, offset) = if let Some(ref note) = self.state.active_note {
+                let (l, c) = note.line_col();
+                let (vr, vc) = crate::markdown::find_visual_row_for_cursor(&note.cached_visual_rows, l, c).unwrap_or((0, 0));
+                (vr, vc, l, c, note.cursor_offset)
+            } else {
+                (0, 0, 0, 0, 0)
+            };
+            crate::perf::PERF.log_key_navigation(keystroke.key.as_str(), t.elapsed(), v_row, v_col, line, col, offset);
+        }
     }
 
     fn render_navigation_bar(&self, theme: &Theme, cx: &Context<Self>) -> gpui::Stateful<Div> {
@@ -1544,6 +1603,7 @@ impl AppView {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let render_start = std::time::Instant::now();
         if !self.initial_scroll_done {
             self.initial_scroll_done = true;
             if self.initial_scroll_top > 0.0 {
@@ -1621,6 +1681,9 @@ impl Render for AppView {
         let viewport_w: f32 = window.viewport_size().width.into();
         let wrap_cols = self.compute_wrap_cols(viewport_w, line_char_width);
         self.last_wrap_cols = wrap_cols;
+        if let Some(ref mut note) = self.state.active_note {
+            note.ensure_visual_cache(self.word_wrap, wrap_cols);
+        }
 
         let is_resizer_active = self.is_resizing_sidebar || self.is_hovering_resizer;
         let resizer_color = if is_resizer_active { theme.accent } else { theme.border };
@@ -2660,24 +2723,19 @@ impl Render for AppView {
                                     .map(|s| s.to_string_lossy().into_owned())
                                     .unwrap_or_else(|| "Untitled".to_string());
 
-                                let lines: Vec<String> = note.content.split('\n').map(String::from).collect();
-                                let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+                                let lines_arc = Arc::clone(&note.cached_lines);
+                                let visual_rows_arc = Arc::clone(&note.cached_visual_rows);
+                                let line_starts_arc = Arc::clone(&note.cached_line_starts);
+                                let code_states_arc = Arc::clone(&note.cached_code_states);
+                                let visual_rows_count = visual_rows_arc.len();
+
                                 let (cursor_line, cursor_col) = note.line_col();
-                                let visual_rows = crate::markdown::build_visual_rows(&line_refs, self.word_wrap, wrap_cols);
-                                let (active_v_idx, active_col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col)
+                                let (active_v_idx, active_col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows_arc, cursor_line, cursor_col)
                                     .unwrap_or((0, 0));
 
-                                let mut line_starts: Vec<usize> = Vec::with_capacity(lines.len());
-                                let mut running_offset = 0;
-                                for line in &lines {
-                                    line_starts.push(running_offset);
-                                    running_offset += line.len() + 1;
-                                }
-
-                                let code_states = crate::markdown::analyze_code_blocks(&line_refs);
                                 let active_block_id: Option<usize> = if is_editing {
-                                    code_states.get(cursor_line).and_then(|s| s.as_ref()).map(|s| s.block_id)
-                                    } else {
+                                    code_states_arc.get(cursor_line).and_then(|s| s.as_ref()).map(|s| s.block_id)
+                                } else {
                                     None
                                 };
                                 let line_h = px(24.0);
@@ -2686,13 +2744,8 @@ impl Render for AppView {
                                 let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
                                 let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
 
-                                let lines_arc = Arc::new(lines);
-                                let visual_rows_arc = Arc::new(visual_rows);
-                                let line_starts_arc = Arc::new(line_starts);
-                                let code_states_arc = Arc::new(code_states);
                                 let theme_copy = theme.clone();
                                 let theme_scrollbar = theme.clone();
-                                let visual_rows_count = visual_rows_arc.len();
 
                                 let viewport_h: f32 = window.viewport_size().height.into();
                                 let editor_h = (viewport_h - 170.0).max(100.0);
@@ -2936,6 +2989,7 @@ impl Render for AppView {
                                                     n.selection_anchor = Some(end_offset);
                                                 }
                                                 n.cursor_offset = end_offset;
+                                                n.sync_cursor();
                                             }
                                             cx.notify();
                                         }))
@@ -2989,6 +3043,9 @@ impl Render for AppView {
                                                     let selection_range = this.state.active_note.as_ref().and_then(|n| n.selection_range());
                                                     let (cursor_line, _) = this.state.active_note.as_ref().map(|n| n.line_col()).unwrap_or((0, 0));
 
+                                                    let range_start = range.start;
+                                                    let range_end = range.end;
+                                                    crate::perf::PERF.shape_calls.fetch_add(range.len() as u64, std::sync::atomic::Ordering::Relaxed);
                                                     let mut items = Vec::with_capacity(range.len());
                                                     for v_idx in range {
                                                         let v = &visual_rows_arc[v_idx];
@@ -3098,6 +3155,7 @@ impl Render for AppView {
                                                                             n.cursor_offset = offset;
                                                                             n.selection_anchor = Some(offset);
                                                                         }
+                                                                        n.sync_cursor();
                                                                     }
                                                                     window.focus(&this.focus_handle);
                                                                     cx.notify();
@@ -3178,6 +3236,16 @@ impl Render for AppView {
                                                                 ),
                                                         );
                                                     }
+                                                    let active_cursor_x = (active_col_in_row as f32) * line_char_width;
+                                                    crate::perf::PERF.log_render_frame(
+                                                        active_v_idx,
+                                                        active_col_in_row,
+                                                        active_cursor_x,
+                                                        range_start,
+                                                        range_end,
+                                                        visual_rows_count,
+                                                        render_start.elapsed(),
+                                                    );
                                                     items
                                                 }),
                                             )

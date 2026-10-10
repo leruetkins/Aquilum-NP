@@ -1,7 +1,9 @@
-#![windows_subsystem = "windows"]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 pub mod icons;
 pub mod markdown;
+pub mod markdown_doc;
+pub mod perf;
 pub mod state;
 pub mod theme;
 pub mod views;

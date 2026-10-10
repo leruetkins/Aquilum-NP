@@ -52,3 +52,4 @@ aquilum-app/tmp-fm.*
 /vibecodium/target/debug
 /aquilum-native/target/debug
 /operator-panel
+/aquilum-gpui/target

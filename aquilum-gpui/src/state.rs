@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use crate::markdown_doc::{MarkdownDocument, CursorState};
 
 pub fn app_data_dir() -> PathBuf {
     dirs::data_dir()
@@ -208,10 +209,27 @@ pub struct OpenedNote {
     pub is_dirty: bool,
     pub undo_stack: Vec<(String, usize)>,
     pub redo_stack: Vec<(String, usize)>,
+
+    // Markdown Document model
+    pub doc: MarkdownDocument,
+    pub cursor: CursorState,
+
+    // Cached visual layout structures
+    pub cached_lines: Arc<Vec<String>>,
+    pub cached_line_starts: Arc<Vec<usize>>,
+    pub cached_visual_rows: Arc<Vec<crate::markdown::VisualRow>>,
+    pub cached_code_states: Arc<Vec<Option<crate::markdown::CodeBlockState>>>,
+    pub cached_wrap_cols: usize,
+    pub cached_word_wrap: bool,
+    pub visual_cache_dirty: bool,
 }
 
 impl OpenedNote {
     pub fn new(path: PathBuf, title: String, content: String, version: u64) -> Self {
+        let doc = MarkdownDocument::new(content.clone());
+        let mut cursor = CursorState::default();
+        doc.update_cursor(&mut cursor, 0);
+
         Self {
             path,
             title,
@@ -222,6 +240,52 @@ impl OpenedNote {
             is_dirty: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            doc,
+            cursor,
+            cached_lines: Arc::new(Vec::new()),
+            cached_line_starts: Arc::new(Vec::new()),
+            cached_visual_rows: Arc::new(Vec::new()),
+            cached_code_states: Arc::new(Vec::new()),
+            cached_wrap_cols: 0,
+            cached_word_wrap: true,
+            visual_cache_dirty: true,
+        }
+    }
+
+    pub fn sync_cursor(&mut self) {
+        self.doc.update_cursor(&mut self.cursor, self.cursor_offset);
+    }
+
+    pub fn rebuild_visual_cache(&mut self, word_wrap: bool, wrap_cols: usize) {
+        crate::perf::PERF.parse_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let lines: Vec<String> = self.content.split('\n').map(String::from).collect();
+        crate::perf::PERF.span_rebuilds.fetch_add(lines.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let visual_rows = crate::markdown::build_visual_rows(&line_refs, word_wrap, wrap_cols);
+        let mut line_starts: Vec<usize> = Vec::with_capacity(lines.len());
+        let mut running_offset = 0;
+        for line in &lines {
+            line_starts.push(running_offset);
+            running_offset += line.len() + 1;
+        }
+        let code_states = crate::markdown::analyze_code_blocks(&line_refs);
+
+        self.cached_lines = Arc::new(lines);
+        self.cached_line_starts = Arc::new(line_starts);
+        self.cached_visual_rows = Arc::new(visual_rows);
+        self.cached_code_states = Arc::new(code_states);
+        self.cached_word_wrap = word_wrap;
+        self.cached_wrap_cols = wrap_cols;
+        self.visual_cache_dirty = false;
+    }
+
+    pub fn ensure_visual_cache(&mut self, word_wrap: bool, wrap_cols: usize) {
+        if self.visual_cache_dirty
+            || self.cached_lines.is_empty()
+            || self.cached_word_wrap != word_wrap
+            || self.cached_wrap_cols != wrap_cols
+        {
+            self.rebuild_visual_cache(word_wrap, wrap_cols);
         }
     }
 
@@ -237,9 +301,12 @@ impl OpenedNote {
         if let Some((prev_content, prev_cursor)) = self.undo_stack.pop() {
             self.redo_stack.push((self.content.clone(), self.cursor_offset));
             self.content = prev_content;
+            self.doc = MarkdownDocument::new(self.content.clone());
             self.cursor_offset = prev_cursor.min(self.content.len());
             self.selection_anchor = None;
             self.is_dirty = true;
+            self.visual_cache_dirty = true;
+            self.sync_cursor();
         }
     }
 
@@ -247,9 +314,12 @@ impl OpenedNote {
         if let Some((next_content, next_cursor)) = self.redo_stack.pop() {
             self.undo_stack.push((self.content.clone(), self.cursor_offset));
             self.content = next_content;
+            self.doc = MarkdownDocument::new(self.content.clone());
             self.cursor_offset = next_cursor.min(self.content.len());
             self.selection_anchor = None;
             self.is_dirty = true;
+            self.visual_cache_dirty = true;
+            self.sync_cursor();
         }
     }
 
@@ -272,10 +342,13 @@ impl OpenedNote {
     pub fn delete_selection(&mut self) -> bool {
         if let Some(range) = self.selection_range() {
             self.snapshot_undo();
-            self.content.replace_range(range.clone(), "");
+            self.doc.apply_edit(range.clone(), "");
+            self.content = self.doc.source.clone();
             self.cursor_offset = range.start;
             self.selection_anchor = None;
             self.is_dirty = true;
+            self.visual_cache_dirty = true;
+            self.sync_cursor();
             true
         } else {
             false
@@ -285,6 +358,7 @@ impl OpenedNote {
     pub fn select_all(&mut self) {
         self.selection_anchor = Some(0);
         self.cursor_offset = self.content.len();
+        self.sync_cursor();
     }
 
     pub fn word_range_at(&self, offset: usize) -> (usize, usize) {
@@ -329,6 +403,19 @@ impl OpenedNote {
     /// Возвращает (line_index, col_index) 0-indexed
     pub fn line_col(&self) -> (usize, usize) {
         let offset = self.cursor_offset.min(self.content.len());
+        if !self.cached_line_starts.is_empty() && !self.cached_lines.is_empty() {
+            let line_idx = match self.cached_line_starts.binary_search(&offset) {
+                Ok(idx) => idx,
+                Err(idx) => idx.saturating_sub(1),
+            };
+            if line_idx < self.cached_lines.len() {
+                let line_start = self.cached_line_starts[line_idx];
+                let line = &self.cached_lines[line_idx];
+                let byte_in_line = offset.saturating_sub(line_start).min(line.len());
+                let col_idx = line[..byte_in_line].chars().count();
+                return (line_idx, col_idx);
+            }
+        }
         let prefix = &self.content[..offset];
         let line_idx = prefix.matches('\n').count();
         let last_newline = prefix.rfind('\n').map(|idx| idx + 1).unwrap_or(0);
@@ -337,6 +424,16 @@ impl OpenedNote {
     }
 
     pub fn offset_for_line_col(&self, target_line: usize, target_col: usize) -> usize {
+        if !self.cached_line_starts.is_empty() && !self.cached_lines.is_empty() {
+            if target_line < self.cached_lines.len() {
+                let line_start = self.cached_line_starts[target_line];
+                let line = &self.cached_lines[target_line];
+                let actual_col = target_col.min(line.chars().count());
+                let byte_col: usize = line.chars().take(actual_col).map(|c| c.len_utf8()).sum();
+                return line_start + byte_col;
+            }
+            return self.content.len();
+        }
         let lines: Vec<&str> = self.content.split('\n').collect();
         let mut offset = 0;
         for (i, line) in lines.iter().enumerate() {
@@ -355,10 +452,13 @@ impl OpenedNote {
         self.snapshot_undo();
         let _ = self.delete_selection();
         let offset = self.cursor_offset.min(self.content.len());
-        self.content.insert_str(offset, text);
+        self.doc.apply_edit(offset..offset, text);
+        self.content = self.doc.source.clone();
         self.cursor_offset = offset + text.len();
         self.selection_anchor = None;
         self.is_dirty = true;
+        self.visual_cache_dirty = true;
+        self.sync_cursor();
     }
 
     pub fn insert_newline_auto_indent(&mut self) {
@@ -372,10 +472,13 @@ impl OpenedNote {
         let indent: String = last_line.chars().take(indent_len).collect();
 
         let insert_str = format!("\n{}", indent);
-        self.content.insert_str(offset, &insert_str);
+        self.doc.apply_edit(offset..offset, &insert_str);
+        self.content = self.doc.source.clone();
         self.cursor_offset = offset + insert_str.len();
         self.selection_anchor = None;
         self.is_dirty = true;
+        self.visual_cache_dirty = true;
+        self.sync_cursor();
     }
 
     pub fn delete_backwards(&mut self) {
@@ -391,10 +494,13 @@ impl OpenedNote {
         while prev > 0 && !self.content.is_char_boundary(prev) {
             prev -= 1;
         }
-        self.content.remove(prev);
+        self.doc.apply_edit(prev..offset, "");
+        self.content = self.doc.source.clone();
         self.cursor_offset = prev;
         self.selection_anchor = None;
         self.is_dirty = true;
+        self.visual_cache_dirty = true;
+        self.sync_cursor();
     }
 
     pub fn delete_forwards(&mut self) {
@@ -406,9 +512,16 @@ impl OpenedNote {
             return;
         }
         self.snapshot_undo();
-        self.content.remove(offset);
+        let mut next = offset + 1;
+        while next <= self.content.len() && !self.content.is_char_boundary(next) {
+            next += 1;
+        }
+        self.doc.apply_edit(offset..next, "");
+        self.content = self.doc.source.clone();
         self.selection_anchor = None;
         self.is_dirty = true;
+        self.visual_cache_dirty = true;
+        self.sync_cursor();
     }
 
     pub fn move_cursor_left(&mut self, shift: bool) {
@@ -416,6 +529,7 @@ impl OpenedNote {
             if let Some(range) = self.selection_range() {
                 self.cursor_offset = range.start;
                 self.selection_anchor = None;
+                self.sync_cursor();
                 return;
             }
         }
@@ -433,6 +547,7 @@ impl OpenedNote {
         if !shift {
             self.selection_anchor = None;
         }
+        self.sync_cursor();
     }
 
     pub fn move_cursor_right(&mut self, shift: bool) {
@@ -440,6 +555,7 @@ impl OpenedNote {
             if let Some(range) = self.selection_range() {
                 self.cursor_offset = range.end;
                 self.selection_anchor = None;
+                self.sync_cursor();
                 return;
             }
         }
@@ -459,6 +575,7 @@ impl OpenedNote {
         if !shift {
             self.selection_anchor = None;
         }
+        self.sync_cursor();
     }
 
     pub fn move_cursor_up(&mut self, shift: bool) {
@@ -471,6 +588,7 @@ impl OpenedNote {
             if !shift {
                 self.selection_anchor = None;
             }
+            self.sync_cursor();
             return;
         }
 
@@ -486,10 +604,12 @@ impl OpenedNote {
                 if !shift {
                     self.selection_anchor = None;
                 }
+                self.sync_cursor();
                 return;
             }
             offset += line.len() + 1;
         }
+        self.sync_cursor();
     }
 
     pub fn move_cursor_down(&mut self, shift: bool) {
@@ -503,6 +623,7 @@ impl OpenedNote {
             if !shift {
                 self.selection_anchor = None;
             }
+            self.sync_cursor();
             return;
         }
 
@@ -517,10 +638,12 @@ impl OpenedNote {
                 if !shift {
                     self.selection_anchor = None;
                 }
+                self.sync_cursor();
                 return;
             }
             offset += line.len() + 1;
         }
+        self.sync_cursor();
     }
 
     pub fn set_cursor_to_line_start(&mut self, target_line: usize) {
@@ -530,10 +653,12 @@ impl OpenedNote {
             if i == target_line {
                 self.cursor_offset = offset;
                 self.selection_anchor = None;
+                self.sync_cursor();
                 return;
             }
             offset += line.len() + 1;
         }
+        self.sync_cursor();
     }
 
     pub fn set_cursor_to_line_end(&mut self, target_line: usize) {
@@ -543,16 +668,19 @@ impl OpenedNote {
             if i == target_line {
                 self.cursor_offset = offset + line.len();
                 self.selection_anchor = None;
+                self.sync_cursor();
                 return;
             }
             offset += line.len() + 1;
         }
+        self.sync_cursor();
     }
 
     #[allow(dead_code)]
     pub fn set_cursor_to_line_col(&mut self, target_line: usize, target_col: usize) {
         self.cursor_offset = self.offset_for_line_col(target_line, target_col);
         self.selection_anchor = None;
+        self.sync_cursor();
     }
 
     pub fn home(&mut self, shift: bool) {
@@ -564,6 +692,7 @@ impl OpenedNote {
         if !shift {
             self.selection_anchor = None;
         }
+        self.sync_cursor();
     }
 
     pub fn end(&mut self, shift: bool) {
@@ -575,6 +704,7 @@ impl OpenedNote {
         if !shift {
             self.selection_anchor = None;
         }
+        self.sync_cursor();
     }
 }
 
@@ -818,6 +948,7 @@ impl AppState {
         self.open_note(new_path.clone());
         if let Some(ref mut note) = self.active_note {
             note.cursor_offset = note.content.len();
+            note.sync_cursor();
         }
         Some(new_path)
     }
@@ -996,6 +1127,7 @@ impl AppState {
                     offset -= 1;
                 }
                 note.cursor_offset = offset;
+                note.sync_cursor();
 
                 note.selection_anchor = settings.selection_anchor.map(|anchor| {
                     let mut a = anchor.min(note.content.len());
@@ -1152,5 +1284,234 @@ impl AppState {
         self.status_text = format!("Renamed to: {}", trimmed);
 
         Ok(new_path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_opened_note_cursor_movement_zero_reparse() {
+        let mut text = String::new();
+        for i in 0..5000 {
+            text.push_str(&format!("Line {} with **bold** text and `code`\n", i));
+        }
+
+        let mut note = OpenedNote::new(
+            PathBuf::from("test.md"),
+            "test".to_string(),
+            text,
+            1,
+        );
+
+        // Initial cache build
+        note.ensure_visual_cache(true, 80);
+        assert_eq!(note.cached_lines.len(), 5001); // 5000 lines + trailing empty
+        assert_eq!(note.cached_line_starts.len(), 5001);
+        let initial_lines = Arc::clone(&note.cached_lines);
+
+        let t0 = std::time::Instant::now();
+        const MOVES: usize = 1000;
+        for _ in 0..MOVES {
+            note.move_cursor_right(false);
+            note.ensure_visual_cache(true, 80);
+        }
+        for _ in 0..MOVES {
+            note.move_cursor_left(false);
+            note.ensure_visual_cache(true, 80);
+        }
+        let elapsed = t0.elapsed();
+        let per_move_us = elapsed.as_micros() as f64 / (MOVES * 2) as f64;
+
+        println!(
+            "2000 cursor moves on 5,000 lines: total {:?}, {:.2} µs/move",
+            elapsed, per_move_us
+        );
+
+        // CRITICAL REQUIREMENTS:
+        // 1. Cached lines Arc must NOT have been reallocated or rebuilt during cursor movements:
+        assert!(Arc::ptr_eq(&note.cached_lines, &initial_lines), "Cache must not be rebuilt during cursor moves");
+        assert!(!note.visual_cache_dirty, "Cache must remain clean");
+        // 2. Must be << 200 µs (0.2 ms)
+        assert!(per_move_us < 200.0, "Per move latency should be under 200 µs, got {:.2} µs", per_move_us);
+    }
+
+    #[test]
+    fn test_opened_note_incremental_text_edit() {
+        let text = "# Title\n\nSome paragraph text here.\n".to_string();
+        let mut note = OpenedNote::new(
+            PathBuf::from("edit.md"),
+            "edit".to_string(),
+            text,
+            1,
+        );
+
+        note.ensure_visual_cache(true, 80);
+        assert!(!note.visual_cache_dirty);
+
+        // Move cursor to inside paragraph: line 2 ("Some paragraph text here.")
+        // "# Title\n\n" is 9 bytes. "Some " is 5 bytes. Offset 14 is right after "Some ".
+        note.cursor_offset = 14;
+        note.sync_cursor();
+
+        // Insert text incrementally
+        note.insert_text("awesome ");
+        assert_eq!(note.content, "# Title\n\nSome awesome paragraph text here.\n");
+        assert_eq!(note.doc.source, note.content);
+        assert!(note.visual_cache_dirty, "Cache must be marked dirty after text insertion");
+
+        // Rebuilding cache should reflect the new content
+        note.ensure_visual_cache(true, 80);
+        assert!(!note.visual_cache_dirty);
+        assert_eq!(note.cached_lines[2], "Some awesome paragraph text here.");
+
+        // Undo
+        note.undo();
+        assert_eq!(note.content, "# Title\n\nSome paragraph text here.\n");
+        assert_eq!(note.doc.source, note.content);
+        assert!(note.visual_cache_dirty);
+
+        note.ensure_visual_cache(true, 80);
+        assert_eq!(note.cached_lines[2], "Some paragraph text here.");
+
+        // Redo
+        note.redo();
+        assert_eq!(note.content, "# Title\n\nSome awesome paragraph text here.\n");
+        assert_eq!(note.doc.source, note.content);
+    }
+
+    #[test]
+    fn test_property_move_cursor_up_always_decreases_v_idx() {
+        let mut text = String::new();
+        // Generate a document with empty lines, short lines, long lines (> 80 chars), and various text
+        for i in 0..100 {
+            if i % 5 == 0 {
+                text.push_str("\n");
+            } else if i % 5 == 1 {
+                text.push_str("   \n");
+            } else if i % 5 == 2 {
+                text.push_str("Short\n");
+            } else if i % 5 == 3 {
+                text.push_str("This is a much longer line that definitely wraps around when word wrap is enabled at 40 or 80 columns in the editor view!\n");
+            } else {
+                text.push_str("Another medium line with some words and symbols.\n");
+            }
+        }
+
+        let mut note = OpenedNote::new(
+            PathBuf::from("prop.md"),
+            "prop".to_string(),
+            text,
+            1,
+        );
+
+        note.ensure_visual_cache(true, 40); // wrap at 40 cols
+        let visual_rows = Arc::clone(&note.cached_visual_rows);
+
+        // Test every single possible cursor offset in the document!
+        for offset in 1..=note.content.len() {
+            note.cursor_offset = offset;
+            let (cursor_line, cursor_col) = note.line_col();
+            let (curr_v_idx, col_in_row) = match crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col) {
+                Some(res) => res,
+                None => continue,
+            };
+
+            if curr_v_idx == 0 {
+                continue;
+            }
+
+            let target_v = &visual_rows[curr_v_idx - 1];
+            let target_len = target_v.char_end.saturating_sub(target_v.char_start);
+            let max_col = if target_v.is_last_sub {
+                target_len
+            } else {
+                target_len.saturating_sub(1)
+            };
+            let target_col = col_in_row.min(max_col);
+            let target_char = target_v.char_start + target_col;
+            let new_offset = note.offset_for_line_col(target_v.line_idx, target_char);
+
+            note.cursor_offset = new_offset;
+            let (new_line, new_col) = note.line_col();
+            let (new_v_idx, _) = crate::markdown::find_visual_row_for_cursor(&visual_rows, new_line, new_col)
+                .unwrap_or((0, 0));
+
+            if new_v_idx >= curr_v_idx {
+                panic!(
+                    "CURSOR STUCK! orig_offset={}, curr_v_idx={}, target_v_idx={}, new_v_idx={}, \
+                    cursor_line={}, cursor_col={}, col_in_row={}, target_len={}, target_char={}, new_offset={}, new_line={}, new_col={}",
+                    offset, curr_v_idx, curr_v_idx - 1, new_v_idx,
+                    cursor_line, cursor_col, col_in_row, target_len, target_char, new_offset, new_line, new_col
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_property_move_cursor_down_always_increases_v_idx() {
+        let mut text = String::new();
+        for i in 0..100 {
+            if i % 5 == 0 {
+                text.push_str("\n");
+            } else if i % 5 == 1 {
+                text.push_str("   \n");
+            } else if i % 5 == 2 {
+                text.push_str("Short\n");
+            } else if i % 5 == 3 {
+                text.push_str("This is a much longer line that definitely wraps around when word wrap is enabled at 40 or 80 columns in the editor view!\n");
+            } else {
+                text.push_str("Another medium line with some words and symbols.\n");
+            }
+        }
+
+        let mut note = OpenedNote::new(
+            PathBuf::from("prop_down.md"),
+            "prop_down".to_string(),
+            text,
+            1,
+        );
+
+        note.ensure_visual_cache(true, 40); // wrap at 40 cols
+        let visual_rows = Arc::clone(&note.cached_visual_rows);
+
+        for offset in 0..note.content.len() {
+            note.cursor_offset = offset;
+            let (cursor_line, cursor_col) = note.line_col();
+            let (curr_v_idx, col_in_row) = match crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col) {
+                Some(res) => res,
+                None => continue,
+            };
+
+            if curr_v_idx + 1 >= visual_rows.len() {
+                continue;
+            }
+
+            let target_v = &visual_rows[curr_v_idx + 1];
+            let target_len = target_v.char_end.saturating_sub(target_v.char_start);
+            let max_col = if target_v.is_last_sub {
+                target_len
+            } else {
+                target_len.saturating_sub(1)
+            };
+            let target_col = col_in_row.min(max_col);
+            let target_char = target_v.char_start + target_col;
+            let new_offset = note.offset_for_line_col(target_v.line_idx, target_char);
+
+            note.cursor_offset = new_offset;
+            let (new_line, new_col) = note.line_col();
+            let (new_v_idx, _) = crate::markdown::find_visual_row_for_cursor(&visual_rows, new_line, new_col)
+                .unwrap_or((0, 0));
+
+            if new_v_idx <= curr_v_idx {
+                panic!(
+                    "CURSOR DOWN STUCK! orig_offset={}, curr_v_idx={}, target_v_idx={}, new_v_idx={}, \
+                    cursor_line={}, cursor_col={}, col_in_row={}, target_len={}, target_char={}, new_offset={}, new_line={}, new_col={}",
+                    offset, curr_v_idx, curr_v_idx + 1, new_v_idx,
+                    cursor_line, cursor_col, col_in_row, target_len, target_char, new_offset, new_line, new_col
+                );
+            }
+        }
     }
 }
