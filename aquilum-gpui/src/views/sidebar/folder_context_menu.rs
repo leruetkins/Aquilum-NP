@@ -17,6 +17,7 @@ pub struct FolderContextMenuState {
     pub position_x: f32,
     pub position_y: f32,
     pub is_copy_path_submenu_open: bool,
+    pub hovered_item: Option<usize>,
 }
 
 impl Default for FolderContextMenuState {
@@ -28,6 +29,7 @@ impl Default for FolderContextMenuState {
             position_x: 0.0,
             position_y: 0.0,
             is_copy_path_submenu_open: false,
+            hovered_item: None,
         }
     }
 }
@@ -47,6 +49,7 @@ impl AppView {
             position_x: x,
             position_y: y,
             is_copy_path_submenu_open: false,
+            hovered_item: None,
         };
         cx.notify();
     }
@@ -55,6 +58,7 @@ impl AppView {
     pub fn close_folder_context_menu(&mut self, cx: &mut Context<Self>) {
         self.folder_context_menu.is_open = false;
         self.folder_context_menu.is_copy_path_submenu_open = false;
+        self.folder_context_menu.hovered_item = None;
         cx.notify();
     }
 
@@ -64,8 +68,10 @@ impl AppView {
         let window_h: f32 = window_size.height.into();
         let window_w: f32 = window_size.width.into();
 
-        let menu_w = 230.0;
-        let menu_h = 510.0;
+        let menu_w = 250.0;
+        let menu_h = 515.0;
+        let submenu_w = 180.0;
+        let submenu_gap = 6.0;
 
         // Clamp Y so menu doesn't overflow bottom of screen
         let mut menu_y = self.folder_context_menu.position_y;
@@ -80,22 +86,27 @@ impl AppView {
             menu_x = (window_w - menu_w - 12.0).max(8.0);
         }
 
-        // Submenu orientation: if not enough space on right for submenu (width 190), open to left
-        let submenu_on_left = menu_x + menu_w + 195.0 > window_w;
-        let submenu_left = if submenu_on_left {
-            -186.0
+        // Submenu orientation: if not enough space on right for submenu, open to left
+        let submenu_on_left = menu_x + menu_w + submenu_w + submenu_gap + 12.0 > window_w;
+        let submenu_x = if submenu_on_left {
+            menu_x - submenu_w - submenu_gap
         } else {
-            222.0
+            menu_x + menu_w + submenu_gap
         };
 
-        let is_submenu_open = self.folder_context_menu.is_copy_path_submenu_open;
+        // Item 8 ("Копировать путь") vertical position inside menu container:
+        let submenu_y = menu_y + 228.0;
+
+        let is_submenu_open = self.folder_context_menu.hovered_item == Some(8);
         let target_path = self.folder_context_menu.folder_path.clone();
 
-        let render_item = |id: &'static str,
+        let render_item = |ix: usize,
+                           id: &'static str,
                            icon_path: &'static str,
                            label: &'static str,
                            is_danger: bool,
                            on_click: Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static>| {
+            let is_selected = self.folder_context_menu.hovered_item == Some(ix);
             let text_color = if is_danger {
                 gpui::rgb(0xe05252)
             } else {
@@ -109,20 +120,19 @@ impl AppView {
 
             div()
                 .id(id)
+                .h(px(26.0))
                 .flex()
                 .flex_row()
                 .items_center()
                 .justify_between()
-                .px_3()
-                .py_1p5()
+                .px_2p5()
+                .rounded_md()
                 .cursor_pointer()
+                .when(is_selected, |d| d.bg(theme.bg_hover))
                 .hover(|h| h.bg(theme.bg_hover))
-                .on_mouse_move(|_, _, cx| {
-                    cx.stop_propagation();
-                })
-                .on_hover(cx.listener(|this, is_hovered: &bool, _, cx| {
-                    if *is_hovered && this.folder_context_menu.is_copy_path_submenu_open {
-                        this.folder_context_menu.is_copy_path_submenu_open = false;
+                .on_hover(cx.listener(move |this, is_hovered: &bool, _, cx| {
+                    if *is_hovered {
+                        this.folder_context_menu.hovered_item = Some(ix);
                         cx.notify();
                     }
                 }))
@@ -185,9 +195,9 @@ impl AppView {
                     .bg(theme.bg_sidebar)
                     .border_1()
                     .border_color(theme.border)
-                    .rounded_md()
-                    .shadow_lg()
-                    .py_1()
+                    .rounded_lg()
+                    .shadow_xl()
+                    .p_1()
                     .flex()
                     .flex_col()
                     .cursor(gpui::CursorStyle::Arrow)
@@ -197,15 +207,13 @@ impl AppView {
                     .on_mouse_down(MouseButton::Right, |_, _, cx| {
                         cx.stop_propagation();
                     })
-                    .on_mouse_move(|_, _, cx| {
-                        cx.stop_propagation();
-                    })
                     .on_scroll_wheel(|_, _, cx| {
                         cx.stop_propagation();
                     })
                     // --- SECTION 1: CREATION ---
-                    // 1. Новая заметка
+                    // 1. Новая заметка (index 0)
                     .child(render_item(
+                        0,
                         "menu-item-new-note",
                         icons::ICON_NOTE_CREATE,
                         "Новая заметка",
@@ -223,8 +231,9 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 2. Новая папка
+                    // 2. Новая папка (index 1)
                     .child(render_item(
+                        1,
                         "menu-item-new-folder",
                         icons::ICON_FOLDER,
                         "Новая папка",
@@ -242,8 +251,9 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 3. Новый холст
+                    // 3. Новый холст (index 2)
                     .child(render_item(
+                        2,
                         "menu-item-new-canvas",
                         icons::ICON_CANVAS,
                         "Новый холст",
@@ -261,8 +271,9 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 4. Создать новый чертеж
+                    // 4. Создать новый чертеж (index 3)
                     .child(render_item(
+                        3,
                         "menu-item-new-drawing",
                         icons::ICON_DRAWING,
                         "Создать новый чертеж",
@@ -283,8 +294,9 @@ impl AppView {
                     // Divider 1
                     .child(self.render_menu_divider(theme))
                     // --- SECTION 2: MANAGEMENT ---
-                    // 5. Создать копию
+                    // 5. Создать копию (index 4)
                     .child(render_item(
+                        4,
                         "menu-item-duplicate-folder",
                         icons::ICON_COPY,
                         "Создать копию",
@@ -301,8 +313,9 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 6. Переместить папку в...
+                    // 6. Переместить папку в... (index 5)
                     .child(render_item(
+                        5,
                         "menu-item-move-folder",
                         icons::ICON_FOLDER_INPUT,
                         "Переместить папку в...",
@@ -315,8 +328,9 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 7. Искать в папке
+                    // 7. Искать в папке (index 6)
                     .child(render_item(
+                        6,
                         "menu-item-search-in-folder",
                         icons::ICON_SEARCH,
                         "Искать в папке",
@@ -334,8 +348,9 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 8. Добавить в закладки...
+                    // 8. Добавить в закладки... (index 7)
                     .child(render_item(
+                        7,
                         "menu-item-bookmark-folder",
                         icons::ICON_BOOKMARK,
                         "Добавить в закладки...",
@@ -353,26 +368,23 @@ impl AppView {
                     // Divider 2
                     .child(self.render_menu_divider(theme))
                     // --- SECTION 3: PATHS & EXPLORER ---
-                    // 9. Копировать путь > (with interactive submenu)
+                    // 9. Копировать путь > (triggers floating submenu, index 8)
                     .child(
                         div()
                             .id("menu-item-copy-path-parent")
-                            .relative()
+                            .h(px(26.0))
                             .flex()
                             .flex_row()
                             .items_center()
                             .justify_between()
-                            .px_3()
-                            .py_1p5()
+                            .px_2p5()
+                            .rounded_md()
                             .cursor_pointer()
                             .when(is_submenu_open, |d| d.bg(theme.bg_hover))
                             .hover(|h| h.bg(theme.bg_hover))
-                            .on_mouse_move(|_, _, cx| {
-                                cx.stop_propagation();
-                            })
                             .on_hover(cx.listener(|this, is_hovered: &bool, _, cx| {
-                                if *is_hovered && !this.folder_context_menu.is_copy_path_submenu_open {
-                                    this.folder_context_menu.is_copy_path_submenu_open = true;
+                                if *is_hovered {
+                                    this.folder_context_menu.hovered_item = Some(8);
                                     cx.notify();
                                 }
                             }))
@@ -390,104 +402,11 @@ impl AppView {
                                             .child("Копировать путь"),
                                     ),
                             )
-                            .child(icons::icon(icons::ICON_CHEVRON_RIGHT, 11.0, theme.text_muted))
-                            // Floating submenu for Copy Path
-                            .when(is_submenu_open, |d| {
-                                let target_for_sub = target_path.clone();
-                                d.child(
-                                    div()
-                                        .id("folder-copy-path-submenu")
-                                        .absolute()
-                                        .left(px(submenu_left))
-                                        .top(px(-4.0))
-                                        .w(px(190.0))
-                                        .bg(theme.bg_sidebar)
-                                        .border_1()
-                                        .border_color(theme.border)
-                                        .rounded_md()
-                                        .shadow_lg()
-                                        .py_1()
-                                        .flex()
-                                        .flex_col()
-                                        .cursor(gpui::CursorStyle::Arrow)
-                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                            cx.stop_propagation();
-                                        })
-                                        .on_mouse_down(MouseButton::Right, |_, _, cx| {
-                                            cx.stop_propagation();
-                                        })
-                                        .on_mouse_move(|_, _, cx| {
-                                            cx.stop_propagation();
-                                        })
-                                        .on_scroll_wheel(|_, _, cx| {
-                                            cx.stop_propagation();
-                                        })
-                                        .child(
-                                            div()
-                                                .id("submenu-copy-rel-path")
-                                                .flex()
-                                                .flex_row()
-                                                .items_center()
-                                                .gap_2()
-                                                .px_3()
-                                                .py_1p5()
-                                                .cursor_pointer()
-                                                .hover(|h| h.bg(theme.bg_hover))
-                                                .on_mouse_move(|_, _, cx| {
-                                                    cx.stop_propagation();
-                                                })
-                                                .child(
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(theme.text_primary)
-                                                        .child("Относительный путь"),
-                                                )
-                                                .on_click({
-                                                    let p = target_for_sub.clone();
-                                                    cx.listener(move |this, _, _, cx| {
-                                                        let ws = this.state.workspace_path.as_deref().unwrap_or(std::path::Path::new(""));
-                                                        let rel = folder_actions::get_relative_path_string(ws, &p);
-                                                        cx.write_to_clipboard(ClipboardItem::new_string(rel.clone()));
-                                                        this.state.status_text = format!("Скопирован относительный путь: {}", rel);
-                                                        this.close_folder_context_menu(cx);
-                                                    })
-                                                }),
-                                        )
-                                        .child(
-                                            div()
-                                                .id("submenu-copy-abs-path")
-                                                .flex()
-                                                .flex_row()
-                                                .items_center()
-                                                .gap_2()
-                                                .px_3()
-                                                .py_1p5()
-                                                .cursor_pointer()
-                                                .hover(|h| h.bg(theme.bg_hover))
-                                                .on_mouse_move(|_, _, cx| {
-                                                    cx.stop_propagation();
-                                                })
-                                                .child(
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(theme.text_primary)
-                                                        .child("Абсолютный путь"),
-                                                )
-                                                .on_click({
-                                                    let p = target_for_sub.clone();
-                                                    cx.listener(move |this, _, _, cx| {
-                                                        let abs = p.to_string_lossy().to_string();
-                                                        cx.write_to_clipboard(ClipboardItem::new_string(abs.clone()));
-                                                        this.state.status_text = format!("Скопирован абсолютный путь: {}", abs);
-                                                        this.close_folder_context_menu(cx);
-                                                    })
-                                                }),
-                                        ),
-                                )
-                            }),
+                            .child(icons::icon(icons::ICON_CHEVRON_RIGHT, 11.0, theme.text_muted)),
                     )
-                    // 10. Показать в Проводнике
+                    // 10. Показать в Проводнике (index 9)
                     .child(render_item(
+                        9,
                         "menu-item-show-in-explorer",
                         icons::ICON_EXTERNAL_LINK,
                         "Показать в Проводнике",
@@ -503,8 +422,9 @@ impl AppView {
                     // Divider 3
                     .child(self.render_menu_divider(theme))
                     // --- SECTION 4: OBSIDIAN FEATURES ---
-                    // 11. Find orphaned files
+                    // 11. Find orphaned files (index 10)
                     .child(render_item(
+                        10,
                         "menu-item-find-orphaned",
                         icons::ICON_SEARCH,
                         "Find orphaned files",
@@ -524,8 +444,9 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 12. Create Folder Note
+                    // 12. Create Folder Note (index 11)
                     .child(render_item(
+                        11,
                         "menu-item-create-folder-note",
                         icons::ICON_PENCIL,
                         "Create Folder Note",
@@ -542,8 +463,9 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 13. Change icon
+                    // 13. Change icon (index 12)
                     .child(render_item(
+                        12,
                         "menu-item-change-icon",
                         icons::ICON_HASH,
                         "Change icon",
@@ -561,8 +483,9 @@ impl AppView {
                     // Divider 4
                     .child(self.render_menu_divider(theme))
                     // --- SECTION 5: MODIFICATIONS (RENAME / DELETE) ---
-                    // 14. Переименовать
+                    // 14. Переименовать (index 13)
                     .child(render_item(
+                        13,
                         "menu-item-rename-folder",
                         icons::ICON_PENCIL,
                         "Переименовать",
@@ -575,8 +498,9 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 15. Удалить (Red danger item!)
+                    // 15. Удалить (Red danger item, index 14)
                     .child(render_item(
+                        14,
                         "menu-item-delete-folder",
                         icons::ICON_TRASH_2,
                         "Удалить",
@@ -592,8 +516,9 @@ impl AppView {
                     // Divider 5
                     .child(self.render_menu_divider(theme))
                     // --- SECTION 6: ATTACHMENTS ---
-                    // 16. Collect attachments in file
+                    // 16. Collect attachments in file (index 15)
                     .child(render_item(
+                        15,
                         "menu-item-collect-attachments",
                         icons::ICON_DOWNLOAD,
                         "Collect attachments in file",
@@ -604,8 +529,9 @@ impl AppView {
                             cx.notify();
                         })),
                     ))
-                    // 17. Move attachment to proper folder
+                    // 17. Move attachment to proper folder (index 16)
                     .child(render_item(
+                        16,
                         "menu-item-move-attachments",
                         icons::ICON_MOVE_ARROWS,
                         "Move attachment to proper folder",
@@ -617,6 +543,113 @@ impl AppView {
                         })),
                     )),
             )
+            // Floating submenu for Copy Path (placed in overlay coordinates with a clear 6px offset)
+            .when(is_submenu_open, |overlay| {
+                let target_for_sub = target_path.clone();
+                overlay.child(
+                    div()
+                        .id("folder-copy-path-submenu")
+                        .absolute()
+                        .left(px(submenu_x))
+                        .top(px(submenu_y))
+                        .w(px(submenu_w))
+                        .bg(theme.bg_sidebar)
+                        .border_1()
+                        .border_color(theme.border)
+                        .rounded_lg()
+                        .shadow_xl()
+                        .p_1()
+                        .flex()
+                        .flex_col()
+                        .cursor(gpui::CursorStyle::Arrow)
+                        .on_hover(cx.listener(|this, is_hovered: &bool, _, _cx| {
+                            if *is_hovered {
+                                this.folder_context_menu.hovered_item = Some(8);
+                            }
+                        }))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation();
+                        })
+                        .on_mouse_down(MouseButton::Right, |_, _, cx| {
+                            cx.stop_propagation();
+                        })
+                        .on_scroll_wheel(|_, _, cx| {
+                            cx.stop_propagation();
+                        })
+                        // Invisible bridge connecting parent item and submenu across the 6px gap
+                        .child(
+                            div()
+                                .id("submenu-hover-bridge")
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .when(!submenu_on_left, |this| this.left(px(-10.0)).w(px(12.0)))
+                                .when(submenu_on_left, |this| this.right(px(-10.0)).w(px(12.0)))
+                                .on_hover(cx.listener(|this, is_hovered: &bool, _, _cx| {
+                                    if *is_hovered {
+                                        this.folder_context_menu.hovered_item = Some(8);
+                                    }
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("submenu-copy-rel-path")
+                                .h(px(26.0))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_2()
+                                .px_2p5()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .hover(|h| h.bg(theme.bg_hover))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.text_primary)
+                                        .child("Относительный путь"),
+                                )
+                                .on_click({
+                                    let p = target_for_sub.clone();
+                                    cx.listener(move |this, _, _, cx| {
+                                        let ws = this.state.workspace_path.as_deref().unwrap_or(std::path::Path::new(""));
+                                        let rel = folder_actions::get_relative_path_string(ws, &p);
+                                        cx.write_to_clipboard(ClipboardItem::new_string(rel.clone()));
+                                        this.state.status_text = format!("Скопирован относительный путь: {}", rel);
+                                        this.close_folder_context_menu(cx);
+                                    })
+                                }),
+                        )
+                        .child(
+                            div()
+                                .id("submenu-copy-abs-path")
+                                .h(px(26.0))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_2()
+                                .px_2p5()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .hover(|h| h.bg(theme.bg_hover))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.text_primary)
+                                        .child("Абсолютный путь"),
+                                )
+                                .on_click({
+                                    let p = target_for_sub.clone();
+                                    cx.listener(move |this, _, _, cx| {
+                                        let abs = p.to_string_lossy().to_string();
+                                        cx.write_to_clipboard(ClipboardItem::new_string(abs.clone()));
+                                        this.state.status_text = format!("Скопирован абсолютный путь: {}", abs);
+                                        this.close_folder_context_menu(cx);
+                                    })
+                                }),
+                        ),
+                )
+            })
     }
 
     /// Renders a subtle divider line between sections in the context menu.
@@ -625,6 +658,6 @@ impl AppView {
             .h_px()
             .bg(theme.border_subtle)
             .my_1()
-            .mx_2()
+            .mx_1()
     }
 }
