@@ -1538,11 +1538,14 @@ impl AppView {
                     let folder_path = path.clone();
                     let folder_path_context = path.clone();
 
+                    let is_folder_selected = self.folder_context_menu.is_open && self.folder_context_menu.folder_path == *path;
+                    let folder_label_color = if is_folder_selected { theme.accent } else { theme.text_primary };
+
                     let folder_label = crate::views::sidebar::highlight_matches(
                         name,
                         &self.state.search_query,
-                        theme.text_primary,
-                        false,
+                        folder_label_color,
+                        is_folder_selected,
                         theme,
                     );
 
@@ -1557,15 +1560,23 @@ impl AppView {
                         .py_1()
                         .rounded_md()
                         .cursor_pointer()
-                        .when(!self.folder_context_menu.is_open && !self.file_context_menu.is_open, |d| {
-                            d.hover(|h| h.bg(theme.bg_hover))
+                        .when(is_folder_selected, |s| {
+                            s.bg(theme.bg_selected)
+                                .text_color(theme.accent)
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                        })
+                        .when(!is_folder_selected, |s| {
+                            s.when(!self.folder_context_menu.is_open && !self.file_context_menu.is_open, |d| {
+                                d.hover(|h| h.bg(theme.bg_hover))
+                            })
+                            .text_color(theme.text_primary)
                         })
                         .child(chevron)
                         .child(folder_svg)
                         .child(
                             div()
                                 .text_xs()
-                                .text_color(theme.text_primary)
+                                .text_color(folder_label_color)
                                 .truncate()
                                 .child(folder_label),
                         )

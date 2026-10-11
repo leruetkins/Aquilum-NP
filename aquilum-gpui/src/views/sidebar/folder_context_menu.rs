@@ -37,6 +37,9 @@ impl Default for FolderContextMenuState {
 impl AppView {
     /// Opens the folder context menu at the given coordinates.
     pub fn open_folder_context_menu(&mut self, folder_path: PathBuf, x: f32, y: f32, cx: &mut Context<Self>) {
+        // If file menu is open, close it
+        self.file_context_menu.is_open = false;
+
         let name = folder_path
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
@@ -69,16 +72,20 @@ impl AppView {
         let window_w: f32 = window_size.width.into();
 
         let menu_w = 250.0;
-        let menu_h = 515.0;
+        let menu_h = 500.0;
         let submenu_w = 180.0;
         let submenu_gap = 6.0;
 
-        // Clamp Y so menu doesn't overflow bottom of screen
-        let mut menu_y = self.folder_context_menu.position_y;
-        if menu_y + menu_h > window_h - 12.0 {
-            menu_y = (window_h - menu_h - 12.0).max(8.0);
-        }
-        menu_y = menu_y.max(8.0);
+        // Upward or downward placement:
+        // Status bar is 28px + 8px margin = 36px bottom margin.
+        // If there's not enough room downwards, open the menu upwards so its bottom edge
+        // aligns with the middle of the clicked item row (~13px above click_y).
+        let click_y = self.folder_context_menu.position_y;
+        let menu_y = if click_y + menu_h + 36.0 > window_h {
+            (click_y - menu_h + 13.0).max(8.0)
+        } else {
+            click_y.max(8.0)
+        };
 
         // Clamp X so menu doesn't overflow right of screen
         let mut menu_x = self.folder_context_menu.position_x.max(8.0);

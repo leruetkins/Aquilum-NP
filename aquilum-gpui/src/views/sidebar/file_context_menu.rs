@@ -69,16 +69,20 @@ impl AppView {
         let window_w: f32 = window_size.width.into();
 
         let menu_w = 265.0;
-        let menu_h = 475.0;
+        let menu_h = 500.0;
         let submenu_w = 210.0;
         let submenu_gap = 6.0;
 
-        // Clamp Y so menu doesn't overflow bottom of screen
-        let mut menu_y = self.file_context_menu.position_y;
-        if menu_y + menu_h > window_h - 12.0 {
-            menu_y = (window_h - menu_h - 12.0).max(8.0);
-        }
-        menu_y = menu_y.max(8.0);
+        // Upward or downward placement:
+        // Status bar is 28px + 8px margin = 36px bottom margin.
+        // If there's not enough room downwards, open the menu upwards so its bottom edge
+        // aligns with the middle of the clicked item row (~13px above click_y).
+        let click_y = self.file_context_menu.position_y;
+        let menu_y = if click_y + menu_h + 36.0 > window_h {
+            (click_y - menu_h + 13.0).max(8.0)
+        } else {
+            click_y.max(8.0)
+        };
 
         // Clamp X so menu doesn't overflow right of screen
         let mut menu_x = self.file_context_menu.position_x.max(8.0);
