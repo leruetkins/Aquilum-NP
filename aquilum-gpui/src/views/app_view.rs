@@ -1544,6 +1544,14 @@ impl AppView {
                     let indent = (depth * 14) as f32 + 4.0;
                     let folder_path = path.clone();
 
+                    let folder_label = crate::views::sidebar::highlight_matches(
+                        name,
+                        &self.state.search_query,
+                        theme.text_primary,
+                        false,
+                        theme,
+                    );
+
                     let folder_row = div()
                         .id(SharedString::from(format!("fld-{}", folder_path.to_string_lossy())))
                         .flex()
@@ -1563,7 +1571,7 @@ impl AppView {
                                 .text_xs()
                                 .text_color(theme.text_primary)
                                 .truncate()
-                                .child(name.clone()),
+                                .child(folder_label),
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.state.toggle_folder(folder_path.clone());
@@ -1598,6 +1606,14 @@ impl AppView {
                     let indent = (depth * 14 + 18) as f32 + 4.0;
                     let file_path = path.clone();
                     let display_name = name.strip_suffix(".md").unwrap_or(name).to_string();
+                    let file_base_color = if is_selected { theme.accent } else { theme.text_secondary };
+                    let file_label = crate::views::sidebar::highlight_matches(
+                        &display_name,
+                        &self.state.search_query,
+                        file_base_color,
+                        is_selected,
+                        theme,
+                    );
 
                     let file_svg = icons::icon(
                         icons::ICON_FILE_TEXT,
@@ -1630,7 +1646,7 @@ impl AppView {
                             div()
                                 .text_xs()
                                 .truncate()
-                                .child(display_name),
+                                .child(file_label),
                         )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.select_note(file_path.clone(), false, window, cx);

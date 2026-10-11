@@ -2,9 +2,10 @@ use std::cell::Cell;
 use std::rc::Rc;
 use gpui::{
     div, prelude::*, px, ClipboardItem, Context, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, SharedString, Window,
+    MouseDownEvent, MouseMoveEvent, Rgba, SharedString, StyledText, TextRun, Window,
 };
 use crate::icons;
+use crate::theme::Theme;
 use crate::views::app_view::AppView;
 
 /// Encapsulates the complete state of the quick filter input in the explorer sidebar.
@@ -617,4 +618,109 @@ impl AppView {
                 )
             })
     }
+}
+
+/// Builds a StyledText with subtle highlight on substrings matching `query`.
+pub fn highlight_matches(
+    text: &str,
+    query: &str,
+    base_color: Rgba,
+    is_selected: bool,
+    theme: &Theme,
+) -> StyledText {
+    let query_trimmed = query.trim();
+    if query_trimmed.is_empty() {
+        return StyledText::new(text.to_string());
+    }
+
+    let text_chars: Vec<char> = text.chars().collect();
+    let query_chars: Vec<char> = query_trimmed.chars().collect();
+    if text_chars.is_empty() || query_chars.is_empty() || query_chars.len() > text_chars.len() {
+        return StyledText::new(text.to_string());
+    }
+
+    let char_indices: Vec<usize> = text.char_indices().map(|(idx, _)| idx).collect();
+    let text_total_bytes = text.len();
+
+    let mut matches: Vec<(usize, usize)> = Vec::new(); // (byte_start, byte_end)
+    let q_len = query_chars.len();
+    let mut i = 0;
+    while i + q_len <= text_chars.len() {
+        let is_match = (0..q_len).all(|k| {
+            text_chars[i + k]
+                .to_lowercase()
+                .eq(query_chars[k].to_lowercase())
+        });
+
+        if is_match {
+            let start_byte = char_indices[i];
+            let end_byte = if i + q_len < char_indices.len() {
+                char_indices[i + q_len]
+            } else {
+                text_total_bytes
+            };
+            matches.push((start_byte, end_byte));
+            i += q_len; // Skip past the match
+        } else {
+            i += 1;
+        }
+    }
+
+    if matches.is_empty() {
+        return StyledText::new(text.to_string());
+    }
+
+    let reg_font = gpui::font("Segoe UI");
+    let match_font = gpui::font("Segoe UI").bold();
+    let hl_bg = Rgba {
+        r: theme.accent.r,
+        g: theme.accent.g,
+        b: theme.accent.b,
+        a: if theme.is_dark { 0.28 } else { 0.20 },
+    };
+    let match_color = if is_selected {
+        theme.text_primary
+    } else {
+        theme.accent
+    };
+
+    let mut runs = Vec::new();
+    let mut curr_byte = 0;
+
+    for (m_start, m_end) in matches {
+        if m_start > curr_byte {
+            runs.push(TextRun {
+                len: m_start - curr_byte,
+                font: reg_font.clone(),
+                color: base_color.into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            });
+        }
+
+        runs.push(TextRun {
+            len: m_end - m_start,
+            font: match_font.clone(),
+            color: match_color.into(),
+            background_color: Some(hl_bg.into()),
+            underline: None,
+            strikethrough: None,
+        });
+
+        curr_byte = m_end;
+    }
+
+    if curr_byte < text_total_bytes {
+        runs.push(TextRun {
+            len: text_total_bytes - curr_byte,
+            font: reg_font,
+            color: base_color.into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        });
+    }
+
+    StyledText::new(text.to_string()).with_runs(runs)
 }
