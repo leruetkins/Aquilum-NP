@@ -95,6 +95,16 @@ impl AppView {
         };
 
         // Item 8 ("Копировать путь") vertical position inside menu container:
+        // Precise vertical coordinate calculation for the submenu:
+        // - Top internal padding of the menu panel: p_1() = 4px
+        // - 8 menu items preceding Item 8 (indices 0..7), each with fixed height h(px(26.0)):
+        //   8 * 26px = 208px
+        // - 2 section dividers (Divider 1 & Divider 2): each takes ~8px in Taffy flexbox (h_px + my_1):
+        //   2 * 8px = 16px
+        // Total offset of Item 8 top edge: 4px + 208px + 16px = 228px.
+        // Because the submenu container also has identical top padding p_1() (4px) and 26px item height,
+        // submenu_y = menu_y + 228px aligns the first submenu item ("Относительный путь")
+        // pixel-perfect horizontally with the parent item ("Копировать путь").
         let submenu_y = menu_y + 228.0;
 
         let is_submenu_open = self.folder_context_menu.hovered_item == Some(8);
