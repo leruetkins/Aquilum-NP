@@ -2171,16 +2171,23 @@ impl Render for AppView {
         let right_controls_w = 214.0;
         let drag_min_w = 24.0;
         let available_tab_strip_w = (viewport_w - sidebar_area_w - right_controls_w - drag_min_w).max(60.0);
-        let (tab_widths, is_tabs_overflowing) = crate::views::tabs_menu::calculate_tab_widths(
+        let active_tab_idx = self.state.active_note.as_ref().and_then(|note| {
+            self.state.open_tabs.iter().position(|p| p == &note.path)
+        });
+        let tab_layout = crate::views::tabs_menu::calculate_tab_widths(
             self.state.open_tabs.len(),
+            active_tab_idx,
             available_tab_strip_w,
             160.0,
-            0.0,
+            120.0,
             6.0,
             28.0,
             6.0,
             8.0,
         );
+        let tab_widths = tab_layout.widths;
+        let is_tabs_overflowing = tab_layout.is_overflowing;
+        let effective_tab_gap = tab_layout.tab_gap;
 
         div()
             .flex()
@@ -2502,13 +2509,16 @@ impl Render for AppView {
                                     .flex()
                                     .flex_row()
                                     .items_end()
-                                    .gap(px(6.0))
+                                    .gap(px(effective_tab_gap))
                                     .h_full()
                                     .pl(px(8.0))
                                     .flex_shrink_0();
 
                                 for (idx, tab_path) in self.state.open_tabs.iter().enumerate() {
                                     let is_active = active_path.as_ref() == Some(tab_path);
+                                    let is_next_active = active_path.as_ref() == self.state.open_tabs.get(idx + 1);
+                                    let show_divider = !is_active && (idx + 1 < self.state.open_tabs.len()) && !is_next_active;
+
                                     let title = tab_path
                                         .file_stem()
                                         .map(|s| s.to_string_lossy().into_owned())
@@ -2540,6 +2550,26 @@ impl Render for AppView {
                                                 .border_color(theme.border)
                                                 .hover(|h| h.bg(theme.bg_hover))
                                         });
+
+                                    if show_divider {
+                                        let sep_right = -(effective_tab_gap / 2.0).floor();
+                                        let divider_color = if theme.is_dark {
+                                            rgba(0xcdd6f440)
+                                        } else {
+                                            rgba(0x1e203030)
+                                        };
+                                        tab_item = tab_item.child(
+                                            div()
+                                                .id(gpui::ElementId::from(("tab-separator", idx)))
+                                                .absolute()
+                                                .top(px(9.0))
+                                                .h(px(16.0))
+                                                .w(px(1.0))
+                                                .right(px(sep_right))
+                                                .rounded_full()
+                                                .bg(divider_color),
+                                        );
+                                    }
 
                                     if is_active {
                                         // 1. Solid center body fill
@@ -2630,12 +2660,13 @@ impl Render for AppView {
                                                     .flex()
                                                     .flex_row()
                                                     .items_center()
-                                                    .gap_1p5()
+                                                    .gap(if tab_w < 48.0 { px(2.0) } else { px(6.0) })
                                                     .h_full()
-                                                    .pl_2p5()
-                                                    .pr_1()
+                                                    .pl(if tab_w < 40.0 { px(2.0) } else { px(10.0) })
+                                                    .pr(if tab_w < 40.0 { px(2.0) } else { px(4.0) })
                                                     .flex_1()
                                                     .min_w_0()
+                                                    .overflow_hidden()
                                                     .cursor_pointer()
                                                     .child(icons::icon(
                                                         icons::ICON_FILE_TEXT,
@@ -2683,24 +2714,26 @@ impl Render for AppView {
                                                     })),
                                             )
                                             // Tab close button (isolated sibling)
-                                            .child(
-                                                div()
-                                                    .id(gpui::ElementId::from(("btn-close-tab", idx)))
-                                                    .p_0p5()
-                                                    .mr_1p5()
-                                                    .flex_shrink_0()
-                                                    .rounded_sm()
-                                                    .cursor_pointer()
-                                                    .hover(|h| h.bg(theme.bg_hover))
-                                                    .child(icons::icon(icons::ICON_CLOSE, 10.0, theme.text_muted))
-                                                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-                                                        cx.stop_propagation();
-                                                    })
-                                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                                        cx.stop_propagation();
-                                                        this.close_tab(&tab_path_for_close, cx);
-                                                    })),
-                                            ),
+                                            .when(is_active || tab_w >= 56.0, |tab| {
+                                                tab.child(
+                                                    div()
+                                                        .id(gpui::ElementId::from(("btn-close-tab", idx)))
+                                                        .p_0p5()
+                                                        .mr_1p5()
+                                                        .flex_shrink_0()
+                                                        .rounded_sm()
+                                                        .cursor_pointer()
+                                                        .hover(|h| h.bg(theme.bg_hover))
+                                                        .child(icons::icon(icons::ICON_CLOSE, 10.0, theme.text_muted))
+                                                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                                            cx.stop_propagation();
+                                                        })
+                                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                                            cx.stop_propagation();
+                                                            this.close_tab(&tab_path_for_close, cx);
+                                                        })),
+                                                )
+                                            }),
                                     );
                                 }
 
