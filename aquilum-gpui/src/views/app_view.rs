@@ -514,7 +514,29 @@ impl AppView {
         self.editor_scroll_handle.set_offset(point(offset_x, px(-scroll_y)));
     }
 
-    fn handle_scrollbar_drag(&mut self, current_y: f32, window: &Window, cx: &mut Context<Self>) {
+    pub fn editor_scroll_metrics(&self, total_content_h: f32) -> (f32, f32, f32) {
+        let bounds = self.editor_scroll_handle.bounds();
+        let bounds_h = f32::from(bounds.size.height);
+        let editor_h = if bounds_h > 50.0 {
+            bounds_h
+        } else {
+            self.last_editor_h.get().max(100.0)
+        };
+        let max_offset_y = f32::from(self.editor_scroll_handle.max_offset().height);
+        let max_scroll_content = if max_offset_y > 0.0 {
+            max_offset_y
+        } else {
+            (total_content_h - editor_h).max(0.0)
+        };
+        let track_top_y = if bounds.origin.y > px(0.0) {
+            f32::from(bounds.origin.y)
+        } else {
+            132.0
+        };
+        (editor_h, max_scroll_content, track_top_y)
+    }
+
+    fn handle_scrollbar_drag(&mut self, current_y: f32, _window: &Window, cx: &mut Context<Self>) {
         if !self.is_dragging_scrollbar {
             return;
         }
@@ -522,12 +544,10 @@ impl AppView {
             return;
         };
         note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings));
-        let viewport_h: f32 = window.viewport_size().height.into();
-        let editor_h = (viewport_h - 170.0).max(100.0);
         let total_content_h = note.cached_height_index.total() + 48.0;
-        let ratio = (editor_h / total_content_h).clamp(0.04, 1.0);
+        let (editor_h, max_scroll_content, _) = self.editor_scroll_metrics(total_content_h);
+        let ratio = (editor_h / total_content_h.max(editor_h)).clamp(0.04, 1.0);
         let thumb_h = (editor_h * ratio).max(28.0);
-        let max_scroll_content = (total_content_h - editor_h).max(1.0);
         let track_scrollable = (editor_h - thumb_h).max(1.0);
 
         let delta_y = current_y - self.scrollbar_drag_start_y;
@@ -3342,18 +3362,16 @@ impl Render for AppView {
                                 let theme_copy = theme.clone();
                                 let theme_scrollbar = theme.clone();
 
-                                let viewport_h: f32 = window.viewport_size().height.into();
-                                let editor_h = (viewport_h - 170.0).max(100.0);
-                                self.last_editor_h.set(editor_h);
                                 let total_content_h = height_index_arc.total() + 48.0;
-                                let show_scrollbar = total_content_h > editor_h;
-                                let max_scroll_content = (total_content_h - editor_h).max(1.0);
+                                let (editor_h, max_scroll_content, track_top_y) = self.editor_scroll_metrics(total_content_h);
+                                self.last_editor_h.set(editor_h);
+                                let show_scrollbar = max_scroll_content > 1.0;
                                 let (thumb_top, thumb_h) = if show_scrollbar {
-                                    let ratio = (editor_h / total_content_h).clamp(0.04, 1.0);
+                                    let ratio = (editor_h / total_content_h.max(editor_h)).clamp(0.04, 1.0);
                                     let th = (editor_h * ratio).max(28.0);
                                     let scroll_y = {
                                         let offset = self.editor_scroll_handle.offset();
-                                        f32::from(-offset.y).max(0.0)
+                                        f32::from(-offset.y).clamp(0.0, max_scroll_content)
                                     };
                                     let scroll_fraction = (scroll_y / max_scroll_content).clamp(0.0, 1.0);
                                     let tt = scroll_fraction * (editor_h - th);
@@ -3364,7 +3382,7 @@ impl Render for AppView {
                                 let is_scrollbar_dragging = self.is_dragging_scrollbar;
                                 let scroll_y_current = {
                                     let offset = self.editor_scroll_handle.offset();
-                                    f32::from(-offset.y).max(0.0)
+                                    f32::from(-offset.y).clamp(0.0, max_scroll_content)
                                 };
 
                                 let is_title_focused = self.title_focus_handle.is_focused(window);
@@ -3568,7 +3586,7 @@ impl Render for AppView {
                                         .min_w_0()
                                         .min_h_0()
                                         .overflow_hidden()
-                                        .when(self.is_settings_open, |d| {
+                                        .when(self.is_settings_open || !show_scrollbar, |d| {
                                             d.on_scroll_wheel(|_, _, cx| {
                                                 cx.stop_propagation();
                                             })
@@ -3634,11 +3652,23 @@ impl Render for AppView {
                                             let hide_current_line_on_selection = self.config.editor.hide_current_line_on_selection;
                                             let has_selection = selection_range.as_ref().map_or(false, |sel| sel.start < sel.end);
 
-                                            let scroll_y = self.current_scroll_top();
-                                            let visible_range = height_index_arc.visible_range(scroll_y, editor_h, 300.0);
-                                            let top_spacer_h = height_index_arc.top_of(visible_range.start);
-                                            let rendered_bottom = height_index_arc.top_of(visible_range.end);
-                                            let bottom_spacer_h = (height_index_arc.total() - rendered_bottom).max(0.0);
+                                            let (visible_range, top_spacer_h, bottom_spacer_h) = if !show_scrollbar {
+                                                if self.current_scroll_top() > 0.0 {
+                                                    self.set_editor_scroll_top(0.0);
+                                                }
+                                                (0..visual_rows_arc.len(), 0.0, 0.0)
+                                            } else {
+                                                let raw_scroll_y = self.current_scroll_top();
+                                                let scroll_y = raw_scroll_y.clamp(0.0, max_scroll_content);
+                                                if (raw_scroll_y - scroll_y).abs() > 0.5 {
+                                                    self.set_editor_scroll_top(scroll_y);
+                                                }
+                                                let vr = height_index_arc.visible_range(scroll_y, editor_h, 300.0);
+                                                let top_h = height_index_arc.top_of(vr.start);
+                                                let rendered_bottom = height_index_arc.top_of(vr.end);
+                                                let bot_h = (height_index_arc.total() - rendered_bottom).max(0.0);
+                                                (vr, top_h, bot_h)
+                                            };
 
                                             crate::perf::PERF.shape_calls.fetch_add(visible_range.len() as u64, std::sync::atomic::Ordering::Relaxed);
                                             let mut items = Vec::with_capacity(visible_range.len() + 2);
@@ -3988,11 +4018,11 @@ impl Render for AppView {
                                                 .track_scroll(&self.editor_scroll_handle)
                                                 .flex()
                                                 .flex_col()
-                                                .overflow_y_scroll()
+                                                .when(show_scrollbar, |d| d.overflow_y_scroll())
                                                 .size_full()
                                                 .px_8()
                                                 .pt_0()
-                                                .pb_6()
+                                                .pb(px(48.0))
                                                 .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
                                                     cx.stop_propagation();
                                                     this.commit_title_rename(window, cx);
@@ -4002,7 +4032,106 @@ impl Render for AppView {
                                                     let click_y: f32 = event.position.y.into();
                                                     this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, cx);
                                                 }))
-                                                .children(items)
+                                                .on_scroll_wheel(cx.listener(move |this, event: &gpui::ScrollWheelEvent, _, cx| {
+                                                    let delta_y = match event.delta {
+                                                        gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
+                                                        gpui::ScrollDelta::Lines(l) => l.y,
+                                                    };
+                                                    if !show_scrollbar {
+                                                        cx.stop_propagation();
+                                                        return;
+                                                    }
+                                                    let current_scroll = this.current_scroll_top();
+                                                    if delta_y < 0.0 {
+                                                        if current_scroll >= max_scroll_content - 1.0 {
+                                                            this.set_editor_scroll_top(max_scroll_content);
+                                                            cx.stop_propagation();
+                                                            return;
+                                                        }
+                                                        let line_h = 24.0;
+                                                        let px_delta_y = match event.delta {
+                                                            gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
+                                                            gpui::ScrollDelta::Lines(l) => l.y * line_h,
+                                                        };
+                                                        if current_scroll - px_delta_y >= max_scroll_content {
+                                                            this.set_editor_scroll_top(max_scroll_content);
+                                                            cx.stop_propagation();
+                                                            cx.notify();
+                                                            return;
+                                                        }
+                                                    } else if delta_y > 0.0 {
+                                                        if current_scroll <= 1.0 {
+                                                            this.set_editor_scroll_top(0.0);
+                                                            cx.stop_propagation();
+                                                            return;
+                                                        }
+                                                        let line_h = 24.0;
+                                                        let px_delta_y = match event.delta {
+                                                            gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
+                                                            gpui::ScrollDelta::Lines(l) => l.y * line_h,
+                                                        };
+                                                        if current_scroll - px_delta_y <= 0.0 {
+                                                            this.set_editor_scroll_top(0.0);
+                                                            cx.stop_propagation();
+                                                            cx.notify();
+                                                            return;
+                                                        }
+                                                    }
+                                                }))
+                                                .child(
+                                                    div()
+                                                        .id("note-editor-scroll-content")
+                                                        .w_full()
+                                                        .flex()
+                                                        .flex_col()
+                                                        .on_scroll_wheel(cx.listener(move |this, event: &gpui::ScrollWheelEvent, _, cx| {
+                                                            let delta_y = match event.delta {
+                                                                gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
+                                                                gpui::ScrollDelta::Lines(l) => l.y,
+                                                            };
+                                                            if !show_scrollbar {
+                                                                cx.stop_propagation();
+                                                                return;
+                                                            }
+                                                            let current_scroll = this.current_scroll_top();
+                                                            if delta_y < 0.0 {
+                                                                if current_scroll >= max_scroll_content - 1.0 {
+                                                                    this.set_editor_scroll_top(max_scroll_content);
+                                                                    cx.stop_propagation();
+                                                                    return;
+                                                                }
+                                                                let line_h = 24.0;
+                                                                let px_delta_y = match event.delta {
+                                                                    gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
+                                                                    gpui::ScrollDelta::Lines(l) => l.y * line_h,
+                                                                };
+                                                                if current_scroll - px_delta_y >= max_scroll_content {
+                                                                    this.set_editor_scroll_top(max_scroll_content);
+                                                                    cx.stop_propagation();
+                                                                    cx.notify();
+                                                                    return;
+                                                                }
+                                                            } else if delta_y > 0.0 {
+                                                                if current_scroll <= 1.0 {
+                                                                    this.set_editor_scroll_top(0.0);
+                                                                    cx.stop_propagation();
+                                                                    return;
+                                                                }
+                                                                let line_h = 24.0;
+                                                                let px_delta_y = match event.delta {
+                                                                    gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
+                                                                    gpui::ScrollDelta::Lines(l) => l.y * line_h,
+                                                                };
+                                                                if current_scroll - px_delta_y <= 0.0 {
+                                                                    this.set_editor_scroll_top(0.0);
+                                                                    cx.stop_propagation();
+                                                                    cx.notify();
+                                                                    return;
+                                                                }
+                                                            }
+                                                        }))
+                                                        .children(items)
+                                                )
                                         })
                                         .when(show_scrollbar, |c| {
                                             c.child(
@@ -4019,7 +4148,7 @@ impl Render for AppView {
                                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                                                         cx.stop_propagation();
                                                         let click_y: f32 = event.position.y.into();
-                                                        let click_rel_y = (click_y - 132.0).max(0.0);
+                                                        let click_rel_y = (click_y - track_top_y).max(0.0);
                                                         let target_fraction = (click_rel_y / editor_h).clamp(0.0, 1.0);
                                                         let target_scroll_y = target_fraction * max_scroll_content;
                                                         this.set_editor_scroll_top(target_scroll_y);
