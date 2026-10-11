@@ -2157,9 +2157,7 @@ impl Render for AppView {
             .map(|s| f32::from(s.width))
             .unwrap_or(7.7);
 
-        let viewport_w = f32::from(window.bounds().size.width)
-            .max(f32::from(window.viewport_size().width))
-            .max(800.0);
+        let viewport_w: f32 = window.viewport_size().width.into();
         let wrap_cols = self.compute_wrap_cols(viewport_w, line_char_width);
         self.last_wrap_cols = wrap_cols;
         if let Some(ref mut note) = self.state.active_note {
@@ -2171,14 +2169,15 @@ impl Render for AppView {
 
         let sidebar_area_w = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
         let right_controls_w = 214.0;
-        let available_tab_strip_w = (viewport_w - sidebar_area_w - right_controls_w - 20.0).max(80.0);
+        let drag_min_w = 24.0;
+        let available_tab_strip_w = (viewport_w - sidebar_area_w - right_controls_w - drag_min_w).max(60.0);
         let tab_layout = crate::views::tabs_menu::calculate_tabs_layout(
             self.state.open_tabs.len(),
             available_tab_strip_w,
             160.0,
             0.0,
             6.0,
-            34.0,
+            48.0,
         );
 
         div()
@@ -2503,7 +2502,8 @@ impl Render for AppView {
                                     .items_end()
                                     .gap(px(6.0))
                                     .h_full()
-                                    .pl_2();
+                                    .pl_2()
+                                    .pr_1();
 
                                 for (idx, tab_path) in self.state.open_tabs.iter().enumerate() {
                                     let is_active = active_path.as_ref() == Some(tab_path);
@@ -2539,8 +2539,8 @@ impl Render for AppView {
                                                 .absolute()
                                                 .top(px(1.0))
                                                 .bottom_0()
-                                                .left(px(7.0))
-                                                .right(px(7.0))
+                                                .left(px(6.0))
+                                                .right(px(6.0))
                                                 .bg(theme.bg_editor),
                                         );
                                         // 2. Solid fill mask at the baseline connecting active tab into the editor
@@ -2549,23 +2549,12 @@ impl Render for AppView {
                                                 .id("tab-bottom-cover")
                                                 .absolute()
                                                 .bottom(px(-2.0))
-                                                .left(px(7.0))
-                                                .right(px(7.0))
+                                                .left(px(6.0))
+                                                .right(px(6.0))
                                                 .h(px(3.0))
                                                 .bg(theme.bg_editor),
                                         );
-                                        // 3. Continuous top border between corner curves
-                                        tab_item = tab_item.child(
-                                            div()
-                                                .id("tab-border-top")
-                                                .absolute()
-                                                .top_0()
-                                                .left(px(7.0))
-                                                .right(px(7.0))
-                                                .h(px(1.0))
-                                                .bg(theme.border),
-                                        );
-                                        // 4. Left cap
+                                        // 3. Left cap
                                         tab_item = tab_item.child(
                                             div()
                                                 .id("tab-cap-left")
@@ -2587,7 +2576,7 @@ impl Render for AppView {
                                                         .left_0(),
                                                 ),
                                         );
-                                        // 5. Right cap
+                                        // 4. Right cap
                                         tab_item = tab_item.child(
                                             div()
                                                 .id("tab-cap-right")
@@ -2608,6 +2597,17 @@ impl Render for AppView {
                                                         .top_0()
                                                         .left_0(),
                                                 ),
+                                        );
+                                        // 5. Continuous top border on top of caps connecting the corner curves seamlessly
+                                        tab_item = tab_item.child(
+                                            div()
+                                                .id("tab-border-top")
+                                                .absolute()
+                                                .top_0()
+                                                .left(px(6.0))
+                                                .right(px(6.0))
+                                                .h(px(1.0))
+                                                .bg(theme.border),
                                         );
                                     }
 
@@ -2697,7 +2697,6 @@ impl Render for AppView {
                                         .items_center()
                                         .justify_center()
                                         .h(px(34.0))
-                                        .ml_1()
                                         .flex_shrink_0()
                                         .child(
                                             div()
@@ -2724,17 +2723,15 @@ impl Render for AppView {
                                     .flex_row()
                                     .items_end()
                                     .h_full()
-                                    .overflow_hidden()
-                                    .when(!layout.is_overflowing, |d| d.flex_shrink_0())
-                                    .when(layout.is_overflowing, |d| d.flex_1().min_w_0())
+                                    .flex_shrink_0()
                                     .child(tabs_strip)
                             })
                             // Drag Area (fills remaining space between tabs and window controls)
                             .child(
                                 div()
                                     .id("titlebar-drag-region")
-                                    .when(!tab_layout.is_overflowing, |d| d.flex_1().min_w(px(20.0)))
-                                    .when(tab_layout.is_overflowing, |d| d.w(px(20.0)).flex_shrink_0())
+                                    .flex_1()
+                                    .min_w(px(24.0))
                                     .h_full()
                                     .window_control_area(WindowControlArea::Drag),
                             )

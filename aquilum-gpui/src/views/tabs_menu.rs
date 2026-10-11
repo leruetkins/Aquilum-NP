@@ -328,7 +328,7 @@ pub fn calculate_tabs_layout(
     // Shrink tabs proportionally without artificial cutoff so the + button never disappears
     let space_for_tabs = (available_width - new_tab_btn_w - gaps_total).max(0.0);
     let candidate_w = space_for_tabs / (num_tabs as f32);
-    let tab_w = candidate_w.clamp(min_tab_w, max_tab_w);
+    let tab_w = candidate_w.clamp(min_tab_w, max_tab_w).floor();
     let total_tabs_width = num_tabs as f32 * tab_w + gaps_total;
 
     TabsLayout {
@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn test_calculate_tabs_layout_few_tabs() {
         // 1 tab, wide area -> max width, not overflowing
-        let layout = calculate_tabs_layout(1, 800.0, 160.0, 0.0, 6.0, 34.0);
+        let layout = calculate_tabs_layout(1, 800.0, 160.0, 0.0, 6.0, 48.0);
         assert_eq!(layout.tab_width, 160.0);
         assert!(!layout.is_overflowing);
         assert_eq!(layout.max_scroll, 0.0);
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn test_calculate_tabs_layout_shrunk_tabs() {
         // 4 tabs, 500px -> shrunk between 0 and 160, not overflowing
-        let layout = calculate_tabs_layout(4, 500.0, 160.0, 0.0, 6.0, 34.0);
+        let layout = calculate_tabs_layout(4, 500.0, 160.0, 0.0, 6.0, 48.0);
         assert!(layout.tab_width > 0.0 && layout.tab_width <= 160.0);
         assert!(!layout.is_overflowing);
         assert_eq!(layout.max_scroll, 0.0);
@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn test_calculate_tabs_layout_overflowing_tabs() {
         // 15 tabs, 500px -> shrinks down without cutoff so + button fits, not overflowing
-        let layout = calculate_tabs_layout(15, 500.0, 160.0, 0.0, 6.0, 34.0);
+        let layout = calculate_tabs_layout(15, 500.0, 160.0, 0.0, 6.0, 48.0);
         assert!(layout.tab_width > 0.0 && layout.tab_width < 64.0);
         assert!(!layout.is_overflowing);
         assert_eq!(layout.max_scroll, 0.0);
