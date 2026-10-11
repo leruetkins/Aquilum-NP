@@ -364,9 +364,17 @@ impl OpenedNote {
     pub fn selection_range(&self) -> Option<Range<usize>> {
         if let Some(anchor) = self.selection_anchor {
             if anchor != self.cursor_offset {
-                let start = anchor.min(self.cursor_offset).min(self.content.len());
-                let end = anchor.max(self.cursor_offset).min(self.content.len());
-                return Some(start..end);
+                let mut start = anchor.min(self.cursor_offset).min(self.content.len());
+                let mut end = anchor.max(self.cursor_offset).min(self.content.len());
+                while start > 0 && !self.content.is_char_boundary(start) {
+                    start -= 1;
+                }
+                while end > 0 && !self.content.is_char_boundary(end) {
+                    end -= 1;
+                }
+                if start != end {
+                    return Some(start..end);
+                }
             }
         }
         None
@@ -374,7 +382,11 @@ impl OpenedNote {
 
     pub fn selected_text(&self) -> Option<String> {
         let range = self.selection_range()?;
-        Some(self.content[range].to_string())
+        if self.content.is_char_boundary(range.start) && self.content.is_char_boundary(range.end) {
+            Some(self.content[range].to_string())
+        } else {
+            None
+        }
     }
 
     pub fn delete_selection(&mut self) -> bool {
@@ -403,7 +415,10 @@ impl OpenedNote {
         if self.content.is_empty() {
             return (0, 0);
         }
-        let offset = offset.min(self.content.len());
+        let mut offset = offset.min(self.content.len());
+        while offset > 0 && !self.content.is_char_boundary(offset) {
+            offset -= 1;
+        }
         let chars: Vec<(usize, char)> = self.content.char_indices().collect();
         if chars.is_empty() {
             return (0, 0);
@@ -432,7 +447,10 @@ impl OpenedNote {
     }
 
     pub fn line_range_at(&self, offset: usize) -> (usize, usize) {
-        let offset = offset.min(self.content.len());
+        let mut offset = offset.min(self.content.len());
+        while offset > 0 && !self.content.is_char_boundary(offset) {
+            offset -= 1;
+        }
         let start = self.content[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
         let end = self.content[offset..].find('\n').map(|i| offset + i + 1).unwrap_or(self.content.len());
         (start, end)
@@ -440,8 +458,11 @@ impl OpenedNote {
 
     /// Возвращает (line_index, col_index) 0-indexed
     pub fn line_col(&self) -> (usize, usize) {
-        let offset = self.cursor_offset.min(self.content.len());
-        if !self.cached_line_starts.is_empty() && !self.cached_lines.is_empty() {
+        let mut offset = self.cursor_offset.min(self.content.len());
+        while offset > 0 && !self.content.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        if !self.visual_cache_dirty && !self.cached_line_starts.is_empty() && !self.cached_lines.is_empty() {
             let line_idx = match self.cached_line_starts.binary_search(&offset) {
                 Ok(idx) => idx,
                 Err(idx) => idx.saturating_sub(1),
@@ -449,7 +470,10 @@ impl OpenedNote {
             if line_idx < self.cached_lines.len() {
                 let line_start = self.cached_line_starts[line_idx];
                 let line = &self.cached_lines[line_idx];
-                let byte_in_line = offset.saturating_sub(line_start).min(line.len());
+                let mut byte_in_line = offset.saturating_sub(line_start).min(line.len());
+                while byte_in_line > 0 && !line.is_char_boundary(byte_in_line) {
+                    byte_in_line -= 1;
+                }
                 let col_idx = line[..byte_in_line].chars().count();
                 return (line_idx, col_idx);
             }
@@ -462,7 +486,7 @@ impl OpenedNote {
     }
 
     pub fn offset_for_line_col(&self, target_line: usize, target_col: usize) -> usize {
-        if !self.cached_line_starts.is_empty() && !self.cached_lines.is_empty() {
+        if !self.visual_cache_dirty && !self.cached_line_starts.is_empty() && !self.cached_lines.is_empty() {
             if target_line < self.cached_lines.len() {
                 let line_start = self.cached_line_starts[target_line];
                 let line = &self.cached_lines[target_line];
@@ -489,7 +513,10 @@ impl OpenedNote {
     pub fn insert_text(&mut self, text: &str) {
         self.snapshot_undo();
         let _ = self.delete_selection();
-        let offset = self.cursor_offset.min(self.content.len());
+        let mut offset = self.cursor_offset.min(self.content.len());
+        while offset > 0 && !self.content.is_char_boundary(offset) {
+            offset -= 1;
+        }
         self.doc.apply_edit(offset..offset, text);
         self.content = self.doc.source.clone();
         self.cursor_offset = offset + text.len();
@@ -503,7 +530,10 @@ impl OpenedNote {
         self.snapshot_undo();
         let _ = self.delete_selection();
 
-        let offset = self.cursor_offset.min(self.content.len());
+        let mut offset = self.cursor_offset.min(self.content.len());
+        while offset > 0 && !self.content.is_char_boundary(offset) {
+            offset -= 1;
+        }
         let prefix = &self.content[..offset];
         let last_line = prefix.split('\n').last().unwrap_or("");
         let indent_len = last_line.chars().take_while(|c| c.is_whitespace()).count();
@@ -527,7 +557,13 @@ impl OpenedNote {
             return;
         }
         self.snapshot_undo();
-        let offset = self.cursor_offset.min(self.content.len());
+        let mut offset = self.cursor_offset.min(self.content.len());
+        while offset > 0 && !self.content.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        if offset == 0 {
+            return;
+        }
         let mut prev = offset - 1;
         while prev > 0 && !self.content.is_char_boundary(prev) {
             prev -= 1;
@@ -545,7 +581,10 @@ impl OpenedNote {
         if self.delete_selection() {
             return;
         }
-        let offset = self.cursor_offset.min(self.content.len());
+        let mut offset = self.cursor_offset.min(self.content.len());
+        while offset > 0 && !self.content.is_char_boundary(offset) {
+            offset -= 1;
+        }
         if offset >= self.content.len() {
             return;
         }
@@ -1594,4 +1633,86 @@ mod tests {
         // Empty query matches all
         assert!(tree.matches_query(""));
     }
+
+    #[test]
+    fn test_opened_note_utf8_cyrillic_typing_and_line_col() {
+        let mut note = OpenedNote::new(
+            PathBuf::from("test.md"),
+            "test".to_string(),
+            "# Заметка\n".to_string(),
+            1,
+        );
+        note.ensure_visual_cache(true, 80);
+
+        // Move cursor to the end of the first line
+        note.cursor_offset = note.content.len();
+
+        let russian_text = "Привет мир! Это тестовая строка на русском языке.";
+        for ch in russian_text.chars() {
+            let mut s = String::new();
+            s.push(ch);
+            note.insert_text(&s);
+            assert!(note.visual_cache_dirty);
+
+            // Crucial: line_col() must not panic while visual_cache_dirty is true
+            let (line, col) = note.line_col();
+            assert_eq!(line, 1);
+            // col should match number of characters on line 1
+            let expected_col = note.content.split('\n').nth(1).unwrap().chars().count();
+            assert_eq!(col, expected_col);
+        }
+
+        // Backspace test with multi-byte characters
+        for _ in 0..10 {
+            note.delete_backwards();
+            let (line, col) = note.line_col();
+            assert_eq!(line, 1);
+            let expected_col = note.content.split('\n').nth(1).unwrap().chars().count();
+            assert_eq!(col, expected_col);
+        }
+
+        // Move cursor left and delete forwards
+        note.cursor_offset = note.content.len().saturating_sub(6); // inside Cyrillic text
+        while !note.content.is_char_boundary(note.cursor_offset) {
+            note.cursor_offset -= 1;
+        }
+        note.delete_forwards();
+        let _ = note.line_col();
+
+        // Selection across multi-byte characters
+        note.selection_anchor = Some(2); // inside "# Заметка"
+        let range = note.selection_range();
+        assert!(range.is_some());
+        let range = range.unwrap();
+        assert!(note.content.is_char_boundary(range.start));
+        assert!(note.content.is_char_boundary(range.end));
+        let selected = note.selected_text();
+        assert!(selected.is_some());
+
+        // Test with exact template from create_note_in_folder: "# Без названия\n\n"
+        let mut new_note = OpenedNote::new(
+            PathBuf::from("Без названия.md"),
+            "Без названия".to_string(),
+            "# Без названия\n\n".to_string(),
+            1,
+        );
+        new_note.ensure_visual_cache(true, 80);
+        new_note.cursor_offset = new_note.content.len();
+
+        // Type text containing 'ё' and other Cyrillic characters
+        let sample = "Привет, моё солнышко! Ещё одна заметка.";
+        for ch in sample.chars() {
+            let mut s = String::new();
+            s.push(ch);
+            new_note.insert_text(&s);
+            let _ = new_note.line_col();
+        }
+
+        // Backspace every character one by one
+        for _ in 0..sample.chars().count() {
+            new_note.delete_backwards();
+            let _ = new_note.line_col();
+        }
+    }
 }
+

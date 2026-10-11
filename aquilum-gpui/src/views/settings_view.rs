@@ -769,7 +769,7 @@ impl AppView {
                                     .child(if self.custom_hex_input.is_empty() { "#HEX".to_string() } else { self.custom_hex_input.clone() })
                             )
                             // 3. Caret (only shown when focused and not selecting)
-                            .when(self.hex_is_focused && self.hex_cursor_visible && self.hex_selection_range().is_none(), |s| {
+                            .when(self.hex_is_focused && self.hex_blink.visible() && self.hex_selection_range().is_none(), |s| {
                                 let cursor_x = 8.0 + (self.hex_cursor_pos as f32) * char_w;
                                 s.child(
                                     div()

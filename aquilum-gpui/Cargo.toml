@@ -16,3 +16,11 @@ smallvec = "1"
 
 [build-dependencies]
 winres = "0.1"
+
+# In debug builds, optimize dependencies (GPUI, pulldown-cmark, etc.) so UI runs smoothly at 60-120 FPS
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+

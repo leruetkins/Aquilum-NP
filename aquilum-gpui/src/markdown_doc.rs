@@ -646,56 +646,14 @@ impl MarkdownDocument {
         width: f32,
         char_w: f32,
     ) {
-        let delta = new_text.len() as isize - range.len() as isize;
-        let removed = if range.end <= self.source.len() {
-            &self.source[range.clone()]
-        } else {
-            ""
-        };
-        let is_wide = needs_wide_reparse(new_text, removed);
-
         // 1. Применяем правку к исходному тексту
-        self.source.replace_range(range.clone(), new_text);
+        self.source.replace_range(range, new_text);
 
-        // Если документ пустой или правка меняет глобальный синтаксис (```, ---, <!--)
-        if self.blocks.is_empty() || is_wide {
-            crate::perf::PERF.parse_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let new_blocks = parse_blocks(&self.source, 0, &mut self.ids);
-            self.heights = HeightIndex::from_blocks(&new_blocks, line_height, width, char_w);
-            self.blocks = new_blocks;
-            return;
-        }
-
-        // 2-3. Затронутые блоки с запасом [a..b)
-        let mut a = self.blocks.partition_point(|b| b.source_range.end < range.start);
-        let mut b = self.blocks.partition_point(|b| b.source_range.start <= range.end);
-        a = a.saturating_sub(1);
-        b = (b + 1).min(self.blocks.len());
-
-        let start = self.blocks.get(a).map(|x| x.source_range.start).unwrap_or(0);
-        let old_end = self.blocks.get(b.saturating_sub(1)).map(|x| x.source_range.end).unwrap_or(start);
-        let new_end = ((old_end as isize + delta).max(start as isize) as usize).min(self.source.len());
-
-        // 4-5. Перепарсить локальный срез
+        // 2. Полный надёжный парсинг AST документа без повреждения UTF-8 смещений и срезов
         crate::perf::PERF.parse_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let slice = &self.source[start..new_end];
-        let new_blocks = parse_blocks(slice, start, &mut self.ids);
-        let new_count = new_blocks.len();
-
-        // 6. Заменить затронутый диапазон новыми блоками
-        self.blocks.splice(a..b, new_blocks);
-
-        // 7. Сдвиг смещений хвоста документа
-        for blk in &mut self.blocks[a + new_count..] {
-            shift_block(blk, delta);
-        }
-
-        // 8. Обновление индекса высот
-        let new_heights: Vec<f32> = self.blocks[a..a + new_count]
-            .iter()
-            .map(|blk| estimate_height(blk, line_height, width, char_w))
-            .collect();
-        self.heights.splice(a..b, new_heights);
+        let new_blocks = parse_blocks(&self.source, 0, &mut self.ids);
+        self.heights = HeightIndex::from_blocks(&new_blocks, line_height, width, char_w);
+        self.blocks = new_blocks;
     }
 }
 

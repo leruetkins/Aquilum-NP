@@ -4,6 +4,7 @@ use gpui::{
     div, prelude::*, px, ClipboardItem, Context, IntoElement, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, Rgba, SharedString, StyledText, TextRun, Window,
 };
+use crate::blink_manager::{BlinkManager, BlinkTarget};
 use crate::icons;
 use crate::theme::Theme;
 use crate::views::app_view::AppView;
@@ -15,8 +16,7 @@ pub struct QuickFilterState {
     pub selection_anchor: Option<usize>,
     pub is_mouse_selecting: bool,
     pub is_focused: bool,
-    pub cursor_visible: bool,
-    pub cursor_blink_epoch: usize,
+    pub blink: BlinkManager,
     pub box_origin_x: Rc<Cell<f32>>,
 }
 
@@ -33,8 +33,7 @@ impl QuickFilterState {
             selection_anchor: None,
             is_mouse_selecting: false,
             is_focused: false,
-            cursor_visible: true,
-            cursor_blink_epoch: 0,
+            blink: BlinkManager::new(),
             box_origin_x: Rc::new(Cell::new(0.0)),
         }
     }
@@ -50,40 +49,35 @@ impl QuickFilterState {
         None
     }
 
-    /// Resets the cursor blink cycle and restarts the asynchronous 530ms blink ticker.
+    /// Resets the cursor blink cycle, showing the cursor and pausing blink.
     pub fn reset_cursor_blink(&mut self, cx: &mut Context<AppView>) {
-        self.cursor_visible = true;
-        self.cursor_blink_epoch = self.cursor_blink_epoch.wrapping_add(1);
-        let epoch = self.cursor_blink_epoch;
-        let entity = cx.weak_entity();
-        let mut async_cx = cx.to_async();
-        let timer_executor = cx.background_executor().clone();
-        cx.foreground_executor().spawn(async move {
-            loop {
-                timer_executor.timer(std::time::Duration::from_millis(530)).await;
-                let should_continue = entity.update(&mut async_cx, |this, cx| {
-                    if this.quick_filter.cursor_blink_epoch != epoch || !this.quick_filter.is_focused {
-                        false
-                    } else {
-                        this.quick_filter.cursor_visible = !this.quick_filter.cursor_visible;
-                        cx.notify();
-                        true
-                    }
-                }).unwrap_or(false);
-                if !should_continue {
-                    break;
-                }
-            }
-        }).detach();
+        self.blink.pause_and_show(BlinkTarget::QuickFilter, cx);
+    }
+
+    /// Enables cursor blinking when focused.
+    pub fn enable_cursor_blink(&mut self, cx: &mut Context<AppView>) {
+        self.blink.enable(BlinkTarget::QuickFilter, cx);
+    }
+
+    /// Disables cursor blinking and immediately hides the cursor when losing focus.
+    pub fn disable_cursor_blink(&mut self, cx: &mut Context<AppView>) {
+        self.blink.disable(cx);
+    }
+
+    /// Backward compatible helper for cursor visibility.
+    #[inline]
+    pub fn cursor_visible(&self) -> bool {
+        self.blink.visible()
     }
 
     /// Synchronizes internal focus state with GPUI focus handle state.
     pub fn sync_focus(&mut self, is_focused: bool, cx: &mut Context<AppView>) {
         if !self.is_focused && is_focused {
             self.is_focused = true;
-            self.reset_cursor_blink(cx);
+            self.enable_cursor_blink(cx);
         } else if self.is_focused && !is_focused {
             self.is_focused = false;
+            self.disable_cursor_blink(cx);
             self.selection_anchor = None;
             self.is_mouse_selecting = false;
         }
@@ -128,7 +122,7 @@ impl QuickFilterState {
         };
         if self.cursor_pos != new_pos {
             self.cursor_pos = new_pos;
-            self.cursor_visible = true;
+            self.reset_cursor_blink(cx);
             cx.notify();
         }
     }
@@ -587,7 +581,7 @@ impl AppView {
                         }
                     )
                     // 3. Caret (shown when focused and cursor_visible)
-                    .when(is_search_focused && self.quick_filter.cursor_visible, |s| {
+                    .when(is_search_focused && self.quick_filter.cursor_visible(), |s| {
                         s.child(
                             div()
                                 .absolute()

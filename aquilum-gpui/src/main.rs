@@ -1,5 +1,6 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+pub mod blink_manager;
 pub mod icons;
 pub mod markdown;
 pub mod markdown_doc;

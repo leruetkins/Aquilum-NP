@@ -1,3 +1,4 @@
+use crate::blink_manager::{BlinkManager, BlinkTarget};
 use crate::icons;
 use crate::state::{AppState, FileNode};
 use crate::theme::Theme;
@@ -20,8 +21,8 @@ pub struct AppView {
     pub need_scroll_sidebar_to_active: Cell<bool>,
     pub initial_sidebar_scroll_done: Cell<bool>,
     pub edit_mode: bool,
-    pub editor_cursor_visible: bool,
-    pub editor_cursor_blink_epoch: usize,
+    pub editor_blink: BlinkManager,
+    pub editor_is_focused: bool,
     pub is_mouse_selecting: bool,
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
@@ -53,21 +54,22 @@ pub struct AppView {
     pub title_selection_anchor: Option<usize>,
     pub title_is_mouse_selecting: bool,
     pub title_is_focused: bool,
-    pub title_cursor_visible: bool,
-    pub title_cursor_blink_epoch: usize,
+    pub title_blink: BlinkManager,
     pub auto_save_epoch: usize,
     pub active_color_picker: Option<&'static str>,
     pub custom_hex_input: String,
     pub custom_hex_focus_handle: FocusHandle,
     pub hex_is_focused: bool,
-    pub hex_cursor_visible: bool,
-    pub hex_cursor_blink_epoch: usize,
+    pub hex_blink: BlinkManager,
     pub hex_cursor_pos: usize,
     pub hex_selection_anchor: Option<usize>,
     pub hex_is_mouse_selecting: bool,
     pub hex_mouse_drag_start_x: Option<f32>,
     pub hex_box_origin_x: std::rc::Rc<Cell<f32>>,
     pub quick_filter: crate::views::sidebar::QuickFilterState,
+    pub folder_context_menu: crate::views::sidebar::FolderContextMenuState,
+    pub folder_modal: crate::views::sidebar::FolderModal,
+    pub folder_modal_focus_handle: FocusHandle,
 }
 
 impl AppView {
@@ -104,8 +106,8 @@ impl AppView {
             need_scroll_sidebar_to_active: Cell::new(false),
             initial_sidebar_scroll_done: Cell::new(false),
             edit_mode,
-            editor_cursor_visible: true,
-            editor_cursor_blink_epoch: 0,
+            editor_blink: BlinkManager::new(),
+            editor_is_focused: true,
             is_mouse_selecting: false,
             sidebar_width: 260.0,
             sidebar_collapsed: false,
@@ -137,23 +139,24 @@ impl AppView {
             title_selection_anchor: None,
             title_is_mouse_selecting: false,
             title_is_focused: false,
-            title_cursor_visible: true,
-            title_cursor_blink_epoch: 0,
+            title_blink: BlinkManager::new(),
             auto_save_epoch: 0,
             active_color_picker: None,
             custom_hex_input: String::new(),
             custom_hex_focus_handle: cx.focus_handle(),
             hex_is_focused: false,
-            hex_cursor_visible: true,
-            hex_cursor_blink_epoch: 0,
+            hex_blink: BlinkManager::new(),
             hex_cursor_pos: 0,
             hex_selection_anchor: None,
             hex_is_mouse_selecting: false,
             hex_mouse_drag_start_x: None,
             hex_box_origin_x: std::rc::Rc::new(Cell::new(0.0)),
             quick_filter: crate::views::sidebar::QuickFilterState::new(),
+            folder_context_menu: crate::views::sidebar::FolderContextMenuState::default(),
+            folder_modal: crate::views::sidebar::FolderModal::default(),
+            folder_modal_focus_handle: cx.focus_handle(),
         };
-        this.reset_editor_cursor_blink(cx);
+        this.editor_blink.enable(BlinkTarget::Editor, cx);
         this
     }
 
@@ -168,29 +171,15 @@ impl AppView {
     }
 
     pub fn reset_hex_cursor_blink(&mut self, cx: &mut Context<Self>) {
-        self.hex_cursor_visible = true;
-        self.hex_cursor_blink_epoch = self.hex_cursor_blink_epoch.wrapping_add(1);
-        let epoch = self.hex_cursor_blink_epoch;
-        let entity = cx.weak_entity();
-        let mut async_cx = cx.to_async();
-        let timer_executor = cx.background_executor().clone();
-        cx.foreground_executor().spawn(async move {
-            loop {
-                timer_executor.timer(std::time::Duration::from_millis(530)).await;
-                let should_continue = entity.update(&mut async_cx, |this, cx| {
-                    if this.hex_cursor_blink_epoch != epoch || this.active_color_picker.is_none() || !this.hex_is_focused {
-                        false
-                    } else {
-                        this.hex_cursor_visible = !this.hex_cursor_visible;
-                        cx.notify();
-                        true
-                    }
-                }).unwrap_or(false);
-                if !should_continue {
-                    break;
-                }
-            }
-        }).detach();
+        self.hex_blink.pause_and_show(BlinkTarget::Hex, cx);
+    }
+
+    pub fn enable_hex_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.hex_blink.enable(BlinkTarget::Hex, cx);
+    }
+
+    pub fn disable_hex_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.hex_blink.disable(cx);
     }
 
     pub fn title_selection_range(&self) -> Option<(usize, usize)> {
@@ -204,55 +193,27 @@ impl AppView {
     }
 
     pub fn reset_title_cursor_blink(&mut self, cx: &mut Context<Self>) {
-        self.title_cursor_visible = true;
-        self.title_cursor_blink_epoch = self.title_cursor_blink_epoch.wrapping_add(1);
-        let epoch = self.title_cursor_blink_epoch;
-        let entity = cx.weak_entity();
-        let mut async_cx = cx.to_async();
-        let timer_executor = cx.background_executor().clone();
-        cx.foreground_executor().spawn(async move {
-            loop {
-                timer_executor.timer(std::time::Duration::from_millis(530)).await;
-                let should_continue = entity.update(&mut async_cx, |this, cx| {
-                    if this.title_cursor_blink_epoch != epoch || !this.title_is_focused {
-                        false
-                    } else {
-                        this.title_cursor_visible = !this.title_cursor_visible;
-                        cx.notify();
-                        true
-                    }
-                }).unwrap_or(false);
-                if !should_continue {
-                    break;
-                }
-            }
-        }).detach();
+        self.title_blink.pause_and_show(BlinkTarget::Title, cx);
+    }
+
+    pub fn enable_title_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.title_blink.enable(BlinkTarget::Title, cx);
+    }
+
+    pub fn disable_title_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.title_blink.disable(cx);
     }
 
     pub fn reset_editor_cursor_blink(&mut self, cx: &mut Context<Self>) {
-        self.editor_cursor_visible = true;
-        self.editor_cursor_blink_epoch = self.editor_cursor_blink_epoch.wrapping_add(1);
-        let epoch = self.editor_cursor_blink_epoch;
-        let entity = cx.weak_entity();
-        let mut async_cx = cx.to_async();
-        let timer_executor = cx.background_executor().clone();
-        cx.foreground_executor().spawn(async move {
-            loop {
-                timer_executor.timer(std::time::Duration::from_millis(530)).await;
-                let should_continue = entity.update(&mut async_cx, |this, cx| {
-                    if this.editor_cursor_blink_epoch != epoch || !this.edit_mode || this.state.active_note.is_none() {
-                        false
-                    } else {
-                        this.editor_cursor_visible = !this.editor_cursor_visible;
-                        cx.notify();
-                        true
-                    }
-                }).unwrap_or(false);
-                if !should_continue {
-                    break;
-                }
-            }
-        }).detach();
+        self.editor_blink.pause_and_show(BlinkTarget::Editor, cx);
+    }
+
+    pub fn enable_editor_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.editor_blink.enable(BlinkTarget::Editor, cx);
+    }
+
+    pub fn disable_editor_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.editor_blink.disable(cx);
     }
 
     pub fn schedule_auto_save(&mut self, cx: &mut Context<Self>) {
@@ -1553,6 +1514,7 @@ impl AppView {
                     };
                     let indent = (depth * 14) as f32 + 4.0;
                     let folder_path = path.clone();
+                    let folder_path_context = path.clone();
 
                     let folder_label = crate::views::sidebar::highlight_matches(
                         name,
@@ -1573,7 +1535,9 @@ impl AppView {
                         .py_1()
                         .rounded_md()
                         .cursor_pointer()
-                        .hover(|h| h.bg(theme.bg_hover))
+                        .when(!self.folder_context_menu.is_open, |d| {
+                            d.hover(|h| h.bg(theme.bg_hover))
+                        })
                         .child(chevron)
                         .child(folder_svg)
                         .child(
@@ -1586,6 +1550,12 @@ impl AppView {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.state.toggle_folder(folder_path.clone());
                             cx.notify();
+                        }))
+                        .on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            let x: f32 = event.position.x.into();
+                            let y: f32 = event.position.y.into();
+                            this.open_folder_context_menu(folder_path_context.clone(), x, y, cx);
                         }));
 
                     acc.push(folder_row.into_any_element());
@@ -1648,8 +1618,10 @@ impl AppView {
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                         })
                         .when(!is_selected, |s| {
-                            s.hover(|h| h.bg(theme.bg_hover))
-                                .text_color(theme.text_primary)
+                            s.when(!self.folder_context_menu.is_open, |d| {
+                                d.hover(|h| h.bg(theme.bg_hover))
+                            })
+                            .text_color(theme.text_primary)
                         })
                         .child(file_svg)
                         .child(
@@ -1689,6 +1661,18 @@ impl AppView {
         if keystroke.key == "escape" && self.is_tabs_menu_open {
             self.is_tabs_menu_open = false;
             cx.notify();
+            return;
+        }
+
+        // Escape closes folder context menu if open
+        if keystroke.key == "escape" && self.folder_context_menu.is_open {
+            self.close_folder_context_menu(cx);
+            return;
+        }
+
+        // Escape closes folder modal if open
+        if keystroke.key == "escape" && self.folder_modal != crate::views::sidebar::FolderModal::None {
+            self.close_folder_modal(cx);
             return;
         }
 
@@ -2080,6 +2064,19 @@ impl AppView {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        static LAST_FPS: std::sync::OnceLock<std::sync::Mutex<std::time::Instant>> = std::sync::OnceLock::new();
+        let mutex = LAST_FPS.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
+        FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut last) = mutex.try_lock() {
+            if last.elapsed() >= std::time::Duration::from_secs(1) {
+                let frames = FRAME_COUNT.swap(0, std::sync::atomic::Ordering::Relaxed);
+                let elapsed = last.elapsed();
+                *last = std::time::Instant::now();
+                eprintln!("[FPS Monitor] {:?} elapsed, {} render calls (~{:.1} FPS)", elapsed, frames, frames as f32 / elapsed.as_secs_f32());
+            }
+        }
+
         if !self.initial_scroll_done {
             self.initial_scroll_done = true;
             if self.initial_scroll_top > 0.0 {
@@ -2111,18 +2108,45 @@ impl Render for AppView {
             ws.save(&crate::state::app_data_dir());
         }
 
+        let is_custom_hex_focused = self.custom_hex_focus_handle.is_focused(window);
+        if !self.hex_is_focused && is_custom_hex_focused {
+            self.hex_is_focused = true;
+            self.enable_hex_cursor_blink(cx);
+        } else if self.hex_is_focused && !is_custom_hex_focused {
+            self.hex_is_focused = false;
+            self.disable_hex_cursor_blink(cx);
+        }
+
         let is_title_focused = self.title_focus_handle.is_focused(window);
         if !self.title_is_focused && is_title_focused {
             self.title_is_focused = true;
-            self.reset_title_cursor_blink(cx);
+            self.enable_title_cursor_blink(cx);
         } else if self.title_is_focused && !is_title_focused {
             self.title_is_focused = false;
+            self.disable_title_cursor_blink(cx);
             self.title_selection_anchor = None;
             self.title_is_mouse_selecting = false;
         }
 
         let is_search_focused = self.search_focus_handle.is_focused(window);
         self.quick_filter.sync_focus(is_search_focused, cx);
+
+        let is_editor_focused_now = self.focus_handle.is_focused(window)
+            || (!is_title_focused
+                && !is_search_focused
+                && !is_custom_hex_focused
+                && !self.folder_modal_focus_handle.is_focused(window)
+                && !self.folder_context_menu.is_open
+                && self.folder_modal == crate::views::sidebar::FolderModal::None
+                && !self.is_settings_open);
+
+        if !self.editor_is_focused && is_editor_focused_now {
+            self.editor_is_focused = true;
+            self.enable_editor_cursor_blink(cx);
+        } else if self.editor_is_focused && !is_editor_focused_now {
+            self.editor_is_focused = false;
+            self.disable_editor_cursor_blink(cx);
+        }
 
         if self.was_title_focused && !is_title_focused {
             self.commit_title_rename_internal();
@@ -2251,7 +2275,7 @@ impl Render for AppView {
                     };
                     if this.title_cursor_pos != new_pos {
                         this.title_cursor_pos = new_pos;
-                        this.title_cursor_visible = true;
+                        this.reset_title_cursor_blink(cx);
                         cx.notify();
                     }
                 } else if this.quick_filter.is_mouse_selecting {
@@ -3517,7 +3541,7 @@ impl Render for AppView {
                                                             .child("Untitled"),
                                                     )
                                                 })
-                                                .when(is_title_focused && self.title_cursor_visible, |s| {
+                                                .when(is_title_focused && self.title_blink.visible(), |s| {
                                                     s.child(
                                                         div()
                                                             .absolute()
@@ -3603,9 +3627,7 @@ impl Render for AppView {
                                         .child({
                                             let theme = &theme_copy;
                                             let is_editing = self.edit_mode;
-                                            let is_editor_focused = !self.title_focus_handle.is_focused(window)
-                                                && !self.search_focus_handle.is_focused(window)
-                                                && !self.custom_hex_focus_handle.is_focused(window);
+                                            let is_editor_focused = self.editor_is_focused;
                                             let selection_range = self.state.active_note.as_ref().and_then(|n| n.selection_range());
                                             let (cursor_line, _) = self.state.active_note.as_ref().map(|n| n.line_col()).unwrap_or((0, 0));
                                             let headings = &self.config.editor.headings;
@@ -3675,8 +3697,14 @@ impl Render for AppView {
                                                 let classified = crate::markdown::classify_line(line, code_state);
                                                 let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_act_line);
 
-                                                let byte_s = sel.start.saturating_sub(line_start).min(line.len());
-                                                let byte_e = sel.end.saturating_sub(line_start).min(line.len());
+                                                let mut byte_s = sel.start.saturating_sub(line_start).min(line.len());
+                                                let mut byte_e = sel.end.saturating_sub(line_start).min(line.len());
+                                                while byte_s > 0 && !line.is_char_boundary(byte_s) {
+                                                    byte_s -= 1;
+                                                }
+                                                while byte_e > 0 && !line.is_char_boundary(byte_e) {
+                                                    byte_e -= 1;
+                                                }
                                                 let char_s = line[..byte_s].chars().count();
                                                 let char_e = char_s + line[byte_s..byte_e].chars().count();
 
@@ -3917,7 +3945,7 @@ impl Render for AppView {
                                                                             theme,
                                                                         )),
                                                                 )
-                                                                .when(is_current && is_editor_focused && self.editor_cursor_visible, |s| {
+                                                                .when(is_current && is_editor_focused && self.editor_blink.visible(), |s| {
                                                                     let vis_cursor = crate::markdown::row_char_to_visual_col(&row_spans, active_col_in_row, is_active_line, hidden_prefix_len);
                                                                     let cursor_x = (vis_cursor as f32) * row_char_w;
                                                                     s.child(
@@ -4107,6 +4135,14 @@ impl Render for AppView {
             // ================= SETTINGS MODAL =================
             .when(self.is_settings_open, |d| {
                 d.child(self.render_settings_modal(cx))
+            })
+            // ================= FOLDER CONTEXT MENU =================
+            .when(self.folder_context_menu.is_open, |d| {
+                d.child(self.render_folder_context_menu(theme, window, cx))
+            })
+            // ================= FOLDER MODALS =================
+            .when(self.folder_modal != crate::views::sidebar::FolderModal::None, |d| {
+                d.child(self.render_folder_modals(theme, window, cx))
             })
     }
 }
