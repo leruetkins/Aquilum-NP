@@ -640,7 +640,7 @@ impl AppView {
         cx.notify();
     }
 
-    fn close_tab(&mut self, path: &Path, cx: &mut Context<Self>) {
+    pub(crate) fn close_tab(&mut self, path: &Path, cx: &mut Context<Self>) {
         if self.state.active_note.as_ref().map(|n| n.path == path).unwrap_or(false) {
             self.commit_title_rename_internal();
         }
@@ -2171,13 +2171,15 @@ impl Render for AppView {
         let right_controls_w = 214.0;
         let drag_min_w = 24.0;
         let available_tab_strip_w = (viewport_w - sidebar_area_w - right_controls_w - drag_min_w).max(60.0);
-        let tab_layout = crate::views::tabs_menu::calculate_tabs_layout(
+        let (tab_widths, is_tabs_overflowing) = crate::views::tabs_menu::calculate_tab_widths(
             self.state.open_tabs.len(),
             available_tab_strip_w,
             160.0,
             0.0,
             6.0,
-            48.0,
+            28.0,
+            6.0,
+            8.0,
         );
 
         div()
@@ -2493,7 +2495,7 @@ impl Render for AppView {
                                 let active_path = self.state.active_note.as_ref().map(|n| n.path.clone());
                                 let is_active_dirty = self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false);
 
-                                let layout = tab_layout;
+                                let is_overflowing = is_tabs_overflowing;
 
                                 let mut tabs_strip = div()
                                     .id("tabs-strip-inner")
@@ -2502,8 +2504,8 @@ impl Render for AppView {
                                     .items_end()
                                     .gap(px(6.0))
                                     .h_full()
-                                    .pl_2()
-                                    .pr_1();
+                                    .pl(px(8.0))
+                                    .flex_shrink_0();
 
                                 for (idx, tab_path) in self.state.open_tabs.iter().enumerate() {
                                     let is_active = active_path.as_ref() == Some(tab_path);
@@ -2513,6 +2515,10 @@ impl Render for AppView {
                                         .unwrap_or_else(|| "Untitled".to_owned());
                                     let tab_path_for_select = tab_path.clone();
                                     let tab_path_for_close = tab_path.clone();
+                                    let tab_path_for_middle = tab_path.clone();
+                                    let tab_path_for_middle_select = tab_path.clone();
+
+                                    let tab_w = tab_widths.get(idx).copied().unwrap_or(160.0);
 
                                     let mut tab_item = div()
                                         .id(gpui::ElementId::from(("tab-item", idx)))
@@ -2521,8 +2527,12 @@ impl Render for AppView {
                                         .flex_row()
                                         .items_center()
                                         .h(px(34.0))
-                                        .w(px(layout.tab_width))
+                                        .w(px(tab_w))
                                         .flex_shrink_0()
+                                        .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.close_tab(&tab_path_for_middle, cx);
+                                        }))
                                         .when(!is_active, |tab| {
                                             tab.bg(theme.bg_sidebar)
                                                 .rounded_t_md()
@@ -2554,7 +2564,18 @@ impl Render for AppView {
                                                 .h(px(3.0))
                                                 .bg(theme.bg_editor),
                                         );
-                                        // 3. Left cap
+                                        // 3. Continuous top border - stops safely within the flat SVG lead-in
+                                        tab_item = tab_item.child(
+                                            div()
+                                                .id("tab-border-top")
+                                                .absolute()
+                                                .top_0()
+                                                .left(px(7.0))
+                                                .right(px(7.0))
+                                                .h(px(1.0))
+                                                .bg(theme.border),
+                                        );
+                                        // 4. Left cap
                                         tab_item = tab_item.child(
                                             div()
                                                 .id("tab-cap-left")
@@ -2576,7 +2597,7 @@ impl Render for AppView {
                                                         .left_0(),
                                                 ),
                                         );
-                                        // 4. Right cap
+                                        // 5. Right cap
                                         tab_item = tab_item.child(
                                             div()
                                                 .id("tab-cap-right")
@@ -2597,17 +2618,6 @@ impl Render for AppView {
                                                         .top_0()
                                                         .left_0(),
                                                 ),
-                                        );
-                                        // 5. Continuous top border on top of caps connecting the corner curves seamlessly
-                                        tab_item = tab_item.child(
-                                            div()
-                                                .id("tab-border-top")
-                                                .absolute()
-                                                .top_0()
-                                                .left(px(6.0))
-                                                .right(px(6.0))
-                                                .h(px(1.0))
-                                                .bg(theme.border),
                                         );
                                     }
 
@@ -2666,6 +2676,10 @@ impl Render for AppView {
                                                             this.state.reveal_path_in_tree(&tab_path_for_select);
                                                             cx.notify();
                                                         }
+                                                    }))
+                                                    .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, _, cx| {
+                                                        cx.stop_propagation();
+                                                        this.close_tab(&tab_path_for_middle_select, cx);
                                                     })),
                                             )
                                             // Tab close button (isolated sibling)
@@ -2690,31 +2704,30 @@ impl Render for AppView {
                                     );
                                 }
 
-                                tabs_strip = tabs_strip.child(
-                                    div()
-                                        .id("btn-new-tab-inline")
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .h(px(34.0))
-                                        .flex_shrink_0()
-                                        .child(
-                                            div()
-                                                .id("btn-new-tab-inline-inner")
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .w(px(28.0))
-                                                .h(px(28.0))
-                                                .rounded_md()
-                                                .cursor_pointer()
-                                                .hover(|h| h.bg(theme.bg_hover))
-                                                .child(icons::icon(icons::ICON_PLUS, 15.0, theme.text_muted))
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.create_new_note(window, cx);
-                                                })),
-                                        ),
-                                );
+                                let btn_new_tab = div()
+                                    .id("btn-new-tab-inline")
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .h(px(34.0))
+                                    .w(px(32.0))
+                                    .flex_shrink_0()
+                                    .child(
+                                        div()
+                                            .id("btn-new-tab-inline-inner")
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .w(px(28.0))
+                                            .h(px(28.0))
+                                            .rounded_md()
+                                            .cursor_pointer()
+                                            .hover(|h| h.bg(theme.bg_hover))
+                                            .child(icons::icon(icons::ICON_PLUS, 15.0, theme.text_muted))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.create_new_note(window, cx);
+                                            })),
+                                    );
 
                                 div()
                                     .id("tabs-scroll-viewport")
@@ -2723,8 +2736,11 @@ impl Render for AppView {
                                     .flex_row()
                                     .items_end()
                                     .h_full()
-                                    .flex_shrink_0()
+                                    .gap(px(6.0))
+                                    .when(!is_overflowing, |d| d.flex_shrink_0())
+                                    .when(is_overflowing, |d| d.w(px(available_tab_strip_w)).flex_shrink_0())
                                     .child(tabs_strip)
+                                    .child(btn_new_tab)
                             })
                             // Drag Area (fills remaining space between tabs and window controls)
                             .child(
