@@ -663,7 +663,7 @@ impl AppView {
     }
 
     /// Renders a subtle divider line between sections in the context menu.
-    fn render_menu_divider(&self, theme: &Theme) -> impl IntoElement {
+    pub(crate) fn render_menu_divider(&self, theme: &Theme) -> impl IntoElement {
         div()
             .h_px()
             .bg(theme.border_subtle)

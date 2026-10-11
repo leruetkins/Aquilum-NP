@@ -56,6 +56,12 @@ pub const DRAWING: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 pub const HASH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="20" y1="9" y2="9"/><line x1="4" x2="20" y1="15" y2="15"/><line x1="10" x2="8" y1="3" y2="21"/><line x1="16" x2="14" y1="3" y2="21"/></svg>"#;
 pub const DOWNLOAD: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>"#;
 pub const MOVE_ARROWS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" x2="22" y1="12" y2="12"/><line x1="12" x2="12" y1="2" y2="22"/></svg>"#;
+pub const SPLIT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></svg>"#;
+pub const APP_WINDOW: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/></svg>"#;
+pub const MERGE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg>"#;
+pub const LINK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>"#;
+pub const VAULT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="12" cy="12" r="4"/><line x1="12" x2="12" y1="8" y2="10"/><line x1="12" x2="12" y1="14" y2="16"/><line x1="8" x2="10" y1="12" y2="12"/><line x1="14" x2="16" y1="12" y2="12"/></svg>"#;
+pub const COMPUTER: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="12" x="4" y="3" rx="2"/><path d="M2 18h20"/><path d="M12 15v3"/></svg>"#;
 
 pub const ICON_ARROW_LEFT: &str = "icons/arrow_left.svg";
 pub const ICON_ARROW_RIGHT: &str = "icons/arrow_right.svg";
@@ -72,6 +78,12 @@ pub const ICON_DRAWING: &str = "icons/drawing.svg";
 pub const ICON_HASH: &str = "icons/hash.svg";
 pub const ICON_DOWNLOAD: &str = "icons/download.svg";
 pub const ICON_MOVE_ARROWS: &str = "icons/move_arrows.svg";
+pub const ICON_SPLIT: &str = "icons/split.svg";
+pub const ICON_APP_WINDOW: &str = "icons/app_window.svg";
+pub const ICON_MERGE: &str = "icons/merge.svg";
+pub const ICON_LINK: &str = "icons/link.svg";
+pub const ICON_VAULT: &str = "icons/vault.svg";
+pub const ICON_COMPUTER: &str = "icons/computer.svg";
 
 pub const ICON_CHEVRON_RIGHT: &str = "icons/chevron_right.svg";
 pub const ICON_CHEVRON_DOWN: &str = "icons/chevron_down.svg";
@@ -171,6 +183,12 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_HASH => Some(HASH),
             ICON_DOWNLOAD => Some(DOWNLOAD),
             ICON_MOVE_ARROWS => Some(MOVE_ARROWS),
+            ICON_SPLIT => Some(SPLIT),
+            ICON_APP_WINDOW => Some(APP_WINDOW),
+            ICON_MERGE => Some(MERGE),
+            ICON_LINK => Some(LINK),
+            ICON_VAULT => Some(VAULT),
+            ICON_COMPUTER => Some(COMPUTER),
             _ => None,
         };
         Ok(svg.map(|s| Cow::Borrowed(s.as_bytes())))
@@ -231,6 +249,12 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_HASH.into(),
             ICON_DOWNLOAD.into(),
             ICON_MOVE_ARROWS.into(),
+            ICON_SPLIT.into(),
+            ICON_APP_WINDOW.into(),
+            ICON_MERGE.into(),
+            ICON_LINK.into(),
+            ICON_VAULT.into(),
+            ICON_COMPUTER.into(),
         ])
     }
 }

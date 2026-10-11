@@ -68,6 +68,7 @@ pub struct AppView {
     pub hex_box_origin_x: std::rc::Rc<Cell<f32>>,
     pub quick_filter: crate::views::sidebar::QuickFilterState,
     pub folder_context_menu: crate::views::sidebar::FolderContextMenuState,
+    pub file_context_menu: crate::views::sidebar::FileContextMenuState,
     pub folder_modal: crate::views::sidebar::FolderModal,
     pub folder_modal_focus_handle: FocusHandle,
 }
@@ -153,6 +154,7 @@ impl AppView {
             hex_box_origin_x: std::rc::Rc::new(Cell::new(0.0)),
             quick_filter: crate::views::sidebar::QuickFilterState::new(),
             folder_context_menu: crate::views::sidebar::FolderContextMenuState::default(),
+            file_context_menu: crate::views::sidebar::FileContextMenuState::default(),
             folder_modal: crate::views::sidebar::FolderModal::default(),
             folder_modal_focus_handle: cx.focus_handle(),
         };
@@ -1555,7 +1557,7 @@ impl AppView {
                         .py_1()
                         .rounded_md()
                         .cursor_pointer()
-                        .when(!self.folder_context_menu.is_open, |d| {
+                        .when(!self.folder_context_menu.is_open && !self.file_context_menu.is_open, |d| {
                             d.hover(|h| h.bg(theme.bg_hover))
                         })
                         .child(chevron)
@@ -1638,7 +1640,7 @@ impl AppView {
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                         })
                         .when(!is_selected, |s| {
-                            s.when(!self.folder_context_menu.is_open, |d| {
+                            s.when(!self.folder_context_menu.is_open && !self.file_context_menu.is_open, |d| {
                                 d.hover(|h| h.bg(theme.bg_hover))
                             })
                             .text_color(theme.text_primary)
@@ -1652,6 +1654,16 @@ impl AppView {
                         )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.select_note(file_path.clone(), false, window, cx);
+                        }))
+                        .on_mouse_down(MouseButton::Right, cx.listener({
+                            let file_path = path.clone();
+                            move |this, event: &gpui::MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                let x: f32 = event.position.x.into();
+                                let y: f32 = event.position.y.into();
+                                this.select_note(file_path.clone(), false, window, cx);
+                                this.open_file_context_menu(file_path.clone(), x, y, cx);
+                            }
                         }));
 
                     acc.push(file_row.into_any_element());
@@ -1687,6 +1699,12 @@ impl AppView {
         // Escape closes folder context menu if open
         if keystroke.key == "escape" && self.folder_context_menu.is_open {
             self.close_folder_context_menu(cx);
+            return;
+        }
+
+        // Escape closes file context menu if open
+        if keystroke.key == "escape" && self.file_context_menu.is_open {
+            self.close_file_context_menu(cx);
             return;
         }
 
@@ -4268,6 +4286,10 @@ impl Render for AppView {
             // ================= FOLDER CONTEXT MENU =================
             .when(self.folder_context_menu.is_open, |d| {
                 d.child(self.render_folder_context_menu(theme, window, cx))
+            })
+            // ================= FILE CONTEXT MENU =================
+            .when(self.file_context_menu.is_open, |d| {
+                d.child(self.render_file_context_menu(theme, window, cx))
             })
             // ================= FOLDER MODALS =================
             .when(self.folder_modal != crate::views::sidebar::FolderModal::None, |d| {
