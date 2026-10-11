@@ -27,6 +27,11 @@ pub struct AppView {
     pub sidebar_collapsed: bool,
     pub is_resizing_sidebar: bool,
     pub is_hovering_resizer: bool,
+    pub right_sidebar_width: f32,
+    pub right_sidebar_collapsed: bool,
+    pub is_resizing_right_sidebar: bool,
+    pub is_hovering_right_resizer: bool,
+    pub is_tabs_menu_open: bool,
     pub word_wrap: bool,
     pub last_wrap_cols: usize,
     pub is_settings_open: bool,
@@ -106,6 +111,11 @@ impl AppView {
             sidebar_collapsed: false,
             is_resizing_sidebar: false,
             is_hovering_resizer: false,
+            right_sidebar_width: 260.0,
+            right_sidebar_collapsed: true,
+            is_resizing_right_sidebar: false,
+            is_hovering_right_resizer: false,
+            is_tabs_menu_open: false,
             word_wrap,
             last_wrap_cols: 80,
             is_settings_open: false,
@@ -1143,7 +1153,7 @@ impl AppView {
         }
     }
 
-    fn commit_title_rename_internal(&mut self) -> bool {
+    pub(crate) fn commit_title_rename_internal(&mut self) -> bool {
         let Some(ref note) = self.state.active_note else {
             return false;
         };
@@ -1675,6 +1685,13 @@ impl AppView {
             return;
         }
 
+        // Escape closes tabs dropdown menu if open
+        if keystroke.key == "escape" && self.is_tabs_menu_open {
+            self.is_tabs_menu_open = false;
+            cx.notify();
+            return;
+        }
+
         // Escape closes settings modal if open
         if keystroke.key == "escape" && self.is_settings_open {
             self.close_settings(cx);
@@ -2171,6 +2188,17 @@ impl Render for AppView {
                         this.sidebar_width = x.clamp(160.0, 600.0);
                     }
                     cx.notify();
+                } else if this.is_resizing_right_sidebar {
+                    let win_w: f32 = window.viewport_size().width.into();
+                    let x: f32 = event.position.x.into();
+                    let right_w = win_w - x;
+                    if right_w < 100.0 {
+                        this.right_sidebar_collapsed = true;
+                    } else {
+                        this.right_sidebar_collapsed = false;
+                        this.right_sidebar_width = right_w.clamp(160.0, 600.0);
+                    }
+                    cx.notify();
                 } else if this.is_dragging_scrollbar {
                     let y: f32 = event.position.y.into();
                     this.handle_scrollbar_drag(y, window, cx);
@@ -2226,6 +2254,7 @@ impl Render for AppView {
                     cx.notify();
                 }
                 this.is_resizing_sidebar = false;
+                this.is_resizing_right_sidebar = false;
                 this.is_mouse_selecting = false;
                 this.is_dragging_scrollbar = false;
                 if let Some(ref mut n) = this.state.active_note {
@@ -2248,7 +2277,9 @@ impl Render for AppView {
                     cx.notify();
                 }
                 this.is_resizing_sidebar = false;
+                this.is_resizing_right_sidebar = false;
                 this.is_hovering_resizer = false;
+                this.is_hovering_right_resizer = false;
                 this.is_mouse_selecting = false;
                 this.is_dragging_scrollbar = false;
                 cx.notify();
@@ -2671,6 +2702,19 @@ impl Render for AppView {
                                     .flex_1()
                                     .h_full()
                                     .window_control_area(WindowControlArea::Drag),
+                            )
+                            // Right action buttons (Open tabs list & Right sidebar toggle)
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .h_full()
+                                    .flex_shrink_0()
+                                    .gap_1()
+                                    .px_1()
+                                    .child(self.render_tabs_dropdown_button(theme, cx))
+                                    .child(self.render_right_sidebar_toggle_button(theme, cx)),
                             )
                             // Native Windows Titlebar Control Buttons (Minimize, Maximize/Restore, Close)
                             .child(
@@ -3919,7 +3963,12 @@ impl Render for AppView {
                                         ),
                                 )
                             }),
-                    ),
+                    )
+                    // ----- Right Sidebar Resizer & Right Sidebar -----
+                    .when(!self.right_sidebar_collapsed, |s| {
+                        s.child(self.render_right_resizer(theme, cx))
+                            .child(self.render_right_sidebar(theme, cx))
+                    }),
             )
             // ================= FOOTER / STATUS BAR =================
             .child(
@@ -3960,6 +4009,10 @@ impl Render for AppView {
                             .child("120 FPS"),
                     ),
             )
+            // ================= TABS DROPDOWN MENU =================
+            .when(self.is_tabs_menu_open, |d| {
+                d.child(self.render_tabs_dropdown_menu(theme, cx))
+            })
             // ================= SETTINGS MODAL =================
             .when(self.is_settings_open, |d| {
                 d.child(self.render_settings_modal(cx))
