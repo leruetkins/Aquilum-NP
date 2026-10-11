@@ -2157,7 +2157,9 @@ impl Render for AppView {
             .map(|s| f32::from(s.width))
             .unwrap_or(7.7);
 
-        let viewport_w: f32 = window.viewport_size().width.into();
+        let viewport_w = f32::from(window.bounds().size.width)
+            .max(f32::from(window.viewport_size().width))
+            .max(800.0);
         let wrap_cols = self.compute_wrap_cols(viewport_w, line_char_width);
         self.last_wrap_cols = wrap_cols;
         if let Some(ref mut note) = self.state.active_note {
@@ -2166,6 +2168,18 @@ impl Render for AppView {
 
         let is_resizer_active = self.is_resizing_sidebar || self.is_hovering_resizer;
         let resizer_color = if is_resizer_active { theme.accent } else { theme.border };
+
+        let sidebar_area_w = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
+        let right_controls_w = 214.0;
+        let available_tab_strip_w = (viewport_w - sidebar_area_w - right_controls_w - 20.0).max(80.0);
+        let tab_layout = crate::views::tabs_menu::calculate_tabs_layout(
+            self.state.open_tabs.len(),
+            available_tab_strip_w,
+            160.0,
+            0.0,
+            6.0,
+            34.0,
+        );
 
         div()
             .flex()
@@ -2459,7 +2473,6 @@ impl Render for AppView {
                             .flex()
                             .flex_row()
                             .items_center()
-                            .justify_between()
                             .flex_1()
                             .h_full()
                             .min_w_0()
@@ -2478,18 +2491,19 @@ impl Render for AppView {
                             )
                             // Browser-style Tabs Area starting directly at the boundary
                             .child({
-                                let mut tabs_bar = div()
+                                let active_path = self.state.active_note.as_ref().map(|n| n.path.clone());
+                                let is_active_dirty = self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false);
+
+                                let layout = tab_layout;
+
+                                let mut tabs_strip = div()
+                                    .id("tabs-strip-inner")
                                     .flex()
                                     .flex_row()
                                     .items_end()
-                                    .gap_2()
+                                    .gap(px(6.0))
                                     .h_full()
-                                    .pl_2()
-                                    .min_w_0()
-                                    .overflow_hidden();
-
-                                let active_path = self.state.active_note.as_ref().map(|n| n.path.clone());
-                                let is_active_dirty = self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false);
+                                    .pl_2();
 
                                 for (idx, tab_path) in self.state.open_tabs.iter().enumerate() {
                                     let is_active = active_path.as_ref() == Some(tab_path);
@@ -2507,6 +2521,8 @@ impl Render for AppView {
                                         .flex_row()
                                         .items_center()
                                         .h(px(34.0))
+                                        .w(px(layout.tab_width))
+                                        .flex_shrink_0()
                                         .when(!is_active, |tab| {
                                             tab.bg(theme.bg_sidebar)
                                                 .rounded_t_md()
@@ -2516,7 +2532,7 @@ impl Render for AppView {
                                         });
 
                                     if is_active {
-                                        // 1. Solid center body fill (stops 7px before tab edges so it never bleeds into corners/vertical borders, and starts at top 1px below top border)
+                                        // 1. Solid center body fill
                                         tab_item = tab_item.child(
                                             div()
                                                 .id("tab-body-fill")
@@ -2538,7 +2554,7 @@ impl Render for AppView {
                                                 .h(px(3.0))
                                                 .bg(theme.bg_editor),
                                         );
-                                        // 3. Continuous top border between corner curves (from x=7.0 to x=W-7.0)
+                                        // 3. Continuous top border between corner curves
                                         tab_item = tab_item.child(
                                             div()
                                                 .id("tab-border-top")
@@ -2549,7 +2565,7 @@ impl Render for AppView {
                                                 .h(px(1.0))
                                                 .bg(theme.border),
                                         );
-                                        // 4. Left cap (bottom concave flair + vertical line + top convex corner + 2px horizontal top extension)
+                                        // 4. Left cap
                                         tab_item = tab_item.child(
                                             div()
                                                 .id("tab-cap-left")
@@ -2571,7 +2587,7 @@ impl Render for AppView {
                                                         .left_0(),
                                                 ),
                                         );
-                                        // 5. Right cap (2px horizontal top extension + top convex corner + vertical line + bottom concave flair)
+                                        // 5. Right cap
                                         tab_item = tab_item.child(
                                             div()
                                                 .id("tab-cap-right")
@@ -2595,7 +2611,7 @@ impl Render for AppView {
                                         );
                                     }
 
-                                    tabs_bar = tabs_bar.child(
+                                    tabs_strip = tabs_strip.child(
                                         tab_item
                                             // Tab selection area (icon + title + dirty dot)
                                             .child(
@@ -2608,6 +2624,8 @@ impl Render for AppView {
                                                     .h_full()
                                                     .pl_2p5()
                                                     .pr_1()
+                                                    .flex_1()
+                                                    .min_w_0()
                                                     .cursor_pointer()
                                                     .child(icons::icon(
                                                         icons::ICON_FILE_TEXT,
@@ -2628,7 +2646,8 @@ impl Render for AppView {
                                                                 theme.text_secondary
                                                             })
                                                             .truncate()
-                                                            .max_w(px(160.0))
+                                                            .flex_1()
+                                                            .min_w_0()
                                                             .child(title),
                                                     )
                                                     .when(is_active && is_active_dirty, |tab| {
@@ -2655,6 +2674,7 @@ impl Render for AppView {
                                                     .id(gpui::ElementId::from(("btn-close-tab", idx)))
                                                     .p_0p5()
                                                     .mr_1p5()
+                                                    .flex_shrink_0()
                                                     .rounded_sm()
                                                     .cursor_pointer()
                                                     .hover(|h| h.bg(theme.bg_hover))
@@ -2670,16 +2690,18 @@ impl Render for AppView {
                                     );
                                 }
 
-                                tabs_bar.child(
+                                tabs_strip = tabs_strip.child(
                                     div()
+                                        .id("btn-new-tab-inline")
                                         .flex()
                                         .items_center()
                                         .justify_center()
                                         .h(px(34.0))
                                         .ml_1()
+                                        .flex_shrink_0()
                                         .child(
                                             div()
-                                                .id("btn-new-tab")
+                                                .id("btn-new-tab-inline-inner")
                                                 .flex()
                                                 .items_center()
                                                 .justify_center()
@@ -2688,106 +2710,129 @@ impl Render for AppView {
                                                 .rounded_md()
                                                 .cursor_pointer()
                                                 .hover(|h| h.bg(theme.bg_hover))
-                                                .child(icons::icon(icons::ICON_PLUS, 16.0, theme.text_muted))
+                                                .child(icons::icon(icons::ICON_PLUS, 15.0, theme.text_muted))
                                                 .on_click(cx.listener(|this, _, window, cx| {
                                                     this.create_new_note(window, cx);
                                                 })),
                                         ),
-                                )
+                                );
+
+                                div()
+                                    .id("tabs-scroll-viewport")
+                                    .relative()
+                                    .flex()
+                                    .flex_row()
+                                    .items_end()
+                                    .h_full()
+                                    .overflow_hidden()
+                                    .when(!layout.is_overflowing, |d| d.flex_shrink_0())
+                                    .when(layout.is_overflowing, |d| d.flex_1().min_w_0())
+                                    .child(tabs_strip)
                             })
                             // Drag Area (fills remaining space between tabs and window controls)
                             .child(
                                 div()
                                     .id("titlebar-drag-region")
-                                    .flex_1()
+                                    .when(!tab_layout.is_overflowing, |d| d.flex_1().min_w(px(20.0)))
+                                    .when(tab_layout.is_overflowing, |d| d.w(px(20.0)).flex_shrink_0())
                                     .h_full()
                                     .window_control_area(WindowControlArea::Drag),
                             )
-                            // Right action buttons (Open tabs list & Right sidebar toggle)
+                            // Unified right controls group permanently anchored to the right window edge
                             .child(
                                 div()
+                                    .id("titlebar-right-controls-group")
                                     .flex()
                                     .flex_row()
                                     .items_center()
                                     .h_full()
                                     .flex_shrink_0()
-                                    .gap_1()
-                                    .px_1()
-                                    .child(self.render_tabs_dropdown_button(theme, cx))
-                                    .child(self.render_right_sidebar_toggle_button(theme, cx)),
-                            )
-                            // Native Windows Titlebar Control Buttons (Minimize, Maximize/Restore, Close)
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .h_full()
-                                    .flex_shrink_0()
+                                    // 1. Right action buttons ([v], [|])
                                     .child(
                                         div()
-                                            .id("win-ctrl-min")
                                             .flex()
+                                            .flex_row()
                                             .items_center()
-                                            .justify_center()
-                                            .w(px(46.0))
                                             .h_full()
-                                            .cursor_pointer()
-                                            .window_control_area(WindowControlArea::Min)
-                                            .hover(|h| h.bg(theme.bg_hover))
-                                            .child(icons::icon(icons::ICON_MINIMIZE, 12.0, theme.text_secondary))
-                                            .on_click(cx.listener(|_, _, window, _| {
-                                                window.minimize_window();
-                                            })),
+                                            .flex_shrink_0()
+                                            .gap_1()
+                                            .px_1()
+                                            .child(self.render_tabs_dropdown_button(theme, cx))
+                                            .child(self.render_right_sidebar_toggle_button(theme, cx)),
                                     )
+                                    // 2. Native Windows Titlebar Control Buttons (Minimize, Maximize/Restore, Close)
                                     .child(
                                         div()
-                                            .id("win-ctrl-max")
                                             .flex()
+                                            .flex_row()
                                             .items_center()
-                                            .justify_center()
-                                            .w(px(46.0))
                                             .h_full()
-                                            .cursor_pointer()
-                                            .window_control_area(WindowControlArea::Max)
-                                            .hover(|h| h.bg(theme.bg_hover))
-                                            .child(icons::icon(
-                                                if is_maximized { icons::ICON_RESTORE } else { icons::ICON_MAXIMIZE },
-                                                12.0,
-                                                theme.text_secondary,
-                                            ))
-                                            .on_click(cx.listener(|_, _, window, _| {
-                                                window.zoom_window();
-                                            })),
-                                    )
-                                    .child({
-                                        let is_hovering_close = self.is_hovering_close;
-                                        div()
-                                            .id("win-ctrl-close")
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .w(px(46.0))
-                                            .h_full()
-                                            .cursor_pointer()
-                                            .window_control_area(WindowControlArea::Close)
-                                            .hover(|h| h.bg(rgb(0xe81123)))
-                                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                                if this.is_hovering_close != *hovered {
-                                                    this.is_hovering_close = *hovered;
-                                                    cx.notify();
-                                                }
-                                            }))
-                                            .child(icons::icon(
-                                                icons::ICON_WINDOW_CLOSE,
-                                                12.0,
-                                                if is_hovering_close { rgb(0xffffff) } else { theme.text_secondary },
-                                            ))
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.save_on_exit(window);
-                                                cx.quit();
-                                            }))
-                                    }),
+                                            .flex_shrink_0()
+                                            .child(
+                                                div()
+                                                    .id("win-ctrl-min")
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .w(px(46.0))
+                                                    .h_full()
+                                                    .cursor_pointer()
+                                                    .window_control_area(WindowControlArea::Min)
+                                                    .hover(|h| h.bg(theme.bg_hover))
+                                                    .child(icons::icon(icons::ICON_MINIMIZE, 12.0, theme.text_secondary))
+                                                    .on_click(cx.listener(|_, _, window, _| {
+                                                        window.minimize_window();
+                                                    })),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("win-ctrl-max")
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .w(px(46.0))
+                                                    .h_full()
+                                                    .cursor_pointer()
+                                                    .window_control_area(WindowControlArea::Max)
+                                                    .hover(|h| h.bg(theme.bg_hover))
+                                                    .child(icons::icon(
+                                                        if is_maximized { icons::ICON_RESTORE } else { icons::ICON_MAXIMIZE },
+                                                        12.0,
+                                                        theme.text_secondary,
+                                                    ))
+                                                    .on_click(cx.listener(|_, _, window, _| {
+                                                        window.zoom_window();
+                                                    })),
+                                            )
+                                            .child({
+                                                let is_hovering_close = self.is_hovering_close;
+                                                div()
+                                                    .id("win-ctrl-close")
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .w(px(46.0))
+                                                    .h_full()
+                                                    .cursor_pointer()
+                                                    .window_control_area(WindowControlArea::Close)
+                                                    .hover(|h| h.bg(rgb(0xe81123)))
+                                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                                        if this.is_hovering_close != *hovered {
+                                                            this.is_hovering_close = *hovered;
+                                                            cx.notify();
+                                                        }
+                                                    }))
+                                                    .child(icons::icon(
+                                                        icons::ICON_WINDOW_CLOSE,
+                                                        12.0,
+                                                        if is_hovering_close { rgb(0xffffff) } else { theme.text_secondary },
+                                                    ))
+                                                    .on_click(cx.listener(|this, _, window, cx| {
+                                                        this.save_on_exit(window);
+                                                        cx.quit();
+                                                    }))
+                                            }),
+                                    ),
                             ),
                     ),
             )

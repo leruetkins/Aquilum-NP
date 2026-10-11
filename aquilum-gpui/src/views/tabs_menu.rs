@@ -284,6 +284,61 @@ impl AppView {
     }
 }
 
+/// Layout metrics and overflow state for the tab strip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TabsLayout {
+    pub tab_width: f32,
+    pub is_overflowing: bool,
+    pub total_tabs_width: f32,
+    pub max_scroll: f32,
+}
+
+/// Calculates dynamic tab width and whether tabs overflow.
+pub fn calculate_tabs_layout(
+    num_tabs: usize,
+    available_width: f32,
+    max_tab_w: f32,
+    min_tab_w: f32,
+    tab_gap: f32,
+    new_tab_btn_w: f32,
+) -> TabsLayout {
+    if num_tabs == 0 {
+        return TabsLayout {
+            tab_width: max_tab_w,
+            is_overflowing: false,
+            total_tabs_width: 0.0,
+            max_scroll: 0.0,
+        };
+    }
+
+    let gaps_total = (num_tabs.saturating_sub(1)) as f32 * tab_gap;
+    let total_at_max = num_tabs as f32 * max_tab_w + gaps_total + new_tab_btn_w;
+
+    if total_at_max <= available_width {
+        // Case 1: All tabs fit comfortably at max width with the inline + button
+        let total_tabs_width = num_tabs as f32 * max_tab_w + gaps_total;
+        return TabsLayout {
+            tab_width: max_tab_w,
+            is_overflowing: false,
+            total_tabs_width,
+            max_scroll: 0.0,
+        };
+    }
+
+    // Shrink tabs proportionally without artificial cutoff so the + button never disappears
+    let space_for_tabs = (available_width - new_tab_btn_w - gaps_total).max(0.0);
+    let candidate_w = space_for_tabs / (num_tabs as f32);
+    let tab_w = candidate_w.clamp(min_tab_w, max_tab_w);
+    let total_tabs_width = num_tabs as f32 * tab_w + gaps_total;
+
+    TabsLayout {
+        tab_width: tab_w,
+        is_overflowing: false,
+        total_tabs_width,
+        max_scroll: 0.0,
+    }
+}
+
 /// Formats the bookmark label with proper Russian pluralization.
 pub fn format_bookmark_label(count: usize) -> String {
     let suffix = match count % 10 {
@@ -313,5 +368,32 @@ mod tests {
         assert_eq!(format_bookmark_label(12), "Добавить в закладки 12 вкладок...");
         assert_eq!(format_bookmark_label(21), "Добавить в закладки 21 вкладку...");
         assert_eq!(format_bookmark_label(22), "Добавить в закладки 22 вкладки...");
+    }
+
+    #[test]
+    fn test_calculate_tabs_layout_few_tabs() {
+        // 1 tab, wide area -> max width, not overflowing
+        let layout = calculate_tabs_layout(1, 800.0, 160.0, 0.0, 6.0, 34.0);
+        assert_eq!(layout.tab_width, 160.0);
+        assert!(!layout.is_overflowing);
+        assert_eq!(layout.max_scroll, 0.0);
+    }
+
+    #[test]
+    fn test_calculate_tabs_layout_shrunk_tabs() {
+        // 4 tabs, 500px -> shrunk between 0 and 160, not overflowing
+        let layout = calculate_tabs_layout(4, 500.0, 160.0, 0.0, 6.0, 34.0);
+        assert!(layout.tab_width > 0.0 && layout.tab_width <= 160.0);
+        assert!(!layout.is_overflowing);
+        assert_eq!(layout.max_scroll, 0.0);
+    }
+
+    #[test]
+    fn test_calculate_tabs_layout_overflowing_tabs() {
+        // 15 tabs, 500px -> shrinks down without cutoff so + button fits, not overflowing
+        let layout = calculate_tabs_layout(15, 500.0, 160.0, 0.0, 6.0, 34.0);
+        assert!(layout.tab_width > 0.0 && layout.tab_width < 64.0);
+        assert!(!layout.is_overflowing);
+        assert_eq!(layout.max_scroll, 0.0);
     }
 }
