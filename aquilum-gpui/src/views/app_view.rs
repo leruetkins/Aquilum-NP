@@ -1462,17 +1462,21 @@ impl AppView {
     }
 
     pub(crate) fn first_matching_file(&self, nodes: &[FileNode]) -> Option<PathBuf> {
+        let query = self.state.search_query.trim().to_lowercase();
+        self.first_matching_file_internal(nodes, &query, false)
+    }
+
+    fn first_matching_file_internal(&self, nodes: &[FileNode], query: &str, parent_matched: bool) -> Option<PathBuf> {
         for node in nodes {
             match node {
                 FileNode::File { name, path } => {
-                    if self.state.search_query.is_empty()
-                        || name.to_lowercase().contains(&self.state.search_query.to_lowercase())
-                    {
+                    if query.is_empty() || parent_matched || name.to_lowercase().contains(query) {
                         return Some(path.clone());
                     }
                 }
-                FileNode::Folder { children, .. } => {
-                    if let Some(p) = self.first_matching_file(children) {
+                FileNode::Folder { name, children, .. } => {
+                    let folder_matched = parent_matched || (!query.is_empty() && name.to_lowercase().contains(query));
+                    if let Some(p) = self.first_matching_file_internal(children, query, folder_matched) {
                         return Some(p);
                     }
                 }
@@ -1491,6 +1495,23 @@ impl AppView {
         selected_index: &mut Option<usize>,
         cx: &Context<Self>,
     ) {
+        self.render_tree_nodes_internal(nodes, depth, active_path, theme, acc, selected_index, false, cx);
+    }
+
+    fn render_tree_nodes_internal(
+        &self,
+        nodes: &[FileNode],
+        depth: usize,
+        active_path: Option<&PathBuf>,
+        theme: &Theme,
+        acc: &mut Vec<AnyElement>,
+        selected_index: &mut Option<usize>,
+        parent_matched: bool,
+        cx: &Context<Self>,
+    ) {
+        let query = self.state.search_query.trim().to_lowercase();
+        let is_filtering = !query.is_empty();
+
         for node in nodes {
             match node {
                 FileNode::Folder {
@@ -1498,7 +1519,18 @@ impl AppView {
                     path,
                     children,
                 } => {
-                    let is_expanded = self.state.expanded_folders.contains(path);
+                    let folder_matches_self = is_filtering && name.to_lowercase().contains(&query);
+                    let folder_has_matching_descendant = is_filtering && children.iter().any(|c| c.matches_query(&query));
+
+                    // When filtering, hide folder if neither it, nor its parent, nor any descendant matches
+                    if is_filtering && !parent_matched && !folder_matches_self && !folder_has_matching_descendant {
+                        continue;
+                    }
+
+                    // Auto-expand folder when filtering if it or its descendants match
+                    let is_expanded = self.state.expanded_folders.contains(path)
+                        || (is_filtering && (folder_matches_self || folder_has_matching_descendant));
+
                     let chevron = if is_expanded {
                         icons::icon(icons::ICON_CHEVRON_DOWN, 12.0, theme.text_muted)
                     } else {
@@ -1541,13 +1573,21 @@ impl AppView {
                     acc.push(folder_row.into_any_element());
 
                     if is_expanded {
-                        self.render_tree_nodes(children, depth + 1, active_path, theme, acc, selected_index, cx);
+                        let next_parent_matched = parent_matched || folder_matches_self;
+                        self.render_tree_nodes_internal(
+                            children,
+                            depth + 1,
+                            active_path,
+                            theme,
+                            acc,
+                            selected_index,
+                            next_parent_matched,
+                            cx,
+                        );
                     }
                 }
                 FileNode::File { name, path } => {
-                    if !self.state.search_query.is_empty()
-                        && !name.to_lowercase().contains(&self.state.search_query.to_lowercase())
-                    {
+                    if is_filtering && !parent_matched && !name.to_lowercase().contains(&query) {
                         continue;
                     }
 

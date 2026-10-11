@@ -196,6 +196,22 @@ impl FileNode {
             Self::File { name, .. } => name,
         }
     }
+
+    /// Recursively checks if this node or any descendant matches the case-insensitive query.
+    pub fn matches_query(&self, query_lower: &str) -> bool {
+        if query_lower.is_empty() {
+            return true;
+        }
+        match self {
+            Self::File { name, .. } => name.to_lowercase().contains(query_lower),
+            Self::Folder { name, children, .. } => {
+                if name.to_lowercase().contains(query_lower) {
+                    return true;
+                }
+                children.iter().any(|c| c.matches_query(query_lower))
+            }
+        }
+    }
 }
 
 pub struct OpenedNote {
@@ -1535,5 +1551,47 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_file_node_matches_query() {
+        let tree = FileNode::Folder {
+            name: "Backend".to_string(),
+            path: PathBuf::from("backend"),
+            children: vec![
+                FileNode::Folder {
+                    name: "Services".to_string(),
+                    path: PathBuf::from("backend/services"),
+                    children: vec![
+                        FileNode::File {
+                            name: "auth_service.rs".to_string(),
+                            path: PathBuf::from("backend/services/auth_service.rs"),
+                        },
+                    ],
+                },
+                FileNode::File {
+                    name: "main.rs".to_string(),
+                    path: PathBuf::from("backend/main.rs"),
+                },
+            ],
+        };
+
+        // Matching folder name
+        assert!(tree.matches_query("backend"));
+        assert!(tree.matches_query("back"));
+
+        // Matching child folder name
+        assert!(tree.matches_query("services"));
+
+        // Matching nested file
+        assert!(tree.matches_query("auth"));
+        assert!(tree.matches_query("main"));
+
+        // Non-matching
+        assert!(!tree.matches_query("frontend"));
+        assert!(!tree.matches_query("python"));
+
+        // Empty query matches all
+        assert!(tree.matches_query(""));
     }
 }
