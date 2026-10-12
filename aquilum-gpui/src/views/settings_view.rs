@@ -951,58 +951,67 @@ impl AppView {
                         )
                         .when(is_open, |parent| {
                             parent.child(
-                                div()
-                                    .id("language-dropdown-menu")
-                                    .absolute()
-                                    .top_full()
-                                    .right_0()
-                                    .mt_1()
-                                    .w(px(250.0))
-                                    .max_h(px(220.0))
-                                    .overflow_scroll()
-                                    .bg(theme.bg_sidebar)
-                                    .border_1()
-                                    .border_color(theme.border)
-                                    .rounded_md()
-                                    .shadow_lg()
-                                    .p_1()
-                                    .gap_0p5()
-                                    .flex()
-                                    .flex_col()
-                                    .children(crate::i18n::SUPPORTED_LOCALES.iter().enumerate().map(|(idx, loc)| {
-                                        let is_active = loc.code == current_loc.code;
-                                        let code = loc.code;
-                                        div()
-                                            .id(gpui::ElementId::from(("lang-item", idx)))
-                                            .flex()
-                                            .flex_row()
-                                            .justify_between()
-                                            .items_center()
-                                            .px_2p5()
-                                            .py_1p5()
-                                            .rounded_sm()
-                                            .cursor_pointer()
-                                            .when(is_active, |s| s.bg(theme.accent).text_color(theme.text_on_accent))
-                                            .when(!is_active, |s| s.hover(|h| h.bg(theme.bg_hover)).text_color(theme.text_primary))
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .font_weight(if is_active { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::NORMAL })
-                                                    .child(loc.native_name),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(if is_active { theme.text_on_accent } else { theme.text_muted })
-                                                    .child(loc.english_name),
-                                            )
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.config.ui.language = code.to_string();
-                                                this.save_settings(cx);
-                                                this.is_language_menu_open = false;
-                                                cx.notify();
-                                            }))
-                                    })),
+                                gpui::deferred(
+                                    div()
+                                        .id("language-dropdown-menu")
+                                        .absolute()
+                                        .top_full()
+                                        .right_0()
+                                        .mt_1()
+                                        .w(px(250.0))
+                                        .max_h(px(220.0))
+                                        .overflow_scroll()
+                                        .bg(theme.bg_sidebar)
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .rounded_md()
+                                        .shadow_lg()
+                                        .p_1()
+                                        .gap_0p5()
+                                        .flex()
+                                        .flex_col()
+                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                            cx.stop_propagation();
+                                        })
+                                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                            this.is_language_menu_open = false;
+                                            cx.notify();
+                                        }))
+                                        .children(crate::i18n::SUPPORTED_LOCALES.iter().enumerate().map(|(idx, loc)| {
+                                            let is_active = loc.code == current_loc.code;
+                                            let code = loc.code;
+                                            div()
+                                                .id(gpui::ElementId::from(("lang-item", idx)))
+                                                .flex()
+                                                .flex_row()
+                                                .justify_between()
+                                                .items_center()
+                                                .px_2p5()
+                                                .py_1p5()
+                                                .rounded_sm()
+                                                .cursor_pointer()
+                                                .when(is_active, |s| s.bg(theme.accent).text_color(theme.text_on_accent))
+                                                .when(!is_active, |s| s.hover(|h| h.bg(theme.bg_hover)).text_color(theme.text_primary))
+                                                .child(
+                                                    div()
+                                                        .text_xs()
+                                                        .font_weight(if is_active { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::NORMAL })
+                                                        .child(loc.native_name),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(if is_active { theme.text_on_accent } else { theme.text_muted })
+                                                        .child(loc.english_name),
+                                                )
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.config.ui.language = code.to_string();
+                                                    this.save_settings(cx);
+                                                    this.is_language_menu_open = false;
+                                                    cx.notify();
+                                                }))
+                                        }))
+                                ).with_priority(999)
                             )
                         })
                 },
@@ -1078,8 +1087,8 @@ impl AppView {
 
         let heading_rows = vec![
             self.render_setting_row(
-                "H1 — Главный заголовок",
-                Some("Размер шрифта и цвет для '# Заголовок'"),
+                &self.t("settings.editor.h1_title"),
+                Some(&self.t("settings.editor.h1_desc")),
                 div()
                     .flex()
                     .flex_row()
@@ -1109,8 +1118,8 @@ impl AppView {
                     )),
             ),
             self.render_setting_row(
-                "H2 — Секция второго уровня",
-                Some("Размер шрифта и цвет для '## Заголовок'"),
+                &self.t("settings.editor.h2_title"),
+                Some(&self.t("settings.editor.h2_desc")),
                 div()
                     .flex()
                     .flex_row()
@@ -1140,8 +1149,8 @@ impl AppView {
                     )),
             ),
             self.render_setting_row(
-                "H3 — Подсекция",
-                Some("Размер шрифта и цвет для '### Заголовок'"),
+                &self.t("settings.editor.h3_title"),
+                Some(&self.t("settings.editor.h3_desc")),
                 div()
                     .flex()
                     .flex_row()
@@ -1171,8 +1180,8 @@ impl AppView {
                     )),
             ),
             self.render_setting_row(
-                "H4 — Подраздел",
-                Some("Размер шрифта и цвет для '#### Заголовок'"),
+                &self.t("settings.editor.h4_title"),
+                Some(&self.t("settings.editor.h4_desc")),
                 div()
                     .flex()
                     .flex_row()
@@ -1202,8 +1211,8 @@ impl AppView {
                     )),
             ),
             self.render_setting_row(
-                "H5 — Мелкий заголовок",
-                Some("Размер шрифта и цвет для '##### Заголовок'"),
+                &self.t("settings.editor.h5_title"),
+                Some(&self.t("settings.editor.h5_desc")),
                 div()
                     .flex()
                     .flex_row()
@@ -1233,8 +1242,8 @@ impl AppView {
                     )),
             ),
             self.render_setting_row(
-                "H6 — Минимальный заголовок",
-                Some("Размер шрифта и цвет для '###### Заголовок'"),
+                &self.t("settings.editor.h6_title"),
+                Some(&self.t("settings.editor.h6_desc")),
                 div()
                     .flex()
                     .flex_row()
@@ -1267,13 +1276,13 @@ impl AppView {
 
         let font_rows = vec![
             self.render_setting_row(
-                "Шрифт редактора",
-                Some("Моноширинный шрифт для редактирования заметок"),
+                &self.t("settings.editor.font_family"),
+                Some(&self.t("settings.editor.font_family_desc")),
                 self.render_select_pill(&config.editor.font.font_family),
             ),
             self.render_setting_row(
-                "Размер шрифта",
-                Some("Размер символов редактора в пикселях"),
+                &self.t("settings.editor.font_size"),
+                Some(&self.t("settings.editor.font_size_desc")),
                 self.render_stepper(
                     "editor-font-size",
                     &format!("{} px", config.editor.font.font_size_base),
@@ -1293,8 +1302,8 @@ impl AppView {
                 ),
             ),
             self.render_setting_row(
-                "Высота строки",
-                Some("Межстрочный интервал текста заметки"),
+                &self.t("settings.editor.line_height"),
+                Some(&self.t("settings.editor.line_height_desc")),
                 self.render_stepper(
                     "editor-line-height",
                     &format!("{:.2}", config.editor.line_height),
@@ -1315,10 +1324,11 @@ impl AppView {
             ),
         ];
 
+        let tabs_display = self.t_fmt("settings.editor.live_tabs_unit", &[&config.editor.live_tabs.to_string()]);
         let layout_rows = vec![
             self.render_setting_row(
-                "Максимальная ширина строки",
-                Some("Ограничение ширины текста редактора в символах (ch)"),
+                &self.t("settings.editor.max_width"),
+                Some(&self.t("settings.editor.max_width_desc")),
                 self.render_stepper(
                     "editor-max-width",
                     &format!("{} ch", config.editor.max_width_ch),
@@ -1338,8 +1348,8 @@ impl AppView {
                 ),
             ),
             self.render_setting_row(
-                "Перенос длинных строк",
-                Some("Мягкий перенос текста по границе окна (Word wrap)"),
+                &self.t("settings.editor.word_wrap"),
+                Some(&self.t("settings.editor.word_wrap_desc")),
                 div()
                     .id("row-word-wrap")
                     .child(self.render_toggle_switch(self.word_wrap))
@@ -1348,11 +1358,11 @@ impl AppView {
                     })),
             ),
             self.render_setting_row(
-                "Ширина табуляции",
-                Some("Количество пробелов при нажатии Tab"),
+                &self.t("settings.editor.live_tabs"),
+                Some(&self.t("settings.editor.live_tabs_desc")),
                 self.render_stepper(
                     "editor-tabs",
-                    &format!("{} пробела", config.editor.live_tabs),
+                    &tabs_display,
                     |this: &mut AppView, cx| {
                         if this.config.editor.live_tabs > 1 {
                             this.config.editor.live_tabs -= 1;
@@ -1370,10 +1380,11 @@ impl AppView {
             ),
         ];
 
+        let debounce_display = self.t_fmt("settings.editor.debounce_unit", &[&config.editor.save_debounce_ms.to_string()]);
         let input_rows = vec![
             self.render_setting_row(
-                "Умные тире",
-                Some("Автоматическая замена двойного дефиса '--' на длинное тире '—'"),
+                &self.t("settings.editor.smart_dashes"),
+                Some(&self.t("settings.editor.smart_dashes_desc")),
                 div()
                     .id("row-smart-dashes")
                     .child(self.render_toggle_switch(config.editor.smart_dashes))
@@ -1383,8 +1394,8 @@ impl AppView {
                     })),
             ),
             self.render_setting_row(
-                "Выделение списков",
-                Some("Стилизованное отображение маркеров списков и чекбоксов"),
+                &self.t("settings.editor.list_callouts"),
+                Some(&self.t("settings.editor.list_callouts_desc")),
                 div()
                     .id("row-list-callouts")
                     .child(self.render_toggle_switch(config.editor.list_callouts))
@@ -1394,8 +1405,8 @@ impl AppView {
                     })),
             ),
             self.render_setting_row(
-                "Автоподстановка ссылок",
-                Some("Всплывающее меню вариантов при вводе двойных скобок '[['"),
+                &self.t("settings.editor.link_suggest"),
+                Some(&self.t("settings.editor.link_suggest_desc")),
                 div()
                     .id("row-link-suggest")
                     .child(self.render_toggle_switch(config.editor.link_suggest))
@@ -1405,8 +1416,8 @@ impl AppView {
                     })),
             ),
             self.render_setting_row(
-                "Скрывать подсветку строки при выделении",
-                Some("Отключать подсветку текущей строки при наличии выделения текста (как в Zed)"),
+                &self.t("settings.editor.hide_current_line_on_selection"),
+                Some(&self.t("settings.editor.hide_current_line_on_selection_desc")),
                 div()
                     .id("row-hide-current-line-on-selection")
                     .child(self.render_toggle_switch(config.editor.hide_current_line_on_selection))
@@ -1416,11 +1427,11 @@ impl AppView {
                     })),
             ),
             self.render_setting_row(
-                "Задержка автосохранения",
-                Some("Таймаут после ввода текста перед записью на диск"),
+                &self.t("settings.editor.debounce"),
+                Some(&self.t("settings.editor.debounce_desc")),
                 self.render_stepper(
                     "editor-debounce",
-                    &format!("{} мс", config.editor.save_debounce_ms),
+                    &debounce_display,
                     |this: &mut AppView, cx| {
                         if this.config.editor.save_debounce_ms > 250 {
                             this.config.editor.save_debounce_ms -= 250;
@@ -1442,10 +1453,10 @@ impl AppView {
             .flex()
             .flex_col()
             .gap_5()
-            .child(self.render_settings_card("Стилизация заголовков (H1–H6)", heading_rows))
-            .child(self.render_settings_card("Шрифты редактора", font_rows))
-            .child(self.render_settings_card("Разметка и строки", layout_rows))
-            .child(self.render_settings_card("Ввод и поведение", input_rows))
+            .child(self.render_settings_card(&self.t("settings.editor.headings_card"), heading_rows))
+            .child(self.render_settings_card(&self.t("settings.editor.font_card"), font_rows))
+            .child(self.render_settings_card(&self.t("settings.editor.layout_card"), layout_rows))
+            .child(self.render_settings_card(&self.t("settings.editor.input_card"), input_rows))
     }
 
     // =========================================================================
@@ -1480,8 +1491,8 @@ impl AppView {
                 ),
             ),
             self.render_setting_row(
-                "Выравнивание по ширине",
-                Some("Форматирование абзацев по обоим краям страницы"),
+                &self.t("settings.reader.justify"),
+                Some(&self.t("settings.reader.justify_desc")),
                 div()
                     .id("row-justify")
                     .child(self.render_toggle_switch(config.reader.justify))
@@ -1491,8 +1502,8 @@ impl AppView {
                     })),
             ),
             self.render_setting_row(
-                "Переносы слов (Hyphenation)",
-                Some("Автоматический перенос длинных слов по слогам"),
+                &self.t("settings.reader.hyphenate"),
+                Some(&self.t("settings.reader.hyphenate_desc")),
                 div()
                     .id("row-hyphenate")
                     .child(self.render_toggle_switch(config.reader.hyphenate))
