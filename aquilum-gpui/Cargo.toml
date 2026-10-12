@@ -16,6 +16,16 @@ smallvec = "1"
 [build-dependencies]
 winres = "0.1"
 
+# GPUI 0.2.2 is vendored (see vendor/gpui) with a one-line fix in the Windows
+# frame loop. Upstream re-presents the cached scene on EVERY vsync tick for one
+# second after the last input event ("to prevent the display from underclocking
+# the refresh rate"). On Windows a present is not a cheap blit: it replays the
+# whole scene on the GPU. A resting mouse that emits a couple of 1-2px jitters
+# per second keeps that one-second window open permanently, so an idle, focused
+# window re-renders the full scene 60-144 times per second (~20% GPU).
+[patch.crates-io]
+gpui = { path = "vendor/gpui" }
+
 # In debug builds, optimize dependencies (GPUI, pulldown-cmark, etc.) so UI runs smoothly at 60-120 FPS
 [profile.dev]
 opt-level = 1

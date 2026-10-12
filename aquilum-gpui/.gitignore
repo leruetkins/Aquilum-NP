@@ -1,0 +1,24 @@
+# Cargo build output
+/target/
+
+# Agent scratch space and local work logs (session-local, not part of the project).
+# NOTE: .workbuddy-ai/skills/ is deliberately NOT ignored — project-level skills
+# are meant to be shareable with the rest of the team.
+.workbuddy-ai/tmp/
+.workbuddy-ai/memory/
+
+# NOTE: vendor/ must NEVER be ignored.
+#
+# Cargo.toml declares `[patch.crates-io] gpui = { path = "vendor/gpui" }`, i.e. a
+# PATH dependency. Two local fixes live only there (both marked `LOCAL PATCH`):
+#
+#   vendor/gpui/src/window.rs  — stops gpui from re-presenting the cached scene on
+#                                every vsync tick for a second after the last input
+#                                event. Without it a focused but idle window replays
+#                                the whole scene 60-144x per second (~20% GPU).
+#   vendor/gpui/build.rs       — finds fxc.exe by scanning the installed Windows SDK
+#                                versions. Without it `cargo build --release` panics
+#                                with "Failed to find fxc.exe".
+#
+# If vendor/gpui is missing, the build fails for everyone, so it has to be committed.
+# Do make sure no stray target/ sneaked into it (registry copies sometimes carry one).
