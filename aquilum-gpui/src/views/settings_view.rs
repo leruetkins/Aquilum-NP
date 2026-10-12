@@ -428,12 +428,12 @@ impl AppView {
     fn render_toggle_switch(&self, checked: bool) -> gpui::Div {
         let theme = &self.theme;
         let track_bg = if checked { theme.accent } else { theme.border };
-        let knob_left = if checked { px(18.0) } else { px(2.0) };
+        let knob_left = if checked { px(21.0) } else { px(3.0) };
 
         div()
             .flex_none()
             .relative()
-            .w(px(38.0))
+            .w(px(40.0))
             .h(px(22.0))
             .rounded_full()
             .bg(track_bg)
@@ -441,10 +441,10 @@ impl AppView {
             .child(
                 div()
                     .absolute()
-                    .top(px(2.0))
+                    .top(px(3.0))
                     .left(knob_left)
-                    .w(px(18.0))
-                    .h(px(18.0))
+                    .w(px(16.0))
+                    .h(px(16.0))
                     .rounded_full()
                     .bg(gpui::white())
                     .shadow_sm(),
