@@ -359,6 +359,15 @@ impl AppView {
     /// Wraps a collection of rows inside a titled card container.
     fn render_settings_card(&self, title: &str, rows: Vec<gpui::Div>) -> gpui::Div {
         let theme = &self.theme;
+        let row_count = rows.len();
+        let formatted_rows = rows.into_iter().enumerate().map(|(idx, row)| {
+            if idx + 1 == row_count {
+                row.border_b_0()
+            } else {
+                row
+            }
+        });
+
         div()
             .flex()
             .flex_col()
@@ -379,7 +388,7 @@ impl AppView {
                     .border_1()
                     .border_color(theme.border_subtle)
                     .px_4()
-                    .children(rows),
+                    .children(formatted_rows),
             )
     }
 
