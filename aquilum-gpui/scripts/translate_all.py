@@ -1,12 +1,35 @@
 """
-Full localization translator for Aquilum GPUI.
-Features:
-- Incremental translation: automatically skips already translated strings.
-- Robust UTF-8 console output safe for Windows cp1251 terminals.
-- Uses reliable client endpoint (dict-chrome-ex) with fallback to gtx.
-- Auto-saves JSON every 10 translated keys so progress is immediately committed to disk.
-- Rate-limit handling with exponential backoff.
-- Placeholder protection ({0}, {1}, etc.).
+================================================================================
+                 Aquilum GPUI - Automated i18n Translator
+================================================================================
+
+PURPOSE:
+    Automatically finds untranslated strings (matching en.json values)
+    across all 19 supported target languages and translates them via Google Translate API.
+
+KEY FEATURES:
+    1. Incremental Mode:
+       - Skips strings that are already translated.
+       - Fully translated language files are bypassed immediately with "Skipping".
+       - Safely resumable: re-running picks up exactly where it left off.
+    2. Data Safety & Periodic Auto-Save:
+       - Automatically flushes to disk every 10 keys and at the end of each file.
+       - If stopped (Ctrl+C, network interruption), no progress is lost.
+    3. Placeholder & Shortcut Protection:
+       - Tokenizes placeholders ({0}, {1}, {:?}) to prevent mangling during translation.
+       - Preserves shortcut keys ("Ctrl + O", "Alt + Z", etc.) and technical terms
+         (BM25F, JSON, Consolas, JetBrains Mono) verbatim.
+    4. Rate-Limit Resilience:
+       - Uses stable Chrome dict client endpoint with automatic fallback to gtx.
+       - Built-in exponential backoff retry for network errors and 429 throttling.
+    5. Clean UTF-8 console output safe on Windows (cp1251 terminal friendly).
+
+USAGE:
+    python scripts/translate_all.py
+
+    Console displays live progress:
+      [it] (7/64) sidebar.open_default_app: 'Open in Default App' -> 'Apri nell'app predefinita'
+================================================================================
 """
 
 import json

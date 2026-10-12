@@ -679,6 +679,19 @@ impl AppView {
         }
     }
 
+    /// Opens the native folder picker *outside* the current update cycle.
+    ///
+    /// rfd pumps its own OS message loop, so calling it inline from an event
+    /// handler lets timer futures re-enter `App::update` while it is still
+    /// borrowed and aborts the process ("RefCell already borrowed").
+    /// Deferred past the effect cycle, the outer borrow is gone and nested
+    /// ticks update normally.
+    pub(crate) fn open_folder_dialog_deferred(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.defer_in(window, |this, window, cx| {
+            this.open_folder_dialog(window, cx);
+        });
+    }
+
     pub(crate) fn create_new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_title_rename_internal();
         if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
@@ -3271,7 +3284,7 @@ impl Render for AppView {
                                                     .hover(|h| h.bg(theme.bg_hover))
                                                     .child(icons::icon(icons::ICON_FOLDER_OPEN, 13.0, theme.text_primary))
                                                     .on_click(cx.listener(|this, _, window, cx| {
-                                                        this.open_folder_dialog(window, cx);
+                                                        this.open_folder_dialog_deferred(window, cx);
                                                     })),
                                             ),
                                     ),
@@ -3316,20 +3329,21 @@ impl Render for AppView {
                                             .min_w_0()
                                             .flex_row()
                                             .items_center()
-                                            .gap_1p5()
+                                            .gap_2()
                                             .px_1p5()
                                             .py_1()
                                             .rounded_md()
                                             .cursor_pointer()
                                             .hover(|h| h.bg(theme.bg_hover))
-                                            .text_xs()
-                                            .text_color(theme.text_secondary)
-                                            .child(icons::icon(icons::ICON_CHEVRONS_UP_DOWN, 12.0, theme.text_muted))
+                                            .child(icons::icon(icons::ICON_FOLDER, 15.0, theme.accent))
                                             .child(
                                                 div()
                                                     .flex_1()
                                                     .min_w_0()
                                                     .truncate()
+                                                    .text_sm()
+                                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                    .text_color(theme.text_primary)
                                                     .child(self.state.workspace_name.clone()),
                                             )
                                             .on_click(cx.listener(|this, _, _, cx| {

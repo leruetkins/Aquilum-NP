@@ -1,7 +1,32 @@
 """
-Script to validate localization files parity against en.json.
-Reports missing keys, extra keys, and empty translations for all 20 supported languages.
-Optionally syncs missing keys from en.json into target locales (--fix).
+================================================================================
+                    Aquilum GPUI - i18n Parity Checker
+================================================================================
+
+PURPOSE:
+    Validates completeness and key parity of all localization files
+    (locales/*.json) against the baseline reference locales/en.json.
+
+FEATURES:
+    1. Detects missing keys across all 20 supported languages.
+    2. Identifies obsolete / extra keys present in translations but removed from en.json.
+    3. Finds empty string translations ("").
+    4. Supports automatic backfilling (--fix) with English values as fallback.
+
+USAGE:
+    1. Standard check (validation):
+       python scripts/check_i18n.py
+
+    2. Auto-fill missing keys in all locales with English values:
+       python scripts/check_i18n.py --fix
+
+    3. Specify custom locales folder:
+       python scripts/check_i18n.py --locales-dir path/to/locales
+
+EXIT CODES:
+    0 - All 20 files are 100% in sync (full key parity).
+    1 - Missing keys or JSON syntax errors detected.
+================================================================================
 """
 
 import argparse

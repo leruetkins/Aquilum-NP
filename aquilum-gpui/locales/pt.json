@@ -198,8 +198,8 @@
       "undo": "Desfazer",
       "redo": "Refazer",
       "home_end": "Vá para início/fim da linha",
-      "quick_open": "Go to File (Quick Open)",
-      "search_files": "Search Files"
+      "quick_open": "Vá para arquivo (abertura rápida)",
+      "search_files": "Pesquisar arquivos"
     }
   },
   "sidebar": {
@@ -271,9 +271,9 @@
     "cannot_duplicate_root": "Não é possível duplicar o diretório raiz",
     "error_copying_folder": "Erro ao copiar a pasta: {}",
     "foldername_cannot_be_empty": "O nome da pasta não pode ficar vazio",
-    "vaults_title": "Knowledge bases",
-    "open_folder": "Open Folder",
-    "no_vaults": "No vaults yet"
+    "vaults_title": "Bases de conhecimento",
+    "open_folder": "Abrir pasta",
+    "no_vaults": "Ainda não há cofres"
   },
   "tabs": {
     "fold_tabs": "Dobrar abas",
@@ -287,7 +287,7 @@
     "add_few_tabs": "guias...",
     "add_many_tabs": "guias...",
     "add_n_tabs": "Marcador {} {}",
-    "newTab": "New tab",
+    "newTab": "Nova guia",
     "close": "Fechar",
     "close_others": "Fechar outras guias",
     "close_to_right": "Fechar guias à direita",
@@ -299,32 +299,32 @@
     "new_window_status": "Mover para uma nova janela estará disponível em breve"
   },
   "editor": {
-    "create_note": "Create a note",
-    "open_file": "Go to the file",
-    "close": "Close"
+    "create_note": "Crie uma nota",
+    "open_file": "Vá para o arquivo",
+    "close": "Fechar"
   },
   "search": {
-    "title": "Search the knowledge base",
-    "title_hint": "Type a note name or its text",
-    "no_results": "Nothing found",
-    "create_hint": "Shift+Enter - create a note",
-    "no_folder": "No folder open",
-    "no_folder_hint": "Open a knowledge base folder to search",
-    "hint_navigate": "navigate",
-    "hint_open": "open",
-    "hint_create": "create",
-    "match_one": "{} match",
-    "match_few": "{} matches",
-    "match_many": "{} matches",
-    "panel_hint": "Enter a search query...",
-    "operators_title": "Search options",
-    "op_path_desc": "match in file path",
-    "op_file_desc": "match in file name",
-    "op_tag_desc": "match in tags",
-    "op_line_desc": "keywords on one line",
-    "op_section_desc": "keywords under one heading",
-    "history": "History",
-    "found": "Found: {}"
+    "title": "Pesquise na base de conhecimento",
+    "title_hint": "Digite um nome de nota ou seu texto",
+    "no_results": "Nada encontrado",
+    "create_hint": "Shift+Enter – cria uma nota",
+    "no_folder": "Nenhuma pasta aberta",
+    "no_folder_hint": "Abra uma pasta da base de conhecimento para pesquisar",
+    "hint_navigate": "navegar",
+    "hint_open": "abrir",
+    "hint_create": "criar",
+    "match_one": "{} corresponder",
+    "match_few": "{} partidas",
+    "match_many": "{} partidas",
+    "panel_hint": "Insira uma consulta de pesquisa...",
+    "operators_title": "Opções de pesquisa",
+    "op_path_desc": "correspondência no caminho do arquivo",
+    "op_file_desc": "correspondência no nome do arquivo",
+    "op_tag_desc": "combinar em tags",
+    "op_line_desc": "palavras-chave em uma linha",
+    "op_section_desc": "palavras-chave sob um título",
+    "history": "História",
+    "found": "Encontrado: {}"
   },
   "app": {
     "search_placeholder": "Pesquisa rápida no cofre..."

@@ -241,7 +241,7 @@ impl AppView {
             if key.eq_ignore_ascii_case("s") || key == "ы" || key == "Ы" {
                 self.save_note(window, cx);
             } else if key.eq_ignore_ascii_case("o") || key == "щ" || key == "Щ" {
-                self.open_folder_dialog(window, cx);
+                self.open_folder_dialog_deferred(window, cx);
             } else if key.eq_ignore_ascii_case("n") || key == "т" || key == "Т" {
                 self.open_empty_tab(window, cx);
             }

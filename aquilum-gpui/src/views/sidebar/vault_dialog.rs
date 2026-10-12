@@ -333,8 +333,8 @@ impl AppView {
                                             )
                                             .on_click(cx.listener(
                                                 |this, _, window, cx| {
-                                                    this.open_folder_dialog(window, cx);
                                                     this.close_vault_dialog(cx);
+                                                    this.open_folder_dialog_deferred(window, cx);
                                                 },
                                             )),
                                     ),
