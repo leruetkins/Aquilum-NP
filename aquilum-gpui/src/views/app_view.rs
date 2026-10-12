@@ -4480,7 +4480,7 @@ impl Render for AppView {
                                 crate::views::tab_list::WINDOW_ANCHOR_TOP
                                     + crate::views::tab_list::POPUP_GAP,
                             ))
-                            .right(px(140.0))
+                            .right(px(crate::views::tab_list::POPUP_RIGHT_OFFSET))
                             .child(popup),
                     )
                     .with_priority(999),

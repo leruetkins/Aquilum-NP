@@ -78,6 +78,11 @@ pub const WINDOW_ANCHOR_TOP: f32 = 38.0;
 /// live at the right end of that row, and the panel must visibly hang from them
 /// rather than glue itself to the row's bottom border.
 pub const POPUP_GAP: f32 = 4.0;
+/// Right offset (px) of the panel's right edge, measured from the window edge. It
+/// sums the three native window controls plus the action group's padding, the
+/// sidebar toggle and its gap, so the edge lines up with the chevron that opens the
+/// popup. See `titlebar-right-controls-group` in `app_view.rs`.
+pub const POPUP_RIGHT_OFFSET: f32 = 46.0 * 3.0 + 4.0 + 32.0 + 4.0;
 /// File and check mark icon size (px).
 const ICON_SIZE: f32 = 14.0;
 
