@@ -7,8 +7,9 @@
 //! at most [`MAX_SCAN_FILES`] files, files larger than [`MAX_FILE_BYTES`]
 //! contribute name matches only, and at most [`MAX_RESULTS`] hits surface.
 
+use std::borrow::Cow;
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui::{
@@ -28,7 +29,7 @@ const MAX_SCAN_FILES: usize = 2000;
 /// Files larger than this only match by name; contents are not read.
 const MAX_FILE_BYTES: u64 = 512 * 1024;
 /// Upper bound on surfaced hits.
-const MAX_RESULTS: usize = 50;
+pub(crate) const MAX_RESULTS: usize = 50;
 /// Snippet context around the first hit (chars).
 const SNIPPET_BEFORE: usize = 60;
 const SNIPPET_AFTER: usize = 140;
@@ -52,7 +53,7 @@ const GOTO_ROW_SCROLLBAR_GAP: f32 = 4.0;
 /// against the panel border with a 2px sliver of background on each side.
 /// `thumb_w == thumb_w_active` keeps the width constant — the bar never
 /// changes size under the pointer.
-fn goto_scrollbar_style() -> ScrollbarStyle {
+pub(crate) fn goto_scrollbar_style() -> ScrollbarStyle {
     ScrollbarStyle {
         track_w: GOTO_RESULTS_PAD,
         thumb_w: 6.0,
@@ -505,7 +506,8 @@ impl AppView {
 }
 
 /// Collects note file paths from the sidebar tree (depth-first, capped).
-fn collect_goto_files(nodes: &[FileNode], limit: usize) -> Vec<PathBuf> {
+pub(crate) fn collect_goto_files(nodes: &[FileNode], limit: usize) -> Vec<PathBuf> {
+
     fn walk(nodes: &[FileNode], out: &mut Vec<PathBuf>, limit: usize) {
         for node in nodes {
             if out.len() >= limit {
@@ -522,12 +524,109 @@ fn collect_goto_files(nodes: &[FileNode], limit: usize) -> Vec<PathBuf> {
     out
 }
 
+/// Obsidian-style search operator: restricts what the query matches against.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SearchOp {
+    /// File name first, then file contents (default).
+    #[default]
+    Any,
+    /// Substring of the vault-relative file path.
+    Path,
+    /// Substring of the file name only.
+    File,
+    /// `#tag` mentions in the file body.
+    Tag,
+    /// All terms on a single line.
+    Line,
+    /// All terms under one heading-delimited section.
+    Section,
+}
+
+/// Splits an `op: rest` prefix off the raw query (case-insensitive prefix).
+///
+/// Returns `(Any, trimmed whole query)` when there is no known prefix or
+/// nothing follows the colon, so half-typed operators keep showing results.
+///
+/// The prefix is probed with [`str::get`] instead of byte slicing: queries
+/// in multibyte scripts (e.g. Cyrillic, 2 bytes per letter) must never be
+/// cut in the middle of a character.
+pub(crate) fn parse_search_op(raw: &str) -> (SearchOp, String) {
+    let trimmed = raw.trim();
+    const PREFIXES: &[(&str, SearchOp)] = &[
+        ("path:", SearchOp::Path),
+        ("file:", SearchOp::File),
+        ("tag:", SearchOp::Tag),
+        ("line:", SearchOp::Line),
+        ("section:", SearchOp::Section),
+    ];
+    for (prefix, op) in PREFIXES {
+        // `get` yields `None` for short queries and for mid-character
+        // boundaries instead of panicking.
+        match trimmed.get(..prefix.len()) {
+            Some(head) if head.eq_ignore_ascii_case(prefix) => {
+                let rest = trimmed[prefix.len()..].trim().to_string();
+                if rest.is_empty() {
+                    break;
+                }
+                return (*op, rest);
+            }
+            _ => {}
+        }
+    }
+    (SearchOp::Any, trimmed.to_string())
+}
+
+/// Extra knobs for [`search_goto_files_opts`].
+pub(crate) struct GotoSearchParams<'a> {
+    /// Case-sensitive matching (`Aa` toggle). Default is insensitive.
+    pub case_sensitive: bool,
+    /// Workspace root for vault-relative paths (`path:` operator and snippets).
+    pub rel_base: Option<&'a Path>,
+}
+
+impl Default for GotoSearchParams<'_> {
+    fn default() -> Self {
+        Self {
+            case_sensitive: false,
+            rel_base: None,
+        }
+    }
+}
+
+/// Case folding shared by every matcher: identity when sensitive.
+fn fold<'a>(s: &'a str, case_sensitive: bool) -> Cow<'a, str> {
+    if case_sensitive {
+        Cow::Borrowed(s)
+    } else {
+        Cow::Owned(s.to_lowercase())
+    }
+}
+
 /// Scores and ranks files for `query`: name hits first, then content hits.
 fn search_goto_files(files: &[PathBuf], query: &str, limit: usize) -> Vec<GotoResult> {
-    let q = query.trim().to_lowercase();
-    if q.is_empty() {
+    search_goto_files_opts(
+        files,
+        query,
+        SearchOp::Any,
+        &GotoSearchParams::default(),
+        limit,
+    )
+}
+
+/// Scores and ranks files for an operator query (see [`SearchOp`]).
+pub(crate) fn search_goto_files_opts(
+    files: &[PathBuf],
+    raw_query: &str,
+    op: SearchOp,
+    params: &GotoSearchParams,
+    limit: usize,
+) -> Vec<GotoResult> {
+    let cs = params.case_sensitive;
+    let rest = raw_query.trim();
+    if rest.is_empty() {
         return Vec::new();
     }
+    let q = fold(rest, cs).into_owned();
     let terms: Vec<String> = {
         let mut seen = std::collections::HashSet::new();
         q.split_whitespace()
@@ -550,9 +649,13 @@ fn search_goto_files(files: &[PathBuf], query: &str, limit: usize) -> Vec<GotoRe
         if file_name.is_empty() {
             continue;
         }
-        let name_lower = file_name.to_lowercase();
-        let name_hit_whole = name_lower.contains(&q);
-        let name_hit_terms = terms.iter().all(|t| name_lower.contains(t));
+        let name_folded = fold(&file_name, cs).into_owned();
+        let rel_string: String = params
+            .rel_base
+            .and_then(|base| path.strip_prefix(base).ok())
+            .map(|rel| rel.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        let rel_folded = fold(&rel_string, cs).into_owned();
 
         // Read contents unless the file is too large (name-only match then).
         let content: Option<String> = match std::fs::metadata(path) {
@@ -560,34 +663,120 @@ fn search_goto_files(files: &[PathBuf], query: &str, limit: usize) -> Vec<GotoRe
             _ => None,
         };
 
-        let (rank, match_count, snippet) = if name_hit_whole || name_hit_terms {
-            let (count, snip) = match content.as_deref() {
-                Some(text) => {
-                    let lower = text.to_lowercase();
-                    let count =
-                        count_occurrences(&lower, &q) + count_occurrences(&name_lower, &q);
-                    (count.max(1), make_snippet(text, &lower, &q, &terms))
+        let hit: Option<(usize, String, bool)> = match op {
+            SearchOp::Any => match_any(&name_folded, content.as_deref(), &q, &terms, cs),            SearchOp::File => {
+                if !(name_folded.contains(&q) || terms.iter().all(|t| name_folded.contains(t))) {
+                    None
+                } else {
+                    let count = count_occurrences(&name_folded, &q);
+                    let count = if count > 0 {
+                        count
+                    } else {
+                        terms
+                            .iter()
+                            .map(|t| count_occurrences(&name_folded, t))
+                            .sum::<usize>()
+                            .max(1)
+                    };
+                    let snippet = content
+                        .as_deref()
+                        .map(|text| first_line(text, SNIPPET_BEFORE + SNIPPET_AFTER))
+                        .unwrap_or_default();
+                    Some((count, snippet, true))
                 }
-                None => (count_occurrences(&name_lower, &q).max(1), String::new()),
-            };
-            (0u8, count, snip)
-        } else {
-            let Some(text) = content.as_deref() else {
-                continue;
-            };
-            let lower = text.to_lowercase();
-            if !terms.iter().all(|t| lower.contains(t)) {
-                continue;
             }
-            let count = count_occurrences(&lower, &q);
-            let count = if count > 0 {
-                count
-            } else {
-                terms.iter().map(|t| count_occurrences(&lower, t)).sum::<usize>().max(1)
-            };
-            (1u8, count, make_snippet(text, &lower, &q, &terms))
+            SearchOp::Path => {
+                if !(rel_folded.contains(&q) || terms.iter().all(|t| rel_folded.contains(t))) {
+                    None
+                } else {
+                    let count = count_occurrences(&rel_folded, &q).max(1);
+                    // Path matches are name-like: same top rank as file names.
+                    Some((count, rel_string.clone(), true))
+                }
+            }
+            SearchOp::Tag => match content.as_deref() {
+                None => None,
+                Some(text) => {
+                    // `#term` mentions; a leading `#` in the query is tolerated.
+                    let tags: Vec<String> = terms
+                        .iter()
+                        .map(|t| format!("#{}", t.trim_start_matches('#')))
+                        .collect();
+                    let lower = fold(text, cs).into_owned();
+                    if !tags.iter().all(|t| lower.contains(t)) {
+                        None
+                    } else {
+                        let count = tags
+                            .iter()
+                            .map(|t| count_occurrences(&lower, t))
+                            .sum::<usize>()
+                            .max(1);
+                        let snippet = first_line_matching(text, &tags, cs)
+                            .unwrap_or_else(|| first_line(text, SNIPPET_BEFORE + SNIPPET_AFTER));
+                        Some((count, snippet, false))
+                    }
+                }
+            },
+            SearchOp::Line => match content.as_deref() {
+                None => None,
+                Some(text) => {
+                    let mut found: Option<(usize, String)> = None;
+                    for line in text.lines() {
+                        let folded = fold(line, cs);
+                        if !terms.iter().all(|t| folded.contains(t)) {
+                            continue;
+                        }
+                        let count = count_occurrences(&folded, &q);
+                        let count = if count > 0 {
+                            count
+                        } else {
+                            terms
+                                .iter()
+                                .map(|t| count_occurrences(&folded, t))
+                                .sum::<usize>()
+                                .max(1)
+                        };
+                        found = Some((count, cap_line(line, SNIPPET_BEFORE + SNIPPET_AFTER)));
+                        break;
+                    }
+                    found.map(|(count, snippet)| (count, snippet, false))
+                }
+            },
+            SearchOp::Section => match content.as_deref() {
+                None => None,
+                Some(text) => {
+                    let mut found: Option<(usize, String)> = None;
+                    for (heading, chunk) in split_sections(text) {
+                        let folded = fold(&chunk, cs);
+                        if !terms.iter().all(|t| folded.contains(t)) {
+                            continue;
+                        }
+                        let count = count_occurrences(&folded, &q);
+                        let count = if count > 0 {
+                            count
+                        } else {
+                            terms
+                                .iter()
+                                .map(|t| count_occurrences(&folded, t))
+                                .sum::<usize>()
+                                .max(1)
+                        };
+                        let snippet = first_line_matching(&chunk, &terms, cs).unwrap_or(heading);
+                        found = Some((count, snippet));
+                        break;
+                    }
+                    found.map(|(count, snippet)| (count, snippet, false))
+                }
+            },
         };
 
+        let Some((match_count, snippet, name_hit)) = hit else {
+            continue;
+        };
+        // File/path-name hits always outrank body-text hits, regardless of
+        // the raw match count (a name hit with 1 occurrence beats 50 hits
+        // scattered across a body).
+        let rank = if name_hit { 0u8 } else { 1u8 };
         ranked.push((
             rank,
             match_count,
@@ -597,7 +786,7 @@ fn search_goto_files(files: &[PathBuf], query: &str, limit: usize) -> Vec<GotoRe
                 title: file_name,
                 snippet,
                 match_count,
-                name_hit: name_hit_whole || name_hit_terms,
+                name_hit,
             },
         ));
     }
@@ -608,6 +797,106 @@ fn search_goto_files(files: &[PathBuf], query: &str, limit: usize) -> Vec<GotoRe
         .take(limit)
         .map(|(_, _, _, hit)| hit)
         .collect()
+}
+
+/// The default `Any` branch: name hits outrank content hits.
+fn match_any(
+    name_folded: &str,
+    content: Option<&str>,
+    q: &str,
+    terms: &[String],
+    case_sensitive: bool,
+) -> Option<(usize, String, bool)> {
+    let name_hit_whole = name_folded.contains(q);
+    let name_hit_terms = terms.iter().all(|t| name_folded.contains(t));
+    if name_hit_whole || name_hit_terms {
+        let (count, snip) = match content {
+            Some(text) => {
+                let lower = fold(text, case_sensitive).into_owned();
+                let count =
+                    count_occurrences(&lower, q) + count_occurrences(name_folded, q);
+                (count.max(1), make_snippet(text, &lower, q, terms))
+            }
+            None => (count_occurrences(name_folded, q).max(1), String::new()),
+        };
+        Some((count, snip, true))
+    } else {
+        let text = content?;
+        let lower = fold(text, case_sensitive).into_owned();
+        if !terms.iter().all(|t| lower.contains(t)) {
+            return None;
+        }
+        let count = count_occurrences(&lower, q);
+        let count = if count > 0 {
+            count
+        } else {
+            terms
+                .iter()
+                .map(|t| count_occurrences(&lower, t))
+                .sum::<usize>()
+                .max(1)
+        };
+        Some((count, make_snippet(text, &lower, q, terms), false))
+    }
+}
+
+/// First line whose folded form contains every folded term.
+fn first_line_matching(text: &str, terms: &[String], case_sensitive: bool) -> Option<String> {
+    for line in text.lines() {
+        if terms.iter().all(|t| fold(line, case_sensitive).contains(t)) {
+            return Some(cap_line(line, SNIPPET_BEFORE + SNIPPET_AFTER));
+        }
+    }
+    None
+}
+
+/// Flattens a single line and caps it at `limit` chars with a "..." tail.
+fn cap_line(line: &str, limit: usize) -> String {
+    let flat = flatten_whitespace(line.trim());
+    if flat.chars().count() > limit {
+        let mut s: String = flat.chars().take(limit).collect();
+        s.push_str("...");
+        s
+    } else {
+        flat
+    }
+}
+
+/// Whether `line` opens a Markdown section (`# …` … `###### …`).
+fn is_heading_line(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut hashes = 0;
+    while hashes < bytes.len() && bytes[hashes] == b'#' {
+        hashes += 1;
+    }
+    hashes > 0 && hashes <= 6 && bytes.get(hashes).map_or(true, |b| b.is_ascii_whitespace())
+}
+
+/// Splits `text` into `(heading, chunk)` pairs at ATX headings.
+///
+/// The heading line belongs to its own chunk so heading terms match.
+/// Text before the first heading forms a chunk with an empty heading.
+fn split_sections(text: &str) -> Vec<(String, String)> {
+    let mut chunks: Vec<(String, String)> = Vec::new();
+    let mut heading = String::new();
+    let mut body = String::new();
+    for line in text.lines() {
+        if is_heading_line(line) {
+            if !heading.is_empty() || !body.trim().is_empty() {
+                chunks.push((std::mem::take(&mut heading), std::mem::take(&mut body)));
+            }
+            heading = line.trim().to_string();
+            body.push_str(line);
+            body.push('\n');
+        } else {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    if !heading.is_empty() || !body.trim().is_empty() {
+        chunks.push((heading, body));
+    }
+    chunks
 }
 
 /// Non-overlapping occurrences of `needle` in `haystack` (both lowercase).
@@ -625,6 +914,10 @@ fn count_occurrences(haystack: &str, needle: &str) -> usize {
 }
 
 /// Snippet around the first content hit, whitespace-flattened with "..." cuts.
+///
+/// `byte_ix` comes from the folded string, whose lengths can theoretically
+/// differ from the original under exotic casings — so the index is mapped
+/// through char counts and clamped instead of slicing bytes directly.
 fn make_snippet(text: &str, lower: &str, query: &str, terms: &[String]) -> String {
     let hit = lower.find(query).or_else(|| {
         terms
@@ -636,9 +929,10 @@ fn make_snippet(text: &str, lower: &str, query: &str, terms: &[String]) -> Strin
         // Name-only hit: lead with the file's first line.
         return first_line(text, SNIPPET_BEFORE + SNIPPET_AFTER);
     };
-    // Map byte index to char index for safe slicing.
     let chars: Vec<char> = text.chars().collect();
-    let char_ix = text[..byte_ix].chars().count();
+    // Char offset of the hit in the folded string; valid there by construction.
+    let folded_chars = lower[..byte_ix].chars().count();
+    let char_ix = folded_chars.min(chars.len());
     let start = char_ix.saturating_sub(SNIPPET_BEFORE);
     let end = (char_ix + SNIPPET_AFTER).min(chars.len());
     let mut snippet: String = chars[start..end].iter().collect();
@@ -683,7 +977,20 @@ pub fn highlight_terms(
     is_selected: bool,
     theme: &Theme,
 ) -> StyledText {
-    let ranges = find_term_ranges(text, terms);
+    highlight_terms_cased(text, terms, base_color, is_selected, false, theme)
+}
+
+/// Case-aware [`highlight_terms`]: with `case_sensitive`, only exact-case
+/// occurrences are highlighted.
+pub(crate) fn highlight_terms_cased(
+    text: &str,
+    terms: &[String],
+    base_color: Rgba,
+    is_selected: bool,
+    case_sensitive: bool,
+    theme: &Theme,
+) -> StyledText {
+    let ranges = find_term_ranges_cased(text, terms, case_sensitive);
     if ranges.is_empty() {
         return StyledText::new(text.to_string());
     }
@@ -740,7 +1047,19 @@ pub fn highlight_terms(
 ///
 /// Scans char-by-char so slicing the original is always safe, even when
 /// case folding changes byte lengths. Longest terms win on overlap.
+///
+/// Kept for tests; production code uses the case-aware variant below.
+#[cfg(test)]
 fn find_term_ranges(text: &str, terms: &[String]) -> Vec<(usize, usize)> {
+    find_term_ranges_cased(text, terms, false)
+}
+
+/// Case-aware [`find_term_ranges`].
+fn find_term_ranges_cased(
+    text: &str,
+    terms: &[String],
+    case_sensitive: bool,
+) -> Vec<(usize, usize)> {
     let mut ordered: Vec<&str> = terms.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
     ordered.sort_by(|a, b| b.len().cmp(&a.len()));
     if ordered.is_empty() || text.is_empty() {
@@ -766,7 +1085,11 @@ fn find_term_ranges(text: &str, terms: &[String]) -> Vec<(usize, usize)> {
                 continue;
             }
             let matches = term_chars.iter().enumerate().all(|(k, tc)| {
-                chars[i + k].to_lowercase().eq(tc.to_lowercase())
+                if case_sensitive {
+                    chars[i + k] == *tc
+                } else {
+                    chars[i + k].to_lowercase().eq(tc.to_lowercase())
+                }
             });
             if matches {
                 hit_len = Some(term_chars.len());
@@ -785,10 +1108,20 @@ fn find_term_ranges(text: &str, terms: &[String]) -> Vec<(usize, usize)> {
 
 /// Query terms for highlighting: whole query plus individual words.
 fn highlight_query_terms(query: &str) -> Vec<String> {
-    let q = query.trim().to_lowercase();
-    if q.is_empty() {
+    highlight_query_terms_cased(query, false)
+}
+
+/// Case-aware [`highlight_query_terms`].
+pub(crate) fn highlight_query_terms_cased(query: &str, case_sensitive: bool) -> Vec<String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
         return Vec::new();
     }
+    let q = if case_sensitive {
+        trimmed.to_string()
+    } else {
+        trimmed.to_lowercase()
+    };
     let mut terms = vec![q.clone()];
     for part in q.split_whitespace() {
         if part != q {
@@ -1350,6 +1683,19 @@ mod tests {
     }
 
     #[test]
+    fn name_hit_wins_despite_lower_match_count() {
+        let dir = tmp_dir("rankcount");
+        // One name occurrence vs three body occurrences: the name still first.
+        let named = write_tmp(&dir, "query.md", "nothing relevant inside");
+        let bodied = write_tmp(&dir, "zzz.md", "query query query");
+        let files = vec![bodied.clone(), named.clone()];
+        let hits = search_goto_files(&files, "query", 50);
+        assert_eq!(hits.len(), 2);
+        assert!(hits[1].match_count > hits[0].match_count);
+        assert_eq!(hits[0].path, named);
+    }
+
+    #[test]
     fn all_terms_required_for_content_match() {
         let dir = tmp_dir("terms");
         let both = write_tmp(&dir, "a.md", "alpha and beta together");
@@ -1397,5 +1743,144 @@ mod tests {
     fn empty_query_yields_no_hits() {
         assert!(search_goto_files(&[], "", 50).is_empty());
         assert!(search_goto_files(&[PathBuf::from("a.md")], "   ", 50).is_empty());
+    }
+
+    fn search_opts(
+        files: &[PathBuf],
+        raw: &str,
+        case_sensitive: bool,
+        base: Option<&Path>,
+    ) -> Vec<GotoResult> {
+        let (op, rest) = parse_search_op(raw);
+        search_goto_files_opts(
+            files,
+            &rest,
+            op,
+            &GotoSearchParams {
+                case_sensitive,
+                rel_base: base,
+            },
+            50,
+        )
+    }
+
+    #[test]
+    fn op_prefix_parsing() {
+        assert_eq!(
+            parse_search_op("file: Protocols"),
+            (SearchOp::File, "Protocols".to_string())
+        );
+        assert_eq!(
+            parse_search_op("PATH:docs/x"),
+            (SearchOp::Path, "docs/x".to_string())
+        );
+        assert_eq!(
+            parse_search_op("  Tag: rust  "),
+            (SearchOp::Tag, "rust".to_string())
+        );
+        // Bare prefix without a query falls back to a plain search.
+        assert_eq!(
+            parse_search_op("line:"),
+            (SearchOp::Any, "line:".to_string())
+        );
+        assert_eq!(
+            parse_search_op("just words"),
+            (SearchOp::Any, "just words".to_string())
+        );
+    }
+
+    #[test]
+    fn op_file_matches_name_only() {
+        let dir = tmp_dir("opfile");
+        let named = write_tmp(&dir, "protocols.md", "nothing about the query in here");
+        let bodied = write_tmp(&dir, "other.md", "protocols appear only in this body");
+        let files = vec![named.clone(), bodied.clone()];
+        let hits = search_opts(&files, "file: protocols", false, None);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, named);
+    }
+
+    #[test]
+    fn op_path_matches_relative_path() {
+        let dir = tmp_dir("oppath");
+        let sub = dir.join("docs");
+        std::fs::create_dir_all(&sub).unwrap();
+        let inside = write_tmp(&sub, "note.md", "no match in body at all");
+        let outside = write_tmp(&dir, "note2.md", "no match in body at all");
+        let files = vec![inside.clone(), outside.clone()];
+        let hits = search_opts(&files, "path: docs", false, Some(dir.as_path()));
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, inside);
+        assert!(hits[0].snippet.contains("docs"));
+    }
+
+    #[test]
+    fn op_tag_matches_hash_mentions() {
+        let dir = tmp_dir("optag");
+        let tagged = write_tmp(&dir, "a.md", "some text with #rust inside the line");
+        let plain = write_tmp(&dir, "b.md", "rust without a hash is not a tag");
+        let files = vec![tagged.clone(), plain.clone()];
+        let hits = search_opts(&files, "tag: rust", false, None);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, tagged);
+        assert!(hits[0].snippet.contains("#rust") || hits[0].snippet.contains("#Rust"));
+    }
+
+    #[test]
+    fn op_line_requires_single_line() {
+        let dir = tmp_dir("opline");
+        let together = write_tmp(&dir, "a.md", "alpha\nbeta\nnothing\n");
+        let split = write_tmp(&dir, "b.md", "alpha and beta together here");
+        let files = vec![together.clone(), split.clone()];
+        let hits = search_opts(&files, "line: alpha beta", false, None);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, split);
+    }
+
+    #[test]
+    fn op_section_requires_shared_heading() {
+        let dir = tmp_dir("opsection");
+        let same = write_tmp(
+            &dir,
+            "a.md",
+            "# Cooking\nadd alpha and beta\n# Other\nnothing\n",
+        );
+        let apart = write_tmp(&dir, "b.md", "# Alpha\nfirst\n# Beta\nsecond\n");
+        let files = vec![same.clone(), apart.clone()];
+        let hits = search_opts(&files, "section: alpha beta", false, None);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, same);
+    }
+
+    #[test]
+    fn op_prefix_with_multibyte_query_does_not_panic() {
+        // Regression: probing the ASCII prefix with byte slicing panicked on
+        // Cyrillic input (`trimmed[..5]` lands inside `и` for "при").
+        assert_eq!(
+            parse_search_op("при"),
+            (SearchOp::Any, "при".to_string())
+        );
+        assert_eq!(
+            parse_search_op("прив"),
+            (SearchOp::Any, "прив".to_string())
+        );
+        let dir = tmp_dir("opcyr");
+        let f = write_tmp(&dir, "заметка.md", "привет мир");
+        let hits = search_opts(&[f.clone()], "при", false, None);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, f);
+    }
+
+    #[test]
+    fn case_sensitive_toggle() {
+        let dir = tmp_dir("opcase");
+        let upper = write_tmp(&dir, "a.md", "Rust language");
+        let lower = write_tmp(&dir, "b.md", "rust language");
+        let files = vec![upper.clone(), lower.clone()];
+        let lax = search_opts(&files, "rust", false, None);
+        assert_eq!(lax.len(), 2);
+        let strict = search_opts(&files, "rust", true, None);
+        assert_eq!(strict.len(), 1);
+        assert_eq!(strict[0].path, lower);
     }
 }

@@ -82,6 +82,13 @@ pub struct AppView {
     pub folder_context_menu: crate::views::sidebar::FolderContextMenuState,
     pub file_context_menu: crate::views::sidebar::FileContextMenuState,
     pub tab_context_menu: crate::views::tab_context_menu::TabContextMenuState,
+    /// Sidebar content mode (file tree vs Obsidian-style search panel).
+    pub sidebar_mode: crate::views::sidebar::SidebarMode,
+    pub sidebar_search: crate::views::sidebar::SidebarSearchState,
+    pub search_panel_focus_handle: FocusHandle,
+    pub panel_scroll_handle: ScrollHandle,
+    /// Drag state of the search panel results overlay scrollbar.
+    pub panel_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag,
     /// Go to file dialog ("Search the knowledge base").
     pub search_dialog: crate::views::goto_search::SearchDialogState,
     pub goto_focus_handle: FocusHandle,
@@ -117,6 +124,17 @@ impl AppView {
         let title_edit_text = state.active_note.as_ref().map(|n| n.title.clone()).unwrap_or_default();
         let title_cursor_pos = title_edit_text.chars().count();
 
+        // Restore the sidebar geometry persisted in the session. Old session
+        // files predate these keys (width 0.0), so anything outside the
+        // resize limits falls back to the default.
+        let saved_width = state.session.sidebar_width;
+        let sidebar_width = if (160.0..=600.0).contains(&saved_width) {
+            saved_width
+        } else {
+            260.0
+        };
+        let sidebar_mode = state.session.sidebar_mode;
+
         let mut this = Self {
             state,
             theme,
@@ -131,7 +149,7 @@ impl AppView {
             editor_is_focused: true,
             window_was_active: true,
             is_mouse_selecting: false,
-            sidebar_width: 260.0,
+            sidebar_width,
             sidebar_collapsed: false,
             is_resizing_sidebar: false,
             is_hovering_resizer: false,
@@ -181,6 +199,11 @@ impl AppView {
             folder_context_menu: crate::views::sidebar::FolderContextMenuState::default(),
             file_context_menu: crate::views::sidebar::FileContextMenuState::default(),
             tab_context_menu: crate::views::tab_context_menu::TabContextMenuState::default(),
+            sidebar_mode,
+            sidebar_search: crate::views::sidebar::SidebarSearchState::default(),
+            search_panel_focus_handle: cx.focus_handle(),
+            panel_scroll_handle: ScrollHandle::new(),
+            panel_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
             search_dialog: crate::views::goto_search::SearchDialogState::default(),
             goto_focus_handle: cx.focus_handle(),
             goto_blink: BlinkManager::new(),
@@ -267,6 +290,9 @@ impl AppView {
         if self.search_dialog.is_open {
             self.goto_blink.suspend_visible(cx);
         }
+        if self.sidebar_mode == crate::views::sidebar::SidebarMode::Search {
+            self.sidebar_search.blink.suspend_visible(cx);
+        }
     }
 
     /// Re-arms blinking for whichever caret holds in-app focus. Used when the OS window
@@ -286,6 +312,9 @@ impl AppView {
         }
         if self.search_dialog.is_open {
             self.goto_blink.enable(BlinkTarget::GotoSearch, cx);
+        }
+        if self.sidebar_mode == crate::views::sidebar::SidebarMode::Search {
+            self.sidebar_search.blink.enable(BlinkTarget::SidebarSearch, cx);
         }
     }
 
@@ -353,6 +382,8 @@ impl AppView {
         self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         let sidebar_offset_y: f32 = self.sidebar_scroll_handle.offset().y.into();
         self.state.session.sidebar_scroll_top = sidebar_offset_y;
+        self.state.session.sidebar_width = self.sidebar_width;
+        self.state.session.sidebar_mode = self.sidebar_mode;
         self.state.save_session_state();
     }
 
@@ -1661,8 +1692,9 @@ impl AppView {
             return;
         }
 
-        // Ctrl + F (Поиск / фильтр)
-        if ctrl && (keystroke.key.eq_ignore_ascii_case("f") || keystroke.key == "а" || keystroke.key == "А") {
+        // Ctrl + F (Поиск / фильтр). Shift excluded: Ctrl+Shift+F opens
+        // the sidebar search panel via the root listener below.
+        if ctrl && !shift && (keystroke.key.eq_ignore_ascii_case("f") || keystroke.key == "а" || keystroke.key == "А") {
             _window.focus(&self.search_focus_handle);
             self.quick_filter.focus_and_select_all(&self.state.search_query, cx);
             return;
@@ -2266,6 +2298,11 @@ impl Render for AppView {
                     }
                 } else if this.quick_filter.is_mouse_selecting {
                     this.quick_filter.handle_mouse_move(event, &this.state.search_query, window, cx);
+                } else if this.panel_scrollbar_drag.active {
+                    let y: f32 = event.position.y.into();
+                    this.handle_panel_scrollbar_drag(y, cx);
+                } else if this.sidebar_search.is_mouse_selecting {
+                    this.handle_panel_mouse_move(event, window, cx);
                 } else if this.goto_scrollbar_drag.active {
                     let y: f32 = event.position.y.into();
                     this.handle_goto_scrollbar_drag(y, cx);
@@ -2285,6 +2322,14 @@ impl Render for AppView {
                 this.quick_filter.handle_mouse_up(cx);
                 this.handle_goto_mouse_up(cx);
                 this.goto_scrollbar_drag.end();
+                this.handle_panel_mouse_up(cx);
+                this.panel_scrollbar_drag.end();
+                if this.is_resizing_sidebar {
+                    // Persist the dragged width right away (crash-safe;
+                    // exit save refreshes it again).
+                    this.state.session.sidebar_width = this.sidebar_width;
+                    this.state.save_session_state();
+                }
                 if this.title_is_mouse_selecting {
                     this.title_is_mouse_selecting = false;
                     if this.title_selection_anchor == Some(this.title_cursor_pos) {
@@ -2311,6 +2356,8 @@ impl Render for AppView {
                 this.quick_filter.handle_mouse_up(cx);
                 this.handle_goto_mouse_up(cx);
                 this.goto_scrollbar_drag.end();
+                this.handle_panel_mouse_up(cx);
+                this.panel_scrollbar_drag.end();
                 if this.title_is_mouse_selecting {
                     this.title_is_mouse_selecting = false;
                     if this.title_selection_anchor == Some(this.title_cursor_pos) {
@@ -2328,16 +2375,27 @@ impl Render for AppView {
                 cx.notify();
             }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                let keystroke = &event.keystroke;
                 // Ctrl+P opens Go to file from anywhere (leaves don't handle it,
                 // so this root listener fires exactly once; the dialog input
                 // stops propagation, so an open dialog never re-triggers it).
-                if event.keystroke.modifiers.control
-                    && (event.keystroke.key.eq_ignore_ascii_case("p")
-                        || event.keystroke.key == "з"
-                        || event.keystroke.key == "З")
+                if keystroke.modifiers.control
+                    && !keystroke.modifiers.shift
+                    && (keystroke.key.eq_ignore_ascii_case("p")
+                        || keystroke.key == "з"
+                        || keystroke.key == "З")
                     && !this.search_dialog.is_open
                 {
                     this.open_search_dialog(window, cx);
+                }
+                // Ctrl+Shift+F opens the sidebar search panel from anywhere.
+                if keystroke.modifiers.control
+                    && keystroke.modifiers.shift
+                    && (keystroke.key.eq_ignore_ascii_case("f")
+                        || keystroke.key == "а"
+                        || keystroke.key == "А")
+                {
+                    this.open_sidebar_search(window, cx);
                 }
             }))
             // ================= WINDOW TITLEBAR & TAB BAR (CUSTOM CSD FRAME) =================
@@ -2416,6 +2474,73 @@ impl Render for AppView {
                                                 .rounded_md()
                                                 .text_xs()
                                                 .child("VIBECODIUM"),
+                                        )
+                                        // Files / Search view toggle (Obsidian-style)
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .gap_1()
+                                                .mx_1()
+                                                .child(
+                                                    div()
+                                                        .id("btn-sidebar-files")
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .w(px(28.0))
+                                                        .h(px(28.0))
+                                                        .rounded_md()
+                                                        .cursor_pointer()
+                                                        .when(
+                                                            self.sidebar_mode
+                                                                == crate::views::sidebar::SidebarMode::Files,
+                                                            |d| d.bg(theme.bg_hover),
+                                                        )
+                                                        .hover(|h| h.bg(theme.bg_hover))
+                                                        .child(icons::icon(
+                                                            icons::ICON_FOLDER,
+                                                            14.0,
+                                                            if self.sidebar_mode == crate::views::sidebar::SidebarMode::Files {
+                                                                theme.accent
+                                                            } else {
+                                                                theme.text_muted
+                                                            },
+                                                        ))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.close_sidebar_search(cx);
+                                                        })),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id("btn-sidebar-search")
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .w(px(28.0))
+                                                        .h(px(28.0))
+                                                        .rounded_md()
+                                                        .cursor_pointer()
+                                                        .when(
+                                                            self.sidebar_mode
+                                                                == crate::views::sidebar::SidebarMode::Search,
+                                                            |d| d.bg(theme.bg_hover),
+                                                        )
+                                                        .hover(|h| h.bg(theme.bg_hover))
+                                                        .child(icons::icon(
+                                                            icons::ICON_SEARCH,
+                                                            14.0,
+                                                            if self.sidebar_mode == crate::views::sidebar::SidebarMode::Search {
+                                                                theme.accent
+                                                            } else {
+                                                                theme.text_muted
+                                                            },
+                                                        ))
+                                                        .on_click(cx.listener(|this, _, window, cx| {
+                                                            this.open_sidebar_search(window, cx);
+                                                        })),
+                                                ),
                                         )
                                         .child(
                                             div()
@@ -3158,15 +3283,26 @@ impl Render for AppView {
                                             ),
                                     ),
                             )
-                            // Search Filter Bar
-                            .child(self.render_quick_filter(window, cx))
-                            // Tree Scroll — виртуализированный список (см. views/sidebar/tree.rs)
-                            .child(self.render_sidebar_tree(
-                                active_path.as_ref(),
-                                theme,
-                                window,
-                                cx,
-                            ))
+                            // Search Filter Bar + Tree (Files mode) or Search Panel
+                            .when(
+                                self.sidebar_mode
+                                    == crate::views::sidebar::SidebarMode::Files,
+                                |d| {
+                                    d.child(self.render_quick_filter(window, cx))
+                                        // Tree Scroll — виртуализированный список (см. views/sidebar/tree.rs)
+                                        .child(self.render_sidebar_tree(
+                                            active_path.as_ref(),
+                                            theme,
+                                            window,
+                                            cx,
+                                        ))
+                                },
+                            )
+                            .when(
+                                self.sidebar_mode
+                                    == crate::views::sidebar::SidebarMode::Search,
+                                |d| d.child(self.render_search_panel(theme, window, cx)),
+                            )
                             // Sidebar Footer (Vault display + Settings button)
                             .child(
                                 div()

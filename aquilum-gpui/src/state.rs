@@ -156,6 +156,12 @@ pub struct SessionState {
     pub expanded_folders: HashSet<PathBuf>,
     #[serde(default)]
     pub sidebar_scroll_top: f32,
+    /// Left sidebar width in pixels (clamped to 160..=600 on restore).
+    #[serde(default)]
+    pub sidebar_width: f32,
+    /// Open sidebar panel (file tree vs search). Defaults to files.
+    #[serde(default)]
+    pub sidebar_mode: crate::views::sidebar::SidebarMode,
 }
 
 impl SessionState {
@@ -1492,6 +1498,38 @@ mod tests {
         assert!(!is_empty_tab_path(Path::new("note.md")));
         assert!(!is_empty_tab_path(Path::new("Welcome.md")));
         assert!(!is_empty_tab_path(Path::new("")));
+    }
+
+    #[test]
+    fn session_persists_sidebar_geometry() {
+        let dir = std::env::temp_dir().join(format!(
+            "vibecodium_session_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut saved = SessionState::default();
+        saved.sidebar_width = 320.0;
+        saved.sidebar_mode = crate::views::sidebar::SidebarMode::Search;
+        saved.save(&dir);
+
+        let loaded = SessionState::load(&dir);
+        assert_eq!(loaded.sidebar_width, 320.0);
+        assert_eq!(
+            loaded.sidebar_mode,
+            crate::views::sidebar::SidebarMode::Search
+        );
+
+        // Session files written before these keys existed still load.
+        std::fs::write(dir.join("session-state.json"), "{}").unwrap();
+        let legacy = SessionState::load(&dir);
+        assert_eq!(legacy.sidebar_width, 0.0);
+        assert_eq!(
+            legacy.sidebar_mode,
+            crate::views::sidebar::SidebarMode::Files
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

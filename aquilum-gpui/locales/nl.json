@@ -198,7 +198,8 @@
       "undo": "Ongedaan maken",
       "redo": "Opnieuw uitvoeren",
       "home_end": "Ga naar Begin/Einde van de regel",
-      "quick_open": "Go to File (Quick Open)"
+      "quick_open": "Go to File (Quick Open)",
+      "search_files": "Search Files"
     }
   },
   "sidebar": {
@@ -311,7 +312,16 @@
     "hint_create": "create",
     "match_one": "{} match",
     "match_few": "{} matches",
-    "match_many": "{} matches"
+    "match_many": "{} matches",
+    "panel_hint": "Enter a search query...",
+    "operators_title": "Search options",
+    "op_path_desc": "match in file path",
+    "op_file_desc": "match in file name",
+    "op_tag_desc": "match in tags",
+    "op_line_desc": "keywords on one line",
+    "op_section_desc": "keywords under one heading",
+    "history": "History",
+    "found": "Found: {}"
   },
   "app": {
     "search_placeholder": "Snel kluis zoeken..."

@@ -183,6 +183,7 @@ pub enum BlinkTarget {
     Hex,
     QuickFilter,
     GotoSearch,
+    SidebarSearch,
 }
 
 impl BlinkTarget {
@@ -193,6 +194,7 @@ impl BlinkTarget {
             BlinkTarget::Hex => &mut view.hex_blink,
             BlinkTarget::QuickFilter => &mut view.quick_filter.blink,
             BlinkTarget::GotoSearch => &mut view.goto_blink,
+            BlinkTarget::SidebarSearch => &mut view.sidebar_search.blink,
         }
     }
 }
