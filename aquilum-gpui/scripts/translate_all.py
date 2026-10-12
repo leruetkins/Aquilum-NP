@@ -1,17 +1,27 @@
 """
 Full localization translator for Aquilum GPUI.
-Translates all untranslated keys from en.json into the target 18 language JSON files.
-Preserves placeholders ({0}, {1}, etc.), keyboard shortcuts, special terms, and JSON structure.
+Features:
+- Incremental translation: automatically skips already translated strings.
+- Robust UTF-8 console output safe for Windows cp1251 terminals.
+- Uses reliable client endpoint (dict-chrome-ex) with fallback to gtx.
+- Auto-saves JSON every 10 translated keys so progress is immediately committed to disk.
+- Rate-limit handling with exponential backoff.
+- Placeholder protection ({0}, {1}, etc.).
 """
 
 import json
 import re
+import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
-# Mapping of file codes to Google Translate API language codes
+# Force UTF-8 stdout if needed
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 LOCALE_MAP = {
     "ar": "ar",
     "cs": "cs",
@@ -46,6 +56,10 @@ SHORTCUT_KEYS = {
 }
 
 
+def log(msg: str):
+    print(msg, flush=True)
+
+
 def flatten_keys(d, prefix=""):
     items = {}
     for k, v in d.items():
@@ -70,43 +84,60 @@ def unflatten_keys(flat_dict):
     return res
 
 
+def save_locale(file_path: Path, flat_dict: dict):
+    rebuilt = unflatten_keys(flat_dict)
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(rebuilt, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def fetch_translation(text: str, target_lang: str) -> str:
+    # 1. Try dict-chrome-ex endpoint
+    url1 = f"https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=en&tl={target_lang}&q={urllib.parse.quote(text)}"
+    req1 = urllib.request.Request(url1, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+    try:
+        with urllib.request.urlopen(req1, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], str):
+                return data[0]
+            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
+                return "".join([p[0] for p in data[0] if p and p[0]])
+    except Exception:
+        pass
+
+    # 2. Fallback to gtx endpoint
+    url2 = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl={target_lang}&dt=t&q={urllib.parse.quote(text)}"
+    req2 = urllib.request.Request(url2, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+    with urllib.request.urlopen(req2, timeout=8) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+        return "".join([p[0] for p in data[0] if p and p[0]])
+
+
 def translate_text(text: str, target_lang: str) -> str:
-    """Translates a single string with placeholder preservation."""
     if text in DO_NOT_TRANSLATE or text in SHORTCUT_KEYS:
         return text
 
-    # Extract placeholders like {0}, {1} to prevent mangling
     placeholders = re.findall(r"\{\d+\}", text)
-    # Temporary token replacements
     temp_text = text
     for i, ph in enumerate(placeholders):
         temp_text = temp_text.replace(ph, f"__PH_{i}__")
 
-    url = (
-        "https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl="
-        + urllib.parse.quote(target_lang)
-        + "&dt=t&q="
-        + urllib.parse.quote(temp_text)
-    )
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-
-    for attempt in range(4):
+    for attempt in range(5):
         try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                raw = response.read().decode("utf-8")
-                data = json.loads(raw)
-                res = "".join([part[0] for part in data[0] if part[0]])
-
-                # Restore placeholders
-                for i, ph in enumerate(placeholders):
-                    res = re.sub(rf"__\s*PH_{i}\s*__", ph, res, flags=re.IGNORECASE)
-
-                return res
+            res = fetch_translation(temp_text, target_lang)
+            for i, ph in enumerate(placeholders):
+                res = re.sub(rf"__\s*PH_{i}\s*__", ph, res, flags=re.IGNORECASE)
+            return res
+        except urllib.error.HTTPError as he:
+            wait_sec = 4.0 * (attempt + 1)
+            log(f"   [HTTP {he.code}] Sleeping {wait_sec:.0f}s before retry {attempt + 1}/5...")
+            time.sleep(wait_sec)
         except Exception as e:
-            if attempt == 3:
-                print(f"    Failed to translate '{text}': {e}")
-                return text
-            time.sleep(1.0 + attempt)
+            wait_sec = 2.0 * (attempt + 1)
+            time.sleep(wait_sec)
+
+    log(f"   [Warning] Translation failed for '{text}', keeping original.")
+    return text
 
 
 def main():
@@ -116,10 +147,14 @@ def main():
 
     en_flat = flatten_keys(en_data)
 
+    log("=" * 60)
+    log("Aquilum i18n Translation Runner")
+    log(f"Base locale: en.json ({len(en_flat)} keys)")
+    log("=" * 60)
+
     for code, tl_code in LOCALE_MAP.items():
         path = locales_dir / f"{code}.json"
         if not path.exists():
-            print(f"Skipping {code}: file not found")
             continue
 
         with open(path, "r", encoding="utf-8") as f:
@@ -133,29 +168,38 @@ def main():
                     continue
                 keys_to_translate.append(k)
 
-        print(f"\n[{code}] Found {len(keys_to_translate)} untranslated keys. Translating to {tl_code}...")
+        total_keys = len(keys_to_translate)
         if not keys_to_translate:
-            print(f"[{code}] Already fully translated!")
+            log(f"[{code}.json] -> 100% translated (0 untranslated). Skipping.")
             continue
 
+        log(f"\n>>> [{code}.json] Found {total_keys} untranslated strings -> Translating to [{tl_code}]...")
+
         count = 0
-        for k in keys_to_translate:
-            original = en_flat[k]
-            translated = translate_text(original, tl_code)
-            target_flat[k] = translated
+        unsaved = 0
+        for idx, k in enumerate(keys_to_translate, 1):
+            orig = en_flat[k]
+            trans = translate_text(orig, tl_code)
+            target_flat[k] = trans
             count += 1
-            if count % 25 == 0 or count == len(keys_to_translate):
-                print(f"  [{code}] Progress: {count}/{len(keys_to_translate)}")
-            time.sleep(0.04)
+            unsaved += 1
 
-        # Reconstruct json
-        rebuilt = unflatten_keys(target_flat)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(rebuilt, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-        print(f"[{code}] Done! Saved {len(target_flat)} keys to {path.name}")
+            preview_orig = (orig[:25] + "..") if len(orig) > 25 else orig
+            preview_trans = (trans[:25] + "..") if len(trans) > 25 else trans
+            log(f"  [{code}] ({idx}/{total_keys}) {k}: '{preview_orig}' -> '{preview_trans}'")
 
-    print("\nAll locales processed successfully!")
+            if unsaved >= 10:
+                save_locale(path, target_flat)
+                unsaved = 0
+
+            time.sleep(0.15)
+
+        save_locale(path, target_flat)
+        log(f"[{code}.json] Successfully completed and saved! ({count} keys translated)\n")
+
+    log("=" * 60)
+    log("All localization files processed successfully!")
+    log("=" * 60)
 
 
 if __name__ == "__main__":
