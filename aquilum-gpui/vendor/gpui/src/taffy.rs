@@ -309,7 +309,15 @@ impl ToTaffy<taffy::style::Style> for Style {
             unit: &Option<u16>,
         ) -> Vec<taffy::GridTemplateComponent<T>> {
             // grid-template-columns: repeat(<number>, minmax(0, 1fr));
-            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0), fr(1.0))])])
+            //
+            // LOCAL PATCH (see [patch.crates-io] in the app's Cargo.toml).
+            //
+            // `length`/`fr` take `Input: Into<f32>`, and there is no `From<f64> for f32`,
+            // so an unannotated `0.0`/`1.0` cannot be inferred and the compiler falls
+            // back to `f32`. That fallback is `float_literal_f32_fallback`, a
+            // `future_incompatible` lint that will become a hard error. Spell the type
+            // out instead of relying on it.
+            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0_f32), fr(1.0_f32))])])
                 .unwrap_or_default()
         }
 
