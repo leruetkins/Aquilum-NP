@@ -58,10 +58,11 @@ impl AppView {
 
     /// Opens the delete folder confirmation modal.
     pub fn open_delete_folder_modal(&mut self, folder_path: PathBuf, cx: &mut Context<Self>) {
+        let fallback_folder = self.t("common.folder");
         let folder_name = folder_path
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Папка".to_string());
+            .unwrap_or(fallback_folder);
 
         self.folder_modal = FolderModal::Delete {
             folder_path,
@@ -72,10 +73,11 @@ impl AppView {
 
     /// Opens the move folder modal.
     pub fn open_move_folder_modal(&mut self, folder_path: PathBuf, cx: &mut Context<Self>) {
+        let fallback_folder = self.t("common.folder");
         let folder_name = folder_path
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Папка".to_string());
+            .unwrap_or(fallback_folder);
 
         let ws_root = self.state.workspace_path.clone().unwrap_or_default();
         let all_folders = folder_actions::collect_all_workspace_folders(&ws_root);
@@ -113,7 +115,7 @@ impl AppView {
                     self.state.expanded_folders.remove(folder_path);
                     self.state.expanded_folders.insert(new_path);
                     self.state.reload_file_tree();
-                    self.state.status_text = format!("Папка переименована в '{}'", new_name);
+                    self.state.status_text = self.t_fmt("sidebar.folder_renamed", &[new_name]);
                     self.folder_modal = FolderModal::None;
                 }
                 Err(e) => {
@@ -133,11 +135,11 @@ impl AppView {
                 Ok(_) => {
                     self.state.expanded_folders.remove(folder_path);
                     self.state.reload_file_tree();
-                    self.state.status_text = format!("Папка '{}' удалена", folder_name);
+                    self.state.status_text = self.t_fmt("sidebar.folder_deleted", &[folder_name]);
                     self.folder_modal = FolderModal::None;
                 }
                 Err(e) => {
-                    self.state.status_text = format!("Ошибка удаления: {}", e);
+                    self.state.status_text = self.t_fmt("sidebar.error_deleting", &[&e]);
                     self.folder_modal = FolderModal::None;
                 }
             }
@@ -154,11 +156,11 @@ impl AppView {
                     self.state.expanded_folders.insert(dest_parent);
                     self.state.expanded_folders.insert(new_path);
                     self.state.reload_file_tree();
-                    self.state.status_text = "Папка успешно перемещена".to_string();
+                    self.state.status_text = self.t("sidebar.folder_moved");
                     self.folder_modal = FolderModal::None;
                 }
                 Err(e) => {
-                    self.state.status_text = format!("Ошибка перемещения: {}", e);
+                    self.state.status_text = self.t_fmt("sidebar.error_moving", &[&e]);
                     self.folder_modal = FolderModal::None;
                 }
             }
@@ -304,7 +306,7 @@ impl AppView {
                                         .text_sm()
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
                                         .text_color(theme.text_primary)
-                                        .child("Переименовать папку"),
+                                        .child(self.t("sidebar.rename_folder")),
                                 )
                                 // Input Box
                                 .child(
@@ -359,7 +361,7 @@ impl AppView {
                                                 .cursor_pointer()
                                                 .text_color(theme.text_secondary)
                                                 .hover(|h| h.bg(theme.bg_hover))
-                                                .child("Отмена")
+                                                .child(self.t("common.cancel"))
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.close_folder_modal(cx);
                                                 })),
@@ -375,7 +377,7 @@ impl AppView {
                                                 .bg(theme.accent)
                                                 .text_color(gpui::rgb(0xffffff))
                                                 .hover(|h| h.opacity(0.9))
-                                                .child("Переименовать")
+                                                .child(self.t("sidebar.rename"))
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.commit_folder_rename(cx);
                                                 })),
@@ -415,17 +417,14 @@ impl AppView {
                                         .text_sm()
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
                                         .text_color(gpui::rgb(0xe05252))
-                                        .child("Удалить папку"),
+                                        .child(self.t("sidebar.delete_folder")),
                                 )
                                 // Description
                                 .child(
                                     div()
                                         .text_xs()
                                         .text_color(theme.text_primary)
-                                        .child(format!(
-                                            "Вы уверены, что хотите удалить папку \"{}\"? Все файлы и вложенные каталоги внутри неё будут удалены.",
-                                            folder_name
-                                        )),
+                                        .child(self.t_fmt("sidebar.delete_folder_confirm", &[&folder_name])),
                                 )
                                 // Actions
                                 .child(
@@ -445,7 +444,7 @@ impl AppView {
                                                 .cursor_pointer()
                                                 .text_color(theme.text_secondary)
                                                 .hover(|h| h.bg(theme.bg_hover))
-                                                .child("Отмена")
+                                                .child(self.t("common.cancel"))
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.close_folder_modal(cx);
                                                 })),
@@ -461,7 +460,7 @@ impl AppView {
                                                 .bg(gpui::rgb(0xe05252))
                                                 .text_color(gpui::rgb(0xffffff))
                                                 .hover(|h| h.opacity(0.9))
-                                                .child("Удалить")
+                                                .child(self.t("sidebar.delete"))
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.commit_folder_delete(cx);
                                                 })),
@@ -505,7 +504,7 @@ impl AppView {
                                         .text_sm()
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
                                         .text_color(theme.text_primary)
-                                        .child(format!("Переместить \"{}\" в:", folder_name)),
+                                        .child(self.t_fmt("sidebar.move_folder_to", &[&folder_name])),
                                 )
                                 // Folders scroll list
                                 .child(
@@ -524,7 +523,7 @@ impl AppView {
                                         .children(available_folders.into_iter().enumerate().map(|(idx, folder)| {
                                             let is_root = folder == ws_root;
                                             let label = if is_root {
-                                                "/ (Корень хранилища)".to_string()
+                                                self.t("common.root")
                                             } else {
                                                 folder_actions::get_relative_path_string(&ws_root, &folder)
                                             };
@@ -571,7 +570,7 @@ impl AppView {
                                                 .cursor_pointer()
                                                 .text_color(theme.text_secondary)
                                                 .hover(|h| h.bg(theme.bg_hover))
-                                                .child("Отмена")
+                                                .child(self.t("common.cancel"))
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.close_folder_modal(cx);
                                                 })),

@@ -23,22 +23,27 @@ pub enum SettingsTab {
 }
 
 impl SettingsTab {
-    /// Returns the user-facing localized display title for the tab.
-    pub fn title(&self) -> &'static str {
+    /// Returns the i18n key for this settings tab.
+    pub fn key(&self) -> &'static str {
         match self {
-            Self::Ui => "Интерфейс",
-            Self::Editor => "Редактор",
-            Self::Reader => "Читалка",
-            Self::Search => "Поиск",
-            Self::Templates => "Шаблоны",
-            Self::Files => "Файлы",
-            Self::Analysis => "Анализ",
-            Self::Mcp => "AI-агенты",
-            Self::History => "История",
-            Self::Trash => "Корзина",
-            Self::System => "Система",
-            Self::Shortcuts => "Горячие клавиши",
+            Self::Ui => "settings.tabs.ui",
+            Self::Editor => "settings.tabs.editor",
+            Self::Reader => "settings.tabs.reader",
+            Self::Search => "settings.tabs.search",
+            Self::Templates => "settings.tabs.templates",
+            Self::Files => "settings.tabs.files",
+            Self::Analysis => "settings.tabs.analysis",
+            Self::Mcp => "settings.tabs.mcp",
+            Self::History => "settings.tabs.history",
+            Self::Trash => "settings.tabs.trash",
+            Self::System => "settings.tabs.system",
+            Self::Shortcuts => "settings.tabs.shortcuts",
         }
+    }
+
+    /// Returns the user-facing localized display title for the tab.
+    pub fn title(&self, lang: &str) -> String {
+        crate::i18n::t(self.key(), lang)
     }
 
     /// Returns the SVG icon path corresponding to this settings tab.
@@ -79,6 +84,16 @@ impl SettingsTab {
 }
 
 impl AppView {
+    /// Helper to get localized string using current UI language
+    pub fn t(&self, key: &str) -> String {
+        crate::i18n::t(key, &self.config.ui.language)
+    }
+
+    /// Helper to get localized string with positional `{}` formatting
+    pub fn t_fmt(&self, key: &str, args: &[&str]) -> String {
+        crate::i18n::t_fmt(key, &self.config.ui.language, args)
+    }
+
     /// Toggles visibility of the Settings modal window.
     pub fn toggle_settings(&mut self, cx: &mut Context<Self>) {
         self.is_settings_open = !self.is_settings_open;
@@ -102,6 +117,7 @@ impl AppView {
     pub fn close_settings(&mut self, cx: &mut Context<Self>) {
         self.is_settings_open = false;
         self.active_color_picker = None;
+        self.is_language_menu_open = false;
         cx.notify();
     }
 
@@ -234,7 +250,7 @@ impl AppView {
                             .text_base()
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(theme.text_primary)
-                            .child("Настройки"),
+                            .child(self.t("settings.title")),
                     ),
             )
             .child(
@@ -295,7 +311,7 @@ impl AppView {
                             .text_sm()
                             .font_weight(if is_active { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::NORMAL })
                             .text_color(text_color)
-                            .child(tab.title()),
+                            .child(tab.title(&self.config.ui.language)),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.settings_tab = tab;
@@ -848,8 +864,8 @@ impl AppView {
 
         let display_rows = vec![
             self.render_setting_row(
-                "Тема оформления",
-                Some("Цветовая палитра интерфейса (системная, светлая, тёмная)"),
+                &self.t("settings.ui.theme"),
+                Some(&self.t("settings.ui.theme_desc")),
                 div()
                     .flex()
                     .flex_row()
@@ -870,7 +886,7 @@ impl AppView {
                             .when(config.ui.theme != "system", |s| s.text_color(theme.text_muted).hover(|h| h.bg(theme.bg_hover)))
                             .text_xs()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child("Системная")
+                            .child(self.t("settings.ui.theme_system"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.ui.theme = "system".to_string();
                                 this.save_settings(cx);
@@ -887,7 +903,7 @@ impl AppView {
                             .when(config.ui.theme != "light", |s| s.text_color(theme.text_muted).hover(|h| h.bg(theme.bg_hover)))
                             .text_xs()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child("Светлая")
+                            .child(self.t("settings.ui.theme_light"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.ui.theme = "light".to_string();
                                 this.save_settings(cx);
@@ -904,7 +920,7 @@ impl AppView {
                             .when(config.ui.theme != "dark", |s| s.text_color(theme.text_muted).hover(|h| h.bg(theme.bg_hover)))
                             .text_xs()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child("Тёмная")
+                            .child(self.t("settings.ui.theme_dark"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.config.ui.theme = "dark".to_string();
                                 this.save_settings(cx);
@@ -912,20 +928,88 @@ impl AppView {
                     ),
             ),
             self.render_setting_row(
-                "Язык интерфейса",
-                Some("Язык меню и системных сообщений"),
-                div()
-                    .id("select-language")
-                    .cursor_pointer()
-                    .child(self.render_select_pill(if config.ui.language == "en" { "English" } else { "Русский" }))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.ui.language = if this.config.ui.language == "en" { "ru".to_string() } else { "en".to_string() };
-                        this.save_settings(cx);
-                    })),
+                &self.t("settings.ui.language"),
+                Some(&self.t("settings.ui.language_desc")),
+                {
+                    let current_code = crate::i18n::LocaleInfo::normalize(&config.ui.language);
+                    let current_loc = crate::i18n::LocaleInfo::for_code(current_code)
+                        .unwrap_or(&crate::i18n::SUPPORTED_LOCALES[0]);
+                    let pill_label = format!("{} ({})", current_loc.native_name, current_loc.english_name);
+                    let is_open = self.is_language_menu_open;
+
+                    div()
+                        .relative()
+                        .child(
+                            div()
+                                .id("select-language-btn")
+                                .cursor_pointer()
+                                .child(self.render_select_pill(&pill_label))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.is_language_menu_open = !this.is_language_menu_open;
+                                    cx.notify();
+                                })),
+                        )
+                        .when(is_open, |parent| {
+                            parent.child(
+                                div()
+                                    .id("language-dropdown-menu")
+                                    .absolute()
+                                    .top_full()
+                                    .right_0()
+                                    .mt_1()
+                                    .w(px(250.0))
+                                    .max_h(px(220.0))
+                                    .overflow_scroll()
+                                    .bg(theme.bg_sidebar)
+                                    .border_1()
+                                    .border_color(theme.border)
+                                    .rounded_md()
+                                    .shadow_lg()
+                                    .p_1()
+                                    .gap_0p5()
+                                    .flex()
+                                    .flex_col()
+                                    .children(crate::i18n::SUPPORTED_LOCALES.iter().enumerate().map(|(idx, loc)| {
+                                        let is_active = loc.code == current_loc.code;
+                                        let code = loc.code;
+                                        div()
+                                            .id(gpui::ElementId::from(("lang-item", idx)))
+                                            .flex()
+                                            .flex_row()
+                                            .justify_between()
+                                            .items_center()
+                                            .px_2p5()
+                                            .py_1p5()
+                                            .rounded_sm()
+                                            .cursor_pointer()
+                                            .when(is_active, |s| s.bg(theme.accent).text_color(theme.text_on_accent))
+                                            .when(!is_active, |s| s.hover(|h| h.bg(theme.bg_hover)).text_color(theme.text_primary))
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_weight(if is_active { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::NORMAL })
+                                                    .child(loc.native_name),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(if is_active { theme.text_on_accent } else { theme.text_muted })
+                                                    .child(loc.english_name),
+                                            )
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.config.ui.language = code.to_string();
+                                                this.save_settings(cx);
+                                                this.is_language_menu_open = false;
+                                                cx.notify();
+                                            }))
+                                    })),
+                            )
+                        })
+                },
             ),
             self.render_setting_row(
-                "Акцентный цвет",
-                Some("Основной цвет кнопок, ссылок и курсора"),
+                &self.t("settings.ui.accent_color"),
+                Some(&self.t("settings.ui.accent_color_desc")),
                 div()
                     .flex()
                     .flex_row()
@@ -944,18 +1028,18 @@ impl AppView {
 
         let font_rows = vec![
             self.render_setting_row(
-                "Шрифт интерфейса",
-                Some("Семейство шрифтов для панелей и навигации"),
+                &self.t("settings.ui.font_family"),
+                Some(&self.t("settings.ui.font_family_desc")),
                 self.render_select_pill(&config.ui.font.font_family),
             ),
             self.render_setting_row(
-                "Начертание шрифта",
-                Some("Базовая толщина текста интерфейса"),
+                &self.t("settings.ui.font_weight"),
+                Some(&self.t("settings.ui.font_weight_desc")),
                 self.render_select_pill(if config.ui.font.font_weight >= 600 { "Semibold" } else { "Regular" }),
             ),
             self.render_setting_row(
-                "Базовый размер шрифта",
-                Some("Размер текста элементов интерфейса в пикселях"),
+                &self.t("settings.ui.font_size"),
+                Some(&self.t("settings.ui.font_size_desc")),
                 self.render_stepper(
                     "ui-font-size",
                     &format!("{} px", config.ui.font.font_size_base),
@@ -980,8 +1064,8 @@ impl AppView {
             .flex()
             .flex_col()
             .gap_5()
-            .child(self.render_settings_card("Отображение", display_rows))
-            .child(self.render_settings_card("Шрифты интерфейса", font_rows))
+            .child(self.render_settings_card(&self.t("settings.ui.display_card"), display_rows))
+            .child(self.render_settings_card(&self.t("settings.ui.font_card"), font_rows))
     }
 
     // =========================================================================
@@ -1374,13 +1458,13 @@ impl AppView {
 
         let reader_rows = vec![
             self.render_setting_row(
-                "Шрифт читалки",
-                Some("Типографический шрифт для комфортного чтения больших заметок"),
+                &self.t("settings.reader.font_family"),
+                Some(&self.t("settings.reader.font_family_desc")),
                 self.render_select_pill(&config.reader.font.font_family),
             ),
             self.render_setting_row(
-                "Высота строки",
-                Some("Интервал строк в режиме чтения"),
+                &self.t("settings.reader.line_height"),
+                Some(&self.t("settings.reader.line_height_desc")),
                 self.render_stepper(
                     "reader-line-height",
                     &format!("{:.2}", config.reader.line_height),
@@ -1423,7 +1507,7 @@ impl AppView {
             .flex()
             .flex_col()
             .gap_5()
-            .child(self.render_settings_card("Режим чтения", reader_rows))
+            .child(self.render_settings_card(&self.t("settings.reader.title"), reader_rows))
     }
 
     // =========================================================================
@@ -1436,8 +1520,8 @@ impl AppView {
 
         let search_rows = vec![
             self.render_setting_row(
-                "Размер пула кандидатов",
-                Some("Количество результатов первичного отбора индекса Tantivy"),
+                &self.t("settings.search.candidate_pool"),
+                Some(&self.t("settings.search.candidate_pool_desc")),
                 self.render_stepper(
                     "search-pool",
                     &format!("{}", config.search.candidate_pool_size),
@@ -1457,8 +1541,8 @@ impl AppView {
                 ),
             ),
             self.render_setting_row(
-                "Максимум терминов в запросе",
-                Some("Ограничение числа слов для нечёткого поиска"),
+                &self.t("settings.search.max_terms"),
+                Some(&self.t("settings.search.max_terms_desc")),
                 self.render_stepper(
                     "search-terms",
                     &format!("{}", config.search.max_query_terms),
@@ -1483,7 +1567,7 @@ impl AppView {
             .flex()
             .flex_col()
             .gap_5()
-            .child(self.render_settings_card("Параметры поиска", search_rows))
+            .child(self.render_settings_card(&self.t("settings.search.title"), search_rows))
     }
 
     // =========================================================================
@@ -1497,8 +1581,8 @@ impl AppView {
 
         let template_rows = vec![
             self.render_setting_row(
-                "Папка шаблонов",
-                Some("Относительный путь к папке с Markdown-шаблонами в базе"),
+                &self.t("settings.templates.folder"),
+                Some(&self.t("settings.templates.folder_desc")),
                 div()
                     .px_3()
                     .py_1()
@@ -1516,7 +1600,7 @@ impl AppView {
             .flex()
             .flex_col()
             .gap_5()
-            .child(self.render_settings_card("Шаблоны заметок", template_rows))
+            .child(self.render_settings_card(&self.t("settings.templates.title"), template_rows))
     }
 
     // =========================================================================
@@ -1530,8 +1614,8 @@ impl AppView {
 
         let file_rows = vec![
             self.render_setting_row(
-                "Папка для вложений",
-                Some("Куда сохраняются вставленные изображения, видео и документы"),
+                &self.t("settings.files.attachments_folder"),
+                Some(&self.t("settings.files.attachments_folder_desc")),
                 div()
                     .px_3()
                     .py_1()
@@ -1549,7 +1633,7 @@ impl AppView {
             .flex()
             .flex_col()
             .gap_5()
-            .child(self.render_settings_card("Файлы и медиа", file_rows))
+            .child(self.render_settings_card(&self.t("settings.files.title"), file_rows))
     }
 
     // =========================================================================
@@ -1562,8 +1646,8 @@ impl AppView {
 
         let analysis_rows = vec![
             self.render_setting_row(
-                "Алгоритм BM25F",
-                Some("Ранжирование связанных заметок с учётом веса заголовка"),
+                &self.t("settings.analysis.bm25f"),
+                Some(&self.t("settings.analysis.bm25f_desc")),
                 div()
                     .id("row-bm25f")
                     .child(self.render_toggle_switch(config.analysis.enable_bm25f))
@@ -1573,8 +1657,8 @@ impl AppView {
                     })),
             ),
             self.render_setting_row(
-                "Алгоритм Adamic-Adar",
-                Some("Анализ топологии графа на основе общих соседей заметок"),
+                &self.t("settings.analysis.adamic_adar"),
+                Some(&self.t("settings.analysis.adamic_adar_desc")),
                 div()
                     .id("row-adamic")
                     .child(self.render_toggle_switch(config.analysis.enable_adamic_adar))
@@ -1584,8 +1668,8 @@ impl AppView {
                     })),
             ),
             self.render_setting_row(
-                "WikiXiv рекомендации",
-                Some("Поиск контекстных ассоциаций и смысловых связей"),
+                &self.t("settings.analysis.wikixiv"),
+                Some(&self.t("settings.analysis.wikixiv_desc")),
                 div()
                     .id("row-wikixiv")
                     .child(self.render_toggle_switch(config.analysis.enable_wikixiv))
@@ -1600,7 +1684,7 @@ impl AppView {
             .flex()
             .flex_col()
             .gap_5()
-            .child(self.render_settings_card("Методы анализа связей", analysis_rows))
+            .child(self.render_settings_card(&self.t("settings.analysis.title"), analysis_rows))
     }
 
     // =========================================================================
@@ -1614,8 +1698,8 @@ impl AppView {
 
         let mcp_rows = vec![
             self.render_setting_row(
-                "Локальный сервер MCP",
-                Some("Разрешить AI-ассистентам читать базу знаний через протокол Model Context Protocol"),
+                &self.t("settings.mcp.enable"),
+                Some(&self.t("settings.mcp.enable_desc")),
                 div()
                     .id("row-mcp")
                     .child(self.render_toggle_switch(config.mcp.enabled))
@@ -1625,8 +1709,8 @@ impl AppView {
                     })),
             ),
             self.render_setting_row(
-                "Порт сервера",
-                Some("TCP порт локального HTTP моста MCP"),
+                &self.t("settings.mcp.port"),
+                Some(&self.t("settings.mcp.port_desc")),
                 div()
                     .px_3()
                     .py_1()
@@ -1639,8 +1723,8 @@ impl AppView {
                     .child(format!("{}", config.mcp.port)),
             ),
             self.render_setting_row(
-                "Разрешить запись заметок",
-                Some("Разрешить внешним AI-агентам создавать и обновлять заметки"),
+                &self.t("settings.mcp.allow_write"),
+                Some(&self.t("settings.mcp.allow_write_desc")),
                 div()
                     .id("row-mcp-write")
                     .child(self.render_toggle_switch(config.mcp.allow_write))
@@ -1655,7 +1739,7 @@ impl AppView {
             .flex()
             .flex_col()
             .gap_5()
-            .child(self.render_settings_card("Model Context Protocol (AI)", mcp_rows))
+            .child(self.render_settings_card(&self.t("settings.mcp.title"), mcp_rows))
     }
 
     // =========================================================================
@@ -1668,17 +1752,17 @@ impl AppView {
 
         let history_rows = vec![
             self.render_setting_row(
-                "Срок хранения версий",
-                Some("Период хранения снимков заметок в скрытой папке .vibecodium/history"),
+                &self.t("settings.history.retention"),
+                Some(&self.t("settings.history.retention_desc")),
                 div()
                     .id("row-history-retention")
                     .cursor_pointer()
-                    .child(self.render_select_pill(match config.history.retention_days {
-                        0 => "Всегда",
-                        30 => "30 дней",
-                        90 => "90 дней",
-                        365 => "1 год",
-                        _ => "Всегда",
+                    .child(self.render_select_pill(&match config.history.retention_days {
+                        0 => self.t("common.always"),
+                        30 => self.t("common.days_30"),
+                        90 => self.t("common.days_90"),
+                        365 => self.t("common.year_1"),
+                        _ => self.t("common.always"),
                     }))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.config.history.retention_days = match this.config.history.retention_days {
@@ -1696,7 +1780,7 @@ impl AppView {
             .flex()
             .flex_col()
             .gap_5()
-            .child(self.render_settings_card("История изменений", history_rows))
+            .child(self.render_settings_card(&self.t("settings.history.title"), history_rows))
     }
 
     // =========================================================================
@@ -1710,16 +1794,16 @@ impl AppView {
 
         let trash_rows = vec![
             self.render_setting_row(
-                "Удалять безвозвратно",
-                Some("Автоматическая очистка заметок из папки .trash"),
+                &self.t("settings.trash.auto_delete"),
+                Some(&self.t("settings.trash.auto_delete_desc")),
                 div()
                     .id("row-trash-retention")
                     .cursor_pointer()
-                    .child(self.render_select_pill(match config.trash.retention_days {
-                        30 => "Через 30 дней",
-                        90 => "Через 90 дней",
-                        365 => "Через год",
-                        _ => "Никогда",
+                    .child(self.render_select_pill(&match config.trash.retention_days {
+                        30 => self.t("common.after_30_days"),
+                        90 => self.t("common.after_90_days"),
+                        365 => self.t("common.after_1_year"),
+                        _ => self.t("common.never"),
                     }))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.config.trash.retention_days = match this.config.trash.retention_days {
@@ -1732,8 +1816,8 @@ impl AppView {
                     })),
             ),
             self.render_setting_row(
-                "Папка корзины",
-                Some("Локальная корзина внутри текущей базы заметок"),
+                &self.t("settings.trash.folder"),
+                Some(&self.t("settings.trash.folder_desc")),
                 div()
                     .px_3()
                     .py_1()
@@ -1751,7 +1835,7 @@ impl AppView {
             .flex()
             .flex_col()
             .gap_5()
-            .child(self.render_settings_card("Корзина заметок", trash_rows))
+            .child(self.render_settings_card(&self.t("settings.trash.title"), trash_rows))
     }
 
     // =========================================================================
@@ -1764,8 +1848,8 @@ impl AppView {
 
         let system_rows = vec![
             self.render_setting_row(
-                "Версия приложения",
-                Some("Архитектура скомпилированного нативного клиента"),
+                &self.t("settings.system.version"),
+                Some(&self.t("settings.system.arch")),
                 div()
                     .px_3()
                     .py_1()
@@ -1779,8 +1863,8 @@ impl AppView {
                     .child("v0.1.0 GPUI Native DirectX 120 FPS"),
             ),
             self.render_setting_row(
-                "Движок хранения",
-                Some("Локальная база данных метаданных и индекс связей"),
+                &self.t("settings.system.storage"),
+                Some(&self.t("settings.system.storage_desc")),
                 div()
                     .text_xs()
                     .text_color(theme.text_secondary)
@@ -1792,7 +1876,7 @@ impl AppView {
             .flex()
             .flex_col()
             .gap_5()
-            .child(self.render_settings_card("О программе и системе", system_rows))
+            .child(self.render_settings_card(&self.t("settings.system.title"), system_rows))
     }
 
     // =========================================================================
@@ -1803,7 +1887,7 @@ impl AppView {
     fn render_shortcuts_tab(&self, _cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
 
-        let render_shortcut_item = |name: &str, kbd: &str| {
+        let render_shortcut_item = |name: String, kbd: &str| {
             div()
                 .flex()
                 .flex_row()
@@ -1812,7 +1896,7 @@ impl AppView {
                 .py_2()
                 .border_b_1()
                 .border_color(theme.border_subtle)
-                .child(div().text_sm().text_color(theme.text_primary).child(name.to_string()))
+                .child(div().text_sm().text_color(theme.text_primary).child(name))
                 .child(
                     div()
                         .px_2()
@@ -1829,32 +1913,32 @@ impl AppView {
         };
 
         let global_rows = vec![
-            render_shortcut_item("Открыть папку базы знаний", "Ctrl + O"),
-            render_shortcut_item("Создать новую заметку", "Ctrl + N"),
-            render_shortcut_item("Сохранить заметку", "Ctrl + S"),
-            render_shortcut_item("Быстрый поиск по базе", "Ctrl + F"),
-            render_shortcut_item("Окно настроек", "Ctrl + ,"),
-            render_shortcut_item("Свернуть / развернуть боковую панель", "Ctrl + \\"),
-            render_shortcut_item("Переключить перенос длинных строк", "Alt + Z"),
+            render_shortcut_item(self.t("settings.shortcuts.open_folder"), "Ctrl + O"),
+            render_shortcut_item(self.t("settings.shortcuts.new_note"), "Ctrl + N"),
+            render_shortcut_item(self.t("settings.shortcuts.save_note"), "Ctrl + S"),
+            render_shortcut_item(self.t("settings.shortcuts.quick_search"), "Ctrl + F"),
+            render_shortcut_item(self.t("settings.shortcuts.settings"), "Ctrl + ,"),
+            render_shortcut_item(self.t("settings.shortcuts.toggle_sidebar"), "Ctrl + \\"),
+            render_shortcut_item(self.t("settings.shortcuts.toggle_word_wrap"), "Alt + Z"),
         ];
 
         let editor_rows = vec![
-            render_shortcut_item("Жирный текст (**bold**)", "Ctrl + B"),
-            render_shortcut_item("Курсивный текст (*italic*)", "Ctrl + I"),
-            render_shortcut_item("Выделить весь документ", "Ctrl + A"),
-            render_shortcut_item("Копировать выделенное", "Ctrl + C"),
-            render_shortcut_item("Вырезать выделенное", "Ctrl + X"),
-            render_shortcut_item("Вставить из буфера", "Ctrl + V"),
-            render_shortcut_item("Отменить действие (Undo)", "Ctrl + Z"),
-            render_shortcut_item("Повторить действие (Redo)", "Ctrl + Y"),
-            render_shortcut_item("Переход в начало / конец строки", "Home / End"),
+            render_shortcut_item(self.t("settings.shortcuts.bold"), "Ctrl + B"),
+            render_shortcut_item(self.t("settings.shortcuts.italic"), "Ctrl + I"),
+            render_shortcut_item(self.t("settings.shortcuts.select_all"), "Ctrl + A"),
+            render_shortcut_item(self.t("settings.shortcuts.copy"), "Ctrl + C"),
+            render_shortcut_item(self.t("settings.shortcuts.cut"), "Ctrl + X"),
+            render_shortcut_item(self.t("settings.shortcuts.paste"), "Ctrl + V"),
+            render_shortcut_item(self.t("settings.shortcuts.undo"), "Ctrl + Z"),
+            render_shortcut_item(self.t("settings.shortcuts.redo"), "Ctrl + Y"),
+            render_shortcut_item(self.t("settings.shortcuts.home_end"), "Home / End"),
         ];
 
         div()
             .flex()
             .flex_col()
             .gap_5()
-            .child(self.render_settings_card("Глобальные сочетания", global_rows))
-            .child(self.render_settings_card("Редактирование текста", editor_rows))
+            .child(self.render_settings_card(&self.t("settings.shortcuts.global_header"), global_rows))
+            .child(self.render_settings_card(&self.t("settings.shortcuts.editing_header"), editor_rows))
     }
 }

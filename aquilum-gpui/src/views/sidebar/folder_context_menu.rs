@@ -40,10 +40,11 @@ impl AppView {
         // If file menu is open, close it
         self.file_context_menu.is_open = false;
 
+        let fallback_folder = self.t("common.folder");
         let name = folder_path
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Папка".to_string());
+            .unwrap_or(fallback_folder);
 
         self.folder_context_menu = FolderContextMenuState {
             is_open: true,
@@ -120,7 +121,7 @@ impl AppView {
         let render_item = |ix: usize,
                            id: &'static str,
                            icon_path: &'static str,
-                           label: &'static str,
+                           label: String,
                            is_danger: bool,
                            on_click: Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static>| {
             let is_selected = self.folder_context_menu.hovered_item == Some(ix);
@@ -233,7 +234,7 @@ impl AppView {
                         0,
                         "menu-item-new-note",
                         icons::ICON_NOTE_CREATE,
-                        "Новая заметка",
+                        self.t("sidebar.new_note"),
                         false,
                         {
                             let p = target_path.clone();
@@ -253,7 +254,7 @@ impl AppView {
                         1,
                         "menu-item-new-folder",
                         icons::ICON_FOLDER,
-                        "Новая папка",
+                        self.t("sidebar.new_folder"),
                         false,
                         {
                             let p = target_path.clone();
@@ -273,7 +274,7 @@ impl AppView {
                         2,
                         "menu-item-new-canvas",
                         icons::ICON_CANVAS,
-                        "Новый холст",
+                        self.t("sidebar.new_canvas"),
                         false,
                         {
                             let p = target_path.clone();
@@ -282,7 +283,8 @@ impl AppView {
                                 if let Ok(canvas_path) = folder_actions::create_canvas_in_folder(&p) {
                                     this.state.expanded_folders.insert(p.clone());
                                     this.state.reload_file_tree();
-                                    this.state.status_text = format!("Холст создан: {:?}", canvas_path.file_name().unwrap_or_default());
+                                    let canvas_name = canvas_path.file_name().unwrap_or_default().to_string_lossy();
+                                    this.state.status_text = this.t_fmt("sidebar.canvas_created", &[&canvas_name]);
                                     cx.notify();
                                 }
                             }))
@@ -293,7 +295,7 @@ impl AppView {
                         3,
                         "menu-item-new-drawing",
                         icons::ICON_DRAWING,
-                        "Создать новый чертеж",
+                        self.t("sidebar.new_drawing"),
                         false,
                         {
                             let p = target_path.clone();
@@ -316,7 +318,7 @@ impl AppView {
                         4,
                         "menu-item-duplicate-folder",
                         icons::ICON_COPY,
-                        "Создать копию",
+                        self.t("sidebar.create_copy"),
                         false,
                         {
                             let p = target_path.clone();
@@ -324,7 +326,8 @@ impl AppView {
                                 this.close_folder_context_menu(cx);
                                 if let Ok(copy_path) = folder_actions::duplicate_folder(&p) {
                                     this.state.reload_file_tree();
-                                    this.state.status_text = format!("Создана копия папки: {:?}", copy_path.file_name().unwrap_or_default());
+                                    let copy_name = copy_path.file_name().unwrap_or_default().to_string_lossy();
+                                    this.state.status_text = this.t_fmt("sidebar.copy_created_folder", &[&copy_name]);
                                     cx.notify();
                                 }
                             }))
@@ -335,7 +338,7 @@ impl AppView {
                         5,
                         "menu-item-move-folder",
                         icons::ICON_FOLDER_INPUT,
-                        "Переместить папку в...",
+                        self.t("sidebar.move_folder"),
                         false,
                         {
                             let p = target_path.clone();
@@ -350,7 +353,7 @@ impl AppView {
                         6,
                         "menu-item-search-in-folder",
                         icons::ICON_SEARCH,
-                        "Искать в папке",
+                        self.t("sidebar.search_in_folder"),
                         false,
                         {
                             let p = target_path.clone();
@@ -370,14 +373,14 @@ impl AppView {
                         7,
                         "menu-item-bookmark-folder",
                         icons::ICON_BOOKMARK,
-                        "Добавить в закладки...",
+                        self.t("sidebar.add_to_bookmarks"),
                         false,
                         {
                             let p = target_path.clone();
                             Box::new(cx.listener(move |this, _, _, cx| {
                                 this.close_folder_context_menu(cx);
                                 let name = p.file_name().unwrap_or_default().to_string_lossy();
-                                this.state.status_text = format!("Папка '{}' добавлена в закладки", name);
+                                this.state.status_text = this.t_fmt("sidebar.folder_bookmarked", &[&name]);
                                 cx.notify();
                             }))
                         },
@@ -416,7 +419,7 @@ impl AppView {
                                         div()
                                             .text_xs()
                                             .text_color(theme.text_primary)
-                                            .child("Копировать путь"),
+                                            .child(self.t("sidebar.copy_path")),
                                     ),
                             )
                             .child(icons::icon(icons::ICON_CHEVRON_RIGHT, 11.0, theme.text_muted)),
@@ -426,7 +429,7 @@ impl AppView {
                         9,
                         "menu-item-show-in-explorer",
                         icons::ICON_EXTERNAL_LINK,
-                        "Показать в Проводнике",
+                        self.t("sidebar.reveal_in_explorer"),
                         false,
                         {
                             let p = target_path.clone();
@@ -444,7 +447,7 @@ impl AppView {
                         10,
                         "menu-item-find-orphaned",
                         icons::ICON_SEARCH,
-                        "Find orphaned files",
+                        self.t("sidebar.find_orphaned"),
                         false,
                         {
                             let p = target_path.clone();
@@ -453,9 +456,10 @@ impl AppView {
                                 let ws = this.state.workspace_path.as_deref().unwrap_or(std::path::Path::new(""));
                                 let orphaned = folder_actions::find_orphaned_files_in_folder(ws, &p);
                                 if orphaned.is_empty() {
-                                    this.state.status_text = "Изолированных заметок в этой папке не найдено".to_string();
+                                    this.state.status_text = this.t("sidebar.isolated_none");
                                 } else {
-                                    this.state.status_text = format!("Найдено {} изолированных заметок", orphaned.len());
+                                    let cnt = orphaned.len().to_string();
+                                    this.state.status_text = this.t_fmt("sidebar.isolated_found", &[&cnt]);
                                 }
                                 cx.notify();
                             }))
@@ -466,7 +470,7 @@ impl AppView {
                         11,
                         "menu-item-create-folder-note",
                         icons::ICON_PENCIL,
-                        "Create Folder Note",
+                        self.t("sidebar.create_folder_note"),
                         false,
                         {
                             let p = target_path.clone();
@@ -485,14 +489,14 @@ impl AppView {
                         12,
                         "menu-item-change-icon",
                         icons::ICON_HASH,
-                        "Change icon",
+                        self.t("sidebar.change_icon_label"),
                         false,
                         {
                             let p = target_path.clone();
                             Box::new(cx.listener(move |this, _, _, cx| {
                                 this.close_folder_context_menu(cx);
                                 let name = p.file_name().unwrap_or_default().to_string_lossy();
-                                this.state.status_text = format!("Смена значка для '{}'", name);
+                                this.state.status_text = this.t_fmt("sidebar.change_icon", &[&name]);
                                 cx.notify();
                             }))
                         },
@@ -505,7 +509,7 @@ impl AppView {
                         13,
                         "menu-item-rename-folder",
                         icons::ICON_PENCIL,
-                        "Переименовать",
+                        self.t("sidebar.rename"),
                         false,
                         {
                             let p = target_path.clone();
@@ -520,7 +524,7 @@ impl AppView {
                         14,
                         "menu-item-delete-folder",
                         icons::ICON_TRASH_2,
-                        "Удалить",
+                        self.t("sidebar.delete"),
                         true,
                         {
                             let p = target_path.clone();
@@ -538,11 +542,11 @@ impl AppView {
                         15,
                         "menu-item-collect-attachments",
                         icons::ICON_DOWNLOAD,
-                        "Collect attachments in file",
+                        self.t("sidebar.collect_attachments"),
                         false,
                         Box::new(cx.listener(|this, _, _, cx| {
                             this.close_folder_context_menu(cx);
-                            this.state.status_text = "Вложения собраны".to_string();
+                            this.state.status_text = this.t("sidebar.attachments_collected");
                             cx.notify();
                         })),
                     ))
@@ -551,11 +555,11 @@ impl AppView {
                         16,
                         "menu-item-move-attachments",
                         icons::ICON_MOVE_ARROWS,
-                        "Move attachment to proper folder",
+                        self.t("sidebar.move_attachments"),
                         false,
                         Box::new(cx.listener(|this, _, _, cx| {
                             this.close_folder_context_menu(cx);
-                            this.state.status_text = "Вложения перемещены в папку".to_string();
+                            this.state.status_text = this.t("sidebar.attachments_moved_folder");
                             cx.notify();
                         })),
                     )),
@@ -624,7 +628,7 @@ impl AppView {
                                     div()
                                         .text_xs()
                                         .text_color(theme.text_primary)
-                                        .child("Относительный путь"),
+                                        .child(self.t("sidebar.copy_relative_path")),
                                 )
                                 .on_click({
                                     let p = target_for_sub.clone();
@@ -632,7 +636,7 @@ impl AppView {
                                         let ws = this.state.workspace_path.as_deref().unwrap_or(std::path::Path::new(""));
                                         let rel = folder_actions::get_relative_path_string(ws, &p);
                                         cx.write_to_clipboard(ClipboardItem::new_string(rel.clone()));
-                                        this.state.status_text = format!("Скопирован относительный путь: {}", rel);
+                                        this.state.status_text = this.t_fmt("sidebar.copy_relative_path_msg", &[&rel]);
                                         this.close_folder_context_menu(cx);
                                     })
                                 }),
@@ -653,14 +657,14 @@ impl AppView {
                                     div()
                                         .text_xs()
                                         .text_color(theme.text_primary)
-                                        .child("Абсолютный путь"),
+                                        .child(self.t("sidebar.copy_absolute_path")),
                                 )
                                 .on_click({
                                     let p = target_for_sub.clone();
                                     cx.listener(move |this, _, _, cx| {
                                         let abs = p.to_string_lossy().to_string();
                                         cx.write_to_clipboard(ClipboardItem::new_string(abs.clone()));
-                                        this.state.status_text = format!("Скопирован абсолютный путь: {}", abs);
+                                        this.state.status_text = this.t_fmt("sidebar.copy_absolute_path_msg", &[&abs]);
                                         this.close_folder_context_menu(cx);
                                     })
                                 }),

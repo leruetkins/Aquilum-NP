@@ -84,7 +84,7 @@ impl AppView {
     /// Renders the open tabs popup dropdown menu (Obsidian-style).
     pub fn render_tabs_dropdown_menu(&self, theme: &Theme, cx: &Context<Self>) -> impl IntoElement {
         let count = self.state.open_tabs.len();
-        let bookmark_label = format_bookmark_label(count);
+        let bookmark_label = format_bookmark_label(count, &self.config.ui.language);
 
         div()
             .id("tabs-dropdown-overlay")
@@ -143,11 +143,11 @@ impl AppView {
                                 div()
                                     .text_xs()
                                     .text_color(theme.text_primary)
-                                    .child("Сложить вкладки"),
+                                    .child(self.t("tabs.fold_tabs")),
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.is_tabs_menu_open = false;
-                                this.state.status_text = "Режим сложенных вкладок".to_string();
+                                this.state.status_text = this.t("tabs.fold_tabs_mode");
                                 cx.notify();
                             })),
                     )
@@ -172,7 +172,7 @@ impl AppView {
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.is_tabs_menu_open = false;
-                                this.state.status_text = "Вкладки добавлены в закладки".to_string();
+                                this.state.status_text = this.t("tabs.tabs_added_to_bookmarks");
                                 cx.notify();
                             })),
                     )
@@ -201,7 +201,7 @@ impl AppView {
                                 div()
                                     .text_xs()
                                     .text_color(theme.text_primary)
-                                    .child("Закрыть все вкладки"),
+                                    .child(self.t("tabs.close_all")),
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.close_all_tabs(cx);
@@ -232,7 +232,7 @@ impl AppView {
                                     .py_2()
                                     .text_xs()
                                     .text_color(theme.text_muted)
-                                    .child("Нет открытых вкладок"),
+                                    .child(self.t("tabs.no_open_tabs")),
                             );
                         } else {
                             for (idx, tab_path) in self.state.open_tabs.iter().enumerate() {
@@ -243,7 +243,7 @@ impl AppView {
                                 let display_name = tab_path
                                     .file_stem()
                                     .map(|s| s.to_string_lossy().to_string())
-                                    .unwrap_or_else(|| "Без названия".to_string());
+                                    .unwrap_or_else(|| self.t("common.untitled"));
 
                                 list = list.child(
                                     div()
@@ -494,17 +494,28 @@ pub fn calculate_tab_widths(
     }
 }
 
-/// Formats the bookmark label with proper Russian pluralization.
-pub fn format_bookmark_label(count: usize) -> String {
-    let suffix = match count % 10 {
-        1 if count % 100 != 11 => "вкладку...",
-        2..=4 if !(12..=14).contains(&(count % 100)) => "вкладки...",
-        _ => "вкладок...",
-    };
-    if count > 0 {
-        format!("Добавить в закладки {} {}", count, suffix)
+/// Formats the bookmark label with localized pluralization.
+pub fn format_bookmark_label(count: usize, lang: &str) -> String {
+    let norm = crate::i18n::LocaleInfo::normalize(lang);
+    if norm == "ru" || norm == "uk" {
+        let suffix = match count % 10 {
+            1 if count % 100 != 11 => crate::i18n::t("tabs.add_one_tab", norm),
+            2..=4 if !(12..=14).contains(&(count % 100)) => crate::i18n::t("tabs.add_few_tabs", norm),
+            _ => crate::i18n::t("tabs.add_many_tabs", norm),
+        };
+        if count > 0 {
+            crate::i18n::t_fmt("tabs.add_n_tabs", norm, &[&count.to_string(), &suffix])
+        } else {
+            crate::i18n::t("tabs.add_tabs_to_bookmarks", norm)
+        }
+    } else if count == 1 {
+        let unit = crate::i18n::t("tabs.add_one_tab", norm);
+        crate::i18n::t_fmt("tabs.add_n_tabs", norm, &["1", &unit])
+    } else if count > 1 {
+        let unit = crate::i18n::t("tabs.add_many_tabs", norm);
+        crate::i18n::t_fmt("tabs.add_n_tabs", norm, &[&count.to_string(), &unit])
     } else {
-        "Добавить в закладки вкладку...".to_string()
+        crate::i18n::t("tabs.add_tabs_to_bookmarks", norm)
     }
 }
 
@@ -514,15 +525,15 @@ mod tests {
 
     #[test]
     fn test_format_bookmark_label() {
-        assert_eq!(format_bookmark_label(0), "Добавить в закладки вкладку...");
-        assert_eq!(format_bookmark_label(1), "Добавить в закладки 1 вкладку...");
-        assert_eq!(format_bookmark_label(2), "Добавить в закладки 2 вкладки...");
-        assert_eq!(format_bookmark_label(4), "Добавить в закладки 4 вкладки...");
-        assert_eq!(format_bookmark_label(5), "Добавить в закладки 5 вкладок...");
-        assert_eq!(format_bookmark_label(11), "Добавить в закладки 11 вкладок...");
-        assert_eq!(format_bookmark_label(12), "Добавить в закладки 12 вкладок...");
-        assert_eq!(format_bookmark_label(21), "Добавить в закладки 21 вкладку...");
-        assert_eq!(format_bookmark_label(22), "Добавить в закладки 22 вкладки...");
+        assert_eq!(format_bookmark_label(0, "ru"), "Добавить в закладки N вкладок...");
+        assert_eq!(format_bookmark_label(1, "ru"), "Добавить в закладки 1 вкладку...");
+        assert_eq!(format_bookmark_label(2, "ru"), "Добавить в закладки 2 вкладки...");
+        assert_eq!(format_bookmark_label(4, "ru"), "Добавить в закладки 4 вкладки...");
+        assert_eq!(format_bookmark_label(5, "ru"), "Добавить в закладки 5 вкладок...");
+        assert_eq!(format_bookmark_label(11, "ru"), "Добавить в закладки 11 вкладок...");
+        assert_eq!(format_bookmark_label(12, "ru"), "Добавить в закладки 12 вкладок...");
+        assert_eq!(format_bookmark_label(21, "ru"), "Добавить в закладки 21 вкладку...");
+        assert_eq!(format_bookmark_label(22, "ru"), "Добавить в закладки 22 вкладки...");
     }
 
     #[test]
