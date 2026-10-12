@@ -398,8 +398,10 @@ impl AppView {
                 div()
                     .flex()
                     .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .mr_4()
                     .gap_0p5()
-                    .max_w(px(380.0))
                     .child(
                         div()
                             .text_sm()
@@ -415,7 +417,11 @@ impl AppView {
                         )
                     }),
             )
-            .child(control)
+            .child(
+                div()
+                    .flex_none()
+                    .child(control),
+            )
     }
 
     /// Renders an interactive toggle switch widget.
@@ -425,6 +431,7 @@ impl AppView {
         let knob_left = if checked { px(18.0) } else { px(2.0) };
 
         div()
+            .flex_none()
             .relative()
             .w(px(38.0))
             .h(px(22.0))
