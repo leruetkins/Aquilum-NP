@@ -5,6 +5,7 @@ pub mod icons;
 pub mod markdown;
 pub mod markdown_doc;
 pub mod perf;
+pub mod settings;
 pub mod state;
 pub mod theme;
 pub mod views;

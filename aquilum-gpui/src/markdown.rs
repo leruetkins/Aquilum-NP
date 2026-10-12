@@ -794,10 +794,10 @@ impl VisualRowHeightIndex {
     pub fn from_rows(
         lines: &[impl AsRef<str>],
         visual_rows: &[VisualRow],
-        headings: Option<&aquilum_core::settings::HeadingsSettings>,
+        headings: Option<&crate::settings::HeadingsSettings>,
     ) -> Self {
         let mut heights = Vec::with_capacity(visual_rows.len());
-        let default_headings = aquilum_core::settings::HeadingsSettings::default();
+        let default_headings = crate::settings::HeadingsSettings::default();
         let h_settings = headings.unwrap_or(&default_headings);
 
         for v in visual_rows {

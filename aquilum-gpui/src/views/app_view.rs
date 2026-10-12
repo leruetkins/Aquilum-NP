@@ -41,7 +41,7 @@ pub struct AppView {
     pub scrollbar_drag_start_y: f32,
     pub scrollbar_drag_start_scroll_y: f32,
     pub last_editor_h: Cell<f32>,
-    pub config: aquilum_core::settings::models::AppConfig,
+    pub config: crate::settings::AppConfig,
     pub last_saved_geometry: Option<(f32, f32, Option<f32>, Option<f32>, bool)>,
     pub initial_scroll_done: bool,
     pub initial_scroll_top: f32,
@@ -77,7 +77,7 @@ impl AppView {
     /// Creates and initializes a new AppView instance with loaded configuration.
     pub fn new(cx: &mut Context<Self>) -> Self {
         let state = AppState::new();
-        let config = state.core.settings.get_config();
+        let config = state.settings.get_config();
         let theme = Theme::from_config(&config.ui.theme, None);
         let ws = crate::state::WindowState::load(&crate::state::app_data_dir());
         let last_saved_geometry = Some((ws.width, ws.height, ws.x, ws.y, ws.maximized));
@@ -463,7 +463,7 @@ impl AppView {
 
     pub fn heading_typography_metrics(
         classified: &crate::markdown::LineKind<'_>,
-        headings: &aquilum_core::settings::HeadingsSettings,
+        headings: &crate::settings::HeadingsSettings,
         base_line_h: f32,
         base_char_w: f32,
     ) -> (f32, f32, f32, f32, f32) {
@@ -4511,7 +4511,7 @@ fn render_live_styled_row(
     sub_idx: usize,
     is_active_line: bool,
     show_fences: bool,
-    headings: &aquilum_core::settings::HeadingsSettings,
+    headings: &crate::settings::HeadingsSettings,
     theme: &Theme,
 ) -> gpui::Div {
     if line.is_empty() || char_start >= char_end {

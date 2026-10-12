@@ -1,6 +1,3 @@
-use aquilum_core::app_core::{Core, CoreEvent, EventSink};
-use aquilum_core::files::models::FileItem;
-use aquilum_core::files::workspace::read_directory_impl;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -282,7 +279,7 @@ impl OpenedNote {
         &mut self,
         word_wrap: bool,
         wrap_cols: usize,
-        headings: Option<&aquilum_core::settings::HeadingsSettings>,
+        headings: Option<&crate::settings::HeadingsSettings>,
     ) {
         crate::perf::PERF.parse_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let lines: Vec<String> = self.content.split('\n').map(String::from).collect();
@@ -316,7 +313,7 @@ impl OpenedNote {
         &mut self,
         word_wrap: bool,
         wrap_cols: usize,
-        headings: Option<&aquilum_core::settings::HeadingsSettings>,
+        headings: Option<&crate::settings::HeadingsSettings>,
     ) {
         if self.visual_cache_dirty
             || self.cached_lines.is_empty()
@@ -786,13 +783,12 @@ impl OpenedNote {
 }
 
 pub struct AppState {
-    pub core: Arc<Core>,
+    pub settings: Arc<crate::settings::SettingsManager>,
     pub workspace_path: Option<PathBuf>,
     pub workspace_name: String,
     pub file_tree: Vec<FileNode>,
     pub expanded_folders: HashSet<PathBuf>,
     pub search_query: String,
-    pub files: Vec<FileItem>,
     pub active_note: Option<OpenedNote>,
     pub open_tabs: Vec<PathBuf>,
     pub nav_history: Vec<PathBuf>,
@@ -802,22 +798,13 @@ pub struct AppState {
     pub note_states: HashMap<PathBuf, NoteSettings>,
 }
 
-struct CoreEventSink;
-
-impl EventSink for CoreEventSink {
-    fn emit(&self, event: CoreEvent) {
-        println!("[core event] {}", event.name());
-    }
-}
-
 const DEFAULT_WELCOME_NOTE: &str = "# Welcome to Vibecodium (GPUI Live Preview)\n\nYour fast, distraction-free markdown knowledge base with **true Obsidian Live Preview**!\n\n## Inline Live Preview Demo\n- Click any line or block to edit raw markdown inline\n- Move cursor away (or click another line) to see rendered styling\n- Regular text and code blocks are fully selectable across the entire page with `Ctrl+A`\n\n### Interactive Features\n- [x] Zero Electron / Chromium overhead (~40 MB RAM, 120 FPS)\n- [x] Full document continuous text selection\n- [x] Dedicated Obsidian-style code blocks with syntax styling\n- [ ] Auto-saving and instant search\n\n```rust\nfn main() {\n    println!(\"Hello from Vibecodium GPUI Live Preview!\");\n}\n```\n\n> Regular text and code blocks are cleanly organized with seamless Live Preview transitions.\n";
 
 impl AppState {
     pub fn new() -> Self {
         let app_data_dir = app_data_dir();
         let _ = std::fs::create_dir_all(&app_data_dir);
-        let sink: Arc<dyn EventSink> = Arc::new(CoreEventSink);
-        let core = Core::open(&app_data_dir, sink);
+        let settings = Arc::new(crate::settings::SettingsManager::new(&app_data_dir));
         let session = SessionState::load(&app_data_dir);
 
         let valid_tabs: Vec<PathBuf> = session
@@ -828,13 +815,12 @@ impl AppState {
             .collect();
 
         let mut state = Self {
-            core,
+            settings,
             workspace_path: None,
             workspace_name: "No Workspace".to_owned(),
             file_tree: Vec::new(),
             expanded_folders: session.expanded_folders.clone(),
             search_query: String::new(),
-            files: Vec::new(),
             active_note: None,
             open_tabs: valid_tabs,
             nav_history: Vec::new(),
@@ -849,16 +835,6 @@ impl AppState {
         if let Some(ref ws) = state.session.workspace_path {
             if ws.exists() {
                 ws_to_open = Some(ws.clone());
-            }
-        }
-        if ws_to_open.is_none() {
-            if let Ok(workspaces) = state.core.ui_state.list_workspaces() {
-                if let Some(first) = workspaces.into_iter().next() {
-                    let path = PathBuf::from(&first.path);
-                    if path.exists() {
-                        ws_to_open = Some(path);
-                    }
-                }
             }
         }
 
@@ -1056,12 +1032,7 @@ impl AppState {
     }
 
     pub fn reload_files(&mut self) {
-        if let Some(ref ws) = self.workspace_path {
-            match read_directory_impl(ws) {
-                Ok(items) => self.files = items,
-                Err(err) => eprintln!("Failed to read directory {}: {:?}", ws.display(), err),
-            }
-        }
+        // file_tree is maintained by reload_file_tree()
     }
 
     pub fn push_nav_history(&mut self, path: PathBuf) {
@@ -1172,27 +1143,16 @@ impl AppState {
                 0,
             ));
         } else {
-            match self.core.documents.open(&self.core, &path, 0) {
-                Ok(opened) => {
-                    opened_note = Some(OpenedNote::new(
-                        path.clone(),
-                        title.clone(),
-                        opened.text,
-                        opened.version,
-                    ));
-                    self.status_text = format!("Opened: {}", path.file_name().unwrap_or_default().to_string_lossy());
-                }
-                Err(_) => {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        opened_note = Some(OpenedNote::new(
-                            path.clone(),
-                            title.clone(),
-                            content,
-                            0,
-                        ));
-                        self.status_text = format!("Read: {}", path.file_name().unwrap_or_default().to_string_lossy());
-                    }
-                }
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                opened_note = Some(OpenedNote::new(
+                    path.clone(),
+                    title.clone(),
+                    content,
+                    0,
+                ));
+                self.status_text = format!("Opened: {}", path.file_name().unwrap_or_default().to_string_lossy());
+            } else {
+                eprintln!("Failed to read file: {:?}", path);
             }
         }
 

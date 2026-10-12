@@ -83,7 +83,7 @@ impl AppView {
     pub fn toggle_settings(&mut self, cx: &mut Context<Self>) {
         self.is_settings_open = !self.is_settings_open;
         if self.is_settings_open {
-            self.config = self.state.core.settings.get_config();
+            self.config = self.state.settings.get_config();
         }
         cx.notify();
     }
@@ -91,7 +91,7 @@ impl AppView {
     /// Opens the Settings modal, optionally navigating directly to the given tab.
     pub fn open_settings(&mut self, tab: Option<SettingsTab>, cx: &mut Context<Self>) {
         self.is_settings_open = true;
-        self.config = self.state.core.settings.get_config();
+        self.config = self.state.settings.get_config();
         if let Some(t) = tab {
             self.settings_tab = t;
         }
@@ -105,12 +105,12 @@ impl AppView {
         cx.notify();
     }
 
-    /// Persists the modified AppConfig to disk via Core SettingsManager.
+    /// Persists the modified AppConfig to disk via SettingsManager.
     pub fn save_settings(&mut self, cx: &mut Context<Self>) {
         if let Some(ref mut note) = self.state.active_note {
             note.visual_cache_dirty = true;
         }
-        let _ = self.state.core.settings.update_config(self.config.clone());
+        let _ = self.state.settings.update_config(self.config.clone());
         cx.notify();
     }
 
