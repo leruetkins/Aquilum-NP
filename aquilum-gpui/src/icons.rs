@@ -62,6 +62,7 @@ pub const MERGE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 
 pub const LINK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>"#;
 pub const VAULT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="12" cy="12" r="4"/><line x1="12" x2="12" y1="8" y2="10"/><line x1="12" x2="12" y1="14" y2="16"/><line x1="8" x2="10" y1="12" y2="12"/><line x1="14" x2="16" y1="12" y2="12"/></svg>"#;
 pub const COMPUTER: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="12" x="4" y="3" rx="2"/><path d="M2 18h20"/><path d="M12 15v3"/></svg>"#;
+pub const PIN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6a1 1 0 0 0-1-1H8a2 2 0 0 0-2 2z"/><path d="M5 8V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v3"/></svg>"#;
 
 pub const ICON_ARROW_LEFT: &str = "icons/arrow_left.svg";
 pub const ICON_ARROW_RIGHT: &str = "icons/arrow_right.svg";
@@ -84,6 +85,7 @@ pub const ICON_MERGE: &str = "icons/merge.svg";
 pub const ICON_LINK: &str = "icons/link.svg";
 pub const ICON_VAULT: &str = "icons/vault.svg";
 pub const ICON_COMPUTER: &str = "icons/computer.svg";
+pub const ICON_PIN: &str = "icons/pin.svg";
 
 pub const ICON_CHEVRON_RIGHT: &str = "icons/chevron_right.svg";
 pub const ICON_CHEVRON_DOWN: &str = "icons/chevron_down.svg";
@@ -189,6 +191,7 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_LINK => Some(LINK),
             ICON_VAULT => Some(VAULT),
             ICON_COMPUTER => Some(COMPUTER),
+            ICON_PIN => Some(PIN),
             _ => None,
         };
         Ok(svg.map(|s| Cow::Borrowed(s.as_bytes())))
@@ -255,6 +258,7 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_LINK.into(),
             ICON_VAULT.into(),
             ICON_COMPUTER.into(),
+            ICON_PIN.into(),
         ])
     }
 }
