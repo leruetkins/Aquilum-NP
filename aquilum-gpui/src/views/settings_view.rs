@@ -502,7 +502,10 @@ impl AppView {
             )
             .child(
                 div()
-                    .px_2()
+                    .w(px(56.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .text_xs()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.text_primary)
@@ -522,6 +525,93 @@ impl AppView {
                     .child(div().text_sm().text_color(theme.text_secondary).child("+"))
                     .on_click(cx.listener(move |this: &mut AppView, _, _, cx| {
                         on_inc(this, cx);
+                    })),
+            )
+    }
+
+    /// Renders bold (B) and italic (I) toggle buttons for a heading level.
+    fn render_heading_format_toggles<F1, F2>(
+        &self,
+        prefix: &'static str,
+        bold: bool,
+        italic: bool,
+        on_toggle_bold: F1,
+        on_toggle_italic: F2,
+        cx: &Context<Self>,
+    ) -> gpui::Div
+    where
+        F1: Fn(&mut AppView, &mut Context<AppView>) + 'static,
+        F2: Fn(&mut AppView, &mut Context<AppView>) + 'static,
+    {
+        let theme = &self.theme;
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .child(
+                div()
+                    .id(gpui::ElementId::from((prefix, 10usize)))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(26.0))
+                    .h(px(26.0))
+                    .rounded_md()
+                    .cursor_pointer()
+                    .border_1()
+                    .when(bold, |s| {
+                        s.bg(gpui::Rgba { a: 0.18, ..theme.accent })
+                            .border_color(theme.accent)
+                            .text_color(theme.accent)
+                    })
+                    .when(!bold, |s| {
+                        s.bg(theme.bg_sidebar)
+                            .border_color(theme.border)
+                            .text_color(theme.text_muted)
+                            .hover(|h| h.bg(theme.bg_hover).text_color(theme.text_secondary))
+                    })
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .child("B"),
+                    )
+                    .on_click(cx.listener(move |this: &mut AppView, _, _, cx| {
+                        on_toggle_bold(this, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id(gpui::ElementId::from((prefix, 11usize)))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(26.0))
+                    .h(px(26.0))
+                    .rounded_md()
+                    .cursor_pointer()
+                    .border_1()
+                    .when(italic, |s| {
+                        s.bg(gpui::Rgba { a: 0.18, ..theme.accent })
+                            .border_color(theme.accent)
+                            .text_color(theme.accent)
+                    })
+                    .when(!italic, |s| {
+                        s.bg(theme.bg_sidebar)
+                            .border_color(theme.border)
+                            .text_color(theme.text_muted)
+                            .hover(|h| h.bg(theme.bg_hover).text_color(theme.text_secondary))
+                    })
+                    .child(
+                        div()
+                            .text_xs()
+                            .italic()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .child("I"),
+                    )
+                    .on_click(cx.listener(move |this: &mut AppView, _, _, cx| {
+                        on_toggle_italic(this, cx);
                     })),
             )
     }
@@ -1131,6 +1221,20 @@ impl AppView {
                         "h1-color",
                         &config.editor.headings.h1.color_name,
                         cx,
+                    ))
+                    .child(self.render_heading_format_toggles(
+                        "h1",
+                        config.editor.headings.h1.bold,
+                        config.editor.headings.h1.italic,
+                        |this, cx| {
+                            this.config.editor.headings.h1.bold = !this.config.editor.headings.h1.bold;
+                            this.save_settings(cx);
+                        },
+                        |this, cx| {
+                            this.config.editor.headings.h1.italic = !this.config.editor.headings.h1.italic;
+                            this.save_settings(cx);
+                        },
+                        cx,
                     )),
             ),
             self.render_setting_row(
@@ -1161,6 +1265,20 @@ impl AppView {
                     .child(self.render_color_picker_button(
                         "h2-color",
                         &config.editor.headings.h2.color_name,
+                        cx,
+                    ))
+                    .child(self.render_heading_format_toggles(
+                        "h2",
+                        config.editor.headings.h2.bold,
+                        config.editor.headings.h2.italic,
+                        |this, cx| {
+                            this.config.editor.headings.h2.bold = !this.config.editor.headings.h2.bold;
+                            this.save_settings(cx);
+                        },
+                        |this, cx| {
+                            this.config.editor.headings.h2.italic = !this.config.editor.headings.h2.italic;
+                            this.save_settings(cx);
+                        },
                         cx,
                     )),
             ),
@@ -1193,6 +1311,20 @@ impl AppView {
                         "h3-color",
                         &config.editor.headings.h3.color_name,
                         cx,
+                    ))
+                    .child(self.render_heading_format_toggles(
+                        "h3",
+                        config.editor.headings.h3.bold,
+                        config.editor.headings.h3.italic,
+                        |this, cx| {
+                            this.config.editor.headings.h3.bold = !this.config.editor.headings.h3.bold;
+                            this.save_settings(cx);
+                        },
+                        |this, cx| {
+                            this.config.editor.headings.h3.italic = !this.config.editor.headings.h3.italic;
+                            this.save_settings(cx);
+                        },
+                        cx,
                     )),
             ),
             self.render_setting_row(
@@ -1223,6 +1355,20 @@ impl AppView {
                     .child(self.render_color_picker_button(
                         "h4-color",
                         &config.editor.headings.h4.color_name,
+                        cx,
+                    ))
+                    .child(self.render_heading_format_toggles(
+                        "h4",
+                        config.editor.headings.h4.bold,
+                        config.editor.headings.h4.italic,
+                        |this, cx| {
+                            this.config.editor.headings.h4.bold = !this.config.editor.headings.h4.bold;
+                            this.save_settings(cx);
+                        },
+                        |this, cx| {
+                            this.config.editor.headings.h4.italic = !this.config.editor.headings.h4.italic;
+                            this.save_settings(cx);
+                        },
                         cx,
                     )),
             ),
@@ -1255,6 +1401,20 @@ impl AppView {
                         "h5-color",
                         &config.editor.headings.h5.color_name,
                         cx,
+                    ))
+                    .child(self.render_heading_format_toggles(
+                        "h5",
+                        config.editor.headings.h5.bold,
+                        config.editor.headings.h5.italic,
+                        |this, cx| {
+                            this.config.editor.headings.h5.bold = !this.config.editor.headings.h5.bold;
+                            this.save_settings(cx);
+                        },
+                        |this, cx| {
+                            this.config.editor.headings.h5.italic = !this.config.editor.headings.h5.italic;
+                            this.save_settings(cx);
+                        },
+                        cx,
                     )),
             ),
             self.render_setting_row(
@@ -1285,6 +1445,20 @@ impl AppView {
                     .child(self.render_color_picker_button(
                         "h6-color",
                         &config.editor.headings.h6.color_name,
+                        cx,
+                    ))
+                    .child(self.render_heading_format_toggles(
+                        "h6",
+                        config.editor.headings.h6.bold,
+                        config.editor.headings.h6.italic,
+                        |this, cx| {
+                            this.config.editor.headings.h6.bold = !this.config.editor.headings.h6.bold;
+                            this.save_settings(cx);
+                        },
+                        |this, cx| {
+                            this.config.editor.headings.h6.italic = !this.config.editor.headings.h6.italic;
+                            this.save_settings(cx);
+                        },
                         cx,
                     )),
             ),

@@ -4455,23 +4455,25 @@ fn render_syntax_spans(
     theme: &Theme,
     text_color_override: Option<gpui::Rgba>,
     base_weight: Option<gpui::FontWeight>,
+    base_style: Option<gpui::FontStyle>,
 ) -> gpui::StyledText {
     let main_color = text_color_override.unwrap_or(theme.text_primary);
     let base_weight = base_weight.unwrap_or(gpui::FontWeight::NORMAL);
+    let base_style = base_style.unwrap_or(gpui::FontStyle::Normal);
     let mut full_text = String::new();
     let mut runs = Vec::new();
 
     let reg_font = gpui::Font {
         family: "Consolas".into(),
         weight: base_weight,
-        style: gpui::FontStyle::Normal,
+        style: base_style,
         features: Default::default(),
         fallbacks: None,
     };
     let bold_font = gpui::Font {
         family: "Consolas".into(),
         weight: gpui::FontWeight::BOLD,
-        style: gpui::FontStyle::Normal,
+        style: base_style,
         features: Default::default(),
         fallbacks: None,
     };
@@ -4664,6 +4666,8 @@ fn render_live_styled_row(
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
             let h_size = headings.h1.font_size as f32;
             let h_color = crate::markdown::heading_color_to_rgb(&headings.h1.color_name);
+            let h_weight = if headings.h1.bold { gpui::FontWeight::BOLD } else { gpui::FontWeight::NORMAL };
+            let h_style = if headings.h1.italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal };
 
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(2));
@@ -4671,7 +4675,8 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
-                    .font_weight(gpui::FontWeight::BOLD)
+                    .font_weight(h_weight)
+                    .when(headings.h1.italic, |d| d.italic())
                     .text_size(px(h_size))
                     .h_full();
                 if is_active_line {
@@ -4680,7 +4685,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::BOLD))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -4692,13 +4697,14 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
-                    .font_weight(gpui::FontWeight::BOLD)
+                    .font_weight(h_weight)
+                    .when(headings.h1.italic, |d| d.italic())
                     .text_size(px(h_size))
                     .h_full()
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::BOLD))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -4707,6 +4713,8 @@ fn render_live_styled_row(
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
             let h_size = headings.h2.font_size as f32;
             let h_color = crate::markdown::heading_color_to_rgb(&headings.h2.color_name);
+            let h_weight = if headings.h2.bold { gpui::FontWeight::BOLD } else { gpui::FontWeight::NORMAL };
+            let h_style = if headings.h2.italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal };
 
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(3));
@@ -4714,7 +4722,8 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
-                    .font_weight(gpui::FontWeight::BOLD)
+                    .font_weight(h_weight)
+                    .when(headings.h2.italic, |d| d.italic())
                     .text_size(px(h_size))
                     .h_full();
                 if is_active_line {
@@ -4723,7 +4732,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::BOLD))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -4735,13 +4744,14 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
-                    .font_weight(gpui::FontWeight::BOLD)
+                    .font_weight(h_weight)
+                    .when(headings.h2.italic, |d| d.italic())
                     .text_size(px(h_size))
                     .h_full()
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::BOLD))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -4750,6 +4760,8 @@ fn render_live_styled_row(
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
             let h_size = headings.h3.font_size as f32;
             let h_color = crate::markdown::heading_color_to_rgb(&headings.h3.color_name);
+            let h_weight = if headings.h3.bold { gpui::FontWeight::BOLD } else { gpui::FontWeight::NORMAL };
+            let h_style = if headings.h3.italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal };
 
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(4));
@@ -4757,7 +4769,8 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(h_weight)
+                    .when(headings.h3.italic, |d| d.italic())
                     .text_size(px(h_size))
                     .h_full();
                 if is_active_line {
@@ -4766,7 +4779,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::SEMIBOLD))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -4778,13 +4791,14 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(h_weight)
+                    .when(headings.h3.italic, |d| d.italic())
                     .text_size(px(h_size))
                     .h_full()
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::SEMIBOLD))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -4793,6 +4807,8 @@ fn render_live_styled_row(
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
             let h_size = headings.h4.font_size as f32;
             let h_color = crate::markdown::heading_color_to_rgb(&headings.h4.color_name);
+            let h_weight = if headings.h4.bold { gpui::FontWeight::BOLD } else { gpui::FontWeight::NORMAL };
+            let h_style = if headings.h4.italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal };
 
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(5));
@@ -4800,7 +4816,8 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(h_weight)
+                    .when(headings.h4.italic, |d| d.italic())
                     .text_size(px(h_size))
                     .h_full();
                 if is_active_line {
@@ -4809,7 +4826,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::SEMIBOLD))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -4821,13 +4838,14 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(h_weight)
+                    .when(headings.h4.italic, |d| d.italic())
                     .text_size(px(h_size))
                     .h_full()
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::SEMIBOLD))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -4836,6 +4854,8 @@ fn render_live_styled_row(
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
             let h_size = headings.h5.font_size as f32;
             let h_color = crate::markdown::heading_color_to_rgb(&headings.h5.color_name);
+            let h_weight = if headings.h5.bold { gpui::FontWeight::BOLD } else { gpui::FontWeight::NORMAL };
+            let h_style = if headings.h5.italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal };
 
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(6));
@@ -4843,7 +4863,8 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(h_weight)
+                    .when(headings.h5.italic, |d| d.italic())
                     .text_size(px(h_size))
                     .h_full();
                 if is_active_line {
@@ -4852,7 +4873,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::SEMIBOLD))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -4864,13 +4885,14 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(h_weight)
+                    .when(headings.h5.italic, |d| d.italic())
                     .text_size(px(h_size))
                     .h_full()
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::SEMIBOLD))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -4879,6 +4901,8 @@ fn render_live_styled_row(
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
             let h_size = headings.h6.font_size as f32;
             let h_color = crate::markdown::heading_color_to_rgb(&headings.h6.color_name);
+            let h_weight = if headings.h6.bold { gpui::FontWeight::BOLD } else { gpui::FontWeight::NORMAL };
+            let h_style = if headings.h6.italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal };
 
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(7));
@@ -4886,7 +4910,8 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(h_weight)
+                    .when(headings.h6.italic, |d| d.italic())
                     .text_size(px(h_size))
                     .h_full();
                 if is_active_line {
@@ -4895,7 +4920,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::SEMIBOLD))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -4907,13 +4932,14 @@ fn render_live_styled_row(
                     .flex()
                     .flex_row()
                     .items_center()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(h_weight)
+                    .when(headings.h6.italic, |d| d.italic())
                     .text_size(px(h_size))
                     .h_full()
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(gpui::FontWeight::SEMIBOLD))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -4929,7 +4955,7 @@ fn render_live_styled_row(
                     .h_full()
                     .italic()
                     .child(div().text_color(theme.accent).child("> "))
-                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, is_active_line, theme, Some(theme.text_secondary), None)))
+                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, is_active_line, theme, Some(theme.text_secondary), None, None)))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -4943,7 +4969,7 @@ fn render_live_styled_row(
                     .h_full()
                     .italic()
                     .child(div().text_color(theme.border_subtle).child("  "))
-                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, is_active_line, theme, Some(theme.text_secondary), None)))
+                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, is_active_line, theme, Some(theme.text_secondary), None, None)))
             }
         }
         crate::markdown::LineKind::Task { checked, .. } => {
@@ -4975,7 +5001,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .when(*checked, |s| s.text_color(theme.text_muted).line_through())
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, task_color, None)),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, task_color, None, None)),
                     )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -4992,7 +5018,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .when(*checked, |s| s.text_color(theme.text_muted).line_through())
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, task_color, None)),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, task_color, None, None)),
                     )
             }
         }
@@ -5017,7 +5043,7 @@ fn render_live_styled_row(
                     .h_full()
                     .child(div().child(indent.to_string()))
                     .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(bullet.to_string()))
-                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None))
+                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -5030,7 +5056,7 @@ fn render_live_styled_row(
                     .items_center()
                     .h_full()
                     .child(div().child(format!("{}  ", indent)))
-                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None))
+                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None))
             }
         }
         crate::markdown::LineKind::NumberedList { num, .. } => {
@@ -5055,7 +5081,7 @@ fn render_live_styled_row(
                     .h_full()
                     .child(div().child(indent.to_string()))
                     .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(num_part.to_string()))
-                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None))
+                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -5069,7 +5095,7 @@ fn render_live_styled_row(
                     .items_center()
                     .h_full()
                     .child(div().child(spaces))
-                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None))
+                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None))
             }
         }
         crate::markdown::LineKind::HorizontalRule => {
@@ -5158,7 +5184,7 @@ fn render_live_styled_row(
                 .flex_row()
                 .items_center()
                 .h_full()
-                .child(render_syntax_spans(row_spans, is_active_line, theme, None, None))
+                .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None))
         }
     }
 }

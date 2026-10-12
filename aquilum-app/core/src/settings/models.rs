@@ -72,11 +72,19 @@ impl Default for FontSettings {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct HeadingStyle {
     pub font_size: u32,
     pub color_name: String,
+    #[serde(default = "default_true")]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
 }
 
 impl HeadingStyle {
@@ -84,6 +92,17 @@ impl HeadingStyle {
         Self {
             font_size,
             color_name: color_name.to_string(),
+            bold: true,
+            italic: false,
+        }
+    }
+
+    pub fn with_style(font_size: u32, color_name: &str, bold: bool, italic: bool) -> Self {
+        Self {
+            font_size,
+            color_name: color_name.to_string(),
+            bold,
+            italic,
         }
     }
 }
@@ -93,6 +112,8 @@ impl Default for HeadingStyle {
         Self {
             font_size: 16,
             color_name: "blue".to_string(),
+            bold: true,
+            italic: false,
         }
     }
 }
