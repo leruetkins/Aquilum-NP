@@ -4,6 +4,7 @@ pub mod folder_actions;
 pub mod folder_context_menu;
 pub mod folder_modals;
 pub mod quick_filter;
+pub mod tree;
 
 pub use file_actions::*;
 pub use file_context_menu::*;

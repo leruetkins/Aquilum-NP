@@ -3,7 +3,7 @@ use crate::icons;
 use crate::state::{AppState, FileNode};
 use crate::theme::Theme;
 use gpui::{
-    div, point, prelude::*, px, rgb, rgba, AnyElement, ClipboardItem, Context, Div, FocusHandle,
+    div, point, prelude::*, px, rgb, rgba, ClipboardItem, Context, Div, FocusHandle,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Render, ScrollHandle, ScrollStrategy,
     SharedString, Window, WindowControlArea,
 };
@@ -1517,211 +1517,6 @@ impl AppView {
         None
     }
 
-    fn render_tree_nodes(
-        &self,
-        nodes: &[FileNode],
-        depth: usize,
-        active_path: Option<&PathBuf>,
-        theme: &Theme,
-        acc: &mut Vec<AnyElement>,
-        selected_index: &mut Option<usize>,
-        cx: &Context<Self>,
-    ) {
-        self.render_tree_nodes_internal(nodes, depth, active_path, theme, acc, selected_index, false, cx);
-    }
-
-    fn render_tree_nodes_internal(
-        &self,
-        nodes: &[FileNode],
-        depth: usize,
-        active_path: Option<&PathBuf>,
-        theme: &Theme,
-        acc: &mut Vec<AnyElement>,
-        selected_index: &mut Option<usize>,
-        parent_matched: bool,
-        cx: &Context<Self>,
-    ) {
-        let query = self.state.search_query.trim().to_lowercase();
-        let is_filtering = !query.is_empty();
-
-        for node in nodes {
-            match node {
-                FileNode::Folder {
-                    name,
-                    path,
-                    children,
-                } => {
-                    let folder_matches_self = is_filtering && name.to_lowercase().contains(&query);
-                    let folder_has_matching_descendant = is_filtering && children.iter().any(|c| c.matches_query(&query));
-
-                    // When filtering, hide folder if neither it, nor its parent, nor any descendant matches
-                    if is_filtering && !parent_matched && !folder_matches_self && !folder_has_matching_descendant {
-                        continue;
-                    }
-
-                    // Auto-expand folder when filtering if it or its descendants match
-                    let is_expanded = self.state.expanded_folders.contains(path)
-                        || (is_filtering && (folder_matches_self || folder_has_matching_descendant));
-
-                    let chevron = if is_expanded {
-                        icons::icon(icons::ICON_CHEVRON_DOWN, 12.0, theme.text_muted)
-                    } else {
-                        icons::icon(icons::ICON_CHEVRON_RIGHT, 12.0, theme.text_muted)
-                    };
-                    let folder_svg = if is_expanded {
-                        icons::icon(icons::ICON_FOLDER_OPEN, 14.0, theme.accent)
-                    } else {
-                        icons::icon(icons::ICON_FOLDER, 14.0, theme.accent)
-                    };
-                    let indent = (depth * 14) as f32 + 4.0;
-                    let folder_path = path.clone();
-                    let folder_path_context = path.clone();
-
-                    let is_folder_selected = self.folder_context_menu.is_open && self.folder_context_menu.folder_path == *path;
-                    let folder_label_color = if is_folder_selected { theme.accent } else { theme.text_primary };
-
-                    let folder_label = crate::views::sidebar::highlight_matches(
-                        name,
-                        &self.state.search_query,
-                        folder_label_color,
-                        is_folder_selected,
-                        theme,
-                    );
-
-                    let folder_row = div()
-                        .id(SharedString::from(format!("fld-{}", folder_path.to_string_lossy())))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_1p5()
-                        .pl(px(indent))
-                        .pr_2()
-                        .py_1()
-                        .rounded_md()
-                        .cursor_pointer()
-                        .when(is_folder_selected, |s| {
-                            s.bg(theme.bg_selected)
-                                .text_color(theme.accent)
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                        })
-                        .when(!is_folder_selected, |s| {
-                            s.when(!self.folder_context_menu.is_open && !self.file_context_menu.is_open, |d| {
-                                d.hover(|h| h.bg(theme.bg_hover))
-                            })
-                            .text_color(theme.text_primary)
-                        })
-                        .child(chevron)
-                        .child(folder_svg)
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(folder_label_color)
-                                .truncate()
-                                .child(folder_label),
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.state.toggle_folder(folder_path.clone());
-                            cx.notify();
-                        }))
-                        .on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
-                            cx.stop_propagation();
-                            let x: f32 = event.position.x.into();
-                            let y: f32 = event.position.y.into();
-                            this.open_folder_context_menu(folder_path_context.clone(), x, y, cx);
-                        }));
-
-                    acc.push(folder_row.into_any_element());
-
-                    if is_expanded {
-                        let next_parent_matched = parent_matched || folder_matches_self;
-                        self.render_tree_nodes_internal(
-                            children,
-                            depth + 1,
-                            active_path,
-                            theme,
-                            acc,
-                            selected_index,
-                            next_parent_matched,
-                            cx,
-                        );
-                    }
-                }
-                FileNode::File { name, path } => {
-                    if is_filtering && !parent_matched && !name.to_lowercase().contains(&query) {
-                        continue;
-                    }
-
-                    let is_selected = active_path.map(|p| p == path).unwrap_or(false);
-                    if is_selected {
-                        *selected_index = Some(acc.len());
-                    }
-                    let indent = (depth * 14 + 18) as f32 + 4.0;
-                    let file_path = path.clone();
-                    let display_name = name.strip_suffix(".md").unwrap_or(name).to_string();
-                    let file_base_color = if is_selected { theme.accent } else { theme.text_secondary };
-                    let file_label = crate::views::sidebar::highlight_matches(
-                        &display_name,
-                        &self.state.search_query,
-                        file_base_color,
-                        is_selected,
-                        theme,
-                    );
-
-                    let file_svg = icons::icon(
-                        icons::ICON_FILE_TEXT,
-                        13.0,
-                        if is_selected { theme.accent } else { theme.text_muted },
-                    );
-
-                    let file_row = div()
-                        .id(SharedString::from(format!("fil-{}", file_path.to_string_lossy())))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_1p5()
-                        .pl(px(indent))
-                        .pr_2()
-                        .py_1()
-                        .rounded_md()
-                        .cursor_pointer()
-                        .when(is_selected, |s| {
-                            s.bg(theme.bg_selected)
-                                .text_color(theme.accent)
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                        })
-                        .when(!is_selected, |s| {
-                            s.when(!self.folder_context_menu.is_open && !self.file_context_menu.is_open, |d| {
-                                d.hover(|h| h.bg(theme.bg_hover))
-                            })
-                            .text_color(theme.text_primary)
-                        })
-                        .child(file_svg)
-                        .child(
-                            div()
-                                .text_xs()
-                                .truncate()
-                                .child(file_label),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.select_note(file_path.clone(), false, window, cx);
-                        }))
-                        .on_mouse_down(MouseButton::Right, cx.listener({
-                            let file_path = path.clone();
-                            move |this, event: &gpui::MouseDownEvent, window, cx| {
-                                cx.stop_propagation();
-                                let x: f32 = event.position.x.into();
-                                let y: f32 = event.position.y.into();
-                                this.select_note(file_path.clone(), false, window, cx);
-                                this.open_file_context_menu(file_path.clone(), x, y, cx);
-                            }
-                        }));
-
-                    acc.push(file_row.into_any_element());
-                }
-            }
-        }
-    }
-
     fn handle_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         self.reset_editor_cursor_blink(cx);
         let keystroke = &event.keystroke;
@@ -3168,41 +2963,7 @@ impl Render for AppView {
                     )
                     // ----- Сайдбар файлов (Дерево каталогов) -----
                     .when(!self.sidebar_collapsed, |s| {
-                        s.child({
-                            let mut tree_elements = Vec::new();
-                            let mut selected_tree_index = None;
-                            self.render_tree_nodes(
-                                &self.state.file_tree,
-                                0,
-                                active_path.as_ref(),
-                                theme,
-                                &mut tree_elements,
-                                &mut selected_tree_index,
-                                cx,
-                            );
-
-                            if !self.initial_sidebar_scroll_done.get() {
-                                self.initial_sidebar_scroll_done.set(true);
-                                if self.state.session.sidebar_scroll_top < 0.0 {
-                                    self.sidebar_scroll_handle.set_offset(point(px(0.0), px(self.state.session.sidebar_scroll_top)));
-                                } else if let Some(ix) = selected_tree_index {
-                                    let tree_viewport_h = (f32::from(window.bounds().size.height) - 144.0).max(100.0);
-                                    let visible_items = (tree_viewport_h / 26.0).floor() as usize;
-                                    let half = (visible_items / 2).max(1);
-                                    let target_top_ix = ix.saturating_sub(half);
-                                    self.sidebar_scroll_handle.scroll_to_top_of_item(target_top_ix);
-                                }
-                            } else if self.need_scroll_sidebar_to_active.get() {
-                                self.need_scroll_sidebar_to_active.set(false);
-                                if let Some(ix) = selected_tree_index {
-                                    let tree_viewport_h = (f32::from(window.bounds().size.height) - 144.0).max(100.0);
-                                    let visible_items = (tree_viewport_h / 26.0).floor() as usize;
-                                    let half = (visible_items / 2).max(1);
-                                    let target_top_ix = ix.saturating_sub(half);
-                                    self.sidebar_scroll_handle.scroll_to_top_of_item(target_top_ix);
-                                }
-                            }
-
+                        s.child(
                             div()
                                 .flex()
                                 .flex_col()
@@ -3302,18 +3063,13 @@ impl Render for AppView {
                             )
                             // Search Filter Bar
                             .child(self.render_quick_filter(window, cx))
-                            // Tree Scroll
-                            .child(
-                                div()
-                                    .id("sidebar-tree-scroll")
-                                    .track_scroll(&self.sidebar_scroll_handle)
-                                    .flex()
-                                    .flex_col()
-                                    .flex_1()
-                                    .overflow_scroll()
-                                    .gap_0p5()
-                                    .children(tree_elements)
-                            )
+                            // Tree Scroll — виртуализированный список (см. views/sidebar/tree.rs)
+                            .child(self.render_sidebar_tree(
+                                active_path.as_ref(),
+                                theme,
+                                window,
+                                cx,
+                            ))
                             // Sidebar Footer (Vault display + Settings button)
                             .child(
                                 div()
@@ -3354,7 +3110,7 @@ impl Render for AppView {
                                             })),
                                     ),
                             )
-                        })
+                        )
                     })
                     // ----- Sidebar Resizer Divider (1px border line + 7px transparent hitbox) -----
                     .when(!self.sidebar_collapsed, |s| {
