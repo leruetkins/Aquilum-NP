@@ -667,29 +667,32 @@ impl AppView {
     }
 
     pub(crate) fn open_folder_dialog(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-            self.state.open_workspace(folder);
-            if self.state.active_note.is_none() {
-                if let Some(first_file) = AppState::first_file_in_tree(&self.state.file_tree) {
-                    self.state.open_note(first_file);
-                }
-            }
-            self.need_scroll_sidebar_to_active.set(true);
-            cx.notify();
+        let entity = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let mut dialog = rfd::AsyncFileDialog::new();
+        if let Some(ref root) = self.state.workspace_path {
+            dialog = dialog.set_directory(root);
         }
+        cx.foreground_executor().spawn(async move {
+            if let Some(folder_handle) = dialog.pick_folder().await {
+                let folder = folder_handle.path().to_path_buf();
+                let _ = entity.update(&mut async_cx, |this, cx| {
+                    this.state.open_workspace(folder);
+                    if this.state.active_note.is_none() {
+                        if let Some(first_file) = AppState::first_file_in_tree(&this.state.file_tree) {
+                            this.state.open_note(first_file);
+                        }
+                    }
+                    this.need_scroll_sidebar_to_active.set(true);
+                    cx.notify();
+                });
+            }
+        }).detach();
     }
 
-    /// Opens the native folder picker *outside* the current update cycle.
-    ///
-    /// rfd pumps its own OS message loop, so calling it inline from an event
-    /// handler lets timer futures re-enter `App::update` while it is still
-    /// borrowed and aborts the process ("RefCell already borrowed").
-    /// Deferred past the effect cycle, the outer borrow is gone and nested
-    /// ticks update normally.
+    /// Opens the native folder picker asynchronously without blocking the GPUI update loop.
     pub(crate) fn open_folder_dialog_deferred(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        cx.defer_in(window, |this, window, cx| {
-            this.open_folder_dialog(window, cx);
-        });
+        self.open_folder_dialog(window, cx);
     }
 
     pub(crate) fn create_new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
