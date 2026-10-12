@@ -9,13 +9,14 @@
 
 use std::path::PathBuf;
 
-use gpui::{div, point, prelude::*, px, AnyElement, Context, MouseButton, SharedString, Window};
+use gpui::{div, point, prelude::*, px, AnyElement, Context, MouseButton, MouseDownEvent, SharedString, Window};
 
 use crate::icons;
 use crate::markdown::VisualRowHeightIndex;
 use crate::state::FileNode;
 use crate::theme::Theme;
 use crate::views::app_view::AppView;
+use crate::views::scrollbar::{overlay_scrollbar, ScrollbarGeometry, ScrollbarStyle};
 
 /// Fixed height of one sidebar tree row, in pixels.
 ///
@@ -35,6 +36,49 @@ const SIDEBAR_ROW_H: f32 = 29.0;
 /// Pixels of rows rendered above and below the viewport, so fast scrolling does not
 /// expose blank edges before the next frame catches up.
 const SIDEBAR_OVERSCAN_PX: f32 = 300.0;
+
+/// Horizontal padding of the sidebar column (`p_2`), in pixels.
+///
+/// The tree viewport ends this far short of the panel border, which would leave the
+/// scrollbar floating over the rows. Pushing it out by the same amount parks it in that
+/// padding gutter instead, clear of the row backgrounds.
+const SIDEBAR_PADDING: f32 = 8.0;
+
+/// Gap the rows leave between their background and the scrollbar lane, in pixels.
+///
+/// A row's background stretches to the edge of the content box, which is exactly where the
+/// scrollbar lane begins — so a highlighted row would run straight into the thumb. The rows
+/// give up this much of their right edge to open the gap. Only the background moves: the label
+/// keeps its own `pr_2` padding and does not shift.
+const SIDEBAR_ROW_SCROLLBAR_GAP: f32 = 4.0;
+
+/// Visible width of the sidebar thumb, in pixels.
+const SIDEBAR_THUMB_W: f32 = 6.0;
+
+/// Gap between the thumb and the panel border, in pixels.
+///
+/// Without it the thumb sits flush on the divider and reads as part of the border instead of
+/// as a control. The inset leaves a sliver of panel background on the border side, while
+/// [`SIDEBAR_ROW_SCROLLBAR_GAP`] does the same on the row side.
+const SIDEBAR_SCROLLBAR_BORDER_GAP: f32 = 2.0;
+
+/// Scrollbar look for the sidebar tree.
+///
+/// The lane is the whole padding gutter ([`SIDEBAR_PADDING`]), but the thumb is narrower than
+/// the lane and pushed left, so it clears the panel border by
+/// [`SIDEBAR_SCROLLBAR_BORDER_GAP`] and the row highlight by [`SIDEBAR_ROW_SCROLLBAR_GAP`].
+/// `thumb_w == thumb_w_active` keeps the width constant — the bar never changes size under the
+/// pointer.
+fn sidebar_scrollbar_style() -> ScrollbarStyle {
+    ScrollbarStyle {
+        track_w: SIDEBAR_PADDING,
+        thumb_w: SIDEBAR_THUMB_W,
+        thumb_w_active: SIDEBAR_THUMB_W,
+        thumb_inset: SIDEBAR_SCROLLBAR_BORDER_GAP,
+        track_right_offset: -SIDEBAR_PADDING,
+        ..ScrollbarStyle::default()
+    }
+}
 
 /// One flattened line of the sidebar file tree.
 ///
@@ -56,9 +100,10 @@ struct SidebarRow {
 impl AppView {
     /// Renders the scrollable, virtualized file tree.
     ///
-    /// Returns the whole `#sidebar-tree-scroll` container: the caller only decides where
-    /// it goes. Everything else — flattening, resolving the scroll offset, and slicing the
-    /// visible range — happens here.
+    /// Returns the whole viewport: a `relative` wrapper holding the
+    /// `#sidebar-tree-scroll` container plus the overlay scrollbar. The caller only
+    /// decides where it goes. Everything else — flattening, resolving the scroll offset,
+    /// slicing the visible range and sizing the thumb — happens here.
     pub(crate) fn render_sidebar_tree(
         &self,
         active_path: Option<&PathBuf>,
@@ -165,15 +210,75 @@ impl AppView {
             );
         }
 
-        div()
+        let scroll_container = div()
             .id("sidebar-tree-scroll")
             .track_scroll(&self.sidebar_scroll_handle)
             .flex()
             .flex_col()
             .flex_1()
             .overflow_scroll()
-            .children(tree_elements)
-            .into_any_element()
+            .children(tree_elements);
+
+        // The scrollbar is an overlay, so it must not scroll with the content: it is a
+        // sibling of the scroll container inside a `relative` wrapper, not a child of it.
+        let style = sidebar_scrollbar_style();
+        let mut viewport = div()
+            .id("sidebar-tree-viewport")
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(scroll_container);
+
+        if let Some(geometry) = ScrollbarGeometry::from_handle(&self.sidebar_scroll_handle, &style) {
+            viewport = viewport.child(overlay_scrollbar(
+                "sidebar-scrollbar-track",
+                &geometry,
+                &style,
+                theme,
+                self.sidebar_scrollbar_drag.active,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    // One gesture at a time: a border drag already owns the pointer, so a
+                    // track click must not jump the list out from under it.
+                    if this.is_resizing_sidebar {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    let pointer_y: f32 = event.position.y.into();
+                    this.set_sidebar_scroll_top(geometry.offset_for_track_click(pointer_y));
+                    cx.notify();
+                }),
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    if this.is_resizing_sidebar {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    this.sidebar_scrollbar_drag.begin(event.position.y.into(), geometry.scroll_y);
+                    cx.notify();
+                }),
+            ));
+        }
+
+        viewport.into_any_element()
+    }
+
+    /// Scrolls the sidebar tree to `scroll_y` pixels from the top of the list.
+    pub(crate) fn set_sidebar_scroll_top(&self, scroll_y: f32) {
+        self.sidebar_scroll_handle.set_offset(point(px(0.0), px(-scroll_y)));
+    }
+
+    /// Follows the pointer while the sidebar scrollbar thumb is being dragged.
+    pub(crate) fn handle_sidebar_scrollbar_drag(&mut self, pointer_y: f32, cx: &mut Context<Self>) {
+        if !self.sidebar_scrollbar_drag.active {
+            return;
+        }
+        let style = sidebar_scrollbar_style();
+        let Some(geometry) = ScrollbarGeometry::from_handle(&self.sidebar_scroll_handle, &style) else {
+            return;
+        };
+        geometry.apply_drag(&self.sidebar_scroll_handle, &self.sidebar_scrollbar_drag, pointer_y);
+        cx.notify();
     }
 
     /// Flattens the file tree into a list of rows, honouring collapsed folders and the
@@ -287,6 +392,7 @@ impl AppView {
                 .flex_shrink_0()
                 .pl(px(indent))
                 .pr_2()
+                .mr(px(SIDEBAR_ROW_SCROLLBAR_GAP))
                 .rounded_md()
                 .cursor_pointer()
                 .when(is_folder_selected, |s| {
@@ -295,9 +401,12 @@ impl AppView {
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                 })
                 .when(!is_folder_selected, |s| {
-                    s.when(!self.folder_context_menu.is_open && !self.file_context_menu.is_open, |d| {
-                        d.hover(|h| h.bg(theme.bg_hover))
-                    })
+                    s.when(
+                        !self.folder_context_menu.is_open
+                            && !self.file_context_menu.is_open
+                            && !self.sidebar_scrollbar_drag.active,
+                        |d| d.hover(|h| h.bg(theme.bg_hover)),
+                    )
                     .text_color(theme.text_primary)
                 })
                 .child(chevron)
@@ -352,6 +461,7 @@ impl AppView {
                 .flex_shrink_0()
                 .pl(px(indent))
                 .pr_2()
+                .mr(px(SIDEBAR_ROW_SCROLLBAR_GAP))
                 .rounded_md()
                 .cursor_pointer()
                 .when(is_selected, |s| {
@@ -360,9 +470,12 @@ impl AppView {
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                 })
                 .when(!is_selected, |s| {
-                    s.when(!self.folder_context_menu.is_open && !self.file_context_menu.is_open, |d| {
-                        d.hover(|h| h.bg(theme.bg_hover))
-                    })
+                    s.when(
+                        !self.folder_context_menu.is_open
+                            && !self.file_context_menu.is_open
+                            && !self.sidebar_scrollbar_drag.active,
+                        |d| d.hover(|h| h.bg(theme.bg_hover)),
+                    )
                     .text_color(theme.text_primary)
                 })
                 .child(file_svg)

@@ -2,6 +2,7 @@ use crate::blink_manager::{BlinkManager, BlinkTarget};
 use crate::icons;
 use crate::state::{AppState, FileNode};
 use crate::theme::Theme;
+use crate::views::scrollbar::ScrollbarDrag;
 use gpui::{
     div, point, prelude::*, px, rgb, rgba, ClipboardItem, Context, Div, FocusHandle,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Render, ScrollHandle, ScrollStrategy,
@@ -44,6 +45,8 @@ pub struct AppView {
     pub is_dragging_scrollbar: bool,
     pub scrollbar_drag_start_y: f32,
     pub scrollbar_drag_start_scroll_y: f32,
+    /// Drag state of the sidebar tree's overlay scrollbar.
+    pub sidebar_scrollbar_drag: ScrollbarDrag,
     pub last_editor_h: Cell<f32>,
     pub config: crate::settings::AppConfig,
     pub last_saved_geometry: Option<(f32, f32, Option<f32>, Option<f32>, bool)>,
@@ -131,6 +134,7 @@ impl AppView {
             is_dragging_scrollbar: false,
             scrollbar_drag_start_y: 0.0,
             scrollbar_drag_start_scroll_y: 0.0,
+            sidebar_scrollbar_drag: ScrollbarDrag::default(),
             last_editor_h: Cell::new(600.0),
             config,
             last_saved_geometry,
@@ -2170,6 +2174,9 @@ impl Render for AppView {
                 } else if this.is_dragging_scrollbar {
                     let y: f32 = event.position.y.into();
                     this.handle_scrollbar_drag(y, window, cx);
+                } else if this.sidebar_scrollbar_drag.active {
+                    let y: f32 = event.position.y.into();
+                    this.handle_sidebar_scrollbar_drag(y, cx);
                 } else if this.title_is_mouse_selecting {
                     let x: f32 = event.position.x.into();
                     let editor_left_x = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
@@ -2225,6 +2232,7 @@ impl Render for AppView {
                 this.is_resizing_right_sidebar = false;
                 this.is_mouse_selecting = false;
                 this.is_dragging_scrollbar = false;
+                this.sidebar_scrollbar_drag.end();
                 if let Some(ref mut n) = this.state.active_note {
                     if n.selection_anchor == Some(n.cursor_offset) {
                         n.selection_anchor = None;
@@ -2250,6 +2258,7 @@ impl Render for AppView {
                 this.is_hovering_right_resizer = false;
                 this.is_mouse_selecting = false;
                 this.is_dragging_scrollbar = false;
+                this.sidebar_scrollbar_drag.end();
                 cx.notify();
             }))
             // ================= WINDOW TITLEBAR & TAB BAR (CUSTOM CSD FRAME) =================
@@ -3143,10 +3152,18 @@ impl Render for AppView {
                                         .w(px(7.0))
                                         .cursor(gpui::CursorStyle::ResizeColumn)
                                         .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                            this.is_hovering_resizer = *hovered;
+                                            // A scrollbar drag may pass over this hitbox; the
+                                            // divider must not light up as the active target.
+                                            this.is_hovering_resizer =
+                                                *hovered && !this.sidebar_scrollbar_drag.active;
                                             cx.notify();
                                         }))
                                         .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                            // One gesture at a time: the scrollbar already
+                                            // owns the pointer, so the border must not steal it.
+                                            if this.sidebar_scrollbar_drag.active {
+                                                return;
+                                            }
                                             if event.click_count == 2 {
                                                 this.toggle_sidebar(cx);
                                             } else {
@@ -3488,6 +3505,7 @@ impl Render for AppView {
                                         .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                             this.is_resizing_sidebar = false;
                                             this.is_dragging_scrollbar = false;
+                                            this.sidebar_scrollbar_drag.end();
                                             this.is_mouse_selecting = false;
                                             if let Some(ref mut n) = this.state.active_note {
                                                 if n.selection_anchor == Some(n.cursor_offset) {
@@ -3499,6 +3517,7 @@ impl Render for AppView {
                                         .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                             this.is_resizing_sidebar = false;
                                             this.is_dragging_scrollbar = false;
+                                            this.sidebar_scrollbar_drag.end();
                                             this.is_mouse_selecting = false;
                                             cx.notify();
                                         }))
