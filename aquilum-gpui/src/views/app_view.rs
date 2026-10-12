@@ -4472,7 +4472,14 @@ impl Render for AppView {
                         div()
                             .id("tabs-popup-anchor")
                             .absolute()
-                            .top(px(crate::views::tab_list::WINDOW_MARGIN))
+                            // Below the tab strip, with a small gap: the "+" and the
+                            // chevron that opens this popup sit at the right end of that
+                            // row, so the panel hangs from under them instead of
+                            // covering them. Same corner the old tabs dropdown used.
+                            .top(px(
+                                crate::views::tab_list::WINDOW_ANCHOR_TOP
+                                    + crate::views::tab_list::POPUP_GAP,
+                            ))
                             .right(px(140.0))
                             .child(popup),
                     )

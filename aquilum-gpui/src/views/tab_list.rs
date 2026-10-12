@@ -5,9 +5,14 @@
 //! the beginning of the list, near the bottom edge the end, and in between the
 //! offset is proportional to the cursor position.
 //!
+//! The top and bottom edge have a dead zone (see [`edge_pad`]): while the cursor
+//! is inside it the list already sits at its extreme position, so the first and
+//! the last row are fully visible without pushing the mouse against the border.
+//!
 //! The offset does not jump to the cursor: it smoothly chases the target derived
 //! from the cursor position. Smoothing is time based (`dt` of the real frame, not
-//! a hardcoded 1/60), so 60/120/144 Hz monitors look identical.
+//! a hardcoded 1/60), so 60/120/144 Hz monitors look identical. The offset is
+//! always snapped to whole device pixels, so text and icons move together.
 //!
 //! The parent is responsible for positioning: this component only renders the
 //! panel itself (`deferred(anchored(...))` lives in the parent).
@@ -32,26 +37,47 @@ use crate::icons;
 use crate::theme::Theme;
 use crate::views::app_view::AppView;
 
-/// Dead zone at the top and bottom edge of the list (px): the first and the last
-/// row are reachable without pushing the cursor against the window border.
-const EDGE_PAD: f32 = 12.0;
+/// Height of a single row (px). The keyboard navigation relies on it.
+const ROW_HEIGHT: f32 = 28.0;
+
+/// Dead zone at the top and bottom edge, as a fraction of the list height...
+const EDGE_PAD_FRACTION: f32 = 0.10;
+/// ...but never smaller than one row, so the last row ends up fully under the
+/// cursor before it reaches the border...
+const EDGE_PAD_MIN: f32 = ROW_HEIGHT;
+/// ...and never larger than this on very tall lists.
+const EDGE_PAD_MAX: f32 = 56.0;
+
 /// Mouse movements shorter than this (px) are ignored to suppress jitter.
 const MIN_MOVE: f32 = 1.5;
 /// Smoothing time constant (ms). 80-100 is brisk, 150-200 is very smooth.
 const SMOOTH_TAU_MS: f32 = 140.0;
-/// Below this distance (px) the offset snaps to the target and the animation stops.
-const SNAP_EPSILON: f32 = 0.3;
 /// Upper bound for a single frame step (s): keeps a long stall from producing a jump.
 const MAX_FRAME_DT: f32 = 0.05;
-/// Height of a single row (px). The keyboard navigation relies on it.
-const ROW_HEIGHT: f32 = 28.0;
+/// A scroll range below this (px) counts as "everything fits": no cursor scrolling.
+const MIN_SCROLL_RANGE: f32 = 1.0;
+
 /// Panel width (px).
 const LIST_WIDTH: f32 = 280.0;
+/// Vertical padding of the panel (px). Together with the border it is subtracted
+/// from the panel height to get the list viewport, so the height must include it.
+const PANEL_PAD_Y: f32 = 4.0;
+/// Border width of the panel (px).
+const PANEL_BORDER: f32 = 1.0;
+/// Total vertical space taken by the panel padding and border.
+const PANEL_CHROME: f32 = PANEL_PAD_Y * 2.0 + PANEL_BORDER * 2.0;
+
 /// Margin from the window edges (px) when the list wants to be taller than the
 /// window. The parent uses it to place the panel so that the heights match.
 pub const WINDOW_MARGIN: f32 = 16.0;
-/// Extra height (px) added to the content height so the panel does not hug the rows.
-const LIST_EXTRA_HEIGHT: f32 = 8.0;
+/// Distance from the top of the window to the top of the panel (px): the height of
+/// the unified titlebar, so that the panel opens *below* the tabs instead of
+/// covering them. Same anchor the old tabs dropdown menu uses.
+pub const WINDOW_ANCHOR_TOP: f32 = 38.0;
+/// Extra gap (px) below the titlebar: the "+" and the chevron that opens this popup
+/// live at the right end of that row, and the panel must visibly hang from them
+/// rather than glue itself to the row's bottom border.
+pub const POPUP_GAP: f32 = 4.0;
 /// File and check mark icon size (px).
 const ICON_SIZE: f32 = 14.0;
 
@@ -75,19 +101,31 @@ pub enum TabListEvent {
 
 impl EventEmitter<TabListEvent> for TabListPopup {}
 
+/// Size of the dead zone at the top and at the bottom of the list.
+///
+/// A fraction of the list height, but at least one row (so the last row is fully
+/// visible while the cursor is still a row away from the border) and at most
+/// [`EDGE_PAD_MAX`]. On very short lists it never takes more than a third of the
+/// height, otherwise nothing would be left for the proportional part.
+fn edge_pad(list_height: Pixels) -> Pixels {
+    (list_height * EDGE_PAD_FRACTION)
+        .clamp(px(EDGE_PAD_MIN), px(EDGE_PAD_MAX))
+        .min(list_height / 3.0)
+}
+
 /// Target offset for the given cursor position: `0` at the top of the list,
 /// `-max_scroll` at the bottom, proportional in between.
 ///
 /// The scroll speed follows from this formula by itself: it equals
-/// `max_scroll / list_height`, so a long list moves faster than a short one for
-/// the same cursor travel.
+/// `max_scroll / (list_height - 2 * edge_pad)`, so a long list moves faster than a
+/// short one for the same cursor travel.
 fn cursor_target_offset(
     cursor_y: Pixels,
     list_top: Pixels,
     list_height: Pixels,
     max_scroll: Pixels,
 ) -> Pixels {
-    let pad = px(EDGE_PAD);
+    let pad = edge_pad(list_height);
     let usable = (list_height - pad * 2.0).max(px(1.0));
     let t = ((cursor_y - list_top - pad) / usable).clamp(0.0, 1.0);
     // In gpui the offset is negative: 0 is the top, -max is the bottom.
@@ -124,6 +162,13 @@ fn nearest_offset(
 /// the progress after a given wall-clock time is the same at any frame rate.
 fn smoothing_alpha(dt_secs: f32) -> f32 {
     1.0 - (-dt_secs * 1000.0 / SMOOTH_TAU_MS).exp()
+}
+
+/// Rounds a value to a whole number of device pixels. A fractional offset makes
+/// text and SVG icons snap to the pixel grid differently, which shows up as them
+/// shimmering out of sync while the list moves.
+fn snap_to_device_pixel(value: Pixels, scale: f32) -> Pixels {
+    (value * scale).round() / scale
 }
 
 /// Dropdown list of open tabs with cursor driven scrolling.
@@ -199,7 +244,7 @@ impl TabListPopup {
             if (y - previous).abs() >= px(MIN_MOVE) {
                 let bounds = self.bounds.get();
                 let max_scroll = self.base_handle().max_offset().height;
-                if bounds.size.height > px(0.0) && max_scroll > px(0.0) {
+                if bounds.size.height > px(0.0) && max_scroll >= px(MIN_SCROLL_RANGE) {
                     self.target_y = Some(cursor_target_offset(
                         y,
                         bounds.origin.y,
@@ -233,7 +278,7 @@ impl TabListPopup {
         let max_scroll = base.max_offset().height;
         let viewport = base.bounds().size.height;
         // `max_offset()` is 0 until the first layout: never clamp against it there.
-        if max_scroll <= px(0.0) || viewport <= px(0.0) {
+        if max_scroll < px(MIN_SCROLL_RANGE) || viewport <= px(0.0) {
             return;
         }
 
@@ -250,7 +295,11 @@ impl TabListPopup {
     }
 
     /// One smoothing step. Returns `true` when another frame is needed.
-    fn animate(&mut self) -> bool {
+    ///
+    /// `scale` is the window scale factor: the offset is kept on whole device
+    /// pixels, and a step is never smaller than one device pixel, otherwise the
+    /// tail of the animation would stall after rounding.
+    fn animate(&mut self, scale: f32) -> bool {
         let Some(target) = self.target_y else {
             self.last_frame = None;
             return false;
@@ -264,17 +313,24 @@ impl TabListPopup {
         });
         self.last_frame = Some(now);
 
+        let one_px = px(1.0 / scale);
+        let target = snap_to_device_pixel(target, scale);
+
         let base = self.base_handle();
         let mut offset = base.offset();
         let diff = target - offset.y;
-        if diff.abs() < px(SNAP_EPSILON) {
+        if diff.abs() < one_px {
             offset.y = target;
             base.set_offset(offset);
             self.last_frame = None;
             return false;
         }
 
-        offset.y += diff * smoothing_alpha(dt);
+        let mut step = diff * smoothing_alpha(dt);
+        if step.abs() < one_px {
+            step = if diff > px(0.0) { one_px } else { -one_px };
+        }
+        offset.y = snap_to_device_pixel(offset.y + step, scale);
         base.set_offset(offset);
         true
     }
@@ -331,14 +387,21 @@ impl TabListPopup {
 impl Render for TabListPopup {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Keep the animation alive until the offset reaches its target.
-        if self.animate() {
+        if self.animate(window.scale_factor()) {
             window.request_animation_frame();
         }
 
         // Almost the whole window height when there are many tabs, content height otherwise.
-        let max_height = window.viewport_size().height - px(WINDOW_MARGIN * 2.0);
-        let height = (px(ROW_HEIGHT) * self.tabs.len() as f32 + px(LIST_EXTRA_HEIGHT))
-            .min(max_height)
+        // The anchor top is not zero (the panel opens below the titlebar plus a gap), so
+        // the free space below the anchor is what bounds the height, otherwise the panel
+        // would run out of the window at the bottom.
+        let free_height = window.viewport_size().height
+            - px(WINDOW_ANCHOR_TOP + POPUP_GAP)
+            - px(WINDOW_MARGIN);
+        // The panel height includes its padding and border, so that the list viewport is
+        // exactly `rows * ROW_HEIGHT` when everything fits and there is nothing to scroll.
+        let height = (px(ROW_HEIGHT) * self.tabs.len() as f32 + px(PANEL_CHROME))
+            .min(free_height)
             .max(px(ROW_HEIGHT));
 
         let bounds = self.bounds.clone();
@@ -352,7 +415,7 @@ impl Render for TabListPopup {
             .relative()
             .w(px(LIST_WIDTH))
             .h(height)
-            .py_1()
+            .py(px(PANEL_PAD_Y))
             .bg(bg_panel)
             .border_1()
             .border_color(border)
@@ -501,18 +564,45 @@ mod tests {
         (left - right).abs() < px(0.01)
     }
 
+    // The tests below use list_top = 100 and list_height = 300, so the dead zone is
+    // clamp(300 * 0.10, 28, 56) = 30 px: the proportional band is 130..370.
+
     #[test]
-    fn cursor_at_the_top_edge_shows_the_beginning() {
-        // list_top = 100, list_height = 300, so the usable band starts at 112.
-        let target = cursor_target_offset(px(112.0), px(100.0), px(300.0), px(1000.0));
+    fn edge_pad_is_a_fraction_of_the_height_within_bounds() {
+        assert!(approx(edge_pad(px(300.0)), px(30.0)));
+        // 10% of 1000 is 100, capped at EDGE_PAD_MAX.
+        assert!(approx(edge_pad(px(1000.0)), px(EDGE_PAD_MAX)));
+        // 10% of 100 is 10, raised to one row...
+        assert!(approx(edge_pad(px(150.0)), px(ROW_HEIGHT)));
+        // ...but never more than a third of a very short list.
+        assert!(approx(edge_pad(px(60.0)), px(20.0)));
+    }
+
+    #[test]
+    fn cursor_at_the_top_of_the_band_shows_the_beginning() {
+        let target = cursor_target_offset(px(130.0), px(100.0), px(300.0), px(1000.0));
         assert!(approx(target, px(0.0)));
     }
 
     #[test]
-    fn cursor_at_the_bottom_edge_shows_the_end() {
-        // The usable band ends at 100 + 300 - 12 = 388.
-        let target = cursor_target_offset(px(388.0), px(100.0), px(300.0), px(1000.0));
+    fn cursor_at_the_bottom_of_the_band_shows_the_end() {
+        let target = cursor_target_offset(px(370.0), px(100.0), px(300.0), px(1000.0));
         assert!(approx(target, px(-1000.0)));
+    }
+
+    #[test]
+    fn the_last_row_is_fully_visible_one_row_before_the_edge() {
+        // One row above the bottom border (400 - 28 = 372) is already the very end.
+        let target =
+            cursor_target_offset(px(400.0 - ROW_HEIGHT), px(100.0), px(300.0), px(1000.0));
+        assert!(approx(target, px(-1000.0)));
+    }
+
+    #[test]
+    fn the_first_row_is_fully_visible_one_row_after_the_edge() {
+        let target =
+            cursor_target_offset(px(100.0 + ROW_HEIGHT), px(100.0), px(300.0), px(1000.0));
+        assert!(approx(target, px(0.0)));
     }
 
     #[test]
@@ -522,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_outside_the_padding_zone_is_clamped() {
+    fn cursor_outside_the_list_is_clamped() {
         let top = cursor_target_offset(px(0.0), px(100.0), px(300.0), px(1000.0));
         let bottom = cursor_target_offset(px(900.0), px(100.0), px(300.0), px(1000.0));
         assert!(approx(top, px(0.0)));
@@ -557,7 +647,8 @@ mod tests {
     #[test]
     fn a_row_above_the_viewport_scrolls_up_by_the_minimum() {
         // Viewport 500..800, row 200..228.
-        let target = nearest_offset(px(200.0), px(28.0), px(500.0), px(300.0), px(-500.0), px(1000.0));
+        let target =
+            nearest_offset(px(200.0), px(28.0), px(500.0), px(300.0), px(-500.0), px(1000.0));
         assert!(approx(target, px(-200.0)));
     }
 
@@ -593,5 +684,19 @@ mod tests {
         assert!((at_60 - at_144).abs() < px(1.0));
         // And it really got there: tau is 140 ms, so one second is ~7 time constants.
         assert!((target - at_60).abs() < px(2.0));
+    }
+
+    #[test]
+    fn snapping_lands_on_device_pixels() {
+        // 150%: a device pixel is 1/1.5 px. 10.3 * 1.5 = 15.45 -> 15 -> 10.0.
+        assert!(approx(snap_to_device_pixel(px(10.3), 1.5), px(10.0)));
+        assert!(approx(snap_to_device_pixel(px(10.4), 1.0), px(10.0)));
+        assert!(approx(snap_to_device_pixel(px(-13.47), 2.0), px(-13.5)));
+    }
+
+    #[test]
+    fn panel_chrome_matches_padding_and_border() {
+        // Viewport = panel height - padding (top + bottom) - border (top + bottom).
+        assert!(approx(px(PANEL_CHROME), px(10.0)));
     }
 }

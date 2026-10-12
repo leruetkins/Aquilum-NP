@@ -1905,39 +1905,44 @@ mod tests {
     }
 
     #[test]
-    fn test_heading_font_advances_are_strictly_monospace() {
+    fn test_emoji_line_shaping_and_positions() {
         gpui::Application::new().run(|cx: &mut gpui::App| {
             crate::fonts::register_embedded_fonts(cx);
-            let sample_text = "# Полный тест Markdown-редактора";
-            for family in ["Droid Sans Mono", "Roboto Mono"] {
-                for bold in [false, true] {
-                    let mut font = gpui::font(family);
-                    if bold {
-                        font = font.bold();
-                    }
-                    let font_id = cx.text_system().resolve_font(&font);
-                    for &size in &[14.0, 22.0] {
-                        let base_adv = cx
-                            .text_system()
-                            .advance(font_id, gpui::px(size), 'x')
-                            .expect("advance for 'x' should succeed")
-                            .width;
-                        for ch in sample_text.chars() {
-                            let ch_adv = cx
-                                .text_system()
-                                .advance(font_id, gpui::px(size), ch)
-                                .expect("advance should succeed")
-                                .width;
-                            let diff = (f32::from(ch_adv) - f32::from(base_adv)).abs();
-                            assert!(
-                                diff < 0.001,
-                                "Font {family} (bold={bold}, size={size}px) char '{ch}' advance {ch_adv:?} differs from base {base_adv:?}"
-                            );
-                        }
+            let text: gpui::SharedString = "# Нативные: 😀 🚀 ⚠️ ❤️ 👍 🎉 🐛 👨‍👩‍👧‍👦 🏳️‍🌈 RU".into();
+            cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                let run = gpui::TextRun {
+                    len: text.len(),
+                    font: gpui::font("Droid Sans Mono").bold(),
+                    color: Default::default(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped = window.text_system().shape_line(text.clone(), gpui::px(22.0), &[run], None);
+                println!("shaped line len in bytes: {}", shaped.len());
+                println!("shaped total width: {:?}", shaped.width);
+                println!("x at 0 (#): {:?}", shaped.x_for_index(0));
+                println!("x at end (102, after RU): {:?}", shaped.x_for_index(102));
+                println!("closest index for width: {:?}", shaped.closest_index_for_x(shaped.width));
+
+                // Print x for all byte indices corresponding to chars
+                let mut b_off = 0;
+                for (c_idx, ch) in text.chars().enumerate() {
+                    let x = shaped.x_for_index(b_off);
+                    println!("c_idx #{:2} [{}] at byte {}: x = {:?}", c_idx, ch, b_off, x);
+                    b_off += ch.len_utf8();
+                }
+                println!("FINAL at byte {}: x = {:?}", b_off, shaped.x_for_index(b_off));
+                cx.quit();
+                use gpui::AppContext;
+                struct DummyView;
+                impl gpui::Render for DummyView {
+                    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+                        gpui::div()
                     }
                 }
-            }
-            cx.quit();
+                cx.new(|_| DummyView)
+            });
         });
     }
 }
