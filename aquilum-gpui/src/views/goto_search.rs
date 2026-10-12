@@ -12,11 +12,12 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
-    div, prelude::*, px, Context, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    div, point, prelude::*, px, Context, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, Rgba, SharedString, Styled, StyledText, TextRun, Window,
 };
 
 use crate::blink_manager::BlinkTarget;
+use crate::views::scrollbar::{overlay_scrollbar, ScrollbarGeometry, ScrollbarStyle};
 use crate::icons;
 use crate::state::FileNode;
 use crate::theme::Theme;
@@ -31,6 +32,36 @@ const MAX_RESULTS: usize = 50;
 /// Snippet context around the first hit (chars).
 const SNIPPET_BEFORE: usize = 60;
 const SNIPPET_AFTER: usize = 140;
+
+/// Right gutter of the results scroll container, in pixels.
+///
+/// Matches the `p_2` padding of the scroll container: the scrollbar lane
+/// lives exactly in that gutter instead of floating over the cards.
+const GOTO_RESULTS_PAD: f32 = 8.0;
+
+/// Gap the cards leave between their border and the scrollbar lane.
+///
+/// A card border stretches to the edge of the content box, which is exactly
+/// where the lane begins — without this the cards would run straight into
+/// the thumb. Same idea as `SIDEBAR_ROW_SCROLLBAR_GAP` in the sidebar tree.
+const GOTO_ROW_SCROLLBAR_GAP: f32 = 4.0;
+
+/// Scrollbar look for the results list.
+///
+/// The lane is the whole padding gutter, the thumb is narrower and pushed
+/// against the panel border with a 2px sliver of background on each side.
+/// `thumb_w == thumb_w_active` keeps the width constant — the bar never
+/// changes size under the pointer.
+fn goto_scrollbar_style() -> ScrollbarStyle {
+    ScrollbarStyle {
+        track_w: GOTO_RESULTS_PAD,
+        thumb_w: 6.0,
+        thumb_w_active: 6.0,
+        thumb_inset: 2.0,
+        track_right_offset: 0.0,
+        ..ScrollbarStyle::default()
+    }
+}
 
 /// A single knowledge-base hit.
 #[derive(Clone, Debug)]
@@ -132,6 +163,26 @@ impl AppView {
         }
     }
 
+    /// Scrolls the results list to `scroll_y` pixels from the top.
+    pub(crate) fn set_goto_scroll_top(&self, scroll_y: f32) {
+        self.goto_scroll_handle.set_offset(point(px(0.0), px(-scroll_y)));
+    }
+
+    /// Follows the pointer while the results scrollbar thumb is dragged.
+    /// Mirrors `handle_sidebar_scrollbar_drag` in the sidebar tree.
+    pub(crate) fn handle_goto_scrollbar_drag(&mut self, pointer_y: f32, cx: &mut Context<Self>) {
+        if !self.goto_scrollbar_drag.active {
+            return;
+        }
+        let style = goto_scrollbar_style();
+        let Some(geometry) = ScrollbarGeometry::from_handle(&self.goto_scroll_handle, &style)
+        else {
+            return;
+        };
+        geometry.apply_drag(&self.goto_scroll_handle, &self.goto_scrollbar_drag, pointer_y);
+        cx.notify();
+    }
+
     /// Recomputes [`SearchDialogState::results`] from the current query.
     pub fn run_goto_search(&mut self) {
         let query = self.search_dialog.query.trim().to_string();
@@ -151,6 +202,8 @@ impl AppView {
             .search_dialog
             .selected_ix
             .min(self.search_dialog.results.len().saturating_sub(1));
+        // A fresh result set always starts at the top.
+        self.set_goto_scroll_top(0.0);
     }
 
     /// Opens a search hit: an active empty tab is replaced by the file,
@@ -813,9 +866,27 @@ impl AppView {
             .absolute()
             .inset_0()
             .cursor(gpui::CursorStyle::Arrow)
-            .on_mouse_move(|_, _, cx| {
+            // NOTE: this overlay stops mouse moves so the editor behind the
+            // dialog never reacts — which also cuts the root-level drag
+            // handlers off. Both in-progress gestures (input selection and
+            // scrollbar thumb) are therefore followed right here.
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                if this.goto_scrollbar_drag.active {
+                    let y: f32 = event.position.y.into();
+                    this.handle_goto_scrollbar_drag(y, cx);
+                } else {
+                    this.handle_goto_mouse_move(event, window, cx);
+                }
                 cx.stop_propagation();
-            })
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                this.handle_goto_mouse_up(cx);
+                this.goto_scrollbar_drag.end();
+            }))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                this.handle_goto_mouse_up(cx);
+                this.goto_scrollbar_drag.end();
+            }))
             .on_scroll_wheel(|_, _, cx| {
                 cx.stop_propagation();
             })
@@ -825,6 +896,17 @@ impl AppView {
                     .absolute()
                     .inset_0()
                     .bg(gpui::rgba(0x00000066))
+                    // Same drag following as the overlay: the backdrop sits
+                    // between the pointer and the overlay and stops moves.
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                        if this.goto_scrollbar_drag.active {
+                            let y: f32 = event.position.y.into();
+                            this.handle_goto_scrollbar_drag(y, cx);
+                        } else {
+                            this.handle_goto_mouse_move(event, window, cx);
+                        }
+                        cx.stop_propagation();
+                    }))
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
                         this.close_search_dialog(window, cx);
                     }))
@@ -1035,16 +1117,31 @@ impl AppView {
                                     self.t("search.create_hint"),
                                 )
                             } else {
-                                div()
-                                    .id("goto-results")
+                                // Scrollable results with the shared overlay
+                                // scrollbar (same infra as the sidebar tree).
+                                // The thumb is a sibling of the scroll container
+                                // inside a `relative` wrapper, so it never
+                                // scrolls with the content.
+                                let scroll_style = goto_scrollbar_style();
+                                let mut viewport = div()
+                                    .id("goto-results-viewport")
+                                    .relative()
                                     .flex()
                                     .flex_col()
                                     .flex_1()
                                     .min_h_0()
-                                    .overflow_scroll()
-                                    .p_2()
-                                    .gap_1p5()
-                                    .children(self.search_dialog.results.iter().enumerate().map(|(ix, hit)| {
+                                    .child(
+                                        div()
+                                            .id("goto-results-scroll")
+                                            .track_scroll(&self.goto_scroll_handle)
+                                            .flex()
+                                            .flex_col()
+                                            .flex_1()
+                                            .min_h_0()
+                                            .overflow_scroll()
+                                            .p_2()
+                                            .gap_1p5()
+                                            .children(self.search_dialog.results.iter().enumerate().map(|(ix, hit)| {
                                         let is_selected = ix == selected_ix;
                                         let hit_path_click = hit.path.clone();
                                         let hit_title = hit.title.clone();
@@ -1057,6 +1154,7 @@ impl AppView {
                                             .gap_1()
                                             .px_3()
                                             .py_2()
+                                            .mr(px(GOTO_ROW_SCROLLBAR_GAP))
                                             .rounded_lg()
                                             .border_1()
                                             .border_color(theme.border_subtle)
@@ -1109,8 +1207,35 @@ impl AppView {
                                                         .child(highlight_terms(&hit_snippet, &terms, theme.text_secondary, is_selected, theme)),
                                                 )
                                             })
-                                    }))
-                                    .into_any_element()
+                                    })),
+                                    );
+                                if let Some(geometry) =
+                                    ScrollbarGeometry::from_handle(&self.goto_scroll_handle, &scroll_style)
+                                {
+                                    let dragging = self.goto_scrollbar_drag.active;
+                                    viewport = viewport.child(overlay_scrollbar(
+                                        "goto-scrollbar-track",
+                                        &geometry,
+                                        &scroll_style,
+                                        theme,
+                                        dragging,
+                                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                            cx.stop_propagation();
+                                            let pointer_y: f32 = event.position.y.into();
+                                            this.set_goto_scroll_top(
+                                                geometry.offset_for_track_click(pointer_y),
+                                            );
+                                            cx.notify();
+                                        }),
+                                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                            cx.stop_propagation();
+                                            this.goto_scrollbar_drag
+                                                .begin(event.position.y.into(), geometry.scroll_y);
+                                            cx.notify();
+                                        }),
+                                    ));
+                                }
+                                viewport.into_any_element()
                             })
                             // ---- Footer hints ----
                             .child(
