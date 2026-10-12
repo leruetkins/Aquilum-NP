@@ -258,7 +258,7 @@
     "error_copying_file": "Fel vid kopiering av fil: {}",
     "filename_cannot_be_empty": "Filnamnet får inte vara tomt",
     "folder_not_exist": "Mappen finns inte: {:?}",
-    "error_creating_note": "",
+    "error_creating_note": "Fel vid skapande av anteckning: {}",
     "new_folder_default": "Ny mapp",
     "error_creating_folder": "Det gick inte att skapa mapp: {}",
     "error_creating_canvas": "Det gick inte att skapa arbetsytan: {}",

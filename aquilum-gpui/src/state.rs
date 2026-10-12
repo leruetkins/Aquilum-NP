@@ -1016,27 +1016,35 @@ impl AppState {
         }
     }
 
+    /// Default new-file stem in the current UI language.
+    ///
+    /// Used for every created note/canvas so the file name always matches
+    /// the interface locale instead of a hardcoded language.
+    pub fn untitled_base(&self) -> String {
+        let lang = self.settings.get_config().ui.language;
+        crate::i18n::t("common.untitled", &lang)
+    }
+
     pub fn create_new_note(&mut self) -> Option<PathBuf> {
         let ws = self.workspace_path.clone()?;
-        let mut i = 1;
-        let mut new_path;
-        loop {
-            let name = format!("Untitled {}.md", i);
-            new_path = ws.join(&name);
-            if !new_path.exists() {
-                break;
-            }
-            i += 1;
+        // Default file name comes from the UI locale ("Без названия" for
+        // Russian, "Untitled" for English, ...), never hardcoded.
+        let base = self.untitled_base();
+        let mut candidate = ws.join(format!("{}.md", base));
+        let mut counter = 1;
+        while candidate.exists() {
+            candidate = ws.join(format!("{} {}.md", base, counter));
+            counter += 1;
         }
         let default_text = String::new();
-        let _ = std::fs::write(&new_path, &default_text);
+        let _ = std::fs::write(&candidate, &default_text);
         self.reload_file_tree();
-        self.open_note(new_path.clone());
+        self.open_note(candidate.clone());
         if let Some(ref mut note) = self.active_note {
             note.cursor_offset = note.content.len();
             note.sync_cursor();
         }
-        Some(new_path)
+        Some(candidate)
     }
 
     /// Creates a new note with the given title as the file name.
@@ -1269,10 +1277,11 @@ impl AppState {
         if !self.open_tabs.iter().any(|p| p == &path) {
             self.open_tabs.push(path.clone());
         }
+        let fallback = self.untitled_base();
         let title = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Untitled".to_owned());
+            .unwrap_or(fallback);
 
         let mut opened_note = None;
         if path.to_string_lossy() == "Welcome.md" {

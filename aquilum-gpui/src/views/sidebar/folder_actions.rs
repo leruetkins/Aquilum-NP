@@ -18,23 +18,26 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 /// Creates a new Markdown note inside the specified folder.
-/// Automatically handles naming collisions (`Без названия.md`, `Без названия 1.md`, etc.).
-pub fn create_note_in_folder(folder: &Path) -> Result<PathBuf, String> {
+///
+/// `untitled` is the default file stem in the current UI language
+/// (callers pass the localized `common.untitled`). Collisions resolve as
+/// `<untitled>.md`, `<untitled> 1.md`, etc.
+pub fn create_note_in_folder(folder: &Path, untitled: &str) -> Result<PathBuf, String> {
     if !folder.exists() {
         return Err(format!("Папка не существует: {:?}", folder));
     }
 
-    let mut candidate = folder.join("Без названия.md");
+    let mut candidate = folder.join(format!("{}.md", untitled));
     let mut counter = 1;
     while candidate.exists() {
-        candidate = folder.join(format!("Без названия {}.md", counter));
+        candidate = folder.join(format!("{} {}.md", untitled, counter));
         counter += 1;
     }
 
     let title = candidate
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "Без названия".to_string());
+        .unwrap_or_else(|| untitled.to_string());
 
     let initial_content = format!("# {}\n\n", title);
     fs::write(&candidate, initial_content).map_err(|e| format!("Ошибка создания заметки: {}", e))?;
@@ -61,15 +64,18 @@ pub fn create_folder_in_folder(folder: &Path) -> Result<PathBuf, String> {
 }
 
 /// Creates a new Canvas file inside the specified folder.
-pub fn create_canvas_in_folder(folder: &Path) -> Result<PathBuf, String> {
+///
+/// `untitled` is the default file stem in the current UI language
+/// (callers pass the localized `common.untitled`).
+pub fn create_canvas_in_folder(folder: &Path, untitled: &str) -> Result<PathBuf, String> {
     if !folder.exists() {
         return Err(format!("Папка не существует: {:?}", folder));
     }
 
-    let mut candidate = folder.join("Без названия.canvas");
+    let mut candidate = folder.join(format!("{}.canvas", untitled));
     let mut counter = 1;
     while candidate.exists() {
-        candidate = folder.join(format!("Без названия {}.canvas", counter));
+        candidate = folder.join(format!("{} {}.canvas", untitled, counter));
         counter += 1;
     }
 
@@ -364,11 +370,11 @@ mod tests {
         let folder = temp.path().join("sub");
         fs::create_dir_all(&folder).unwrap();
 
-        let n1 = create_note_in_folder(&folder).unwrap();
+        let n1 = create_note_in_folder(&folder, "Без названия").unwrap();
         assert_eq!(n1.file_name().unwrap(), "Без названия.md");
         assert!(n1.exists());
 
-        let n2 = create_note_in_folder(&folder).unwrap();
+        let n2 = create_note_in_folder(&folder, "Без названия").unwrap();
         assert_eq!(n2.file_name().unwrap(), "Без названия 1.md");
         assert!(n2.exists());
     }
@@ -387,7 +393,7 @@ mod tests {
         assert_eq!(f2.file_name().unwrap(), "Новая папка 1");
         assert!(f2.is_dir());
 
-        let c1 = create_canvas_in_folder(&folder).unwrap();
+        let c1 = create_canvas_in_folder(&folder, "Без названия").unwrap();
         assert_eq!(c1.file_name().unwrap(), "Без названия.canvas");
         assert!(c1.exists());
 

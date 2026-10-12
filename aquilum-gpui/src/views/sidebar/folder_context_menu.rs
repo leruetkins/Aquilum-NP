@@ -240,7 +240,7 @@ impl AppView {
                             let p = target_path.clone();
                             Box::new(cx.listener(move |this, _, _, cx| {
                                 this.close_folder_context_menu(cx);
-                                if let Ok(new_note_path) = folder_actions::create_note_in_folder(&p) {
+                                if let Ok(new_note_path) = folder_actions::create_note_in_folder(&p, &this.t("common.untitled")) {
                                     this.state.expanded_folders.insert(p.clone());
                                     this.state.reload_file_tree();
                                     this.state.open_note(new_note_path);
@@ -280,7 +280,7 @@ impl AppView {
                             let p = target_path.clone();
                             Box::new(cx.listener(move |this, _, _, cx| {
                                 this.close_folder_context_menu(cx);
-                                if let Ok(canvas_path) = folder_actions::create_canvas_in_folder(&p) {
+                                if let Ok(canvas_path) = folder_actions::create_canvas_in_folder(&p, &this.t("common.untitled")) {
                                     this.state.expanded_folders.insert(p.clone());
                                     this.state.reload_file_tree();
                                     let canvas_name = canvas_path.file_name().unwrap_or_default().to_string_lossy();
