@@ -98,6 +98,23 @@ fn default_true() -> bool {
     true
 }
 
+/// Prefix for virtual "empty tab" paths (like `NewTab` in aquilum-app).
+///
+/// An empty tab has no file on disk: it shows the New Tab page with
+/// `Create note / Go to file / Close` actions instead of an editor.
+/// The suffix is a unique id so several empty tabs can coexist.
+pub const EMPTY_TAB_PREFIX: &str = "__new_tab__";
+
+/// Builds a fresh unique empty-tab sentinel path.
+pub fn empty_tab_path() -> PathBuf {
+    PathBuf::from(format!("{}{}", EMPTY_TAB_PREFIX, uuid::Uuid::new_v4()))
+}
+
+/// Whether `path` is an empty-tab sentinel rather than a real file.
+pub fn is_empty_tab_path(path: &Path) -> bool {
+    path.to_string_lossy().starts_with(EMPTY_TAB_PREFIX)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NoteSettings {
     pub cursor_offset: usize,
@@ -791,6 +808,9 @@ pub struct AppState {
     pub search_query: String,
     pub active_note: Option<OpenedNote>,
     pub open_tabs: Vec<PathBuf>,
+    /// Active empty-tab sentinel, if the current tab has no file on disk.
+    /// Mutually exclusive with `active_note`: exactly one of them is `Some`.
+    pub active_empty_tab: Option<PathBuf>,
     pub nav_history: Vec<PathBuf>,
     pub nav_history_index: usize,
     pub status_text: String,
@@ -810,7 +830,7 @@ impl AppState {
         let valid_tabs: Vec<PathBuf> = session
             .open_tabs
             .iter()
-            .filter(|p| p.exists() || p.to_string_lossy() == "Welcome.md")
+            .filter(|p| is_empty_tab_path(p) || p.exists() || p.to_string_lossy() == "Welcome.md")
             .cloned()
             .collect();
 
@@ -823,6 +843,7 @@ impl AppState {
             search_query: String::new(),
             active_note: None,
             open_tabs: valid_tabs,
+            active_empty_tab: None,
             nav_history: Vec::new(),
             nav_history_index: 0,
             status_text: "GPUI Ready • 0 WebView Processes".to_owned(),
@@ -842,10 +863,15 @@ impl AppState {
             state.open_workspace(ws);
         }
 
-        // Restore active note
+        // Restore active note (or active empty tab)
         let mut note_to_open = None;
+        let mut empty_to_open = None;
         if let Some(ref active) = state.session.active_note {
-            if active.exists() || active.to_string_lossy() == "Welcome.md" {
+            if is_empty_tab_path(active) {
+                if state.open_tabs.contains(active) {
+                    empty_to_open = Some(active.clone());
+                }
+            } else if active.exists() || active.to_string_lossy() == "Welcome.md" {
                 note_to_open = Some(active.clone());
             }
         }
@@ -856,7 +882,9 @@ impl AppState {
             note_to_open = Self::first_file_in_tree(&state.file_tree);
         }
 
-        if let Some(path) = note_to_open {
+        if let Some(path) = empty_to_open {
+            state.active_empty_tab = Some(path);
+        } else if let Some(path) = note_to_open {
             state.reveal_path_in_tree(&path);
             state.open_note(path);
         } else {
@@ -886,6 +914,11 @@ impl AppState {
         self.session.workspace_path = Some(path.clone());
         self.expanded_folders.insert(path.clone());
         self.open_tabs.retain(|p| p.starts_with(&path) || p.to_string_lossy() == "Welcome.md");
+        if let Some(ref empty) = self.active_empty_tab {
+            if !self.open_tabs.contains(empty) {
+                self.active_empty_tab = None;
+            }
+        }
         self.reload_file_tree();
         self.status_text = format!("Workspace: {}", self.workspace_name);
         self.save_session_state();
@@ -1006,29 +1039,131 @@ impl AppState {
         Some(new_path)
     }
 
+    /// Creates a new note with the given title as the file name.
+    ///
+    /// The title is sanitized (same rules as rename) and uniquified
+    /// (`Title.md`, `Title 2.md`, ...). Used by "Shift+Enter — create"
+    /// in the Go to file dialog.
+    pub fn create_named_note(&mut self, title: &str) -> Option<PathBuf> {
+        let ws = self.workspace_path.clone()?;
+        let trimmed = title.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
+        let sanitized: String = trimmed
+            .chars()
+            .filter(|c| !invalid_chars.contains(c) && !c.is_control())
+            .collect();
+        let base: String = sanitized.trim().chars().take(80).collect();
+        if base.is_empty() {
+            return None;
+        }
+        let mut candidate = ws.join(format!("{}.md", base));
+        let mut counter = 2;
+        while candidate.exists() {
+            candidate = ws.join(format!("{} {}.md", base, counter));
+            counter += 1;
+        }
+        let _ = std::fs::write(&candidate, String::new());
+        self.reload_file_tree();
+        self.open_note(candidate.clone());
+        if let Some(ref mut note) = self.active_note {
+            note.cursor_offset = note.content.len();
+            note.sync_cursor();
+        }
+        Some(candidate)
+    }
+
+    /// Opens (activates) an empty tab: no file on disk, the New Tab page
+    /// is shown instead of an editor. The sentinel is added to `open_tabs`
+    /// like a regular tab so it renders in the tab strip.
+    pub fn open_empty_tab(&mut self) -> PathBuf {
+        // Save current note's cursor and selection before switching
+        if let Some(ref current) = self.active_note {
+            let entry = self.note_states.entry(current.path.clone()).or_default();
+            entry.cursor_offset = current.cursor_offset;
+            entry.selection_anchor = current.selection_anchor;
+            self.session.cursor_positions.insert(current.path.clone(), current.cursor_offset);
+            self.session.note_states.insert(current.path.clone(), entry.clone());
+        }
+        let path = empty_tab_path();
+        self.push_nav_history(path.clone());
+        if !self.open_tabs.iter().any(|p| p == &path) {
+            self.open_tabs.push(path.clone());
+        }
+        self.active_note = None;
+        self.active_empty_tab = Some(path.clone());
+        self.session.active_note = Some(path.clone());
+        self.save_session_state();
+        path
+    }
+
+    /// Activates an already open empty tab.
+    pub fn activate_empty_tab(&mut self, path: PathBuf) {
+        if let Some(ref current) = self.active_note {
+            let entry = self.note_states.entry(current.path.clone()).or_default();
+            entry.cursor_offset = current.cursor_offset;
+            entry.selection_anchor = current.selection_anchor;
+            self.session.cursor_positions.insert(current.path.clone(), current.cursor_offset);
+            self.session.note_states.insert(current.path.clone(), entry.clone());
+        }
+        self.push_nav_history(path.clone());
+        if !self.open_tabs.iter().any(|p| p == &path) {
+            self.open_tabs.push(path.clone());
+        }
+        self.active_note = None;
+        self.active_empty_tab = Some(path.clone());
+        self.session.active_note = Some(path);
+        self.save_session_state();
+    }
+
     pub fn close_tab(&mut self, path: &Path) {
         if let Some(pos) = self.open_tabs.iter().position(|p| p == path) {
             self.open_tabs.remove(pos);
             if self.active_note.as_ref().map(|n| &n.path == path).unwrap_or(false) {
-                let next_path = if pos < self.open_tabs.len() {
-                    Some(self.open_tabs[pos].clone())
-                } else if !self.open_tabs.is_empty() {
-                    Some(self.open_tabs[self.open_tabs.len() - 1].clone())
-                } else {
-                    None
-                };
-                if let Some(target) = next_path {
-                    self.open_note(target);
-                } else {
-                    self.active_note = None;
-                    self.session.active_note = None;
-                }
+                self.activate_neighbor_after_close(pos);
+            } else if self.active_empty_tab.as_deref() == Some(path) {
+                self.active_empty_tab = None;
+                self.activate_neighbor_after_close(pos);
             }
         } else if self.active_note.as_ref().map(|n| &n.path == path).unwrap_or(false) {
             self.active_note = None;
             self.session.active_note = None;
+        } else if self.active_empty_tab.as_deref() == Some(path) {
+            self.active_empty_tab = None;
+            self.session.active_note = None;
         }
         self.save_session_state();
+    }
+
+    /// After closing the active tab at `pos`, activates the tab that slid
+    /// into its place (or the last one). Handles both real and empty tabs.
+    fn activate_neighbor_after_close(&mut self, pos: usize) {
+        let next_path = if pos < self.open_tabs.len() {
+            Some(self.open_tabs[pos].clone())
+        } else if !self.open_tabs.is_empty() {
+            Some(self.open_tabs[self.open_tabs.len() - 1].clone())
+        } else {
+            None
+        };
+        match next_path {
+            Some(target) => {
+                if is_empty_tab_path(&target) {
+                    self.active_note = None;
+                    self.active_empty_tab = Some(target.clone());
+                    self.session.active_note = Some(target);
+                } else {
+                    self.active_empty_tab = None;
+                    self.open_note(target);
+                }
+            }
+            None => {
+                self.active_note = None;
+                self.active_empty_tab = None;
+                self.session.active_note = None;
+            }
+        }
     }
 
     pub fn reload_files(&mut self) {
@@ -1115,6 +1250,11 @@ impl AppState {
     }
 
     pub fn open_note_internal(&mut self, path: PathBuf) {
+        // Empty-tab sentinels carry no file: just activate the New Tab page.
+        if is_empty_tab_path(&path) {
+            self.activate_empty_tab(path);
+            return;
+        }
         self.reveal_path_in_tree(&path);
 
         // Save current note's cursor and selection before switching
@@ -1175,6 +1315,7 @@ impl AppState {
                 });
             }
             self.active_note = Some(note);
+            self.active_empty_tab = None;
             self.session.active_note = Some(path);
             self.save_session_state();
         }
@@ -1215,6 +1356,9 @@ impl AppState {
             self.session.note_states.insert(note.path.clone(), entry.clone());
             self.session.cursor_positions.insert(note.path.clone(), note.cursor_offset);
             self.session.active_note = Some(note.path.clone());
+            self.active_empty_tab = None;
+        } else if let Some(ref empty) = self.active_empty_tab.clone() {
+            self.session.active_note = Some(empty.clone());
         }
         self.session.open_tabs = self.open_tabs.clone();
         self.session.workspace_path = self.workspace_path.clone();
@@ -1327,6 +1471,19 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_tab_sentinel_roundtrip() {
+        let a = empty_tab_path();
+        let b = empty_tab_path();
+        assert!(is_empty_tab_path(&a));
+        assert!(is_empty_tab_path(&b));
+        // Unique per tab so several empty tabs can coexist.
+        assert_ne!(a, b);
+        assert!(!is_empty_tab_path(Path::new("note.md")));
+        assert!(!is_empty_tab_path(Path::new("Welcome.md")));
+        assert!(!is_empty_tab_path(Path::new("")));
+    }
 
     #[test]
     fn test_opened_note_cursor_movement_zero_reparse() {

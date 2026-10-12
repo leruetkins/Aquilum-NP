@@ -183,7 +183,7 @@
       "global_header": "Globální zkratky",
       "editing_header": "Editace textu",
       "open_folder": "Otevřete složku Vault",
-      "new_note": "Vytvořit novou poznámku",
+      "new_note": "New Tab",
       "save_note": "Uložit poznámku",
       "quick_search": "Rychlé vyhledávání trezoru",
       "settings": "Okno nastavení",
@@ -197,7 +197,8 @@
       "paste": "Vložit ze schránky",
       "undo": "Vrátit zpět",
       "redo": "Předělat",
-      "home_end": "Přejděte na začátek / konec řádku"
+      "home_end": "Přejděte na začátek / konec řádku",
+      "quick_open": "Go to File (Quick Open)"
     }
   },
   "sidebar": {
@@ -275,13 +276,42 @@
     "fold_tabs_mode": "Režim složených karet",
     "add_tabs_to_bookmarks": "Záložka N karet...",
     "tabs_added_to_bookmarks": "Karty byly přidány do záložek",
-    "close_all": "Zavřete všechny karty",
+    "close_all": "Close All Tabs",
     "no_open_tabs": "Žádné otevřené karty",
     "untitled": "Bez názvu",
     "add_one_tab": "karta...",
     "add_few_tabs": "karty...",
     "add_many_tabs": "karty...",
-    "add_n_tabs": "Přidat do záložek {} {}"
+    "add_n_tabs": "Přidat do záložek {} {}",
+    "newTab": "New tab",
+    "close": "Close",
+    "close_others": "Close other tabs",
+    "close_to_right": "Close tabs to the right",
+    "pin": "Pin",
+    "link_tab": "Link with tab...",
+    "move_to_new_window": "Move to new window",
+    "pinned_status": "Tab \"{}\" pinned",
+    "link_tab_status": "Tab linking is coming soon",
+    "new_window_status": "Move to new window is coming soon"
+  },
+  "editor": {
+    "create_note": "Create a note",
+    "open_file": "Go to the file",
+    "close": "Close"
+  },
+  "search": {
+    "title": "Search the knowledge base",
+    "title_hint": "Type a note name or its text",
+    "no_results": "Nothing found",
+    "create_hint": "Shift+Enter - create a note",
+    "no_folder": "No folder open",
+    "no_folder_hint": "Open a knowledge base folder to search",
+    "hint_navigate": "navigate",
+    "hint_open": "open",
+    "hint_create": "create",
+    "match_one": "{} match",
+    "match_few": "{} matches",
+    "match_many": "{} matches"
   },
   "app": {
     "search_placeholder": "Rychlé hledání trezoru..."

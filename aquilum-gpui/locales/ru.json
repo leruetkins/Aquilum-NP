@@ -183,7 +183,7 @@
       "global_header": "Глобальные сочетания",
       "editing_header": "Редактирование текста",
       "open_folder": "Открыть папку базы знаний",
-      "new_note": "Создать новую заметку",
+      "new_note": "New Tab",
       "save_note": "Сохранить заметку",
       "quick_search": "Быстрый поиск по базе",
       "settings": "Окно настроек",
@@ -197,7 +197,8 @@
       "paste": "Вставить из буфера",
       "undo": "Отменить действие (Undo)",
       "redo": "Повторить действие (Redo)",
-      "home_end": "Переход в начало / конец строки"
+      "home_end": "Переход в начало / конец строки",
+      "quick_open": "Go to File (Quick Open)"
     }
   },
   "sidebar": {
@@ -275,22 +276,42 @@
     "fold_tabs_mode": "Режим сложенных вкладок",
     "add_tabs_to_bookmarks": "Добавить в закладки N вкладок...",
     "tabs_added_to_bookmarks": "Вкладки добавлены в закладки",
-    "close": "Закрыть",
-    "close_others": "Закрыть остальные вкладки",
-    "close_to_right": "Закрыть вкладки справа",
-    "close_all": "Закрыть все вкладки",
-    "pin": "Закрепить",
-    "link_tab": "Связать со вкладкой...",
-    "move_to_new_window": "Переместить в новое окно",
-    "pinned_status": "Вкладка «{}» закреплена",
-    "link_tab_status": "Связывание вкладок скоро появится",
-    "new_window_status": "Перемещение в новое окно скоро появится",
+    "close": "Close",
+    "close_others": "Close other tabs",
+    "close_to_right": "Close tabs to the right",
+    "close_all": "Close All Tabs",
+    "pin": "Pin",
+    "link_tab": "Link with tab...",
+    "move_to_new_window": "Move to new window",
+    "pinned_status": "Tab \"{}\" pinned",
+    "link_tab_status": "Tab linking is coming soon",
+    "new_window_status": "Move to new window is coming soon",
     "no_open_tabs": "Нет открытых вкладок",
     "untitled": "Без названия",
     "add_one_tab": "вкладку...",
     "add_few_tabs": "вкладки...",
     "add_many_tabs": "вкладок...",
-    "add_n_tabs": "Добавить в закладки {} {}"
+    "add_n_tabs": "Добавить в закладки {} {}",
+    "newTab": "New tab"
+  },
+  "editor": {
+    "create_note": "Create a note",
+    "open_file": "Go to the file",
+    "close": "Close"
+  },
+  "search": {
+    "title": "Search the knowledge base",
+    "title_hint": "Type a note name or its text",
+    "no_results": "Nothing found",
+    "create_hint": "Shift+Enter - create a note",
+    "no_folder": "No folder open",
+    "no_folder_hint": "Open a knowledge base folder to search",
+    "hint_navigate": "navigate",
+    "hint_open": "open",
+    "hint_create": "create",
+    "match_one": "{} match",
+    "match_few": "{} matches",
+    "match_many": "{} matches"
   },
   "app": {
     "search_placeholder": "Быстрый поиск по базе знаний..."

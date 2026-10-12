@@ -243,7 +243,7 @@ impl AppView {
             } else if key.eq_ignore_ascii_case("o") || key == "щ" || key == "Щ" {
                 self.open_folder_dialog(window, cx);
             } else if key.eq_ignore_ascii_case("n") || key == "т" || key == "Т" {
-                self.create_new_note(window, cx);
+                self.open_empty_tab(window, cx);
             }
             return;
         }

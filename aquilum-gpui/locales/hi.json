@@ -183,7 +183,7 @@
       "global_header": "वैश्विक शॉर्टकट",
       "editing_header": "पाठ संपादन",
       "open_folder": "वॉल्ट फ़ोल्डर खोलें",
-      "new_note": "नया नोट बनाएं",
+      "new_note": "New Tab",
       "save_note": "नोट सहेजें",
       "quick_search": "त्वरित वॉल्ट खोज",
       "settings": "सेटिंग्स विंडो",
@@ -197,7 +197,8 @@
       "paste": "क्लिपबोर्ड से चिपकाएँ",
       "undo": "पूर्ववत",
       "redo": "फिर से करना",
-      "home_end": "पंक्ति के प्रारंभ/अंत पर जाएं"
+      "home_end": "पंक्ति के प्रारंभ/अंत पर जाएं",
+      "quick_open": "Go to File (Quick Open)"
     }
   },
   "sidebar": {
@@ -275,13 +276,42 @@
     "fold_tabs_mode": "मुड़े हुए टैब मोड",
     "add_tabs_to_bookmarks": "बुकमार्क एन टैब्स...",
     "tabs_added_to_bookmarks": "बुकमार्क में टैब जोड़े गए",
-    "close_all": "सभी टैब को बंद करें",
+    "close_all": "Close All Tabs",
     "no_open_tabs": "कोई खुला टैब नहीं",
     "untitled": "शीर्षकहीन",
     "add_one_tab": "टैब...",
     "add_few_tabs": "टैब...",
     "add_many_tabs": "टैब...",
-    "add_n_tabs": "बुकमार्क {} {}"
+    "add_n_tabs": "बुकमार्क {} {}",
+    "newTab": "New tab",
+    "close": "Close",
+    "close_others": "Close other tabs",
+    "close_to_right": "Close tabs to the right",
+    "pin": "Pin",
+    "link_tab": "Link with tab...",
+    "move_to_new_window": "Move to new window",
+    "pinned_status": "Tab \"{}\" pinned",
+    "link_tab_status": "Tab linking is coming soon",
+    "new_window_status": "Move to new window is coming soon"
+  },
+  "editor": {
+    "create_note": "Create a note",
+    "open_file": "Go to the file",
+    "close": "Close"
+  },
+  "search": {
+    "title": "Search the knowledge base",
+    "title_hint": "Type a note name or its text",
+    "no_results": "Nothing found",
+    "create_hint": "Shift+Enter - create a note",
+    "no_folder": "No folder open",
+    "no_folder_hint": "Open a knowledge base folder to search",
+    "hint_navigate": "navigate",
+    "hint_open": "open",
+    "hint_create": "create",
+    "match_one": "{} match",
+    "match_few": "{} matches",
+    "match_many": "{} matches"
   },
   "app": {
     "search_placeholder": "त्वरित तिजोरी खोज..."

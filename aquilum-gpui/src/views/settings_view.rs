@@ -1942,6 +1942,7 @@ impl AppView {
         let global_rows = vec![
             render_shortcut_item(self.t("settings.shortcuts.open_folder"), "Ctrl + O"),
             render_shortcut_item(self.t("settings.shortcuts.new_note"), "Ctrl + N"),
+            render_shortcut_item(self.t("settings.shortcuts.quick_open"), "Ctrl + P"),
             render_shortcut_item(self.t("settings.shortcuts.save_note"), "Ctrl + S"),
             render_shortcut_item(self.t("settings.shortcuts.quick_search"), "Ctrl + F"),
             render_shortcut_item(self.t("settings.shortcuts.settings"), "Ctrl + ,"),

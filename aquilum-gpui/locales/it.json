@@ -183,7 +183,7 @@
       "global_header": "Scorciatoie globali",
       "editing_header": "Modifica del testo",
       "open_folder": "Apri la cartella del Vault",
-      "new_note": "Crea nuova nota",
+      "new_note": "New Tab",
       "save_note": "Salva nota",
       "quick_search": "Ricerca rapida del caveau",
       "settings": "Finestra Impostazioni",
@@ -197,7 +197,8 @@
       "paste": "Incolla dagli Appunti",
       "undo": "Disfare",
       "redo": "Rifare",
-      "home_end": "Vai a Inizio/Fine riga"
+      "home_end": "Vai a Inizio/Fine riga",
+      "quick_open": "Go to File (Quick Open)"
     }
   },
   "sidebar": {
@@ -275,13 +276,42 @@
     "fold_tabs_mode": "Modalità schede piegate",
     "add_tabs_to_bookmarks": "Aggiungi N schede ai segnalibri...",
     "tabs_added_to_bookmarks": "Schede aggiunte ai segnalibri",
-    "close_all": "Chiudi tutte le schede",
+    "close_all": "Close All Tabs",
     "no_open_tabs": "Nessuna scheda aperta",
     "untitled": "Senza titolo",
     "add_one_tab": "scheda...",
     "add_few_tabs": "schede...",
     "add_many_tabs": "schede...",
-    "add_n_tabs": "Segnalibro {} {}"
+    "add_n_tabs": "Segnalibro {} {}",
+    "newTab": "New tab",
+    "close": "Close",
+    "close_others": "Close other tabs",
+    "close_to_right": "Close tabs to the right",
+    "pin": "Pin",
+    "link_tab": "Link with tab...",
+    "move_to_new_window": "Move to new window",
+    "pinned_status": "Tab \"{}\" pinned",
+    "link_tab_status": "Tab linking is coming soon",
+    "new_window_status": "Move to new window is coming soon"
+  },
+  "editor": {
+    "create_note": "Create a note",
+    "open_file": "Go to the file",
+    "close": "Close"
+  },
+  "search": {
+    "title": "Search the knowledge base",
+    "title_hint": "Type a note name or its text",
+    "no_results": "Nothing found",
+    "create_hint": "Shift+Enter - create a note",
+    "no_folder": "No folder open",
+    "no_folder_hint": "Open a knowledge base folder to search",
+    "hint_navigate": "navigate",
+    "hint_open": "open",
+    "hint_create": "create",
+    "match_one": "{} match",
+    "match_few": "{} matches",
+    "match_many": "{} matches"
   },
   "app": {
     "search_placeholder": "Ricerca rapida del caveau..."
