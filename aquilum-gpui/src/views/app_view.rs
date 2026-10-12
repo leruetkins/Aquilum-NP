@@ -3215,7 +3215,9 @@ impl Render for AppView {
                                 .overflow_hidden()
                                 .h_full()
                                 .bg(theme.bg_sidebar)
-                                .p_2()
+                                .pt_2()
+                                .px_2()
+                                .pb_0()
                                 .gap_2()
                                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                                     if this.is_resizing_sidebar {
