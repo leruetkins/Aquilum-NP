@@ -1,6 +1,10 @@
 pub mod app_view;
+pub mod goto_search;
+pub mod new_tab;
 pub mod right_sidebar;
 pub mod scrollbar;
 pub mod settings_view;
 pub mod sidebar;
+pub mod tab_context_menu;
+pub mod tab_list;
 pub mod tabs_menu;

@@ -23,6 +23,7 @@ impl AppView {
         self.commit_title_rename_internal();
         self.state.open_tabs.clear();
         self.state.active_note = None;
+        self.state.active_empty_tab = None;
         self.state.session.open_tabs.clear();
         self.state.session.active_note = None;
         self.state.save_session_state();
@@ -36,7 +37,7 @@ impl AppView {
 
     /// Renders the chevron-down button for opening the tabs dropdown menu.
     pub fn render_tabs_dropdown_button(&self, theme: &Theme, cx: &Context<Self>) -> impl IntoElement {
-        let is_open = self.is_tabs_menu_open;
+        let is_open = self.tabs_popup_is_open();
         div()
             .id("btn-tabs-dropdown")
             .flex()
@@ -53,8 +54,12 @@ impl AppView {
                 14.0,
                 if is_open { theme.text_primary } else { theme.text_secondary },
             ))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.toggle_tabs_menu(cx);
+            .on_click(cx.listener(|this, _, window, cx| {
+                if this.tabs_popup_is_open() {
+                    this.close_tabs_popup(cx);
+                } else {
+                    this.open_tabs_popup(window, cx);
+                }
             }))
     }
 

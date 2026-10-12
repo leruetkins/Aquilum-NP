@@ -4,9 +4,9 @@ use crate::state::{AppState, FileNode};
 use crate::theme::Theme;
 use crate::views::scrollbar::ScrollbarDrag;
 use gpui::{
-    div, point, prelude::*, px, rgb, rgba, ClipboardItem, Context, Div, FocusHandle,
+    div, point, prelude::*, px, rgb, rgba, ClipboardItem, Context, Div, Entity, FocusHandle,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Render, ScrollHandle, ScrollStrategy,
-    SharedString, Window, WindowControlArea,
+    SharedString, Subscription, Window, WindowControlArea,
 };
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -38,6 +38,10 @@ pub struct AppView {
     pub is_resizing_right_sidebar: bool,
     pub is_hovering_right_resizer: bool,
     pub is_tabs_menu_open: bool,
+    /// Obsidian-style tabs popup; `Some` while it is shown.
+    pub tabs_popup: Option<Entity<crate::views::tab_list::TabListPopup>>,
+    /// Keeps the popup's event subscription alive; dropping it unsubscribes.
+    pub tabs_popup_subscription: Option<Subscription>,
     pub word_wrap: bool,
     pub last_wrap_cols: usize,
     pub is_settings_open: bool,
@@ -77,6 +81,14 @@ pub struct AppView {
     pub quick_filter: crate::views::sidebar::QuickFilterState,
     pub folder_context_menu: crate::views::sidebar::FolderContextMenuState,
     pub file_context_menu: crate::views::sidebar::FileContextMenuState,
+    pub tab_context_menu: crate::views::tab_context_menu::TabContextMenuState,
+    /// Go to file dialog ("Search the knowledge base").
+    pub search_dialog: crate::views::goto_search::SearchDialogState,
+    pub goto_focus_handle: FocusHandle,
+    pub goto_blink: BlinkManager,
+    pub goto_scroll_handle: ScrollHandle,
+    /// Drag state of the search results overlay scrollbar.
+    pub goto_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag,
     pub folder_modal: crate::views::sidebar::FolderModal,
     pub folder_modal_focus_handle: FocusHandle,
 }
@@ -128,6 +140,8 @@ impl AppView {
             is_resizing_right_sidebar: false,
             is_hovering_right_resizer: false,
             is_tabs_menu_open: false,
+            tabs_popup: None,
+            tabs_popup_subscription: None,
             word_wrap,
             last_wrap_cols: 80,
             is_settings_open: false,
@@ -166,6 +180,12 @@ impl AppView {
             quick_filter: crate::views::sidebar::QuickFilterState::new(),
             folder_context_menu: crate::views::sidebar::FolderContextMenuState::default(),
             file_context_menu: crate::views::sidebar::FileContextMenuState::default(),
+            tab_context_menu: crate::views::tab_context_menu::TabContextMenuState::default(),
+            search_dialog: crate::views::goto_search::SearchDialogState::default(),
+            goto_focus_handle: cx.focus_handle(),
+            goto_blink: BlinkManager::new(),
+            goto_scroll_handle: ScrollHandle::new(),
+            goto_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
             folder_modal: crate::views::sidebar::FolderModal::default(),
             folder_modal_focus_handle: cx.focus_handle(),
         };
@@ -244,6 +264,9 @@ impl AppView {
         if self.quick_filter.is_focused {
             self.quick_filter.blink.suspend_visible(cx);
         }
+        if self.search_dialog.is_open {
+            self.goto_blink.suspend_visible(cx);
+        }
     }
 
     /// Re-arms blinking for whichever caret holds in-app focus. Used when the OS window
@@ -260,6 +283,9 @@ impl AppView {
         }
         if self.quick_filter.is_focused {
             self.quick_filter.enable_cursor_blink(cx);
+        }
+        if self.search_dialog.is_open {
+            self.goto_blink.enable(BlinkTarget::GotoSearch, cx);
         }
     }
 
@@ -556,7 +582,7 @@ impl AppView {
         self.scroll_cursor_into_view_with_strategy(ScrollStrategy::Top);
     }
 
-    fn set_editor_scroll_top(&self, scroll_y: f32) {
+    pub(crate) fn set_editor_scroll_top(&self, scroll_y: f32) {
         let offset_x = self.editor_scroll_handle.offset().x;
         self.editor_scroll_handle.set_offset(point(offset_x, px(-scroll_y)));
     }
@@ -643,6 +669,11 @@ impl AppView {
     }
 
     pub(crate) fn select_note(&mut self, path: PathBuf, center_in_sidebar: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // Empty-tab sentinels carry no file: activate the New Tab page instead.
+        if crate::state::is_empty_tab_path(&path) {
+            self.select_empty_tab(path, center_in_sidebar, window, cx);
+            return;
+        }
         self.commit_title_rename_internal();
         if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
@@ -714,6 +745,12 @@ impl AppView {
                 self.title_cursor_pos = self.title_edit_text.chars().count();
                 self.title_selection_anchor = None;
                 self.title_is_mouse_selecting = false;
+            } else {
+                self.title_editing_path = None;
+                self.title_edit_text.clear();
+                self.title_cursor_pos = 0;
+                self.title_selection_anchor = None;
+                self.title_is_mouse_selecting = false;
             }
             self.need_scroll_sidebar_to_active.set(true);
             window.focus(&self.focus_handle);
@@ -734,6 +771,12 @@ impl AppView {
                 self.title_editing_path = Some(note.path.clone());
                 self.title_edit_text = note.title.clone();
                 self.title_cursor_pos = self.title_edit_text.chars().count();
+                self.title_selection_anchor = None;
+                self.title_is_mouse_selecting = false;
+            } else {
+                self.title_editing_path = None;
+                self.title_edit_text.clear();
+                self.title_cursor_pos = 0;
                 self.title_selection_anchor = None;
                 self.title_is_mouse_selecting = false;
             }
@@ -1540,6 +1583,13 @@ impl AppView {
             return;
         }
 
+        // Escape closes the tabs popup if open (it also handles Escape itself
+        // while it holds the focus; this covers the case when it does not)
+        if keystroke.key == "escape" && self.tabs_popup.is_some() {
+            self.close_tabs_popup(cx);
+            return;
+        }
+
         // Escape closes tabs dropdown menu if open
         if keystroke.key == "escape" && self.is_tabs_menu_open {
             self.is_tabs_menu_open = false;
@@ -1596,9 +1646,9 @@ impl AppView {
             return;
         }
 
-        // Ctrl + N (Новая заметка)
+        // Ctrl + N (Новая пустая вкладка: файл не создаётся, показывается New Tab)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("n") || keystroke.key == "т" || keystroke.key == "Т") {
-            self.create_new_note(_window, cx);
+            self.open_empty_tab(_window, cx);
             return;
         }
 
@@ -2211,6 +2261,11 @@ impl Render for AppView {
                     }
                 } else if this.quick_filter.is_mouse_selecting {
                     this.quick_filter.handle_mouse_move(event, &this.state.search_query, window, cx);
+                } else if this.goto_scrollbar_drag.active {
+                    let y: f32 = event.position.y.into();
+                    this.handle_goto_scrollbar_drag(y, cx);
+                } else if this.search_dialog.is_mouse_selecting {
+                    this.handle_goto_mouse_move(event, window, cx);
                 } else if this.is_mouse_selecting {
                     let x: f32 = event.position.x.into();
                     let y: f32 = event.position.y.into();
@@ -2223,6 +2278,8 @@ impl Render for AppView {
                     return;
                 }
                 this.quick_filter.handle_mouse_up(cx);
+                this.handle_goto_mouse_up(cx);
+                this.goto_scrollbar_drag.end();
                 if this.title_is_mouse_selecting {
                     this.title_is_mouse_selecting = false;
                     if this.title_selection_anchor == Some(this.title_cursor_pos) {
@@ -2247,6 +2304,8 @@ impl Render for AppView {
                     return;
                 }
                 this.quick_filter.handle_mouse_up(cx);
+                this.handle_goto_mouse_up(cx);
+                this.goto_scrollbar_drag.end();
                 if this.title_is_mouse_selecting {
                     this.title_is_mouse_selecting = false;
                     if this.title_selection_anchor == Some(this.title_cursor_pos) {
@@ -2262,6 +2321,19 @@ impl Render for AppView {
                 this.is_dragging_scrollbar = false;
                 this.sidebar_scrollbar_drag.end();
                 cx.notify();
+            }))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                // Ctrl+P opens Go to file from anywhere (leaves don't handle it,
+                // so this root listener fires exactly once; the dialog input
+                // stops propagation, so an open dialog never re-triggers it).
+                if event.keystroke.modifiers.control
+                    && (event.keystroke.key.eq_ignore_ascii_case("p")
+                        || event.keystroke.key == "з"
+                        || event.keystroke.key == "З")
+                    && !this.search_dialog.is_open
+                {
+                    this.open_search_dialog(window, cx);
+                }
             }))
             // ================= WINDOW TITLEBAR & TAB BAR (CUSTOM CSD FRAME) =================
             .child(
@@ -2456,7 +2528,8 @@ impl Render for AppView {
                             )
                             // Browser-style Tabs Area starting directly at the boundary
                             .child({
-                                let active_path = self.state.active_note.as_ref().map(|n| n.path.clone());
+                                let active_path = self.state.active_note.as_ref().map(|n| n.path.clone())
+                                    .or_else(|| self.state.active_empty_tab.clone());
                                 let is_active_dirty = self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false);
 
                                 let is_overflowing = is_tabs_overflowing;
@@ -2476,14 +2549,16 @@ impl Render for AppView {
                                     let is_next_active = active_path.as_ref() == self.state.open_tabs.get(idx + 1);
                                     let show_divider = !is_active && (idx + 1 < self.state.open_tabs.len()) && !is_next_active;
 
-                                    let title = tab_path
-                                        .file_stem()
-                                        .map(|s| s.to_string_lossy().into_owned())
-                                        .unwrap_or_else(|| "Untitled".to_owned());
+                                    let title = crate::views::new_tab::tab_display_title(
+                                        tab_path,
+                                        &self.t("tabs.newTab"),
+                                        &self.t("common.untitled"),
+                                    );
                                     let tab_path_for_select = tab_path.clone();
                                     let tab_path_for_close = tab_path.clone();
                                     let tab_path_for_middle = tab_path.clone();
                                     let tab_path_for_middle_select = tab_path.clone();
+                                    let tab_path_for_context = tab_path.clone();
 
                                     let tab_w = tab_widths.get(idx).copied().unwrap_or(160.0);
 
@@ -2499,6 +2574,12 @@ impl Render for AppView {
                                         .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, _, cx| {
                                             cx.stop_propagation();
                                             this.close_tab(&tab_path_for_middle, cx);
+                                        }))
+                                        .on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                            cx.stop_propagation();
+                                            let x: f32 = event.position.x.into();
+                                            let y: f32 = event.position.y.into();
+                                            this.open_tab_context_menu(tab_path_for_context.clone(), x, y, cx);
                                         }))
                                         .when(!is_active, |tab| {
                                             tab.bg(theme.bg_sidebar)
@@ -2715,7 +2796,7 @@ impl Render for AppView {
                                             .hover(|h| h.bg(theme.bg_hover))
                                             .child(icons::icon(icons::ICON_PLUS, 15.0, theme.text_muted))
                                             .on_click(cx.listener(|this, _, window, cx| {
-                                                this.create_new_note(window, cx);
+                                                this.open_empty_tab(window, cx);
                                             })),
                                     );
 
@@ -4066,7 +4147,13 @@ impl Render for AppView {
                                         })
                                 )
                             })
-                            .when(self.state.active_note.is_none(), |this| {
+                            .when(self.state.active_empty_tab.is_some(), |this| {
+                                this.child(self.render_new_tab_page(theme, cx))
+                            })
+                            .when(
+                                self.state.active_note.is_none()
+                                    && self.state.active_empty_tab.is_none(),
+                                |this| {
                                 this.child(
                                     div()
                                         .flex()
@@ -4141,6 +4228,20 @@ impl Render for AppView {
                             .child("120 FPS"),
                     ),
             )
+            // ================= TABS POPUP (Obsidian-style switcher) =================
+            .when_some(self.tabs_popup.clone(), |d, popup| {
+                d.child(
+                    gpui::deferred(
+                        div()
+                            .id("tabs-popup-anchor")
+                            .absolute()
+                            .top(px(crate::views::tab_list::WINDOW_MARGIN))
+                            .right(px(140.0))
+                            .child(popup),
+                    )
+                    .with_priority(999),
+                )
+            })
             // ================= TABS DROPDOWN MENU =================
             .when(self.is_tabs_menu_open, |d| {
                 d.child(self.render_tabs_dropdown_menu(theme, cx))
@@ -4156,6 +4257,14 @@ impl Render for AppView {
             // ================= FILE CONTEXT MENU =================
             .when(self.file_context_menu.is_open, |d| {
                 d.child(self.render_file_context_menu(theme, window, cx))
+            })
+            // ================= TAB CONTEXT MENU (Obsidian-style) =================
+            .when(self.tab_context_menu.is_open, |d| {
+                d.child(self.render_tab_context_menu(theme, window, cx))
+            })
+            // ================= GO TO FILE DIALOG =================
+            .when(self.search_dialog.is_open, |d| {
+                d.child(self.render_search_dialog(theme, window, cx))
             })
             // ================= FOLDER MODALS =================
             .when(self.folder_modal != crate::views::sidebar::FolderModal::None, |d| {
