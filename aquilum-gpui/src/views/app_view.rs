@@ -23,6 +23,10 @@ pub struct AppView {
     pub edit_mode: bool,
     pub editor_blink: BlinkManager,
     pub editor_is_focused: bool,
+    /// Last observed OS window activation state. gpui tracks focus per window and never
+    /// clears it when the window is deactivated, so this is the only way to notice that
+    /// the app went to the background and stop blinking there.
+    pub window_was_active: bool,
     pub is_mouse_selecting: bool,
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
@@ -109,6 +113,7 @@ impl AppView {
             edit_mode,
             editor_blink: BlinkManager::new(),
             editor_is_focused: true,
+            window_was_active: true,
             is_mouse_selecting: false,
             sidebar_width: 260.0,
             sidebar_collapsed: false,
@@ -216,6 +221,40 @@ impl AppView {
 
     pub fn disable_editor_cursor_blink(&mut self, cx: &mut Context<Self>) {
         self.editor_blink.disable(cx);
+    }
+
+    /// Freezes every focused caret visible and kills its blink timer. Used when the OS
+    /// window loses activation: the caret stays on screen, but the view stops re-rendering.
+    fn suspend_cursor_blinks(&mut self, cx: &mut Context<Self>) {
+        if self.editor_is_focused {
+            self.editor_blink.suspend_visible(cx);
+        }
+        if self.title_is_focused {
+            self.title_blink.suspend_visible(cx);
+        }
+        if self.hex_is_focused {
+            self.hex_blink.suspend_visible(cx);
+        }
+        if self.quick_filter.is_focused {
+            self.quick_filter.blink.suspend_visible(cx);
+        }
+    }
+
+    /// Re-arms blinking for whichever caret holds in-app focus. Used when the OS window
+    /// becomes active again.
+    fn resume_cursor_blinks(&mut self, cx: &mut Context<Self>) {
+        if self.editor_is_focused {
+            self.editor_blink.enable(BlinkTarget::Editor, cx);
+        }
+        if self.title_is_focused {
+            self.title_blink.enable(BlinkTarget::Title, cx);
+        }
+        if self.hex_is_focused {
+            self.hex_blink.enable(BlinkTarget::Hex, cx);
+        }
+        if self.quick_filter.is_focused {
+            self.quick_filter.enable_cursor_blink(cx);
+        }
     }
 
     pub fn schedule_auto_save(&mut self, cx: &mut Context<Self>) {
@@ -2111,20 +2150,40 @@ impl AppView {
     }
 }
 
+/// FPS-монитор — только для debug-сборки.
+///
+/// В release-сборке это пустая функция: в Windows-приложении с подсистемой "windows"
+/// консоли нет, и писать в stdout/stderr некуда. Убираем последнего runtime-писателя
+/// в консоль, чтобы исключить его влияние на CPU в простое.
+#[cfg(debug_assertions)]
+fn log_fps_tick() {
+    static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static LAST_FPS: std::sync::OnceLock<std::sync::Mutex<std::time::Instant>> =
+        std::sync::OnceLock::new();
+    let mutex = LAST_FPS.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
+    FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut last) = mutex.try_lock() {
+        if last.elapsed() >= std::time::Duration::from_secs(1) {
+            let frames = FRAME_COUNT.swap(0, std::sync::atomic::Ordering::Relaxed);
+            let elapsed = last.elapsed();
+            *last = std::time::Instant::now();
+            eprintln!(
+                "[FPS Monitor] {:?} elapsed, {} render calls (~{:.1} FPS)",
+                elapsed,
+                frames,
+                frames as f32 / elapsed.as_secs_f32()
+            );
+        }
+    }
+}
+
+/// В release-сборке монитор выключен — ни одной записи в консоль.
+#[cfg(not(debug_assertions))]
+fn log_fps_tick() {}
+
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        static LAST_FPS: std::sync::OnceLock<std::sync::Mutex<std::time::Instant>> = std::sync::OnceLock::new();
-        let mutex = LAST_FPS.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
-        FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if let Ok(mut last) = mutex.try_lock() {
-            if last.elapsed() >= std::time::Duration::from_secs(1) {
-                let frames = FRAME_COUNT.swap(0, std::sync::atomic::Ordering::Relaxed);
-                let elapsed = last.elapsed();
-                *last = std::time::Instant::now();
-                eprintln!("[FPS Monitor] {:?} elapsed, {} render calls (~{:.1} FPS)", elapsed, frames, frames as f32 / elapsed.as_secs_f32());
-            }
-        }
+        log_fps_tick();
 
         if !self.initial_scroll_done {
             self.initial_scroll_done = true;
@@ -2195,6 +2254,25 @@ impl Render for AppView {
         } else if self.editor_is_focused && !is_editor_focused_now {
             self.editor_is_focused = false;
             self.disable_editor_cursor_blink(cx);
+        }
+
+        // Everything above reacts to *in-window* focus, and gpui never clears `window.focus`
+        // when the OS window is deactivated — so all of those flags stay true while the app
+        // sits in the background. Left alone, the blink timers keep ticking there and every
+        // tick calls `notify()`, i.e. a full re-render of this view twice a second, forever,
+        // for a caret nobody can interact with (~0.5-1% of a core).
+        //
+        // Polling is sufficient: gpui's `on_active_status_change` calls `window.refresh()`,
+        // which marks the window dirty and bypasses the root view's element cache, so this
+        // block is guaranteed to run on both deactivation and re-activation.
+        let window_active = window.is_window_active();
+        if self.window_was_active != window_active {
+            self.window_was_active = window_active;
+            if window_active {
+                self.resume_cursor_blinks(cx);
+            } else {
+                self.suspend_cursor_blinks(cx);
+            }
         }
 
         if self.was_title_focused && !is_title_focused {

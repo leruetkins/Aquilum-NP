@@ -1,4 +1,6 @@
-// #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Release-сборка: подсистема "windows" — консольное окно не создаётся вовсе.
+// Debug-сборка сохраняет консоль, чтобы видеть логи (в т.ч. FPS-монитор).
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 pub mod blink_manager;
 pub mod icons;

@@ -6,6 +6,8 @@ use crate::views::app_view::AppView;
 /// - When enabled (focused): blinks continuously at regular intervals.
 /// - When disabled (blurred): instantly hides the cursor (`visible = false`) and kills background timers.
 /// - When typing/moving (`pause_and_show`): forces the cursor visible and delays the next blink cycle.
+/// - When suspended (`suspend_visible`): the OS window is inactive. The timer is killed but the
+///   cursor stays drawn solidly, so the app stops re-rendering while keeping the caret on screen.
 #[derive(Clone, Debug)]
 pub struct BlinkManager {
     interval: Duration,
@@ -13,6 +15,9 @@ pub struct BlinkManager {
     blinking_paused: bool,
     visible: bool,
     enabled: bool,
+    /// Set while the OS window is inactive. Distinct from `disable()`: the cursor is still
+    /// drawn, only the timer is dead. Kept so a repeated `suspend_visible` is a no-op.
+    suspended: bool,
 }
 
 impl Default for BlinkManager {
@@ -31,6 +36,7 @@ impl BlinkManager {
             blinking_paused: false,
             visible: false,
             enabled: false,
+            suspended: false,
         }
     }
 
@@ -48,6 +54,8 @@ impl BlinkManager {
 
     /// Enables blinking (called when gaining focus). Shows cursor immediately and starts loop.
     pub fn enable(&mut self, target: BlinkTarget, cx: &mut Context<AppView>) {
+        self.suspended = false;
+
         if self.enabled {
             self.pause_and_show(target, cx);
             return;
@@ -66,6 +74,8 @@ impl BlinkManager {
     /// Disables blinking (called when losing focus).
     /// Instantly hides cursor (`visible = false`) and invalidates any running background timer.
     pub fn disable(&mut self, cx: &mut Context<AppView>) {
+        self.suspended = false;
+
         if !self.enabled && !self.visible {
             return;
         }
@@ -77,9 +87,41 @@ impl BlinkManager {
         cx.notify();
     }
 
+    /// Suspends blinking while the OS window is inactive, leaving the cursor drawn solidly
+    /// visible: the timer dies, the cursor stays on screen.
+    ///
+    /// This is deliberately *not* `disable()`. `disable()` is for losing in-app focus and
+    /// hides the cursor. Here the caret should remain visible — the only thing we refuse to
+    /// do is re-render the whole view twice a second for a caret that cannot be interacted
+    /// with (gpui's per-window focus never notices the window was deactivated, so without
+    /// this the blink loop runs forever in the background).
+    ///
+    /// Idempotent by design: the caller invokes it from `Render::render`, so a repeated call
+    /// must not `notify()` again or the view would re-render in a loop.
+    pub fn suspend_visible(&mut self, cx: &mut Context<AppView>) {
+        if self.suspended {
+            return;
+        }
+
+        // Nothing was blinking — do not resurrect a cursor that is meant to be hidden.
+        if !self.enabled && !self.visible {
+            return;
+        }
+
+        self.suspended = true;
+        self.enabled = true;
+        self.visible = true;
+        self.blinking_paused = true;
+        // Kills any running timer immediately, including a pending resume scheduled by
+        // `pause_and_show`, since those all check `epoch` before acting.
+        self.epoch = self.epoch.wrapping_add(1);
+        cx.notify();
+    }
+
     /// Temporarily pauses blinking and forces the cursor to be visible (called on keypress / click).
     /// Keeps cursor solidly visible for 530ms before resuming regular blinking.
     pub fn pause_and_show(&mut self, target: BlinkTarget, cx: &mut Context<AppView>) {
+        self.suspended = false;
         self.enabled = true;
         self.visible = true;
         self.blinking_paused = true;
