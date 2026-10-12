@@ -6,6 +6,7 @@ pub mod folder_modals;
 pub mod quick_filter;
 pub mod search_panel;
 pub mod tree;
+pub mod vault_dialog;
 
 pub use file_actions::*;
 pub use file_context_menu::*;

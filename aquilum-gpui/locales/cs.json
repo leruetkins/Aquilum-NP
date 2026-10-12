@@ -270,7 +270,10 @@
     "error_creating_folder_note": "Chyba při vytváření poznámky ke složce: {}",
     "cannot_duplicate_root": "Nelze duplikovat kořenový adresář",
     "error_copying_folder": "Chyba při kopírování složky: {}",
-    "foldername_cannot_be_empty": "Název složky nemůže být prázdný"
+    "foldername_cannot_be_empty": "Název složky nemůže být prázdný",
+    "vaults_title": "Knowledge bases",
+    "open_folder": "Open Folder",
+    "no_vaults": "No vaults yet"
   },
   "tabs": {
     "fold_tabs": "Skládací záložky",

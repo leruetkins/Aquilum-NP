@@ -270,7 +270,10 @@
     "error_creating_folder_note": "Błąd podczas tworzenia notatki do folderu: {}",
     "cannot_duplicate_root": "Nie można zduplikować katalogu głównego",
     "error_copying_folder": "Błąd podczas kopiowania folderu: {}",
-    "foldername_cannot_be_empty": "Nazwa folderu nie może być pusta"
+    "foldername_cannot_be_empty": "Nazwa folderu nie może być pusta",
+    "vaults_title": "Knowledge bases",
+    "open_folder": "Open Folder",
+    "no_vaults": "No vaults yet"
   },
   "tabs": {
     "fold_tabs": "Złóż zakładki",

@@ -270,7 +270,10 @@
     "error_creating_folder_note": "Fehler beim Erstellen des Ordnerhinweis: {}",
     "cannot_duplicate_root": "Das Stammverzeichnis kann nicht dupliziert werden",
     "error_copying_folder": "Fehler beim Kopieren des Ordners: {}",
-    "foldername_cannot_be_empty": "Der Ordnername darf nicht leer sein"
+    "foldername_cannot_be_empty": "Der Ordnername darf nicht leer sein",
+    "vaults_title": "Knowledge bases",
+    "open_folder": "Open Folder",
+    "no_vaults": "No vaults yet"
   },
   "tabs": {
     "fold_tabs": "Tabs falten",

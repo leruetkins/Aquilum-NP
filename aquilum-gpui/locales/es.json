@@ -270,7 +270,10 @@
     "error_creating_folder_note": "Error al crear la nota de la carpeta: {}",
     "cannot_duplicate_root": "No se puede duplicar el directorio raíz",
     "error_copying_folder": "Error al copiar carpeta: {}",
-    "foldername_cannot_be_empty": "El nombre de la carpeta no puede estar vacío"
+    "foldername_cannot_be_empty": "El nombre de la carpeta no puede estar vacío",
+    "vaults_title": "Knowledge bases",
+    "open_folder": "Open Folder",
+    "no_vaults": "No vaults yet"
   },
   "tabs": {
     "fold_tabs": "Pestañas plegables",

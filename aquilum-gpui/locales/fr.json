@@ -270,7 +270,10 @@
     "error_creating_folder_note": "Erreur lors de la création du dossier : {}",
     "cannot_duplicate_root": "Impossible de dupliquer le répertoire racine",
     "error_copying_folder": "Erreur lors de la copie du dossier : {}",
-    "foldername_cannot_be_empty": "Le nom du dossier ne peut pas être vide"
+    "foldername_cannot_be_empty": "Le nom du dossier ne peut pas être vide",
+    "vaults_title": "Knowledge bases",
+    "open_folder": "Open Folder",
+    "no_vaults": "No vaults yet"
   },
   "tabs": {
     "fold_tabs": "Plier les onglets",

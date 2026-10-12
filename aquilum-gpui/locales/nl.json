@@ -270,7 +270,10 @@
     "error_creating_folder_note": "Fout bij maken van mapnotitie: {}",
     "cannot_duplicate_root": "Kan de hoofdmap niet dupliceren",
     "error_copying_folder": "Fout bij kopiëren van map: {}",
-    "foldername_cannot_be_empty": "Mapnaam mag niet leeg zijn"
+    "foldername_cannot_be_empty": "Mapnaam mag niet leeg zijn",
+    "vaults_title": "Knowledge bases",
+    "open_folder": "Open Folder",
+    "no_vaults": "No vaults yet"
   },
   "tabs": {
     "fold_tabs": "Vouw tabbladen",

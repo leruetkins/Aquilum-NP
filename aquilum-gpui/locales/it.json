@@ -270,7 +270,10 @@
     "error_creating_folder_note": "Errore durante la creazione della nota sulla cartella: {}",
     "cannot_duplicate_root": "Impossibile duplicare la directory root",
     "error_copying_folder": "Errore durante la copia della cartella: {}",
-    "foldername_cannot_be_empty": "Il nome della cartella non può essere vuoto"
+    "foldername_cannot_be_empty": "Il nome della cartella non può essere vuoto",
+    "vaults_title": "Knowledge bases",
+    "open_folder": "Open Folder",
+    "no_vaults": "No vaults yet"
   },
   "tabs": {
     "fold_tabs": "Piega le linguette",

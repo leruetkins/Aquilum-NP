@@ -98,6 +98,9 @@ pub struct AppView {
     pub goto_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag,
     pub folder_modal: crate::views::sidebar::FolderModal,
     pub folder_modal_focus_handle: FocusHandle,
+    /// Vault switcher dialog ("Knowledge bases").
+    pub vault_dialog_open: bool,
+    pub vault_dialog_focus_handle: FocusHandle,
 }
 
 impl AppView {
@@ -211,6 +214,8 @@ impl AppView {
             goto_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
             folder_modal: crate::views::sidebar::FolderModal::default(),
             folder_modal_focus_handle: cx.focus_handle(),
+            vault_dialog_open: false,
+            vault_dialog_focus_handle: cx.focus_handle(),
         };
         this.editor_blink.enable(BlinkTarget::Editor, cx);
         this
@@ -3268,18 +3273,6 @@ impl Render for AppView {
                                                     .on_click(cx.listener(|this, _, window, cx| {
                                                         this.open_folder_dialog(window, cx);
                                                     })),
-                                            )
-                                            .child(
-                                                div()
-                                                    .id("btn-reload-vault")
-                                                    .p_1()
-                                                    .rounded_md()
-                                                    .cursor_pointer()
-                                                    .hover(|h| h.bg(theme.bg_hover))
-                                                    .child(icons::icon(icons::ICON_REFRESH, 13.0, theme.text_primary))
-                                                    .on_click(cx.listener(|this, _, window, cx| {
-                                                        this.reload_files(window, cx);
-                                                    })),
                                             ),
                                     ),
                             )
@@ -3303,7 +3296,7 @@ impl Render for AppView {
                                     == crate::views::sidebar::SidebarMode::Search,
                                 |d| d.child(self.render_search_panel(theme, window, cx)),
                             )
-                            // Sidebar Footer (Vault display + Settings button)
+                            // Sidebar Footer (Vault switcher button + Reload button)
                             .child(
                                 div()
                                     .id("sidebar-footer")
@@ -3317,29 +3310,42 @@ impl Render for AppView {
                                     .border_color(theme.border_subtle)
                                     .child(
                                         div()
+                                            .id("btn-switch-vault")
                                             .flex()
+                                            .flex_1()
+                                            .min_w_0()
                                             .flex_row()
                                             .items_center()
                                             .gap_1p5()
+                                            .px_1p5()
+                                            .py_1()
+                                            .rounded_md()
+                                            .cursor_pointer()
+                                            .hover(|h| h.bg(theme.bg_hover))
                                             .text_xs()
                                             .text_color(theme.text_secondary)
-                                            .child(icons::icon(icons::ICON_FOLDER, 12.0, theme.text_muted))
-                                            .child(self.state.workspace_name.clone()),
+                                            .child(icons::icon(icons::ICON_CHEVRONS_UP_DOWN, 12.0, theme.text_muted))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .child(self.state.workspace_name.clone()),
+                                            )
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.open_vault_dialog(cx);
+                                            })),
                                     )
                                     .child(
                                         div()
-                                            .id("btn-sidebar-settings")
+                                            .id("btn-reload-vault")
                                             .p_1()
                                             .rounded_md()
                                             .cursor_pointer()
                                             .hover(|h| h.bg(theme.bg_hover))
-                                            .child(icons::icon(
-                                                icons::ICON_SETTINGS,
-                                                13.0,
-                                                if self.is_settings_open { theme.accent } else { theme.text_muted },
-                                            ))
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.toggle_settings(cx);
+                                            .child(icons::icon(icons::ICON_REFRESH, 13.0, theme.text_muted))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.reload_files(window, cx);
                                             })),
                                     ),
                             )
@@ -4416,6 +4422,10 @@ impl Render for AppView {
             // ================= FOLDER MODALS =================
             .when(self.folder_modal != crate::views::sidebar::FolderModal::None, |d| {
                 d.child(self.render_folder_modals(theme, window, cx))
+            })
+            // ================= VAULT SWITCHER DIALOG =================
+            .when(self.vault_dialog_open, |d| {
+                d.child(self.render_vault_dialog(theme, window, cx))
             })
     }
 }

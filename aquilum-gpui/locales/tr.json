@@ -270,7 +270,10 @@
     "error_creating_folder_note": "Klasör notu oluşturulurken hata oluştu: {}",
     "cannot_duplicate_root": "Kök dizin kopyalanamıyor",
     "error_copying_folder": "Klasör kopyalanırken hata oluştu: {}",
-    "foldername_cannot_be_empty": "Klasör adı boş olamaz"
+    "foldername_cannot_be_empty": "Klasör adı boş olamaz",
+    "vaults_title": "Knowledge bases",
+    "open_folder": "Open Folder",
+    "no_vaults": "No vaults yet"
   },
   "tabs": {
     "fold_tabs": "Sekmeleri Katla",

@@ -270,7 +270,10 @@
     "error_creating_folder_note": "फ़ोल्डर नोट बनाने में त्रुटि: {}",
     "cannot_duplicate_root": "रूट निर्देशिका का डुप्लिकेट नहीं बनाया जा सकता",
     "error_copying_folder": "फ़ोल्डर कॉपी करने में त्रुटि: {}",
-    "foldername_cannot_be_empty": "फ़ोल्डर का नाम खाली नहीं हो सकता"
+    "foldername_cannot_be_empty": "फ़ोल्डर का नाम खाली नहीं हो सकता",
+    "vaults_title": "Knowledge bases",
+    "open_folder": "Open Folder",
+    "no_vaults": "No vaults yet"
   },
   "tabs": {
     "fold_tabs": "टैब मोड़ें",

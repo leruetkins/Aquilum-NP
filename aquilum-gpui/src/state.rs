@@ -162,6 +162,9 @@ pub struct SessionState {
     /// Open sidebar panel (file tree vs search). Defaults to files.
     #[serde(default)]
     pub sidebar_mode: crate::views::sidebar::SidebarMode,
+    /// Known vaults for the switcher dialog, most recent first.
+    #[serde(default)]
+    pub known_vaults: Vec<PathBuf>,
 }
 
 impl SessionState {
@@ -822,6 +825,8 @@ pub struct AppState {
     pub status_text: String,
     pub session: SessionState,
     pub note_states: HashMap<PathBuf, NoteSettings>,
+    /// Known vaults for the switcher dialog, most recent first.
+    pub known_vaults: Vec<PathBuf>,
 }
 
 const DEFAULT_WELCOME_NOTE: &str = "# Welcome to Vibecodium (GPUI Live Preview)\n\nYour fast, distraction-free markdown knowledge base with **true Obsidian Live Preview**!\n\n## Inline Live Preview Demo\n- Click any line or block to edit raw markdown inline\n- Move cursor away (or click another line) to see rendered styling\n- Regular text and code blocks are fully selectable across the entire page with `Ctrl+A`\n\n### Interactive Features\n- [x] Zero Electron / Chromium overhead (~40 MB RAM, 120 FPS)\n- [x] Full document continuous text selection\n- [x] Dedicated Obsidian-style code blocks with syntax styling\n- [ ] Auto-saving and instant search\n\n```rust\nfn main() {\n    println!(\"Hello from Vibecodium GPUI Live Preview!\");\n}\n```\n\n> Regular text and code blocks are cleanly organized with seamless Live Preview transitions.\n";
@@ -854,6 +859,13 @@ impl AppState {
             nav_history_index: 0,
             status_text: "GPUI Ready • 0 WebView Processes".to_owned(),
             note_states: session.note_states.clone(),
+            known_vaults: session
+                .known_vaults
+                .iter()
+                .filter(|p| p.is_dir())
+                .take(20)
+                .cloned()
+                .collect(),
             session,
         };
 
@@ -918,6 +930,13 @@ impl AppState {
         self.workspace_name = name;
         self.workspace_path = Some(path.clone());
         self.session.workspace_path = Some(path.clone());
+        // Remember the vault for the switcher dialog (most recent first).
+        self.known_vaults.retain(|p| p != &path);
+        self.known_vaults.insert(0, path.clone());
+        while self.known_vaults.len() > 20 {
+            self.known_vaults.pop();
+        }
+        self.session.known_vaults = self.known_vaults.clone();
         self.expanded_folders.insert(path.clone());
         self.open_tabs.retain(|p| p.starts_with(&path) || p.to_string_lossy() == "Welcome.md");
         if let Some(ref empty) = self.active_empty_tab {
@@ -1378,6 +1397,7 @@ impl AppState {
         self.session.open_tabs = self.open_tabs.clone();
         self.session.workspace_path = self.workspace_path.clone();
         self.session.expanded_folders = self.expanded_folders.clone();
+        self.session.known_vaults = self.known_vaults.clone();
         let dir = app_data_dir();
         self.session.save(&dir);
     }
@@ -1511,6 +1531,7 @@ mod tests {
         let mut saved = SessionState::default();
         saved.sidebar_width = 320.0;
         saved.sidebar_mode = crate::views::sidebar::SidebarMode::Search;
+        saved.known_vaults = vec![PathBuf::from("D:/vault-a"), PathBuf::from("D:/vault-b")];
         saved.save(&dir);
 
         let loaded = SessionState::load(&dir);
@@ -1518,6 +1539,10 @@ mod tests {
         assert_eq!(
             loaded.sidebar_mode,
             crate::views::sidebar::SidebarMode::Search
+        );
+        assert_eq!(
+            loaded.known_vaults,
+            vec![PathBuf::from("D:/vault-a"), PathBuf::from("D:/vault-b")]
         );
 
         // Session files written before these keys existed still load.

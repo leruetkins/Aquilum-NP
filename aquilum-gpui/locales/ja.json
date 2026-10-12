@@ -270,7 +270,10 @@
     "error_creating_folder_note": "フォルダー作成エラー 注: {}",
     "cannot_duplicate_root": "ルートディレクトリを複製できません",
     "error_copying_folder": "フォルダーのコピー中にエラーが発生しました: {}",
-    "foldername_cannot_be_empty": "フォルダー名を空にすることはできません"
+    "foldername_cannot_be_empty": "フォルダー名を空にすることはできません",
+    "vaults_title": "Knowledge bases",
+    "open_folder": "Open Folder",
+    "no_vaults": "No vaults yet"
   },
   "tabs": {
     "fold_tabs": "タブを折りたたむ",

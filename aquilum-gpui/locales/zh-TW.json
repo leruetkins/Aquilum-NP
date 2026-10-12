@@ -270,7 +270,10 @@
     "error_creating_folder_note": "建立資料夾時出錯注意：{}",
     "cannot_duplicate_root": "無法複製根目錄",
     "error_copying_folder": "複製資料夾時發生錯誤：{}",
-    "foldername_cannot_be_empty": "資料夾名稱不能為空"
+    "foldername_cannot_be_empty": "資料夾名稱不能為空",
+    "vaults_title": "Knowledge bases",
+    "open_folder": "Open Folder",
+    "no_vaults": "No vaults yet"
   },
   "tabs": {
     "fold_tabs": "折疊標籤",

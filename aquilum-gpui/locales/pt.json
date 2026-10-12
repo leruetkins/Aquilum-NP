@@ -270,7 +270,10 @@
     "error_creating_folder_note": "Erro ao criar nota de pasta: {}",
     "cannot_duplicate_root": "Não é possível duplicar o diretório raiz",
     "error_copying_folder": "Erro ao copiar a pasta: {}",
-    "foldername_cannot_be_empty": "O nome da pasta não pode ficar vazio"
+    "foldername_cannot_be_empty": "O nome da pasta não pode ficar vazio",
+    "vaults_title": "Knowledge bases",
+    "open_folder": "Open Folder",
+    "no_vaults": "No vaults yet"
   },
   "tabs": {
     "fold_tabs": "Dobrar abas",

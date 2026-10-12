@@ -270,7 +270,10 @@
     "error_creating_folder_note": "Помилка створення примітки до папки: {}",
     "cannot_duplicate_root": "Не вдається скопіювати кореневий каталог",
     "error_copying_folder": "Помилка копіювання папки: {}",
-    "foldername_cannot_be_empty": "Назва папки не може бути пустою"
+    "foldername_cannot_be_empty": "Назва папки не може бути пустою",
+    "vaults_title": "Knowledge bases",
+    "open_folder": "Open Folder",
+    "no_vaults": "No vaults yet"
   },
   "tabs": {
     "fold_tabs": "Складні вкладки",

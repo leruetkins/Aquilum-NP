@@ -270,7 +270,10 @@
     "error_creating_folder_note": "Lỗi tạo thư mục ghi chú: {}",
     "cannot_duplicate_root": "Không thể sao chép thư mục gốc",
     "error_copying_folder": "Lỗi sao chép thư mục: {}",
-    "foldername_cannot_be_empty": "Tên thư mục không được để trống"
+    "foldername_cannot_be_empty": "Tên thư mục không được để trống",
+    "vaults_title": "Knowledge bases",
+    "open_folder": "Open Folder",
+    "no_vaults": "No vaults yet"
   },
   "tabs": {
     "fold_tabs": "Tab gấp",
