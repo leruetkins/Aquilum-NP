@@ -404,6 +404,8 @@ impl AppView {
     pub fn render_quick_filter(&self, window: &mut Window, cx: &Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
         let is_search_focused = self.search_focus_handle.is_focused(window);
+        // Device-pixel grid for the caret (see `crate::snap`).
+        let pixel_scale = window.scale_factor();
 
         div()
             .id("search-filter-box")
@@ -514,7 +516,7 @@ impl AppView {
                     0.0
                 } else {
                     let byte_index: usize = query_chars[..cursor_pos].iter().map(|c| c.len_utf8()).sum();
-                    f32::from(shaped.x_for_index(byte_index))
+                    crate::snap::snap_x(f32::from(shaped.x_for_index(byte_index)), pixel_scale)
                 };
 
                 let (sel_x1, sel_w) = if let Some((s_start, s_end)) = selection_range {

@@ -820,6 +820,8 @@ impl AppView {
         let has_results = !self.search_dialog.results.is_empty();
         let has_workspace = self.state.workspace_path.is_some();
         let selected_ix = self.search_dialog.selected_ix;
+        // Device-pixel grid for the caret (see `crate::snap`).
+        let pixel_scale = window.scale_factor();
 
         // Input caret geometry (Segoe UI 14px, same shaping as click mapping).
         let query_chars: Vec<char> = query.chars().collect();
@@ -843,7 +845,7 @@ impl AppView {
             0.0
         } else {
             let byte_index: usize = query_chars[..cursor_pos].iter().map(|c| c.len_utf8()).sum();
-            f32::from(shaped.x_for_index(byte_index))
+            crate::snap::snap_x(f32::from(shaped.x_for_index(byte_index)), pixel_scale)
         };
         let (sel_x1, sel_w) = if let Some((s, e)) = selection_range {
             if !query.is_empty() {

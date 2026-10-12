@@ -2036,6 +2036,11 @@ impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         log_fps_tick();
 
+        // Device-pixel grid for thin carets: GPUI paints quads at raw float
+        // coordinates, so an unsnapped 1.5-2px caret visibly changes thickness
+        // while typing. Captured once per frame, reused at every caret site.
+        let pixel_scale = window.scale_factor();
+
         if !self.initial_scroll_done {
             self.initial_scroll_done = true;
             if self.initial_scroll_top > 0.0 {
@@ -3373,7 +3378,10 @@ impl Render for AppView {
                                     0.0
                                 } else {
                                     let byte_index: usize = title_chars[..cursor_pos].iter().map(|c| c.len_utf8()).sum();
-                                    f32::from(shaped.x_for_index(byte_index))
+                                    crate::snap::snap_x(
+                                        f32::from(shaped.x_for_index(byte_index)),
+                                        pixel_scale,
+                                    )
                                 };
 
                                 let (sel_x1, sel_w) = if let Some((s_start, s_end)) = selection_range {
@@ -3942,7 +3950,10 @@ impl Render for AppView {
                                                                 )
                                                                 .when(is_current && is_editor_focused && self.editor_blink.visible(), |s| {
                                                                     let vis_cursor = crate::markdown::row_char_to_visual_col(&row_spans, active_col_in_row, is_active_line, hidden_prefix_len);
-                                                                    let cursor_x = (vis_cursor as f32) * row_char_w;
+                                                                    let cursor_x = crate::snap::snap_x(
+                                                                        (vis_cursor as f32) * row_char_w,
+                                                                        pixel_scale,
+                                                                    );
                                                                     s.child(
                                                                         div()
                                                                             .absolute()
