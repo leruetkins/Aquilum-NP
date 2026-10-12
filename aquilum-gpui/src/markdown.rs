@@ -57,11 +57,21 @@ pub const HEADING_COLOR_PRESETS: &[HeadingPresetColor] = &[
         desc: "Предел для категорий",
         rgb: (204, 121, 167),
     },
+    HeadingPresetColor {
+        id: "red",
+        label: "Красный",
+        hex: "#F44336",
+        desc: "Красный акцент (цвет заголовка заметки)",
+        rgb: (244, 67, 54),
+    },
 ];
 
 pub fn find_heading_preset(name: &str) -> &'static HeadingPresetColor {
     for preset in HEADING_COLOR_PRESETS {
-        if preset.id.eq_ignore_ascii_case(name) || preset.label.eq_ignore_ascii_case(name) {
+        if preset.id.eq_ignore_ascii_case(name)
+            || preset.label.eq_ignore_ascii_case(name)
+            || preset.hex.eq_ignore_ascii_case(name)
+        {
             return preset;
         }
     }
@@ -71,8 +81,9 @@ pub fn find_heading_preset(name: &str) -> &'static HeadingPresetColor {
         "teal" | "emerald" | "bluish_green" => &HEADING_COLOR_PRESETS[2],
         "yellow" => &HEADING_COLOR_PRESETS[3],
         "blue" | "indigo" => &HEADING_COLOR_PRESETS[4],
-        "red" | "rose" | "vermilion" => &HEADING_COLOR_PRESETS[5],
+        "vermilion" => &HEADING_COLOR_PRESETS[5],
         "purple" | "violet" | "fuchsia" | "reddish_purple" => &HEADING_COLOR_PRESETS[6],
+        "red" | "crimson" | "rose" => &HEADING_COLOR_PRESETS[7],
         _ => &HEADING_COLOR_PRESETS[4], // Default to blue
     }
 }
@@ -1105,9 +1116,9 @@ mod tests {
 
     #[test]
     fn test_okabe_ito_colors() {
-        assert_eq!(HEADING_COLOR_PRESETS.len(), 7);
+        assert_eq!(HEADING_COLOR_PRESETS.len(), 8);
 
-        // Verify all 7 Okabe-Ito colors and exact RGB values requested by user
+        // Verify all Okabe-Ito colors and exact RGB values requested by user
         let orange = find_heading_preset("orange");
         assert_eq!(orange.label, "Оранжевый");
         assert_eq!(orange.rgb, (230, 159, 0));
@@ -1136,10 +1147,17 @@ mod tests {
         assert_eq!(reddish_purple.label, "Розово-фиолетовый");
         assert_eq!(reddish_purple.rgb, (204, 121, 167));
 
+        let red = find_heading_preset("red");
+        assert_eq!(red.label, "Красный");
+        assert_eq!(red.hex, "#F44336");
+        assert_eq!(red.rgb, (244, 67, 54));
+
         // Backward compatibility mappings
         assert_eq!(find_heading_preset("indigo").id, "blue");
         assert_eq!(find_heading_preset("violet").id, "reddish_purple");
         assert_eq!(find_heading_preset("teal").id, "bluish_green");
+        assert_eq!(find_heading_preset("crimson").id, "red");
+        assert_eq!(find_heading_preset("#F44336").id, "red");
     }
 
     #[test]

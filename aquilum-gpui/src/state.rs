@@ -1903,5 +1903,42 @@ mod tests {
             let _ = new_note.line_col();
         }
     }
+
+    #[test]
+    fn test_heading_font_advances_are_strictly_monospace() {
+        gpui::Application::new().run(|cx: &mut gpui::App| {
+            crate::fonts::register_embedded_fonts(cx);
+            let sample_text = "# Полный тест Markdown-редактора";
+            for family in ["Droid Sans Mono", "Roboto Mono"] {
+                for bold in [false, true] {
+                    let mut font = gpui::font(family);
+                    if bold {
+                        font = font.bold();
+                    }
+                    let font_id = cx.text_system().resolve_font(&font);
+                    for &size in &[14.0, 22.0] {
+                        let base_adv = cx
+                            .text_system()
+                            .advance(font_id, gpui::px(size), 'x')
+                            .expect("advance for 'x' should succeed")
+                            .width;
+                        for ch in sample_text.chars() {
+                            let ch_adv = cx
+                                .text_system()
+                                .advance(font_id, gpui::px(size), ch)
+                                .expect("advance should succeed")
+                                .width;
+                            let diff = (f32::from(ch_adv) - f32::from(base_adv)).abs();
+                            assert!(
+                                diff < 0.001,
+                                "Font {family} (bold={bold}, size={size}px) char '{ch}' advance {ch_adv:?} differs from base {base_adv:?}"
+                            );
+                        }
+                    }
+                }
+            }
+            cx.quit();
+        });
+    }
 }
 

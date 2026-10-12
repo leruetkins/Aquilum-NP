@@ -3,6 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 pub mod blink_manager;
+pub mod fonts;
 pub mod i18n;
 pub mod icons;
 pub mod markdown;
@@ -21,6 +22,7 @@ fn main() {
     Application::new()
         .with_assets(icons::MemoryAssetSource)
         .run(|cx: &mut App| {
+            fonts::register_embedded_fonts(cx);
             let app_data_dir = state::app_data_dir();
             let window_state = state::WindowState::load(&app_data_dir);
             let window_bounds = window_state.to_window_bounds(cx);

@@ -46,6 +46,7 @@ pub struct AppView {
     pub last_wrap_cols: usize,
     pub is_settings_open: bool,
     pub is_language_menu_open: bool,
+    pub is_editor_font_menu_open: bool,
     pub settings_tab: crate::views::settings_view::SettingsTab,
     pub is_dragging_scrollbar: bool,
     pub scrollbar_drag_start_y: f32,
@@ -167,6 +168,7 @@ impl AppView {
             last_wrap_cols: 80,
             is_settings_open: false,
             is_language_menu_open: false,
+            is_editor_font_menu_open: false,
             settings_tab: crate::views::settings_view::SettingsTab::Ui,
             is_dragging_scrollbar: false,
             scrollbar_drag_start_y: 0.0,
@@ -219,6 +221,15 @@ impl AppView {
         };
         this.editor_blink.enable(BlinkTarget::Editor, cx);
         this
+    }
+
+    pub fn editor_font_family(&self) -> gpui::SharedString {
+        let f = self.config.editor.font.font_family.trim();
+        if f.is_empty() {
+            "Roboto Mono".into()
+        } else {
+            f.to_string().into()
+        }
     }
 
     pub fn hex_selection_range(&self) -> Option<(usize, usize)> {
@@ -574,24 +585,70 @@ impl AppView {
         base_line_h: f32,
         base_char_w: f32,
     ) -> (f32, f32, f32, f32, f32) {
-        let (h_size, is_heading) = match classified {
-            crate::markdown::LineKind::Heading1(_) => (headings.h1.font_size as f32, true),
-            crate::markdown::LineKind::Heading2(_) => (headings.h2.font_size as f32, true),
-            crate::markdown::LineKind::Heading3(_) => (headings.h3.font_size as f32, true),
-            crate::markdown::LineKind::Heading4(_) => (headings.h4.font_size as f32, true),
-            crate::markdown::LineKind::Heading5(_) => (headings.h5.font_size as f32, true),
-            crate::markdown::LineKind::Heading6(_) => (headings.h6.font_size as f32, true),
-            _ => (14.0, false),
+        Self::heading_typography_metrics_with_widths(classified, headings, base_line_h, base_char_w, None)
+    }
+
+    pub fn heading_typography_metrics_with_widths(
+        classified: &crate::markdown::LineKind<'_>,
+        headings: &crate::settings::HeadingsSettings,
+        base_line_h: f32,
+        base_char_w: f32,
+        heading_char_widths: Option<&[f32; 6]>,
+    ) -> (f32, f32, f32, f32, f32) {
+        let (h_size, is_heading, h_idx) = match classified {
+            crate::markdown::LineKind::Heading1(_) => (headings.h1.font_size as f32, true, 0),
+            crate::markdown::LineKind::Heading2(_) => (headings.h2.font_size as f32, true, 1),
+            crate::markdown::LineKind::Heading3(_) => (headings.h3.font_size as f32, true, 2),
+            crate::markdown::LineKind::Heading4(_) => (headings.h4.font_size as f32, true, 3),
+            crate::markdown::LineKind::Heading5(_) => (headings.h5.font_size as f32, true, 4),
+            crate::markdown::LineKind::Heading6(_) => (headings.h6.font_size as f32, true, 5),
+            _ => (14.0, false, 0),
         };
         if is_heading {
             let row_h = (h_size * 1.35).round().max(base_line_h);
-            let char_w = base_char_w * (h_size / 14.0);
+            let char_w = heading_char_widths
+                .and_then(|w| w.get(h_idx).copied())
+                .unwrap_or_else(|| base_char_w * (h_size / 14.0));
             let cursor_h = (h_size * 0.88).round().max(16.0);
             let cursor_top = ((row_h - cursor_h) / 2.0).round().max(2.0);
             (row_h, char_w, h_size, cursor_h, cursor_top)
         } else {
             (base_line_h, base_char_w, 14.0, 16.0, 4.0)
         }
+    }
+
+    pub fn resolve_heading_char_widths(
+        text_system: &gpui::TextSystem,
+        editor_font: &gpui::SharedString,
+        headings: &crate::settings::HeadingsSettings,
+        base_char_w: f32,
+    ) -> [f32; 6] {
+        let heading_configs = [
+            (&headings.h1, 0),
+            (&headings.h2, 1),
+            (&headings.h3, 2),
+            (&headings.h4, 3),
+            (&headings.h5, 4),
+            (&headings.h6, 5),
+        ];
+        let mut widths = [base_char_w; 6];
+        for (h_cfg, idx) in heading_configs {
+            let mut font = gpui::font(editor_font.clone());
+            if h_cfg.bold {
+                font = font.bold();
+            }
+            if h_cfg.italic {
+                font = font.italic();
+            }
+            let font_id = text_system.resolve_font(&font);
+            let h_size = h_cfg.font_size as f32;
+            let char_w = text_system
+                .advance(font_id, gpui::px(h_size), 'x')
+                .map(|s| f32::from(s.width))
+                .unwrap_or(base_char_w * (h_size / 14.0));
+            widths[idx] = char_w;
+        }
+        widths
     }
 
     pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
@@ -857,7 +914,8 @@ impl AppView {
         let current_scroll_y = self.current_scroll_top();
         let rel_y = click_y - editor_rows_top_y + current_scroll_y;
 
-        let font_id = cx.text_system().resolve_font(&gpui::font("Consolas"));
+        let editor_font = self.editor_font_family();
+        let font_id = cx.text_system().resolve_font(&gpui::font(&editor_font));
         let line_char_width = cx
             .text_system()
             .advance(font_id, px(14.0), 'x')
@@ -922,7 +980,8 @@ impl AppView {
         let code_state = note.cached_code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
         let classified = crate::markdown::classify_line(line, code_state);
         let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
-        let (_, row_char_w, _, _, _) = Self::heading_typography_metrics(&classified, &self.config.editor.headings, 24.0, line_char_width);
+        let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &self.config.editor.headings, line_char_width);
+        let (_, row_char_w, _, _, _) = Self::heading_typography_metrics_with_widths(&classified, &self.config.editor.headings, 24.0, line_char_width, Some(&heading_widths));
 
         let col_in_row = if click_x > text_start_x {
             let raw_col = ((click_x - text_start_x) / row_char_w).round() as usize;
@@ -981,7 +1040,8 @@ impl AppView {
         let current_scroll_y = self.current_scroll_top();
         let rel_y = pos_y - editor_rows_top_y + current_scroll_y;
 
-        let font_id = cx.text_system().resolve_font(&gpui::font("Consolas"));
+        let editor_font = self.editor_font_family();
+        let font_id = cx.text_system().resolve_font(&gpui::font(&editor_font));
         let line_char_width = cx
             .text_system()
             .advance(font_id, px(14.0), 'x')
@@ -1046,7 +1106,8 @@ impl AppView {
         let code_state = note.cached_code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
         let classified = crate::markdown::classify_line(line, code_state);
         let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
-        let (_, row_char_w, _, _, _) = Self::heading_typography_metrics(&classified, &self.config.editor.headings, 24.0, line_char_width);
+        let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &self.config.editor.headings, line_char_width);
+        let (_, row_char_w, _, _, _) = Self::heading_typography_metrics_with_widths(&classified, &self.config.editor.headings, 24.0, line_char_width, Some(&heading_widths));
 
         let col_in_row = if pos_x > text_start_x {
             let raw_col = ((pos_x - text_start_x) / row_char_w).round() as usize;
@@ -2210,7 +2271,8 @@ impl Render for AppView {
         let theme = &self.theme;
         let active_path = self.state.active_note.as_ref().map(|n| n.path.clone());
         let is_editing = self.edit_mode;
-        let font_id = cx.text_system().resolve_font(&gpui::font("Consolas"));
+        let editor_font = self.editor_font_family();
+        let font_id = cx.text_system().resolve_font(&gpui::font(editor_font));
         let line_char_width = cx
             .text_system()
             .advance(font_id, px(14.0), 'x')
@@ -3783,6 +3845,8 @@ impl Render for AppView {
                                             let selection_range = self.state.active_note.as_ref().and_then(|n| n.selection_range());
                                             let (cursor_line, _) = self.state.active_note.as_ref().map(|n| n.line_col()).unwrap_or((0, 0));
                                             let headings = &self.config.editor.headings;
+                                            let editor_font = self.editor_font_family();
+                                            let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, headings, line_char_width);
                                             let hide_current_line_on_selection = self.config.editor.hide_current_line_on_selection;
                                             let has_selection = selection_range.as_ref().map_or(false, |sel| sel.start < sel.end);
 
@@ -3935,7 +3999,7 @@ impl Render for AppView {
                                                 let row_spans_move = row_spans.clone();
 
                                                 let (row_h, row_char_w, _row_font_size, _cursor_h, _cursor_top) =
-                                                    Self::heading_typography_metrics(&classified, headings, 24.0, line_char_width);
+                                                    Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths));
 
                                                 let line_number_text = if v.sub_idx == 0 {
                                                     format!("{:>3} ", v.line_idx + 1)
@@ -4038,7 +4102,7 @@ impl Render for AppView {
                                                                 .items_center()
                                                                 .text_xs()
                                                                 .text_color(if is_current { theme.accent } else { theme.text_muted })
-                                                                .font_family("Consolas")
+                                                                .font_family(editor_font.clone())
                                                                 .child(line_number_text),
                                                         )
                                                         .child(
@@ -4051,7 +4115,7 @@ impl Render for AppView {
                                                                 .flex_1()
                                                                 .h(px(row_h))
                                                                 .py_0()
-                                                                .font_family("Consolas")
+                                                                .font_family(editor_font.clone())
                                                                 .text_sm()
                                                                 .cursor(gpui::CursorStyle::IBeam)
                                                                 .when(is_opening_fence && !is_in_active_block, |s| s.bg(theme.bg_card).rounded_t_sm())
@@ -4107,6 +4171,7 @@ impl Render for AppView {
                                                                             is_in_active_block,
                                                                             headings,
                                                                             theme,
+                                                                            &editor_font,
                                                                         )),
                                                                 )
                                                                 .when(is_current && is_editor_focused && self.editor_blink.visible(), |s| {
@@ -4456,6 +4521,7 @@ fn render_syntax_spans(
     text_color_override: Option<gpui::Rgba>,
     base_weight: Option<gpui::FontWeight>,
     base_style: Option<gpui::FontStyle>,
+    font_family: &gpui::SharedString,
 ) -> gpui::StyledText {
     let main_color = text_color_override.unwrap_or(theme.text_primary);
     let base_weight = base_weight.unwrap_or(gpui::FontWeight::NORMAL);
@@ -4464,28 +4530,28 @@ fn render_syntax_spans(
     let mut runs = Vec::new();
 
     let reg_font = gpui::Font {
-        family: "Consolas".into(),
+        family: font_family.clone(),
         weight: base_weight,
         style: base_style,
         features: Default::default(),
         fallbacks: None,
     };
     let bold_font = gpui::Font {
-        family: "Consolas".into(),
+        family: font_family.clone(),
         weight: gpui::FontWeight::BOLD,
         style: base_style,
         features: Default::default(),
         fallbacks: None,
     };
     let italic_font = gpui::Font {
-        family: "Consolas".into(),
+        family: font_family.clone(),
         weight: base_weight,
         style: gpui::FontStyle::Italic,
         features: Default::default(),
         fallbacks: None,
     };
     let bold_italic_font = gpui::Font {
-        family: "Consolas".into(),
+        family: font_family.clone(),
         weight: gpui::FontWeight::BOLD,
         style: gpui::FontStyle::Italic,
         features: Default::default(),
@@ -4655,6 +4721,7 @@ fn render_live_styled_row(
     show_fences: bool,
     headings: &crate::settings::HeadingsSettings,
     theme: &Theme,
+    font_family: &gpui::SharedString,
 ) -> gpui::Div {
     if line.is_empty() || char_start >= char_end {
         return div().h_full().flex().items_center().child(" ");
@@ -4685,7 +4752,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -4704,7 +4771,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
                     )
             }
         }
@@ -4732,7 +4799,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -4751,7 +4818,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
                     )
             }
         }
@@ -4779,7 +4846,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -4798,7 +4865,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
                     )
             }
         }
@@ -4826,7 +4893,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -4845,7 +4912,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
                     )
             }
         }
@@ -4873,7 +4940,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -4892,7 +4959,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
                     )
             }
         }
@@ -4920,7 +4987,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
+                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -4939,7 +5006,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style))),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
                     )
             }
         }
@@ -4955,7 +5022,7 @@ fn render_live_styled_row(
                     .h_full()
                     .italic()
                     .child(div().text_color(theme.accent).child("> "))
-                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, is_active_line, theme, Some(theme.text_secondary), None, None)))
+                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, is_active_line, theme, Some(theme.text_secondary), None, None, font_family)))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -4969,7 +5036,7 @@ fn render_live_styled_row(
                     .h_full()
                     .italic()
                     .child(div().text_color(theme.border_subtle).child("  "))
-                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, is_active_line, theme, Some(theme.text_secondary), None, None)))
+                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, is_active_line, theme, Some(theme.text_secondary), None, None, font_family)))
             }
         }
         crate::markdown::LineKind::Task { checked, .. } => {
@@ -5001,7 +5068,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .when(*checked, |s| s.text_color(theme.text_muted).line_through())
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, task_color, None, None)),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, task_color, None, None, font_family)),
                     )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -5018,7 +5085,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .when(*checked, |s| s.text_color(theme.text_muted).line_through())
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, task_color, None, None)),
+                            .child(render_syntax_spans(row_spans, is_active_line, theme, task_color, None, None, font_family)),
                     )
             }
         }
@@ -5043,7 +5110,7 @@ fn render_live_styled_row(
                     .h_full()
                     .child(div().child(indent.to_string()))
                     .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(bullet.to_string()))
-                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None))
+                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None, font_family))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -5056,7 +5123,7 @@ fn render_live_styled_row(
                     .items_center()
                     .h_full()
                     .child(div().child(format!("{}  ", indent)))
-                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None))
+                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None, font_family))
             }
         }
         crate::markdown::LineKind::NumberedList { num, .. } => {
@@ -5081,7 +5148,7 @@ fn render_live_styled_row(
                     .h_full()
                     .child(div().child(indent.to_string()))
                     .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(num_part.to_string()))
-                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None))
+                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None, font_family))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -5095,7 +5162,7 @@ fn render_live_styled_row(
                     .items_center()
                     .h_full()
                     .child(div().child(spaces))
-                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None))
+                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None, font_family))
             }
         }
         crate::markdown::LineKind::HorizontalRule => {
@@ -5184,7 +5251,7 @@ fn render_live_styled_row(
                 .flex_row()
                 .items_center()
                 .h_full()
-                .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None))
+                .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None, font_family))
         }
     }
 }
