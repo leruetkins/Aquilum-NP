@@ -80,6 +80,23 @@ fn sidebar_scrollbar_style() -> ScrollbarStyle {
     }
 }
 
+/// Clamps a raw scroll offset (pixels from the top of the list) into the scrollable range.
+///
+/// Split out of the renderer so the invariant is testable: the visible-range slice must never
+/// be computed from an offset outside `[0, max_offset]`, because GPUI leaves the offset
+/// unclamped until prepaint and a stale overshoot makes the list flicker at whichever end is
+/// being pushed against.
+///
+/// `max_offset` stays 0 until the tree has been laid out once, so it is only a usable bound
+/// once positive; before that only the lower bound applies.
+fn clamp_sidebar_scroll_top(raw: f32, max_offset: f32) -> f32 {
+    if max_offset > 0.0 {
+        raw.clamp(0.0, max_offset)
+    } else {
+        raw.max(0.0)
+    }
+}
+
 /// One flattened line of the sidebar file tree.
 ///
 /// Built by [`AppView::flatten_sidebar_tree`] and turned into an element by
@@ -165,19 +182,25 @@ impl AppView {
             }
         }
 
-        if scroll_request {
-            // `max_offset` stays 0 until the tree has been laid out once, so only clamp
-            // against it when it is meaningful; GPUI's own prepaint clamps the offset
-            // against the real content size anyway.
-            let max_y = f32::from(self.sidebar_scroll_handle.max_offset().height);
-            sidebar_scroll_top = if max_y > 0.0 {
-                sidebar_scroll_top.clamp(0.0, max_y)
-            } else {
-                sidebar_scroll_top.max(0.0)
-            };
+        // Clamp the offset before slicing the virtualized range — this is the fix for the
+        // end-of-list flicker, and the editor's renderer does the same thing for the same
+        // reason. GPUI's wheel handler adds its delta to the shared scroll offset *unclamped*
+        // (`Div::add_scroll_wheel_listener`) and only clamps it later, in prepaint
+        // (`clamp_scroll_position`). So while the wheel keeps turning past either end, the
+        // offset this render reads is briefly out of range: past the bottom it shifts the
+        // slice down (dropping the rows at the top of the viewport), past the top it shrinks
+        // the slice (dropping the rows at the bottom). One frame later prepaint clamps and
+        // the rows come back, which is the flicker. Clamping here makes the slice independent
+        // of that stale overshoot; writing the value back keeps the next frame stable too.
+        let max_y = f32::from(self.sidebar_scroll_handle.max_offset().height);
+        let clamped_top = clamp_sidebar_scroll_top(sidebar_scroll_top, max_y);
+        // Only write back when the value actually moved, so a settled list does not issue a
+        // redundant scroll write every frame.
+        if scroll_request || (clamped_top - sidebar_scroll_top).abs() > 0.5 {
             self.sidebar_scroll_handle
-                .set_offset(point(px(0.0), px(-sidebar_scroll_top)));
+                .set_offset(point(px(0.0), px(-clamped_top)));
         }
+        sidebar_scroll_top = clamped_top;
 
         let visible_rows = height_index.visible_range(sidebar_scroll_top, sidebar_viewport_h, SIDEBAR_OVERSCAN_PX);
         let top_spacer_h = height_index.top_of(visible_rows.start);
@@ -500,5 +523,29 @@ impl AppView {
                 }))
                 .into_any_element()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scroll_offset_is_clamped_into_range_before_slicing() {
+        // Pushing past the bottom: the wheel leaves an overshoot that must never reach the
+        // slice, or the rows at the top of the viewport are dropped for one frame.
+        assert_eq!(clamp_sidebar_scroll_top(1200.0, 1000.0), 1000.0);
+        // Pushing past the top.
+        assert_eq!(clamp_sidebar_scroll_top(-40.0, 1000.0), 0.0);
+        // In range: untouched.
+        assert_eq!(clamp_sidebar_scroll_top(250.0, 1000.0), 250.0);
+    }
+
+    #[test]
+    fn scroll_offset_before_the_first_layout_keeps_only_the_lower_bound() {
+        // `max_offset` is 0 until the tree has been laid out once, so it must not be used as
+        // an upper bound — that would pin the list to the top on the first frame.
+        assert_eq!(clamp_sidebar_scroll_top(250.0, 0.0), 250.0);
+        assert_eq!(clamp_sidebar_scroll_top(-40.0, 0.0), 0.0);
     }
 }
