@@ -37,7 +37,6 @@ pub struct AppView {
     pub right_sidebar_collapsed: bool,
     pub is_resizing_right_sidebar: bool,
     pub is_hovering_right_resizer: bool,
-    pub is_tabs_menu_open: bool,
     /// Obsidian-style tabs popup; `Some` while it is shown.
     pub tabs_popup: Option<Entity<crate::views::tab_list::TabListPopup>>,
     /// Keeps the popup's event subscription alive; dropping it unsubscribes.
@@ -161,7 +160,6 @@ impl AppView {
             right_sidebar_collapsed: true,
             is_resizing_right_sidebar: false,
             is_hovering_right_resizer: false,
-            is_tabs_menu_open: false,
             tabs_popup: None,
             tabs_popup_subscription: None,
             word_wrap,
@@ -1700,13 +1698,6 @@ impl AppView {
         // while it holds the focus; this covers the case when it does not)
         if keystroke.key == "escape" && self.tabs_popup.is_some() {
             self.close_tabs_popup(cx);
-            return;
-        }
-
-        // Escape closes tabs dropdown menu if open
-        if keystroke.key == "escape" && self.is_tabs_menu_open {
-            self.is_tabs_menu_open = false;
-            cx.notify();
             return;
         }
 
@@ -4485,10 +4476,6 @@ impl Render for AppView {
                     )
                     .with_priority(999),
                 )
-            })
-            // ================= TABS DROPDOWN MENU =================
-            .when(self.is_tabs_menu_open, |d| {
-                d.child(self.render_tabs_dropdown_menu(theme, cx))
             })
             // ================= SETTINGS MODAL =================
             .when(self.is_settings_open, |d| {

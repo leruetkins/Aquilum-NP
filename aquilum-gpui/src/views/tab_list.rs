@@ -36,9 +36,19 @@ use gpui::{
 use crate::icons;
 use crate::theme::Theme;
 use crate::views::app_view::AppView;
+use crate::views::tabs_menu::format_bookmark_label;
 
 /// Height of a single row (px). The keyboard navigation relies on it.
 const ROW_HEIGHT: f32 = 28.0;
+
+/// Number of action rows in the popup header (fold, bookmark, close all).
+const HEADER_ROWS: usize = 3;
+/// Number of dividers in the popup header.
+const HEADER_DIVIDERS: usize = 2;
+/// Height of one header divider (px): 1px line plus `my_1` (4px each side).
+const DIVIDER_H: f32 = 9.0;
+/// Total height of the popup header (px): action rows plus dividers.
+const HEADER_H: f32 = ROW_HEIGHT * HEADER_ROWS as f32 + DIVIDER_H * HEADER_DIVIDERS as f32;
 
 /// Dead zone at the top and bottom edge, as a fraction of the list height...
 const EDGE_PAD_FRACTION: f32 = 0.10;
@@ -100,11 +110,26 @@ pub struct TabEntry {
 pub enum TabListEvent {
     /// The user picked the tab with this id (click or Enter).
     Activate(usize),
+    /// The user clicked "Fold tabs" in the header.
+    FoldTabs,
+    /// The user clicked the bookmark action in the header.
+    BookmarkTabs,
+    /// The user clicked "Close all tabs" in the header.
+    CloseAllTabs,
     /// The list should be closed (Escape or a click outside of it).
     Dismiss,
 }
 
 impl EventEmitter<TabListEvent> for TabListPopup {}
+
+/// Localized labels of the popup header (Obsidian-style actions above the
+/// tab list). Computed once by the parent, which owns the locale.
+#[derive(Clone)]
+pub struct TabListHeader {
+    pub fold: SharedString,
+    pub bookmark: SharedString,
+    pub close_all: SharedString,
+}
 
 /// Size of the dead zone at the top and at the bottom of the list.
 ///
@@ -181,6 +206,7 @@ pub struct TabListPopup {
     theme: Theme,
     tabs: Vec<TabEntry>,
     active_ix: usize,
+    header: TabListHeader,
     scroll: UniformListScrollHandle,
     /// List viewport in window coordinates; filled in prepaint through a canvas.
     bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -196,7 +222,13 @@ pub struct TabListPopup {
 impl TabListPopup {
     /// Builds the popup. The caller has to focus [`TabListPopup::focus_handle`]
     /// after the entity is created, otherwise the keyboard will not work.
-    pub fn new(tabs: Vec<TabEntry>, active_ix: usize, theme: Theme, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        tabs: Vec<TabEntry>,
+        active_ix: usize,
+        theme: Theme,
+        header: TabListHeader,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let scroll = UniformListScrollHandle::new();
         let active_ix = if tabs.is_empty() {
             0
@@ -209,6 +241,7 @@ impl TabListPopup {
             theme,
             tabs,
             active_ix,
+            header,
             scroll,
             bounds: Rc::new(Cell::new(Bounds::default())),
             target_y: None,
@@ -364,7 +397,6 @@ impl TabListPopup {
             .items_center()
             .gap_2()
             .h(px(ROW_HEIGHT))
-            .mx_1()
             .px_2()
             .rounded_md()
             .cursor_pointer()
@@ -387,6 +419,80 @@ impl TabListPopup {
                 cx.emit(TabListEvent::Activate(id));
             }))
     }
+
+    /// Renders one header action row: icon plus label, same metrics as a tab
+    /// row so the whole panel reads as one menu. Emits the given event.
+    fn render_header_row(
+        &self,
+        id: &'static str,
+        icon: &'static str,
+        label: SharedString,
+        event: TabListEvent,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .id(id)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .h(px(ROW_HEIGHT))
+            .px_2()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|row| row.bg(self.theme.bg_hover))
+            .child(icons::icon(icon, ICON_SIZE, self.theme.text_secondary))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(self.theme.text_primary)
+                    .child(label),
+            )
+            .on_click(cx.listener(move |_this, _event, _window, cx| {
+                cx.emit(event);
+            }))
+    }
+
+    /// Renders a hairline divider between header sections.
+    fn render_header_divider(&self, id: &'static str) -> impl IntoElement {
+        div()
+            .id(id)
+            .h_px()
+            .bg(self.theme.border_subtle)
+            .my_1()
+            .mx_1()
+    }
+
+    /// Renders the popup header: Obsidian-style tab actions above the list.
+    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .child(self.render_header_row(
+                "tab-list-fold",
+                icons::ICON_LAYERS,
+                self.header.fold.clone(),
+                TabListEvent::FoldTabs,
+                cx,
+            ))
+            .child(self.render_header_row(
+                "tab-list-bookmark",
+                icons::ICON_BOOKMARK,
+                self.header.bookmark.clone(),
+                TabListEvent::BookmarkTabs,
+                cx,
+            ))
+            .child(self.render_header_divider("tab-list-divider-1"))
+            .child(self.render_header_row(
+                "tab-list-close-all",
+                icons::ICON_CLOSE,
+                self.header.close_all.clone(),
+                TabListEvent::CloseAllTabs,
+                cx,
+            ))
+            .child(self.render_header_divider("tab-list-divider-2"))
+    }
 }
 
 impl Render for TabListPopup {
@@ -403,11 +509,14 @@ impl Render for TabListPopup {
         let free_height = window.viewport_size().height
             - px(WINDOW_ANCHOR_TOP + POPUP_GAP)
             - px(WINDOW_MARGIN);
-        // The panel height includes its padding and border, so that the list viewport is
-        // exactly `rows * ROW_HEIGHT` when everything fits and there is nothing to scroll.
-        let height = (px(ROW_HEIGHT) * self.tabs.len() as f32 + px(PANEL_CHROME))
-            .min(free_height)
-            .max(px(ROW_HEIGHT));
+        // The panel height is header + list viewport + its padding and border, so that
+        // the list viewport is exactly `rows * ROW_HEIGHT` when everything fits and
+        // there is nothing to scroll.
+        let header_h = px(HEADER_H);
+        let chrome = px(PANEL_CHROME);
+        let list_h = (px(ROW_HEIGHT) * self.tabs.len() as f32)
+            .min((free_height - header_h - chrome).max(px(0.0)));
+        let height = header_h + list_h + chrome;
 
         let bounds = self.bounds.clone();
         let count = self.tabs.len();
@@ -418,9 +527,14 @@ impl Render for TabListPopup {
         div()
             .id("tab-list-popup")
             .relative()
+            .flex()
+            .flex_col()
             .w(px(LIST_WIDTH))
             .h(height)
             .py(px(PANEL_PAD_Y))
+            // Horizontal panel padding: every row (header and tabs) sits
+            // inset from the border, so hover highlights never touch the edge.
+            .px_1()
             .bg(bg_panel)
             .border_1()
             .border_color(border)
@@ -457,12 +571,15 @@ impl Render for TabListPopup {
                     _ => {}
                 }
             }))
+            .child(self.render_header(cx))
             .child(
                 // The list viewport. The canvas measures exactly this box, so the
-                // cursor mapping is not offset by the panel padding or its border.
+                // cursor mapping is not offset by the header, the panel padding
+                // or its border.
                 div()
                     .relative()
-                    .size_full()
+                    .flex_1()
+                    .min_h_0()
                     .child(
                         canvas(
                             move |viewport, _window, _cx| bounds.set(viewport),
@@ -541,8 +658,16 @@ impl AppView {
             })
             .unwrap_or(0);
         let theme = self.theme.clone();
+        let header = TabListHeader {
+            fold: SharedString::from(self.t("tabs.fold_tabs")),
+            bookmark: SharedString::from(format_bookmark_label(
+                self.state.open_tabs.len(),
+                &self.config.ui.language,
+            )),
+            close_all: SharedString::from(self.t("tabs.close_all")),
+        };
 
-        let popup = cx.new(|cx| TabListPopup::new(tabs, active_ix, theme, cx));
+        let popup = cx.new(|cx| TabListPopup::new(tabs, active_ix, theme, header, cx));
         // `subscribe_in` is used instead of `subscribe`: activating a tab needs a window.
         let subscription =
             cx.subscribe_in(&popup, window, |this, _popup, event: &TabListEvent, window, cx| {
@@ -551,6 +676,18 @@ impl AppView {
                         if let Some(path) = this.state.open_tabs.get(*id).cloned() {
                             this.select_note(path, true, window, cx);
                         }
+                        this.close_tabs_popup(cx);
+                    }
+                    TabListEvent::FoldTabs => {
+                        this.state.status_text = this.t("tabs.fold_tabs_mode");
+                        this.close_tabs_popup(cx);
+                    }
+                    TabListEvent::BookmarkTabs => {
+                        this.state.status_text = this.t("tabs.tabs_added_to_bookmarks");
+                        this.close_tabs_popup(cx);
+                    }
+                    TabListEvent::CloseAllTabs => {
+                        this.close_all_tabs(cx);
                         this.close_tabs_popup(cx);
                     }
                     TabListEvent::Dismiss => this.close_tabs_popup(cx),
