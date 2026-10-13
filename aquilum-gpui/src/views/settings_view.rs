@@ -1,9 +1,22 @@
 use crate::icons;
 use super::app_view::AppView;
 use gpui::{
-    div, prelude::*, px, rgba, Context, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent,
+    canvas, div, point, prelude::*, px, rgba, Context, DispatchPhase, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, ScrollDelta, ScrollWheelEvent,
 };
+
+/// Line-based wheel ticks (mice) are divided down by this: one notch moves
+/// roughly one UI line instead of the system default (usually 3 lines ≈
+/// half a settings card). Pixel deltas (trackpads) pass through untouched.
+const SETTINGS_WHEEL_LINES_DIVISOR: f32 = 3.0;
+
+/// Scales a raw wheel delta for the settings list into logical pixels.
+fn scaled_wheel_dy(delta: ScrollDelta, line_h: f32) -> f32 {
+    match delta {
+        ScrollDelta::Pixels(p) => f32::from(p.y),
+        ScrollDelta::Lines(l) => l.y * line_h / SETTINGS_WHEEL_LINES_DIVISOR,
+    }
+}
 
 /// Represents the navigation tabs available in the Settings modal window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -322,9 +335,12 @@ impl AppView {
     /// Renders the active tab's settings content container.
     fn render_settings_content(&self, cx: &Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
+        let scroll_handle = self.settings_scroll_handle.clone();
 
         div()
             .id("settings-content-scroll")
+            .relative()
+            .track_scroll(&self.settings_scroll_handle)
             .flex()
             .flex_col()
             .flex_1()
@@ -355,6 +371,43 @@ impl AppView {
                 SettingsTab::System => self.render_system_tab(cx),
                 SettingsTab::Shortcuts => self.render_shortcuts_tab(cx),
             })
+            .child(
+                canvas(
+                    |viewport, _, _| viewport,
+                    move |viewport, _, window, _cx| {
+                        // Capture-перехват колеса раньше дефолтного скролла div:
+                        // делим Lines-тики (мышь) на 3 — один тик ≈ одна строка,
+                        // пиксельные дельты тачпада идут как есть.
+                        let current_view = window.current_view();
+                        window.on_mouse_event(
+                            move |event: &ScrollWheelEvent, phase, window, cx| {
+                                if phase == DispatchPhase::Capture
+                                    && viewport.contains(&event.position)
+                                {
+                                    let dy = scaled_wheel_dy(
+                                        event.delta,
+                                        f32::from(window.line_height()),
+                                    );
+                                    if dy != 0.0 {
+                                        let cur = f32::from(scroll_handle.offset().y);
+                                        let max =
+                                            f32::from(scroll_handle.max_offset().height);
+                                        let next = (cur + dy).clamp(-max, 0.0);
+                                        if next != cur {
+                                            scroll_handle
+                                                .set_offset(point(px(0.0), px(next)));
+                                            cx.notify(current_view);
+                                        }
+                                    }
+                                    cx.stop_propagation();
+                                }
+                            },
+                        );
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
     }
 
     // =========================================================================
