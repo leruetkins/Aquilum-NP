@@ -4,6 +4,7 @@
 
 | Документ | О чём |
 |---|---|
+| `plugins-00a-adaptation.md` | адаптация к текущему коду (рефакторинг до плагинов) |
 | `plugins-00-core.md` (этот) | общее ядро и дорожная карта |
 | `plugins-01-js-obsidian.md` | JS/TS-плагины (QuickJS) с API в стиле Obsidian |
 | `plugins-02-wasm.md` | WASM-плагины (wasmtime, WIT) и Rust SDK |
@@ -47,8 +48,26 @@
 
 ## 2. Архитектура
 
-### 2.1 Крейты
+### 2.1 Крейты и стратегия перехода
 
+Текущая кодовая база `aquilum-gpui` представляет собой **один монолитный крейт** `vibecodium`. Чтобы не блокировать разработку плагинов тяжелым распилом проекта на месяц, архитектура реализуется в две фазы:
+
+**Фаза A (Старт разработки): Модульная структура внутри текущего крейта**
+```
+aquilum-gpui/src/
+├─ vault.rs          # VaultCore, FileInfo, безопасные пути без зависимости от GPUI
+├─ events.rs         # EventBus: VaultEvent, WorkspaceEvent
+├─ commands.rs       # CommandRegistry (общий для встроенных команд и плагинов)
+├─ ribbon.rs         # Реестры RibbonAction и StatusBarItem
+├─ plugins/          # Хост и рантайм плагинов
+│   ├─ bridge.rs     # Асинхронный мост GPUI (start_plugin_bridge)
+│   ├─ ui.rs         # UiNode и GPUI-рендер
+│   ├─ runtime.rs    # QuickJS рантайм
+│   └─ manifest.rs   # Парсинг manifest.json и права
+└─ views/            # Существующий UI (AppView, right_sidebar.rs с монтированием PluginView)
+```
+
+**Фаза B (Целевая): Выделение в workspace**
 ```
 workspace/
 ├─ core/            # vault, заметки, ссылки, теги, поиск, события. Без GPUI
@@ -266,14 +285,27 @@ plugin-host: resolve Promise в рантайме плагина
 
 
 ## 7. Этапы реализации
+ 
+### Этап 0. Подготовка и адаптация текущего кода (2 недели)
+- [ ] Создать `src/vault.rs`: структура `VaultCore` и безопасное разрешение путей `resolve()`
+- [ ] Интегрировать `VaultCore` в `AppState` вместо разрозненных полей
+- [ ] Создать `src/events.rs`: шина событий `EventBus` (`VaultEvent`, `WorkspaceEvent`)
+- [ ] Встроить рассылку событий в `save_active_note()` и `open_note()`
+- [ ] Создать `src/commands.rs`: `CommandRegistry` и палитра команд в `AppView`
+- [ ] Создать `src/ribbon.rs`: расширяемые реестры для Ribbon и Status Bar
+- [ ] Инкрементировать `note.version` при правках в `OpenedNote` (для `Editor` API)
+- [ ] Добавить в `Cargo.toml`: `arc-swap = "1"`, `semver = "1"`, `futures = "0.3"`
+- [ ] Реализовать `Snapshot` через `ArcSwap` для мгновенных геттеров `getActiveFile`
 
-### Этап 1. Ядро без UI
-- [ ] Вынести vault, заметки, события в крейт `core`
-- [ ] Определить типы событий и запросов в `plugin-api` (serde)
+**Готово, когда:** приложение компилируется, палитра команд открывается по хоткею, изменения заметок порождают события в шине, а операции vault изолированы в `VaultCore`.
+
+### Этап 1. Ядро плагинов и API
+- [ ] Определить типы событий и запросов `ApiRequest`, `HostEvent`, `ApiCall` (serde)
+- [ ] Контракт `PluginRuntime` и фабрика `RuntimeFactory` (§12.1)
 - [ ] Версия API (`apiVersion`) и проверка совместимости (`semver`)
-- [ ] Зафиксировать таблицу имён API в стиле Obsidian (JS §2.3) и правила: «то же имя только при том же поведении»
+- [ ] Зафиксировать таблицу имён API в стиле Obsidian (JS §2.3)
 
-**Готово, когда:** ядро запускается и тестируется без GPUI.
+**Готово, когда:** типы API и контракт рантайма протестированы модульными тестами.
 
 ### Этап 2. Минимальный хост
 - [ ] Загрузка `manifest.json`, валидация
@@ -414,11 +446,11 @@ plugin-host: resolve Promise в рантайме плагина
 
 ## 10. Порядок первых недель (ориентир)
 
-1. Неделя 1: этап 1 + начало этапа 2 (загрузка плагина, `addCommand`).
-2. Неделя 2: мост Promise ↔ хост, `vault.read`, события, палитра команд.
-3. Неделя 3: права, лимиты, горячая перезагрузка.
-4. Неделя 4: декларативный UI v1 (статус-бар, панель).
-5. Дальше: редактор/Markdown-хуки, SDK, документация.
+1. Недели 1–2 (Этап 0): внутренняя адаптация текущего кода (`src/vault.rs`, `src/events.rs`, `src/commands.rs`, палитра команд, инкремент `note.version`, `Snapshot`).
+2. Неделя 3 (Этапы 1–2): типы `ApiRequest`/`HostEvent`, мост GPUI, загрузка QuickJS, вызовы `app.vault.read`, `addCommand`.
+3. Неделя 4 (Этапы 3–4): права, лимиты, горячая перезагрузка плагинов, консоль плагинов.
+4. Недели 5–6 (Этап 5): декларативный UI v1 (монтирование в правую панель, статус-бар, кнопки действий).
+5. Дальше: редактор/Markdown-хуки (Этап 6), SDK (Этап 7), каталог (Этап 8).
 
 ---
 
@@ -548,54 +580,58 @@ pub struct ApiCall {
 
 **Штрафы:** если сработал interrupt handler, плагину ставится «страйк». Три страйка за минуту отключают плагин, пользователю показывается уведомление.
 
-Мост на стороне GPUI (идея из `WasmHost::new` в Zed: отдельная задача читает канал и работает в главном потоке):
+Мост на стороне GPUI (реализация под GPUI 0.2.2 через `WeakEntity` и `cx.spawn`):
 
 ```rust
-// app
-pub fn start_bridge(
-    host: WeakEntity<PluginHost>,
+// app / src/plugins/bridge.rs
+pub fn start_plugin_bridge(
+    weak_app: gpui::WeakEntity<crate::views::app_view::AppView>,
     mut api_rx: futures::channel::mpsc::UnboundedReceiver<ApiCall>,
-    cx: &mut App,
+    cx: &mut gpui::App,
 ) {
-    cx.spawn(async move |cx| {
+    cx.spawn(async move |mut cx| {
         while let Some(call) = api_rx.next().await {
-            if host.update(cx, |host, cx| host.handle_api(call, cx)).is_err() {
-                break;   // хост закрыт
+            let handled = cx.update(|cx| {
+                if let Some(app) = weak_app.upgrade() {
+                    app.update(cx, |this, cx| {
+                        this.handle_plugin_call(call, cx);
+                    });
+                    true
+                } else {
+                    false
+                }
+            });
+
+            if matches!(handled, Ok(false) | Err(_)) {
+                break; // Окно закрыто или AppView уничтожен
             }
         }
     })
     .detach();
 }
 
-impl PluginHost {
-    fn handle_api(&mut self, call: ApiCall, cx: &mut Context<Self>) {
-        let Some(plugin) = self.plugins.get(&call.plugin) else { return };
-
-        // 1. права (12.3)
-        if let Err(e) = plugin.permissions.allow(&call.request) {
-            plugin.reply(call.id, Err(e));
-            return;
-        }
-
-        // 2. тяжёлый ввод-вывод уходит с UI-потока
+impl crate::views::app_view::AppView {
+    pub fn handle_plugin_call(&mut self, call: ApiCall, cx: &mut gpui::Context<Self>) {
+        // Проверка прав и диспетчеризация вызова
         match call.request {
-            ApiRequest::VaultRead { path } => {
-                let root = self.vault_root.clone();
-                let tx = plugin.events_tx.clone();
-                let id = call.id;
-                cx.background_spawn(async move {
-                    let result = resolve_in_vault(&root, &path)
-                        .and_then(|p| std::fs::read_to_string(p).map_err(Into::into));
-                    let _ = tx.send(HostEvent::response(id, result));
-                })
-                .detach();
+            ApiRequest::Notice { text, timeout_ms: _ } => {
+                self.state.status_text = format!("[{}] {}", call.plugin_id, text);
+                cx.notify();
+            }
+            ApiRequest::OpenFile { path } => {
+                let p = std::path::PathBuf::from(path);
+                self.select_note(p, cx);
             }
             ApiRequest::SetViewTree { view_id, tree } => {
-                if let Err(e) = validate_tree(&tree) { plugin.reply(call.id, Err(e)); return; }
-                self.set_view_tree(call.plugin.clone(), view_id, tree, cx);   // 12.7
-                plugin.reply(call.id, Ok(serde_json::Value::Null));
+                self.update_plugin_view(call.plugin_id, view_id, tree, cx);
             }
-            // ...остальные запросы
+            // Тяжёлый ввод-вывод перенаправляется в background_spawn:
+            ApiRequest::VaultRead { path } => {
+                if let Some(vault) = &self.state.vault {
+                    let content = vault.read_file(&path);
+                    // Ответ отправляется плагину через events_tx
+                }
+            }
             _ => {}
         }
     }
@@ -854,35 +890,69 @@ pub fn validate_tree(root: &UiNode) -> Result<(), ApiError> {
 
 **События:** клики и `submit` отправляются сразу, `change` с debounce 150 мс. Каждое событие содержит `view_id`, `node_id` и растущий `seq`. Хост отбрасывает события для узлов, которых уже нет в дереве.
 
-Рендер узла (эскиз GPUI, по образцу кода `Dock` и `PanelButtons` в Zed):
+Рендер узла (с использованием реальных токенов темы из `src/theme.rs`):
 
 ```rust
-fn render_node(node: &UiNode, cx: &mut Context<PluginView>) -> AnyElement {
+fn render_node(
+    node: &UiNode,
+    plugin_id: &str,
+    view_id: u64,
+    theme: &crate::theme::Theme,
+    cx: &gpui::Context<crate::views::app_view::AppView>,
+) -> gpui::AnyElement {
     match node {
-        UiNode::Column { gap, children } => div()
-            .flex().flex_col().gap(theme::gap(*gap))
-            .children(children.iter().map(|c| render_node(c, cx)))
-            .into_any_element(),
-        UiNode::Text { value, style } => div()
-            .text_color(theme::text(*style))
-            .child(value.clone())
-            .into_any_element(),
-        UiNode::Button { id, label, variant, disabled } => {
-            let id = id.clone();
-            div()
-                .id(SharedString::from(id.clone()))
-                .px_3().py_1().rounded_md()
-                .bg(theme::button_bg(*variant, *disabled))
-                .child(label.clone())
-                .when(!*disabled, |el| {
-                    el.on_click(cx.listener(move |this, _ev, _window, cx| {
-                        this.send_ui_event(&id, "click", None, cx);
-                    }))
-                })
+        UiNode::Column { gap, children } => {
+            let mut el = gpui::div().flex().flex_col();
+            if let Some(g) = gap {
+                el = el.gap(gpui::px(*g));
+            }
+            el.children(children.iter().map(|c| render_node(c, plugin_id, view_id, theme, cx)))
                 .into_any_element()
         }
-        // ...остальные узлы; все цвета и отступы только из theme::*
-        _ => div().into_any_element(),
+        UiNode::Text { value, style } => {
+            let color = match style.as_deref() {
+                Some("muted") => theme.text_muted,
+                Some("accent") => theme.accent,
+                _ => theme.text_primary,
+            };
+            gpui::div()
+                .text_color(color)
+                .child(value.clone())
+                .into_any_element()
+        }
+        UiNode::Button { id, label, variant } => {
+            let bg = match variant.as_deref() {
+                Some("primary") => theme.accent,
+                Some("danger") => gpui::rgb(0xed8796),
+                _ => theme.bg_card,
+            };
+            let text_color = match variant.as_deref() {
+                Some("primary") => theme.text_on_accent,
+                _ => theme.text_primary,
+            };
+            let btn_id = id.clone();
+            let p_id = plugin_id.to_string();
+
+            gpui::div()
+                .px(gpui::px(8.0))
+                .py(gpui::px(4.0))
+                .rounded(gpui::px(4.0))
+                .bg(bg)
+                .text_color(text_color)
+                .cursor(gpui::CursorStyle::PointingHand)
+                .hover(|s| s.bg(theme.bg_hover))
+                .child(label.clone())
+                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                    this.dispatch_plugin_ui_event(&p_id, view_id, &btn_id, "click", None, cx);
+                }))
+                .into_any_element()
+        }
+        UiNode::Separator => gpui::div()
+            .w_full()
+            .h(gpui::px(1.0))
+            .bg(theme.border_subtle)
+            .into_any_element(),
+        _ => gpui::div().into_any_element(),
     }
 }
 ```
@@ -1048,13 +1118,14 @@ fn verify_sha256(bytes: &[u8], expected_hex: Option<&String>) -> Result<()> {
 
 ### 12.13 Порядок внедрения по этапам плана
 
-1. **Этапы 1–2:** типы `ApiRequest` и `HostEvent`, контракт `PluginRuntime` (12.1), `spawn_plugin` для JS (JS §4), мост `start_bridge`, `Snapshot` (12.2, 12.5).
-2. **Этап 3:** `Permissions`, `resolve_in_vault`, дедлайны и страйки (12.2–12.4), `plugin-verify` с `MockHost`, кэшем и boot guard (12.14).
-3. **Этап 4:** `Registrations` и `unload`, наблюдение за папкой (12.10).
-4. **Этап 5:** `UiNode`, `validate_tree`, рендер, `ModalLayer`, модель `Layout` и её сохранение (12.6–12.8).
-5. **Этап 6:** версии документа, транзакции, `map_offset` (12.9).
-6. **Этап 8:** установка и обновление из каталога (12.11).
-7. Тесты из 12.12 добавлять вместе с соответствующей частью, а не в конце.
+1. **Этап 0 (Адаптация монолита):** `VaultCore` (`resolve()`), `EventBus`, `CommandRegistry`, палитра команд, `Snapshot` по `ArcSwap`, инкремент `note.version`.
+2. **Этапы 1–2:** типы `ApiRequest` и `HostEvent`, контракт `PluginRuntime` (12.1), `spawn_plugin` для JS (JS §4), мост `start_plugin_bridge` (12.2).
+3. **Этап 3:** `Permissions`, дедлайны и страйки (12.2–12.4), `plugin-verify` с `MockHost`, кэшем и boot guard (12.14).
+4. **Этап 4:** `Registrations` и `unload`, наблюдение за папкой (12.10).
+5. **Этап 5:** `UiNode`, `validate_tree`, рендер в правую панель (`right_sidebar.rs`), модель `Layout` (12.6–12.8).
+6. **Этап 6:** версии документа, транзакции, `map_offset`, хуки `registerMarkdownCodeBlockProcessor` (12.9).
+7. **Этап 8:** установка и обновление из каталога (12.11).
+8. Тесты из 12.12 добавлять вместе с соответствующей частью, а не в конце.
 
 ### 12.14 Проверка плагинов: крейт `plugin-verify` (общая часть)
 
