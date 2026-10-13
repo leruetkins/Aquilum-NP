@@ -133,6 +133,9 @@ pub struct AppView {
     pub plugin_catalog: crate::views::plugin_catalog::PluginCatalogState,
     pub catalog_focus_handle: FocusHandle,
     pub catalog_scroll_handle: ScrollHandle,
+    pub catalog_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag,
+    pub catalog_details_scroll_handle: ScrollHandle,
+    pub catalog_details_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag,
 }
 
 impl AppView {
@@ -263,6 +266,9 @@ impl AppView {
             plugin_catalog: crate::views::plugin_catalog::PluginCatalogState::default(),
             catalog_focus_handle: cx.focus_handle(),
             catalog_scroll_handle: ScrollHandle::new(),
+            catalog_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
+            catalog_details_scroll_handle: ScrollHandle::new(),
+            catalog_details_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
             plugin_views: HashMap::new(),
             plugin_runtimes: Vec::new(),
             code_block_views: HashMap::new(),
@@ -2531,6 +2537,9 @@ impl Render for AppView {
                     this.handle_panel_scrollbar_drag(y, cx);
                 } else if this.sidebar_search.is_mouse_selecting {
                     this.handle_panel_mouse_move(event, window, cx);
+                } else if this.catalog_scrollbar_drag.active {
+                    let y: f32 = event.position.y.into();
+                    this.handle_catalog_scrollbar_drag(y, cx);
                 } else if this.goto_scrollbar_drag.active {
                     let y: f32 = event.position.y.into();
                     this.handle_goto_scrollbar_drag(y, cx);
@@ -2550,6 +2559,7 @@ impl Render for AppView {
                 this.quick_filter.handle_mouse_up(cx);
                 this.handle_goto_mouse_up(cx);
                 this.goto_scrollbar_drag.end();
+                this.catalog_scrollbar_drag.end();
                 this.handle_panel_mouse_up(cx);
                 this.panel_scrollbar_drag.end();
                 if this.is_resizing_sidebar {
