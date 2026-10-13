@@ -60,8 +60,17 @@ const HEADER_H: f32 = ROW_HEIGHT * HEADER_ROWS as f32 + DIVIDER_H * HEADER_DIVID
 
 /// Mouse movements shorter than this (px) are ignored to suppress jitter.
 const MIN_MOVE: f32 = 0.5;
-/// Smoothing time constant (ms). 80-100 is brisk, 150-200 is very smooth.
-const SMOOTH_TAU_MS: f32 = 140.0;
+/// Natural frequency of the scroll spring (rad/s). Lower is smoother and
+/// "heavier": 12 feels like the old 140 ms exponential chase, 8-10 is
+/// noticeably softer.
+const SPRING_OMEGA: f32 = 10.0;
+/// Stiffer spring once the mouse stops: the list lands fast instead of
+/// trailing behind with a tail. 0 would snap onto the target instantly.
+const SETTLE_OMEGA: f32 = 25.0;
+/// Pause without mouse motion (ms) after which the cursor counts as idle.
+const IDLE_AFTER_MS: u128 = 50;
+/// The list counts as settled when the spring velocity drops below this (px/s).
+const REST_VELOCITY: f32 = 8.0;
 /// Upper bound for a single frame step (s): keeps a long stall from producing a jump.
 const MAX_FRAME_DT: f32 = 0.05;
 /// A scroll range below this (px) counts as "everything fits": no cursor scrolling.
@@ -195,10 +204,17 @@ fn nearest_offset(
     target.clamp(-max_scroll, px(0.0))
 }
 
-/// Smoothing factor for a single frame of `dt` seconds. Exponential approach, so
-/// the progress after a given wall-clock time is the same at any frame rate.
-fn smoothing_alpha(dt_secs: f32) -> f32 {
-    1.0 - (-dt_secs * 1000.0 / SMOOTH_TAU_MS).exp()
+/// Exact step of a critically damped spring over `dt` seconds.
+/// Returns the new (position, velocity). Closed-form, so it does not depend
+/// on the frame rate.
+fn spring_step(pos: f32, vel: f32, target: f32, dt: f32, omega: f32) -> (f32, f32) {
+    let d = pos - target;
+    let c = vel + omega * d;
+    let decay = (-omega * dt).exp();
+    (
+        target + (d + c * dt) * decay,
+        (vel - omega * c * dt) * decay,
+    )
 }
 
 /// Rounds a value to a whole number of device pixels. A fractional offset makes
@@ -226,6 +242,12 @@ pub struct TabListPopup {
     last_mouse_y: Option<Pixels>,
     /// Timestamp of the previous animation frame (for `dt`).
     last_frame: Option<Instant>,
+    /// Smoothed position in px (fractional, pre-snapping).
+    pos_y: Option<f32>,
+    /// Spring velocity, px/s.
+    velocity_y: f32,
+    /// When the mouse last moved noticeably; staleness means "idle".
+    last_move: Option<Instant>,
     focus_handle: FocusHandle,
 }
 
@@ -259,6 +281,9 @@ impl TabListPopup {
             target_y: None,
             last_mouse_y: None,
             last_frame: None,
+            pos_y: None,
+            velocity_y: 0.0,
+            last_move: None,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -294,6 +319,7 @@ impl TabListPopup {
         // accumulates instead of being dropped event by event.
         Some(anchor) if (y - anchor).abs() >= px(MIN_MOVE) => {
             self.last_mouse_y = Some(y);
+            self.last_move = Some(Instant::now());
 
             let bounds = self.bounds.get();
             let max_scroll = self.base_handle().max_offset().height;
@@ -327,7 +353,7 @@ impl TabListPopup {
     }
 
     /// Picks the offset that shows the highlighted row with the least movement,
-    /// then lets the same smoothing animation carry it there.
+    /// then lets the same spring animation carry it there.
     fn scroll_selection_into_view(&mut self) {
         let base = self.base_handle();
         let max_scroll = base.max_offset().height;
@@ -346,17 +372,28 @@ impl TabListPopup {
             offset,
             max_scroll,
         ));
-        self.last_frame = None;
+        // Keyboard motion counts as fresh: the glide stays soft instead of
+        // being mistaken for a stale mouse.
+        self.reset_motion();
+        self.last_move = Some(Instant::now());
     }
 
-    /// One smoothing step. Returns `true` when another frame is needed.
+    /// Drops the spring state: the next animation starts from the currently
+    /// shown offset with zero velocity, so a sharp direction change never yanks.
+    fn reset_motion(&mut self) {
+        self.last_frame = None;
+        self.pos_y = None;
+        self.velocity_y = 0.0;
+        self.last_move = None;
+    }
+
+    /// One spring step. Returns `true` when another frame is needed.
     ///
-    /// `scale` is the window scale factor: the offset is kept on whole device
-    /// pixels, and a step is never smaller than one device pixel, otherwise the
-    /// tail of the animation would stall after rounding.
+    /// `scale` is the window scale factor: the shown offset is kept on whole
+    /// device pixels (see [`snap_to_device_pixel`]).
     fn animate(&mut self, scale: f32) -> bool {
         let Some(target) = self.target_y else {
-            self.last_frame = None;
+            self.reset_motion();
             return false;
         };
 
@@ -368,25 +405,42 @@ impl TabListPopup {
         });
         self.last_frame = Some(now);
 
-        let one_px = px(1.0 / scale);
-        let target = snap_to_device_pixel(target, scale);
+        // Stale mouse → stiff spring: land fast instead of trailing a tail.
+        // Fresh motion (mouse or keyboard) keeps the soft spring.
+        let idle = self.last_move.map_or(true, |t| {
+            now.duration_since(t).as_millis() >= IDLE_AFTER_MS
+        });
+        let omega = if idle { SETTLE_OMEGA } else { SPRING_OMEGA };
 
         let base = self.base_handle();
+        let max = f32::from(base.max_offset().height);
+        let target = f32::from(target);
         let mut offset = base.offset();
-        let diff = target - offset.y;
-        if diff.abs() < one_px {
-            offset.y = target;
-            base.set_offset(offset);
-            self.last_frame = None;
+        // The fractional position lives apart from what is shown: after rounding
+        // to pixels the accumulated precision would be lost on every frame.
+        let pos = self.pos_y.unwrap_or_else(|| f32::from(offset.y));
+
+        let (mut pos, mut vel) = spring_step(pos, self.velocity_y, target, dt, omega);
+
+        // The spring can slightly overshoot on a sharp direction change:
+        // it must never leave the list.
+        let clamped = pos.clamp(-max, 0.0);
+        if clamped != pos {
+            vel = 0.0;
+            pos = clamped;
+        }
+        self.pos_y = Some(pos);
+        self.velocity_y = vel;
+
+        let resting = (pos - target).abs() < 0.5 / scale && vel.abs() < REST_VELOCITY;
+        let shown = if resting { target } else { pos };
+        offset.y = snap_to_device_pixel(px(shown), scale);
+        base.set_offset(offset);
+
+        if resting {
+            self.reset_motion();
             return false;
         }
-
-        let mut step = diff * smoothing_alpha(dt);
-        if step.abs() < one_px {
-            step = if diff > px(0.0) { one_px } else { -one_px };
-        }
-        offset.y = snap_to_device_pixel(offset.y + step, scale);
-        base.set_offset(offset);
         true
     }
 
@@ -1011,23 +1065,41 @@ mod tests {
     }
 
     #[test]
-    fn smoothing_progress_does_not_depend_on_the_frame_rate() {
-        // One second of frames at 60 Hz and at 144 Hz must land on the same offset.
-        let target = px(-1000.0);
+    fn spring_progress_does_not_depend_on_the_frame_rate() {
+        let run = |frames: u32| {
+            let (mut pos, mut vel) = (0.0_f32, 0.0_f32);
+            for _ in 0..frames {
+                (pos, vel) = spring_step(pos, vel, -1000.0, 1.0 / frames as f32, SPRING_OMEGA);
+            }
+            pos
+        };
+        assert!((run(60) - run(144)).abs() < 1.0);
+        // After a second the spring is already there.
+        assert!((run(60) + 1000.0).abs() < 2.0);
+    }
 
-        let mut at_60 = px(0.0);
-        for _ in 0..60 {
-            at_60 += (target - at_60) * smoothing_alpha(1.0 / 60.0);
-        }
+    #[test]
+    fn spring_does_not_jump_at_the_start() {
+        // The first frame shifts almost nothing: velocity builds up smoothly.
+        let (pos, _) = spring_step(0.0, 0.0, -1000.0, 1.0 / 60.0, SPRING_OMEGA);
+        assert!(pos.abs() < 20.0);
+    }
 
-        let mut at_144 = px(0.0);
-        for _ in 0..144 {
-            at_144 += (target - at_144) * smoothing_alpha(1.0 / 144.0);
-        }
-
-        assert!((at_60 - at_144).abs() < px(1.0));
-        // And it really got there: tau is 140 ms, so one second is ~7 time constants.
-        assert!((target - at_60).abs() < px(2.0));
+    #[test]
+    fn settle_spring_lands_faster_than_the_soft_one() {
+        // Half a second of soft motion, then compare: the stiff spring must
+        // already sit on the target while the soft one still travels.
+        let run = |omega: f32| {
+            let (mut pos, mut vel) = (0.0_f32, 0.0_f32);
+            for _ in 0..30 {
+                (pos, vel) = spring_step(pos, vel, -1000.0, 1.0 / 60.0, omega);
+            }
+            pos
+        };
+        let soft = (run(SPRING_OMEGA) + 1000.0).abs();
+        let stiff = (run(SETTLE_OMEGA) + 1000.0).abs();
+        assert!(stiff < 1.0, "stiff spring still off by {stiff}");
+        assert!(stiff < soft, "stiff {stiff} should beat soft {soft}");
     }
 
     #[test]
