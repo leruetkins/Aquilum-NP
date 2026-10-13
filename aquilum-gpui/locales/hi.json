@@ -199,7 +199,8 @@
       "redo": "फिर से करना",
       "home_end": "पंक्ति के प्रारंभ/अंत पर जाएं",
       "quick_open": "फ़ाइल पर जाएँ (त्वरित खोलें)",
-      "search_files": "फ़ाइलें खोजें"
+      "search_files": "फ़ाइलें खोजें",
+      "open_command_palette": "Open Command Palette"
     }
   },
   "sidebar": {

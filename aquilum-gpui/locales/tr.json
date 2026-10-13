@@ -199,7 +199,8 @@
       "redo": "Yinele",
       "home_end": "Satır Başına / Sonuna Git",
       "quick_open": "Dosyaya Git (Hızlı Açma)",
-      "search_files": "Dosyaları Ara"
+      "search_files": "Dosyaları Ara",
+      "open_command_palette": "Open Command Palette"
     }
   },
   "sidebar": {

@@ -107,6 +107,16 @@ pub fn spawn_plugin_runtime(
                             });
                             break;
                         }
+                        HostEvent::ProcessCodeBlock { language, source, block_id } => {
+                            let _ = ctx.with(|ctx| {
+                                dispatch_code_block_process(&ctx, language, source, block_id);
+                            });
+                        }
+                        HostEvent::ExecuteCommand { command_id } => {
+                            let _ = ctx.with(|ctx| {
+                                dispatch_command_execution(&ctx, command_id);
+                            });
+                        }
                         _ => {
                             // Dispatch other event hooks (file modified, etc.)
                         }
@@ -188,6 +198,8 @@ fn setup_plugin_environment<'js>(
     // 4. Inject runtime JavaScript bootstrap defining Obsidian-compatible classes
     let bootstrap_js = r#"
         const __pending_promises = new Map();
+        globalThis.__code_block_handlers = new Map();
+        globalThis.__command_handlers = new Map();
 
         function __dispatch_host_response(id, ok, result) {
             const entry = __pending_promises.get(id);
@@ -198,6 +210,35 @@ fn setup_plugin_environment<'js>(
                 } else {
                     entry.reject(new Error(result?.error || "Host error"));
                 }
+            }
+        }
+
+        function __dispatch_command_execution(commandId) {
+            const handler = globalThis.__command_handlers.get(commandId);
+            if (handler) {
+                try {
+                    handler();
+                } catch (e) {
+                    console.error("Command execution error:", e);
+                }
+            }
+        }
+
+        function __dispatch_code_block_process(lang, source, blockId) {
+            const handler = globalThis.__code_block_handlers.get(String(lang).toLowerCase());
+            if (!handler) return;
+            try {
+                const result = handler(source);
+                if (result && typeof result === "object") {
+                    __invoke_host("set_code_block_view", { block_id: blockId, tree: result });
+                } else if (typeof result === "string") {
+                    __invoke_host("set_code_block_view", {
+                        block_id: blockId,
+                        tree: { type: "text", value: result }
+                    });
+                }
+            } catch (e) {
+                console.error("Code block processor error:", e);
             }
         }
 
@@ -223,7 +264,27 @@ fn setup_plugin_environment<'js>(
             async onload() {}
             async onunload() {}
             addCommand(cmd) {
-                return __invoke_host("add_command", cmd);
+                if (cmd && cmd.id) {
+                    if (cmd.callback) {
+                        globalThis.__command_handlers.set(cmd.id, cmd.callback);
+                    }
+                    return __invoke_host("add_command", {
+                        id: cmd.id,
+                        name: cmd.name || cmd.id,
+                        hotkey: cmd.hotkey
+                    });
+                }
+            }
+            addRibbonIcon(icon, title, callback) {
+                const id = "ribbon-" + Math.random().toString(36).substr(2, 9);
+                if (callback) {
+                    globalThis.__command_handlers.set(id, callback);
+                }
+                return __invoke_host("add_ribbon_icon", {
+                    id,
+                    icon: String(icon),
+                    title: String(title)
+                });
             }
             async loadData() {
                 return __invoke_host("load_data", {});
@@ -231,28 +292,51 @@ fn setup_plugin_environment<'js>(
             async saveData(data) {
                 return __invoke_host("save_data", { data });
             }
+            registerMarkdownCodeBlockProcessor(language, handler) {
+                globalThis.__code_block_handlers.set(String(language).toLowerCase(), handler);
+                return __invoke_host("register_code_block_processor", { language: String(language) });
+            }
         }
 
         const app = {
             vault: {
-                read: (path) => __invoke_host("vault_read", { path }),
-                modify: (path, data) => __invoke_host("vault_modify", { path, data }),
+                read: (path) => __invoke_host("vault_read", { path: typeof path === 'object' ? path.path : path }),
+                modify: (path, data) => __invoke_host("vault_modify", { path: typeof path === 'object' ? path.path : path, data }),
                 create: (path, data) => __invoke_host("vault_create", { path, data }),
-                delete: (path) => __invoke_host("vault_delete", { path }),
-                getMarkdownFiles: () => __host_get_markdown_files(),
+                delete: (path) => __invoke_host("vault_delete", { path: typeof path === 'object' ? path.path : path }),
+                getMarkdownFiles: () => {
+                    const files = __host_get_markdown_files();
+                    return files.map(p => ({ path: p, name: p.split("/").pop(), basename: p.split("/").pop().replace(/\.md$/, ""), extension: "md" }));
+                },
+                getAbstractFileByPath: (path) => {
+                    return { path: String(path), name: String(path).split("/").pop(), basename: String(path).split("/").pop().replace(/\.md$/, ""), extension: "md" };
+                },
             },
             workspace: {
                 getActiveFile: () => {
                     const p = __host_get_active_file();
                     return p ? { path: p, name: p.split("/").pop() } : null;
                 },
-                openFile: (path) => __invoke_host("open_file", { path }),
+                openFile: (path) => __invoke_host("open_file", { path: typeof path === 'object' ? path.path : path }),
+                registerMarkdownCodeBlockProcessor: (language, handler) => {
+                    globalThis.__code_block_handlers.set(String(language).toLowerCase(), handler);
+                    return __invoke_host("register_code_block_processor", { language: String(language) });
+                },
+            },
+            commands: {
+                executeCommandById: (id) => __invoke_host("execute_command", { id: String(id) }),
             }
         };
 
         globalThis.Notice = Notice;
         globalThis.Plugin = Plugin;
         globalThis.app = app;
+        globalThis.require = function(mod) {
+            if (mod === "obsidian") {
+                return { Notice, Plugin, app };
+            }
+            throw new Error(`Module '${mod}' is not available in sandbox`);
+        };
     "#;
 
     ctx.eval::<(), _>(bootstrap_js)?;
@@ -335,10 +419,98 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
                 .unwrap_or(serde_json::Value::Null);
             ApiRequest::SaveData { data }
         }
-        _ => ApiRequest::Notice {
-            text: format!("Unknown request kind: {}", kind),
-            timeout_ms: 3000,
-        },
+        "register_code_block_processor" => {
+            let language = payload
+                .get("language")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::RegisterCodeBlockProcessor { language }
+        }
+        "set_code_block_view" => {
+            let block_id = payload
+                .get("block_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let tree: crate::plugins::ui::UiNode = payload
+                .get("tree")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_else(|| crate::plugins::ui::UiNode::Text {
+                    value: "".to_string(),
+                    style: crate::plugins::ui::TextStyle::default(),
+                });
+            ApiRequest::SetCodeBlockView { block_id, tree }
+        }
+        "add_command" => {
+            let id = payload
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let name = payload
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&id)
+                .to_string();
+            let hotkey = payload
+                .get("hotkey")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            ApiRequest::AddCommand { id, name, hotkey }
+        }
+        "add_ribbon_icon" => {
+            let id = payload
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let icon = payload
+                .get("icon")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let title = payload
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::AddRibbonIcon { id, icon, title }
+        }
+        "execute_command" => {
+            let id = payload
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::ExecuteCommand { id }
+        }
+        _ => {
+            eprintln!("[plugin] Unknown request kind: {}", kind);
+            ApiRequest::Unknown {
+                req_kind: kind.to_string(),
+            }
+        }
+    }
+}
+
+/// Dispatches a command execution trigger into QuickJS.
+fn dispatch_command_execution<'js>(ctx: &Ctx<'js>, command_id: String) {
+    let dispatch_fn: rquickjs::Result<Function> = ctx.globals().get("__dispatch_command_execution");
+    if let Ok(func) = dispatch_fn {
+        let _ = func.call::<_, ()>((command_id,));
+    }
+}
+
+/// Dispatches an incoming code block processing request into QuickJS.
+fn dispatch_code_block_process<'js>(
+    ctx: &Ctx<'js>,
+    language: String,
+    source: String,
+    block_id: usize,
+) {
+    let dispatch_fn: rquickjs::Result<Function> = ctx.globals().get("__dispatch_code_block_process");
+    if let Ok(func) = dispatch_fn {
+        let _ = func.call::<_, ()>((language, source, block_id as f64));
     }
 }
 
@@ -536,4 +708,82 @@ mod tests {
 
         let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
     }
+
+    #[test]
+    fn test_quickjs_register_markdown_code_block_processor() {
+        let manifest = PluginManifest {
+            id: "dataview-plugin".to_string(),
+            name: "Dataview".to_string(),
+            version: "0.5.0".to_string(),
+            min_app_version: None,
+            author: "Tester".to_string(),
+            description: "Dataview query processor".to_string(),
+            permissions: PluginPermissions::default(),
+        };
+
+        let (api_tx, mut api_rx) = unbounded();
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
+
+        let script = r#"
+            const plugin = new Plugin(app, { id: "dataview-plugin" });
+            plugin.registerMarkdownCodeBlockProcessor("dataview", (source) => {
+                return {
+                    type: "column",
+                    children: [
+                        { type: "text", value: "Query result for: " + source.trim() }
+                    ]
+                };
+            });
+        "#;
+
+        let handle = spawn_plugin_runtime(
+            manifest,
+            script.to_string(),
+            api_tx,
+            snapshot,
+        )
+        .unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        // 1. Host receives RegisterCodeBlockProcessor
+        let reg_req = api_rx.try_recv().unwrap();
+        assert_eq!(reg_req.plugin_id, "dataview-plugin");
+        if let ApiRequest::RegisterCodeBlockProcessor { language } = reg_req.request {
+            assert_eq!(language, "dataview");
+        } else {
+            panic!("Expected ApiRequest::RegisterCodeBlockProcessor");
+        }
+
+        // 2. Host sends ProcessCodeBlock
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::ProcessCodeBlock {
+            language: "dataview".to_string(),
+            source: "TABLE file.name FROM #project".to_string(),
+            block_id: 42,
+        });
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        // 3. Host receives SetCodeBlockView with processed UI tree
+        let view_req = api_rx.try_recv().unwrap();
+        assert_eq!(view_req.plugin_id, "dataview-plugin");
+        if let ApiRequest::SetCodeBlockView { block_id, tree } = view_req.request {
+            assert_eq!(block_id, 42);
+            if let crate::plugins::ui::UiNode::Column { children, .. } = tree {
+                assert_eq!(children.len(), 1);
+                if let crate::plugins::ui::UiNode::Text { value, .. } = &children[0] {
+                    assert_eq!(value, "Query result for: TABLE file.name FROM #project");
+                } else {
+                    panic!("Expected UiNode::Text child");
+                }
+            } else {
+                panic!("Expected UiNode::Column");
+            }
+        } else {
+            panic!("Expected ApiRequest::SetCodeBlockView");
+        }
+
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
+    }
 }
+

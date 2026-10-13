@@ -2190,9 +2190,10 @@ impl AppView {
         };
 
         let global_rows = vec![
-            render_shortcut_item(self.t("settings.shortcuts.open_folder"), "Ctrl + O"),
+            render_shortcut_item(self.t("settings.shortcuts.quick_open"), "Ctrl + O"),
+            render_shortcut_item(self.t("settings.shortcuts.open_command_palette"), "Ctrl + P"),
+            render_shortcut_item(self.t("settings.shortcuts.open_folder"), "Ctrl + Shift + O"),
             render_shortcut_item(self.t("settings.shortcuts.new_note"), "Ctrl + N"),
-            render_shortcut_item(self.t("settings.shortcuts.quick_open"), "Ctrl + P"),
             render_shortcut_item(self.t("settings.shortcuts.search_files"), "Ctrl + Shift + F"),
             render_shortcut_item(self.t("settings.shortcuts.save_note"), "Ctrl + S"),
             render_shortcut_item(self.t("settings.shortcuts.quick_search"), "Ctrl + F"),
@@ -2317,8 +2318,7 @@ impl AppView {
                     this.state.status_text = "Safe mode enabled: community plugins unloaded".to_string();
                 } else {
                     // Safe mode turned OFF -> reload enabled plugins
-                    let (api_tx, _api_rx) = futures::channel::mpsc::unbounded();
-                    this.load_installed_plugins_for_vault(api_tx);
+                    this.load_installed_plugins_for_vault();
                     this.state.status_text = "Safe mode disabled: community plugins loaded".to_string();
                 }
                 this.save_settings(cx);
@@ -2392,12 +2392,13 @@ impl AppView {
                                 this.state.commands.unregister_all_of(&toggle_id);
                                 this.state.ribbon.unregister_all_of(&toggle_id);
                                 this.state.status_bar.unregister_all_of(&toggle_id);
+                                this.state.code_block_processors.unregister_all_of(&toggle_id);
+                                this.code_block_views.retain(|_, (pid, _)| pid != &toggle_id);
                             }
                         } else {
                             let _ = vault.enable_community_plugin(&toggle_id);
                             // Reload plugins for vault
-                            let (api_tx, _api_rx) = futures::channel::mpsc::unbounded();
-                            this.load_installed_plugins_for_vault(api_tx);
+                            this.load_installed_plugins_for_vault();
                         }
                         cx.notify();
                     }

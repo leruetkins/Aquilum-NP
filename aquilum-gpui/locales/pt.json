@@ -199,7 +199,8 @@
       "redo": "Refazer",
       "home_end": "Vá para início/fim da linha",
       "quick_open": "Vá para arquivo (abertura rápida)",
-      "search_files": "Pesquisar arquivos"
+      "search_files": "Pesquisar arquivos",
+      "open_command_palette": "Open Command Palette"
     }
   },
   "sidebar": {

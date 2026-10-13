@@ -51,14 +51,19 @@ pub struct AppView {
     pub font_popup: Option<Entity<crate::views::tab_list::TabListPopup>>,
     /// Keeps the font picker's event subscription alive.
     pub font_popup_subscription: Option<Subscription>,
-    /// Command Palette popup (Ctrl+Shift+P).
-    pub command_palette_popup: Option<Entity<crate::views::tab_list::TabListPopup>>,
-    /// Keeps the command palette's event subscription alive.
-    pub command_palette_subscription: Option<Subscription>,
+    /// Command Palette modal dialog (Ctrl+P, Obsidian-style).
+    pub command_palette: crate::views::command_palette::CommandPaletteState,
+    pub command_palette_focus_handle: FocusHandle,
+    pub command_palette_blink: BlinkManager,
+    pub command_palette_scroll_handle: ScrollHandle,
     /// Active declarative UI trees registered by plugins, keyed by (plugin_id, view_id).
     pub plugin_views: HashMap<(String, u64), crate::plugins::ui::UiNode>,
     /// Active plugin runtime handles keeping QuickJS worker threads and communication channels alive.
     pub plugin_runtimes: Vec<crate::plugins::runtime::PluginRuntimeHandle>,
+    /// Custom declarative UI trees rendered for markdown code blocks, keyed by block_id.
+    pub code_block_views: HashMap<usize, (String, crate::plugins::ui::UiNode)>,
+    /// Active API sender channel connected to the GPUI plugin bridge background listener.
+    pub plugin_api_tx: Option<futures::channel::mpsc::UnboundedSender<crate::plugins::api::ApiCall>>,
     pub word_wrap: bool,
     pub last_wrap_cols: usize,
     pub is_settings_open: bool,
@@ -190,8 +195,10 @@ impl AppView {
             locale_popup_subscription: None,
             font_popup: None,
             font_popup_subscription: None,
-            command_palette_popup: None,
-            command_palette_subscription: None,
+            command_palette: crate::views::command_palette::CommandPaletteState::default(),
+            command_palette_focus_handle: cx.focus_handle(),
+            command_palette_blink: BlinkManager::new(),
+            command_palette_scroll_handle: ScrollHandle::new(),
             word_wrap,
             last_wrap_cols: 80,
             is_settings_open: false,
@@ -250,6 +257,8 @@ impl AppView {
             catalog_scroll_handle: ScrollHandle::new(),
             plugin_views: HashMap::new(),
             plugin_runtimes: Vec::new(),
+            code_block_views: HashMap::new(),
+            plugin_api_tx: None,
         };
         this.editor_blink.enable(BlinkTarget::Editor, cx);
         crate::commands_builtin::register_builtin_commands(&this.state.commands);
@@ -257,10 +266,10 @@ impl AppView {
     }
 
     /// Discovers and spawns all installed plugins located in `<vault>/.vault/plugins/`.
-    pub fn load_installed_plugins_for_vault(
-        &mut self,
-        api_tx: futures::channel::mpsc::UnboundedSender<crate::plugins::api::ApiCall>,
-    ) {
+    pub fn load_installed_plugins_for_vault(&mut self) {
+        let Some(api_tx) = self.plugin_api_tx.clone() else {
+            return;
+        };
         let Some(vault) = &self.state.vault else {
             return;
         };
@@ -289,6 +298,8 @@ impl AppView {
             self.state.ribbon.unregister_all_of(&handle.manifest.id);
             self.state.status_bar.unregister_all_of(&handle.manifest.id);
         }
+        self.state.code_block_processors.clear();
+        self.code_block_views.clear();
         self.plugin_runtimes.clear();
         self.plugin_views.clear();
     }
@@ -804,7 +815,9 @@ impl AppView {
             if let Some(folder_handle) = dialog.pick_folder().await {
                 let folder = folder_handle.path().to_path_buf();
                 let _ = entity.update(&mut async_cx, |this, cx| {
+                    this.unload_all_plugins();
                     this.state.open_workspace(folder);
+                    this.load_installed_plugins_for_vault();
                     if this.state.active_note.is_none() {
                         if let Some(first_file) = AppState::first_file_in_tree(&this.state.file_tree) {
                             this.state.open_note(first_file);
@@ -1811,8 +1824,8 @@ impl AppView {
         }
 
         // Escape closes the command palette if open
-        if keystroke.key == "escape" && self.command_palette_popup.is_some() {
-            self.close_command_palette(cx);
+        if keystroke.key == "escape" && self.command_palette.is_open {
+            self.close_command_palette(_window, cx);
             return;
         }
 
@@ -1859,8 +1872,8 @@ impl AppView {
             return;
         }
 
-        // Ctrl + O (Открыть хранилище)
-        if ctrl && (keystroke.key.eq_ignore_ascii_case("o") || keystroke.key == "щ" || keystroke.key == "Щ") {
+        // Ctrl + Shift + O (Открыть хранилище)
+        if ctrl && shift && (keystroke.key.eq_ignore_ascii_case("o") || keystroke.key == "щ" || keystroke.key == "Щ") {
             self.open_folder_dialog(_window, cx);
             return;
         }
@@ -2565,19 +2578,38 @@ impl Render for AppView {
             }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let keystroke = &event.keystroke;
-                // Ctrl+P opens Go to file from anywhere (leaves don't handle it,
-                // so this root listener fires exactly once; the dialog input
-                // stops propagation, so an open dialog never re-triggers it).
+                // Ctrl+P opens Command Palette from anywhere (leaves don't handle it,
+                // so this root listener fires exactly once; the modal input
+                // stops propagation, so an open modal never re-triggers it).
                 if keystroke.modifiers.control
                     && !keystroke.modifiers.shift
                     && (keystroke.key.eq_ignore_ascii_case("p")
                         || keystroke.key == "з"
                         || keystroke.key == "З")
+                    && !this.command_palette.is_open
+                {
+                    this.open_command_palette(window, cx);
+                }
+                // Ctrl+O opens Go to file (Search Dialog) from anywhere.
+                if keystroke.modifiers.control
+                    && !keystroke.modifiers.shift
+                    && (keystroke.key.eq_ignore_ascii_case("o")
+                        || keystroke.key == "щ"
+                        || keystroke.key == "Щ")
                     && !this.search_dialog.is_open
                 {
                     this.open_search_dialog(window, cx);
                 }
-                // Ctrl+Shift+P opens Command Palette from anywhere.
+                // Ctrl+Shift+O opens folder dialog from anywhere.
+                if keystroke.modifiers.control
+                    && keystroke.modifiers.shift
+                    && (keystroke.key.eq_ignore_ascii_case("o")
+                        || keystroke.key == "щ"
+                        || keystroke.key == "Щ")
+                {
+                    this.open_folder_dialog(window, cx);
+                }
+                // Ctrl+Shift+P also opens Command Palette for muscle memory compatibility.
                 if keystroke.modifiers.control
                     && keystroke.modifiers.shift
                     && (keystroke.key.eq_ignore_ascii_case("p")
@@ -4257,6 +4289,47 @@ impl Render for AppView {
                                                         None
                                                     };
 
+                                                // Trigger custom code block processor if registered by a plugin and not yet cached
+                                                if is_opening_fence {
+                                                    if let Some(st) = code_states_arc[v.line_idx].as_ref() {
+                                                        if let Some(lang) = &st.lang {
+                                                            if let Some(owner_plugin) = self.state.code_block_processors.get_plugin_for_lang(lang) {
+                                                                if !self.code_block_views.contains_key(&st.block_id) {
+                                                                    let mut body = String::new();
+                                                                    let mut i = v.line_idx + 1;
+                                                                    while let Some(next) = code_states_arc.get(i).and_then(|s| s.as_ref()) {
+                                                                        if next.block_id != st.block_id || next.kind != crate::markdown::CodeBlockKind::InsideCode {
+                                                                            break;
+                                                                        }
+                                                                        body.push_str(&lines_arc[i]);
+                                                                        body.push('\n');
+                                                                        i += 1;
+                                                                    }
+                                                                    let _ = self.state.plugin_host.send_event(
+                                                                        &owner_plugin,
+                                                                        crate::plugins::api::HostEvent::ProcessCodeBlock {
+                                                                            language: lang.clone(),
+                                                                            source: body,
+                                                                            block_id: st.block_id,
+                                                                        },
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                let (custom_plugin_id, custom_ui_node, is_first_code_line) = match &code_states_arc[v.line_idx] {
+                                                    Some(st) => {
+                                                        let view = self.code_block_views.get(&st.block_id);
+                                                        let pid = view.as_ref().map(|(p, _)| p.as_str());
+                                                        let tree = view.as_ref().map(|(_, t)| t);
+                                                        let first_line = v.line_idx > 0 && code_states_arc[v.line_idx - 1].as_ref().map(|s| s.kind) == Some(crate::markdown::CodeBlockKind::OpeningFence);
+                                                        (pid, tree, first_line)
+                                                    }
+                                                    None => (None, None, false),
+                                                };
+
                                                 items.push(
                                                     div()
                                                         .id(gpui::ElementId::from(("v-row", v_idx)))
@@ -4391,6 +4464,10 @@ impl Render for AppView {
                                                                             headings,
                                                                             theme,
                                                                             &editor_font,
+                                                                            custom_ui_node,
+                                                                            custom_plugin_id,
+                                                                            is_first_code_line,
+                                                                            cx,
                                                                         )),
                                                                 )
                                                                 .when(is_current && is_editor_focused && self.editor_blink.visible(), |s| {
@@ -4761,20 +4838,9 @@ impl Render for AppView {
                     .with_priority(999),
                 )
             })
-            // ================= COMMAND PALETTE POPUP =================
-            .when_some(self.command_palette_popup.clone(), |d, popup| {
-                d.child(
-                    gpui::deferred(
-                        div()
-                            .id("command-palette-anchor")
-                            .absolute()
-                            .top(px(45.0))
-                            .left_1_2()
-                            .ml(px(-160.0))
-                            .child(popup),
-                    )
-                    .with_priority(1000),
-                )
+            // ================= COMMAND PALETTE MODAL =================
+            .when(self.command_palette.is_open, |d| {
+                d.child(self.render_command_palette(theme, window, cx))
             })
             // ================= SETTINGS MODAL =================
             .when(self.is_settings_open, |d| {
@@ -5280,6 +5346,10 @@ fn render_live_styled_row(
     headings: &crate::settings::HeadingsSettings,
     theme: &Theme,
     font_family: &gpui::SharedString,
+    custom_ui_node: Option<&crate::plugins::ui::UiNode>,
+    custom_plugin_id: Option<&str>,
+    is_first_code_line: bool,
+    cx: &Context<AppView>,
 ) -> gpui::Div {
     if line.is_empty() || char_start >= char_end {
         return div().h_full().flex().items_center().child(" ");
@@ -5763,7 +5833,7 @@ fn render_live_styled_row(
                     // Collapsed: the language label stands in for the fence, and the row
                     // loop overlays the copy button at the right end of this same row.
                     let lang_label = lang.unwrap_or("CODE").to_uppercase();
-                    div()
+                    let mut header = div()
                         .flex()
                         .flex_row()
                         .items_center()
@@ -5775,8 +5845,17 @@ fn render_live_styled_row(
                                 .font_weight(gpui::FontWeight::BOLD)
                                 .text_color(theme.accent)
                                 .child(lang_label),
-                        )
-                        .child(icons::icon(icons::ICON_CODE, 12.0, theme.text_muted))
+                        );
+                    if let Some(pid) = custom_plugin_id {
+                        header = header.child(
+                            div()
+                                .text_xs()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(theme.text_muted)
+                                .child(format!("[{}]", pid)),
+                        );
+                    }
+                    header.child(icons::icon(icons::ICON_CODE, 12.0, theme.text_muted))
                 }
             } else if show_fences || is_active_line {
                 // Editing the block: paint the raw closing fence.
@@ -5795,16 +5874,31 @@ fn render_live_styled_row(
             }
         }
         crate::markdown::LineKind::CodeLine(_) => {
-            let row_slice: String = line.chars().skip(char_start).take(char_end - char_start).collect();
-            // Plain foreground: the block background alone marks this as code. The
-            // green that used to sit here read as an accent colour, not as text.
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .h_full()
-                .text_color(theme.text_primary)
-                .child(row_slice)
+            if !show_fences && !is_active_line && custom_ui_node.is_some() {
+                if is_first_code_line {
+                    let tree = custom_ui_node.unwrap();
+                    let pid = custom_plugin_id.unwrap_or("plugin");
+                    div()
+                        .flex()
+                        .flex_col()
+                        .w_full()
+                        .py_1()
+                        .child(crate::plugins::ui::render_ui_node(tree, pid, 0, theme, cx))
+                } else {
+                    div().h_0().overflow_hidden()
+                }
+            } else {
+                let row_slice: String = line.chars().skip(char_start).take(char_end - char_start).collect();
+                // Plain foreground: the block background alone marks this as code. The
+                // green that used to sit here read as an accent colour, not as text.
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .text_color(theme.text_primary)
+                    .child(row_slice)
+            }
         }
         crate::markdown::LineKind::Paragraph(_) => {
             let spans = crate::markdown::parse_inline_syntax_spans(line);

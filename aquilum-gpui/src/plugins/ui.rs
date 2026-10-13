@@ -101,6 +101,7 @@ pub enum UiNode {
         value: String,
     },
     Button {
+        #[serde(default)]
         id: String,
         label: String,
         #[serde(default)]
@@ -109,6 +110,7 @@ pub enum UiNode {
         disabled: bool,
     },
     Input {
+        #[serde(default)]
         id: String,
         #[serde(default)]
         placeholder: Option<String>,
@@ -116,12 +118,14 @@ pub enum UiNode {
         value: Option<String>,
     },
     Checkbox {
+        #[serde(default)]
         id: String,
         label: String,
         #[serde(default)]
         checked: bool,
     },
     List {
+        #[serde(default)]
         id: String,
         #[serde(default)]
         items: Vec<ListItem>,

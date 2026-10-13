@@ -199,7 +199,8 @@
       "redo": "重做",
       "home_end": "转到行首/行尾",
       "quick_open": "转到文件（快速打开）",
-      "search_files": "搜索文件"
+      "search_files": "搜索文件",
+      "open_command_palette": "Open Command Palette"
     }
   },
   "sidebar": {

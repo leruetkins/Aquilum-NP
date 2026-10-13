@@ -14,6 +14,17 @@ pub struct Command {
     pub hotkey: Option<String>,
 }
 
+impl std::fmt::Debug for Command {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Command")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("owner", &self.owner)
+            .field("hotkey", &self.hotkey)
+            .finish()
+    }
+}
+
 /// Центральный реестр команд приложения и плагинов.
 pub struct CommandRegistry {
     commands: Mutex<HashMap<String, Command>>,

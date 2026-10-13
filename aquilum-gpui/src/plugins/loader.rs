@@ -179,4 +179,97 @@ mod tests {
         let discovered = discover_plugins(&temp.path);
         assert_eq!(discovered.len(), 0);
     }
+
+    #[test]
+    fn test_load_and_run_installed_plugin_full_lifecycle() {
+        let temp = TempDir::new("lifecycle");
+        let plugin_dir = temp.path.join("counter-plugin");
+        fs::create_dir_all(&plugin_dir).unwrap();
+
+        let manifest_json = r#"{
+            "id": "counter-plugin",
+            "name": "Counter Plugin",
+            "version": "1.2.0",
+            "description": "Lifecycle test plugin",
+            "author": "Antigravity",
+            "permissions": {
+                "vault": "read"
+            }
+        }"#;
+        fs::write(plugin_dir.join("manifest.json"), manifest_json).unwrap();
+
+        let script_js = r#"
+            const plugin = new Plugin(app, { id: "counter-plugin" });
+            new Notice("Counter started");
+            plugin.registerMarkdownCodeBlockProcessor("counter", (source) => {
+                return {
+                    type: "text",
+                    value: "Count: " + source.trim().length
+                };
+            });
+        "#;
+        fs::write(plugin_dir.join("main.js"), script_js).unwrap();
+
+        let host_state = Arc::new(PluginHostState::new());
+        let (api_tx, mut api_rx) = futures::channel::mpsc::unbounded();
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(crate::state::Snapshot::default()));
+
+        let enabled_list = vec!["counter-plugin".to_string()];
+        let handles = load_installed_plugins(
+            &temp.path,
+            Some(&enabled_list),
+            api_tx,
+            snapshot,
+            &host_state,
+        );
+
+        assert_eq!(handles.len(), 1);
+        assert_eq!(handles[0].manifest.id, "counter-plugin");
+        assert!(host_state.is_plugin_registered("counter-plugin"));
+
+        std::thread::sleep(std::time::Duration::from_millis(60));
+
+        // 1. Notice request received by host
+        let notice_req = api_rx.try_recv().unwrap();
+        assert_eq!(notice_req.plugin_id, "counter-plugin");
+        assert!(matches!(notice_req.request, crate::plugins::api::ApiRequest::Notice { .. }));
+
+        // 2. RegisterCodeBlockProcessor received by host
+        let reg_req = api_rx.try_recv().unwrap();
+        assert_eq!(reg_req.plugin_id, "counter-plugin");
+        if let crate::plugins::api::ApiRequest::RegisterCodeBlockProcessor { language } = reg_req.request {
+            assert_eq!(language, "counter");
+        } else {
+            panic!("Expected RegisterCodeBlockProcessor");
+        }
+
+        // 3. Send ProcessCodeBlock event to plugin
+        let _ = handles[0].host_events_tx.unbounded_send(crate::plugins::api::HostEvent::ProcessCodeBlock {
+            language: "counter".to_string(),
+            source: "hello world".to_string(),
+            block_id: 101,
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(60));
+
+        // 4. Plugin responds with SetCodeBlockView
+        let view_req = api_rx.try_recv().unwrap();
+        assert_eq!(view_req.plugin_id, "counter-plugin");
+        if let crate::plugins::api::ApiRequest::SetCodeBlockView { block_id, tree } = view_req.request {
+            assert_eq!(block_id, 101);
+            if let crate::plugins::ui::UiNode::Text { value, .. } = tree {
+                assert_eq!(value, "Count: 11");
+            } else {
+                panic!("Expected UiNode::Text");
+            }
+        } else {
+            panic!("Expected SetCodeBlockView");
+        }
+
+        // 5. Unload plugin
+        let _ = handles[0].host_events_tx.unbounded_send(crate::plugins::api::HostEvent::Unload);
+        host_state.unregister_plugin("counter-plugin");
+        assert!(!host_state.is_plugin_registered("counter-plugin"));
+    }
 }
+

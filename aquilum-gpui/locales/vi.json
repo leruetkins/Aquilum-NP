@@ -199,7 +199,8 @@
       "redo": "Làm lại",
       "home_end": "Đi tới đầu/cuối dòng",
       "quick_open": "Đi tới Tệp (Mở nhanh)",
-      "search_files": "Tìm kiếm tập tin"
+      "search_files": "Tìm kiếm tập tin",
+      "open_command_palette": "Open Command Palette"
     }
   },
   "sidebar": {

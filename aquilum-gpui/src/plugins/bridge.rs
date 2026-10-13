@@ -39,6 +39,12 @@ impl PluginHostState {
         map.insert(manifest.id.clone(), PluginHandle { manifest, events_tx });
     }
 
+    /// Check if a plugin is registered.
+    pub fn is_plugin_registered(&self, plugin_id: &str) -> bool {
+        let map = self.plugins.lock().unwrap();
+        map.contains_key(plugin_id)
+    }
+
     /// Unregister a plugin upon unload.
     pub fn unregister_plugin(&self, plugin_id: &str) {
         let mut map = self.plugins.lock().unwrap();
@@ -98,9 +104,15 @@ impl PluginHostState {
             ApiRequest::Notice { .. }
             | ApiRequest::OpenFile { .. }
             | ApiRequest::SetViewTree { .. }
+            | ApiRequest::RegisterCodeBlockProcessor { .. }
+            | ApiRequest::SetCodeBlockView { .. }
+            | ApiRequest::AddCommand { .. }
+            | ApiRequest::AddRibbonIcon { .. }
+            | ApiRequest::ExecuteCommand { .. }
+            | ApiRequest::Unknown { .. }
             | ApiRequest::LoadData
             | ApiRequest::SaveData { .. } => {
-                // UI updates, notices, and plugin data.json storage are permitted by default for active plugins.
+                // UI updates, notices, commands, ribbon icons, code block processors, and plugin data.json storage are permitted by default for active plugins.
             }
         }
         Ok(())
@@ -286,6 +298,26 @@ impl AppView {
                 };
                 let _ = self.state.plugin_host.send_event(&plugin_id, event);
             }
+            ApiRequest::RegisterCodeBlockProcessor { language } => {
+                self.state.code_block_processors.register(&language, &plugin_id);
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Null),
+                );
+                cx.notify();
+            }
+            ApiRequest::SetCodeBlockView { block_id, tree } => {
+                let validation = crate::plugins::ui::validate_tree(&tree);
+                let event = match validation {
+                    Ok(()) => {
+                        self.code_block_views.insert(block_id, (plugin_id.clone(), tree));
+                        cx.notify();
+                        HostEvent::response_ok(request_id, serde_json::Value::Null)
+                    }
+                    Err(err) => HostEvent::response_err(request_id, &err),
+                };
+                let _ = self.state.plugin_host.send_event(&plugin_id, event);
+            }
             ApiRequest::LoadData => {
                 let data = self
                     .state
@@ -311,6 +343,76 @@ impl AppView {
                     Err(e) => HostEvent::response_err(request_id, &e),
                 };
                 let _ = self.state.plugin_host.send_event(&plugin_id, event);
+            }
+            ApiRequest::AddCommand { id, name, hotkey } => {
+                let p_id = plugin_id.clone();
+                let cmd_id = id.clone();
+                let host = self.state.plugin_host.clone();
+                let cmd = crate::commands::Command {
+                    id: format!("{}:{}", plugin_id, id),
+                    name: name.clone(),
+                    owner: Some(plugin_id.clone()),
+                    hotkey,
+                    callback: std::sync::Arc::new(move || {
+                        let _ = host.send_event(
+                            &p_id,
+                            HostEvent::ExecuteCommand {
+                                command_id: cmd_id.clone(),
+                            },
+                        );
+                    }),
+                };
+                self.state.commands.register(cmd);
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Null),
+                );
+            }
+            ApiRequest::AddRibbonIcon { id, icon, title } => {
+                let p_id = plugin_id.clone();
+                let icon_id = id.clone();
+                let host = self.state.plugin_host.clone();
+                let icon_static: &'static str = Box::leak(icon.into_boxed_str());
+                let action = crate::ribbon::RibbonAction {
+                    id: format!("{}:{}", plugin_id, id),
+                    icon: icon_static,
+                    tooltip: title,
+                    owner: Some(plugin_id.clone()),
+                    callback: std::sync::Arc::new(move || {
+                        let _ = host.send_event(
+                            &p_id,
+                            HostEvent::ExecuteCommand {
+                                command_id: icon_id.clone(),
+                            },
+                        );
+                    }),
+                };
+                self.state.ribbon.register(action);
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Null),
+                );
+                cx.notify();
+            }
+            ApiRequest::ExecuteCommand { id } => {
+                let executed = self.state.commands.execute(&id);
+                if !executed && id == "file-explorer:new-file" {
+                    if let Some(_) = self.state.create_new_note() {
+                        self.need_scroll_sidebar_to_active.set(true);
+                        cx.notify();
+                    }
+                }
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Null),
+                );
+            }
+            ApiRequest::Unknown { req_kind } => {
+                eprintln!("[plugins:{}] Unhandled request kind: {}", plugin_id, req_kind);
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_err(request_id, &format!("Unknown request kind: {}", req_kind)),
+                );
             }
             ApiRequest::Http { .. } => {
                 // Network HTTP requests will be implemented with reqwest/background executor in Phase 3.

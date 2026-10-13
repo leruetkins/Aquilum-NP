@@ -199,7 +199,8 @@
       "redo": "Opnieuw uitvoeren",
       "home_end": "Ga naar Begin/Einde van de regel",
       "quick_open": "Ga naar bestand (snel openen)",
-      "search_files": "Zoek bestanden"
+      "search_files": "Zoek bestanden",
+      "open_command_palette": "Open Command Palette"
     }
   },
   "sidebar": {

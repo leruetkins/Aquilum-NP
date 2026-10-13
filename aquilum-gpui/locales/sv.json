@@ -199,7 +199,8 @@
       "redo": "Göra om",
       "home_end": "Gå till Start / End of Line",
       "quick_open": "Gå till fil (snabböppning)",
-      "search_files": "Sök efter filer"
+      "search_files": "Sök efter filer",
+      "open_command_palette": "Open Command Palette"
     }
   },
   "sidebar": {

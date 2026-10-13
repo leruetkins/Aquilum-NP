@@ -49,7 +49,8 @@ fn main() {
 
                     let view = cx.new(|cx| {
                         let mut app = AppView::new(cx);
-                        app.load_installed_plugins_for_vault(api_tx_clone);
+                        app.plugin_api_tx = Some(api_tx_clone);
+                        app.load_installed_plugins_for_vault();
                         app
                     });
                     let weak = view.downgrade();

@@ -447,13 +447,13 @@ impl RuntimeVerifier for JsVerifier {
 
 Полная совместимость потребовала бы встроить webview с DOM и CM6, то есть повторить Obsidian. Это убивает смысл нативного приложения (память, скорость).
 
-### 7.2 Варианты
+### 7.2 Варианты и выбранный путь
 
 | Вариант | Что это | Оценка |
 |---|---|---|
-| 1. Свой API с похожими названиями (раздел 2) | Те же понятия (`Plugin`, `onload`, `addCommand`, `vault`, `workspace`, `Notice`, `Setting`), но без DOM. Автору легко портировать логику | **Выбран** |
-| 2. Тонкий слой совместимости позже | Модуль `obsidian` с частичной реализацией: `Plugin`, `Notice`, `addCommand`, `vault.read/modify/create`, `requestUrl`, `Setting`. Плагины, которые в основном работают с логикой и файлами, могут запускаться почти без правок | Решить после измерения (7.4) |
-| 3. Webview для UI плагинов | Даёт DOM, но приносит тяжёлый движок и два мира UI | Не рекомендуется |
+| 1. Свой API с похожими названиями (раздел 2) | Те же понятия (`Plugin`, `onload`, `addCommand`, `vault`, `workspace`, `Notice`, `Setting`), но без DOM. Автору легко портировать логику | **Базовый стандарт** |
+| 2. **Micro-DOM эмулятор (Путь Б, раздел 7.8)** | Легковесный полифилл виртуального DOM (~350 строк JS), эмулирующий `createEl`, `contentEl`, `addEventListener`, `ButtonComponent` и на лету транслирующий дерево в `UiNode` | **Выбран для совместимости UI модалок и форм** |
+| 3. Webview для UI плагинов | Даёт полноценный DOM, но приносит тяжёлый движок Chromium/WebKit и два параллельных мира UI | Не рекомендуется |
 
 ### 7.3 Совместимость на уровне данных
 
@@ -479,6 +479,95 @@ impl RuntimeVerifier for JsVerifier {
 ### 7.6 Лицензии
 
 Не копировать код и типы Obsidian: свои `.d.ts` и свой код. Лицензии конкретных плагинов, которые вы захотите портировать или запускать, проверяйте отдельно.
+
+### 7.7 Система автоматического анализа совместимости и Proxy-телеметрии
+
+Для автоматической оценки совместимости любого Obsidian-плагина (`main.js`) система использует комбинацию статического сканера и рантайм-перехватчиков.
+
+#### 1. Таблица классификации методов и API
+
+| Категория | Статус / Цвет | Примеры вызовов | Поведение хоста |
+|---|---|---|---|
+| **Ядро и Поддержанные** | 🟢 **Зелёный (Full)** | `new Notice()`, `plugin.addCommand()`, `plugin.registerMarkdownCodeBlockProcessor()`, `app.vault.read()`, `app.vault.modify()`, `app.vault.create()`, `plugin.loadData()`, `plugin.saveData()`, `app.workspace.getActiveFile()` | Полное нативное выполнение в хосте. |
+| **Второстепенные / Заглушки / Легко добавить** | 🟡 **Жёлтый (Partial)** | `app.vault.getMarkdownFiles()`, `app.vault.getFiles()`, `app.vault.getAbstractFileByPath()`, `plugin.addRibbonIcon()`, `plugin.addStatusBarItem()`, `app.workspace.on()`, `app.metadataCache.getFileCache()`, `normalizePath()` | Либо возвращается безопасный дефолт (fallback), либо метод быстро дописывается в `runtime.rs` / `bridge.rs`. |
+| **Критические несовместимости** | 🔴 **Красный (Incompatible)** | `require('electron')`, `require('child_process')`, сырой `fs`, `document.createElement()`, `containerEl.appendChild()`, `innerHTML`, `jQuery`, CM6 `EditorView`, `app.internalPlugins` | Плагин помечается как несовместимый. При попытке вызова выдаётся понятное предупреждение в UI/логах. |
+
+#### 2. Архитектура JS Proxy для аудита в реальном времени
+
+В `src/plugins/runtime.rs` глобальные объекты `app`, `app.vault`, `app.workspace` оборачиваются в `Proxy`:
+
+```javascript
+function makeAuditedProxy(target, targetName, hostBridge) {
+    return new Proxy(target, {
+        get(obj, prop) {
+            if (prop in obj) {
+                return obj[prop];
+            }
+            // Метод ещё не реализован в хосте
+            const methodName = String(prop);
+            hostBridge.auditApiCall(targetName, methodName);
+            console.warn(`[API Audit] Plugin called unimplemented API: ${targetName}.${methodName}`);
+            
+            // Возвращаем безопасную заглушку, предотвращающую моментальный краш
+            return (...args) => {
+                return Promise.resolve(null);
+            };
+        }
+    });
+}
+```
+
+#### 3. Модель данных отчёта совместимости (`src/plugins/compat.rs`)
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CompatibilityStatus {
+    Full,         // 🟢 100% поддерживается
+    Partial(f32), // 🟡 Частично (например, 75%)
+    Incompatible, // 🔴 Требует Electron / DOM
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompatibilityReport {
+    pub status: CompatibilityStatus,
+    pub score: f32, // 0.0 .. 1.0
+    pub supported_calls: Vec<String>,
+    pub missing_calls: Vec<String>,
+    pub incompatible_calls: Vec<String>,
+```
+
+### 7.8 Архитектура Micro-DOM эмулятора для Obsidian UI (Путь Б)
+
+Большинство утилитарных плагинов Obsidian (очистка заметок, поиск сирот, генераторы шаблонов, диалоги подтверждения) не требуют сложного CSS или Canvas, а используют стандартный набор методов Obsidian для построения интерфейсов модальных окон и настроек. Для запуска таких плагинов без переписывания создаётся легковесный полифилл виртуального DOM (~350 строк JS внутри QuickJS).
+
+#### 1. Поддерживаемое подмножество DOM API
+- Создание элементов: `element.createEl(tag, options)`, `element.createDiv(cls)`, `element.createSpan(cls)`.
+- Дерево элементов: `element.empty()`, `element.remove()`, `element.appendChild(child)`.
+- Стили и классы: `element.addClass(cls)`, `element.removeClass(cls)`, `element.toggleClass(cls, bool)`.
+- Содержимое и свойства: `element.textContent`, `element.innerHTML` (текстовый парсинг), `element.disabled`, `element.checked`.
+- События: `element.addEventListener(type, listener)`, `element.dispatchEvent(event)`.
+- Селекторы: `element.querySelector(selector)`, `element.querySelectorAll(selector)`, `document.getElementById(id)`.
+- Компоненты Obsidian: `ButtonComponent` (`setButtonText`, `setCta`, `onClick`), `ToggleComponent` (`setValue`, `onChange`), `TextComponent` (`setPlaceholder`, `onChange`).
+
+#### 2. Трансляция виртуального DOM в нативные `UiNode` GPUI
+При закрытии сборки модального окна (`Modal.open()`) или панели, корневой виртуальный элемент `contentEl` рекурсивно транслируется в нативное дерево `UiNode`:
+
+| Виртуальный тег / компонент | Трансляция в `UiNode` | Особенности |
+|---|---|---|
+| `button` / `ButtonComponent` | `UiNode::Button` | Класс `mod-cta` / `ef-btn-danger` мапится в `variant: ButtonVariant::Primary / Danger`. Свойство `disabled` поддерживается нативно. |
+| `input[type=checkbox]` / `ToggleComponent` | `UiNode::Checkbox` | Состояние `checked` и событие `change`. |
+| `input[type=text]` / `TextComponent` | `UiNode::Input` | Поле ввода с `placeholder` и `value`. |
+| `h1`, `h2`, `h3`, `h4` | `UiNode::Text { style: Heading }` | Заголовки разделов. |
+| `p`, `span`, текстовые ноды | `UiNode::Text` | Текстовые блоки. Классы `muted` / `subtitle` мапятся в `style: Muted`. |
+| `div` (контейнер) | `UiNode::Column` / `UiNode::Row` | По умолчанию вертикальный стек (`Column`). Если задан flex-row или класс кнопочной панели — горизонтальный ряд (`Row`). |
+
+#### 3. Маршрутизация событий кликов и ввода
+- Каждый виртуальный элемент получает уникальный идентификатор (`ElementId`).
+- При рендере в GPUI кнопкам и полям назначается этот идентификатор.
+- Когда пользователь кликает по кнопке или переключает чекбокс в окне приложения, хост передает в QuickJS:
+  `HostEvent::UiAction { element_id, action: "click" / "change", value: Option<String> }`.
+- JS-рантайм находит виртуальный элемент и синхронно вызывает привязанные обработчики `addEventListener("click", ...)` с синтетическим объектом `Event`.
+- После завершения обработчика, если дерево изменилось (например, добавлен список удаленных файлов или обновлен текст кнопки), хост получает обновленное дерево `SetViewTree` и перерисовывает окно.
 
 ---
 

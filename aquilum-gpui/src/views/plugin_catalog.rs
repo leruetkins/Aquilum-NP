@@ -229,8 +229,7 @@ module.exports = Plugin;
 
         // Reload plugins if safe mode is off
         if !self.config.community_plugins.safe_mode {
-            let (api_tx, _api_rx) = futures::channel::mpsc::unbounded();
-            self.load_installed_plugins_for_vault(api_tx);
+            self.load_installed_plugins_for_vault();
         }
 
         self.state.status_text = format!("Installed and enabled plugin '{}'", entry.name);
@@ -253,6 +252,8 @@ module.exports = Plugin;
             self.state.commands.unregister_all_of(plugin_id);
             self.state.ribbon.unregister_all_of(plugin_id);
             self.state.status_bar.unregister_all_of(plugin_id);
+            self.state.code_block_processors.unregister_all_of(plugin_id);
+            self.code_block_views.retain(|_, (pid, _)| pid != plugin_id);
         }
 
         let plugin_dir = vault.root.join(".vault").join("plugins").join(plugin_id);
@@ -664,8 +665,7 @@ module.exports = Plugin;
                                                         }
                                                     } else {
                                                         let _ = vault.enable_community_plugin(&plugin_id_toggle);
-                                                        let (api_tx, _api_rx) = futures::channel::mpsc::unbounded();
-                                                        this.load_installed_plugins_for_vault(api_tx);
+                                                        this.load_installed_plugins_for_vault();
                                                     }
                                                     cx.notify();
                                                 }

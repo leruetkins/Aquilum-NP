@@ -35,6 +35,33 @@ pub enum ApiRequest {
     LoadData,
     /// Writes plugin persistent settings: plugin.saveData(data)
     SaveData { data: serde_json::Value },
+    /// Registers a custom markdown code block processor: plugin.registerMarkdownCodeBlockProcessor(lang, handler)
+    RegisterCodeBlockProcessor { language: String },
+    /// Updates declarative UI component tree for a custom markdown code block
+    SetCodeBlockView {
+        block_id: usize,
+        tree: crate::plugins::ui::UiNode,
+    },
+    /// Register a command in the command palette: plugin.addCommand({ id, name, hotkey })
+    AddCommand {
+        id: String,
+        name: String,
+        hotkey: Option<String>,
+    },
+    /// Register ribbon action: plugin.addRibbonIcon(icon, title, callback)
+    AddRibbonIcon {
+        id: String,
+        icon: String,
+        title: String,
+    },
+    /// Execute a command by id
+    ExecuteCommand {
+        id: String,
+    },
+    /// Unhandled request kind (logged to console, does not trigger status bar toast)
+    Unknown {
+        req_kind: String,
+    },
 }
 
 /// Envelops an API request sent from a plugin worker to the host bridge.
@@ -71,6 +98,16 @@ pub enum HostEvent {
         node_id: String,
         event: String,
         value: Option<String>,
+    },
+    /// Requests the plugin to process a markdown code block: (language, source, block_id)
+    ProcessCodeBlock {
+        language: String,
+        source: String,
+        block_id: usize,
+    },
+    /// Requests the plugin to execute a registered command by its id
+    ExecuteCommand {
+        command_id: String,
     },
     /// Instructs the plugin runtime to clean up resources and exit.
     Unload,

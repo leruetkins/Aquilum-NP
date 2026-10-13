@@ -51,7 +51,9 @@ impl AppView {
         if self.state.workspace_path.as_deref() == Some(path.as_path()) {
             return;
         }
+        self.unload_all_plugins();
         self.state.open_workspace(path.clone());
+        self.load_installed_plugins_for_vault();
         let still_valid = self
             .state
             .active_note

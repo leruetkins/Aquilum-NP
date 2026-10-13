@@ -199,7 +199,8 @@
       "redo": "Předělat",
       "home_end": "Přejděte na začátek / konec řádku",
       "quick_open": "Přejít na soubor (rychlé otevření)",
-      "search_files": "Hledat soubory"
+      "search_files": "Hledat soubory",
+      "open_command_palette": "Open Command Palette"
     }
   },
   "sidebar": {

@@ -22,7 +22,7 @@ use crate::theme::Theme;
 /// A single value lives on the view that owns the scroll handle. The anchor is captured
 /// on mouse-down so the thumb tracks the pointer exactly for the whole drag instead of
 /// accumulating frame-to-frame error.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct ScrollbarDrag {
     pub active: bool,
     pub start_y: f32,

@@ -199,7 +199,8 @@
       "redo": "إعادة",
       "home_end": "انتقل إلى بداية / نهاية السطر",
       "quick_open": "انتقل إلى الملف (فتح سريع)",
-      "search_files": "البحث في الملفات"
+      "search_files": "البحث في الملفات",
+      "open_command_palette": "Open Command Palette"
     }
   },
   "sidebar": {

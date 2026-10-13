@@ -199,7 +199,8 @@
       "redo": "Rifare",
       "home_end": "Vai a Inizio/Fine riga",
       "quick_open": "Vai a File (Apertura rapida)",
-      "search_files": "Cerca file"
+      "search_files": "Cerca file",
+      "open_command_palette": "Open Command Palette"
     }
   },
   "sidebar": {

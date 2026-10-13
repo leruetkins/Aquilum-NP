@@ -199,7 +199,8 @@
       "redo": "Przerobić",
       "home_end": "Przejdź do opcji Początek/Koniec linii",
       "quick_open": "Przejdź do pliku (szybkie otwieranie)",
-      "search_files": "Wyszukaj pliki"
+      "search_files": "Wyszukaj pliki",
+      "open_command_palette": "Open Command Palette"
     }
   },
   "sidebar": {

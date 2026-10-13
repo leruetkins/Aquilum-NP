@@ -199,7 +199,8 @@
       "redo": "Повторить действие (Redo)",
       "home_end": "Переход в начало / конец строки",
       "quick_open": "Go to File (Quick Open)",
-      "search_files": "Search Files"
+      "search_files": "Search Files",
+      "open_command_palette": "Открыть палитру команд"
     }
   },
   "sidebar": {

@@ -199,7 +199,8 @@
       "redo": "Redo",
       "home_end": "Go to Start / End of Line",
       "quick_open": "Go to File (Quick Open)",
-      "search_files": "Search Files"
+      "search_files": "Search Files",
+      "open_command_palette": "Open Command Palette"
     }
   },
   "sidebar": {

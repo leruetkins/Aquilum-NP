@@ -65,6 +65,24 @@ pub fn register_builtin_commands(registry: &CommandRegistry) {
         hotkey: None,
         callback: Arc::new(|| {}),
     });
+
+    // 8. Палитра команд (Ctrl+P)
+    registry.register(Command {
+        id: "app:open-command-palette".into(),
+        name: "Open command palette".into(),
+        owner: None,
+        hotkey: Some("Ctrl+P".into()),
+        callback: Arc::new(|| {}),
+    });
+
+    // 9. Меню быстрого перехода / поиск файлов (Ctrl+O)
+    registry.register(Command {
+        id: "app:open-search-dialog".into(),
+        name: "Quick switcher: Open search".into(),
+        owner: None,
+        hotkey: Some("Ctrl+O".into()),
+        callback: Arc::new(|| {}),
+    });
 }
 
 #[cfg(test)]
@@ -77,12 +95,14 @@ mod tests {
         register_builtin_commands(&registry);
 
         let commands = registry.all();
-        assert!(commands.len() >= 7);
+        assert!(commands.len() >= 9);
 
         assert!(registry.search("save").iter().any(|c| c.id == "editor:save"));
         assert!(registry.search("settings").iter().any(|c| c.id == "app:open-settings"));
         assert!(registry.search("sidebar").iter().any(|c| c.id == "view:toggle-left-sidebar"));
         assert!(registry.search("sidebar").iter().any(|c| c.id == "view:toggle-right-sidebar"));
         assert!(registry.search("new tab").iter().any(|c| c.id == "workspace:new-tab"));
+        assert!(registry.search("palette").iter().any(|c| c.id == "app:open-command-palette"));
+        assert!(registry.search("switcher").iter().any(|c| c.id == "app:open-search-dialog"));
     }
 }

@@ -1107,7 +1107,7 @@ fn find_term_ranges_cased(
 }
 
 /// Query terms for highlighting: whole query plus individual words.
-fn highlight_query_terms(query: &str) -> Vec<String> {
+pub(crate) fn highlight_query_terms(query: &str) -> Vec<String> {
     highlight_query_terms_cased(query, false)
 }
 
@@ -1635,7 +1635,7 @@ impl AppView {
 }
 
 /// Word boundaries around char index `pos` for double-click selection.
-fn word_range_at(text: &str, pos: usize) -> (usize, usize) {
+pub(crate) fn word_range_at(text: &str, pos: usize) -> (usize, usize) {
     let chars: Vec<char> = text.chars().collect();
     if chars.is_empty() {
         return (0, 0);

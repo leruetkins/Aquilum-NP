@@ -199,7 +199,8 @@
       "redo": "やり直し",
       "home_end": "行頭/行末に移動",
       "quick_open": "ファイルに移動 (クイックオープン)",
-      "search_files": "ファイルの検索"
+      "search_files": "ファイルの検索",
+      "open_command_palette": "Open Command Palette"
     }
   },
   "sidebar": {

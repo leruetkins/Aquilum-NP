@@ -184,6 +184,7 @@ pub enum BlinkTarget {
     QuickFilter,
     GotoSearch,
     SidebarSearch,
+    CommandPalette,
 }
 
 impl BlinkTarget {
@@ -195,6 +196,7 @@ impl BlinkTarget {
             BlinkTarget::QuickFilter => &mut view.quick_filter.blink,
             BlinkTarget::GotoSearch => &mut view.goto_blink,
             BlinkTarget::SidebarSearch => &mut view.sidebar_search.blink,
+            BlinkTarget::CommandPalette => &mut view.command_palette_blink,
         }
     }
 }

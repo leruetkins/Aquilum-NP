@@ -199,7 +199,8 @@
       "redo": "다시 하다",
       "home_end": "줄의 시작/끝으로 이동",
       "quick_open": "파일로 이동(빠른 열기)",
-      "search_files": "파일 검색"
+      "search_files": "파일 검색",
+      "open_command_palette": "Open Command Palette"
     }
   },
   "sidebar": {
