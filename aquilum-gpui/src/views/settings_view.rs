@@ -2812,12 +2812,20 @@ impl AppView {
                     })),
             );
 
-        let details_header = div()
+        let top_action_bar = div()
             .flex()
             .flex_row()
-            .items_start()
+            .items_center()
             .justify_between()
             .gap_3()
+            .flex_wrap()
+            .child(back_btn)
+            .child(header_actions);
+
+        let details_header = div()
+            .flex()
+            .flex_col()
+            .gap_2()
             .p_4()
             .rounded_lg()
             .bg(theme.bg_card)
@@ -2826,67 +2834,58 @@ impl AppView {
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .gap_1p5()
+                    .flex_row()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2p5()
                     .child(
                         div()
-                            .flex()
-                            .flex_row()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_2p5()
-                            .child(
-                                div()
-                                    .text_lg()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .text_color(theme.text_primary)
-                                    .child(display_name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded_full()
-                                    .bg(theme.bg_hover)
-                                    .text_color(theme.text_secondary)
-                                    .child(version_str.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded_full()
-                                    .bg(if is_enabled { rgba(0x34a85322) } else { theme.bg_hover })
-                                    .text_color(if is_enabled { rgba(0x34a853ff) } else { theme.text_muted })
-                                    .child(if is_enabled {
-                                        if is_ru { "Активен" } else { "Enabled" }
-                                    } else {
-                                        if is_ru { "Отключен" } else { "Disabled" }
-                                    }),
-                            ),
+                            .text_lg()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(theme.text_primary)
+                            .child(display_name.clone()),
                     )
-                    .when(!author_str.is_empty(), |parent| {
-                        parent.child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.text_muted)
-                                .child(format!("{} {}", if is_ru { "Автор:" } else { "By" }, author_str)),
-                        )
-                    })
-                    .when(!desc_str.is_empty(), |parent| {
-                        parent.child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.text_secondary)
-                                .child(desc_str),
-                        )
-                    }),
+                    .child(
+                        div()
+                            .text_xs()
+                            .px_2()
+                            .py_0p5()
+                            .rounded_full()
+                            .bg(theme.bg_hover)
+                            .text_color(theme.text_secondary)
+                            .child(version_str.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .px_2()
+                            .py_0p5()
+                            .rounded_full()
+                            .bg(if is_enabled { rgba(0x34a85322) } else { theme.bg_hover })
+                            .text_color(if is_enabled { rgba(0x34a853ff) } else { theme.text_muted })
+                            .child(if is_enabled {
+                                if is_ru { "Активен" } else { "Enabled" }
+                            } else {
+                                if is_ru { "Отключен" } else { "Disabled" }
+                            }),
+                    ),
             )
-            .child(header_actions);
+            .when(!author_str.is_empty(), |parent| {
+                parent.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.text_muted)
+                        .child(format!("{} {}", if is_ru { "Автор:" } else { "By" }, author_str)),
+                )
+            })
+            .when(!desc_str.is_empty(), |parent| {
+                parent.child(
+                    div()
+                        .text_sm()
+                        .text_color(theme.text_secondary)
+                        .child(desc_str),
+                )
+            });
 
         // Technical metadata card: show all manifest fields
         let mut meta_rows = vec![
@@ -3402,12 +3401,7 @@ impl AppView {
             .flex()
             .flex_col()
             .gap_5()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .child(back_btn),
-            )
+            .child(top_action_bar)
             .child(details_header)
             .child(self.render_settings_card(if is_ru { "Метаданные" } else { "Metadata" }, meta_rows))
             .child(content_section)
