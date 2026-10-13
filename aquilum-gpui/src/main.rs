@@ -3,16 +3,22 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 pub mod blink_manager;
+pub mod commands;
+pub mod commands_builtin;
+pub mod events;
 pub mod fonts;
 pub mod i18n;
 pub mod icons;
 pub mod markdown;
 pub mod markdown_doc;
 pub mod perf;
+pub mod plugins;
+pub mod ribbon;
 pub mod settings;
 pub mod snap;
 pub mod state;
 pub mod theme;
+pub mod vault;
 pub mod views;
 
 use gpui::{App, AppContext, Application, WindowOptions};
@@ -38,11 +44,23 @@ fn main() {
                     ..Default::default()
                 },
                 |window, cx| {
-                    let view = cx.new(|cx| AppView::new(cx));
+                    let (api_tx, api_rx) = futures::channel::mpsc::unbounded();
+                    let api_tx_clone = api_tx.clone();
+
+                    let view = cx.new(|cx| {
+                        let mut app = AppView::new(cx);
+                        app.load_installed_plugins_for_vault(api_tx_clone);
+                        app
+                    });
                     let weak = view.downgrade();
+
+                    // Start the GPUI plugin bridge background listener
+                    crate::plugins::bridge::start_plugin_bridge(weak.clone(), api_rx, cx);
+
                     window.on_window_should_close(cx, move |window, cx| {
                         if let Some(view) = weak.upgrade() {
                             let _ = view.update(cx, |app, _cx| {
+                                app.unload_all_plugins();
                                 app.save_on_exit(window);
                             });
                         }

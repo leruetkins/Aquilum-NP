@@ -327,6 +327,19 @@ impl Default for UpdateSettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CommunityPluginSettings {
+    /// Safe mode disables execution of all community plugins.
+    pub safe_mode: bool,
+}
+
+impl Default for CommunityPluginSettings {
+    fn default() -> Self {
+        Self { safe_mode: false }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppConfig {
@@ -341,6 +354,7 @@ pub struct AppConfig {
     pub templates: TemplateSettings,
     pub files: FilesSettings,
     pub updates: UpdateSettings,
+    pub community_plugins: CommunityPluginSettings,
 }
 
 // =========================================================================

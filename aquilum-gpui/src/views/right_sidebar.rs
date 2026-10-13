@@ -64,8 +64,8 @@ impl AppView {
     }
 
     /// Renders the right sidebar container (Obsidian-style).
-    pub fn render_right_sidebar(&self, theme: &Theme, _cx: &Context<Self>) -> impl IntoElement {
-        div()
+    pub fn render_right_sidebar(&self, theme: &Theme, cx: &Context<Self>) -> impl IntoElement {
+        let mut container = div()
             .id("right-sidebar")
             .flex()
             .flex_col()
@@ -76,5 +76,42 @@ impl AppView {
             .bg(theme.bg_sidebar)
             .border_l_1()
             .border_color(theme.border)
+            .p(px(8.0))
+            .gap(px(8.0));
+
+        if self.plugin_views.is_empty() {
+            container = container.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .h_full()
+                    .text_xs()
+                    .text_color(theme.text_muted)
+                    .child("No active plugin views"),
+            );
+        } else {
+            for ((plugin_id, view_id), tree) in &self.plugin_views {
+                container = container.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .w_full()
+                        .p(px(6.0))
+                        .rounded(px(4.0))
+                        .bg(theme.bg_card)
+                        .child(crate::plugins::ui::render_ui_node(
+                            tree,
+                            plugin_id,
+                            *view_id,
+                            theme,
+                            cx,
+                        )),
+                );
+            }
+        }
+
+        container
     }
 }

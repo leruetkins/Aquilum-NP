@@ -19,7 +19,7 @@ fn scaled_wheel_dy(delta: ScrollDelta, line_h: f32) -> f32 {
 }
 
 /// Represents the navigation tabs available in the Settings modal window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingsTab {
     Ui,
     Editor,
@@ -33,6 +33,9 @@ pub enum SettingsTab {
     Trash,
     System,
     Shortcuts,
+    CorePlugins,
+    CommunityPlugins,
+    PluginSettings(String),
 }
 
 impl SettingsTab {
@@ -51,12 +54,32 @@ impl SettingsTab {
             Self::Trash => "settings.tabs.trash",
             Self::System => "settings.tabs.system",
             Self::Shortcuts => "settings.tabs.shortcuts",
+            Self::CorePlugins => "settings.tabs.core_plugins",
+            Self::CommunityPlugins => "settings.tabs.community_plugins",
+            Self::PluginSettings(_) => "settings.tabs.plugin_settings",
         }
     }
 
     /// Returns the user-facing localized display title for the tab.
     pub fn title(&self, lang: &str) -> String {
-        crate::i18n::t(self.key(), lang)
+        match self {
+            Self::CorePlugins => {
+                if lang.starts_with("ru") {
+                    "Встроенные плагины".to_string()
+                } else {
+                    "Core plugins".to_string()
+                }
+            }
+            Self::CommunityPlugins => {
+                if lang.starts_with("ru") {
+                    "Сторонние плагины".to_string()
+                } else {
+                    "Community plugins".to_string()
+                }
+            }
+            Self::PluginSettings(name) => name.clone(),
+            _ => crate::i18n::t(self.key(), lang),
+        }
     }
 
     /// Returns the SVG icon path corresponding to this settings tab.
@@ -74,6 +97,9 @@ impl SettingsTab {
             Self::Trash => icons::ICON_TRASH_2,
             Self::System => icons::ICON_POWER,
             Self::Shortcuts => icons::ICON_KEYBOARD,
+            Self::CorePlugins => icons::ICON_PLUG,
+            Self::CommunityPlugins => icons::ICON_GLOBE,
+            Self::PluginSettings(_) => icons::ICON_SETTINGS,
         }
     }
 
@@ -92,6 +118,8 @@ impl SettingsTab {
             Self::Trash,
             Self::System,
             Self::Shortcuts,
+            Self::CorePlugins,
+            Self::CommunityPlugins,
         ]
     }
 }
@@ -285,7 +313,7 @@ impl AppView {
     /// Renders the vertical tab navigation sidebar inside the Settings dialog.
     fn render_settings_nav(&self, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
-        let active_tab = self.settings_tab;
+        let active_tab = &self.settings_tab;
 
         div()
             .flex()
@@ -299,14 +327,15 @@ impl AppView {
             .cursor(gpui::CursorStyle::Arrow)
             .p_2()
             .gap_1()
-            .children(SettingsTab::all().iter().map(|&tab| {
+            .children(SettingsTab::all().iter().enumerate().map(|(idx, tab)| {
                 let is_active = tab == active_tab;
                 let text_color = if is_active { theme.text_primary } else { theme.text_secondary };
                 let icon_color = if is_active { theme.accent } else { theme.text_muted };
                 let bg_color = if is_active { theme.bg_hover } else { rgba(0x00000000) };
+                let tab_clone = tab.clone();
 
                 div()
-                    .id(gpui::ElementId::from(("nav-tab", tab as usize)))
+                    .id(gpui::ElementId::from(("nav-tab", idx)))
                     .flex()
                     .flex_row()
                     .items_center()
@@ -326,7 +355,7 @@ impl AppView {
                             .child(tab.title(&self.config.ui.language)),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.settings_tab = tab;
+                        this.settings_tab = tab_clone.clone();
                         cx.notify();
                     }))
             }))
@@ -370,6 +399,9 @@ impl AppView {
                 SettingsTab::Trash => self.render_trash_tab(cx),
                 SettingsTab::System => self.render_system_tab(cx),
                 SettingsTab::Shortcuts => self.render_shortcuts_tab(cx),
+                SettingsTab::CorePlugins => self.render_core_plugins_tab(cx),
+                SettingsTab::CommunityPlugins => self.render_community_plugins_tab(cx),
+                SettingsTab::PluginSettings(ref id) => self.render_plugin_settings_tab(id, cx),
             })
             .child(
                 canvas(
@@ -2187,5 +2219,337 @@ impl AppView {
             .gap_5()
             .child(self.render_settings_card(&self.t("settings.shortcuts.global_header"), global_rows))
             .child(self.render_settings_card(&self.t("settings.shortcuts.editing_header"), editor_rows))
+    }
+
+    /// Renders the Core Plugins settings tab (Obsidian-style built-in tools).
+    fn render_core_plugins_tab(&self, cx: &Context<Self>) -> gpui::Div {
+        let _theme = &self.theme;
+        let is_ru = self.config.ui.language.starts_with("ru");
+
+        let header_title = if is_ru {
+            "Встроенные модули приложения"
+        } else {
+            "Application Core Plugins"
+        };
+
+        // Built-in modules list
+        let plugins = vec![
+            (
+                "command-palette",
+                if is_ru { "Палитра команд" } else { "Command palette" },
+                if is_ru { "Быстрый поиск и выполнение команд приложения (Ctrl+Shift+P)" } else { "Quickly search and execute application actions (Ctrl+Shift+P)" },
+                true, // Command palette is always on
+            ),
+            (
+                "word-counter",
+                if is_ru { "Подсчёт слов" } else { "Word counter" },
+                if is_ru { "Отображает количество слов и символов в строке состояния" } else { "Displays character and word count in the status bar" },
+                true,
+            ),
+            (
+                "file-recovery",
+                if is_ru { "Восстановление файлов" } else { "File recovery" },
+                if is_ru { "Создание регулярных локальных снэпшотов для защиты от потери данных" } else { "Automatic local snapshotting to protect against data loss" },
+                false,
+            ),
+        ];
+
+        let rows: Vec<gpui::Div> = plugins
+            .into_iter()
+            .map(|(id, name, desc, default_val)| {
+                let p_id = id.to_string();
+                let is_enabled = self
+                    .state
+                    .vault
+                    .as_ref()
+                    .map(|v| v.is_core_plugin_enabled(id))
+                    .unwrap_or(default_val);
+
+                let toggle_id = p_id.clone();
+                let toggle = div()
+                    .id(gpui::ElementId::from(gpui::SharedString::from(format!("core-toggle-{}", id))))
+                    .cursor_pointer()
+                    .child(self.render_toggle_switch(is_enabled))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(vault) = &this.state.vault {
+                            if is_enabled {
+                                let _ = vault.disable_core_plugin(&toggle_id);
+                            } else {
+                                let _ = vault.enable_core_plugin(&toggle_id);
+                            }
+                            this.state.status_text = format!("Core plugin '{}' updated", toggle_id);
+                            cx.notify();
+                        }
+                    }));
+
+                self.render_setting_row(name, Some(desc), toggle)
+            })
+            .collect();
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_5()
+            .child(self.render_settings_card(header_title, rows))
+    }
+
+    /// Renders the Community Plugins settings tab (Obsidian-style third-party plugins management).
+    fn render_community_plugins_tab(&self, cx: &Context<Self>) -> gpui::Div {
+        let theme = &self.theme;
+        let is_ru = self.config.ui.language.starts_with("ru");
+
+        let header_title = if is_ru {
+            "Сторонние плагины (Community Plugins)"
+        } else {
+            "Community Plugins"
+        };
+
+        let safe_mode_enabled = self.config.community_plugins.safe_mode;
+        let safe_mode_toggle = div()
+            .id("toggle-community-safe-mode")
+            .cursor_pointer()
+            .child(self.render_toggle_switch(safe_mode_enabled))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.config.community_plugins.safe_mode = !this.config.community_plugins.safe_mode;
+                if this.config.community_plugins.safe_mode {
+                    // Safe mode turned ON -> unload all plugins immediately
+                    this.unload_all_plugins();
+                    this.state.status_text = "Safe mode enabled: community plugins unloaded".to_string();
+                } else {
+                    // Safe mode turned OFF -> reload enabled plugins
+                    let (api_tx, _api_rx) = futures::channel::mpsc::unbounded();
+                    this.load_installed_plugins_for_vault(api_tx);
+                    this.state.status_text = "Safe mode disabled: community plugins loaded".to_string();
+                }
+                this.save_settings(cx);
+            }));
+
+        let safe_mode_row = self.render_setting_row(
+            if is_ru { "Безопасный режим (Safe Mode)" } else { "Safe Mode" },
+            Some(if is_ru {
+                "Блокирует выполнение сторонних плагинов для защиты данных и стабильности"
+            } else {
+                "Blocks community plugins execution for system stability and data protection"
+            }),
+            safe_mode_toggle,
+        );
+
+        let browse_btn = div()
+            .id("btn-browse-community-plugins")
+            .flex()
+            .items_center()
+            .justify_center()
+            .px_4()
+            .py_2()
+            .bg(if safe_mode_enabled { theme.bg_hover } else { theme.accent })
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|h| h.bg(theme.accent_hover))
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(if safe_mode_enabled { theme.text_muted } else { theme.text_on_accent })
+                    .child(if is_ru { "Обзор каталога плагинов" } else { "Browse community plugins" }),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.open_plugin_catalog(cx);
+            }));
+
+        let browse_row = self.render_setting_row(
+            if is_ru { "Каталог плагинов" } else { "Community plugins catalog" },
+            Some(if is_ru { "Поиск, установка и обновление плагинов от сообщества" } else { "Discover, install and update community-created plugins" }),
+            browse_btn,
+        );
+
+        // Scan installed plugins in the vault
+        let installed_plugins = if let Some(vault) = &self.state.vault {
+            let plugins_dir = vault.root.join(".vault").join("plugins");
+            crate::plugins::loader::discover_plugins(&plugins_dir)
+        } else {
+            Vec::new()
+        };
+
+        let mut plugin_rows = Vec::new();
+        for plugin in &installed_plugins {
+            let p_id = plugin.manifest.id.clone();
+            let is_enabled = self.state.vault.as_ref().map(|v| v.is_community_plugin_enabled(&p_id)).unwrap_or(false);
+
+            let toggle_id = p_id.clone();
+            let toggle = div()
+                .id(gpui::ElementId::from(gpui::SharedString::from(format!("comm-toggle-{}", plugin.manifest.id))))
+                .cursor_pointer()
+                .child(self.render_toggle_switch(is_enabled))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(vault) = &this.state.vault {
+                        if is_enabled {
+                            let _ = vault.disable_community_plugin(&toggle_id);
+                            // Unload runtime if running
+                            if let Some(pos) = this.plugin_runtimes.iter().position(|r| r.manifest.id == toggle_id) {
+                                let handle = this.plugin_runtimes.remove(pos);
+                                let _ = handle.host_events_tx.unbounded_send(crate::plugins::api::HostEvent::Unload);
+                                this.state.plugin_host.unregister_plugin(&toggle_id);
+                                this.state.commands.unregister_all_of(&toggle_id);
+                                this.state.ribbon.unregister_all_of(&toggle_id);
+                                this.state.status_bar.unregister_all_of(&toggle_id);
+                            }
+                        } else {
+                            let _ = vault.enable_community_plugin(&toggle_id);
+                            // Reload plugins for vault
+                            let (api_tx, _api_rx) = futures::channel::mpsc::unbounded();
+                            this.load_installed_plugins_for_vault(api_tx);
+                        }
+                        cx.notify();
+                    }
+                }));
+
+            let p_name = plugin.manifest.name.clone();
+            let settings_btn_id = p_id.clone();
+            let action_group = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .when(is_enabled, |parent| {
+                    parent.child(
+                        div()
+                            .id(gpui::ElementId::from(gpui::SharedString::from(format!("comm-gear-{}", plugin.manifest.id))))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .p_1p5()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(|h| h.bg(theme.bg_hover))
+                            .child(icons::icon(icons::ICON_SETTINGS, 14.0, theme.text_muted))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.settings_tab = SettingsTab::PluginSettings(settings_btn_id.clone());
+                                cx.notify();
+                            })),
+                    )
+                })
+                .child(toggle);
+
+            let hint = format!("v{} • {}", plugin.manifest.version, plugin.manifest.description);
+            plugin_rows.push(self.render_setting_row(&p_name, Some(&hint), action_group));
+        }
+
+        let installed_card_title = if is_ru {
+            format!("Установленные плагины ({})", installed_plugins.len())
+        } else {
+            format!("Installed plugins ({})", installed_plugins.len())
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_5()
+            .child(self.render_settings_card(header_title, vec![safe_mode_row, browse_row]))
+            .when(!plugin_rows.is_empty(), |this| {
+                this.child(self.render_settings_card(&installed_card_title, plugin_rows))
+            })
+    }
+
+    /// Renders the individual settings tab for a specific community plugin.
+    fn render_plugin_settings_tab(&self, plugin_id: &str, cx: &Context<Self>) -> gpui::Div {
+        let theme = &self.theme;
+        let is_ru = self.config.ui.language.starts_with("ru");
+
+        // Back button to Community Plugins list
+        let back_btn = div()
+            .id("btn-back-to-community-plugins")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1p5()
+            .px_3()
+            .py_1p5()
+            .rounded_md()
+            .bg(theme.bg_hover)
+            .cursor_pointer()
+            .hover(|h| h.bg(theme.border))
+            .child(icons::icon(icons::ICON_ARROW_LEFT, 14.0, theme.text_secondary))
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.text_primary)
+                    .child(if is_ru { "Назад к плагинам" } else { "Back to plugins" }),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.settings_tab = SettingsTab::CommunityPlugins;
+                cx.notify();
+            }));
+
+        let p_id_str = plugin_id.to_string();
+        // Check for registered declarative UI tree (view_id = 0 is conventional settings tab view)
+        let custom_tree = self.plugin_views.get(&(p_id_str.clone(), 0));
+
+        let header_title = format!("{} — {}", if is_ru { "Настройки плагина" } else { "Plugin Settings" }, plugin_id);
+
+        if let Some(tree) = custom_tree {
+            let rendered_node = crate::plugins::ui::render_ui_node(tree, plugin_id, 0, theme, cx);
+            div()
+                .flex()
+                .flex_col()
+                .gap_4()
+                .child(back_btn)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .p_5()
+                        .rounded_lg()
+                        .bg(theme.bg_card)
+                        .border_1()
+                        .border_color(theme.border_subtle)
+                        .child(rendered_node),
+                )
+        } else {
+            // Render default data.json inspect / edit card
+            let current_data = self
+                .state
+                .vault
+                .as_ref()
+                .and_then(|v| v.load_plugin_data(plugin_id))
+                .unwrap_or(serde_json::json!({}));
+
+            let data_str = serde_json::to_string_pretty(&current_data).unwrap_or_else(|_| "{}".to_string());
+
+            let info_hint = if is_ru {
+                "Конфигурация плагина загружена из .vault/plugins/<id>/data.json"
+            } else {
+                "Plugin configuration loaded from .vault/plugins/<id>/data.json"
+            };
+
+            let json_preview = div()
+                .flex()
+                .flex_col()
+                .p_3()
+                .rounded_md()
+                .bg(theme.bg_editor)
+                .border_1()
+                .border_color(theme.border)
+                .child(
+                    div()
+                        .text_xs()
+                        .font_family(self.editor_font_family())
+                        .text_color(theme.text_secondary)
+                        .child(data_str),
+                );
+
+            let row = self.render_setting_row(
+                if is_ru { "Хранилище параметров (data.json)" } else { "Configuration store (data.json)" },
+                Some(info_hint),
+                json_preview,
+            );
+
+            div()
+                .flex()
+                .flex_col()
+                .gap_4()
+                .child(back_btn)
+                .child(self.render_settings_card(&header_title, vec![row]))
+        }
     }
 }

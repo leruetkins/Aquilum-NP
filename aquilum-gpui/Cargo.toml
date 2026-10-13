@@ -12,6 +12,10 @@ rfd = "0.15"
 uuid = { version = "1.23", features = ["v4"] }
 pulldown-cmark = "0.13"
 smallvec = "1"
+arc-swap = "1"
+semver = "1"
+futures = "0.3"
+rquickjs = "0.8"
 
 [build-dependencies]
 winres = "0.1"

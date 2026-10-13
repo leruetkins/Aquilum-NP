@@ -17,6 +17,24 @@ pub fn snap_x(x: f32, scale_factor: f32) -> f32 {
     (x * scale_factor).round() / scale_factor
 }
 
+/// Snaps both edges of a span to the physical pixel grid and returns
+/// `(left, width)`.
+///
+/// Selection rectangles use this so their edges land on the same device pixels as
+/// the caret. GPUI paints a quad with rounded corners on its signed-distance path
+/// with an antialiasing threshold, so an unsnapped selection edge is blended across
+/// the pixel it straddles: the blend ratio shifts with every sub-pixel mouse move
+/// and the edge visibly breathes, while the snapped caret on the same boundary stays
+/// crisp.
+///
+/// Rounding cannot reorder the edges, so a reversed or empty span yields a zero
+/// width rather than a negative one.
+pub fn snapped_span(x1: f32, x2: f32, scale_factor: f32) -> (f32, f32) {
+    let left = snap_x(x1, scale_factor);
+    let right = snap_x(x2, scale_factor);
+    (left, (right - left).max(0.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,5 +74,48 @@ mod tests {
     fn degenerate_inputs_pass_through() {
         assert_eq!(snap_x(10.3, 0.0), 10.3);
         assert!(snap_x(f32::NAN, 1.0).is_nan());
+    }
+
+    /// A selection rectangle's edges must sit on the device grid exactly like the
+    /// caret's, or the antialiased edge blends differently at every sub-pixel mouse
+    /// position and the selection appears to breathe while dragging.
+    #[test]
+    fn snapped_span_puts_both_edges_on_the_device_grid() {
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            for (x1, x2) in [(10.4, 42.7), (0.0, 0.0), (7.13, 7.99), (120.5, 121.5)] {
+                let (left, width) = snapped_span(x1, x2, scale);
+                assert!(width >= 0.0, "negative width for {x1}..{x2} @{scale}x");
+                for edge in [left, left + width] {
+                    let device = edge * scale;
+                    assert!(
+                        (device - device.round()).abs() < 0.0001,
+                        "edge {edge} of {x1}..{x2} @{scale}x is off the device grid ({device})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Snapping must only round: a reversed span collapses to zero width instead of
+    /// flipping sign, and no edge may wander further than half a device pixel.
+    #[test]
+    fn snapped_span_only_rounds() {
+        let (_, width) = snapped_span(20.0, 10.0, 1.5);
+        assert_eq!(width, 0.0);
+        let (_, empty) = snapped_span(42.3, 42.3, 1.5);
+        assert_eq!(empty, 0.0);
+
+        for scale in [1.0, 1.5, 1.75] {
+            for i in 0..200 {
+                let x1 = i as f32 * 0.37;
+                let x2 = x1 + 5.3;
+                let (left, width) = snapped_span(x1, x2, scale);
+                assert!((left - x1).abs() <= 0.5 / scale + 0.0001, "left edge moved too far");
+                assert!(
+                    ((left + width) - x2).abs() <= 0.5 / scale + 0.0001,
+                    "right edge moved too far"
+                );
+            }
+        }
     }
 }

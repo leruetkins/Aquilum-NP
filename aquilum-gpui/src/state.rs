@@ -362,6 +362,7 @@ impl OpenedNote {
         if let Some((prev_content, prev_cursor)) = self.undo_stack.pop() {
             self.redo_stack.push((self.content.clone(), self.cursor_offset));
             self.content = prev_content;
+            self.version += 1;
             self.doc = MarkdownDocument::new(self.content.clone());
             self.cursor_offset = prev_cursor.min(self.content.len());
             self.selection_anchor = None;
@@ -375,6 +376,7 @@ impl OpenedNote {
         if let Some((next_content, next_cursor)) = self.redo_stack.pop() {
             self.undo_stack.push((self.content.clone(), self.cursor_offset));
             self.content = next_content;
+            self.version += 1;
             self.doc = MarkdownDocument::new(self.content.clone());
             self.cursor_offset = next_cursor.min(self.content.len());
             self.selection_anchor = None;
@@ -417,6 +419,7 @@ impl OpenedNote {
             self.snapshot_undo();
             self.doc.apply_edit(range.clone(), "");
             self.content = self.doc.source.clone();
+            self.version += 1;
             self.cursor_offset = range.start;
             self.selection_anchor = None;
             self.is_dirty = true;
@@ -542,6 +545,7 @@ impl OpenedNote {
         }
         self.doc.apply_edit(offset..offset, text);
         self.content = self.doc.source.clone();
+        self.version += 1;
         self.cursor_offset = offset + text.len();
         self.selection_anchor = None;
         self.is_dirty = true;
@@ -565,6 +569,7 @@ impl OpenedNote {
         let insert_str = format!("\n{}", indent);
         self.doc.apply_edit(offset..offset, &insert_str);
         self.content = self.doc.source.clone();
+        self.version += 1;
         self.cursor_offset = offset + insert_str.len();
         self.selection_anchor = None;
         self.is_dirty = true;
@@ -593,6 +598,7 @@ impl OpenedNote {
         }
         self.doc.apply_edit(prev..offset, "");
         self.content = self.doc.source.clone();
+        self.version += 1;
         self.cursor_offset = prev;
         self.selection_anchor = None;
         self.is_dirty = true;
@@ -618,6 +624,7 @@ impl OpenedNote {
         }
         self.doc.apply_edit(offset..next, "");
         self.content = self.doc.source.clone();
+        self.version += 1;
         self.selection_anchor = None;
         self.is_dirty = true;
         self.visual_cache_dirty = true;
@@ -808,10 +815,25 @@ impl OpenedNote {
     }
 }
 
+/// Неизменяемый снимок состояния vault и активного файла для синхронных геттеров плагинов.
+#[derive(Debug, Clone, Default)]
+pub struct Snapshot {
+    pub version: u64,
+    pub active_file: Option<crate::vault::FileInfo>,
+    pub files: Arc<[crate::vault::FileInfo]>,
+}
+
 pub struct AppState {
     pub settings: Arc<crate::settings::SettingsManager>,
     pub workspace_path: Option<PathBuf>,
     pub workspace_name: String,
+    pub vault: Option<crate::vault::VaultCore>,
+    pub events: Arc<crate::events::EventBus>,
+    pub commands: Arc<crate::commands::CommandRegistry>,
+    pub ribbon: Arc<crate::ribbon::RibbonRegistry>,
+    pub status_bar: Arc<crate::ribbon::StatusBarRegistry>,
+    pub plugin_host: Arc<crate::plugins::bridge::PluginHostState>,
+    pub snapshot: Arc<arc_swap::ArcSwap<Snapshot>>,
     pub file_tree: Vec<FileNode>,
     pub expanded_folders: HashSet<PathBuf>,
     pub search_query: String,
@@ -845,10 +867,24 @@ impl AppState {
             .cloned()
             .collect();
 
+        let events = Arc::new(crate::events::EventBus::new());
+        let commands = Arc::new(crate::commands::CommandRegistry::new());
+        let ribbon = Arc::new(crate::ribbon::RibbonRegistry::new());
+        let status_bar = Arc::new(crate::ribbon::StatusBarRegistry::new());
+        let plugin_host = Arc::new(crate::plugins::bridge::PluginHostState::new());
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
+
         let mut state = Self {
             settings,
             workspace_path: None,
             workspace_name: "No Workspace".to_owned(),
+            vault: None,
+            events,
+            commands,
+            ribbon,
+            status_bar,
+            plugin_host,
+            snapshot,
             file_tree: Vec::new(),
             expanded_folders: session.expanded_folders.clone(),
             search_query: String::new(),
@@ -922,14 +958,13 @@ impl AppState {
     }
 
     pub fn open_workspace(&mut self, path: PathBuf) {
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Workspace".to_owned());
+        let vault = crate::vault::VaultCore::open(path.clone());
+        let name = vault.name.clone();
 
         self.workspace_name = name;
         self.workspace_path = Some(path.clone());
         self.session.workspace_path = Some(path.clone());
+        self.vault = Some(vault);
         // Remember the vault for the switcher dialog (most recent first).
         self.known_vaults.retain(|p| p != &path);
         self.known_vaults.insert(0, path.clone());
@@ -946,7 +981,32 @@ impl AppState {
         }
         self.reload_file_tree();
         self.status_text = format!("Workspace: {}", self.workspace_name);
+
+        self.events.emit_workspace(&crate::events::WorkspaceEvent::VaultOpen {
+            path: path.to_string_lossy().to_string(),
+        });
         self.save_session_state();
+        self.publish_snapshot();
+    }
+
+    /// Публикует актуальный иммутабельный снимок состояния vault и активного файла
+    pub fn publish_snapshot(&self) {
+        let active = self.active_note.as_ref().and_then(|note| {
+            self.vault.as_ref().and_then(|v| {
+                crate::vault::FileInfo::from_path(&v.root, &note.path)
+            })
+        });
+        let files: Vec<crate::vault::FileInfo> = self.vault
+            .as_ref()
+            .map(|v| v.list_markdown_files())
+            .unwrap_or_default();
+
+        let version = self.active_note.as_ref().map(|n| n.version).unwrap_or(0);
+        self.snapshot.store(Arc::new(Snapshot {
+            version,
+            active_file: active,
+            files: files.into(),
+        }));
     }
 
     pub fn build_tree(dir: &Path) -> Vec<FileNode> {
@@ -1350,8 +1410,14 @@ impl AppState {
             }
             self.active_note = Some(note);
             self.active_empty_tab = None;
-            self.session.active_note = Some(path);
+            self.session.active_note = Some(path.clone());
             self.save_session_state();
+
+            let rel = self.vault.as_ref()
+                .and_then(|v| path.strip_prefix(&v.root).ok())
+                .map(|p| p.to_string_lossy().replace('\\', "/"));
+            self.events.emit_workspace(&crate::events::WorkspaceEvent::FileOpen { path: rel });
+            self.publish_snapshot();
         }
     }
 
@@ -1377,6 +1443,13 @@ impl AppState {
             } else {
                 note.is_dirty = false;
                 self.status_text = format!("Saved: {}", note.title);
+
+                let rel_path = self.vault.as_ref()
+                    .and_then(|v| note.path.strip_prefix(&v.root).ok())
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|| note.path.to_string_lossy().into_owned());
+                self.events.emit_vault(&crate::events::VaultEvent::Modify { path: rel_path });
+                self.publish_snapshot();
             }
         }
         self.save_session_state();
@@ -1909,7 +1982,7 @@ mod tests {
         gpui::Application::new().run(|cx: &mut gpui::App| {
             crate::fonts::register_embedded_fonts(cx);
             let text: gpui::SharedString = "# Нативные: 😀 🚀 ⚠️ ❤️ 👍 🎉 🐛 👨‍👩‍👧‍👦 🏳️‍🌈 RU".into();
-            cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+            let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
                 let run = gpui::TextRun {
                     len: text.len(),
                     font: gpui::font("Droid Sans Mono").bold(),
@@ -1944,6 +2017,86 @@ mod tests {
                 cx.new(|_| DummyView)
             });
         });
+    }
+
+    #[test]
+    fn test_opened_note_version_increments() {
+        let mut note = OpenedNote::new(
+            PathBuf::from("test.md"),
+            "test".to_string(),
+            "initial".to_string(),
+            0,
+        );
+        assert_eq!(note.version, 0);
+
+        note.insert_text(" text");
+        assert_eq!(note.version, 1);
+
+        note.delete_backwards();
+        assert_eq!(note.version, 2);
+
+        note.undo();
+        assert_eq!(note.version, 3);
+
+        note.redo();
+        assert_eq!(note.version, 4);
+    }
+
+    #[test]
+    fn test_app_state_snapshot_publish() {
+        let temp_dir = std::env::temp_dir().join(format!("test_snapshot_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let vault = crate::vault::VaultCore::open(temp_dir.clone());
+        let _ = vault.create_file("Note1.md", "content 1").unwrap();
+
+        let events = Arc::new(crate::events::EventBus::new());
+        let commands = Arc::new(crate::commands::CommandRegistry::new());
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
+
+        let mut note = OpenedNote::new(
+            temp_dir.join("Note1.md"),
+            "Note1".into(),
+            "content 1".into(),
+            42,
+        );
+        note.version = 42;
+
+        let state = AppState {
+            settings: Arc::new(crate::settings::SettingsManager::new(&temp_dir)),
+            workspace_path: Some(temp_dir.clone()),
+            workspace_name: "test".into(),
+            vault: Some(vault),
+            events,
+            commands,
+            ribbon: Arc::new(crate::ribbon::RibbonRegistry::new()),
+            status_bar: Arc::new(crate::ribbon::StatusBarRegistry::new()),
+            plugin_host: Arc::new(crate::plugins::bridge::PluginHostState::new()),
+            snapshot: snapshot.clone(),
+            file_tree: Vec::new(),
+            expanded_folders: HashSet::new(),
+            search_query: String::new(),
+            active_note: Some(note),
+            open_tabs: Vec::new(),
+            active_empty_tab: None,
+            nav_history: Vec::new(),
+            nav_history_index: 0,
+            status_text: String::new(),
+            session: SessionState::default(),
+            note_states: HashMap::new(),
+            known_vaults: Vec::new(),
+        };
+
+        state.publish_snapshot();
+
+        let snap = snapshot.load();
+        assert_eq!(snap.version, 42);
+        assert!(snap.active_file.is_some());
+        assert_eq!(snap.active_file.as_ref().unwrap().path, "Note1.md");
+        assert_eq!(snap.files.len(), 1);
+        assert_eq!(snap.files[0].name, "Note1.md");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
 

@@ -1296,3 +1296,110 @@ impl VaultCore {
 
 Это изолирует данные плагинов друг от друга и решает пункт **§6 (Безопасность. Данные плагина)**.
 
+---
+
+## 14. Адаптация меню настроек (`settings_view.rs`) под Core & Community плагины
+
+Текущий диалог настроек (`src/views/settings_view.rs`) оперирует фиксированным перечислением `SettingsTab` из 12 вкладок.
+Для полноценной поддержки плагинов расширяем его по модели Obsidian.
+
+### 14.1 Архитектура категорий и вкладок
+Расширяем модель навигации:
+```rust
+// ─── src/views/settings_view.rs ───
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingsTab {
+    // Базовые настройки приложения
+    Ui,
+    Editor,
+    Reader,
+    Search,
+    Templates,
+    Files,
+    Analysis,
+    Mcp,
+    History,
+    Trash,
+    System,
+    Shortcuts,
+    // Разделы управления плагинами
+    CorePlugins,
+    CommunityPlugins,
+    // Динамические вкладки настроек активных плагинов
+    PluginSettings(String), // plugin_id
+}
+```
+
+### 14.2 Конфигурация активных плагинов в Vault
+Состояние активности плагинов сохраняется в служебных файлах хранилища:
+1. `<vault>/.vault/core-plugins.json` — список включённых встроенных модулей (например, `["command-palette", "word-count", "file-recovery"]`).
+2. `<vault>/.vault/community-plugins.json` — список включённых сторонних плагинов (например, `["dataview", "calendar"]`).
+При запуске `load_installed_plugins_for_vault` считывает этот файл и запускает изолированные потоки QuickJS **только для активированных плагинов**.
+
+### 14.3 Интерфейс вкладки Community Plugins
+- **Глобальный Safe Mode (Безопасный режим):** предупреждение о выполнении стороннего JS-кода.
+- **Кнопка вызова каталога:** `[ Browse Community Plugins ]` (открывает модальное окно каталога).
+- **Список установленных плагинов:**
+  - Карточка каждого плагина: Название, Версия, Автор, Краткое описание.
+  - Тумблер переключения активности (при клике вызывает `spawn_plugin_runtime` или `HostEvent::Unload`).
+  - Кнопка настроек `[ ⚙ ]` (переключает активную вкладку на `SettingsTab::PluginSettings(id)`).
+  - Кнопка удаления `[ 🗑 ]` (выгружает плагин и удаляет каталог из `.vault/plugins/<id>/`).
+
+### 14.4 Декларативные настройки плагина (`PluginSettingTab`)
+В рантайме плагин вызывает:
+```ts
+plugin.addSettingTab({
+  render: () => ({
+    type: "column",
+    children: [
+      { type: "text", value: "Параметры плагина", style: "heading" },
+      { type: "input", id: "api_key", placeholder: "Введите токен", value: this.settings.apiKey },
+      { type: "checkbox", id: "enable_sync", label: "Включить синхронизацию", checked: this.settings.sync }
+    ]
+  })
+});
+```
+Хост рендерит это дерево внутри `render_settings_content` через `render_ui_node`, транслируя события изменения значений обратно в поток плагина.
+
+---
+
+## 15. Модальное окно каталога плагинов (Community Plugins Browser)
+
+### 15.1 Структура и источник данных
+- Каталог читает список из публичного репозитория GitHub: `community-plugins.json`.
+- Формат записи:
+```json
+{
+  "id": "calendar",
+  "name": "Calendar",
+  "author": "Liam Cain",
+  "description": "Simple calendar view for your daily notes",
+  "repo": "liamcain/obsidian-calendar-plugin",
+  "branch": "master"
+}
+```
+
+### 15.2 Компоновка интерфейса каталога
+Диалог строится как модальный оверлей на базе GPUI (`div().absolute().inset_0()`):
+1. **Header:**
+   - Поле мгновенного поиска (фильтрация по `name`, `description`, `author`).
+   - Сортировка (По популярности, По алфавиту, По новизне).
+   - Кнопка закрытия `[ ✕ ]` / `Esc`.
+2. **Body (две колонки):**
+   - **Слева (350px):** список найденных плагинов с бейджами («Установлен», «Доступно обновление»).
+   - **Справа (Flex 1):** карточка выбранного плагина:
+     - Заголовок, версия, автор, ссылка на исходный код.
+     - **Бейджи запрашиваемых прав (Permissions Card):**
+       - `vault:read` / `vault:write`
+       - Доступные сетевые домены (например, `api.github.com`)
+     - Встроенный просмотр `README.md` (скачивается на лету).
+     - Кнопка `[ Установить ]` / `[ Удалить ]` / `[ Обновить ]`.
+
+### 15.3 Процесс безопасной установки
+1. Запрос `GET https://github.com/<repo>/releases/latest/download/manifest.json`.
+2. Проверка совместимости `minAppVersion`.
+3. Запрос `GET https://github.com/<repo>/releases/latest/download/main.js`.
+4. Запись файлов в `<vault>/.vault/plugins/<id>/`.
+5. Показ диалога подтверждения прав. При согласии — добавление в `.vault/community-plugins.json` и вызов горячего запуска плагина.
+
