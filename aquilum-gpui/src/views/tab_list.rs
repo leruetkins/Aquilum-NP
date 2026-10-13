@@ -67,9 +67,17 @@ const SPRING_OMEGA: f32 = 10.0;
 /// Stiffer spring once the mouse stops: the list lands fast instead of
 /// trailing behind with a tail. 0 would snap onto the target instantly,
 /// 25-40 is almost tailless but without a harsh snap.
-const SETTLE_OMEGA: f32 = 70.0;
+const SETTLE_OMEGA: f32 = 50.0;
 /// Pause without mouse motion (ms) after which the cursor counts as idle.
 const IDLE_AFTER_MS: u128 = 50;
+/// Mouse position stays eligible for post-settle centering this long (ms)
+/// after the last motion. Keyboard motion clears it outright, so a stale
+/// cursor can never hijack an arrow-key glide.
+const CENTER_AFTER_MOUSE_MS: u128 = 1000;
+/// Minimum list travel (px) during one motion for post-settle centering to
+/// kick in. Tiny wiggles settle quietly instead of jerking to the row center
+/// with a nudge bigger than the motion itself.
+const CENTER_MIN_TRAVEL: f32 = 48.0;
 /// The list counts as settled when the spring velocity drops below this (px/s).
 const REST_VELOCITY: f32 = 8.0;
 /// Upper bound for a single frame step (s): keeps a long stall from producing a jump.
@@ -232,6 +240,13 @@ fn hover_header_at(rel_y: f32) -> Option<usize> {
     None
 }
 
+/// Whether a settled glide traveled enough to deserve post-settle centering.
+/// Tiny wiggles must rest quietly instead of jerking to the row center with
+/// a nudge bigger than the motion itself.
+fn should_center_after_glide(traveled: f32) -> bool {
+    traveled >= CENTER_MIN_TRAVEL
+}
+
 /// Offset that brings the row `[item_top, item_top + item_height]` into the
 /// viewport with the least movement, clamped to the scrollable range.
 ///
@@ -298,10 +313,16 @@ pub struct TabListPopup {
     last_frame: Option<Instant>,
     /// Smoothed position in px (fractional, pre-snapping).
     pos_y: Option<f32>,
+    /// Offset where the current glide started; measures how far the list
+    /// actually traveled, so post-settle centering can ignore tiny wiggles.
+    glide_start: Option<f32>,
     /// Spring velocity, px/s.
     velocity_y: f32,
     /// When the mouse last moved noticeably; staleness means "idle".
     last_move: Option<Instant>,
+    /// When the keyboard last moved the selection; keeps arrow-key glides
+    /// soft. Unlike the mouse stamp, this one is never used for centering.
+    last_kbd: Option<Instant>,
     focus_handle: FocusHandle,
 }
 
@@ -336,8 +357,10 @@ impl TabListPopup {
             last_mouse_y: None,
             last_frame: None,
             pos_y: None,
+            glide_start: None,
             velocity_y: 0.0,
             last_move: None,
+            last_kbd: None,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -429,9 +452,10 @@ impl TabListPopup {
             max_scroll,
         ));
         // Keyboard motion counts as fresh: the glide stays soft instead of
-        // being mistaken for a stale mouse.
+        // being mistaken for a stale mouse. It also clears the mouse stamp,
+        // so a parked cursor can never recenter an arrow-key glide.
         self.reset_motion();
-        self.last_move = Some(Instant::now());
+        self.last_kbd = Some(Instant::now());
     }
 
     /// Drops the spring state: the next animation starts from the currently
@@ -439,8 +463,10 @@ impl TabListPopup {
     fn reset_motion(&mut self) {
         self.last_frame = None;
         self.pos_y = None;
+        self.glide_start = None;
         self.velocity_y = 0.0;
         self.last_move = None;
+        self.last_kbd = None;
     }
 
     /// One spring step. Returns `true` when another frame is needed.
@@ -461,12 +487,16 @@ impl TabListPopup {
         });
         self.last_frame = Some(now);
 
-        // Stale mouse → stiff spring: land fast instead of trailing a tail.
+        // Stale input → stiff spring: land fast instead of trailing a tail.
         // Fresh motion (mouse or keyboard) keeps the soft spring.
-        let idle = self.last_move.map_or(true, |t| {
-            now.duration_since(t).as_millis() >= IDLE_AFTER_MS
-        });
-        let omega = if idle { SETTLE_OMEGA } else { SPRING_OMEGA };
+        let fresh = |t: Option<Instant>| {
+            t.is_some_and(|t| now.duration_since(t).as_millis() < IDLE_AFTER_MS)
+        };
+        let omega = if fresh(self.last_move) || fresh(self.last_kbd) {
+            SPRING_OMEGA
+        } else {
+            SETTLE_OMEGA
+        };
 
         let base = self.base_handle();
         let max = f32::from(base.max_offset().height);
@@ -474,7 +504,16 @@ impl TabListPopup {
         let mut offset = base.offset();
         // The fractional position lives apart from what is shown: after rounding
         // to pixels the accumulated precision would be lost on every frame.
-        let pos = self.pos_y.unwrap_or_else(|| f32::from(offset.y));
+        // Seeding a fresh glide also records where it started, so the rest
+        // branch below knows how far the list actually traveled.
+        let pos = match self.pos_y {
+            Some(p) => p,
+            None => {
+                let start = f32::from(offset.y);
+                self.glide_start = Some(start);
+                start
+            }
+        };
 
         let (mut pos, mut vel) = spring_step(pos, self.velocity_y, target, dt, omega);
 
@@ -494,10 +533,67 @@ impl TabListPopup {
         base.set_offset(offset);
 
         if resting {
+            // The glide settled: reveal the hovered row if it ended up
+            // clipped — but only while the mouse position is fresh (arrow
+            // keys clear it, so a parked cursor never hijacks keyboard
+            // navigation), and only after a real scroll: tiny wiggles must
+            // settle quietly. Unlike full centering, this moves minimally:
+            // in the middle of the list the hovered row is always fully
+            // visible, so nothing moves at all; near the edges the row
+            // aligns to the viewport edge instead of overshooting past the
+            // clamps. The check below is idempotent, so this runs at most
+            // once per settle.
+            let traveled = self.glide_start.map(|s| (pos - s).abs()).unwrap_or(0.0);
+            if should_center_after_glide(traveled) {
+                if let Some(reveal) = self.settle_reveal_target(now) {
+                    if (f32::from(reveal) - target).abs() >= 1.0 {
+                        self.target_y = Some(reveal);
+                        return true;
+                    }
+                }
+            }
             self.reset_motion();
             return false;
         }
         true
+    }
+
+    /// Offset that fully reveals the hovered row with minimal movement, for
+    /// the post-settle alignment. `None` means "rest as is": stale mouse,
+    /// cursor outside the list, nothing to scroll, or the row already fully
+    /// visible.
+    fn settle_reveal_target(&mut self, now: Instant) -> Option<Pixels> {
+        let moved = self.last_move?;
+        if now.duration_since(moved).as_millis() >= CENTER_AFTER_MOUSE_MS {
+            return None;
+        }
+        let y = self.last_mouse_y?;
+        let bounds = self.bounds.get();
+        if bounds.size.height <= px(0.0) {
+            return None;
+        }
+        let base = self.base_handle();
+        let max_scroll = base.max_offset().height;
+        if max_scroll < px(MIN_SCROLL_RANGE) {
+            return None;
+        }
+        let ix = hover_row_at(
+            f32::from(y),
+            f32::from(bounds.origin.y),
+            f32::from(bounds.size.height),
+            f32::from(base.offset().y),
+            ROW_HEIGHT,
+            self.tabs.len(),
+        )?;
+        let offset = base.offset().y;
+        Some(nearest_offset(
+            px(ix as f32 * ROW_HEIGHT),
+            px(ROW_HEIGHT),
+            -offset,
+            bounds.size.height,
+            offset,
+            max_scroll,
+        ))
     }
 
     /// Tab row under the last known cursor position, recomputed every frame.
@@ -1117,6 +1213,18 @@ mod tests {
         assert_eq!(hover_header_at(101.9), None);
         assert_eq!(hover_header_at(HEADER_H), None);
         assert_eq!(hover_header_at(HEADER_H + 10.0), None);
+    }
+
+
+    #[test]
+    fn tiny_wiggles_rest_quietly_without_centering() {
+        // Below 48 px of travel: a centering nudge (up to half a row)
+        // would outsize the motion itself.
+        assert!(!should_center_after_glide(0.0));
+        assert!(!should_center_after_glide(47.9));
+        // 48 px and beyond: center away.
+        assert!(should_center_after_glide(48.0));
+        assert!(should_center_after_glide(300.0));
     }
 
     #[test]
