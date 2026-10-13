@@ -4167,6 +4167,15 @@ impl Render for AppView {
                                                                 .py_0()
                                                                 .font_family(editor_font.clone())
                                                                 .text_sm()
+                                                                // gpui paints a `TextRun` background at the text
+                                                                // element's line height, and the default (1.618 x
+                                                                // font size) is taller than a heading row
+                                                                // (1.35 x font size), so an inline-code chip would
+                                                                // spill into the rows above and below. Pin the line
+                                                                // height to the row so the chip fits the line; the
+                                                                // glyph baseline does not move, because the text
+                                                                // element stays centred in the row either way.
+                                                                .line_height(px(row_h))
                                                                 .cursor(gpui::CursorStyle::IBeam)
                                                                 .when(is_opening_fence && !is_in_active_block, |s| s.bg(theme.bg_card).rounded_t_sm())
                                                                 .when(is_closing_fence && !is_in_active_block, |s| s.bg(theme.bg_card).rounded_b_sm())
@@ -4566,6 +4575,26 @@ impl Render for AppView {
     }
 }
 
+/// Colour and background a syntax marker is painted with, or `None` when it is not
+/// painted at all on this line.
+///
+/// Every marker except an inline-code delimiter only shows on the active line. A code
+/// delimiter is painted even off the active line so that the code chip keeps a constant
+/// width — and with it the selection rectangle, which otherwise jumps by two cells the
+/// moment the line becomes active. Off the active line the delimiter is drawn in the
+/// chip's own background colour, i.e. invisibly, which is exactly what reads as the
+/// chip's left/right padding. `markdown::row_painted_text` must agree: it keeps the
+/// delimiter's cell on an idle line for the same reason.
+fn marker_paint(m: &str, is_active_line: bool, theme: &Theme) -> Option<(gpui::Hsla, Option<gpui::Hsla>)> {
+    let is_code_delim = crate::markdown::is_inline_code_delim(m);
+    if !is_active_line && !is_code_delim {
+        return None;
+    }
+    let color: gpui::Hsla = if is_active_line { theme.text_muted.into() } else { theme.code_bg.into() };
+    let background_color: Option<gpui::Hsla> = if is_code_delim { Some(theme.code_bg.into()) } else { None };
+    Some((color, background_color))
+}
+
 fn render_syntax_spans(
     spans: Vec<crate::markdown::SyntaxSpan>,
     is_active_line: bool,
@@ -4613,14 +4642,14 @@ fn render_syntax_spans(
     for span in spans {
         match span {
             crate::markdown::SyntaxSpan::Marker(m) => {
-                if is_active_line {
+                if let Some((color, background_color)) = marker_paint(&m, is_active_line, theme) {
                     let len = m.len();
                     full_text.push_str(&m);
                     runs.push(gpui::TextRun {
                         len,
                         font: reg_font.clone(),
-                        color: theme.text_muted.into(),
-                        background_color: None,
+                        color,
+                        background_color,
                         underline: None,
                         strikethrough: None,
                     });
@@ -4675,12 +4704,15 @@ fn render_syntax_spans(
                 });
             }
             crate::markdown::SyntaxSpan::InlineCode(c) => {
+                // Inline code keeps the surrounding text colour and is marked out by its
+                // chip background alone, so its colour never changes as the caret moves
+                // in and out of the line.
                 let len = c.len();
                 full_text.push_str(&c);
                 runs.push(gpui::TextRun {
                     len,
                     font: reg_font.clone(),
-                    color: theme.success.into(),
+                    color: main_color.into(),
                     background_color: Some(theme.code_bg.into()),
                     underline: None,
                     strikethrough: None,
@@ -5840,5 +5872,38 @@ mod tests {
                 cx.new(|_| DummyView)
             });
         });
+    }
+
+    /// The inline-code chip keeps a constant width, so the marker delimiting it must stay
+    /// painted off the active line — in the chip's own colour, i.e. invisibly. Every other
+    /// marker collapses entirely when the line is idle.
+    #[test]
+    fn code_delimiters_stay_painted_off_the_active_line() {
+        let theme = Theme::light();
+        // `Hsla` is not `PartialEq`, and the Rgba -> Hsla -> Rgba round trip is not
+        // exact, so compare the components with a tolerance.
+        let comps = |c: gpui::Rgba| (c.r, c.g, c.b, c.a);
+        let same = |a: gpui::Hsla, b: gpui::Rgba| {
+            let a = comps(gpui::Rgba::from(a));
+            let b = comps(b);
+            (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3 && (a.2 - b.2).abs() < 1e-3 && (a.3 - b.3).abs() < 1e-3
+        };
+
+        assert!(marker_paint("**", false, &theme).is_none(), "a hidden `**` must not be painted");
+        assert!(marker_paint("~~", false, &theme).is_none(), "a hidden `~~` must not be painted");
+
+        let muted = marker_paint("**", true, &theme).expect("an active-line marker is painted");
+        assert!(same(muted.0, theme.text_muted), "an active-line marker is muted: {:?}", comps(gpui::Rgba::from(muted.0)));
+        assert!(muted.1.is_none(), "an active-line marker carries no background");
+
+        let idle_delim = marker_paint("`", false, &theme).expect("a code delimiter is always painted");
+        assert!(same(idle_delim.0, theme.code_bg), "an idle delimiter must be invisible against the chip: {:?}", comps(gpui::Rgba::from(idle_delim.0)));
+        let bg = idle_delim.1.expect("a delimiter carries the chip background");
+        assert!(same(bg, theme.code_bg), "the chip background must be code_bg: {:?}", comps(gpui::Rgba::from(bg)));
+
+        let active_delim = marker_paint("`", true, &theme).expect("a code delimiter is always painted");
+        assert!(same(active_delim.0, theme.text_muted), "an active delimiter is muted: {:?}", comps(gpui::Rgba::from(active_delim.0)));
+        let bg = active_delim.1.expect("a delimiter carries the chip background");
+        assert!(same(bg, theme.code_bg), "the chip background must be code_bg: {:?}", comps(gpui::Rgba::from(bg)));
     }
 }

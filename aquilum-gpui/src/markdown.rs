@@ -1125,8 +1125,19 @@ pub struct PaintedRow {
     /// painted char, so `line_chars.len() == columns() + 1`.
     ///
     /// Non-decreasing, but not strictly so: synthetic continuation padding repeats the
-    /// first char of the wrapped content, and hidden inline markers leave gaps.
+    /// first char of the wrapped content, and hidden inline markers leave gaps (the one
+    /// exception being an inline-code delimiter, which keeps its cell — see
+    /// `is_inline_code_delim`).
     pub line_chars: Vec<usize>,
+}
+
+/// An inline-code delimiter is a lone backtick. It is the one inline marker that keeps
+/// its cell when it is not painted, so that the code chip has a constant width and the
+/// selection rectangle does not jump when the delimiters become visible on the active
+/// line. Both the geometry (`row_painted_text`) and the renderer
+/// (`views::app_view::render_syntax_spans`) must agree on this.
+pub fn is_inline_code_delim(text: &str) -> bool {
+    text == "`"
 }
 
 impl PaintedRow {
@@ -1317,8 +1328,13 @@ pub fn row_painted_text(
                 if n == 0 {
                     continue;
                 }
-                // Hidden markers are not painted, but they still occupy line chars.
-                if is_marker && !is_active_line {
+                // An inline-code delimiter keeps its cell on an idle line, so the code
+                // chip has a constant width and the selection rectangle does not jump
+                // when the delimiters appear on the active line. The renderer paints
+                // that cell in the chip's own background colour, i.e. invisibly, which
+                // is what reads as the chip's left/right padding. Every other hidden
+                // marker collapses to nothing and leaves a gap in the line chars.
+                if is_marker && !is_active_line && !is_inline_code_delim(text) {
                     src += n;
                     continue;
                 }
@@ -1537,6 +1553,23 @@ mod tests {
         // The two hidden `**` runs still consume line chars, so the columns skip them.
         assert_eq!(row.line_chars, vec![0, 3, 6, 7]);
         assert_eq!(row.columns(), 3);
+    }
+
+    #[test]
+    fn painted_inline_code_keeps_its_delimiters_when_idle() {
+        let line = "a `x` b";
+        let kind = classify_line(line, None);
+
+        // The delimiters keep their cells off the active line too, so the code chip has a
+        // constant width and the selection rectangle does not jump when the line becomes
+        // active. Every other hidden marker still collapses (see the `**` test above).
+        let idle = painted(line, &kind, 0, 7, 0, false);
+        assert_eq!(text_of(&idle), "a `x` b");
+        assert_eq!(idle.line_chars, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+
+        let active = painted(line, &kind, 0, 7, 0, true);
+        assert_eq!(text_of(&active), "a `x` b");
+        assert_eq!(active.line_chars, vec![0, 1, 2, 3, 4, 5, 6, 7]);
     }
 
     #[test]
