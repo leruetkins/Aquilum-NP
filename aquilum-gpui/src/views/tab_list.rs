@@ -529,6 +529,9 @@ impl Render for TabListPopup {
             .relative()
             .flex()
             .flex_col()
+            // The panel occludes the editor behind it: without its own
+            // blocking hitbox, mouse presses pass through to the editor.
+            .occlude()
             .w(px(LIST_WIDTH))
             .h(height)
             .py(px(PANEL_PAD_Y))
