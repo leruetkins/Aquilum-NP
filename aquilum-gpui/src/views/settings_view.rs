@@ -2509,6 +2509,75 @@ impl AppView {
             })
     }
 
+    /// Renders an individual parsed inline span for the markdown viewer.
+    fn render_markdown_inline_span(
+        &self,
+        span: crate::markdown::InlineSpan,
+        span_idx: usize,
+        cx: &Context<Self>,
+    ) -> gpui::Div {
+        let theme = &self.theme;
+        match span {
+            crate::markdown::InlineSpan::Bold(t) => {
+                div()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_color(theme.text_primary)
+                    .child(t)
+            }
+            crate::markdown::InlineSpan::Italic(t) => {
+                div()
+                    .italic()
+                    .text_color(theme.text_secondary)
+                    .child(t)
+            }
+            crate::markdown::InlineSpan::BoldItalic(t) => {
+                div()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .italic()
+                    .text_color(theme.text_primary)
+                    .child(t)
+            }
+            crate::markdown::InlineSpan::InlineCode(t) => {
+                div()
+                    .px_1p5()
+                    .py_0p5()
+                    .rounded_sm()
+                    .bg(theme.bg_editor)
+                    .border_1()
+                    .border_color(theme.border)
+                    .font_family(self.editor_font_family())
+                    .text_xs()
+                    .text_color(theme.accent)
+                    .child(t)
+            }
+            crate::markdown::InlineSpan::Link { label, url } => {
+                let target = url.clone();
+                div().child(
+                    div()
+                        .id(gpui::ElementId::from(("readme-link", span_idx)))
+                        .text_color(theme.accent)
+                        .cursor_pointer()
+                        .hover(|h| h.underline())
+                        .child(label)
+                        .on_click(cx.listener(move |_this, _, _, cx| {
+                            cx.open_url(&target);
+                        })),
+                )
+            }
+            crate::markdown::InlineSpan::Strikethrough(t) => {
+                div()
+                    .line_through()
+                    .text_color(theme.text_muted)
+                    .child(t)
+            }
+            crate::markdown::InlineSpan::Text(t) => {
+                div()
+                    .text_color(theme.text_secondary)
+                    .child(t)
+            }
+        }
+    }
+
     /// Renders the individual details and settings tab for a specific community plugin.
     fn render_plugin_settings_tab(&self, plugin_id: &str, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
@@ -2642,12 +2711,14 @@ impl AppView {
             .flex()
             .flex_row()
             .items_center()
+            .flex_shrink_0()
+            .flex_wrap()
             .gap_2()
             // Enable / Disable button
             .child(
                 div()
                     .id("btn-detail-toggle-plugin")
-                    .px_3()
+                    .px_2p5()
                     .py_1p5()
                     .rounded_md()
                     .bg(if is_enabled { theme.bg_hover } else { theme.accent })
@@ -2688,7 +2759,7 @@ impl AppView {
                 parent.child(
                     div()
                         .id("btn-detail-open-folder")
-                        .px_3()
+                        .px_2p5()
                         .py_1p5()
                         .rounded_md()
                         .bg(theme.bg_hover)
@@ -2714,7 +2785,7 @@ impl AppView {
             .child(
                 div()
                     .id("btn-detail-uninstall-plugin")
-                    .px_3()
+                    .px_2p5()
                     .py_1p5()
                     .rounded_md()
                     .bg(rgba(0xea433522))
@@ -2746,6 +2817,7 @@ impl AppView {
             .flex_row()
             .items_start()
             .justify_between()
+            .gap_3()
             .p_4()
             .rounded_lg()
             .bg(theme.bg_card)
@@ -2755,11 +2827,14 @@ impl AppView {
                 div()
                     .flex()
                     .flex_col()
+                    .flex_1()
+                    .min_w_0()
                     .gap_1p5()
                     .child(
                         div()
                             .flex()
                             .flex_row()
+                            .flex_wrap()
                             .items_center()
                             .gap_2p5()
                             .child(
@@ -2843,13 +2918,20 @@ impl AppView {
         ];
 
         if let Some(author_url) = author_url_str {
+            let author_url_click = author_url.clone();
             meta_rows.push(self.render_setting_row(
                 if is_ru { "Сайт автора (authorUrl)" } else { "Author URL" },
                 None,
                 div()
+                    .id("author-url-btn")
                     .text_xs()
                     .text_color(theme.accent)
-                    .child(author_url),
+                    .cursor_pointer()
+                    .hover(|h| h.underline())
+                    .child(author_url)
+                    .on_click(cx.listener(move |_this, _, _, cx| {
+                        cx.open_url(&author_url_click);
+                    })),
             ));
         }
 
@@ -2872,51 +2954,310 @@ impl AppView {
                 .text_xs()
                 .font_family(self.editor_font_family())
                 .text_color(theme.text_muted)
+                .max_w(px(320.0))
+                .truncate()
                 .child(plugin_dir.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default()),
         ));
 
         // Content section: README or fallback information
         let content_section = if let Some(readme_text) = readme_content {
-            // Render parsed markdown lines
-            let rendered_markdown_lines: Vec<gpui::Div> = readme_text
-                .lines()
-                .map(|line| {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        div().h_2()
-                    } else if let Some(h1) = trimmed.strip_prefix("# ") {
-                        div().text_lg().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(h1.to_string())
-                    } else if let Some(h2) = trimmed.strip_prefix("## ") {
-                        div().text_base().font_weight(gpui::FontWeight::BOLD).text_color(theme.text_primary).child(h2.to_string())
-                    } else if let Some(h3) = trimmed.strip_prefix("### ") {
-                        div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).text_color(theme.text_primary).child(h3.to_string())
-                    } else if let Some(bullet) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
-                        let spans = crate::markdown::parse_inline_spans(bullet);
-                        let span_elements = spans.into_iter().map(|s| match s {
-                            crate::markdown::InlineSpan::Bold(t) => div().font_weight(gpui::FontWeight::BOLD).text_color(theme.text_primary).child(t),
-                            crate::markdown::InlineSpan::Italic(t) => div().italic().text_color(theme.text_secondary).child(t),
-                            crate::markdown::InlineSpan::BoldItalic(t) => div().font_weight(gpui::FontWeight::BOLD).italic().text_color(theme.text_primary).child(t),
-                            crate::markdown::InlineSpan::InlineCode(t) => div().px_1().rounded_sm().bg(theme.bg_editor).text_color(theme.accent).child(t),
-                            crate::markdown::InlineSpan::Link { label, .. } => div().text_color(theme.accent).child(label),
-                            crate::markdown::InlineSpan::Strikethrough(t) => div().line_through().text_color(theme.text_muted).child(t),
-                            crate::markdown::InlineSpan::Text(t) => div().text_color(theme.text_secondary).child(t),
-                        });
-                        div().flex().flex_row().items_start().gap_2().child(div().text_color(theme.accent).child("•")).child(div().flex().flex_row().flex_wrap().gap_1().children(span_elements))
-                    } else {
-                        let spans = crate::markdown::parse_inline_spans(line);
-                        let span_elements = spans.into_iter().map(|s| match s {
-                            crate::markdown::InlineSpan::Bold(t) => div().font_weight(gpui::FontWeight::BOLD).text_color(theme.text_primary).child(t),
-                            crate::markdown::InlineSpan::Italic(t) => div().italic().text_color(theme.text_secondary).child(t),
-                            crate::markdown::InlineSpan::BoldItalic(t) => div().font_weight(gpui::FontWeight::BOLD).italic().text_color(theme.text_primary).child(t),
-                            crate::markdown::InlineSpan::InlineCode(t) => div().px_1().rounded_sm().bg(theme.bg_editor).text_color(theme.accent).child(t),
-                            crate::markdown::InlineSpan::Link { label, .. } => div().text_color(theme.accent).child(label),
-                            crate::markdown::InlineSpan::Strikethrough(t) => div().line_through().text_color(theme.text_muted).child(t),
-                            crate::markdown::InlineSpan::Text(t) => div().text_color(theme.text_secondary).child(t),
-                        });
-                        div().flex().flex_row().flex_wrap().gap_1().text_sm().children(span_elements)
+            let mut rendered_markdown_lines: Vec<gpui::Div> = Vec::new();
+            let mut lines_iter = readme_text.lines().peekable();
+            let mut span_counter = 0usize;
+
+            while let Some(line) = lines_iter.next() {
+                let trimmed = line.trim();
+
+                // 1. Fenced code block (``` or ~~~)
+                if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                    let fence = if trimmed.starts_with("```") { "```" } else { "~~~" };
+                    let lang = trimmed.trim_start_matches(fence).trim().to_string();
+                    let lang_opt = if !lang.is_empty() { Some(lang) } else { None };
+
+                    let mut code_lines = Vec::new();
+                    while let Some(next_line) = lines_iter.peek() {
+                        let trimmed_peek = next_line.trim();
+                        if trimmed_peek.starts_with(fence) {
+                            lines_iter.next(); // consume closing fence
+                            break;
+                        }
+                        code_lines.push(lines_iter.next().unwrap());
                     }
-                })
-                .collect();
+
+                    let code_str = code_lines.join("\n");
+                    rendered_markdown_lines.push(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .my_2()
+                            .rounded_md()
+                            .bg(theme.bg_editor)
+                            .border_1()
+                            .border_color(theme.border)
+                            .overflow_hidden()
+                            .when_some(lang_opt, |parent, l| {
+                                parent.child(
+                                    div()
+                                        .px_3()
+                                        .py_1()
+                                        .bg(theme.bg_hover)
+                                        .border_b_1()
+                                        .border_color(theme.border_subtle)
+                                        .text_xs()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(theme.text_muted)
+                                        .child(l),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .p_3()
+                                    .font_family(self.editor_font_family())
+                                    .text_xs()
+                                    .line_height(gpui::relative(1.4))
+                                    .text_color(theme.text_primary)
+                                    .child(code_str),
+                            ),
+                    );
+                    continue;
+                }
+
+                // 2. Empty line
+                if trimmed.is_empty() {
+                    rendered_markdown_lines.push(div().h_2());
+                    continue;
+                }
+
+                // 3. Headings
+                if let Some(h1) = trimmed.strip_prefix("# ") {
+                    rendered_markdown_lines.push(
+                        div()
+                            .text_lg()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(theme.accent)
+                            .mt_3()
+                            .mb_1()
+                            .child(h1.to_string()),
+                    );
+                    continue;
+                }
+                if let Some(h2) = trimmed.strip_prefix("## ") {
+                    rendered_markdown_lines.push(
+                        div()
+                            .text_base()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(theme.text_primary)
+                            .mt_2p5()
+                            .mb_1()
+                            .child(h2.to_string()),
+                    );
+                    continue;
+                }
+                if let Some(h3) = trimmed.strip_prefix("### ") {
+                    rendered_markdown_lines.push(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.text_primary)
+                            .mt_2()
+                            .mb_0p5()
+                            .child(h3.to_string()),
+                    );
+                    continue;
+                }
+                if let Some(h4) = trimmed.strip_prefix("#### ") {
+                    rendered_markdown_lines.push(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.text_secondary)
+                            .mt_1p5()
+                            .child(h4.to_string()),
+                    );
+                    continue;
+                }
+
+                // 4. Horizontal rule
+                if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+                    rendered_markdown_lines.push(
+                        div()
+                            .h(px(1.0))
+                            .w_full()
+                            .bg(theme.border)
+                            .my_2(),
+                    );
+                    continue;
+                }
+
+                // 5. Blockquote
+                if let Some(quote) = trimmed.strip_prefix("> ") {
+                    rendered_markdown_lines.push(
+                        div()
+                            .border_l_2()
+                            .border_color(theme.accent)
+                            .pl_3()
+                            .py_0p5()
+                            .my_1()
+                            .italic()
+                            .text_sm()
+                            .text_color(theme.text_muted)
+                            .child(quote.to_string()),
+                    );
+                    continue;
+                }
+
+                // 6. Task list item
+                let task_opt = if let Some(rest) = trimmed.strip_prefix("- [x] ").or_else(|| trimmed.strip_prefix("- [X] ")).or_else(|| trimmed.strip_prefix("* [x] ")).or_else(|| trimmed.strip_prefix("* [X] ")) {
+                    Some((true, rest))
+                } else if let Some(rest) = trimmed.strip_prefix("- [ ] ").or_else(|| trimmed.strip_prefix("* [ ] ")) {
+                    Some((false, rest))
+                } else {
+                    None
+                };
+                if let Some((checked, task_text)) = task_opt {
+                    let spans = crate::markdown::parse_inline_spans(task_text);
+                    let span_elements: Vec<gpui::Div> = spans
+                        .into_iter()
+                        .map(|s| {
+                            let idx = span_counter;
+                            span_counter += 1;
+                            self.render_markdown_inline_span(s, idx, cx)
+                        })
+                        .collect();
+                    let checkbox = div()
+                        .w_3p5()
+                        .h_3p5()
+                        .mt_0p5()
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(if checked { theme.accent } else { theme.border })
+                        .bg(if checked { theme.accent } else { theme.bg_editor })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(checked, |c| c.child(icons::icon(icons::ICON_CHECK, 10.0, theme.text_on_accent)));
+                    rendered_markdown_lines.push(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_start()
+                            .gap_2()
+                            .my_0p5()
+                            .child(checkbox)
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .text_sm()
+                                    .children(span_elements),
+                            ),
+                    );
+                    continue;
+                }
+
+                // 7. Bullet list item
+                if let Some(bullet) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")).or_else(|| trimmed.strip_prefix("+ ")) {
+                    let spans = crate::markdown::parse_inline_spans(bullet);
+                    let span_elements: Vec<gpui::Div> = spans
+                        .into_iter()
+                        .map(|s| {
+                            let idx = span_counter;
+                            span_counter += 1;
+                            self.render_markdown_inline_span(s, idx, cx)
+                        })
+                        .collect();
+                    rendered_markdown_lines.push(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_start()
+                            .gap_2()
+                            .my_0p5()
+                            .child(div().text_color(theme.accent).child("•"))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .text_sm()
+                                    .children(span_elements),
+                            ),
+                    );
+                    continue;
+                }
+
+                // 8. Numbered list item
+                let digits_len = trimmed.chars().take_while(|c| c.is_ascii_digit()).count();
+                if digits_len > 0 && trimmed[digits_len..].starts_with(". ") {
+                    let num = &trimmed[..digits_len];
+                    let text = &trimmed[digits_len + 2..];
+                    let spans = crate::markdown::parse_inline_spans(text);
+                    let span_elements: Vec<gpui::Div> = spans
+                        .into_iter()
+                        .map(|s| {
+                            let idx = span_counter;
+                            span_counter += 1;
+                            self.render_markdown_inline_span(s, idx, cx)
+                        })
+                        .collect();
+                    rendered_markdown_lines.push(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_start()
+                            .gap_1p5()
+                            .my_0p5()
+                            .child(div().text_xs().text_color(theme.text_muted).child(format!("{}.", num)))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .text_sm()
+                                    .children(span_elements),
+                            ),
+                    );
+                    continue;
+                }
+
+                // 9. Regular paragraph / text line
+                let spans = crate::markdown::parse_inline_spans(line);
+                if spans.len() == 1 {
+                    if let crate::markdown::InlineSpan::Text(t) = &spans[0] {
+                        rendered_markdown_lines.push(
+                            div()
+                                .text_sm()
+                                .line_height(gpui::relative(1.4))
+                                .text_color(theme.text_secondary)
+                                .child(t.clone()),
+                        );
+                        continue;
+                    }
+                }
+
+                let span_elements: Vec<gpui::Div> = spans
+                    .into_iter()
+                    .map(|s| {
+                        let idx = span_counter;
+                        span_counter += 1;
+                        self.render_markdown_inline_span(s, idx, cx)
+                    })
+                    .collect();
+                rendered_markdown_lines.push(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .items_center()
+                        .text_sm()
+                        .line_height(gpui::relative(1.4))
+                        .children(span_elements),
+                );
+            }
 
             div()
                 .flex()
@@ -2933,7 +3274,6 @@ impl AppView {
                     div()
                         .flex()
                         .flex_col()
-                        .gap_2()
                         .p_5()
                         .rounded_lg()
                         .bg(theme.bg_card)
@@ -3062,7 +3402,12 @@ impl AppView {
             .flex()
             .flex_col()
             .gap_5()
-            .child(back_btn)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .child(back_btn),
+            )
             .child(details_header)
             .child(self.render_settings_card(if is_ru { "Метаданные" } else { "Metadata" }, meta_rows))
             .child(content_section)
@@ -3121,6 +3466,39 @@ mod tests {
         assert_eq!(read_upper.unwrap(), "# Upper README");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_markdown_code_block_and_span_parsing() {
+        let md = "# Title\n\n```text\nfolder/file.js\n└── styles.css\n```\n\n- [x] Done task\n- [ ] Todo task\n- Bullet item with `inline code` and [Link](https://example.com)\n\nRegular paragraph.";
+        let mut lines = md.lines().peekable();
+        let mut code_blocks = Vec::new();
+        let mut tasks = Vec::new();
+
+        while let Some(line) = lines.next() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("```") {
+                let mut block_lines = Vec::new();
+                while let Some(next_line) = lines.peek() {
+                    if next_line.trim().starts_with("```") {
+                        lines.next();
+                        break;
+                    }
+                    block_lines.push(lines.next().unwrap());
+                }
+                code_blocks.push(block_lines.join("\n"));
+            } else if trimmed.starts_with("- [x] ") {
+                tasks.push((true, trimmed.strip_prefix("- [x] ").unwrap()));
+            } else if trimmed.starts_with("- [ ] ") {
+                tasks.push((false, trimmed.strip_prefix("- [ ] ").unwrap()));
+            }
+        }
+
+        assert_eq!(code_blocks.len(), 1);
+        assert_eq!(code_blocks[0], "folder/file.js\n└── styles.css");
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0], (true, "Done task"));
+        assert_eq!(tasks[1], (false, "Todo task"));
     }
 }
 
