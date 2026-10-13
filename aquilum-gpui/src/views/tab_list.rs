@@ -67,7 +67,7 @@ const SPRING_OMEGA: f32 = 10.0;
 /// Stiffer spring once the mouse stops: the list lands fast instead of
 /// trailing behind with a tail. 0 would snap onto the target instantly,
 /// 25-40 is almost tailless but without a harsh snap.
-const SETTLE_OMEGA: f32 = 80.0;
+const SETTLE_OMEGA: f32 = 70.0;
 /// Pause without mouse motion (ms) after which the cursor counts as idle.
 const IDLE_AFTER_MS: u128 = 50;
 /// The list counts as settled when the spring velocity drops below this (px/s).
@@ -177,6 +177,59 @@ fn cursor_target_offset(
     let t = ((cursor_y - list_top - pad) / usable).clamp(0.0, 1.0);
     // In gpui the offset is negative: 0 is the top, -max is the bottom.
     -(max_scroll * t)
+}
+
+/// Row index at a cursor height, or `None` outside `[top, top + height]`.
+///
+/// Pure geometry shared by the hover highlight: `floor` gives the lower row
+/// a deterministic win exactly on a boundary. That matters because gpui
+/// hitboxes include both edges (`Bounds::contains` uses `>=`/`<=`), so a
+/// cursor parked exactly on a row seam belongs to two hitboxes and the stock
+/// CSS `:hover` lights both rows at once.
+fn hover_row_at(
+    cursor_y: f32,
+    top: f32,
+    height: f32,
+    offset_y: f32,
+    row_h: f32,
+    count: usize,
+) -> Option<usize> {
+    if count == 0 || height <= 0.0 || row_h <= 0.0 {
+        return None;
+    }
+    if cursor_y < top || cursor_y > top + height {
+        return None;
+    }
+    let content_y = (cursor_y - top) + (-offset_y);
+    let ix = (content_y / row_h).floor() as isize;
+    if ix < 0 || ix >= count as isize {
+        None
+    } else {
+        Some(ix as usize)
+    }
+}
+
+/// Header action row at a height relative to the header top, or `None` on
+/// dividers, padding, or outside. Layout mirrors `render_header` exactly:
+/// three 28 px rows split by two 9 px dividers.
+fn hover_header_at(rel_y: f32) -> Option<usize> {
+    // (exclusive upper bound, row) segments from the header top.
+    const BOUNDS: [(f32, Option<usize>); 5] = [
+        (ROW_HEIGHT, Some(0)),
+        (ROW_HEIGHT * 2.0, Some(1)),
+        (ROW_HEIGHT * 2.0 + DIVIDER_H, None),
+        (ROW_HEIGHT * 3.0 + DIVIDER_H, Some(2)),
+        (HEADER_H, None),
+    ];
+    if rel_y < 0.0 {
+        return None;
+    }
+    for (end, row) in BOUNDS {
+        if rel_y < end {
+            return row;
+        }
+    }
+    None
 }
 
 /// Offset that brings the row `[item_top, item_top + item_height]` into the
@@ -307,10 +360,11 @@ impl TabListPopup {
     /// Maps the absolute cursor position to a target offset.
     ///
     /// The repaint at the end is unconditional, and that is not an optimisation detail:
-    /// the hover highlight is resolved from the hit test while a frame is built, and the
-    /// window is only redrawn when a listener asks for it. A cursor that lands on a row
-    /// in a single jump produces exactly one event, so gating `notify` behind "the offset
-    /// changed" would leave that row unlit. Everything above only decides the offset.
+    /// the hover highlight is computed from the cursor position while a frame is built
+    /// (see `hover_tab_ix`), and the window is only redrawn when a listener asks for
+    /// it. A cursor that lands on a row in a single jump produces exactly one event,
+    /// so gating `notify` behind "the offset changed" would leave that row unlit.
+    /// Everything above only decides the offset.
     fn on_mouse_move(&mut self, y: Pixels, cx: &mut Context<Self>) {
     match self.last_mouse_y {
         // The first event only primes the reference point: the cursor still sits over the
@@ -446,9 +500,38 @@ impl TabListPopup {
         true
     }
 
+    /// Tab row under the last known cursor position, recomputed every frame.
+    ///
+    /// The highlight follows sliding rows during the scroll animation even
+    /// with a stationary mouse, and resolves to a single row on seams (unlike
+    /// CSS `:hover`, whose hitboxes include both edges).
+    fn hover_tab_ix(&self) -> Option<usize> {
+        let y = self.last_mouse_y?;
+        let bounds = self.bounds.get();
+        hover_row_at(
+            f32::from(y),
+            f32::from(bounds.origin.y),
+            f32::from(bounds.size.height),
+            f32::from(self.base_handle().offset().y),
+            ROW_HEIGHT,
+            self.tabs.len(),
+        )
+    }
+
+    /// Header action row under the cursor (0, 1 or 2), if the popup has
+    /// a header at all.
+    fn hover_header_ix(&self) -> Option<usize> {
+        let bounds = self.bounds.get();
+        if bounds.size.height <= px(0.0) {
+            return None;
+        }
+        let y = self.last_mouse_y?;
+        hover_header_at(f32::from(y) - (f32::from(bounds.origin.y) - HEADER_H))
+    }
+
     /// Renders a single row: icon, title, optional subtitle, and a check mark
     /// for the active row only.
-    fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_row(&self, ix: usize, hovered: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let tab = &self.tabs[ix];
         let id = tab.id;
         let title = tab.title.clone();
@@ -481,7 +564,9 @@ impl TabListPopup {
             .px_2()
             .rounded_md()
             .cursor_pointer()
-            .hover(move |row| row.bg(bg_hover))
+            // Manual highlight (see `hover_tab_ix`): stock hover lights every
+            // hitbox sharing the cursor point, i.e. both rows on a seam.
+            .when(hovered, move |row| row.bg(bg_hover))
             .child(icons::icon(icon, ICON_SIZE, icon_color))
             .child(
                 div()
@@ -519,8 +604,10 @@ impl TabListPopup {
         icon: &'static str,
         label: SharedString,
         event: TabListEvent,
+        hovered: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let bg_hover = self.theme.bg_hover;
         div()
             .id(id)
             .flex()
@@ -531,7 +618,7 @@ impl TabListPopup {
             .px_2()
             .rounded_md()
             .cursor_pointer()
-            .hover(|row| row.bg(self.theme.bg_hover))
+            .when(hovered, move |row| row.bg(bg_hover))
             .child(icons::icon(icon, ICON_SIZE, self.theme.text_secondary))
             .child(
                 div()
@@ -556,6 +643,7 @@ impl TabListPopup {
 
     /// Renders the popup header: Obsidian-style tab actions above the list.
     fn render_header(&self, header: &TabListHeader, cx: &mut Context<Self>) -> impl IntoElement {
+        let hover = self.hover_header_ix();
         div()
             .flex()
             .flex_col()
@@ -565,6 +653,7 @@ impl TabListPopup {
                 icons::ICON_LAYERS,
                 header.fold.clone(),
                 TabListEvent::FoldTabs,
+                hover == Some(0),
                 cx,
             ))
             .child(self.render_header_row(
@@ -572,6 +661,7 @@ impl TabListPopup {
                 icons::ICON_BOOKMARK,
                 header.bookmark.clone(),
                 TabListEvent::BookmarkTabs,
+                hover == Some(1),
                 cx,
             ))
             .child(self.render_header_divider("tab-list-divider-1"))
@@ -580,6 +670,7 @@ impl TabListPopup {
                 icons::ICON_CLOSE,
                 header.close_all.clone(),
                 TabListEvent::CloseAllTabs,
+                hover == Some(2),
                 cx,
             ))
             .child(self.render_header_divider("tab-list-divider-2"))
@@ -646,6 +737,14 @@ impl Render for TabListPopup {
             .track_focus(&self.focus_handle)
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
                 this.on_mouse_move(event.position.y, cx);
+            }))
+            // Leaving the panel clears the manual highlight (see `hover_tab_ix`):
+            // without this the last row would stay lit forever.
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !hovered {
+                    this.last_mouse_y = None;
+                    cx.notify();
+                }
             }))
             .on_mouse_down_out(cx.listener(|_this, _event, _window, cx| {
                 cx.emit(TabListEvent::Dismiss);
@@ -714,7 +813,10 @@ impl Render for TabListPopup {
                             "tab-list-popup-rows",
                             count,
                             cx.processor(|this, range: Range<usize>, _window, cx| {
-                                range.map(|ix| this.render_row(ix, cx)).collect::<Vec<_>>()
+                                let hover = this.hover_tab_ix();
+                                range
+                                    .map(|ix| this.render_row(ix, hover == Some(ix), cx))
+                                    .collect::<Vec<_>>()
                             }),
                         )
                         .track_scroll(self.scroll.clone())
@@ -966,6 +1068,56 @@ mod tests {
 
     // The tests below use list_top = 100 and list_height = 300, so the dead zone is
     // clamp(300 * 0.10, 28, 56) = 30 px: the proportional band is 130..370.
+
+    #[test]
+    fn hover_row_resolves_to_a_single_row() {
+        let at = |y: f32| hover_row_at(y, 100.0, 280.0, 0.0, ROW_HEIGHT, 10);
+        assert_eq!(at(100.0), Some(0));
+        assert_eq!(at(100.0 + 3.0 * ROW_HEIGHT + 1.0), Some(3));
+        // Exactly on a seam: floor wins deterministically, never both rows.
+        assert_eq!(at(100.0 + 2.0 * ROW_HEIGHT), Some(2));
+        // Exactly on the bottom edge there is no row anymore (past the last one).
+        assert_eq!(at(100.0 + 280.0), None);
+        // ...but a hair above still hits the last row.
+        assert_eq!(at(100.0 + 279.9), Some(9));
+    }
+
+    #[test]
+    fn hover_row_follows_a_scrolled_offset() {
+        // Viewport scrolled by 56 px (two rows): content [56, 336).
+        let at = |y: f32| hover_row_at(y, 100.0, 280.0, -56.0, ROW_HEIGHT, 10);
+        assert_eq!(at(100.0), Some(2));
+        // Bottom edge shows content 336: clamps into the list.
+        // Bottom edge shows content past the list: nothing hovered.
+        assert_eq!(at(100.0 + 280.0), None);
+    }
+
+    #[test]
+    fn hover_row_is_none_outside_the_list() {
+        let at = |y: f32| hover_row_at(y, 100.0, 280.0, 0.0, ROW_HEIGHT, 10);
+        assert_eq!(at(99.9), None);
+        assert_eq!(at(100.0 + 280.0 + 0.1), None);
+        assert_eq!(hover_row_at(150.0, 100.0, 280.0, 0.0, ROW_HEIGHT, 0), None);
+        assert_eq!(hover_row_at(150.0, 100.0, 0.0, 0.0, ROW_HEIGHT, 10), None);
+    }
+
+    #[test]
+    fn hover_header_maps_rows_and_skips_dividers() {
+        assert_eq!(hover_header_at(-0.1), None);
+        assert_eq!(hover_header_at(0.0), Some(0));
+        assert_eq!(hover_header_at(27.9), Some(0));
+        assert_eq!(hover_header_at(28.0), Some(1));
+        // First divider: no row.
+        assert_eq!(hover_header_at(56.0), None);
+        assert_eq!(hover_header_at(64.9), None);
+        assert_eq!(hover_header_at(65.0), Some(2));
+        assert_eq!(hover_header_at(92.9), Some(2));
+        // Second divider and below: nothing.
+        assert_eq!(hover_header_at(93.0), None);
+        assert_eq!(hover_header_at(101.9), None);
+        assert_eq!(hover_header_at(HEADER_H), None);
+        assert_eq!(hover_header_at(HEADER_H + 10.0), None);
+    }
 
     #[test]
     fn edge_pad_is_a_fraction_of_the_height_within_bounds() {
