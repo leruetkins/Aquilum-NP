@@ -2407,6 +2407,7 @@ impl AppView {
                 }));
 
             let p_name = plugin.manifest.name.clone();
+            let details_btn_id = p_id.clone();
             let settings_btn_id = p_id.clone();
             let action_group = div()
                 .flex()
@@ -2434,7 +2435,62 @@ impl AppView {
                 .child(toggle);
 
             let hint = format!("v{} • {}", plugin.manifest.version, plugin.manifest.description);
-            plugin_rows.push(self.render_setting_row(&p_name, Some(&hint), action_group));
+            let row_header = div()
+                .id(gpui::ElementId::from(gpui::SharedString::from(format!("comm-item-title-{}", plugin.manifest.id))))
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .mr_4()
+                .gap_0p5()
+                .cursor_pointer()
+                .hover(|h| h.opacity(0.85))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings_tab = SettingsTab::PluginSettings(details_btn_id.clone());
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(theme.text_primary)
+                                .child(p_name),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.accent)
+                                .child("↗"),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.text_muted)
+                        .child(hint),
+                );
+
+            let row = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .py_3()
+                .border_b_1()
+                .border_color(theme.border_subtle)
+                .child(row_header)
+                .child(
+                    div()
+                        .flex_none()
+                        .child(action_group),
+                );
+            plugin_rows.push(row);
         }
 
         let installed_card_title = if is_ru {
@@ -2453,7 +2509,7 @@ impl AppView {
             })
     }
 
-    /// Renders the individual settings tab for a specific community plugin.
+    /// Renders the individual details and settings tab for a specific community plugin.
     fn render_plugin_settings_tab(&self, plugin_id: &str, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
         let is_ru = self.config.ui.language.starts_with("ru");
@@ -2477,26 +2533,477 @@ impl AppView {
                     .text_xs()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.text_primary)
-                    .child(if is_ru { "Назад к плагинам" } else { "Back to plugins" }),
+                    .child(if is_ru { "Назад к списку плагинов" } else { "Back to plugins" }),
             )
             .on_click(cx.listener(|this, _, _, cx| {
                 this.settings_tab = SettingsTab::CommunityPlugins;
                 cx.notify();
             }));
 
+        // Retrieve plugin folder, manifest, and README.
+        // The directory name on disk might not match manifest.id (e.g. "obsidian-new-note-np" vs "new-note-np").
+        // Search through discovered plugins or fallback to direct id lookup.
+        let (plugin_dir, manifest, manifest_json) = if let Some(vault) = &self.state.vault {
+            let plugins_dir = vault.root.join(".vault").join("plugins");
+            let discovered = crate::plugins::loader::discover_plugins(&plugins_dir);
+            if let Some(found) = discovered.into_iter().find(|p| p.manifest.id == plugin_id || p.dir_path.file_name().and_then(|n| n.to_str()) == Some(plugin_id)) {
+                let m_path = found.dir_path.join("manifest.json");
+                let raw_val: Option<serde_json::Value> = std::fs::read_to_string(&m_path).ok().and_then(|c| serde_json::from_str(&c).ok());
+                (Some(found.dir_path), Some(found.manifest), raw_val)
+            } else {
+                let direct_dir = plugins_dir.join(plugin_id);
+                let m_path = direct_dir.join("manifest.json");
+                let content = std::fs::read_to_string(&m_path).ok();
+                let m = content.as_deref().and_then(|c| serde_json::from_str(c).ok());
+                let raw_val: Option<serde_json::Value> = content.as_deref().and_then(|c| serde_json::from_str(c).ok());
+                (Some(direct_dir), m, raw_val)
+            }
+        } else {
+            (None, None, None)
+        };
+
+        // Search for README.md or readme.md
+        let readme_content = plugin_dir.as_ref().and_then(|d| {
+            let p1 = d.join("README.md");
+            if p1.is_file() {
+                return std::fs::read_to_string(p1).ok();
+            }
+            let p2 = d.join("readme.md");
+            if p2.is_file() {
+                return std::fs::read_to_string(p2).ok();
+            }
+            // Check case-insensitive in directory if needed
+            if let Ok(entries) = std::fs::read_dir(d) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                            if file_name.eq_ignore_ascii_case("readme.md") {
+                                return std::fs::read_to_string(path).ok();
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        });
+
+        let is_enabled = self.state.vault.as_ref().map(|v| v.is_community_plugin_enabled(plugin_id)).unwrap_or(false);
+        let toggle_id = plugin_id.to_string();
+        let uninstall_id = plugin_id.to_string();
+        let plugin_dir_for_reveal = plugin_dir.clone();
+
+        let display_name = manifest_json
+            .as_ref()
+            .and_then(|j| j.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()))
+            .or_else(|| manifest.as_ref().map(|m| m.name.clone()))
+            .unwrap_or_else(|| plugin_id.to_string());
+
+        let version_str = manifest_json
+            .as_ref()
+            .and_then(|j| j.get("version").and_then(|v| v.as_str()).map(|s| format!("v{}", s)))
+            .or_else(|| manifest.as_ref().map(|m| format!("v{}", m.version)))
+            .unwrap_or_else(|| "v?".to_string());
+
+        let author_str = manifest_json
+            .as_ref()
+            .and_then(|j| j.get("author").and_then(|v| v.as_str()).map(|s| s.to_string()))
+            .or_else(|| manifest.as_ref().map(|m| m.author.clone()))
+            .unwrap_or_default();
+
+        let desc_str = manifest_json
+            .as_ref()
+            .and_then(|j| j.get("description").and_then(|v| v.as_str()).map(|s| s.to_string()))
+            .or_else(|| manifest.as_ref().map(|m| m.description.clone()))
+            .unwrap_or_default();
+
+        let min_app = manifest_json
+            .as_ref()
+            .and_then(|j| j.get("minAppVersion").and_then(|v| v.as_str()).map(|s| s.to_string()))
+            .or_else(|| manifest.as_ref().and_then(|m| m.min_app_version.clone()))
+            .unwrap_or_else(|| "0.1.0".to_string());
+
+        let author_url_str = manifest_json
+            .as_ref()
+            .and_then(|j| j.get("authorUrl").and_then(|v| v.as_str()).map(|s| s.to_string()));
+
+        let is_desktop_only_opt = manifest_json
+            .as_ref()
+            .and_then(|j| j.get("isDesktopOnly").and_then(|v| v.as_bool()));
+
+        let actual_manifest_id = manifest_json
+            .as_ref()
+            .and_then(|j| j.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+            .or_else(|| manifest.as_ref().map(|m| m.id.clone()))
+            .unwrap_or_else(|| plugin_id.to_string());
+
+        // Header with title, version, author, and action buttons
+        let header_actions = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            // Enable / Disable button
+            .child(
+                div()
+                    .id("btn-detail-toggle-plugin")
+                    .px_3()
+                    .py_1p5()
+                    .rounded_md()
+                    .bg(if is_enabled { theme.bg_hover } else { theme.accent })
+                    .cursor_pointer()
+                    .hover(|h| h.bg(if is_enabled { theme.border } else { theme.accent_hover }))
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(if is_enabled { theme.text_primary } else { theme.text_on_accent })
+                    .child(if is_enabled {
+                        if is_ru { "Отключить" } else { "Disable" }
+                    } else {
+                        if is_ru { "Включить" } else { "Enable" }
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(vault) = &this.state.vault {
+                            if is_enabled {
+                                let _ = vault.disable_community_plugin(&toggle_id);
+                                if let Some(pos) = this.plugin_runtimes.iter().position(|r| r.manifest.id == toggle_id) {
+                                    let handle = this.plugin_runtimes.remove(pos);
+                                    let _ = handle.host_events_tx.unbounded_send(crate::plugins::api::HostEvent::Unload);
+                                    this.state.plugin_host.unregister_plugin(&toggle_id);
+                                    this.state.commands.unregister_all_of(&toggle_id);
+                                    this.state.ribbon.unregister_all_of(&toggle_id);
+                                    this.state.status_bar.unregister_all_of(&toggle_id);
+                                    this.state.code_block_processors.unregister_all_of(&toggle_id);
+                                    this.code_block_views.retain(|_, (pid, _)| pid != &toggle_id);
+                                }
+                            } else {
+                                let _ = vault.enable_community_plugin(&toggle_id);
+                                this.load_installed_plugins_for_vault();
+                            }
+                            cx.notify();
+                        }
+                    })),
+            )
+            // Open folder in Windows Explorer button
+            .when_some(plugin_dir_for_reveal, |parent, p_dir| {
+                parent.child(
+                    div()
+                        .id("btn-detail-open-folder")
+                        .px_3()
+                        .py_1p5()
+                        .rounded_md()
+                        .bg(theme.bg_hover)
+                        .cursor_pointer()
+                        .hover(|h| h.bg(theme.border))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1p5()
+                        .child(icons::icon(icons::ICON_FOLDER_OPEN, 13.0, theme.text_muted))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.text_primary)
+                                .child(if is_ru { "Открыть папку" } else { "Open folder" }),
+                        )
+                        .on_click(cx.listener(move |_this, _, _, _cx| {
+                            let _ = std::process::Command::new("explorer").arg(&p_dir).spawn();
+                        })),
+                )
+            })
+            // Uninstall button
+            .child(
+                div()
+                    .id("btn-detail-uninstall-plugin")
+                    .px_3()
+                    .py_1p5()
+                    .rounded_md()
+                    .bg(rgba(0xea433522))
+                    .border_1()
+                    .border_color(rgba(0xea433555))
+                    .cursor_pointer()
+                    .hover(|h| h.bg(rgba(0xea433544)))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1p5()
+                    .child(icons::icon(icons::ICON_TRASH_2, 13.0, rgba(0xea4335ff)))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(rgba(0xea4335ff))
+                            .child(if is_ru { "Удалить" } else { "Delete" }),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.uninstall_plugin_from_catalog(&uninstall_id, cx);
+                        this.settings_tab = SettingsTab::CommunityPlugins;
+                        cx.notify();
+                    })),
+            );
+
+        let details_header = div()
+            .flex()
+            .flex_row()
+            .items_start()
+            .justify_between()
+            .p_4()
+            .rounded_lg()
+            .bg(theme.bg_card)
+            .border_1()
+            .border_color(theme.border_subtle)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2p5()
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .text_color(theme.text_primary)
+                                    .child(display_name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_full()
+                                    .bg(theme.bg_hover)
+                                    .text_color(theme.text_secondary)
+                                    .child(version_str.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_full()
+                                    .bg(if is_enabled { rgba(0x34a85322) } else { theme.bg_hover })
+                                    .text_color(if is_enabled { rgba(0x34a853ff) } else { theme.text_muted })
+                                    .child(if is_enabled {
+                                        if is_ru { "Активен" } else { "Enabled" }
+                                    } else {
+                                        if is_ru { "Отключен" } else { "Disabled" }
+                                    }),
+                            ),
+                    )
+                    .when(!author_str.is_empty(), |parent| {
+                        parent.child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.text_muted)
+                                .child(format!("{} {}", if is_ru { "Автор:" } else { "By" }, author_str)),
+                        )
+                    })
+                    .when(!desc_str.is_empty(), |parent| {
+                        parent.child(
+                            div()
+                                .text_sm()
+                                .text_color(theme.text_secondary)
+                                .child(desc_str),
+                        )
+                    }),
+            )
+            .child(header_actions);
+
+        // Technical metadata card: show all manifest fields
+        let mut meta_rows = vec![
+            self.render_setting_row(
+                if is_ru { "Название плагина (name)" } else { "Plugin Name" },
+                None,
+                div().text_xs().font_weight(gpui::FontWeight::SEMIBOLD).text_color(theme.text_primary).child(display_name),
+            ),
+            self.render_setting_row(
+                if is_ru { "Идентификатор (id)" } else { "Plugin ID" },
+                None,
+                div().text_xs().font_family(self.editor_font_family()).text_color(theme.text_secondary).child(actual_manifest_id),
+            ),
+            self.render_setting_row(
+                if is_ru { "Версия (version)" } else { "Version" },
+                None,
+                div().text_xs().text_color(theme.text_secondary).child(version_str),
+            ),
+            self.render_setting_row(
+                if is_ru { "Совместимость (minAppVersion)" } else { "Minimum App Version" },
+                None,
+                div().text_xs().text_color(theme.text_secondary).child(format!(">= {}", min_app)),
+            ),
+            self.render_setting_row(
+                if is_ru { "Автор (author)" } else { "Author" },
+                None,
+                div().text_xs().text_color(theme.text_secondary).child(if author_str.is_empty() { "—".to_string() } else { author_str }),
+            ),
+        ];
+
+        if let Some(author_url) = author_url_str {
+            meta_rows.push(self.render_setting_row(
+                if is_ru { "Сайт автора (authorUrl)" } else { "Author URL" },
+                None,
+                div()
+                    .text_xs()
+                    .text_color(theme.accent)
+                    .child(author_url),
+            ));
+        }
+
+        if let Some(desktop_only) = is_desktop_only_opt {
+            meta_rows.push(self.render_setting_row(
+                if is_ru { "Только для десктопа (isDesktopOnly)" } else { "Desktop Only" },
+                None,
+                div().text_xs().text_color(theme.text_secondary).child(if desktop_only {
+                    if is_ru { "true (только для десктопа)" } else { "true" }
+                } else {
+                    if is_ru { "false (кроссплатформенный)" } else { "false" }
+                }),
+            ));
+        }
+
+        meta_rows.push(self.render_setting_row(
+            if is_ru { "Каталог на диске" } else { "Installation path" },
+            None,
+            div()
+                .text_xs()
+                .font_family(self.editor_font_family())
+                .text_color(theme.text_muted)
+                .child(plugin_dir.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default()),
+        ));
+
+        // Content section: README or fallback information
+        let content_section = if let Some(readme_text) = readme_content {
+            // Render parsed markdown lines
+            let rendered_markdown_lines: Vec<gpui::Div> = readme_text
+                .lines()
+                .map(|line| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        div().h_2()
+                    } else if let Some(h1) = trimmed.strip_prefix("# ") {
+                        div().text_lg().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(h1.to_string())
+                    } else if let Some(h2) = trimmed.strip_prefix("## ") {
+                        div().text_base().font_weight(gpui::FontWeight::BOLD).text_color(theme.text_primary).child(h2.to_string())
+                    } else if let Some(h3) = trimmed.strip_prefix("### ") {
+                        div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).text_color(theme.text_primary).child(h3.to_string())
+                    } else if let Some(bullet) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+                        let spans = crate::markdown::parse_inline_spans(bullet);
+                        let span_elements = spans.into_iter().map(|s| match s {
+                            crate::markdown::InlineSpan::Bold(t) => div().font_weight(gpui::FontWeight::BOLD).text_color(theme.text_primary).child(t),
+                            crate::markdown::InlineSpan::Italic(t) => div().italic().text_color(theme.text_secondary).child(t),
+                            crate::markdown::InlineSpan::BoldItalic(t) => div().font_weight(gpui::FontWeight::BOLD).italic().text_color(theme.text_primary).child(t),
+                            crate::markdown::InlineSpan::InlineCode(t) => div().px_1().rounded_sm().bg(theme.bg_editor).text_color(theme.accent).child(t),
+                            crate::markdown::InlineSpan::Link { label, .. } => div().text_color(theme.accent).child(label),
+                            crate::markdown::InlineSpan::Strikethrough(t) => div().line_through().text_color(theme.text_muted).child(t),
+                            crate::markdown::InlineSpan::Text(t) => div().text_color(theme.text_secondary).child(t),
+                        });
+                        div().flex().flex_row().items_start().gap_2().child(div().text_color(theme.accent).child("•")).child(div().flex().flex_row().flex_wrap().gap_1().children(span_elements))
+                    } else {
+                        let spans = crate::markdown::parse_inline_spans(line);
+                        let span_elements = spans.into_iter().map(|s| match s {
+                            crate::markdown::InlineSpan::Bold(t) => div().font_weight(gpui::FontWeight::BOLD).text_color(theme.text_primary).child(t),
+                            crate::markdown::InlineSpan::Italic(t) => div().italic().text_color(theme.text_secondary).child(t),
+                            crate::markdown::InlineSpan::BoldItalic(t) => div().font_weight(gpui::FontWeight::BOLD).italic().text_color(theme.text_primary).child(t),
+                            crate::markdown::InlineSpan::InlineCode(t) => div().px_1().rounded_sm().bg(theme.bg_editor).text_color(theme.accent).child(t),
+                            crate::markdown::InlineSpan::Link { label, .. } => div().text_color(theme.accent).child(label),
+                            crate::markdown::InlineSpan::Strikethrough(t) => div().line_through().text_color(theme.text_muted).child(t),
+                            crate::markdown::InlineSpan::Text(t) => div().text_color(theme.text_secondary).child(t),
+                        });
+                        div().flex().flex_row().flex_wrap().gap_1().text_sm().children(span_elements)
+                    }
+                })
+                .collect();
+
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(theme.text_secondary)
+                        .child("README.MD"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .p_5()
+                        .rounded_lg()
+                        .bg(theme.bg_card)
+                        .border_1()
+                        .border_color(theme.border_subtle)
+                        .children(rendered_markdown_lines),
+                )
+        } else {
+            // Fallback view when no README.md is present
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(theme.text_secondary)
+                        .child(if is_ru { "ИНФОРМАЦИЯ О ПЛАГИНЕ" } else { "PLUGIN INFORMATION" }),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .p_8()
+                        .rounded_lg()
+                        .bg(theme.bg_card)
+                        .border_1()
+                        .border_color(theme.border_subtle)
+                        .gap_2()
+                        .child(icons::icon(icons::ICON_FILE_TEXT, 24.0, theme.text_muted))
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(theme.text_primary)
+                                .child(if is_ru { "Файл README.md отсутствует" } else { "No README.md file found" }),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.text_muted)
+                                .child(if is_ru {
+                                    "В каталоге плагина не найден файл документации. Вы можете добавить README.md для отображения руководства."
+                                } else {
+                                    "No documentation file exists in plugin directory. Add a README.md file to display instructions here."
+                                }),
+                        ),
+                )
+        };
+
+        // Declarative UI or data.json configuration inspect section
         let p_id_str = plugin_id.to_string();
-        // Check for registered declarative UI tree (view_id = 0 is conventional settings tab view)
         let custom_tree = self.plugin_views.get(&(p_id_str.clone(), 0));
 
-        let header_title = format!("{} — {}", if is_ru { "Настройки плагина" } else { "Plugin Settings" }, plugin_id);
-
-        if let Some(tree) = custom_tree {
+        let settings_section = if let Some(tree) = custom_tree {
             let rendered_node = crate::plugins::ui::render_ui_node(tree, plugin_id, 0, theme, cx);
             div()
                 .flex()
                 .flex_col()
-                .gap_4()
-                .child(back_btn)
+                .gap_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(theme.text_secondary)
+                        .child(if is_ru { "ПАРАМЕТРЫ ПЛАГИНА" } else { "PLUGIN SETTINGS" }),
+                )
                 .child(
                     div()
                         .flex()
@@ -2509,7 +3016,6 @@ impl AppView {
                         .child(rendered_node),
                 )
         } else {
-            // Render default data.json inspect / edit card
             let current_data = self
                 .state
                 .vault
@@ -2518,11 +3024,10 @@ impl AppView {
                 .unwrap_or(serde_json::json!({}));
 
             let data_str = serde_json::to_string_pretty(&current_data).unwrap_or_else(|_| "{}".to_string());
-
             let info_hint = if is_ru {
-                "Конфигурация плагина загружена из .vault/plugins/<id>/data.json"
+                "Хранилище параметров (.vault/plugins/<id>/data.json)"
             } else {
-                "Plugin configuration loaded from .vault/plugins/<id>/data.json"
+                "Configuration store (.vault/plugins/<id>/data.json)"
             };
 
             let json_preview = div()
@@ -2542,17 +3047,81 @@ impl AppView {
                 );
 
             let row = self.render_setting_row(
-                if is_ru { "Хранилище параметров (data.json)" } else { "Configuration store (data.json)" },
+                if is_ru { "Параметры плагина (data.json)" } else { "Plugin settings (data.json)" },
                 Some(info_hint),
                 json_preview,
             );
 
-            div()
-                .flex()
-                .flex_col()
-                .gap_4()
-                .child(back_btn)
-                .child(self.render_settings_card(&header_title, vec![row]))
-        }
+            self.render_settings_card(
+                if is_ru { "Параметры" } else { "Settings" },
+                vec![row],
+            )
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_5()
+            .child(back_btn)
+            .child(details_header)
+            .child(self.render_settings_card(if is_ru { "Метаданные" } else { "Metadata" }, meta_rows))
+            .child(content_section)
+            .child(settings_section)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_settings_tab_keys_and_titles() {
+        let comm_tab = SettingsTab::CommunityPlugins;
+        assert_eq!(comm_tab.key(), "settings.tabs.community_plugins");
+        assert_eq!(comm_tab.title("ru"), "Сторонние плагины");
+        assert_eq!(comm_tab.title("en"), "Community plugins");
+
+        let custom_plugin_tab = SettingsTab::PluginSettings("obsidian-new-note-np".to_string());
+        assert_eq!(custom_plugin_tab.key(), "settings.tabs.plugin_settings");
+        assert_eq!(custom_plugin_tab.title("ru"), "obsidian-new-note-np");
+    }
+
+    #[test]
+    fn test_plugin_readme_file_discovery_and_fallback() {
+        let unique_name = format!("vibecodium_test_plugin_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+        let temp_dir = std::env::temp_dir().join(unique_name);
+        let plugin_dir = temp_dir.join("my-test-plugin");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+
+        // 1. Without README
+        let find_readme = |dir: &std::path::Path| -> Option<String> {
+            let p1 = dir.join("README.md");
+            if p1.is_file() {
+                return std::fs::read_to_string(p1).ok();
+            }
+            let p2 = dir.join("readme.md");
+            if p2.is_file() {
+                return std::fs::read_to_string(p2).ok();
+            }
+            None
+        };
+
+        assert!(find_readme(&plugin_dir).is_none());
+
+        // 2. With lowercase readme.md
+        std::fs::write(plugin_dir.join("readme.md"), "# Hello Plugin\n- Feature 1").unwrap();
+        let read = find_readme(&plugin_dir);
+        assert!(read.is_some());
+        assert!(read.unwrap().contains("# Hello Plugin"));
+
+        // 3. With uppercase README.md takes priority
+        std::fs::write(plugin_dir.join("README.md"), "# Upper README").unwrap();
+        let read_upper = find_readme(&plugin_dir);
+        assert!(read_upper.is_some());
+        assert_eq!(read_upper.unwrap(), "# Upper README");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+}
+
+
