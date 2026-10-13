@@ -945,6 +945,12 @@ pub fn slice_syntax_spans(
     result
 }
 
+/// Legacy visual-column -> row-char mapping.
+///
+/// Superseded for geometry: it assumes every column is one monospace cell, so it is
+/// wrong for wide glyphs (emoji, CJK) and for the synthetic continuation indent of a
+/// wrapped list/quote row. Row geometry now goes through
+/// `views::app_view::RowShapedLayout`, which is built from shaped glyph positions.
 pub fn visual_col_to_row_char(
     row_spans: &[SyntaxSpan],
     vis_col: usize,
@@ -984,6 +990,9 @@ pub fn visual_col_to_row_char(
     raw_offset + remaining_vis
 }
 
+/// Legacy row-char -> visual-column mapping.
+///
+/// Superseded for geometry: see `visual_col_to_row_char`.
 pub fn row_char_to_visual_col(
     row_spans: &[SyntaxSpan],
     raw_char: usize,
@@ -1023,6 +1032,54 @@ pub fn row_char_to_visual_col(
     vis_col + target_raw
 }
 
+/// Byte length of the marker that precedes the content of `line` for the list-like
+/// kinds (task box, bullet, number). Zero for everything else.
+fn marker_prefix_len(line: &str, classified: &LineKind<'_>) -> usize {
+    match classified {
+        LineKind::Task { .. } => {
+            if line.starts_with("- [ ] ")
+                || line.starts_with("* [ ] ")
+                || line.starts_with("- [x] ")
+                || line.starts_with("- [X] ")
+                || line.starts_with("* [x] ")
+                || line.starts_with("* [X] ")
+            {
+                6
+            } else {
+                0
+            }
+        }
+        LineKind::BulletList { .. } => {
+            let trimmed = line.trim_start();
+            let indent_len = line.len() - trimmed.len();
+            let bullet_len = if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") { 2 } else { 0 };
+            indent_len + bullet_len
+        }
+        LineKind::NumberedList { num, .. } => {
+            let trimmed = line.trim_start();
+            let indent_len = line.len() - trimmed.len();
+            let num_p_len = num.len() + 2;
+            indent_len + if trimmed.len() >= num_p_len { num_p_len } else { 0 }
+        }
+        _ => 0,
+    }
+}
+
+/// Byte offset of the first char of a row's content, i.e. the length of the leading
+/// bytes of `line` that the renderer paints as a marker instead of as span content.
+pub fn row_prefix_offset(line: &str, classified: &LineKind<'_>) -> usize {
+    match classified {
+        LineKind::Heading1(_) => 2,
+        LineKind::Heading2(_) => 3,
+        LineKind::Heading3(_) => 4,
+        LineKind::Heading4(_) => 5,
+        LineKind::Heading5(_) => 6,
+        LineKind::Heading6(_) => 7,
+        LineKind::Quote(_) => 2,
+        _ => marker_prefix_len(line, classified),
+    }
+}
+
 pub fn row_spans_and_hidden_prefix(
     line: &str,
     classified: &LineKind<'_>,
@@ -1037,32 +1094,8 @@ pub fn row_spans_and_hidden_prefix(
         LineKind::Heading5(_) => (line.strip_prefix("##### ").unwrap_or(line), 6, if !is_active_line && v.sub_idx == 0 { 6 } else { 0 }),
         LineKind::Heading6(_) => (line.strip_prefix("###### ").unwrap_or(line), 7, if !is_active_line && v.sub_idx == 0 { 7 } else { 0 }),
         LineKind::Quote(_) => (line.strip_prefix("> ").unwrap_or(line), 2, 0),
-        LineKind::Task { .. } => {
-            let p_len = if line.starts_with("- [ ] ")
-                || line.starts_with("* [ ] ")
-                || line.starts_with("- [x] ")
-                || line.starts_with("- [X] ")
-                || line.starts_with("* [x] ")
-                || line.starts_with("* [X] ")
-            {
-                6
-            } else {
-                0
-            };
-            (if line.len() >= p_len { &line[p_len..] } else { "" }, p_len, 0)
-        }
-        LineKind::BulletList { .. } => {
-            let trimmed = line.trim_start();
-            let indent_len = line.len() - trimmed.len();
-            let bullet_len = if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") { 2 } else { 0 };
-            let p_len = indent_len + bullet_len;
-            (if line.len() >= p_len { &line[p_len..] } else { "" }, p_len, 0)
-        }
-        LineKind::NumberedList { num, .. } => {
-            let trimmed = line.trim_start();
-            let indent_len = line.len() - trimmed.len();
-            let num_p_len = num.len() + 2;
-            let p_len = indent_len + if trimmed.len() >= num_p_len { num_p_len } else { 0 };
+        LineKind::Task { .. } | LineKind::BulletList { .. } | LineKind::NumberedList { .. } => {
+            let p_len = marker_prefix_len(line, classified);
             (if line.len() >= p_len { &line[p_len..] } else { "" }, p_len, 0)
         }
         _ => (line, 0, 0),
@@ -1072,6 +1105,240 @@ pub fn row_spans_and_hidden_prefix(
     let e = v.char_end.saturating_sub(prefix_offset);
     let sliced = slice_syntax_spans(&spans, s, e);
     (sliced, hidden_heading)
+}
+
+/// One run of text painted inside a visual row, with the font traits the renderer
+/// ends up using for it (the row's base traits merged with the span's own).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaintedSegment {
+    pub text: String,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+/// The exact text a visual row paints, plus the source line char of every painted char.
+#[derive(Debug, Clone)]
+pub struct PaintedRow {
+    pub segments: Vec<PaintedSegment>,
+    /// `line_chars[k]` = line char index (chars from the start of the line) painted at
+    /// column `k`. One extra trailing entry holds the line char just past the last
+    /// painted char, so `line_chars.len() == columns() + 1`.
+    ///
+    /// Non-decreasing, but not strictly so: synthetic continuation padding repeats the
+    /// first char of the wrapped content, and hidden inline markers leave gaps.
+    pub line_chars: Vec<usize>,
+}
+
+impl PaintedRow {
+    /// Number of painted character cells in this row.
+    pub fn columns(&self) -> usize {
+        self.line_chars.len().saturating_sub(1)
+    }
+}
+
+fn push_verbatim(
+    segments: &mut Vec<PaintedSegment>,
+    line_chars: &mut Vec<usize>,
+    text: &str,
+    src_start: usize,
+    bold: bool,
+    italic: bool,
+) {
+    if text.is_empty() {
+        return;
+    }
+    for i in 0..text.chars().count() {
+        line_chars.push(src_start + i);
+    }
+    segments.push(PaintedSegment { text: text.to_string(), bold, italic });
+}
+
+/// Padding the renderer synthesises for a wrapped row's continuation indent. Every
+/// char resolves to `src`, so a click in the padding lands on a real character.
+fn push_padding(
+    segments: &mut Vec<PaintedSegment>,
+    line_chars: &mut Vec<usize>,
+    text: &str,
+    src: usize,
+    bold: bool,
+    italic: bool,
+) {
+    if text.is_empty() {
+        return;
+    }
+    for _ in 0..text.chars().count() {
+        line_chars.push(src);
+    }
+    segments.push(PaintedSegment { text: text.to_string(), bold, italic });
+}
+
+/// Number of chars in the first `byte_len` bytes of `line` (clamped to a char boundary).
+fn head_char_count(line: &str, byte_len: usize) -> usize {
+    let mut end = byte_len.min(line.len());
+    while end > 0 && !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    line[..end].chars().count()
+}
+
+/// The exact text a visual row paints, in paint order, together with the source line
+/// char of every painted char.
+///
+/// This mirrors `render_live_styled_row` (and `render_syntax_spans`) branch for branch.
+/// The editor's geometry is derived from it instead of from a `column * char_width`
+/// cell model, so wide glyphs (emoji, CJK, VS16/ZWJ sequences) and the continuation
+/// indents of wrapped rows are measured where they actually land.
+///
+/// NOTE: `render_live_styled_row` in `views/app_view.rs` must stay in sync with this.
+pub fn row_painted_text(
+    line: &str,
+    classified: &LineKind<'_>,
+    v: &VisualRow,
+    is_active_line: bool,
+    headings: &crate::settings::HeadingsSettings,
+) -> PaintedRow {
+    let mut segments: Vec<PaintedSegment> = Vec::new();
+    let mut line_chars: Vec<usize> = Vec::new();
+
+    // The renderer paints a row with no content as a single blank cell.
+    if line.is_empty() || v.char_start >= v.char_end {
+        push_padding(&mut segments, &mut line_chars, " ", v.char_end, false, false);
+        line_chars.push(v.char_end);
+        return PaintedRow { segments, line_chars };
+    }
+
+    let prefix_offset = row_prefix_offset(line, classified);
+
+    // Base font traits of the row body: `render_syntax_spans` receives these as the
+    // default weight/style for every span it flattens.
+    let (base_bold, base_italic) = match classified {
+        LineKind::Heading1(_) => (headings.h1.bold, headings.h1.italic),
+        LineKind::Heading2(_) => (headings.h2.bold, headings.h2.italic),
+        LineKind::Heading3(_) => (headings.h3.bold, headings.h3.italic),
+        LineKind::Heading4(_) => (headings.h4.bold, headings.h4.italic),
+        LineKind::Heading5(_) => (headings.h5.bold, headings.h5.italic),
+        LineKind::Heading6(_) => (headings.h6.bold, headings.h6.italic),
+        LineKind::Quote(_) => (false, true),
+        _ => (false, false),
+    };
+
+    // 1. Marker prefix, in paint order.
+    match classified {
+        // A heading marker is only painted on the active line, and only on its first
+        // row. The renderer emits the literal marker string, so map it to the leading
+        // line chars.
+        LineKind::Heading1(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "# ", 0, base_bold, base_italic),
+        LineKind::Heading2(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "## ", 0, base_bold, base_italic),
+        LineKind::Heading3(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "### ", 0, base_bold, base_italic),
+        LineKind::Heading4(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "#### ", 0, base_bold, base_italic),
+        LineKind::Heading5(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "##### ", 0, base_bold, base_italic),
+        LineKind::Heading6(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "###### ", 0, base_bold, base_italic),
+        LineKind::Quote(_) => {
+            if v.sub_idx == 0 {
+                push_verbatim(&mut segments, &mut line_chars, "> ", 0, base_bold, base_italic);
+            } else {
+                push_padding(&mut segments, &mut line_chars, "  ", v.char_start, base_bold, base_italic);
+            }
+        }
+        LineKind::Task { .. } => {
+            if v.sub_idx == 0 {
+                let head: String = line.chars().take(prefix_offset).collect();
+                push_verbatim(&mut segments, &mut line_chars, &head, 0, true, base_italic);
+            } else {
+                push_padding(&mut segments, &mut line_chars, "      ", v.char_start, true, base_italic);
+            }
+        }
+        LineKind::BulletList { .. } => {
+            let trimmed = line.trim_start();
+            let indent = &line[..line.len() - trimmed.len()];
+            let bullet = if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") { &trimmed[..2] } else { "" };
+            if v.sub_idx == 0 {
+                push_verbatim(&mut segments, &mut line_chars, indent, 0, false, base_italic);
+                push_verbatim(&mut segments, &mut line_chars, bullet, indent.chars().count(), true, base_italic);
+            } else {
+                let pad = format!("{}  ", indent);
+                push_padding(&mut segments, &mut line_chars, &pad, v.char_start, false, base_italic);
+            }
+        }
+        LineKind::NumberedList { num, .. } => {
+            let trimmed = line.trim_start();
+            let indent = &line[..line.len() - trimmed.len()];
+            let num_prefix_len = num.len() + 2;
+            let num_part = if trimmed.len() >= num_prefix_len { &trimmed[..num_prefix_len] } else { "" };
+            if v.sub_idx == 0 {
+                push_verbatim(&mut segments, &mut line_chars, indent, 0, false, base_italic);
+                push_verbatim(&mut segments, &mut line_chars, num_part, indent.chars().count(), true, base_italic);
+            } else {
+                let pad = " ".repeat(indent.chars().count() + num_part.chars().count());
+                push_padding(&mut segments, &mut line_chars, &pad, v.char_start, false, base_italic);
+            }
+        }
+        // A collapsed rule or fence paints a rule / a language label instead of the
+        // line, but the geometry still follows the raw line so that a click resolves to
+        // the character under the cursor.
+        LineKind::HorizontalRule | LineKind::CodeFence { .. } => {
+            push_verbatim(&mut segments, &mut line_chars, line, 0, false, false);
+        }
+        _ => {}
+    }
+
+    // 2. Content: the syntax-span slice the renderer paints for this row.
+    match classified {
+        // Handled as the prefix above.
+        LineKind::HorizontalRule | LineKind::CodeFence { .. } => {}
+        // Code rows paint the raw slice, with no inline-marker filtering.
+        LineKind::CodeLine(_) => {
+            let text: String = line
+                .chars()
+                .skip(v.char_start)
+                .take(v.char_end.saturating_sub(v.char_start))
+                .collect();
+            push_verbatim(&mut segments, &mut line_chars, &text, v.char_start, base_bold, base_italic);
+        }
+        _ => {
+            let (row_spans, _) = row_spans_and_hidden_prefix(line, classified, v, is_active_line);
+            // The span slice starts at `char_start - prefix_offset` chars into the text
+            // that follows the marker, i.e. at this line char.
+            let mut src = head_char_count(line, prefix_offset) + v.char_start.saturating_sub(prefix_offset);
+            for span in &row_spans {
+                let (text, bold, italic, is_marker) = match span {
+                    SyntaxSpan::Marker(t) => (t.as_str(), false, false, true),
+                    SyntaxSpan::Text(t) => (t.as_str(), base_bold, base_italic, false),
+                    SyntaxSpan::Bold(t) => (t.as_str(), true, base_italic, false),
+                    SyntaxSpan::Italic(t) => (t.as_str(), base_bold, true, false),
+                    SyntaxSpan::BoldItalic(t) => (t.as_str(), true, true, false),
+                    SyntaxSpan::InlineCode(t)
+                    | SyntaxSpan::Strikethrough(t)
+                    | SyntaxSpan::LinkText(t)
+                    | SyntaxSpan::Underline(t)
+                    | SyntaxSpan::Highlight(t) => (t.as_str(), base_bold, base_italic, false),
+                };
+                let n = text.chars().count();
+                if n == 0 {
+                    continue;
+                }
+                // Hidden markers are not painted, but they still occupy line chars.
+                if is_marker && !is_active_line {
+                    src += n;
+                    continue;
+                }
+                push_verbatim(&mut segments, &mut line_chars, text, src, bold, italic);
+                src += n;
+            }
+        }
+    }
+
+    if segments.is_empty() {
+        // Nothing paintable, e.g. a row made of inline markers only.
+        line_chars.clear();
+        push_padding(&mut segments, &mut line_chars, " ", v.char_end, false, false);
+        line_chars.push(v.char_end);
+        return PaintedRow { segments, line_chars };
+    }
+
+    let terminal = line_chars.last().map(|&c| c + 1).unwrap_or(v.char_end);
+    line_chars.push(terminal);
+    PaintedRow { segments, line_chars }
 }
 
 #[cfg(test)]
@@ -1218,6 +1485,182 @@ mod tests {
         let (v_idx, col) = find_visual_row_for_cursor(&visual_rows, 15_432, 5).unwrap();
         assert_eq!(v_idx, 15_432);
         assert_eq!(col, 5);
+    }
+
+    // --- row_painted_text -------------------------------------------------------
+    // These lock down the geometry model: the painted text must be exactly what
+    // `render_live_styled_row` draws, and `line_chars` must map every painted column
+    // back to the line char it came from.
+
+    fn painted(
+        line: &str,
+        classified: &LineKind<'_>,
+        char_start: usize,
+        char_end: usize,
+        sub_idx: usize,
+        is_active_line: bool,
+    ) -> PaintedRow {
+        let v = VisualRow {
+            line_idx: 0,
+            sub_idx,
+            is_last_sub: true,
+            char_start,
+            char_end,
+        };
+        row_painted_text(
+            line,
+            classified,
+            &v,
+            is_active_line,
+            &crate::settings::HeadingsSettings::default(),
+        )
+    }
+
+    fn text_of(row: &PaintedRow) -> String {
+        row.segments.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    #[test]
+    fn painted_paragraph_is_the_whole_row() {
+        let line = "hello";
+        let row = painted(line, &classify_line(line, None), 0, 5, 0, false);
+        assert_eq!(text_of(&row), "hello");
+        assert_eq!(row.line_chars, vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(row.columns(), 5);
+    }
+
+    #[test]
+    fn painted_paragraph_drops_hidden_markers() {
+        let line = "a**b**c";
+        let row = painted(line, &classify_line(line, None), 0, 7, 0, false);
+        assert_eq!(text_of(&row), "abc");
+        // The two hidden `**` runs still consume line chars, so the columns skip them.
+        assert_eq!(row.line_chars, vec![0, 3, 6, 7]);
+        assert_eq!(row.columns(), 3);
+    }
+
+    #[test]
+    fn painted_paragraph_keeps_markers_on_the_active_line() {
+        let line = "a**b**c";
+        let row = painted(line, &classify_line(line, None), 0, 7, 0, true);
+        assert_eq!(text_of(&row), "a**b**c");
+        assert_eq!(row.line_chars, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn painted_heading_hides_the_marker_until_active() {
+        let line = "# Title";
+        let kind = classify_line(line, None);
+
+        let idle = painted(line, &kind, 0, 7, 0, false);
+        assert_eq!(text_of(&idle), "Title");
+        assert_eq!(idle.line_chars, vec![2, 3, 4, 5, 6, 7]);
+
+        let active = painted(line, &kind, 0, 7, 0, true);
+        assert_eq!(text_of(&active), "# Title");
+        assert_eq!(active.line_chars, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn painted_heading_continuation_has_no_marker() {
+        // "# Title": line chars are '#',' ','T','i','t','l','e'.
+        let line = "# Title";
+        let row = painted(line, &classify_line(line, None), 4, 7, 1, true);
+        assert_eq!(text_of(&row), "tle");
+        assert_eq!(row.line_chars, vec![4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn painted_bullet_keeps_its_marker_on_every_row() {
+        let line = "- item";
+        let kind = classify_line(line, None);
+
+        let first = painted(line, &kind, 0, 6, 0, false);
+        assert_eq!(text_of(&first), "- item");
+        assert_eq!(first.line_chars, vec![0, 1, 2, 3, 4, 5, 6]);
+
+        // A wrapped continuation paints an indent of the same width; its padding
+        // resolves to the first char of the wrapped content.
+        let wrapped = painted(line, &kind, 4, 6, 1, false);
+        assert_eq!(text_of(&wrapped), "  em");
+        assert_eq!(wrapped.line_chars, vec![4, 4, 4, 5, 6]);
+    }
+
+    #[test]
+    fn painted_quote_keeps_its_marker() {
+        let line = "> hi";
+        let kind = classify_line(line, None);
+
+        let first = painted(line, &kind, 0, 4, 0, false);
+        assert_eq!(text_of(&first), "> hi");
+        assert_eq!(first.line_chars, vec![0, 1, 2, 3, 4]);
+
+        let wrapped = painted(line, &kind, 3, 4, 1, false);
+        assert_eq!(text_of(&wrapped), "  i");
+        assert_eq!(wrapped.line_chars, vec![3, 3, 3, 4]);
+    }
+
+    #[test]
+    fn painted_code_line_keeps_raw_markers() {
+        // Code rows paint the raw slice, so `**` stays visible even on an idle line.
+        let line = "**x**";
+        let row = painted(line, &LineKind::CodeLine(line), 0, 5, 0, false);
+        assert_eq!(text_of(&row), "**x**");
+        assert_eq!(row.line_chars, vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn painted_empty_line_is_one_blank_cell() {
+        let row = painted("", &classify_line("", None), 0, 0, 0, false);
+        assert_eq!(text_of(&row), " ");
+        assert_eq!(row.line_chars, vec![0, 0]);
+        assert_eq!(row.columns(), 1);
+    }
+
+    #[test]
+    fn painted_rule_follows_the_raw_line() {
+        // A collapsed rule paints no text, but the geometry must still follow the line
+        // so that a click resolves to a character.
+        let line = "---";
+        let row = painted(line, &LineKind::HorizontalRule, 0, 3, 0, false);
+        assert_eq!(text_of(&row), "---");
+        assert_eq!(row.line_chars, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn painted_row_columns_always_match_line_chars() {
+        let cases: &[(&str, bool)] = &[
+            ("plain text", false),
+            ("plain text", true),
+            ("**bold** and _italic_", false),
+            ("**bold** and _italic_", true),
+            ("# Heading with emoji 😀 tail", false),
+            ("# Heading with emoji 😀 tail", true),
+            ("- bullet with 🚀 emoji", false),
+            ("> quote with ⚠️ emoji", false),
+            ("- [ ] task with 🏳️‍🌈 flag", false),
+            ("1. numbered", false),
+        ];
+        for &(line, active) in cases {
+            let kind = classify_line(line, None);
+            let len = line.chars().count();
+            let row = painted(line, &kind, 0, len, 0, active);
+            assert_eq!(
+                row.line_chars.len(),
+                row.columns() + 1,
+                "line_chars/columns mismatch for {line:?} (active={active})"
+            );
+            assert_eq!(
+                text_of(&row).chars().count(),
+                row.columns(),
+                "painted text length mismatch for {line:?} (active={active})"
+            );
+            // Monotone non-decreasing, so the reverse lookup can binary search.
+            assert!(
+                row.line_chars.windows(2).all(|w| w[0] <= w[1]),
+                "line_chars is not monotone for {line:?} (active={active})"
+            );
+        }
     }
 }
 

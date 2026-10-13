@@ -913,7 +913,7 @@ impl AppView {
         cx.notify();
     }
 
-    fn handle_editor_mouse_down(&mut self, click_x: f32, click_y: f32, shift: bool, click_count: usize, cx: &mut Context<Self>) {
+    fn handle_editor_mouse_down(&mut self, click_x: f32, click_y: f32, shift: bool, click_count: usize, window: &Window, cx: &mut Context<Self>) {
         if self.state.active_note.is_none() {
             return;
         }
@@ -987,13 +987,25 @@ impl AppView {
         let is_active_line = v.line_idx == cursor_line || is_line_in_selection || is_in_active_block;
         let code_state = note.cached_code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
         let classified = crate::markdown::classify_line(line, code_state);
-        let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
         let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &self.config.editor.headings, line_char_width);
         let (_, row_char_w, _, _, _) = Self::heading_typography_metrics_with_widths(&classified, &self.config.editor.headings, 24.0, line_char_width, Some(&heading_widths));
 
+        // Hit-test against the shaped layout of the row rather than a
+        // `column * char_width` cell model: wide glyphs (emoji, CJK) do not advance
+        // by exactly one cell.
         let col_in_row = if click_x > text_start_x {
-            let raw_col = ((click_x - text_start_x) / row_char_w).round() as usize;
-            crate::markdown::visual_col_to_row_char(&row_spans, raw_col, is_active_line, hidden_prefix_len).min(v_len)
+            let row_layout = shape_row(
+                window.text_system(),
+                line,
+                &classified,
+                v,
+                is_active_line,
+                &self.config.editor.headings,
+                &editor_font,
+                row_char_w,
+            );
+            let column = row_layout.column_for_x(click_x - text_start_x);
+            row_layout.line_char_for_column(column).saturating_sub(v.char_start).min(v_len)
         } else {
             0
         };
@@ -1023,7 +1035,7 @@ impl AppView {
         cx.notify();
     }
 
-    fn update_mouse_selection(&mut self, pos_x: f32, pos_y: f32, viewport_h: f32, cx: &mut Context<Self>) {
+    fn update_mouse_selection(&mut self, pos_x: f32, pos_y: f32, viewport_h: f32, window: &Window, cx: &mut Context<Self>) {
         if !self.is_mouse_selecting {
             return;
         }
@@ -1113,13 +1125,22 @@ impl AppView {
         let is_active_line = v.line_idx == cursor_line || is_line_in_selection || is_in_active_block;
         let code_state = note.cached_code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
         let classified = crate::markdown::classify_line(line, code_state);
-        let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
         let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &self.config.editor.headings, line_char_width);
         let (_, row_char_w, _, _, _) = Self::heading_typography_metrics_with_widths(&classified, &self.config.editor.headings, 24.0, line_char_width, Some(&heading_widths));
 
         let col_in_row = if pos_x > text_start_x {
-            let raw_col = ((pos_x - text_start_x) / row_char_w).round() as usize;
-            crate::markdown::visual_col_to_row_char(&row_spans, raw_col, is_active_line, hidden_prefix_len).min(v_len)
+            let row_layout = shape_row(
+                window.text_system(),
+                line,
+                &classified,
+                v,
+                is_active_line,
+                &self.config.editor.headings,
+                &editor_font,
+                row_char_w,
+            );
+            let column = row_layout.column_for_x(pos_x - text_start_x);
+            row_layout.line_char_for_column(column).saturating_sub(v.char_start).min(v_len)
         } else {
             0
         };
@@ -2396,7 +2417,7 @@ impl Render for AppView {
                     let x: f32 = event.position.x.into();
                     let y: f32 = event.position.y.into();
                     let viewport_h: f32 = window.viewport_size().height.into();
-                    this.update_mouse_selection(x, y, viewport_h, cx);
+                    this.update_mouse_selection(x, y, viewport_h, window, cx);
                 }
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
@@ -3795,7 +3816,7 @@ impl Render for AppView {
                                             this.is_mouse_selecting = true;
                                             let click_x: f32 = event.position.x.into();
                                             let click_y: f32 = event.position.y.into();
-                                            this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, cx);
+                                            this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, window, cx);
                                         }))
                                         .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                                             if this.is_resizing_sidebar {
@@ -3814,7 +3835,7 @@ impl Render for AppView {
                                                 let x: f32 = event.position.x.into();
                                                 let y: f32 = event.position.y.into();
                                                 let viewport_h: f32 = window.viewport_size().height.into();
-                                                this.update_mouse_selection(x, y, viewport_h, cx);
+                                                this.update_mouse_selection(x, y, viewport_h, window, cx);
                                             }
                                         }))
                                         .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
@@ -3848,6 +3869,10 @@ impl Render for AppView {
                                             let headings = &self.config.editor.headings;
                                             let editor_font = self.editor_font_family();
                                             let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, headings, line_char_width);
+                                            // Row geometry is derived from shaped text; keep an owned
+                                            // handle so the row closures below can shape without
+                                            // borrowing the window again.
+                                            let text_system = window.text_system().clone();
                                             let hide_current_line_on_selection = self.config.editor.hide_current_line_on_selection;
                                             let has_selection = selection_range.as_ref().map_or(false, |sel| sel.start < sel.end);
 
@@ -3887,7 +3912,7 @@ impl Render for AppView {
                                                             this.is_mouse_selecting = true;
                                                             let click_x: f32 = event.position.x.into();
                                                             let click_y: f32 = event.position.y.into();
-                                                            this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, cx);
+                                                            this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, window, cx);
                                                         }))
                                                 );
                                             }
@@ -3924,7 +3949,11 @@ impl Render for AppView {
                                                 let is_act_line = is_editing && (v.line_idx == cursor_line || is_line_in_sel || is_in_act_block);
                                                 let code_state = code_states_arc[v.line_idx].as_ref().map(|s| (s.kind, s.lang.as_deref()));
                                                 let classified = crate::markdown::classify_line(line, code_state);
-                                                let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_act_line);
+                                                let (_, row_char_w, _, _, _) =
+                                                    Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths));
+                                                // Selection columns come from the shaped row, i.e. the
+                                                // same model the mouse handlers hit-test with.
+                                                let row_layout = shape_row(&text_system, line, &classified, v, is_act_line, headings, &editor_font, row_char_w);
 
                                                 let mut byte_s = sel.start.saturating_sub(line_start).min(line.len());
                                                 let mut byte_e = sel.end.saturating_sub(line_start).min(line.len());
@@ -3943,10 +3972,8 @@ impl Render for AppView {
                                                     let intersect_s = char_s.max(v.char_start);
                                                     let intersect_e = char_e.min(v.char_end);
                                                     if intersect_s <= intersect_e {
-                                                        let raw_s = intersect_s - v.char_start;
-                                                        let raw_e = intersect_e - v.char_start;
-                                                        let vis_s = crate::markdown::row_char_to_visual_col(&row_spans, raw_s, is_act_line, hidden_prefix_len);
-                                                        let mut vis_e = crate::markdown::row_char_to_visual_col(&row_spans, raw_e, is_act_line, hidden_prefix_len);
+                                                        let vis_s = row_layout.column_for_line_char(intersect_s);
+                                                        let mut vis_e = row_layout.column_for_line_char(intersect_e);
                                                         if includes_newline {
                                                             vis_e += 1;
                                                         }
@@ -3959,8 +3986,7 @@ impl Render for AppView {
                                                         None
                                                     }
                                                 } else if includes_newline && char_s == v.char_end {
-                                                    let raw_s = v.char_end - v.char_start;
-                                                    let vis_s = crate::markdown::row_char_to_visual_col(&row_spans, raw_s, is_act_line, hidden_prefix_len);
+                                                    let vis_s = row_layout.column_for_line_char(v.char_end);
                                                     Some((vis_s, vis_s + 1))
                                                 } else {
                                                     None
@@ -3995,12 +4021,13 @@ impl Render for AppView {
                                                 let is_code_line = matches!(classified, crate::markdown::LineKind::CodeLine(_));
                                                 let row_len = v.char_end.saturating_sub(v.char_start);
 
-                                                let (row_spans, hidden_prefix_len) = crate::markdown::row_spans_and_hidden_prefix(line, &classified, v, is_active_line);
-                                                let row_spans_down = row_spans.clone();
-                                                let row_spans_move = row_spans.clone();
-
                                                 let (row_h, row_char_w, _row_font_size, _cursor_h, _cursor_top) =
                                                     Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths));
+                                                // One shaped layout per row drives the selection
+                                                // rectangle, the caret and the row's own mouse handlers.
+                                                let row_layout = shape_row(&text_system, line, &classified, v, is_active_line, headings, &editor_font, row_char_w);
+                                                let row_layout_down = row_layout.clone();
+                                                let row_layout_move = row_layout.clone();
 
                                                 let line_number_text = if v.sub_idx == 0 {
                                                     format!("{:>3} ", v.line_idx + 1)
@@ -4038,8 +4065,8 @@ impl Render for AppView {
                                                             let click_x: f32 = event.position.x.into();
 
                                                             let col_in_row = if click_x > text_start_x {
-                                                                let raw_col = ((click_x - text_start_x) / row_char_w).round() as usize;
-                                                                crate::markdown::visual_col_to_row_char(&row_spans_down, raw_col, is_active_line, hidden_prefix_len).min(row_len)
+                                                                let column = row_layout_down.column_for_x(click_x - text_start_x);
+                                                                row_layout_down.line_char_for_column(column).saturating_sub(v_char_start).min(row_len)
                                                             } else {
                                                                 0
                                                             };
@@ -4075,8 +4102,8 @@ impl Render for AppView {
                                                                 cx.stop_propagation();
                                                                 let click_x: f32 = event.position.x.into();
                                                                 let col_in_row = if click_x > text_start_x {
-                                                                    let raw_col = ((click_x - text_start_x) / row_char_w).round() as usize;
-                                                                    crate::markdown::visual_col_to_row_char(&row_spans_move, raw_col, is_active_line, hidden_prefix_len).min(row_len)
+                                                                    let column = row_layout_move.column_for_x(click_x - text_start_x);
+                                                                    row_layout_move.line_char_for_column(column).saturating_sub(v_char_start).min(row_len)
                                                                 } else {
                                                                     0
                                                                 };
@@ -4131,8 +4158,8 @@ impl Render for AppView {
                                                                     let round_bl = sel_below.map_or(true, |(bs_s, bs_e)| sel_s < bs_s || sel_s >= bs_e);
                                                                     let round_br = sel_below.map_or(true, |(bs_s, bs_e)| sel_e > bs_e || sel_e <= bs_s);
 
-                                                                    let sel_x = (sel_s as f32) * row_char_w;
-                                                                    let sel_w = ((sel_e - sel_s) as f32) * row_char_w;
+                                                                    let sel_x = row_layout.x_for_column(sel_s);
+                                                                    let sel_w = (row_layout.x_for_column(sel_e) - sel_x).max(0.0);
                                                                     let mut sel_rect = div()
                                                                         .absolute()
                                                                         .left(px(sel_x))
@@ -4176,9 +4203,9 @@ impl Render for AppView {
                                                                         )),
                                                                 )
                                                                 .when(is_current && is_editor_focused && self.editor_blink.visible(), |s| {
-                                                                    let vis_cursor = crate::markdown::row_char_to_visual_col(&row_spans, active_col_in_row, is_active_line, hidden_prefix_len);
+                                                                    let cursor_col = row_layout.column_for_line_char(v_char_start + active_col_in_row);
                                                                     let cursor_x = crate::snap::snap_x(
-                                                                        (vis_cursor as f32) * row_char_w,
+                                                                        row_layout.x_for_column(cursor_col),
                                                                         pixel_scale,
                                                                     );
                                                                     s.child(
@@ -4211,7 +4238,7 @@ impl Render for AppView {
                                                             this.is_mouse_selecting = true;
                                                             let click_x: f32 = event.position.x.into();
                                                             let click_y: f32 = event.position.y.into();
-                                                            this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, cx);
+                                                            this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, window, cx);
                                                         }))
                                                 );
                                             }
@@ -4233,7 +4260,7 @@ impl Render for AppView {
                                                     this.is_mouse_selecting = true;
                                                     let click_x: f32 = event.position.x.into();
                                                     let click_y: f32 = event.position.y.into();
-                                                    this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, cx);
+                                                    this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, window, cx);
                                                 }))
                                                 .on_scroll_wheel(cx.listener(move |this, event: &gpui::ScrollWheelEvent, _, cx| {
                                                     let delta_y = match event.delta {
@@ -4712,6 +4739,141 @@ fn render_syntax_spans(
         }])
     } else {
         gpui::StyledText::new(full_text).with_runs(runs)
+    }
+}
+
+/// Shaped geometry of one painted visual row.
+///
+/// The editor paints rows from `SyntaxSpan` slices, so nothing downstream knew where
+/// the glyphs actually landed: hit-testing and the caret/selection rectangles used a
+/// naive `column * char_width` cell model instead. That model is exact for monospace
+/// runs of narrow glyphs, but drifts for wide ones (emoji, CJK, VS16/ZWJ sequences),
+/// which made the selection edge twitch while dragging across them.
+///
+/// This follows Zed's editor: the row's painted text is shaped once and every
+/// pixel <-> column conversion goes through the real glyph positions
+/// (`LineLayout::closest_index_for_x` and `ShapedGlyph::position`).
+#[derive(Clone)]
+pub(crate) struct RowShapedLayout {
+    layout: Arc<gpui::LineLayout>,
+    text: SharedString,
+    /// `line_chars[k]` = line char painted at visual column `k`, plus one trailing
+    /// entry for the line char just past the last painted char.
+    line_chars: Vec<usize>,
+    /// Monospace cell width. Only used for the virtual cell past the last painted
+    /// char, where a soft-wrapped newline still occupies one cell.
+    cell_w: f32,
+}
+
+impl RowShapedLayout {
+    /// Number of painted character cells in this row.
+    pub fn columns(&self) -> usize {
+        self.line_chars.len().saturating_sub(1)
+    }
+
+    /// Byte offset of painted column `col` in the shaped text.
+    fn byte_for_column(&self, col: usize) -> usize {
+        self.text
+            .char_indices()
+            .nth(col)
+            .map(|(byte, _)| byte)
+            .unwrap_or(self.text.len())
+    }
+
+    /// Pixel offset of painted column `col`, measured from the left edge of the row's
+    /// text. Columns past the end fall back to the monospace cell width.
+    pub fn x_for_column(&self, col: usize) -> f32 {
+        let columns = self.columns();
+        if col >= columns {
+            return f32::from(self.layout.width) + (col - columns) as f32 * self.cell_w;
+        }
+        let byte = self.byte_for_column(col);
+        // Walk the glyphs rather than calling `x_for_index`, so that a column landing
+        // inside a multi-glyph cluster (a ZWJ emoji, say) still resolves to the left
+        // edge of that cluster instead of jumping to the next one.
+        let mut cluster_x = 0.0f32;
+        for run in &self.layout.runs {
+            for glyph in &run.glyphs {
+                if glyph.index == byte {
+                    return f32::from(glyph.position.x);
+                }
+                if glyph.index > byte {
+                    return cluster_x;
+                }
+                cluster_x = f32::from(glyph.position.x);
+            }
+        }
+        cluster_x
+    }
+
+    /// Painted column closest to the given pixel offset.
+    pub fn column_for_x(&self, x: f32) -> usize {
+        let byte = self.layout.closest_index_for_x(px(x));
+        let col = self.text.get(..byte).map(|s| s.chars().count()).unwrap_or(0);
+        col.min(self.columns())
+    }
+
+    /// Line char painted at column `col`.
+    pub fn line_char_for_column(&self, col: usize) -> usize {
+        self.line_chars[col.min(self.columns())]
+    }
+
+    /// Column that paints line char `lc`: the first column at or past it.
+    pub fn column_for_line_char(&self, lc: usize) -> usize {
+        self.line_chars
+            .partition_point(|&line_char| line_char < lc)
+            .min(self.columns())
+    }
+}
+
+/// Shape the text one painted visual row draws, so that pixel <-> column conversion
+/// can use real glyph positions instead of a `column * char_width` cell model.
+///
+/// `cell_w` is only used for the virtual cell past the last painted char, so callers
+/// pass the row's own monospace char width.
+pub(crate) fn shape_row(
+    text_system: &gpui::WindowTextSystem,
+    line: &str,
+    classified: &crate::markdown::LineKind<'_>,
+    v: &crate::markdown::VisualRow,
+    is_active_line: bool,
+    headings: &crate::settings::HeadingsSettings,
+    font_family: &SharedString,
+    cell_w: f32,
+) -> RowShapedLayout {
+    let painted = crate::markdown::row_painted_text(line, classified, v, is_active_line, headings);
+    // Heading rows paint at the heading size, everything else inherits `text_sm()`.
+    let (_, _, font_size, _, _) = AppView::heading_typography_metrics_with_widths(classified, headings, 24.0, cell_w, None);
+
+    let mut text = String::new();
+    let mut runs = Vec::new();
+    // Colours never move glyphs, so one flat colour is enough for geometry.
+    let color = rgba(0x000000ff).into();
+    for segment in &painted.segments {
+        text.push_str(&segment.text);
+        runs.push(gpui::TextRun {
+            len: segment.text.len(),
+            font: gpui::Font {
+                family: font_family.clone(),
+                weight: if segment.bold { gpui::FontWeight::BOLD } else { gpui::FontWeight::NORMAL },
+                style: if segment.italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal },
+                features: Default::default(),
+                fallbacks: None,
+            },
+            color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        });
+    }
+
+    let text: SharedString = text.into();
+    let layout = text_system.layout_line(text.as_ref(), px(font_size), &runs, None);
+    RowShapedLayout {
+        layout,
+        text,
+        line_chars: painted.line_chars,
+        cell_w,
     }
 }
 
@@ -5260,3 +5422,118 @@ fn render_live_styled_row(
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::markdown::{classify_line, row_painted_text, VisualRow};
+
+    /// Row geometry must come from real glyph positions rather than from a
+    /// `column * char_width` cell model: a wide glyph (emoji, CJK) does not advance by
+    /// exactly one cell, so the cell model drifts and the selection edge twitches while
+    /// dragging across it. This fails if `shape_row` is ever replaced by the old model.
+    #[test]
+    fn row_geometry_follows_shaped_glyph_positions() {
+        gpui::Application::new().run(|cx: &mut gpui::App| {
+            crate::fonts::register_embedded_fonts(cx);
+            let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                let font_family: SharedString = "Droid Sans Mono".into();
+                let headings = crate::settings::HeadingsSettings::default();
+                let font_id = window.text_system().resolve_font(&gpui::font(font_family.clone()));
+                let cell_w = window
+                    .text_system()
+                    .advance(font_id, px(14.0), 'x')
+                    .map(|s| f32::from(s.width))
+                    .unwrap_or(7.7);
+
+                let cases = [
+                    "plain ascii line",
+                    "кириллица без эмодзи",
+                    "emoji 😀 test 🚀 done",
+                    "warn ⚠️ love ❤️ flag 🏳️‍🌈 done",
+                ];
+
+                for line in cases {
+                    let v = VisualRow {
+                        line_idx: 0,
+                        sub_idx: 0,
+                        is_last_sub: true,
+                        char_start: 0,
+                        char_end: line.chars().count(),
+                    };
+                    let kind = classify_line(line, None);
+                    let layout = shape_row(window.text_system(), line, &kind, &v, false, &headings, &font_family, cell_w);
+
+                    // Independently shape the very same painted text and read the glyph
+                    // positions straight out of the layout.
+                    let painted = row_painted_text(line, &kind, &v, false, &headings);
+                    let text: String = painted.segments.iter().map(|s| s.text.as_str()).collect();
+                    let run = gpui::TextRun {
+                        len: text.len(),
+                        font: gpui::font(font_family.clone()),
+                        color: Default::default(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    let reference = window
+                        .text_system()
+                        .shape_line(text.clone().into(), px(14.0), &[run], None);
+
+                    let mut shaped_error = 0.0f32;
+                    let mut naive_error = 0.0f32;
+                    let mut cluster_starts = 0usize;
+                    let mut byte = 0usize;
+                    for (column, ch) in text.chars().enumerate() {
+                        // The glyph that starts exactly at this char, and the glyph that
+                        // starts its cluster (VS16 / ZWJ continuations have neither).
+                        let mut cluster_x = 0.0f32;
+                        let mut exact_x = None;
+                        for run in &reference.runs {
+                            for glyph in &run.glyphs {
+                                if glyph.index == byte {
+                                    exact_x = Some(f32::from(glyph.position.x));
+                                }
+                                if glyph.index <= byte {
+                                    cluster_x = f32::from(glyph.position.x);
+                                }
+                            }
+                        }
+                        let actual = layout.x_for_column(column);
+                        match exact_x {
+                            Some(expected) => {
+                                cluster_starts += 1;
+                                shaped_error = shaped_error.max((actual - expected).abs());
+                                naive_error = naive_error.max((column as f32 * cell_w - expected).abs());
+                            }
+                            // A continuation char has no glyph of its own: the caret must
+                            // stay on its cluster's left edge, not jump to the next one.
+                            None => assert_eq!(
+                                actual, cluster_x,
+                                "column {column} ({ch:?}) left its cluster in {line:?}"
+                            ),
+                        }
+                        byte += ch.len_utf8();
+                    }
+                    assert!(cluster_starts > 0, "no glyph positions checked for {line:?}");
+                    println!("{line:?}: {cluster_starts} glyph columns, shaped max error {shaped_error:.3}px, naive cell model {naive_error:.3}px");
+
+                    assert!(
+                        shaped_error <= 0.01,
+                        "shaped geometry drifted {shaped_error}px for {line:?}"
+                    );
+                }
+
+                cx.quit();
+                use gpui::AppContext;
+                struct DummyView;
+                impl gpui::Render for DummyView {
+                    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+                        gpui::div()
+                    }
+                }
+                cx.new(|_| DummyView)
+            });
+        });
+    }
+}
