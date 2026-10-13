@@ -29,7 +29,7 @@ use std::time::Instant;
 
 use gpui::{
     canvas, div, prelude::*, px, uniform_list, Bounds, Context, EventEmitter, FocusHandle,
-    KeyDownEvent, MouseMoveEvent, Pixels, ScrollHandle, ScrollStrategy, SharedString,
+    KeyDownEvent, MouseMoveEvent, Pixels, ScrollHandle, SharedString,
     UniformListScrollHandle, Window,
 };
 
@@ -204,7 +204,7 @@ impl TabListPopup {
             active_ix.min(tabs.len() - 1)
         };
         // Show the active tab right away; the first mouse move must not make the list jump.
-        scroll.scroll_to_item(active_ix, ScrollStrategy::Center);
+        // scroll.scroll_to_item(active_ix, ScrollStrategy::Center);
         Self {
             theme,
             tabs,
