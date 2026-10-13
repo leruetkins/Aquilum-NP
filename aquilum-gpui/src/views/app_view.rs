@@ -4903,7 +4903,10 @@ pub(crate) fn shape_row(
 
     let mut text = String::new();
     let mut runs = Vec::new();
-    // Colours never move glyphs, so one flat colour is enough for geometry.
+    // Colours never move glyphs, so one flat colour is enough for geometry. That holds
+    // only because the text system resolves a font per run: if it merged runs by colour
+    // alone, a flat colour would shape every run with the first segment's face (see the
+    // LOCAL PATCH in `vendor/gpui/src/text_system.rs::layout_line`).
     let color = rgba(0x000000ff).into();
     for segment in &painted.segments {
         text.push_str(&segment.text);
@@ -5740,6 +5743,91 @@ mod tests {
                         }
                     }
                 }
+
+                cx.quit();
+                use gpui::AppContext;
+                struct DummyView;
+                impl gpui::Render for DummyView {
+                    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+                        gpui::div()
+                    }
+                }
+                cx.new(|_| DummyView)
+            });
+        });
+    }
+
+    /// Row geometry is built from shaped glyph positions, so every run must be shaped
+    /// with its *own* face. `TextSystem::layout_line` used to merge runs on the
+    /// decoration alone (colour/underline/strikethrough) and never re-resolve the font,
+    /// so the editor's flat-colour geometry measured an italic span with the upright
+    /// advance. Roboto Mono's italic is 1202/2048 em against the upright 1229/2048 em,
+    /// so the caret and the selection edge drifted ~2% right of the glyphs and the
+    /// caret ended up inside the glyph it should sit in front of.
+    #[test]
+    fn geometry_shapes_each_run_with_its_own_face() {
+        gpui::Application::new().run(|cx: &mut gpui::App| {
+            crate::fonts::register_embedded_fonts(cx);
+            let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                let font_family: SharedString = "Roboto Mono".into();
+                let upright = gpui::Font {
+                    family: font_family.clone(),
+                    weight: gpui::FontWeight::BOLD,
+                    style: gpui::FontStyle::Normal,
+                    features: Default::default(),
+                    fallbacks: None,
+                };
+                let bold_italic = gpui::Font { style: gpui::FontStyle::Italic, ..upright.clone() };
+                let run = |font: gpui::Font, len: usize| gpui::TextRun {
+                    len,
+                    font,
+                    color: rgba(0x000000ff).into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let advance = |font: gpui::Font| -> f32 {
+                    let text: SharedString = "A".into();
+                    let runs = [run(font, 1)];
+                    f32::from(window.text_system().layout_line(&text, px(40.0), &runs, None).width)
+                };
+                let upright_adv = advance(upright.clone());
+                let italic_adv = advance(bold_italic.clone());
+                assert!(
+                    italic_adv < upright_adv,
+                    "the shipped editor font must have a narrower italic advance, \
+                     otherwise this test cannot detect the merged-run regression"
+                );
+
+                // Two runs that share one colour must still split into per-font runs.
+                let text: SharedString = "AB".into();
+                let runs = [run(upright.clone(), 1), run(bold_italic.clone(), 1)];
+                let shaped = window.text_system().layout_line(&text, px(40.0), &runs, None);
+                assert_eq!(
+                    shaped.runs.len(),
+                    2,
+                    "runs with different fonts must not be merged into one font run"
+                );
+                assert!(
+                    (f32::from(shaped.width) - (upright_adv + italic_adv)).abs() < 0.05,
+                    "expected the two faces' own advances to be summed, got {} for {upright_adv} + {italic_adv}",
+                    f32::from(shaped.width)
+                );
+
+                // ...and the row geometry the caret is derived from must do the same.
+                let line = "# *Курсив со звёздочками*";
+                let v = VisualRow { line_idx: 0, sub_idx: 0, is_last_sub: true, char_start: 0, char_end: line.chars().count() };
+                let kind = classify_line(line, None);
+                let mut headings = crate::settings::HeadingsSettings::default();
+                headings.h1.font_size = 40;
+                headings.h1.bold = true;
+                headings.h1.italic = false;
+                let geom = shape_row(window.text_system(), line, &kind, &v, true, &headings, &font_family, 24.0);
+                // Column 0 is the upright "# " marker, column 3 the first italic char.
+                let up_cell = geom.x_for_column(1) - geom.x_for_column(0);
+                let it_cell = geom.x_for_column(4) - geom.x_for_column(3);
+                assert!((up_cell - upright_adv).abs() < 0.05, "upright cell {up_cell} vs {upright_adv}");
+                assert!((it_cell - italic_adv).abs() < 0.05, "italic cell {it_cell} vs {italic_adv}");
 
                 cx.quit();
                 use gpui::AppContext;

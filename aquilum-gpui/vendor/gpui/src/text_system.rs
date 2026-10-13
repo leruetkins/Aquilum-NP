@@ -540,7 +540,6 @@ impl WindowTextSystem {
         force_width: Option<Pixels>,
     ) -> Arc<LineLayout> {
         let mut last_run = None::<&TextRun>;
-        let mut last_font: Option<FontId> = None;
         let mut font_runs = self.font_runs_pool.lock().pop().unwrap_or_default();
         font_runs.clear();
 
@@ -558,14 +557,22 @@ impl WindowTextSystem {
                 true
             };
 
+            // LOCAL PATCH (see [patch.crates-io] in the app's Cargo.toml).
+            // Backport of the upstream fix: resolve *every* run's font and merge only
+            // when the resolved id matches. The 0.2.2 code kept a `last_font` that was
+            // only refreshed on a run split, so once two runs merged the condition
+            // `Some(font_run.font_id) == last_font` stayed true forever and the font was
+            // never re-resolved again: a line whose runs share one colour (the editor's
+            // row geometry passes a single flat colour) was shaped end-to-end with the
+            // *first* run's face, so italic/bold spans silently measured the upright
+            // advance.
+            let font_id = self.resolve_font(&run.font);
             if let Some(font_run) = font_runs.last_mut()
-                && Some(font_run.font_id) == last_font
+                && font_id == font_run.font_id
                 && !decoration_changed
             {
                 font_run.len += run.len;
             } else {
-                let font_id = self.resolve_font(&run.font);
-                last_font = Some(font_id);
                 font_runs.push(FontRun {
                     len: run.len,
                     font_id,
