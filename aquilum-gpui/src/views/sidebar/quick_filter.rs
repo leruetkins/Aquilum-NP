@@ -523,14 +523,9 @@ impl AppView {
                     if !query.is_empty() {
                         let b1: usize = query_chars[..s_start.min(query_chars.len())].iter().map(|c| c.len_utf8()).sum();
                         let b2: usize = query_chars[..s_end.min(query_chars.len())].iter().map(|c| c.len_utf8()).sum();
-                        // Both edges go through the same device-pixel snapping as the caret
-                        // above; the rectangle is rounded, so it is painted antialiased and
-                        // an unsnapped edge would breathe while the caret stays crisp.
-                        crate::snap::snapped_span(
-                            f32::from(shaped.x_for_index(b1)),
-                            f32::from(shaped.x_for_index(b2)),
-                            pixel_scale,
-                        )
+                        let x1 = f32::from(shaped.x_for_index(b1));
+                        let x2 = f32::from(shaped.x_for_index(b2));
+                        (x1, (x2 - x1).max(0.0))
                     } else {
                         (0.0, 0.0)
                     }

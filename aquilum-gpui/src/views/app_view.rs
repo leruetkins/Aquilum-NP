@@ -108,9 +108,6 @@ pub struct AppView {
     /// Vault switcher dialog ("Knowledge bases").
     pub vault_dialog_open: bool,
     pub vault_dialog_focus_handle: FocusHandle,
-    /// Code block whose copy button was just pressed; shows the check mark until the
-    /// reset timer fires.
-    pub copied_code_block: Option<usize>,
 }
 
 impl AppView {
@@ -229,7 +226,6 @@ impl AppView {
             folder_modal_focus_handle: cx.focus_handle(),
             vault_dialog_open: false,
             vault_dialog_focus_handle: cx.focus_handle(),
-            copied_code_block: None,
         };
         this.editor_blink.enable(BlinkTarget::Editor, cx);
         this
@@ -3657,11 +3653,9 @@ impl Render for AppView {
                                         // Same device-pixel snapping as the caret above: an
                                         // unsnapped antialiased edge shifts its blend ratio with
                                         // every sub-pixel move and reads as a stuttering edge.
-                                        crate::snap::snapped_span(
-                                            f32::from(shaped.x_for_index(b1)),
-                                            f32::from(shaped.x_for_index(b2)),
-                                            pixel_scale,
-                                        )
+                                        let x1 = crate::snap::snap_x(f32::from(shaped.x_for_index(b1)), pixel_scale);
+                                        let x2 = crate::snap::snap_x(f32::from(shaped.x_for_index(b2)), pixel_scale);
+                                        (x1, (x2 - x1).max(0.0))
                                     } else {
                                         (0.0, 0.0)
                                     }
@@ -4063,109 +4057,10 @@ impl Render for AppView {
 
                                                 let row_sel_chars = calc_v_row_sel_range(v_idx);
 
-                                                // Rectangles the row paints behind its text. Both the chip and
-                                                // the selection are painted here, before the text, so the glyphs
-                                                // stay on top of them: gpui paints a text-run background from
-                                                // inside the text element, i.e. above everything the row draws
-                                                // itself, and a chip drawn that way would cover the selection and
-                                                // hide the very thing the user is selecting. The chip comes first,
-                                                // so the selection is drawn over it.
-                                                let chip_inset = code_chip_inset(row_h);
-                                                let mut backdrop_rects = Vec::new();
-                                                // The row's own current-line highlight is painted by the row
-                                                // element, i.e. *under* the code block's background, so inside a
-                                                // block it would only show in the line-number gutter. Repaint it
-                                                // here, first, so it covers the block and still sits under the
-                                                // chips and the selection.
-                                                if show_current_line_highlight {
-                                                    backdrop_rects.push(
-                                                        div()
-                                                            .absolute()
-                                                            .left(px(0.0))
-                                                            .top_0()
-                                                            .h(px(row_h))
-                                                            .w_full()
-                                                            .bg(theme.bg_hover),
-                                                    );
-                                                }
-                                                for &(code_start, code_end) in row_layout.code_ranges() {
-                                                    // The chip is a hair shorter than its row and rounded, so that
-                                                    // it reads as a chip rather than as a band across the line.
-                                                    let (chip_x, chip_w) = row_layout.selection_rect(code_start, code_end, pixel_scale);
-                                                    backdrop_rects.push(
-                                                        div()
-                                                            .absolute()
-                                                            .left(px(chip_x))
-                                                            .top(px(chip_inset))
-                                                            .h(px((row_h - 2.0 * chip_inset).max(1.0)))
-                                                            .w(px(chip_w))
-                                                            .bg(theme.code_bg)
-                                                            .rounded_sm(),
-                                                    );
-                                                }
-                                                if let Some((sel_s, sel_e)) = row_sel_chars {
-                                                    let sel_above = if v_idx > 0 { calc_v_row_sel_range(v_idx - 1) } else { None };
-                                                    let sel_below = if v_idx + 1 < visual_rows_arc.len() { calc_v_row_sel_range(v_idx + 1) } else { None };
-
-                                                    let round_tl = sel_above.map_or(true, |(as_s, as_e)| sel_s < as_s || sel_s >= as_e);
-                                                    let round_tr = sel_above.map_or(true, |(as_s, as_e)| sel_e > as_e || sel_e <= as_s);
-                                                    let round_bl = sel_below.map_or(true, |(bs_s, bs_e)| sel_s < bs_s || sel_s >= bs_e);
-                                                    let round_br = sel_below.map_or(true, |(bs_s, bs_e)| sel_e > bs_e || sel_e <= bs_s);
-
-                                                    let (sel_x, sel_w) = row_layout.selection_rect(sel_s, sel_e, pixel_scale);
-                                                    let mut sel_rect = div()
-                                                        .absolute()
-                                                        .left(px(sel_x))
-                                                        .top_0()
-                                                        .h(px(row_h))
-                                                        .w(px(sel_w))
-                                                        .bg(theme.selection_bg);
-
-                                                    if round_tl {
-                                                        sel_rect = sel_rect.rounded_tl_xs();
-                                                    }
-                                                    if round_tr {
-                                                        sel_rect = sel_rect.rounded_tr_xs();
-                                                    }
-                                                    if round_bl {
-                                                        sel_rect = sel_rect.rounded_bl_xs();
-                                                    }
-                                                    if round_br {
-                                                        sel_rect = sel_rect.rounded_br_xs();
-                                                    }
-
-                                                    backdrop_rects.push(sel_rect);
-                                                }
-
                                                 let v_char_start = v.char_start;
                                                 let v_char_end = v.char_end;
                                                 let v_line_idx = v.line_idx;
                                                 let v_sub_idx = v.sub_idx;
-
-                                                // A collapsed code block paints its language label in place of
-                                                // the opening fence, so the copy button belongs to that row. The
-                                                // payload is the block's body: the `InsideCode` lines that follow
-                                                // the fence, up to the closing fence (exclusive).
-                                                let copy_payload: Option<(usize, String)> =
-                                                    if is_opening_fence && !is_in_active_block {
-                                                        code_states_arc[v.line_idx].as_ref().map(|st| {
-                                                            let mut body = String::new();
-                                                            let mut i = v.line_idx + 1;
-                                                            while let Some(next) = code_states_arc.get(i).and_then(|s| s.as_ref()) {
-                                                                if next.block_id != st.block_id
-                                                                    || next.kind != crate::markdown::CodeBlockKind::InsideCode
-                                                                {
-                                                                    break;
-                                                                }
-                                                                body.push_str(&lines_arc[i]);
-                                                                body.push('\n');
-                                                                i += 1;
-                                                            }
-                                                            (st.block_id, body)
-                                                        })
-                                                    } else {
-                                                        None
-                                                    };
 
                                                 items.push(
                                                     div()
@@ -4270,20 +4165,43 @@ impl Render for AppView {
                                                                 .py_0()
                                                                 .font_family(editor_font.clone())
                                                                 .text_sm()
-                                                                // gpui paints a `TextRun` background at the text
-                                                                // element's line height, and the default (1.618 x
-                                                                // font size) is taller than a heading row
-                                                                // (1.35 x font size), so an inline-code chip would
-                                                                // spill into the rows above and below. Pin the line
-                                                                // height to the row so the chip fits the line; the
-                                                                // glyph baseline does not move, because the text
-                                                                // element stays centred in the row either way.
-                                                                .line_height(px(row_h))
                                                                 .cursor(gpui::CursorStyle::IBeam)
-                                                                .when(is_opening_fence, |s| s.bg(theme.code_bg).rounded_t_md())
-                                                                .when(is_closing_fence, |s| s.bg(theme.code_bg).rounded_b_md())
-                                                                .when(is_code_line, |s| s.bg(theme.code_bg))
-                                                                .children(backdrop_rects)
+                                                                .when(is_opening_fence && !is_in_active_block, |s| s.bg(theme.bg_card).rounded_t_sm())
+                                                                .when(is_closing_fence && !is_in_active_block, |s| s.bg(theme.bg_card).rounded_b_sm())
+                                                                .when(is_code_line && !is_in_active_block, |s| s.bg(theme.code_bg))
+                                                                .when_some(row_sel_chars, |s, (sel_s, sel_e)| {
+                                                                    let sel_above = if v_idx > 0 { calc_v_row_sel_range(v_idx - 1) } else { None };
+                                                                    let sel_below = if v_idx + 1 < visual_rows_arc.len() { calc_v_row_sel_range(v_idx + 1) } else { None };
+
+                                                                    let round_tl = sel_above.map_or(true, |(as_s, as_e)| sel_s < as_s || sel_s >= as_e);
+                                                                    let round_tr = sel_above.map_or(true, |(as_s, as_e)| sel_e > as_e || sel_e <= as_s);
+                                                                    let round_bl = sel_below.map_or(true, |(bs_s, bs_e)| sel_s < bs_s || sel_s >= bs_e);
+                                                                    let round_br = sel_below.map_or(true, |(bs_s, bs_e)| sel_e > bs_e || sel_e <= bs_s);
+
+                                                                    let (sel_x, sel_w) = row_layout.selection_rect(sel_s, sel_e, pixel_scale);
+                                                                    let mut sel_rect = div()
+                                                                        .absolute()
+                                                                        .left(px(sel_x))
+                                                                        .top_0()
+                                                                        .h_full()
+                                                                        .w(px(sel_w))
+                                                                        .bg(theme.selection_bg);
+
+                                                                    if round_tl {
+                                                                        sel_rect = sel_rect.rounded_tl_xs();
+                                                                    }
+                                                                    if round_tr {
+                                                                        sel_rect = sel_rect.rounded_tr_xs();
+                                                                    }
+                                                                    if round_bl {
+                                                                        sel_rect = sel_rect.rounded_bl_xs();
+                                                                    }
+                                                                    if round_br {
+                                                                        sel_rect = sel_rect.rounded_br_xs();
+                                                                    }
+
+                                                                    s.child(sel_rect)
+                                                                })
                                                                 .child(
                                                                     div()
                                                                         .h_full()
@@ -4318,59 +4236,6 @@ impl Render for AppView {
                                                                             .w(px(2.0))
                                                                             .bg(theme.accent)
                                                                             .rounded_xs(),
-                                                                    )
-                                                                })
-                                                                // Obsidian-style copy affordance: it sits at the right end
-                                                                // of the block header and copies the block body to the
-                                                                // clipboard, flashing a check mark for a moment.
-                                                                .when(copy_payload.is_some(), |s| {
-                                                                    let (block_id, body) = copy_payload.clone().unwrap();
-                                                                    let just_copied = self.copied_code_block == Some(block_id);
-                                                                    s.child(
-                                                                        div()
-                                                                            .id(gpui::ElementId::from(("code-copy", v_idx)))
-                                                                            .absolute()
-                                                                            .right(px(6.0))
-                                                                            .top_0()
-                                                                            .h(px(row_h))
-                                                                            .flex()
-                                                                            .items_center()
-                                                                            .px(px(4.0))
-                                                                            .rounded_sm()
-                                                                            .cursor(gpui::CursorStyle::PointingHand)
-                                                                            .hover(|h| h.bg(theme.bg_hover))
-                                                                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
-                                                                                // Without this the row would also move the caret
-                                                                                // into the block.
-                                                                                cx.stop_propagation();
-                                                                                cx.write_to_clipboard(ClipboardItem::new_string(body.clone()));
-                                                                                this.copied_code_block = Some(block_id);
-                                                                                cx.notify();
-
-                                                                                let entity = cx.weak_entity();
-                                                                                let mut async_cx = cx.to_async();
-                                                                                let timer_executor = cx.background_executor().clone();
-                                                                                cx.foreground_executor()
-                                                                                    .spawn(async move {
-                                                                                        timer_executor
-                                                                                            .timer(std::time::Duration::from_millis(2000))
-                                                                                            .await;
-                                                                                        entity
-                                                                                            .update(&mut async_cx, |this, cx| {
-                                                                                                if this.copied_code_block == Some(block_id) {
-                                                                                                    this.copied_code_block = None;
-                                                                                                    cx.notify();
-                                                                                                }
-                                                                                            })
-                                                                                            .ok();
-                                                                                    })
-                                                                                    .detach();
-                                                                            }))
-                                                                            .child(icons::icon(
-                                                                                if just_copied { icons::ICON_CHECK } else { icons::ICON_COPY },
-                                                                                14.0,
-                                                                                if just_copied { theme.accent } else { theme.text_muted },
-                                                                            )),
                                                                     )
                                                                 }),
                                                         ),
@@ -4699,56 +4564,6 @@ impl Render for AppView {
     }
 }
 
-/// Weight inline code is painted at.
-///
-/// Roboto Mono is bundled here in Regular and Bold only, and a request for a weight in
-/// between resolves to whichever face the platform deems closest — so the one step up
-/// that is guaranteed to show is Bold. `markdown::PaintedSegment::code` carries the same
-/// trait into the row's shaped layout, so geometry and paint stay in parity.
-const INLINE_CODE_WEIGHT: gpui::FontWeight = gpui::FontWeight::BOLD;
-
-/// Fraction of the row height left as a gap above and below the inline-code chip, i.e.
-/// the chip is `1 - 2 * CODE_CHIP_INSET_RATIO` of the row. Scaled with the row so that a
-/// heading's chip keeps the proportions of a paragraph's.
-const CODE_CHIP_INSET_RATIO: f32 = 1.0 / 12.0;
-
-/// Weight the inline-code face takes in a row whose base weight is `base`: the heavier
-/// of the two, so that code is never lighter than the text around it and a bold heading
-/// keeps its bold.
-fn inline_code_weight(base: gpui::FontWeight) -> gpui::FontWeight {
-    if base.0 > INLINE_CODE_WEIGHT.0 { base } else { INLINE_CODE_WEIGHT }
-}
-
-/// Vertical gap above and below an inline-code chip, in logical px, for a row `row_h`
-/// tall. At least one pixel, so that the chip is always visibly shorter than its row.
-fn code_chip_inset(row_h: f32) -> f32 {
-    (row_h * CODE_CHIP_INSET_RATIO).round().max(1.0)
-}
-
-/// Colour a syntax marker is painted with, or `None` when it is not painted at all on
-/// this line.
-///
-/// Every marker except an inline-code delimiter only shows on the active line. A code
-/// delimiter is painted even off the active line so that the code chip keeps a constant
-/// width — and with it the selection rectangle, which otherwise jumps by two cells the
-/// moment the line becomes active. Off the active line the delimiter carries no ink at
-/// all, which is exactly what reads as the chip's left/right padding: the chip itself is
-/// a rectangle the editor paints behind the row's text, not a text-run background, so a
-/// blank delimiter is enough to open the padding. `markdown::row_painted_text`
-/// must agree: it keeps the delimiter's cell on an idle line for the same reason.
-fn marker_paint(m: &str, is_active_line: bool, theme: &Theme) -> Option<gpui::Hsla> {
-    let is_code_delim = crate::markdown::is_inline_code_delim(m);
-    if !is_active_line && !is_code_delim {
-        return None;
-    }
-    if is_active_line {
-        Some(theme.text_muted.into())
-    } else {
-        // No ink: the cell is part of the chip, and the chip shows through.
-        Some(gpui::rgba(0x00000000).into())
-    }
-}
-
 fn render_syntax_spans(
     spans: Vec<crate::markdown::SyntaxSpan>,
     is_active_line: bool,
@@ -4792,28 +4607,17 @@ fn render_syntax_spans(
         features: Default::default(),
         fallbacks: None,
     };
-    // Inline code is set one weight step heavier than the body it sits in. The chip
-    // background is painted by the editor as part of the row's backdrop, not by this run,
-    // only thing that marks code out here is this face plus the row's chip rectangle.
-    let code_font = gpui::Font {
-        family: font_family.clone(),
-        weight: inline_code_weight(base_weight),
-        style: base_style,
-        features: Default::default(),
-        fallbacks: None,
-    };
 
     for span in spans {
         match span {
             crate::markdown::SyntaxSpan::Marker(m) => {
-                if let Some(color) = marker_paint(&m, is_active_line, theme) {
+                if is_active_line {
                     let len = m.len();
-                    let font = if crate::markdown::is_inline_code_delim(&m) { code_font.clone() } else { reg_font.clone() };
                     full_text.push_str(&m);
                     runs.push(gpui::TextRun {
                         len,
-                        font,
-                        color,
+                        font: reg_font.clone(),
+                        color: theme.text_muted.into(),
                         background_color: None,
                         underline: None,
                         strikethrough: None,
@@ -4869,19 +4673,13 @@ fn render_syntax_spans(
                 });
             }
             crate::markdown::SyntaxSpan::InlineCode(c) => {
-                // Inline code keeps the surrounding text colour and is marked out by the
-                // chip the editor paints behind the row plus its heavier face, so its
-                // colour never changes as the caret moves in and out of the line. The
-                // chip is not a run background on purpose: a run background is painted
-                // by the text element, i.e. above the selection rectangle, which would
-                // hide the selection over the code.
                 let len = c.len();
                 full_text.push_str(&c);
                 runs.push(gpui::TextRun {
                     len,
-                    font: code_font.clone(),
-                    color: main_color.into(),
-                    background_color: None,
+                    font: reg_font.clone(),
+                    color: theme.success.into(),
+                    background_color: Some(theme.code_bg.into()),
                     underline: None,
                     strikethrough: None,
                 });
@@ -4981,10 +4779,6 @@ pub(crate) struct RowShapedLayout {
     /// `line_chars[k]` = line char painted at visual column `k`, plus one trailing
     /// entry for the line char just past the last painted char.
     line_chars: Vec<usize>,
-    /// Visual columns the row covers with the inline-code chip, merged and in order.
-    /// The editor paints the chip and the selection from these, so they must come from
-    /// the same painted text the renderer walks (`markdown::row_painted_text`).
-    code_ranges: Vec<(usize, usize)>,
     /// Monospace cell width. Only used for the virtual cell past the last painted
     /// char, where a soft-wrapped newline still occupies one cell.
     cell_w: f32,
@@ -5067,27 +4861,20 @@ impl RowShapedLayout {
             .min(self.columns())
     }
 
-    /// Visual columns covered by the inline-code chip, merged and in order.
-    pub fn code_ranges(&self) -> &[(usize, usize)] {
-        &self.code_ranges
-    }
-
     /// Left edge and width of the selection rectangle covering columns
     /// `sel_s..sel_e`, in logical px from the row's text origin.
     ///
     /// Both edges go through the same device-pixel snapping as the caret
-    /// (`crate::snap::snapped_span`). The rectangle carries `rounded_*_xs()` corners, so
+    /// (`crate::snap::snap_x`). The rectangle carries `rounded_*_xs()` corners, so
     /// unlike a plain quad it is painted by the signed-distance path and its edge is
     /// antialiased: at a fractional x the partially covered pixel column shifts its
     /// blend ratio with every sub-pixel mouse move, while the snapped caret sitting
     /// on the same boundary stays crisp — so the painted edge and the caret disagree
     /// by up to a device pixel and the edge appears to breathe while dragging.
     pub fn selection_rect(&self, sel_s: usize, sel_e: usize, scale_factor: f32) -> (f32, f32) {
-        crate::snap::snapped_span(
-            self.x_for_column(sel_s),
-            self.x_for_column(sel_e),
-            scale_factor,
-        )
+        let x1 = crate::snap::snap_x(self.x_for_column(sel_s), scale_factor);
+        let x2 = crate::snap::snap_x(self.x_for_column(sel_e), scale_factor);
+        (x1, (x2 - x1).max(0.0))
     }
 }
 
@@ -5107,34 +4894,20 @@ pub(crate) fn shape_row(
     cell_w: f32,
 ) -> RowShapedLayout {
     let painted = crate::markdown::row_painted_text(line, classified, v, is_active_line, headings);
-    let code_ranges = painted.code_ranges();
     // Heading rows paint at the heading size, everything else inherits `text_sm()`.
     let (_, _, font_size, _, _) = AppView::heading_typography_metrics_with_widths(classified, headings, 24.0, cell_w, None);
 
     let mut text = String::new();
     let mut runs = Vec::new();
-    // Colours never move glyphs, so one flat colour is enough for geometry. That holds
-    // only because the text system resolves a font per run: if it merged runs by colour
-    // alone, a flat colour would shape every run with the first segment's face (see the
-    // LOCAL PATCH in `vendor/gpui/src/text_system.rs::layout_line`).
+    // Colours never move glyphs, so one flat colour is enough for geometry.
     let color = rgba(0x000000ff).into();
     for segment in &painted.segments {
-        // Inline code is painted heavier than the row's body, so the shaped layout has
-        // to ask for the same face the renderer uses or the chip would be measured with
-        // the wrong advances.
-        let weight = if segment.code {
-            inline_code_weight(if segment.bold { gpui::FontWeight::BOLD } else { gpui::FontWeight::NORMAL })
-        } else if segment.bold {
-            gpui::FontWeight::BOLD
-        } else {
-            gpui::FontWeight::NORMAL
-        };
         text.push_str(&segment.text);
         runs.push(gpui::TextRun {
             len: segment.text.len(),
             font: gpui::Font {
                 family: font_family.clone(),
-                weight,
+                weight: if segment.bold { gpui::FontWeight::BOLD } else { gpui::FontWeight::NORMAL },
                 style: if segment.italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal },
                 features: Default::default(),
                 fallbacks: None,
@@ -5152,7 +4925,6 @@ pub(crate) fn shape_row(
         layout,
         text,
         line_chars: painted.line_chars,
-        code_ranges,
         cell_w,
     }
 }
@@ -5636,38 +5408,7 @@ fn render_live_styled_row(
             }
         }
         crate::markdown::LineKind::CodeFence { is_opening, lang } => {
-            if *is_opening {
-                if show_fences || is_active_line {
-                    // Editing the block: paint the raw fence so the caret and the
-                    // backticks line up with the source.
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .h_full()
-                        .text_color(theme.text_muted)
-                        .child(line.to_string())
-                } else {
-                    // Collapsed: the language label stands in for the fence, and the row
-                    // loop overlays the copy button at the right end of this same row.
-                    let lang_label = lang.unwrap_or("CODE").to_uppercase();
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .h_full()
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .text_color(theme.accent)
-                                .child(lang_label),
-                        )
-                        .child(icons::icon(icons::ICON_CODE, 12.0, theme.text_muted))
-                }
-            } else if show_fences || is_active_line {
-                // Editing the block: paint the raw closing fence.
+            if show_fences || is_active_line {
                 div()
                     .flex()
                     .flex_row()
@@ -5675,23 +5416,49 @@ fn render_live_styled_row(
                     .h_full()
                     .text_color(theme.text_muted)
                     .child(line.to_string())
+            } else if *is_opening {
+                let lang_label = lang.unwrap_or("CODE").to_uppercase();
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .h_full()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .text_color(theme.accent)
+                                    .child(lang_label),
+                            ),
+                    )
+                    .child(icons::icon(icons::ICON_CODE, 12.0, theme.text_muted))
             } else {
-                // Collapsed: the fence is hidden. The row stays empty and only carries
-                // the block's background and its rounded bottom corners, so the panel
-                // still ends in a visible edge.
-                div().h_full()
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .w_full()
+                    .h_full()
+                    .child(div().h_px().w_full().bg(theme.border_subtle))
             }
         }
         crate::markdown::LineKind::CodeLine(_) => {
             let row_slice: String = line.chars().skip(char_start).take(char_end - char_start).collect();
-            // Plain foreground: the block background alone marks this as code. The
-            // green that used to sit here read as an accent colour, not as text.
+            let text_color = if is_active_line { theme.text_primary } else { theme.success };
             div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .h_full()
-                .text_color(theme.text_primary)
+                .text_color(text_color)
                 .child(row_slice)
         }
         crate::markdown::LineKind::Paragraph(_) => {
@@ -5981,149 +5748,5 @@ mod tests {
                 cx.new(|_| DummyView)
             });
         });
-    }
-
-    /// Row geometry is built from shaped glyph positions, so every run must be shaped
-    /// with its *own* face. `TextSystem::layout_line` used to merge runs on the
-    /// decoration alone (colour/underline/strikethrough) and never re-resolve the font,
-    /// so the editor's flat-colour geometry measured an italic span with the upright
-    /// advance. Roboto Mono's italic is 1202/2048 em against the upright 1229/2048 em,
-    /// so the caret and the selection edge drifted ~2% right of the glyphs and the
-    /// caret ended up inside the glyph it should sit in front of.
-    #[test]
-    fn geometry_shapes_each_run_with_its_own_face() {
-        gpui::Application::new().run(|cx: &mut gpui::App| {
-            crate::fonts::register_embedded_fonts(cx);
-            let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
-                let font_family: SharedString = "Roboto Mono".into();
-                let upright = gpui::Font {
-                    family: font_family.clone(),
-                    weight: gpui::FontWeight::BOLD,
-                    style: gpui::FontStyle::Normal,
-                    features: Default::default(),
-                    fallbacks: None,
-                };
-                let bold_italic = gpui::Font { style: gpui::FontStyle::Italic, ..upright.clone() };
-                let run = |font: gpui::Font, len: usize| gpui::TextRun {
-                    len,
-                    font,
-                    color: rgba(0x000000ff).into(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                };
-                let advance = |font: gpui::Font| -> f32 {
-                    let text: SharedString = "A".into();
-                    let runs = [run(font, 1)];
-                    f32::from(window.text_system().layout_line(&text, px(40.0), &runs, None).width)
-                };
-                let upright_adv = advance(upright.clone());
-                let italic_adv = advance(bold_italic.clone());
-                assert!(
-                    italic_adv < upright_adv,
-                    "the shipped editor font must have a narrower italic advance, \
-                     otherwise this test cannot detect the merged-run regression"
-                );
-
-                // Two runs that share one colour must still split into per-font runs.
-                let text: SharedString = "AB".into();
-                let runs = [run(upright.clone(), 1), run(bold_italic.clone(), 1)];
-                let shaped = window.text_system().layout_line(&text, px(40.0), &runs, None);
-                assert_eq!(
-                    shaped.runs.len(),
-                    2,
-                    "runs with different fonts must not be merged into one font run"
-                );
-                assert!(
-                    (f32::from(shaped.width) - (upright_adv + italic_adv)).abs() < 0.05,
-                    "expected the two faces' own advances to be summed, got {} for {upright_adv} + {italic_adv}",
-                    f32::from(shaped.width)
-                );
-
-                // ...and the row geometry the caret is derived from must do the same.
-                let line = "# *Курсив со звёздочками*";
-                let v = VisualRow { line_idx: 0, sub_idx: 0, is_last_sub: true, char_start: 0, char_end: line.chars().count() };
-                let kind = classify_line(line, None);
-                let mut headings = crate::settings::HeadingsSettings::default();
-                headings.h1.font_size = 40;
-                headings.h1.bold = true;
-                headings.h1.italic = false;
-                let geom = shape_row(window.text_system(), line, &kind, &v, true, &headings, &font_family, 24.0);
-                // Column 0 is the upright "# " marker, column 3 the first italic char.
-                let up_cell = geom.x_for_column(1) - geom.x_for_column(0);
-                let it_cell = geom.x_for_column(4) - geom.x_for_column(3);
-                assert!((up_cell - upright_adv).abs() < 0.05, "upright cell {up_cell} vs {upright_adv}");
-                assert!((it_cell - italic_adv).abs() < 0.05, "italic cell {it_cell} vs {italic_adv}");
-
-                cx.quit();
-                use gpui::AppContext;
-                struct DummyView;
-                impl gpui::Render for DummyView {
-                    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
-                        gpui::div()
-                    }
-                }
-                cx.new(|_| DummyView)
-            });
-        });
-    }
-
-    /// The inline-code chip keeps a constant width, so the marker delimiting it must stay
-    /// painted off the active line — with no ink at all, which is what reads as the
-    /// chip's padding. Every other marker collapses entirely when the line is idle.
-    #[test]
-    fn code_delimiters_stay_painted_off_the_active_line() {
-        let theme = Theme::light();
-        // `Hsla` is not `PartialEq`, and the Rgba -> Hsla -> Rgba round trip is not
-        // exact, so compare the components with a tolerance.
-        let comps = |c: gpui::Rgba| (c.r, c.g, c.b, c.a);
-        let same = |a: gpui::Hsla, b: gpui::Rgba| {
-            let a = comps(gpui::Rgba::from(a));
-            let b = comps(b);
-            (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3 && (a.2 - b.2).abs() < 1e-3 && (a.3 - b.3).abs() < 1e-3
-        };
-
-        assert!(marker_paint("**", false, &theme).is_none(), "a hidden `**` must not be painted");
-        assert!(marker_paint("~~", false, &theme).is_none(), "a hidden `~~` must not be painted");
-
-        let muted = marker_paint("**", true, &theme).expect("an active-line marker is painted");
-        assert!(same(muted, theme.text_muted), "an active-line marker is muted: {:?}", comps(gpui::Rgba::from(muted)));
-
-        // The chip is painted by the row, so an idle delimiter only has
-        // to carry no ink: the chip shows through it, and so does a selection.
-        let idle_delim = marker_paint("`", false, &theme).expect("a code delimiter is always painted");
-        assert_eq!(comps(gpui::Rgba::from(idle_delim)).3, 0.0, "an idle delimiter must be invisible: {:?}", comps(gpui::Rgba::from(idle_delim)));
-
-        let active_delim = marker_paint("`", true, &theme).expect("a code delimiter is always painted");
-        assert!(same(active_delim, theme.text_muted), "an active delimiter is muted: {:?}", comps(gpui::Rgba::from(active_delim)));
-    }
-
-    /// Inline code is painted one step heavier than the body text, and the row's shaped
-    /// layout has to ask for the same face — otherwise the chip and the caret would be
-    /// measured with the wrong advances.
-    #[test]
-    fn inline_code_is_heavier_than_its_body_but_never_lighter_than_a_bold_one() {
-        assert_eq!(inline_code_weight(gpui::FontWeight::NORMAL).0, INLINE_CODE_WEIGHT.0);
-        assert!(INLINE_CODE_WEIGHT.0 > gpui::FontWeight::NORMAL.0);
-        // A bold row keeps its bold: there is no heavier bundled face to move up to.
-        assert_eq!(inline_code_weight(gpui::FontWeight::BOLD).0, gpui::FontWeight::BOLD.0);
-        assert!(inline_code_weight(gpui::FontWeight::LIGHT).0 >= INLINE_CODE_WEIGHT.0);
-    }
-
-    /// The chip has to be visibly shorter than its row at every font size, and never
-    /// collapse to nothing.
-    #[test]
-    fn code_chip_is_shorter_than_its_row_at_every_size() {
-        // Paragraph rows and heading rows, as `heading_typography_metrics` computes them.
-        for row_h in [18.0f32, 24.0, 27.0, 40.5, 47.0, 54.0, 108.0] {
-            let inset = code_chip_inset(row_h);
-            let chip_h = row_h - 2.0 * inset;
-            assert!(inset >= 1.0, "row_h {row_h}: inset {inset} must leave a visible gap");
-            assert!(chip_h < row_h, "row_h {row_h}: chip {chip_h} is not shorter than the row");
-            assert!(chip_h > row_h * 0.7, "row_h {row_h}: chip {chip_h} lost too much height");
-        }
-        // A tiny row still gets a one-pixel gap rather than a negative chip.
-        assert_eq!(code_chip_inset(4.0), 1.0);
-        assert!(4.0 - 2.0 * code_chip_inset(4.0) > 0.0);
     }
 }
