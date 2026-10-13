@@ -404,21 +404,63 @@ pub enum InlineSpan {
     Link { label: String, url: String },
 }
 
+/// Number of backticks at the head of `s`, or 0 when it does not start with one.
+///
+/// A backtick string is a run of one *or more* backticks, and CommonMark closes a code
+/// span with a run of **exactly** the same length. That is what makes
+/// `` ``код с `обратными` `` `` a single span whose content holds literal backticks,
+/// instead of an empty span followed by a lone one.
+fn backtick_run_len(s: &str) -> usize {
+    s.bytes().take_while(|&b| b == b'`').count()
+}
+
+/// Byte offset of the first run of exactly `n` backticks in `s`, or `None` when there is
+/// none. Backticks are ASCII, so the offset is a char boundary and safe to slice on; a
+/// longer run does not match (`` `` `` is not closed by ``` ``` ```).
+fn find_closing_backtick_run(s: &str, n: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'`' {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i] == b'`' {
+            i += 1;
+        }
+        if i - start == n {
+            return Some(start);
+        }
+    }
+    None
+}
+
 pub fn parse_inline_spans(mut s: &str) -> Vec<InlineSpan> {
     let mut spans = Vec::new();
     let mut plain_accum = String::new();
 
     while !s.is_empty() {
-        // Inline code: `...`
-        if s.starts_with('`') {
-            if let Some(end_idx) = s[1..].find('`') {
-                if !plain_accum.is_empty() {
-                    spans.push(InlineSpan::Text(std::mem::take(&mut plain_accum)));
+        // Inline code: a run of N backticks, closed by the next run of exactly N.
+        let run = backtick_run_len(s);
+        if run > 0 {
+            match find_closing_backtick_run(&s[run..], run) {
+                Some(content_len) => {
+                    if !plain_accum.is_empty() {
+                        spans.push(InlineSpan::Text(std::mem::take(&mut plain_accum)));
+                    }
+                    let code_content = &s[run..run + content_len];
+                    spans.push(InlineSpan::InlineCode(code_content.to_string()));
+                    s = &s[run + content_len + run..];
+                    continue;
                 }
-                let code_content = &s[1..1 + end_idx];
-                spans.push(InlineSpan::InlineCode(code_content.to_string()));
-                s = &s[2 + end_idx..];
-                continue;
+                // No run of the same length: the backticks are literal text, and the
+                // whole run is consumed so it cannot be re-read as a shorter delimiter.
+                None => {
+                    plain_accum.push_str(&s[..run]);
+                    s = &s[run..];
+                    continue;
+                }
             }
         }
 
@@ -586,18 +628,32 @@ pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
             }
         }
 
-        // Inline code: `...`
-        if s.starts_with('`') {
-            if let Some(end_idx) = s[1..].find('`') {
-                if !plain_accum.is_empty() {
-                    spans.push(SyntaxSpan::Text(std::mem::take(&mut plain_accum)));
+        // Inline code: a run of N backticks, closed by the next run of exactly N. The
+        // run length is the whole point: `` ``код с `обратными` `` `` is one span holding
+        // literal single backticks, and reading it as a lone delimiter produced an empty
+        // span plus a wrongly-short one (the content must not be re-scanned either).
+        let run = backtick_run_len(s);
+        if run > 0 {
+            match find_closing_backtick_run(&s[run..], run) {
+                Some(content_len) => {
+                    if !plain_accum.is_empty() {
+                        spans.push(SyntaxSpan::Text(std::mem::take(&mut plain_accum)));
+                    }
+                    let delimiter = "`".repeat(run);
+                    let code_content = &s[run..run + content_len];
+                    spans.push(SyntaxSpan::Marker(delimiter.clone()));
+                    spans.push(SyntaxSpan::InlineCode(code_content.to_string()));
+                    spans.push(SyntaxSpan::Marker(delimiter));
+                    s = &s[run + content_len + run..];
+                    continue;
                 }
-                spans.push(SyntaxSpan::Marker("`".to_string()));
-                let code_content = &s[1..1 + end_idx];
-                spans.push(SyntaxSpan::InlineCode(code_content.to_string()));
-                spans.push(SyntaxSpan::Marker("`".to_string()));
-                s = &s[2 + end_idx..];
-                continue;
+                // No run of the same length: the backticks are literal text, and the
+                // whole run is consumed so it cannot be re-read as a shorter delimiter.
+                None => {
+                    plain_accum.push_str(&s[..run]);
+                    s = &s[run..];
+                    continue;
+                }
             }
         }
 
@@ -1115,9 +1171,9 @@ pub struct PaintedSegment {
     pub bold: bool,
     pub italic: bool,
     /// True for inline code and for its delimiters, i.e. for everything the editor
-    /// covers with the code chip. The editor paints the chip from these runs
-    /// (`views::app_view::row_backdrop`) instead of from a text-run background, so that
-    /// the selection rectangle — which is painted before the text — is not covered by
+    /// covers with the code chip. The editor paints the chip from these runs (the row
+    /// backdrop rectangles in `views::app_view`) instead of from a text-run background, so
+    /// that the selection rectangle — which is painted before the text — is not covered by
     /// it, and so that the chip and the selection are cut from the same columns.
     pub code: bool,
 }
@@ -1137,13 +1193,14 @@ pub struct PaintedRow {
     pub line_chars: Vec<usize>,
 }
 
-/// An inline-code delimiter is a lone backtick. It is the one inline marker that keeps
-/// its cell when it is not painted, so that the code chip has a constant width and the
-/// selection rectangle does not jump when the delimiters become visible on the active
-/// line. Both the geometry (`row_painted_text`) and the renderer
+/// An inline-code delimiter is a run of one or more backticks — the run length is what
+/// closes the span, so `` `` `` is a delimiter in its own right. It is the one inline
+/// marker that keeps its cell when it is not painted, so that the code chip has a
+/// constant width and the selection rectangle does not jump when the delimiters become
+/// visible on the active line. Both the geometry (`row_painted_text`) and the renderer
 /// (`views::app_view::render_syntax_spans`) must agree on this.
 pub fn is_inline_code_delim(text: &str) -> bool {
-    text == "`"
+    !text.is_empty() && text.bytes().all(|b| b == b'`')
 }
 
 impl PaintedRow {
@@ -1598,6 +1655,91 @@ mod tests {
         let active = painted(line, &kind, 0, 7, 0, true);
         assert_eq!(text_of(&active), "a `x` b");
         assert_eq!(active.line_chars, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn inline_code_run_length_matches_the_closing_delimiter() {
+        // A double-backtick span holds literal single backticks; a single one inside it
+        // must not close it.
+        let spans = parse_inline_syntax_spans("a ``b`c`` d");
+        let codes: Vec<&str> = spans
+            .iter()
+            .filter_map(|s| match s {
+                SyntaxSpan::InlineCode(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(codes, vec!["b`c"]);
+        let markers: Vec<&str> = spans
+            .iter()
+            .filter_map(|s| match s {
+                SyntaxSpan::Marker(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(markers, vec!["``", "``"]);
+    }
+
+    #[test]
+    fn an_unmatched_backtick_run_stays_literal() {
+        // No run of the same length: the backticks are text, and the lone pair after it
+        // still forms a span. The old single-backtick reader turned `` into an empty span.
+        let spans = parse_inline_syntax_spans("a `` b `c`");
+        let codes: Vec<&str> = spans
+            .iter()
+            .filter_map(|s| match s {
+                SyntaxSpan::InlineCode(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(codes, vec!["c"]);
+        let text: String = spans
+            .iter()
+            .map(|s| match s {
+                SyntaxSpan::Text(t) | SyntaxSpan::InlineCode(t) | SyntaxSpan::Marker(t) => t.as_str(),
+                _ => "",
+            })
+            .collect();
+        assert_eq!(text, "a `` b `c`");
+    }
+
+    #[test]
+    fn every_backtick_run_is_a_code_delimiter() {
+        assert!(is_inline_code_delim("`"));
+        assert!(is_inline_code_delim("``"));
+        assert!(is_inline_code_delim("```"));
+        assert!(!is_inline_code_delim(""));
+        assert!(!is_inline_code_delim("~"));
+        assert!(!is_inline_code_delim("\\`"));
+        assert!(!is_inline_code_delim("``a"));
+    }
+
+    #[test]
+    fn painted_double_backtick_code_is_one_chip_over_both_delimiters() {
+        // The exact line from `markdown-test.md:83`: three spans, the middle one opened
+        // and closed by two backticks and holding literal backticks inside.
+        let line = "Обычный текст `Встроенный код`, ``код с `обратными` кавычками внутри``, ` пробелы по краям `. Обычный текст";
+        let kind = classify_line(line, None);
+        let len = line.chars().count();
+        let row = painted(line, &kind, 0, len, 0, false);
+
+        // Nothing is dropped, and one painted char owns one column.
+        assert_eq!(text_of(&row), line);
+
+        let chars: Vec<char> = text_of(&row).chars().collect();
+        let chips: Vec<String> = row
+            .code_ranges()
+            .iter()
+            .map(|&(s, e)| chars[s..e].iter().collect())
+            .collect();
+        assert_eq!(
+            chips,
+            vec![
+                "`Встроенный код`".to_string(),
+                "``код с `обратными` кавычками внутри``".to_string(),
+                "` пробелы по краям `".to_string(),
+            ]
+        );
     }
 
     #[test]
