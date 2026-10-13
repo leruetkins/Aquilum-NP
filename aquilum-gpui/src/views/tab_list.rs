@@ -9,9 +9,9 @@
 //! is inside it the list already sits at its extreme position, so the first and
 //! the last row are fully visible without pushing the mouse against the border.
 //!
-//! The offset does not jump to the cursor: it smoothly chases the target derived
-//! from the cursor position. Smoothing is time based (`dt` of the real frame, not
-//! a hardcoded 1/60), so 60/120/144 Hz monitors look identical. The offset is
+//! The offset follows the target derived from the cursor position directly:
+//! no spring, no inertia, no tail. The mouse sets the position, the list stands
+//! where it was put and stops dead the moment input stops. The offset is
 //! always snapped to whole device pixels, so text and icons move together.
 //!
 //! The parent is responsible for positioning: this component only renders the
@@ -25,7 +25,6 @@
 use std::cell::Cell;
 use std::ops::Range;
 use std::rc::Rc;
-use std::time::Instant;
 
 use gpui::{
     canvas, div, prelude::*, px, uniform_list, Bounds, Context, DispatchPhase, EventEmitter,
@@ -60,28 +59,6 @@ const HEADER_H: f32 = ROW_HEIGHT * HEADER_ROWS as f32 + DIVIDER_H * HEADER_DIVID
 
 /// Mouse movements shorter than this (px) are ignored to suppress jitter.
 const MIN_MOVE: f32 = 0.5;
-/// Natural frequency of the scroll spring (rad/s). Lower is smoother and
-/// "heavier": 12 feels like the old 140 ms exponential chase, 8-10 is
-/// noticeably softer.
-const SPRING_OMEGA: f32 = 10.0;
-/// Stiffer spring once the mouse stops: the list lands fast instead of
-/// trailing behind with a tail. 0 would snap onto the target instantly,
-/// 25-40 is almost tailless but without a harsh snap.
-const SETTLE_OMEGA: f32 = 50.0;
-/// Pause without mouse motion (ms) after which the cursor counts as idle.
-const IDLE_AFTER_MS: u128 = 50;
-/// Mouse position stays eligible for post-settle centering this long (ms)
-/// after the last motion. Keyboard motion clears it outright, so a stale
-/// cursor can never hijack an arrow-key glide.
-const CENTER_AFTER_MOUSE_MS: u128 = 1000;
-/// Minimum list travel (px) during one motion for post-settle centering to
-/// kick in. Tiny wiggles settle quietly instead of jerking to the row center
-/// with a nudge bigger than the motion itself.
-const CENTER_MIN_TRAVEL: f32 = 48.0;
-/// The list counts as settled when the spring velocity drops below this (px/s).
-const REST_VELOCITY: f32 = 8.0;
-/// Upper bound for a single frame step (s): keeps a long stall from producing a jump.
-const MAX_FRAME_DT: f32 = 0.05;
 /// A scroll range below this (px) counts as "everything fits": no cursor scrolling.
 const MIN_SCROLL_RANGE: f32 = 1.0;
 
@@ -240,13 +217,6 @@ fn hover_header_at(rel_y: f32) -> Option<usize> {
     None
 }
 
-/// Whether a settled glide traveled enough to deserve post-settle centering.
-/// Tiny wiggles must rest quietly instead of jerking to the row center with
-/// a nudge bigger than the motion itself.
-fn should_center_after_glide(traveled: f32) -> bool {
-    traveled >= CENTER_MIN_TRAVEL
-}
-
 /// Offset that brings the row `[item_top, item_top + item_height]` into the
 /// viewport with the least movement, clamped to the scrollable range.
 ///
@@ -273,19 +243,6 @@ fn nearest_offset(
     target.clamp(-max_scroll, px(0.0))
 }
 
-/// Exact step of a critically damped spring over `dt` seconds.
-/// Returns the new (position, velocity). Closed-form, so it does not depend
-/// on the frame rate.
-fn spring_step(pos: f32, vel: f32, target: f32, dt: f32, omega: f32) -> (f32, f32) {
-    let d = pos - target;
-    let c = vel + omega * d;
-    let decay = (-omega * dt).exp();
-    (
-        target + (d + c * dt) * decay,
-        (vel - omega * c * dt) * decay,
-    )
-}
-
 /// Rounds a value to a whole number of device pixels. A fractional offset makes
 /// text and SVG icons snap to the pixel grid differently, which shows up as them
 /// shimmering out of sync while the list moves.
@@ -309,20 +266,6 @@ pub struct TabListPopup {
     target_y: Option<Pixels>,
     /// Last observed cursor position; the very first event only primes it.
     last_mouse_y: Option<Pixels>,
-    /// Timestamp of the previous animation frame (for `dt`).
-    last_frame: Option<Instant>,
-    /// Smoothed position in px (fractional, pre-snapping).
-    pos_y: Option<f32>,
-    /// Offset where the current glide started; measures how far the list
-    /// actually traveled, so post-settle centering can ignore tiny wiggles.
-    glide_start: Option<f32>,
-    /// Spring velocity, px/s.
-    velocity_y: f32,
-    /// When the mouse last moved noticeably; staleness means "idle".
-    last_move: Option<Instant>,
-    /// When the keyboard last moved the selection; keeps arrow-key glides
-    /// soft. Unlike the mouse stamp, this one is never used for centering.
-    last_kbd: Option<Instant>,
     focus_handle: FocusHandle,
 }
 
@@ -355,12 +298,6 @@ impl TabListPopup {
             bounds: Rc::new(Cell::new(Bounds::default())),
             target_y: None,
             last_mouse_y: None,
-            last_frame: None,
-            pos_y: None,
-            glide_start: None,
-            velocity_y: 0.0,
-            last_move: None,
-            last_kbd: None,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -397,7 +334,6 @@ impl TabListPopup {
         // accumulates instead of being dropped event by event.
         Some(anchor) if (y - anchor).abs() >= px(MIN_MOVE) => {
             self.last_mouse_y = Some(y);
-            self.last_move = Some(Instant::now());
 
             let bounds = self.bounds.get();
             let base = self.base_handle();
@@ -431,8 +367,8 @@ impl TabListPopup {
         cx.notify();
     }
 
-    /// Picks the offset that shows the highlighted row with the least movement,
-    /// then lets the same spring animation carry it there.
+    /// Picks the offset that shows the highlighted row with the least movement.
+    /// Applied directly on the next frame (see [`animate`]).
     fn scroll_selection_into_view(&mut self) {
         let base = self.base_handle();
         let max_scroll = base.max_offset().height;
@@ -451,149 +387,27 @@ impl TabListPopup {
             offset,
             max_scroll,
         ));
-        // Keyboard motion counts as fresh: the glide stays soft instead of
-        // being mistaken for a stale mouse. It also clears the mouse stamp,
-        // so a parked cursor can never recenter an arrow-key glide.
-        self.reset_motion();
-        self.last_kbd = Some(Instant::now());
     }
 
-    /// Drops the spring state: the next animation starts from the currently
-    /// shown offset with zero velocity, so a sharp direction change never yanks.
-    fn reset_motion(&mut self) {
-        self.last_frame = None;
-        self.pos_y = None;
-        self.glide_start = None;
-        self.velocity_y = 0.0;
-        self.last_move = None;
-        self.last_kbd = None;
-    }
-
-    /// One spring step. Returns `true` when another frame is needed.
+    /// Applies the pending target offset directly: no spring, no inertia.
+    /// The list stands exactly where the cursor (or keyboard) put it and
+    /// stops dead the moment input stops. Returns `false` — there is never
+    /// another frame to run.
     ///
     /// `scale` is the window scale factor: the shown offset is kept on whole
     /// device pixels (see [`snap_to_device_pixel`]).
     fn animate(&mut self, scale: f32) -> bool {
-        let Some(target) = self.target_y else {
-            self.reset_motion();
+        let Some(target) = self.target_y.take() else {
             return false;
-        };
-
-        // `dt` comes from the real frame time, so the smoothness does not depend
-        // on the refresh rate. The first frame after a pause counts as 1/60 s.
-        let now = Instant::now();
-        let dt = self.last_frame.map_or(1.0 / 60.0, |previous| {
-            now.duration_since(previous).as_secs_f32().min(MAX_FRAME_DT)
-        });
-        self.last_frame = Some(now);
-
-        // Stale input → stiff spring: land fast instead of trailing a tail.
-        // Fresh motion (mouse or keyboard) keeps the soft spring.
-        let fresh = |t: Option<Instant>| {
-            t.is_some_and(|t| now.duration_since(t).as_millis() < IDLE_AFTER_MS)
-        };
-        let omega = if fresh(self.last_move) || fresh(self.last_kbd) {
-            SPRING_OMEGA
-        } else {
-            SETTLE_OMEGA
         };
 
         let base = self.base_handle();
         let max = f32::from(base.max_offset().height);
-        let target = f32::from(target);
+        let clamped = f32::from(target).clamp(-max, 0.0);
         let mut offset = base.offset();
-        // The fractional position lives apart from what is shown: after rounding
-        // to pixels the accumulated precision would be lost on every frame.
-        // Seeding a fresh glide also records where it started, so the rest
-        // branch below knows how far the list actually traveled.
-        let pos = match self.pos_y {
-            Some(p) => p,
-            None => {
-                let start = f32::from(offset.y);
-                self.glide_start = Some(start);
-                start
-            }
-        };
-
-        let (mut pos, mut vel) = spring_step(pos, self.velocity_y, target, dt, omega);
-
-        // The spring can slightly overshoot on a sharp direction change:
-        // it must never leave the list.
-        let clamped = pos.clamp(-max, 0.0);
-        if clamped != pos {
-            vel = 0.0;
-            pos = clamped;
-        }
-        self.pos_y = Some(pos);
-        self.velocity_y = vel;
-
-        let resting = (pos - target).abs() < 0.5 / scale && vel.abs() < REST_VELOCITY;
-        let shown = if resting { target } else { pos };
-        offset.y = snap_to_device_pixel(px(shown), scale);
+        offset.y = snap_to_device_pixel(px(clamped), scale);
         base.set_offset(offset);
-
-        if resting {
-            // The glide settled: reveal the hovered row if it ended up
-            // clipped — but only while the mouse position is fresh (arrow
-            // keys clear it, so a parked cursor never hijacks keyboard
-            // navigation), and only after a real scroll: tiny wiggles must
-            // settle quietly. Unlike full centering, this moves minimally:
-            // in the middle of the list the hovered row is always fully
-            // visible, so nothing moves at all; near the edges the row
-            // aligns to the viewport edge instead of overshooting past the
-            // clamps. The check below is idempotent, so this runs at most
-            // once per settle.
-            let traveled = self.glide_start.map(|s| (pos - s).abs()).unwrap_or(0.0);
-            if should_center_after_glide(traveled) {
-                if let Some(reveal) = self.settle_reveal_target(now) {
-                    if (f32::from(reveal) - target).abs() >= 1.0 {
-                        self.target_y = Some(reveal);
-                        return true;
-                    }
-                }
-            }
-            self.reset_motion();
-            return false;
-        }
-        true
-    }
-
-    /// Offset that fully reveals the hovered row with minimal movement, for
-    /// the post-settle alignment. `None` means "rest as is": stale mouse,
-    /// cursor outside the list, nothing to scroll, or the row already fully
-    /// visible.
-    fn settle_reveal_target(&mut self, now: Instant) -> Option<Pixels> {
-        let moved = self.last_move?;
-        if now.duration_since(moved).as_millis() >= CENTER_AFTER_MOUSE_MS {
-            return None;
-        }
-        let y = self.last_mouse_y?;
-        let bounds = self.bounds.get();
-        if bounds.size.height <= px(0.0) {
-            return None;
-        }
-        let base = self.base_handle();
-        let max_scroll = base.max_offset().height;
-        if max_scroll < px(MIN_SCROLL_RANGE) {
-            return None;
-        }
-        let ix = hover_row_at(
-            f32::from(y),
-            f32::from(bounds.origin.y),
-            f32::from(bounds.size.height),
-            f32::from(base.offset().y),
-            ROW_HEIGHT,
-            self.tabs.len(),
-        )?;
-        let offset = base.offset().y;
-        Some(nearest_offset(
-            px(ix as f32 * ROW_HEIGHT),
-            px(ROW_HEIGHT),
-            -offset,
-            bounds.size.height,
-            offset,
-            max_scroll,
-        ))
+        false
     }
 
     /// Tab row under the last known cursor position, recomputed every frame.
@@ -1215,18 +1029,6 @@ mod tests {
         assert_eq!(hover_header_at(HEADER_H + 10.0), None);
     }
 
-
-    #[test]
-    fn tiny_wiggles_rest_quietly_without_centering() {
-        // Below 48 px of travel: a centering nudge (up to half a row)
-        // would outsize the motion itself.
-        assert!(!should_center_after_glide(0.0));
-        assert!(!should_center_after_glide(47.9));
-        // 48 px and beyond: center away.
-        assert!(should_center_after_glide(48.0));
-        assert!(should_center_after_glide(300.0));
-    }
-
     #[test]
     fn edge_pad_is_a_fraction_of_the_height_within_bounds() {
         assert!(approx(edge_pad(px(300.0)), px(30.0)));
@@ -1324,44 +1126,6 @@ mod tests {
         // The minimum movement would be -128, but only 100 px are scrollable.
         let target = nearest_offset(px(400.0), px(28.0), px(0.0), px(300.0), px(0.0), px(100.0));
         assert!(approx(target, px(-100.0)));
-    }
-
-    #[test]
-    fn spring_progress_does_not_depend_on_the_frame_rate() {
-        let run = |frames: u32| {
-            let (mut pos, mut vel) = (0.0_f32, 0.0_f32);
-            for _ in 0..frames {
-                (pos, vel) = spring_step(pos, vel, -1000.0, 1.0 / frames as f32, SPRING_OMEGA);
-            }
-            pos
-        };
-        assert!((run(60) - run(144)).abs() < 1.0);
-        // After a second the spring is already there.
-        assert!((run(60) + 1000.0).abs() < 2.0);
-    }
-
-    #[test]
-    fn spring_does_not_jump_at_the_start() {
-        // The first frame shifts almost nothing: velocity builds up smoothly.
-        let (pos, _) = spring_step(0.0, 0.0, -1000.0, 1.0 / 60.0, SPRING_OMEGA);
-        assert!(pos.abs() < 20.0);
-    }
-
-    #[test]
-    fn settle_spring_lands_faster_than_the_soft_one() {
-        // Half a second of soft motion, then compare: the stiff spring must
-        // already sit on the target while the soft one still travels.
-        let run = |omega: f32| {
-            let (mut pos, mut vel) = (0.0_f32, 0.0_f32);
-            for _ in 0..30 {
-                (pos, vel) = spring_step(pos, vel, -1000.0, 1.0 / 60.0, omega);
-            }
-            pos
-        };
-        let soft = (run(SPRING_OMEGA) + 1000.0).abs();
-        let stiff = (run(SETTLE_OMEGA) + 1000.0).abs();
-        assert!(stiff < 1.0, "stiff spring still off by {stiff}");
-        assert!(stiff < soft, "stiff {stiff} should beat soft {soft}");
     }
 
     #[test]
