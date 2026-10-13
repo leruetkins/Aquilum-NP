@@ -15,6 +15,7 @@ pub const EYE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24
 pub const PENCIL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>"#;
 pub const REFRESH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>"#;
 pub const SEARCH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>"#;
+pub const GLOBE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>"#;
 pub const BOLT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>"#;
 pub const CODE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>"#;
 pub const CLOSE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>"#;
@@ -100,6 +101,7 @@ pub const ICON_EYE: &str = "icons/eye.svg";
 pub const ICON_PENCIL: &str = "icons/pencil.svg";
 pub const ICON_REFRESH: &str = "icons/refresh.svg";
 pub const ICON_SEARCH: &str = "icons/search.svg";
+pub const ICON_GLOBE: &str = "icons/globe.svg";
 pub const ICON_BOLT: &str = "icons/bolt.svg";
 pub const ICON_CODE: &str = "icons/code.svg";
 pub const ICON_CLOSE: &str = "icons/close.svg";
@@ -146,6 +148,7 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_PENCIL => Some(PENCIL),
             ICON_REFRESH => Some(REFRESH),
             ICON_SEARCH => Some(SEARCH),
+            ICON_GLOBE => Some(GLOBE),
             ICON_BOLT => Some(BOLT),
             ICON_CODE => Some(CODE),
             ICON_CLOSE => Some(CLOSE),
@@ -215,6 +218,7 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_PENCIL.into(),
             ICON_REFRESH.into(),
             ICON_SEARCH.into(),
+            ICON_GLOBE.into(),
             ICON_BOLT.into(),
             ICON_CODE.into(),
             ICON_CLOSE.into(),

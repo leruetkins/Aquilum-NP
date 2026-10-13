@@ -117,7 +117,6 @@ impl AppView {
     pub fn close_settings(&mut self, cx: &mut Context<Self>) {
         self.is_settings_open = false;
         self.active_color_picker = None;
-        self.is_language_menu_open = false;
         self.is_editor_font_menu_open = false;
         cx.notify();
     }
@@ -338,9 +337,8 @@ impl AppView {
             .p_6()
             .gap_5()
             .on_scroll_wheel(cx.listener(|this, _, _, cx| {
-                if this.is_editor_font_menu_open || this.is_language_menu_open || this.active_color_picker.is_some() {
+                if this.is_editor_font_menu_open || this.active_color_picker.is_some() {
                     this.is_editor_font_menu_open = false;
-                    this.is_language_menu_open = false;
                     this.active_color_picker = None;
                     cx.notify();
                 }
@@ -1050,7 +1048,6 @@ impl AppView {
                     let current_loc = crate::i18n::LocaleInfo::for_code(current_code)
                         .unwrap_or(&crate::i18n::SUPPORTED_LOCALES[0]);
                     let pill_label = format!("{} ({})", current_loc.native_name, current_loc.english_name);
-                    let is_open = self.is_language_menu_open;
 
                     div()
                         .relative()
@@ -1059,12 +1056,17 @@ impl AppView {
                                 .id("select-language-btn")
                                 .cursor_pointer()
                                 .child(self.render_select_pill(&pill_label))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.is_language_menu_open = !this.is_language_menu_open;
-                                    cx.notify();
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if this.locale_popup_is_open() {
+                                        this.close_locale_popup(cx);
+                                    } else {
+                                        this.open_locale_popup(window, cx);
+                                    }
                                 })),
                         )
-                        .when(is_open, |parent| {
+                        // The smart locale picker hangs from this button, same
+                        // anchor the old dropdown menu used.
+                        .when_some(self.locale_popup.clone(), |parent, popup| {
                             parent.child(
                                 gpui::deferred(
                                     div()
@@ -1073,63 +1075,9 @@ impl AppView {
                                         .top_full()
                                         .right_0()
                                         .mt_1()
-                                        .w(px(250.0))
-                                        .max_h(px(220.0))
-                                        .overflow_scroll()
-                                        .bg(theme.bg_sidebar)
-                                        .border_1()
-                                        .border_color(theme.border)
-                                        .rounded_md()
-                                        .shadow_lg()
-                                        .p_1()
-                                        .gap_0p5()
-                                        .flex()
-                                        .flex_col()
-                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                            cx.stop_propagation();
-                                        })
-                                        .on_scroll_wheel(|_, _, cx| {
-                                            cx.stop_propagation();
-                                        })
-                                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                            this.is_language_menu_open = false;
-                                            cx.notify();
-                                        }))
-                                        .children(crate::i18n::SUPPORTED_LOCALES.iter().enumerate().map(|(idx, loc)| {
-                                            let is_active = loc.code == current_loc.code;
-                                            let code = loc.code;
-                                            div()
-                                                .id(gpui::ElementId::from(("lang-item", idx)))
-                                                .flex()
-                                                .flex_row()
-                                                .justify_between()
-                                                .items_center()
-                                                .px_2p5()
-                                                .py_1p5()
-                                                .rounded_sm()
-                                                .cursor_pointer()
-                                                .when(is_active, |s| s.bg(theme.accent).text_color(theme.text_on_accent))
-                                                .when(!is_active, |s| s.hover(|h| h.bg(theme.bg_hover)).text_color(theme.text_primary))
-                                                .child(
-                                                    div()
-                                                        .text_xs()
-                                                        .font_weight(if is_active { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::NORMAL })
-                                                        .child(loc.native_name),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(if is_active { theme.text_on_accent } else { theme.text_muted })
-                                                        .child(loc.english_name),
-                                                )
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.config.ui.language = code.to_string();
-                                                    this.save_settings(cx);
-                                                    this.is_language_menu_open = false;
-                                                    cx.notify();
-                                                }))
-                                        }))
-                                ).with_priority(999)
+                                        .child(popup),
+                                )
+                                .with_priority(999),
                             )
                         })
                 },

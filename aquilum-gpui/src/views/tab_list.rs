@@ -41,6 +41,14 @@ use crate::views::tabs_menu::format_bookmark_label;
 /// Height of a single row (px). The keyboard navigation relies on it.
 const ROW_HEIGHT: f32 = 28.0;
 
+/// Dead zone at the top and bottom edge, as a fraction of the list height...
+const EDGE_PAD_FRACTION: f32 = 0.10;
+/// ...but never smaller than one row, so the last row ends up fully under the
+/// cursor before it reaches the border...
+const EDGE_PAD_MIN: f32 = ROW_HEIGHT;
+/// ...and never larger than this on very tall lists.
+const EDGE_PAD_MAX: f32 = 56.0;
+
 /// Number of action rows in the popup header (fold, bookmark, close all).
 const HEADER_ROWS: usize = 3;
 /// Number of dividers in the popup header.
@@ -50,16 +58,8 @@ const DIVIDER_H: f32 = 9.0;
 /// Total height of the popup header (px): action rows plus dividers.
 const HEADER_H: f32 = ROW_HEIGHT * HEADER_ROWS as f32 + DIVIDER_H * HEADER_DIVIDERS as f32;
 
-/// Dead zone at the top and bottom edge, as a fraction of the list height...
-const EDGE_PAD_FRACTION: f32 = 0.10;
-/// ...but never smaller than one row, so the last row ends up fully under the
-/// cursor before it reaches the border...
-const EDGE_PAD_MIN: f32 = ROW_HEIGHT;
-/// ...and never larger than this on very tall lists.
-const EDGE_PAD_MAX: f32 = 56.0;
-
 /// Mouse movements shorter than this (px) are ignored to suppress jitter.
-const MIN_MOVE: f32 = 1.5;
+const MIN_MOVE: f32 = 0.5;
 /// Smoothing time constant (ms). 80-100 is brisk, 150-200 is very smooth.
 const SMOOTH_TAU_MS: f32 = 140.0;
 /// Upper bound for a single frame step (s): keeps a long stall from producing a jump.
@@ -101,8 +101,12 @@ const ICON_SIZE: f32 = 14.0;
 pub struct TabEntry {
     /// Identifier the parent understands; passed back in [`TabListEvent::Activate`].
     pub id: usize,
-    /// Tab title shown in the row.
+    /// Row title shown in the row.
     pub title: SharedString,
+    /// Optional right-aligned muted subtitle (e.g. the English locale name).
+    pub subtitle: Option<SharedString>,
+    /// Leading icon (file for tabs, globe for locales, ...).
+    pub icon: &'static str,
 }
 
 /// Events emitted by [`TabListPopup`] towards the parent.
@@ -206,7 +210,10 @@ pub struct TabListPopup {
     theme: Theme,
     tabs: Vec<TabEntry>,
     active_ix: usize,
-    header: TabListHeader,
+    /// Action header above the list; `None` hides it (e.g. locale picker).
+    header: Option<TabListHeader>,
+    /// Extra cap on the list viewport height; `None` lets it fill free space.
+    max_list_h: Option<Pixels>,
     scroll: UniformListScrollHandle,
     /// List viewport in window coordinates; filled in prepaint through a canvas.
     bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -226,7 +233,8 @@ impl TabListPopup {
         tabs: Vec<TabEntry>,
         active_ix: usize,
         theme: Theme,
-        header: TabListHeader,
+        header: Option<TabListHeader>,
+        max_list_h: Option<Pixels>,
         cx: &mut Context<Self>,
     ) -> Self {
         let scroll = UniformListScrollHandle::new();
@@ -242,6 +250,7 @@ impl TabListPopup {
             tabs,
             active_ix,
             header,
+            max_list_h,
             scroll,
             bounds: Rc::new(Cell::new(Bounds::default())),
             target_y: None,
@@ -274,26 +283,31 @@ impl TabListPopup {
     /// in a single jump produces exactly one event, so gating `notify` behind "the offset
     /// changed" would leave that row unlit. Everything above only decides the offset.
     fn on_mouse_move(&mut self, y: Pixels, cx: &mut Context<Self>) {
-        let previous = self.last_mouse_y.replace(y);
-
+    match self.last_mouse_y {
         // The first event only primes the reference point: the cursor still sits over the
         // chevron that opened the panel, so acting on it would make the list jump.
-        if let Some(previous) = previous {
-            if (y - previous).abs() >= px(MIN_MOVE) {
-                let bounds = self.bounds.get();
-                let max_scroll = self.base_handle().max_offset().height;
-                if bounds.size.height > px(0.0) && max_scroll >= px(MIN_SCROLL_RANGE) {
-                    self.target_y = Some(cursor_target_offset(
-                        y,
-                        bounds.origin.y,
-                        bounds.size.height,
-                        max_scroll,
-                    ));
-                }
+        None => self.last_mouse_y = Some(y),
+        // The distance is measured from the last *accepted* position, so a slow move
+        // accumulates instead of being dropped event by event.
+        Some(anchor) if (y - anchor).abs() >= px(MIN_MOVE) => {
+            self.last_mouse_y = Some(y);
+
+            let bounds = self.bounds.get();
+            let max_scroll = self.base_handle().max_offset().height;
+            if bounds.size.height > px(0.0) && max_scroll >= px(MIN_SCROLL_RANGE) {
+                self.target_y = Some(cursor_target_offset(
+                    y,
+                    bounds.origin.y,
+                    bounds.size.height,
+                    max_scroll,
+                ));
             }
         }
+        Some(_) => {}
+    }
 
-        cx.notify();
+    // Unconditional repaint: the hover highlight needs it (see the note on this function).
+    cx.notify();
     }
 
     /// Moves the highlight and keeps it visible.
@@ -373,16 +387,20 @@ impl TabListPopup {
         true
     }
 
-    /// Renders a single row: file icon, title, and a check mark for the active tab only.
+    /// Renders a single row: icon, title, optional subtitle, and a check mark
+    /// for the active row only.
     fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let tab = &self.tabs[ix];
         let id = tab.id;
         let title = tab.title.clone();
+        let subtitle = tab.subtitle.clone();
+        let icon = tab.icon;
         let is_active = ix == self.active_ix;
 
         let bg_hover = self.theme.bg_hover;
         let text_primary = self.theme.text_primary;
         let text_secondary = self.theme.text_secondary;
+        let text_muted = self.theme.text_muted;
         let accent = self.theme.accent;
         let icon_color = if is_active { accent } else { text_secondary };
 
@@ -401,7 +419,7 @@ impl TabListPopup {
             .rounded_md()
             .cursor_pointer()
             .hover(move |row| row.bg(bg_hover))
-            .child(icons::icon(icons::ICON_FILE_TEXT, ICON_SIZE, icon_color))
+            .child(icons::icon(icon, ICON_SIZE, icon_color))
             .child(
                 div()
                     .flex_1()
@@ -411,7 +429,16 @@ impl TabListPopup {
                     .text_color(text_primary)
                     .child(title),
             )
-            // The check mark belongs to the active tab; the hover highlight is separate.
+            .when_some(subtitle, |row, subtitle| {
+                row.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(text_muted)
+                        .child(subtitle),
+                )
+            })
+            // The check mark belongs to the active row; the hover highlight is separate.
             .when(is_active, move |row| {
                 row.child(icons::icon(icons::ICON_CHECK, ICON_SIZE, text_secondary))
             })
@@ -464,7 +491,7 @@ impl TabListPopup {
     }
 
     /// Renders the popup header: Obsidian-style tab actions above the list.
-    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_header(&self, header: &TabListHeader, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
@@ -472,14 +499,14 @@ impl TabListPopup {
             .child(self.render_header_row(
                 "tab-list-fold",
                 icons::ICON_LAYERS,
-                self.header.fold.clone(),
+                header.fold.clone(),
                 TabListEvent::FoldTabs,
                 cx,
             ))
             .child(self.render_header_row(
                 "tab-list-bookmark",
                 icons::ICON_BOOKMARK,
-                self.header.bookmark.clone(),
+                header.bookmark.clone(),
                 TabListEvent::BookmarkTabs,
                 cx,
             ))
@@ -487,7 +514,7 @@ impl TabListPopup {
             .child(self.render_header_row(
                 "tab-list-close-all",
                 icons::ICON_CLOSE,
-                self.header.close_all.clone(),
+                header.close_all.clone(),
                 TabListEvent::CloseAllTabs,
                 cx,
             ))
@@ -511,11 +538,19 @@ impl Render for TabListPopup {
             - px(WINDOW_MARGIN);
         // The panel height is header + list viewport + its padding and border, so that
         // the list viewport is exactly `rows * ROW_HEIGHT` when everything fits and
-        // there is nothing to scroll.
-        let header_h = px(HEADER_H);
+        // there is nothing to scroll. Without a header the panel is list only.
+        let header_h = if self.header.is_some() {
+            px(HEADER_H)
+        } else {
+            px(0.0)
+        };
         let chrome = px(PANEL_CHROME);
         let list_h = (px(ROW_HEIGHT) * self.tabs.len() as f32)
             .min((free_height - header_h - chrome).max(px(0.0)));
+        let list_h = match self.max_list_h {
+            Some(cap) => list_h.min(cap),
+            None => list_h,
+        };
         let height = header_h + list_h + chrome;
 
         let bounds = self.bounds.clone();
@@ -574,7 +609,9 @@ impl Render for TabListPopup {
                     _ => {}
                 }
             }))
-            .child(self.render_header(cx))
+            .when_some(self.header.clone(), |d, header| {
+                d.child(self.render_header(&header, cx))
+            })
             .child(
                 // The list viewport. The canvas measures exactly this box, so the
                 // cursor mapping is not offset by the header, the panel padding
@@ -649,6 +686,8 @@ impl AppView {
             .map(|(id, path)| TabEntry {
                 id,
                 title: tab_title(path, &new_tab, &untitled),
+                subtitle: None,
+                icon: icons::ICON_FILE_TEXT,
             })
             .collect();
         let active_ix = self
@@ -670,7 +709,9 @@ impl AppView {
             close_all: SharedString::from(self.t("tabs.close_all")),
         };
 
-        let popup = cx.new(|cx| TabListPopup::new(tabs, active_ix, theme, header, cx));
+        let popup = cx.new(|cx| {
+            TabListPopup::new(tabs, active_ix, theme, Some(header), None, cx)
+        });
         // `subscribe_in` is used instead of `subscribe`: activating a tab needs a window.
         let subscription =
             cx.subscribe_in(&popup, window, |this, _popup, event: &TabListEvent, window, cx| {
@@ -716,6 +757,74 @@ impl AppView {
     pub fn tabs_popup_is_open(&self) -> bool {
         self.tabs_popup.is_some()
     }
+
+    /// Opens the locale picker: the same smart popup, but with locales and
+    /// no action header. The parent anchors it to the language button (see
+    /// the settings UI tab), so unlike the tabs popup it needs no free-space
+    /// math: the list viewport is capped to ~10 rows.
+    pub fn open_locale_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::i18n::{LocaleInfo, SUPPORTED_LOCALES};
+
+        let current = LocaleInfo::normalize(&self.config.ui.language);
+        let tabs: Vec<TabEntry> = SUPPORTED_LOCALES
+            .iter()
+            .enumerate()
+            .map(|(id, loc)| TabEntry {
+                id,
+                title: SharedString::from(loc.native_name),
+                subtitle: Some(SharedString::from(loc.english_name)),
+                icon: icons::ICON_GLOBE,
+            })
+            .collect();
+        let active_ix = SUPPORTED_LOCALES
+            .iter()
+            .position(|loc| loc.code == current)
+            .unwrap_or(0);
+        let theme = self.theme.clone();
+
+        let popup = cx.new(|cx| {
+            TabListPopup::new(tabs, active_ix, theme, None, Some(px(ROW_HEIGHT * 10.0)), cx)
+        });
+        let subscription = cx.subscribe_in(
+            &popup,
+            window,
+            |this, _popup, event: &TabListEvent, _window, cx| {
+                match event {
+                    TabListEvent::Activate(id) => {
+                        if let Some(loc) = SUPPORTED_LOCALES.get(*id) {
+                            this.config.ui.language = loc.code.to_string();
+                            this.save_settings(cx);
+                        }
+                        this.close_locale_popup(cx);
+                    }
+                    // The locale picker has no header actions.
+                    TabListEvent::FoldTabs
+                    | TabListEvent::BookmarkTabs
+                    | TabListEvent::CloseAllTabs => {}
+                    TabListEvent::Dismiss => this.close_locale_popup(cx),
+                }
+            },
+        );
+
+        window.focus(&popup.read(cx).focus_handle());
+        self.locale_popup = Some(popup);
+        self.locale_popup_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    /// Closes the locale picker, dropping its subscription with it.
+    pub fn close_locale_popup(&mut self, cx: &mut Context<Self>) {
+        if self.locale_popup.take().is_none() {
+            return;
+        }
+        self.locale_popup_subscription = None;
+        cx.notify();
+    }
+
+    /// Whether the locale picker is currently shown.
+    pub fn locale_popup_is_open(&self) -> bool {
+        self.locale_popup.is_some()
+    }
 }
 
 #[cfg(test)]
@@ -734,7 +843,7 @@ mod tests {
         assert!(approx(edge_pad(px(300.0)), px(30.0)));
         // 10% of 1000 is 100, capped at EDGE_PAD_MAX.
         assert!(approx(edge_pad(px(1000.0)), px(EDGE_PAD_MAX)));
-        // 10% of 100 is 10, raised to one row...
+        // 10% of 150 is 15, raised to one row...
         assert!(approx(edge_pad(px(150.0)), px(ROW_HEIGHT)));
         // ...but never more than a third of a very short list.
         assert!(approx(edge_pad(px(60.0)), px(20.0)));
@@ -776,8 +885,8 @@ mod tests {
     #[test]
     fn cursor_outside_the_list_is_clamped() {
         let top = cursor_target_offset(px(0.0), px(100.0), px(300.0), px(1000.0));
-        let bottom = cursor_target_offset(px(900.0), px(100.0), px(300.0), px(1000.0));
         assert!(approx(top, px(0.0)));
+        let bottom = cursor_target_offset(px(900.0), px(100.0), px(300.0), px(1000.0));
         assert!(approx(bottom, px(-1000.0)));
     }
 
