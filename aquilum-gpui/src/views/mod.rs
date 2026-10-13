@@ -3,6 +3,7 @@ pub mod command_palette;
 pub mod goto_search;
 pub mod new_tab;
 pub mod plugin_catalog;
+pub mod ribbon_menu;
 pub mod right_sidebar;
 pub mod scrollbar;
 pub mod settings_view;

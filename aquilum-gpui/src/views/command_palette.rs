@@ -148,6 +148,9 @@ impl AppView {
             "view:toggle-right-sidebar" => {
                 self.toggle_right_sidebar(cx);
             }
+            "view:toggle-ribbon" => {
+                self.toggle_ribbon_rail_visibility(cx);
+            }
             "app:open-settings" => {
                 self.toggle_settings(cx);
             }

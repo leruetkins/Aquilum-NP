@@ -57,6 +57,11 @@ impl RibbonRegistry {
             .retain(|_, action| action.owner.as_deref() != Some(plugin_id));
     }
 
+    /// Returns a specific ribbon action by id if present.
+    pub fn get(&self, id: &str) -> Option<RibbonAction> {
+        self.actions.lock().unwrap().get(id).cloned()
+    }
+
     /// Returns all registered ribbon actions.
     pub fn all(&self) -> Vec<RibbonAction> {
         let acts = self.actions.lock().unwrap();

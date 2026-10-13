@@ -48,6 +48,15 @@ pub fn register_builtin_commands(registry: &CommandRegistry) {
         callback: Arc::new(|| {}),
     });
 
+    // Переключить вертикальную панель (Ribbon)
+    registry.register(Command {
+        id: "view:toggle-ribbon".into(),
+        name: "Toggle vertical ribbon rail".into(),
+        owner: None,
+        hotkey: None,
+        callback: Arc::new(|| {}),
+    });
+
     // 6. Переключить настройки (Ctrl+,)
     registry.register(Command {
         id: "app:open-settings".into(),

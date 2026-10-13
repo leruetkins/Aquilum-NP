@@ -140,7 +140,17 @@ impl Default for NoteSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+fn default_ribbon_hidden() -> Vec<String> {
+    vec![
+        "ribbon-quick-switcher".to_string(),
+        "ribbon-graph".to_string(),
+        "ribbon-canvas".to_string(),
+        "ribbon-template".to_string(),
+        "ribbon-drawing".to_string(),
+    ]
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionState {
     #[serde(default)]
     pub workspace_path: Option<PathBuf>,
@@ -165,6 +175,35 @@ pub struct SessionState {
     /// Known vaults for the switcher dialog, most recent first.
     #[serde(default)]
     pub known_vaults: Vec<PathBuf>,
+    /// Hidden ribbon action IDs.
+    #[serde(default = "default_ribbon_hidden")]
+    pub ribbon_hidden: Vec<String>,
+    /// Custom ribbon action order (ordered list of action IDs).
+    #[serde(default)]
+    pub ribbon_order: Vec<String>,
+    /// Whether the ribbon rail itself is visible.
+    #[serde(default = "default_true")]
+    pub ribbon_visible: bool,
+}
+
+impl Default for SessionState {
+    fn default() -> Self {
+        Self {
+            workspace_path: None,
+            open_tabs: Vec::new(),
+            active_note: None,
+            cursor_positions: HashMap::new(),
+            note_states: HashMap::new(),
+            expanded_folders: HashSet::new(),
+            sidebar_scroll_top: 0.0,
+            sidebar_width: 0.0,
+            sidebar_mode: crate::views::sidebar::SidebarMode::default(),
+            known_vaults: Vec::new(),
+            ribbon_hidden: default_ribbon_hidden(),
+            ribbon_order: Vec::new(),
+            ribbon_visible: true,
+        }
+    }
 }
 
 impl SessionState {

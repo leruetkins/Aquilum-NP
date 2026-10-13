@@ -103,6 +103,10 @@ pub struct AppView {
     pub folder_context_menu: crate::views::sidebar::FolderContextMenuState,
     pub file_context_menu: crate::views::sidebar::FileContextMenuState,
     pub tab_context_menu: crate::views::tab_context_menu::TabContextMenuState,
+    pub ribbon_context_menu: crate::views::ribbon_menu::RibbonContextMenuState,
+    pub ribbon_dragged_id: Option<String>,
+    pub ribbon_drag_start_y: Option<f32>,
+    pub ribbon_is_dragging: bool,
     /// Sidebar content mode (file tree vs Obsidian-style search panel).
     pub sidebar_mode: crate::views::sidebar::SidebarMode,
     pub sidebar_search: crate::views::sidebar::SidebarSearchState,
@@ -237,6 +241,10 @@ impl AppView {
             folder_context_menu: crate::views::sidebar::FolderContextMenuState::default(),
             file_context_menu: crate::views::sidebar::FileContextMenuState::default(),
             tab_context_menu: crate::views::tab_context_menu::TabContextMenuState::default(),
+            ribbon_context_menu: crate::views::ribbon_menu::RibbonContextMenuState::default(),
+            ribbon_dragged_id: None,
+            ribbon_drag_start_y: None,
+            ribbon_is_dragging: false,
             sidebar_mode,
             sidebar_search: crate::views::sidebar::SidebarSearchState::default(),
             search_panel_focus_handle: cx.focus_handle(),
@@ -3309,146 +3317,7 @@ impl Render for AppView {
                     .min_h_0()
                     .overflow_hidden()
                     // ----- Left Action Rail / Ribbon (Obsidian-style) -----
-                    .child(
-                        div()
-                            .id("sidebar-action-rail")
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .w(px(44.0))
-                            .h_full()
-                            .flex_shrink_0()
-                            .border_r_1()
-                            .border_color(theme.border)
-                            .bg(theme.bg_sidebar)
-                            .pt_2()
-                            .pb_2()
-                            .gap_2()
-                            // 1. Create New Note
-                            .child(
-                                div()
-                                    .id("rail-btn-new-note")
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .w(px(32.0))
-                                    .h(px(32.0))
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .hover(|h| h.bg(theme.bg_hover))
-                                    .child(icons::icon(icons::ICON_NOTE_CREATE, 17.0, theme.text_secondary))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.create_new_note(window, cx);
-                                    })),
-                            )
-                            // 2. Daily Note / Calendar
-                            .child(
-                                div()
-                                    .id("rail-btn-calendar")
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .w(px(32.0))
-                                    .h(px(32.0))
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .hover(|h| h.bg(theme.bg_hover))
-                                    .child(icons::icon(icons::ICON_CALENDAR, 17.0, theme.text_secondary))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.create_new_note(window, cx);
-                                    })),
-                            )
-                            // 3. Command Palette
-                            .child(
-                                div()
-                                    .id("rail-btn-commands")
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .w(px(32.0))
-                                    .h(px(32.0))
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .hover(|h| h.bg(theme.bg_hover))
-                                    .child(icons::icon(icons::ICON_TERMINAL, 17.0, theme.text_secondary))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.toggle_settings(cx);
-                                    })),
-                            )
-                            // 4. Sync / Refresh
-                            .child(
-                                div()
-                                    .id("rail-btn-refresh")
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .w(px(32.0))
-                                    .h(px(32.0))
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .hover(|h| h.bg(theme.bg_hover))
-                                    .child(icons::icon(icons::ICON_REFRESH, 17.0, theme.text_secondary))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.state.reload_file_tree();
-                                        cx.notify();
-                                    })),
-                            )
-                            // 5. Trash
-                            .child(
-                                div()
-                                    .id("rail-btn-trash")
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .w(px(32.0))
-                                    .h(px(32.0))
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .hover(|h| h.bg(theme.bg_hover))
-                                    .child(icons::icon(icons::ICON_TRASH_2, 17.0, theme.text_secondary)),
-                            )
-                            // Dynamic plugin ribbon actions
-                            .children(self.state.ribbon.all().into_iter().map(|action| {
-                                let cb = action.callback.clone();
-                                div()
-                                    .id(gpui::SharedString::from(action.id.clone()))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .w(px(32.0))
-                                    .h(px(32.0))
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .hover(|h| h.bg(theme.bg_hover))
-                                    .child(icons::icon(action.icon, 17.0, theme.text_secondary))
-                                    .on_click(cx.listener(move |_, _, _, _| {
-                                        cb();
-                                    }))
-                            }))
-                            // Spacer to push settings to bottom
-                            .child(div().flex_1())
-                            // Settings at bottom
-                            .child(
-                                div()
-                                    .id("rail-btn-settings")
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .w(px(32.0))
-                                    .h(px(32.0))
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .hover(|h| h.bg(theme.bg_hover))
-                                    .child(icons::icon(
-                                        icons::ICON_SETTINGS,
-                                        17.0,
-                                        if self.is_settings_open { theme.accent } else { theme.text_muted },
-                                    ))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.toggle_settings(cx);
-                                    })),
-                            ),
-                    )
+                    .child(self.render_ribbon_rail(theme, cx))
                     // ----- Сайдбар файлов (Дерево каталогов) -----
                     .when(!self.sidebar_collapsed, |s| {
                         s.child(
@@ -4875,6 +4744,10 @@ impl Render for AppView {
             // ================= TAB CONTEXT MENU (Obsidian-style) =================
             .when(self.tab_context_menu.is_open, |d| {
                 d.child(self.render_tab_context_menu(theme, window, cx))
+            })
+            // ================= RIBBON CONTEXT MENU (Obsidian-style) =================
+            .when(self.ribbon_context_menu.is_open, |d| {
+                d.child(self.render_ribbon_context_menu(theme, window, cx))
             })
             // ================= GO TO FILE DIALOG =================
             .when(self.search_dialog.is_open, |d| {
