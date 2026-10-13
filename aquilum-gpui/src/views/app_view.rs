@@ -984,7 +984,7 @@ impl AppView {
             });
             cursor_in_block || sel_in_block
         });
-        let is_active_line = v.line_idx == cursor_line || is_line_in_selection || is_in_active_block;
+        let is_active_line = Self::is_active_editor_line(self.edit_mode, v.line_idx, cursor_line, is_line_in_selection, is_in_active_block);
         let code_state = note.cached_code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
         let classified = crate::markdown::classify_line(line, code_state);
         let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &self.config.editor.headings, line_char_width);
@@ -1122,7 +1122,7 @@ impl AppView {
             });
             cursor_in_block || sel_in_block
         });
-        let is_active_line = v.line_idx == cursor_line || is_line_in_selection || is_in_active_block;
+        let is_active_line = Self::is_active_editor_line(self.edit_mode, v.line_idx, cursor_line, is_line_in_selection, is_in_active_block);
         let code_state = note.cached_code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
         let classified = crate::markdown::classify_line(line, code_state);
         let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &self.config.editor.headings, line_char_width);
@@ -1152,6 +1152,23 @@ impl AppView {
             note.sync_cursor();
             cx.notify();
         }
+    }
+
+    /// Whether the render path paints line `line_idx` as the active line, i.e. with its
+    /// markdown markers (`# `, `> `, task/bullet/numbered prefixes) visible.
+    ///
+    /// `shape_row` reproduces exactly the text the render paints, so every hit-test must
+    /// answer this the same way the render does (`is_editing && (...)`). Dropping the
+    /// `edit_mode` guard makes the hit-test count markers that read mode hides, and the
+    /// clicked column then lands one marker length away from the glyph under the pointer.
+    fn is_active_editor_line(
+        edit_mode: bool,
+        line_idx: usize,
+        cursor_line: usize,
+        is_line_in_selection: bool,
+        is_in_active_block: bool,
+    ) -> bool {
+        edit_mode && (line_idx == cursor_line || is_line_in_selection || is_in_active_block)
     }
 
 
@@ -3633,8 +3650,11 @@ impl Render for AppView {
                                     if !title_text.is_empty() {
                                         let b1: usize = title_chars[..s_start.min(title_chars.len())].iter().map(|c| c.len_utf8()).sum();
                                         let b2: usize = title_chars[..s_end.min(title_chars.len())].iter().map(|c| c.len_utf8()).sum();
-                                        let x1 = f32::from(shaped.x_for_index(b1));
-                                        let x2 = f32::from(shaped.x_for_index(b2));
+                                        // Same device-pixel snapping as the caret above: an
+                                        // unsnapped antialiased edge shifts its blend ratio with
+                                        // every sub-pixel move and reads as a stuttering edge.
+                                        let x1 = crate::snap::snap_x(f32::from(shaped.x_for_index(b1)), pixel_scale);
+                                        let x2 = crate::snap::snap_x(f32::from(shaped.x_for_index(b2)), pixel_scale);
                                         (x1, (x2 - x1).max(0.0))
                                     } else {
                                         (0.0, 0.0)
@@ -4158,8 +4178,7 @@ impl Render for AppView {
                                                                     let round_bl = sel_below.map_or(true, |(bs_s, bs_e)| sel_s < bs_s || sel_s >= bs_e);
                                                                     let round_br = sel_below.map_or(true, |(bs_s, bs_e)| sel_e > bs_e || sel_e <= bs_s);
 
-                                                                    let sel_x = row_layout.x_for_column(sel_s);
-                                                                    let sel_w = (row_layout.x_for_column(sel_e) - sel_x).max(0.0);
+                                                                    let (sel_x, sel_w) = row_layout.selection_rect(sel_s, sel_e, pixel_scale);
                                                                     let mut sel_rect = div()
                                                                         .absolute()
                                                                         .left(px(sel_x))
@@ -4808,9 +4827,26 @@ impl RowShapedLayout {
 
     /// Painted column closest to the given pixel offset.
     pub fn column_for_x(&self, x: f32) -> usize {
+        let columns = self.columns();
+        let end_x = f32::from(self.layout.width);
+        if x >= end_x {
+            return columns;
+        }
         let byte = self.layout.closest_index_for_x(px(x));
-        let col = self.text.get(..byte).map(|s| s.chars().count()).unwrap_or(0);
-        col.min(self.columns())
+        let col = self.text.get(..byte).map(|s| s.chars().count()).unwrap_or(0).min(columns);
+        // `closest_index_for_x` weighs the boundaries that own a glyph, and the position
+        // past the last painted character owns none: it snaps that one to the last
+        // glyph's *left edge* while every other boundary sits in the middle of its cell.
+        // Left alone, dragging onto the last character makes the selection edge lag by
+        // half a glyph and then jump a whole advance (up to ~19px on an emoji) as the
+        // pointer crosses it — which reads as stuttering at the end of the line.
+        if col == columns && columns > 0 {
+            let mid = (self.x_for_column(columns - 1) + end_x) / 2.0;
+            if x < mid {
+                return columns - 1;
+            }
+        }
+        col
     }
 
     /// Line char painted at column `col`.
@@ -4823,6 +4859,22 @@ impl RowShapedLayout {
         self.line_chars
             .partition_point(|&line_char| line_char < lc)
             .min(self.columns())
+    }
+
+    /// Left edge and width of the selection rectangle covering columns
+    /// `sel_s..sel_e`, in logical px from the row's text origin.
+    ///
+    /// Both edges go through the same device-pixel snapping as the caret
+    /// (`crate::snap::snap_x`). The rectangle carries `rounded_*_xs()` corners, so
+    /// unlike a plain quad it is painted by the signed-distance path and its edge is
+    /// antialiased: at a fractional x the partially covered pixel column shifts its
+    /// blend ratio with every sub-pixel mouse move, while the snapped caret sitting
+    /// on the same boundary stays crisp — so the painted edge and the caret disagree
+    /// by up to a device pixel and the edge appears to breathe while dragging.
+    pub fn selection_rect(&self, sel_s: usize, sel_e: usize, scale_factor: f32) -> (f32, f32) {
+        let x1 = crate::snap::snap_x(self.x_for_column(sel_s), scale_factor);
+        let x2 = crate::snap::snap_x(self.x_for_column(sel_e), scale_factor);
+        (x1, (x2 - x1).max(0.0))
     }
 }
 
@@ -5428,6 +5480,73 @@ mod tests {
     use super::*;
     use crate::markdown::{classify_line, row_painted_text, VisualRow};
 
+    /// Every mouse position must resolve to the **nearest** painted column, including
+    /// the boundary past the last painted character. That one boundary owns no glyph,
+    /// so it is the one a shaper's `closest_index_for_x` cannot weigh and the one a
+    /// right-to-left drag lands on at the end of a line.
+    #[test]
+    fn column_boundaries_sit_mid_cell_including_end_of_line() {
+        gpui::Application::new().run(|cx: &mut gpui::App| {
+            crate::fonts::register_embedded_fonts(cx);
+            let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                let font_family: SharedString = "Droid Sans Mono".into();
+                let headings = crate::settings::HeadingsSettings::default();
+                let font_id = window.text_system().resolve_font(&gpui::font(font_family.clone()));
+                let cell_w = window
+                    .text_system()
+                    .advance(font_id, px(14.0), 'x')
+                    .map(|s| f32::from(s.width))
+                    .unwrap_or(7.7);
+
+                for line in ["abcdef", "abc", "ab 😀", "текст", "x🏳️‍🌈", "warn ⚠️ tail"] {
+                    let v = VisualRow {
+                        line_idx: 0,
+                        sub_idx: 0,
+                        is_last_sub: true,
+                        char_start: 0,
+                        char_end: line.chars().count(),
+                    };
+                    let kind = classify_line(line, None);
+                    let layout = shape_row(window.text_system(), line, &kind, &v, false, &headings, &font_family, cell_w);
+                    let columns = layout.columns();
+                    let end_x = layout.x_for_column(columns);
+
+                    let mut prev = layout.column_for_x(-1.0);
+                    assert_eq!(prev, 0, "the left edge must map to column 0 for {line:?}");
+                    let mut x = -1.0f32;
+                    while x <= end_x + 2.0 {
+                        let col = layout.column_for_x(x);
+                        if col != prev {
+                            let mid = (layout.x_for_column(prev) + layout.x_for_column(col)) / 2.0;
+                            assert!(
+                                (x - mid).abs() <= 0.02,
+                                "{line:?}: boundary {prev}->{col} flipped at x={x:.3} but the middle of \
+                                 that cell is {mid:.3} (off by {:+.3}px)",
+                                x - mid
+                            );
+                            prev = col;
+                        }
+                        x += 0.01;
+                    }
+                    assert_eq!(prev, columns, "sweep never reached the last column for {line:?}");
+                    // And the position past the end must stay reachable far to the right.
+                    assert_eq!(layout.column_for_x(end_x + 100.0), columns);
+                }
+
+                cx.quit();
+                use gpui::AppContext;
+                struct DummyView;
+                impl gpui::Render for DummyView {
+                    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+                        gpui::div()
+                    }
+                }
+                cx.new(|_| DummyView)
+            });
+        });
+    }
+
+
     /// Row geometry must come from real glyph positions rather than from a
     /// `column * char_width` cell model: a wide glyph (emoji, CJK) does not advance by
     /// exactly one cell, so the cell model drifts and the selection edge twitches while
@@ -5522,6 +5641,100 @@ mod tests {
                         shaped_error <= 0.01,
                         "shaped geometry drifted {shaped_error}px for {line:?}"
                     );
+                }
+
+                cx.quit();
+                use gpui::AppContext;
+                struct DummyView;
+                impl gpui::Render for DummyView {
+                    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+                        gpui::div()
+                    }
+                }
+                cx.new(|_| DummyView)
+            });
+        });
+    }
+
+    /// The painted selection edge has to sit on the same device-pixel grid as the
+    /// painted caret, and it has to move monotonically while the mouse drags.
+    ///
+    /// The rectangle carries `rounded_*_xs()` corners, so it is painted by the
+    /// signed-distance path and its edge is antialiased; the caret is snapped by
+    /// `crate::snap::snap_x`. Leave the rectangle unsnapped and the two disagree by up
+    /// to a device pixel — the partially covered pixel column changes its blend ratio
+    /// with every sub-pixel mouse move, which is what reads as the selection edge
+    /// stuttering at the end of a line while dragging right to left.
+    #[test]
+    fn painted_selection_edge_sits_on_the_device_grid() {
+        gpui::Application::new().run(|cx: &mut gpui::App| {
+            crate::fonts::register_embedded_fonts(cx);
+            let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                let font_family: SharedString = "Droid Sans Mono".into();
+                let headings = crate::settings::HeadingsSettings::default();
+                let font_id = window.text_system().resolve_font(&gpui::font(font_family.clone()));
+                let cell_w = window
+                    .text_system()
+                    .advance(font_id, px(14.0), 'x')
+                    .map(|s| f32::from(s.width))
+                    .unwrap_or(7.7);
+
+                for line in ["abcdef", "ab 😀", "x🏳️‍🌈", "warn ⚠️ tail", "текст"] {
+                    let v = VisualRow {
+                        line_idx: 0,
+                        sub_idx: 0,
+                        is_last_sub: true,
+                        char_start: 0,
+                        char_end: line.chars().count(),
+                    };
+                    let kind = classify_line(line, None);
+                    let layout = shape_row(window.text_system(), line, &kind, &v, false, &headings, &font_family, cell_w);
+                    let columns = layout.columns();
+                    let end_x = layout.x_for_column(columns);
+
+                    for scale in [1.0f32, 1.25, 1.5, 1.75, 2.0] {
+                        // Right to left, the direction the stutter was reported in, with
+                        // the anchor parked at the end of the line.
+                        let mut prev_edge = f32::INFINITY;
+                        let mut x = end_x + 2.0;
+                        while x >= -1.0 {
+                            // Exactly what the app does: the mouse picks a column, that
+                            // column becomes a line char / offset, and the selection range
+                            // is painted back from the column of that line char.
+                            let col = layout.column_for_x(x);
+                            let painted_col = layout.column_for_line_char(layout.line_char_for_column(col));
+                            let (edge, width) = layout.selection_rect(painted_col, columns, scale);
+
+                            assert!(width >= 0.0, "{line:?} @{scale}x: negative width at x={x:.3}");
+
+                            // On the device grid, like the caret.
+                            let device = edge * scale;
+                            assert!(
+                                (device - device.round()).abs() <= 0.0005,
+                                "{line:?} @{scale}x: painted edge {edge:.4}px is off the device grid \
+                                 ({device:.4} device px) at x={x:.3}"
+                            );
+
+                            // Dragging left must never push the painted edge right.
+                            assert!(
+                                edge <= prev_edge + 0.0005,
+                                "{line:?} @{scale}x: painted edge moved backwards while dragging left, \
+                                 {prev_edge:.4} -> {edge:.4} at x={x:.3}"
+                            );
+
+                            // Snapping only rounds, so the edge stays within half a device
+                            // pixel of the true glyph boundary.
+                            let raw = layout.x_for_column(painted_col);
+                            assert!(
+                                (edge - raw).abs() <= 0.5 / scale + 0.0005,
+                                "{line:?} @{scale}x: snapping moved the edge {:.4}px from {raw:.4}",
+                                edge - raw
+                            );
+
+                            prev_edge = edge;
+                            x -= 0.01;
+                        }
+                    }
                 }
 
                 cx.quit();
