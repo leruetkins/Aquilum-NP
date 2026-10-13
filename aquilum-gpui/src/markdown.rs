@@ -436,11 +436,28 @@ fn find_closing_backtick_run(s: &str, n: usize) -> Option<usize> {
     None
 }
 
+/// ASCII punctuation — the characters a backslash may escape (CommonMark). Anything else
+/// after a backslash stays literal, backslash included.
+fn is_escapable_punctuation(c: char) -> bool {
+    matches!(c, '!'..='/' | ':'..='@' | '['..='`' | '{'..='~')
+}
+
 pub fn parse_inline_spans(mut s: &str) -> Vec<InlineSpan> {
     let mut spans = Vec::new();
     let mut plain_accum = String::new();
 
     while !s.is_empty() {
+        // Backslash escape: the escaped char is literal, so it must not open a span.
+        if s.starts_with('\\') {
+            if let Some(c) = s[1..].chars().next() {
+                if is_escapable_punctuation(c) {
+                    plain_accum.push(c);
+                    s = &s[1 + c.len_utf8()..];
+                    continue;
+                }
+            }
+        }
+
         // Inline code: a run of N backticks, closed by the next run of exactly N.
         let run = backtick_run_len(s);
         if run > 0 {
@@ -575,6 +592,25 @@ pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
     let mut plain_accum = String::new();
 
     while !s.is_empty() {
+        // Backslash escape: `\` before ASCII punctuation makes that char literal. The
+        // backslash is a marker (hidden off the active line, shown muted on it, like the
+        // other syntax) and the escaped char is plain text — so `` \` `` renders as a
+        // literal backtick and opens no code span, and `\*` keeps its asterisk instead of
+        // starting an emphasis span. This branch must stay ahead of every span opener.
+        if s.starts_with('\\') {
+            if let Some(c) = s[1..].chars().next() {
+                if is_escapable_punctuation(c) {
+                    if !plain_accum.is_empty() {
+                        spans.push(SyntaxSpan::Text(std::mem::take(&mut plain_accum)));
+                    }
+                    spans.push(SyntaxSpan::Marker("\\".to_string()));
+                    spans.push(SyntaxSpan::Text(c.to_string()));
+                    s = &s[1 + c.len_utf8()..];
+                    continue;
+                }
+            }
+        }
+
         // Link: [label](url)
         if s.starts_with('[') {
             if let Some(close_bracket) = s[1..].find(']') {
@@ -1739,6 +1775,71 @@ mod tests {
                 "``код с `обратными` кавычками внутри``".to_string(),
                 "` пробелы по краям `".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn a_backslash_escape_keeps_the_next_char_literal() {
+        // `\`` must not open a code span and `\*` must not open emphasis: the escaped char
+        // is plain text, the backslash is a marker.
+        let spans = parse_inline_syntax_spans("a \\`не код\\` b");
+        assert_eq!(
+            spans,
+            vec![
+                SyntaxSpan::Text("a ".to_string()),
+                SyntaxSpan::Marker("\\".to_string()),
+                SyntaxSpan::Text("`".to_string()),
+                SyntaxSpan::Text("не код".to_string()),
+                SyntaxSpan::Marker("\\".to_string()),
+                SyntaxSpan::Text("`".to_string()),
+                SyntaxSpan::Text(" b".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_non_punctuation_after_a_backslash_stays_escaped_free() {
+        // `\a` is not an escape: the backslash is plain text, not a marker.
+        let spans = parse_inline_syntax_spans("a \\b");
+        assert_eq!(spans, vec![SyntaxSpan::Text("a \\b".to_string())]);
+    }
+
+    #[test]
+    fn a_backslash_escaped_backtick_draws_no_chip() {
+        let line = "\\`не код\\`";
+        let kind = classify_line(line, None);
+        let len = line.chars().count();
+
+        // Neither state may produce a chip: the backticks are escaped, so they are text.
+        assert!(painted(line, &kind, 0, len, 0, false).code_ranges().is_empty());
+        assert!(painted(line, &kind, 0, len, 0, true).code_ranges().is_empty());
+
+        // Idle: the backslashes are hidden, the escaped backticks stay visible as text.
+        assert_eq!(text_of(&painted(line, &kind, 0, len, 0, false)), "`не код`");
+        // Active: the backslashes are painted muted, so the raw syntax stays visible.
+        assert_eq!(text_of(&painted(line, &kind, 0, len, 0, true)), "\\`не код\\`");
+    }
+
+    #[test]
+    fn the_escaping_demo_line_opens_no_spans() {
+        // `markdown-test.md:91-92` (the two lines are byte-identical).
+        let line = "Экранирование: \\*не курсив\\*, \\_не курсив\\_, \\# не заголовок, \\[не ссылка\\], \\`не код\\`, \\\\ обратный слэш, \\> не цитата, \\- не список, \\| не таблица.";
+        let spans = parse_inline_syntax_spans(line);
+        assert!(
+            spans
+                .iter()
+                .all(|s| matches!(s, SyntaxSpan::Text(_) | SyntaxSpan::Marker(_))),
+            "no span may open on escaped punctuation: {spans:?}"
+        );
+
+        let kind = classify_line(line, None);
+        let len = line.chars().count();
+        let idle = painted(line, &kind, 0, len, 0, false);
+        assert!(idle.code_ranges().is_empty());
+        // Every `\X` collapses to `X` — including `\\` to a single backslash.
+        assert_eq!(
+            text_of(&idle),
+            "Экранирование: *не курсив*, _не курсив_, # не заголовок, [не ссылка], `не код`, \\ обратный слэш, > не цитата, - не список, | не таблица."
         );
     }
 
