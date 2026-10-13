@@ -3653,9 +3653,11 @@ impl Render for AppView {
                                         // Same device-pixel snapping as the caret above: an
                                         // unsnapped antialiased edge shifts its blend ratio with
                                         // every sub-pixel move and reads as a stuttering edge.
-                                        let x1 = crate::snap::snap_x(f32::from(shaped.x_for_index(b1)), pixel_scale);
-                                        let x2 = crate::snap::snap_x(f32::from(shaped.x_for_index(b2)), pixel_scale);
-                                        (x1, (x2 - x1).max(0.0))
+                                        crate::snap::snapped_span(
+                                            f32::from(shaped.x_for_index(b1)),
+                                            f32::from(shaped.x_for_index(b2)),
+                                            pixel_scale,
+                                        )
                                     } else {
                                         (0.0, 0.0)
                                     }
@@ -4865,16 +4867,18 @@ impl RowShapedLayout {
     /// `sel_s..sel_e`, in logical px from the row's text origin.
     ///
     /// Both edges go through the same device-pixel snapping as the caret
-    /// (`crate::snap::snap_x`). The rectangle carries `rounded_*_xs()` corners, so
+    /// (`crate::snap::snapped_span`). The rectangle carries `rounded_*_xs()` corners, so
     /// unlike a plain quad it is painted by the signed-distance path and its edge is
     /// antialiased: at a fractional x the partially covered pixel column shifts its
     /// blend ratio with every sub-pixel mouse move, while the snapped caret sitting
     /// on the same boundary stays crisp — so the painted edge and the caret disagree
     /// by up to a device pixel and the edge appears to breathe while dragging.
     pub fn selection_rect(&self, sel_s: usize, sel_e: usize, scale_factor: f32) -> (f32, f32) {
-        let x1 = crate::snap::snap_x(self.x_for_column(sel_s), scale_factor);
-        let x2 = crate::snap::snap_x(self.x_for_column(sel_e), scale_factor);
-        (x1, (x2 - x1).max(0.0))
+        crate::snap::snapped_span(
+            self.x_for_column(sel_s),
+            self.x_for_column(sel_e),
+            scale_factor,
+        )
     }
 }
 
