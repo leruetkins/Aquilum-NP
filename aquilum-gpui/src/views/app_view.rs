@@ -45,10 +45,13 @@ pub struct AppView {
     pub locale_popup: Option<Entity<crate::views::tab_list::TabListPopup>>,
     /// Keeps the locale picker's event subscription alive.
     pub locale_popup_subscription: Option<Subscription>,
+    /// Editor font picker popup (same smart list, anchored to the font button).
+    pub font_popup: Option<Entity<crate::views::tab_list::TabListPopup>>,
+    /// Keeps the font picker's event subscription alive.
+    pub font_popup_subscription: Option<Subscription>,
     pub word_wrap: bool,
     pub last_wrap_cols: usize,
     pub is_settings_open: bool,
-    pub is_editor_font_menu_open: bool,
     pub settings_tab: crate::views::settings_view::SettingsTab,
     pub is_dragging_scrollbar: bool,
     pub scrollbar_drag_start_y: f32,
@@ -167,10 +170,11 @@ impl AppView {
             tabs_popup_subscription: None,
             locale_popup: None,
             locale_popup_subscription: None,
+            font_popup: None,
+            font_popup_subscription: None,
             word_wrap,
             last_wrap_cols: 80,
             is_settings_open: false,
-            is_editor_font_menu_open: false,
             settings_tab: crate::views::settings_view::SettingsTab::Ui,
             is_dragging_scrollbar: false,
             scrollbar_drag_start_y: 0.0,

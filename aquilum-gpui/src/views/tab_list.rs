@@ -107,6 +107,9 @@ pub struct TabEntry {
     pub subtitle: Option<SharedString>,
     /// Leading icon (file for tabs, globe for locales, ...).
     pub icon: &'static str,
+    /// Font family the title is previewed in; `None` uses the UI font.
+    /// Lets e.g. every font choice render in itself.
+    pub font_family: Option<SharedString>,
 }
 
 /// Events emitted by [`TabListPopup`] towards the parent.
@@ -395,6 +398,10 @@ impl TabListPopup {
         let title = tab.title.clone();
         let subtitle = tab.subtitle.clone();
         let icon = tab.icon;
+        let font_family = tab
+            .font_family
+            .clone()
+            .unwrap_or_else(|| SharedString::from("Segoe UI"));
         let is_active = ix == self.active_ix;
 
         let bg_hover = self.theme.bg_hover;
@@ -426,6 +433,7 @@ impl TabListPopup {
                     .min_w_0()
                     .truncate()
                     .text_xs()
+                    .font_family(font_family)
                     .text_color(text_primary)
                     .child(title),
             )
@@ -688,6 +696,7 @@ impl AppView {
                 title: tab_title(path, &new_tab, &untitled),
                 subtitle: None,
                 icon: icons::ICON_FILE_TEXT,
+                font_family: None,
             })
             .collect();
         let active_ix = self
@@ -774,6 +783,7 @@ impl AppView {
                 title: SharedString::from(loc.native_name),
                 subtitle: Some(SharedString::from(loc.english_name)),
                 icon: icons::ICON_GLOBE,
+                font_family: None,
             })
             .collect();
         let active_ix = SUPPORTED_LOCALES
@@ -824,6 +834,69 @@ impl AppView {
     /// Whether the locale picker is currently shown.
     pub fn locale_popup_is_open(&self) -> bool {
         self.locale_popup.is_some()
+    }
+
+    /// Opens the editor font picker: the same smart popup, each row previewed
+    /// in its own font. The list is short, so no height cap is needed.
+    pub fn open_font_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.config.editor.font.font_family.clone();
+        let tabs: Vec<TabEntry> = crate::fonts::EDITOR_FONT_CHOICES
+            .iter()
+            .enumerate()
+            .map(|(id, name)| TabEntry {
+                id,
+                title: SharedString::from(*name),
+                subtitle: None,
+                icon: icons::ICON_TYPE,
+                font_family: Some(SharedString::from(*name)),
+            })
+            .collect();
+        let active_ix = crate::fonts::EDITOR_FONT_CHOICES
+            .iter()
+            .position(|name| *name == current)
+            .unwrap_or(0);
+        let theme = self.theme.clone();
+
+        let popup = cx.new(|cx| TabListPopup::new(tabs, active_ix, theme, None, None, cx));
+        let subscription = cx.subscribe_in(
+            &popup,
+            window,
+            |this, _popup, event: &TabListEvent, _window, cx| {
+                match event {
+                    TabListEvent::Activate(id) => {
+                        if let Some(name) = crate::fonts::EDITOR_FONT_CHOICES.get(*id) {
+                            this.config.editor.font.font_family = name.to_string();
+                            this.save_settings(cx);
+                        }
+                        this.close_font_popup(cx);
+                    }
+                    // The font picker has no header actions.
+                    TabListEvent::FoldTabs
+                    | TabListEvent::BookmarkTabs
+                    | TabListEvent::CloseAllTabs => {}
+                    TabListEvent::Dismiss => this.close_font_popup(cx),
+                }
+            },
+        );
+
+        window.focus(&popup.read(cx).focus_handle());
+        self.font_popup = Some(popup);
+        self.font_popup_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    /// Closes the font picker, dropping its subscription with it.
+    pub fn close_font_popup(&mut self, cx: &mut Context<Self>) {
+        if self.font_popup.take().is_none() {
+            return;
+        }
+        self.font_popup_subscription = None;
+        cx.notify();
+    }
+
+    /// Whether the font picker is currently shown.
+    pub fn font_popup_is_open(&self) -> bool {
+        self.font_popup.is_some()
     }
 }
 

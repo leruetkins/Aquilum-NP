@@ -117,7 +117,6 @@ impl AppView {
     pub fn close_settings(&mut self, cx: &mut Context<Self>) {
         self.is_settings_open = false;
         self.active_color_picker = None;
-        self.is_editor_font_menu_open = false;
         cx.notify();
     }
 
@@ -337,8 +336,7 @@ impl AppView {
             .p_6()
             .gap_5()
             .on_scroll_wheel(cx.listener(|this, _, _, cx| {
-                if this.is_editor_font_menu_open || this.active_color_picker.is_some() {
-                    this.is_editor_font_menu_open = false;
+                if this.active_color_picker.is_some() {
                     this.active_color_picker = None;
                     cx.notify();
                 }
@@ -1150,7 +1148,6 @@ impl AppView {
     /// Renders the Editor layout, typography and behaviors settings tab.
     fn render_editor_tab(&self, cx: &Context<Self>) -> gpui::Div {
         let config = &self.config;
-        let theme = &self.theme;
 
         let heading_rows = vec![
             self.render_setting_row(
@@ -1427,7 +1424,6 @@ impl AppView {
 
         let font_rows = vec![
             {
-                let is_open = self.is_editor_font_menu_open;
                 let current_font = config.editor.font.font_family.clone();
                 self.render_setting_row(
                     &self.t("settings.editor.font_family"),
@@ -1439,12 +1435,17 @@ impl AppView {
                                 .id("select-editor-font-btn")
                                 .cursor_pointer()
                                 .child(self.render_select_pill(&current_font))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.is_editor_font_menu_open = !this.is_editor_font_menu_open;
-                                    cx.notify();
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if this.font_popup_is_open() {
+                                        this.close_font_popup(cx);
+                                    } else {
+                                        this.open_font_popup(window, cx);
+                                    }
                                 })),
                         )
-                        .when(is_open, |parent| {
+                        // The smart font picker hangs from this button, same
+                        // anchor the old dropdown menu used.
+                        .when_some(self.font_popup.clone(), |parent, popup| {
                             parent.child(
                                 gpui::deferred(
                                     div()
@@ -1453,57 +1454,9 @@ impl AppView {
                                         .top_full()
                                         .right_0()
                                         .mt_1()
-                                        .w(px(220.0))
-                                        .max_h(px(240.0))
-                                        .overflow_scroll()
-                                        .bg(theme.bg_sidebar)
-                                        .border_1()
-                                        .border_color(theme.border)
-                                        .rounded_md()
-                                        .shadow_lg()
-                                        .p_1()
-                                        .gap_0p5()
-                                        .flex()
-                                        .flex_col()
-                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                            cx.stop_propagation();
-                                        })
-                                        .on_scroll_wheel(|_, _, cx| {
-                                            cx.stop_propagation();
-                                        })
-                                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                            this.is_editor_font_menu_open = false;
-                                            cx.notify();
-                                        }))
-                                        .children(crate::fonts::EDITOR_FONT_CHOICES.iter().enumerate().map(|(idx, &font_name)| {
-                                            let is_active = font_name == current_font;
-                                            div()
-                                                .id(gpui::ElementId::from(("font-choice", idx)))
-                                                .flex()
-                                                .flex_row()
-                                                .justify_between()
-                                                .items_center()
-                                                .px_2p5()
-                                                .py_1p5()
-                                                .rounded_sm()
-                                                .cursor_pointer()
-                                                .when(is_active, |s| s.bg(theme.accent).text_color(theme.text_on_accent))
-                                                .when(!is_active, |s| s.hover(|h| h.bg(theme.bg_hover)).text_color(theme.text_primary))
-                                                .child(
-                                                    div()
-                                                        .text_xs()
-                                                        .font_family(font_name)
-                                                        .font_weight(if is_active { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::NORMAL })
-                                                        .child(font_name),
-                                                )
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.config.editor.font.font_family = font_name.to_string();
-                                                    this.save_settings(cx);
-                                                    this.is_editor_font_menu_open = false;
-                                                    cx.notify();
-                                                }))
-                                        }))
-                                ).with_priority(999)
+                                        .child(popup),
+                                )
+                                .with_priority(999),
                             )
                         }),
                 )
