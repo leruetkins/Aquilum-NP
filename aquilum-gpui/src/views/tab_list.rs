@@ -25,6 +25,7 @@
 use std::cell::Cell;
 use std::ops::Range;
 use std::rc::Rc;
+use std::time::Instant;
 
 use gpui::{
     canvas, div, prelude::*, px, uniform_list, Bounds, Context, DispatchPhase, EventEmitter,
@@ -59,6 +60,8 @@ const HEADER_H: f32 = ROW_HEIGHT * HEADER_ROWS as f32 + DIVIDER_H * HEADER_DIVID
 
 /// Mouse movements shorter than this (px) are ignored to suppress jitter.
 const MIN_MOVE: f32 = 0.5;
+/// Upper bound for a single frame step (s): keeps a long stall from producing a jump.
+const MAX_FRAME_DT: f32 = 0.05;
 /// A scroll range below this (px) counts as "everything fits": no cursor scrolling.
 const MIN_SCROLL_RANGE: f32 = 1.0;
 
@@ -217,6 +220,16 @@ fn hover_header_at(rel_y: f32) -> Option<usize> {
     None
 }
 
+/// Fraction of the remaining distance covered in one `dt`-second frame.
+/// Time-based, so identical wall-clock motion converges equally at any fps.
+/// A zero (or negative) tau means "already there".
+fn smoothing_alpha(dt_secs: f32, tau_ms: f32) -> f32 {
+    if tau_ms <= 0.0 {
+        return 1.0;
+    }
+    1.0 - (-dt_secs * 1000.0 / tau_ms).exp()
+}
+
 /// Offset that brings the row `[item_top, item_top + item_height]` into the
 /// viewport with the least movement, clamped to the scrollable range.
 ///
@@ -259,6 +272,13 @@ pub struct TabListPopup {
     header: Option<TabListHeader>,
     /// Extra cap on the list viewport height; `None` lets it fill free space.
     max_list_h: Option<Pixels>,
+    /// Light exponential smoothing (time constant, ms) instead of direct
+    /// follow; `None` stands exactly where the cursor put it. Only small
+    /// popups (e.g. locales) opt in — the tabs list stays instant.
+    smooth_tau_ms: Option<f32>,
+    /// Timestamp of the previous animation frame (for `dt`); only used when
+    /// `smooth_tau_ms` is set.
+    last_frame: Option<Instant>,
     scroll: UniformListScrollHandle,
     /// List viewport in window coordinates; filled in prepaint through a canvas.
     bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -278,6 +298,7 @@ impl TabListPopup {
         theme: Theme,
         header: Option<TabListHeader>,
         max_list_h: Option<Pixels>,
+        smooth_tau_ms: Option<f32>,
         cx: &mut Context<Self>,
     ) -> Self {
         let scroll = UniformListScrollHandle::new();
@@ -294,10 +315,12 @@ impl TabListPopup {
             active_ix,
             header,
             max_list_h,
+            smooth_tau_ms,
             scroll,
             bounds: Rc::new(Cell::new(Bounds::default())),
             target_y: None,
             last_mouse_y: None,
+            last_frame: None,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -389,25 +412,56 @@ impl TabListPopup {
         ));
     }
 
-    /// Applies the pending target offset directly: no spring, no inertia.
-    /// The list stands exactly where the cursor (or keyboard) put it and
-    /// stops dead the moment input stops. Returns `false` — there is never
-    /// another frame to run.
+    /// Applies the pending target offset. Without smoothing the list stands
+    /// exactly where the cursor (or keyboard) put it and stops dead the
+    /// moment input stops; with `smooth_tau_ms` set it chases the target with
+    /// a light exponential glide instead. Returns `false` when there is no
+    /// animation running and no further frame is needed.
     ///
     /// `scale` is the window scale factor: the shown offset is kept on whole
     /// device pixels (see [`snap_to_device_pixel`]).
     fn animate(&mut self, scale: f32) -> bool {
         let Some(target) = self.target_y.take() else {
+            self.last_frame = None;
             return false;
         };
+
+        if self.smooth_tau_ms.is_none() {
+            let base = self.base_handle();
+            let max = f32::from(base.max_offset().height);
+            let clamped = f32::from(target).clamp(-max, 0.0);
+            let mut offset = base.offset();
+            offset.y = snap_to_device_pixel(px(clamped), scale);
+            base.set_offset(offset);
+            return false;
+        }
+        let tau_ms = self.smooth_tau_ms.unwrap_or(50.0);
+
+        // `dt` comes from the real frame time, so the glide does not depend
+        // on the refresh rate. The first frame after a pause counts as 1/60 s.
+        let now = Instant::now();
+        let dt = self.last_frame.map_or(1.0 / 60.0, |previous| {
+            now.duration_since(previous).as_secs_f32().min(MAX_FRAME_DT)
+        });
+        self.last_frame = Some(now);
 
         let base = self.base_handle();
         let max = f32::from(base.max_offset().height);
         let clamped = f32::from(target).clamp(-max, 0.0);
         let mut offset = base.offset();
-        offset.y = snap_to_device_pixel(px(clamped), scale);
+        let pos = f32::from(offset.y);
+        let shown = pos + (clamped - pos) * smoothing_alpha(dt, tau_ms);
+        // Within a device pixel: snap onto the target and consume it.
+        if (clamped - shown).abs() < 1.0 / scale {
+            offset.y = snap_to_device_pixel(px(clamped), scale);
+            base.set_offset(offset);
+            self.last_frame = None;
+            return false;
+        }
+        offset.y = snap_to_device_pixel(px(shown), scale);
         base.set_offset(offset);
-        false
+        self.target_y = Some(target);
+        true
     }
 
     /// Tab row under the last known cursor position, recomputed every frame.
@@ -787,7 +841,7 @@ impl AppView {
         };
 
         let popup = cx.new(|cx| {
-            TabListPopup::new(tabs, active_ix, theme, Some(header), None, cx)
+            TabListPopup::new(tabs, active_ix, theme, Some(header), None, None, cx)
         });
         // `subscribe_in` is used instead of `subscribe`: activating a tab needs a window.
         let subscription =
@@ -861,7 +915,15 @@ impl AppView {
         let theme = self.theme.clone();
 
         let popup = cx.new(|cx| {
-            TabListPopup::new(tabs, active_ix, theme, None, Some(px(ROW_HEIGHT * 10.0)), cx)
+            TabListPopup::new(
+                tabs,
+                active_ix,
+                theme,
+                None,
+                Some(px(ROW_HEIGHT * 10.0)),
+                Some(50.0),
+                cx,
+            )
         });
         let subscription = cx.subscribe_in(
             &popup,
@@ -925,7 +987,7 @@ impl AppView {
             .unwrap_or(0);
         let theme = self.theme.clone();
 
-        let popup = cx.new(|cx| TabListPopup::new(tabs, active_ix, theme, None, None, cx));
+        let popup = cx.new(|cx| TabListPopup::new(tabs, active_ix, theme, None, None, None, cx));
         let subscription = cx.subscribe_in(
             &popup,
             window,
@@ -1126,6 +1188,23 @@ mod tests {
         // The minimum movement would be -128, but only 100 px are scrollable.
         let target = nearest_offset(px(400.0), px(28.0), px(0.0), px(300.0), px(0.0), px(100.0));
         assert!(approx(target, px(-100.0)));
+    }
+
+    #[test]
+    fn smoothing_alpha_converges_equally_at_any_fps() {
+        // One second of motion towards -1000 lands on the target at both rates.
+        let run = |frames: u32| {
+            let mut pos = 0.0_f32;
+            let target = -1000.0;
+            for _ in 0..frames {
+                pos += (target - pos) * smoothing_alpha(1.0 / frames as f32, 50.0);
+            }
+            pos
+        };
+        assert!((run(60) - run(144)).abs() < 1.0);
+        assert!((run(60) + 1000.0).abs() < 2.0);
+        // Zero tau means "already there".
+        assert_eq!(smoothing_alpha(1.0 / 60.0, 0.0), 1.0);
     }
 
     #[test]
