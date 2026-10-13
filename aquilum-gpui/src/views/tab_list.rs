@@ -65,8 +65,9 @@ const MIN_MOVE: f32 = 0.5;
 /// noticeably softer.
 const SPRING_OMEGA: f32 = 10.0;
 /// Stiffer spring once the mouse stops: the list lands fast instead of
-/// trailing behind with a tail. 0 would snap onto the target instantly.
-const SETTLE_OMEGA: f32 = 25.0;
+/// trailing behind with a tail. 0 would snap onto the target instantly,
+/// 25-40 is almost tailless but without a harsh snap.
+const SETTLE_OMEGA: f32 = 80.0;
 /// Pause without mouse motion (ms) after which the cursor counts as idle.
 const IDLE_AFTER_MS: u128 = 50;
 /// The list counts as settled when the spring velocity drops below this (px/s).
@@ -322,7 +323,8 @@ impl TabListPopup {
             self.last_move = Some(Instant::now());
 
             let bounds = self.bounds.get();
-            let max_scroll = self.base_handle().max_offset().height;
+            let base = self.base_handle();
+            let max_scroll = base.max_offset().height;
             if bounds.size.height > px(0.0) && max_scroll >= px(MIN_SCROLL_RANGE) {
                 self.target_y = Some(cursor_target_offset(
                     y,
