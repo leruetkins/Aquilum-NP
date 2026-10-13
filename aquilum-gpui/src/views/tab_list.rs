@@ -17,10 +17,10 @@
 //! The parent is responsible for positioning: this component only renders the
 //! panel itself (`deferred(anchored(...))` lives in the parent).
 //!
-//! The native wheel scrolling of the list is intentionally left alone: gpui binds
-//! it to the list element itself and it runs before any ancestor listener, so it
-//! cannot be intercepted from here. If the user does wheel the list, the next
-//! mouse movement recomputes the offset from the cursor position anyway.
+//! The native wheel scrolling of the list is swallowed in the capture phase
+//! (see the `canvas` paint callback): gpui binds it to the list element itself
+//! and it runs before any ancestor listener, so a regular `on_scroll_wheel`
+//! from above cannot intercept it. Scrolling is cursor-driven only.
 
 use std::cell::Cell;
 use std::ops::Range;
@@ -28,9 +28,9 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use gpui::{
-    canvas, div, prelude::*, px, uniform_list, Bounds, Context, EventEmitter, FocusHandle,
-    KeyDownEvent, MouseMoveEvent, Pixels, ScrollHandle, SharedString,
-    UniformListScrollHandle, Window,
+    canvas, div, prelude::*, px, uniform_list, Bounds, Context, DispatchPhase, EventEmitter,
+    FocusHandle, KeyDownEvent, MouseMoveEvent, Pixels, ScrollHandle, ScrollWheelEvent,
+    SharedString, UniformListScrollHandle, Window,
 };
 
 use crate::icons;
@@ -466,7 +466,24 @@ impl Render for TabListPopup {
                     .child(
                         canvas(
                             move |viewport, _window, _cx| bounds.set(viewport),
-                            |_viewport, _state, _window, _cx| {},
+                            |viewport, _state, window, _cx| {
+                                // Гасим колесо и тачпад в фазе capture: до того, как событие
+                                // дойдёт до слушателя uniform_list (он срабатывает раньше любого
+                                // ancestor-слушателя, так что обычным on_scroll_wheel сверху его
+                                // не перехватить). Прокруткой управляет только положение курсора.
+                                // Слушатель живёт один кадр и регистрируется заново в каждом
+                                // paint — так задумано в gpui, утечки нет. contains() нужен,
+                                // чтобы не глушить колесо вне списка: слушатель висит на всём окне.
+                                window.on_mouse_event(
+                                    move |event: &ScrollWheelEvent, phase, _window, cx| {
+                                        if phase == DispatchPhase::Capture
+                                            && viewport.contains(&event.position)
+                                        {
+                                            cx.stop_propagation();
+                                        }
+                                    },
+                                );
+                            },
                         )
                         .absolute()
                         .size_full(),
