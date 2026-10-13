@@ -226,10 +226,10 @@ impl AppView {
                             .id("settings-modal-dialog")
                             .flex()
                             .flex_col()
-                            .w(px(880.0))
-                            .h(px(620.0))
-                            .max_w(px(960.0))
-                            .max_h(px(720.0))
+                            .w(px(900.0))
+                            .h(px(660.0))
+                            .max_w(px(980.0))
+                            .max_h(px(760.0))
                             .rounded_xl()
                             .overflow_hidden()
                             .bg(theme.bg_sidebar)
@@ -311,16 +311,18 @@ impl AppView {
     }
 
     /// Renders the vertical tab navigation sidebar inside the Settings dialog.
-    fn render_settings_nav(&self, cx: &Context<Self>) -> gpui::Div {
+    fn render_settings_nav(&self, cx: &Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
         let active_tab = &self.settings_tab;
 
         div()
+            .id("settings-nav-scroll")
             .flex()
             .flex_col()
             .w(px(210.0))
             .min_w(px(210.0))
             .h_full()
+            .overflow_scroll()
             .border_r_1()
             .border_color(theme.border_subtle)
             .rounded_bl_xl()
