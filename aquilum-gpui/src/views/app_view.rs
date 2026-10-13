@@ -1872,6 +1872,24 @@ impl AppView {
             return;
         }
 
+        // Ctrl + P (Палитра команд)
+        if ctrl && !shift && (keystroke.key.eq_ignore_ascii_case("p") || keystroke.key == "з" || keystroke.key == "З") {
+            self.open_command_palette(_window, cx);
+            return;
+        }
+
+        // Ctrl + Shift + P (Палитра команд)
+        if ctrl && shift && (keystroke.key.eq_ignore_ascii_case("p") || keystroke.key == "з" || keystroke.key == "З") {
+            self.open_command_palette(_window, cx);
+            return;
+        }
+
+        // Ctrl + O (Поиск заметок / Меню быстрого перехода)
+        if ctrl && !shift && (keystroke.key.eq_ignore_ascii_case("o") || keystroke.key == "щ" || keystroke.key == "Щ") {
+            self.open_search_dialog(_window, cx);
+            return;
+        }
+
         // Ctrl + Shift + O (Открыть хранилище)
         if ctrl && shift && (keystroke.key.eq_ignore_ascii_case("o") || keystroke.key == "щ" || keystroke.key == "Щ") {
             self.open_folder_dialog(_window, cx);

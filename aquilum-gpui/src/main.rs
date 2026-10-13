@@ -51,6 +51,9 @@ fn main() {
                         let mut app = AppView::new(cx);
                         app.plugin_api_tx = Some(api_tx_clone);
                         app.load_installed_plugins_for_vault();
+                        // Focus editor by default and activate caret blinking immediately
+                        window.focus(&app.focus_handle);
+                        app.editor_blink.enable(crate::blink_manager::BlinkTarget::Editor, cx);
                         app
                     });
                     let weak = view.downgrade();
