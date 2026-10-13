@@ -1114,6 +1114,12 @@ pub struct PaintedSegment {
     pub text: String,
     pub bold: bool,
     pub italic: bool,
+    /// True for inline code and for its delimiters, i.e. for everything the editor
+    /// covers with the code chip. The editor paints the chip from these runs
+    /// (`views::app_view::row_backdrop`) instead of from a text-run background, so that
+    /// the selection rectangle — which is painted before the text — is not covered by
+    /// it, and so that the chip and the selection are cut from the same columns.
+    pub code: bool,
 }
 
 /// The exact text a visual row paints, plus the source line char of every painted char.
@@ -1145,6 +1151,27 @@ impl PaintedRow {
     pub fn columns(&self) -> usize {
         self.line_chars.len().saturating_sub(1)
     }
+
+    /// Column ranges the row covers with the inline-code chip, merged and in order.
+    ///
+    /// One painted char owns one column, so the char offset of a segment inside the
+    /// painted text is the column it starts at. Adjacent code segments merge, which is
+    /// what turns a delimiter and the code it wraps into a single chip.
+    pub fn code_ranges(&self) -> Vec<(usize, usize)> {
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        let mut col = 0usize;
+        for segment in &self.segments {
+            let n = segment.text.chars().count();
+            if segment.code && n > 0 {
+                match ranges.last_mut() {
+                    Some(last) if last.1 == col => last.1 = col + n,
+                    _ => ranges.push((col, col + n)),
+                }
+            }
+            col += n;
+        }
+        ranges
+    }
 }
 
 fn push_verbatim(
@@ -1154,6 +1181,7 @@ fn push_verbatim(
     src_start: usize,
     bold: bool,
     italic: bool,
+    code: bool,
 ) {
     if text.is_empty() {
         return;
@@ -1161,7 +1189,7 @@ fn push_verbatim(
     for i in 0..text.chars().count() {
         line_chars.push(src_start + i);
     }
-    segments.push(PaintedSegment { text: text.to_string(), bold, italic });
+    segments.push(PaintedSegment { text: text.to_string(), bold, italic, code });
 }
 
 /// Padding the renderer synthesises for a wrapped row's continuation indent. Every
@@ -1180,7 +1208,7 @@ fn push_padding(
     for _ in 0..text.chars().count() {
         line_chars.push(src);
     }
-    segments.push(PaintedSegment { text: text.to_string(), bold, italic });
+    segments.push(PaintedSegment { text: text.to_string(), bold, italic, code: false });
 }
 
 /// Number of chars in the first `byte_len` bytes of `line` (clamped to a char boundary).
@@ -1238,15 +1266,15 @@ pub fn row_painted_text(
         // A heading marker is only painted on the active line, and only on its first
         // row. The renderer emits the literal marker string, so map it to the leading
         // line chars.
-        LineKind::Heading1(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "# ", 0, base_bold, base_italic),
-        LineKind::Heading2(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "## ", 0, base_bold, base_italic),
-        LineKind::Heading3(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "### ", 0, base_bold, base_italic),
-        LineKind::Heading4(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "#### ", 0, base_bold, base_italic),
-        LineKind::Heading5(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "##### ", 0, base_bold, base_italic),
-        LineKind::Heading6(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "###### ", 0, base_bold, base_italic),
+        LineKind::Heading1(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "# ", 0, base_bold, base_italic, false),
+        LineKind::Heading2(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "## ", 0, base_bold, base_italic, false),
+        LineKind::Heading3(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "### ", 0, base_bold, base_italic, false),
+        LineKind::Heading4(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "#### ", 0, base_bold, base_italic, false),
+        LineKind::Heading5(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "##### ", 0, base_bold, base_italic, false),
+        LineKind::Heading6(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "###### ", 0, base_bold, base_italic, false),
         LineKind::Quote(_) => {
             if v.sub_idx == 0 {
-                push_verbatim(&mut segments, &mut line_chars, "> ", 0, base_bold, base_italic);
+                push_verbatim(&mut segments, &mut line_chars, "> ", 0, base_bold, base_italic, false);
             } else {
                 push_padding(&mut segments, &mut line_chars, "  ", v.char_start, base_bold, base_italic);
             }
@@ -1254,7 +1282,7 @@ pub fn row_painted_text(
         LineKind::Task { .. } => {
             if v.sub_idx == 0 {
                 let head: String = line.chars().take(prefix_offset).collect();
-                push_verbatim(&mut segments, &mut line_chars, &head, 0, true, base_italic);
+                push_verbatim(&mut segments, &mut line_chars, &head, 0, true, base_italic, false);
             } else {
                 push_padding(&mut segments, &mut line_chars, "      ", v.char_start, true, base_italic);
             }
@@ -1264,8 +1292,8 @@ pub fn row_painted_text(
             let indent = &line[..line.len() - trimmed.len()];
             let bullet = if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") { &trimmed[..2] } else { "" };
             if v.sub_idx == 0 {
-                push_verbatim(&mut segments, &mut line_chars, indent, 0, false, base_italic);
-                push_verbatim(&mut segments, &mut line_chars, bullet, indent.chars().count(), true, base_italic);
+                push_verbatim(&mut segments, &mut line_chars, indent, 0, false, base_italic, false);
+                push_verbatim(&mut segments, &mut line_chars, bullet, indent.chars().count(), true, base_italic, false);
             } else {
                 let pad = format!("{}  ", indent);
                 push_padding(&mut segments, &mut line_chars, &pad, v.char_start, false, base_italic);
@@ -1277,8 +1305,8 @@ pub fn row_painted_text(
             let num_prefix_len = num.len() + 2;
             let num_part = if trimmed.len() >= num_prefix_len { &trimmed[..num_prefix_len] } else { "" };
             if v.sub_idx == 0 {
-                push_verbatim(&mut segments, &mut line_chars, indent, 0, false, base_italic);
-                push_verbatim(&mut segments, &mut line_chars, num_part, indent.chars().count(), true, base_italic);
+                push_verbatim(&mut segments, &mut line_chars, indent, 0, false, base_italic, false);
+                push_verbatim(&mut segments, &mut line_chars, num_part, indent.chars().count(), true, base_italic, false);
             } else {
                 let pad = " ".repeat(indent.chars().count() + num_part.chars().count());
                 push_padding(&mut segments, &mut line_chars, &pad, v.char_start, false, base_italic);
@@ -1288,7 +1316,7 @@ pub fn row_painted_text(
         // line, but the geometry still follows the raw line so that a click resolves to
         // the character under the cursor.
         LineKind::HorizontalRule | LineKind::CodeFence { .. } => {
-            push_verbatim(&mut segments, &mut line_chars, line, 0, false, false);
+            push_verbatim(&mut segments, &mut line_chars, line, 0, false, false, false);
         }
         _ => {}
     }
@@ -1304,7 +1332,7 @@ pub fn row_painted_text(
                 .skip(v.char_start)
                 .take(v.char_end.saturating_sub(v.char_start))
                 .collect();
-            push_verbatim(&mut segments, &mut line_chars, &text, v.char_start, base_bold, base_italic);
+            push_verbatim(&mut segments, &mut line_chars, &text, v.char_start, base_bold, base_italic, false);
         }
         _ => {
             let (row_spans, _) = row_spans_and_hidden_prefix(line, classified, v, is_active_line);
@@ -1312,17 +1340,17 @@ pub fn row_painted_text(
             // that follows the marker, i.e. at this line char.
             let mut src = head_char_count(line, prefix_offset) + v.char_start.saturating_sub(prefix_offset);
             for span in &row_spans {
-                let (text, bold, italic, is_marker) = match span {
-                    SyntaxSpan::Marker(t) => (t.as_str(), false, false, true),
-                    SyntaxSpan::Text(t) => (t.as_str(), base_bold, base_italic, false),
-                    SyntaxSpan::Bold(t) => (t.as_str(), true, base_italic, false),
-                    SyntaxSpan::Italic(t) => (t.as_str(), base_bold, true, false),
-                    SyntaxSpan::BoldItalic(t) => (t.as_str(), true, true, false),
-                    SyntaxSpan::InlineCode(t)
-                    | SyntaxSpan::Strikethrough(t)
+                let (text, bold, italic, is_marker, is_code) = match span {
+                    SyntaxSpan::Marker(t) => (t.as_str(), false, false, true, is_inline_code_delim(t)),
+                    SyntaxSpan::Text(t) => (t.as_str(), base_bold, base_italic, false, false),
+                    SyntaxSpan::Bold(t) => (t.as_str(), true, base_italic, false, false),
+                    SyntaxSpan::Italic(t) => (t.as_str(), base_bold, true, false, false),
+                    SyntaxSpan::BoldItalic(t) => (t.as_str(), true, true, false, false),
+                    SyntaxSpan::InlineCode(t) => (t.as_str(), base_bold, base_italic, false, true),
+                    SyntaxSpan::Strikethrough(t)
                     | SyntaxSpan::LinkText(t)
                     | SyntaxSpan::Underline(t)
-                    | SyntaxSpan::Highlight(t) => (t.as_str(), base_bold, base_italic, false),
+                    | SyntaxSpan::Highlight(t) => (t.as_str(), base_bold, base_italic, false, false),
                 };
                 let n = text.chars().count();
                 if n == 0 {
@@ -1331,14 +1359,14 @@ pub fn row_painted_text(
                 // An inline-code delimiter keeps its cell on an idle line, so the code
                 // chip has a constant width and the selection rectangle does not jump
                 // when the delimiters appear on the active line. The renderer paints
-                // that cell in the chip's own background colour, i.e. invisibly, which
-                // is what reads as the chip's left/right padding. Every other hidden
-                // marker collapses to nothing and leaves a gap in the line chars.
+                // that cell with no ink at all, which is what reads as the chip's
+                // left/right padding. Every other hidden marker collapses to nothing
+                // and leaves a gap in the line chars.
                 if is_marker && !is_active_line && !is_inline_code_delim(text) {
                     src += n;
                     continue;
                 }
-                push_verbatim(&mut segments, &mut line_chars, text, src, bold, italic);
+                push_verbatim(&mut segments, &mut line_chars, text, src, bold, italic, is_code);
                 src += n;
             }
         }
@@ -1578,6 +1606,43 @@ mod tests {
         let row = painted(line, &classify_line(line, None), 0, 7, 0, true);
         assert_eq!(text_of(&row), "a**b**c");
         assert_eq!(row.line_chars, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    /// The editor paints the code chip from these column ranges instead of from a
+    /// text-run background, so they must cover the delimiters as well as the code —
+    /// the delimiters are what reads as the chip's padding.
+    #[test]
+    fn code_ranges_cover_the_chip_including_its_delimiters() {
+        let line = "a `x` b";
+        let kind = classify_line(line, None);
+
+        // `a ` + the chip (`` `x` ``) + ` b`.
+        assert_eq!(painted(line, &kind, 0, 7, 0, false).code_ranges(), vec![(2, 5)]);
+        assert_eq!(painted(line, &kind, 0, 7, 0, true).code_ranges(), vec![(2, 5)]);
+
+        // Two chips stay two ranges, and hidden markers before them shift the columns.
+        let two = "a**b** `c` `d`";
+        let two_row = painted(two, &classify_line(two, None), 0, two.chars().count(), 0, false);
+        assert_eq!(text_of(&two_row), "ab `c` `d`");
+        assert_eq!(two_row.code_ranges(), vec![(3, 6), (7, 10)]);
+
+        // Adjacent spans inside one chip merge into a single range.
+        let bold_code = "`a`**b**`c`";
+        let bold_row = painted(bold_code, &classify_line(bold_code, None), 0, bold_code.chars().count(), 0, false);
+        assert_eq!(text_of(&bold_row), "`a`b`c`");
+        assert_eq!(bold_row.code_ranges(), vec![(0, 3), (4, 7)]);
+
+        // A heading paints its marker as separate columns, so the chip moves with it.
+        let heading = "## Заголовок с `кодом`";
+        let heading_kind = classify_line(heading, None);
+        let heading_active = painted(heading, &heading_kind, 0, heading.chars().count(), 0, true);
+        let prefix = 3; // "## "
+        let code_start = "## Заголовок с ".chars().count();
+        assert_eq!(heading_active.code_ranges(), vec![(code_start, code_start + 7)]);
+        assert!(prefix < code_start);
+
+        // Plain text has no chip at all.
+        assert!(painted("hello", &classify_line("hello", None), 0, 5, 0, false).code_ranges().is_empty());
     }
 
     #[test]
