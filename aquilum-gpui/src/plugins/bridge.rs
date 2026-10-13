@@ -372,7 +372,7 @@ impl AppView {
                 let p_id = plugin_id.clone();
                 let icon_id = id.clone();
                 let host = self.state.plugin_host.clone();
-                let icon_static: &'static str = Box::leak(icon.into_boxed_str());
+                let icon_static = crate::icons::map_obsidian_icon(&icon);
                 let action = crate::ribbon::RibbonAction {
                     id: format!("{}:{}", plugin_id, id),
                     icon: icon_static,

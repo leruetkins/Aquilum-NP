@@ -78,18 +78,44 @@ pub fn spawn_plugin_runtime(
             };
 
             // Setup global environment and Obsidian compatibility API
-            let setup_res = ctx.with(|ctx| setup_plugin_environment(&ctx, &p_id, api_tx.clone(), snapshot.clone()));
+            let setup_res = ctx.with(|ctx| setup_plugin_environment(&ctx, &manifest, api_tx.clone(), snapshot.clone()));
             if let Err(e) = setup_res {
                 eprintln!("[plugin:{}] Environment setup error: {:?}", p_id, e);
                 return;
             }
 
-            // Execute the plugin script
+            // Execute the plugin script inside a CommonJS module wrapper
+            let wrapped_script = format!(
+                "(function(exports, require, module) {{\n{}\n}})(globalThis.module.exports, globalThis.require, globalThis.module);",
+                script_source
+            );
             let eval_res = ctx.with(|ctx| {
-                ctx.eval::<(), _>(script_source.as_str())
+                ctx.eval::<(), _>(wrapped_script.as_str())
             });
             if let Err(e) = eval_res {
-                eprintln!("[plugin:{}] Script evaluation error: {:?}", p_id, e);
+                let err_msg = ctx.with(|ctx| {
+                    let ex = ctx.catch();
+                    if let Some(obj) = ex.into_object() {
+                        let msg: String = obj.get("message").unwrap_or_default();
+                        let stack: String = obj.get("stack").unwrap_or_default();
+                        if !stack.is_empty() {
+                            format!("{}\n{}", msg, stack)
+                        } else {
+                            msg
+                        }
+                    } else {
+                        format!("{:?}", e)
+                    }
+                });
+                eprintln!("[plugin:{}] Script evaluation error: {}", p_id, err_msg);
+            } else {
+                let boot_res = ctx.with(|ctx| {
+                    ctx.eval::<(), _>("__bootstrap_plugin_instance()")
+                });
+                if let Err(e) = boot_res {
+                    eprintln!("[plugin:{}] Plugin bootstrap error: {:?}", p_id, e);
+                }
+                while let Ok(true) = rt.execute_pending_job() {}
             }
 
             // Plugin worker message loop: process incoming host events and responses
@@ -141,10 +167,11 @@ pub fn spawn_plugin_runtime(
 /// Injects global helper functions and the Obsidian compatibility object model into QuickJS.
 fn setup_plugin_environment<'js>(
     ctx: &Ctx<'js>,
-    plugin_id: &str,
+    manifest: &PluginManifest,
     api_tx: UnboundedSender<ApiCall>,
     snapshot: Arc<arc_swap::ArcSwap<Snapshot>>,
 ) -> rquickjs::Result<()> {
+    let plugin_id = &manifest.id;
     let globals = ctx.globals();
 
     // 1. Console logger
@@ -195,11 +222,43 @@ fn setup_plugin_environment<'js>(
     })?;
     globals.set("__host_get_markdown_files", get_files_fn)?;
 
-    // 4. Inject runtime JavaScript bootstrap defining Obsidian-compatible classes
+    // 4. Inject manifest and CommonJS module / exports
+    let manifest_json = serde_json::to_string(manifest).unwrap_or_else(|_| "{}".to_string());
+    ctx.eval::<(), _>(format!(
+        "globalThis.__plugin_manifest = {}; globalThis.module = {{ exports: {{}} }}; globalThis.exports = globalThis.module.exports;",
+        manifest_json
+    ))?;
+
+    // 5. Inject runtime JavaScript bootstrap defining Obsidian-compatible classes
     let bootstrap_js = r#"
         const __pending_promises = new Map();
         globalThis.__code_block_handlers = new Map();
         globalThis.__command_handlers = new Map();
+
+        async function __bootstrap_plugin_instance() {
+            let exported = globalThis.module ? globalThis.module.exports : null;
+            if (exported && exported.default && typeof exported !== "function") {
+                exported = exported.default;
+            }
+            if (typeof exported === "function") {
+                try {
+                    const inst = new exported(globalThis.app, globalThis.__plugin_manifest);
+                    globalThis.__plugin_instance = inst;
+                    if (typeof inst.onload === "function") {
+                        await inst.onload();
+                    }
+                } catch (e) {
+                    console.error("Plugin instantiation or onload error:", e);
+                }
+            } else if (exported && typeof exported.onload === "function") {
+                globalThis.__plugin_instance = exported;
+                try {
+                    await exported.onload();
+                } catch (e) {
+                    console.error("Plugin onload error:", e);
+                }
+            }
+        }
 
         function __dispatch_host_response(id, ok, result) {
             const entry = __pending_promises.get(id);
@@ -782,6 +841,90 @@ mod tests {
         } else {
             panic!("Expected ApiRequest::SetCodeBlockView");
         }
+
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
+    }
+
+    #[test]
+    fn test_quickjs_class_based_obsidian_plugin_lifecycle() {
+        let manifest = PluginManifest {
+            id: "new-note-np".to_string(),
+            name: "New Note NP".to_string(),
+            version: "1.0.0".to_string(),
+            min_app_version: Some("1.5.0".to_string()),
+            author: "leruetkins".to_string(),
+            description: "Adds a Create new note button back to the left ribbon.".to_string(),
+            permissions: PluginPermissions::default(),
+        };
+
+        let (api_tx, mut api_rx) = unbounded();
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
+
+        // The exact code structure from user's plugin D:\Naben\Vibecodium\.vault\plugins\obsidian-new-note-np\main.js
+        let script = r#"
+            const { Plugin, Notice } = require("obsidian");
+
+            module.exports = class NewNoteRibbonPlugin extends Plugin {
+                async onload() {
+                    this.addRibbonIcon("square-pen", "Новая заметка", async () => {
+                        try {
+                            await this.app.commands.executeCommandById("file-explorer:new-file");
+                        } catch (error) {
+                            new Notice("Не удалось создать заметку");
+                        }
+                    });
+                }
+            };
+        "#;
+
+        let handle = spawn_plugin_runtime(
+            manifest,
+            script.to_string(),
+            api_tx,
+            snapshot,
+        )
+        .unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        // 1. Host receives AddRibbonIcon from plugin's onload()
+        let ribbon_req = api_rx.try_recv().unwrap();
+        assert_eq!(ribbon_req.plugin_id, "new-note-np");
+        let (icon_id, icon_name, icon_title) = match ribbon_req.request {
+            ApiRequest::AddRibbonIcon { id, icon, title } => (id, icon, title),
+            other => panic!("Expected AddRibbonIcon, got {:?}", other),
+        };
+        assert_eq!(icon_name, "square-pen");
+        assert_eq!(icon_title, "Новая заметка");
+
+        // Fulfill AddRibbonIcon response
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::response_ok(
+            ribbon_req.request_id,
+            serde_json::Value::Null,
+        ));
+
+        // 2. Simulate ribbon icon click: host triggers ExecuteCommand with registered icon_id
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::ExecuteCommand {
+            command_id: icon_id,
+        });
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        // 3. Plugin callback triggers executeCommandById("file-explorer:new-file")
+        let exec_req = api_rx.try_recv().unwrap();
+        assert_eq!(exec_req.plugin_id, "new-note-np");
+        match exec_req.request {
+            ApiRequest::ExecuteCommand { id } => {
+                assert_eq!(id, "file-explorer:new-file");
+            }
+            other => panic!("Expected ExecuteCommand, got {:?}", other),
+        }
+
+        // Fulfill command execution
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::response_ok(
+            exec_req.request_id,
+            serde_json::Value::Null,
+        ));
 
         let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
     }

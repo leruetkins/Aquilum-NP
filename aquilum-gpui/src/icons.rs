@@ -291,3 +291,25 @@ pub fn svg_sized(path: &'static str, width: f32, height: f32, color: impl Into<H
         .text_color(color.into())
 }
 
+/// Maps Obsidian / Lucide icon names (e.g. "square-pen", "document", "pencil") to registered SVG icon assets.
+pub fn map_obsidian_icon(name: &str) -> &'static str {
+    match name.to_lowercase().as_str() {
+        "square-pen" | "create-new" | "note" | "pencil" | "edit" | "pen" => ICON_NOTE_CREATE,
+        "plus" | "plus-with-circle" | "add" => ICON_PLUS,
+        "search" | "magnifying-glass" => ICON_SEARCH,
+        "document" | "file" | "file-text" => ICON_FILE_TEXT,
+        "folder" | "folder-open" => ICON_FOLDER,
+        "calendar" => ICON_CALENDAR,
+        "code" | "terminal" => ICON_CODE,
+        "history" | "clock" => ICON_HISTORY,
+        "trash" | "trash-2" => ICON_TRASH_2,
+        "settings" | "gear" => ICON_SETTINGS,
+        "bookmark" => ICON_BOOKMARK,
+        "bolt" | "zap" => ICON_BOLT,
+        "refresh" | "reload" => ICON_REFRESH,
+        "eye" | "preview" => ICON_EYE,
+        "paperclip" | "attachment" => ICON_PAPERCLIP,
+        _ => ICON_NOTE_CREATE,
+    }
+}
+
