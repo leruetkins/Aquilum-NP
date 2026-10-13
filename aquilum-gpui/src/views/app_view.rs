@@ -108,6 +108,9 @@ pub struct AppView {
     /// Vault switcher dialog ("Knowledge bases").
     pub vault_dialog_open: bool,
     pub vault_dialog_focus_handle: FocusHandle,
+    /// Code block whose copy button was just pressed; shows the check mark until the
+    /// reset timer fires.
+    pub copied_code_block: Option<usize>,
 }
 
 impl AppView {
@@ -226,6 +229,7 @@ impl AppView {
             folder_modal_focus_handle: cx.focus_handle(),
             vault_dialog_open: false,
             vault_dialog_focus_handle: cx.focus_handle(),
+            copied_code_block: None,
         };
         this.editor_blink.enable(BlinkTarget::Editor, cx);
         this
@@ -4068,6 +4072,22 @@ impl Render for AppView {
                                                 // so the selection is drawn over it.
                                                 let chip_inset = code_chip_inset(row_h);
                                                 let mut backdrop_rects = Vec::new();
+                                                // The row's own current-line highlight is painted by the row
+                                                // element, i.e. *under* the code block's background, so inside a
+                                                // block it would only show in the line-number gutter. Repaint it
+                                                // here, first, so it covers the block and still sits under the
+                                                // chips and the selection.
+                                                if show_current_line_highlight {
+                                                    backdrop_rects.push(
+                                                        div()
+                                                            .absolute()
+                                                            .left(px(0.0))
+                                                            .top_0()
+                                                            .h(px(row_h))
+                                                            .w_full()
+                                                            .bg(theme.bg_hover),
+                                                    );
+                                                }
                                                 for &(code_start, code_end) in row_layout.code_ranges() {
                                                     // The chip is a hair shorter than its row and rounded, so that
                                                     // it reads as a chip rather than as a band across the line.
@@ -4121,6 +4141,31 @@ impl Render for AppView {
                                                 let v_char_end = v.char_end;
                                                 let v_line_idx = v.line_idx;
                                                 let v_sub_idx = v.sub_idx;
+
+                                                // A collapsed code block paints its language label in place of
+                                                // the opening fence, so the copy button belongs to that row. The
+                                                // payload is the block's body: the `InsideCode` lines that follow
+                                                // the fence, up to the closing fence (exclusive).
+                                                let copy_payload: Option<(usize, String)> =
+                                                    if is_opening_fence && !is_in_active_block {
+                                                        code_states_arc[v.line_idx].as_ref().map(|st| {
+                                                            let mut body = String::new();
+                                                            let mut i = v.line_idx + 1;
+                                                            while let Some(next) = code_states_arc.get(i).and_then(|s| s.as_ref()) {
+                                                                if next.block_id != st.block_id
+                                                                    || next.kind != crate::markdown::CodeBlockKind::InsideCode
+                                                                {
+                                                                    break;
+                                                                }
+                                                                body.push_str(&lines_arc[i]);
+                                                                body.push('\n');
+                                                                i += 1;
+                                                            }
+                                                            (st.block_id, body)
+                                                        })
+                                                    } else {
+                                                        None
+                                                    };
 
                                                 items.push(
                                                     div()
@@ -4235,9 +4280,9 @@ impl Render for AppView {
                                                                 // element stays centred in the row either way.
                                                                 .line_height(px(row_h))
                                                                 .cursor(gpui::CursorStyle::IBeam)
-                                                                .when(is_opening_fence && !is_in_active_block, |s| s.bg(theme.bg_card).rounded_t_sm())
-                                                                .when(is_closing_fence && !is_in_active_block, |s| s.bg(theme.bg_card).rounded_b_sm())
-                                                                .when(is_code_line && !is_in_active_block, |s| s.bg(theme.code_bg))
+                                                                .when(is_opening_fence, |s| s.bg(theme.code_bg).rounded_t_md())
+                                                                .when(is_closing_fence, |s| s.bg(theme.code_bg).rounded_b_md())
+                                                                .when(is_code_line, |s| s.bg(theme.code_bg))
                                                                 .children(backdrop_rects)
                                                                 .child(
                                                                     div()
@@ -4273,6 +4318,59 @@ impl Render for AppView {
                                                                             .w(px(2.0))
                                                                             .bg(theme.accent)
                                                                             .rounded_xs(),
+                                                                    )
+                                                                })
+                                                                // Obsidian-style copy affordance: it sits at the right end
+                                                                // of the block header and copies the block body to the
+                                                                // clipboard, flashing a check mark for a moment.
+                                                                .when(copy_payload.is_some(), |s| {
+                                                                    let (block_id, body) = copy_payload.clone().unwrap();
+                                                                    let just_copied = self.copied_code_block == Some(block_id);
+                                                                    s.child(
+                                                                        div()
+                                                                            .id(gpui::ElementId::from(("code-copy", v_idx)))
+                                                                            .absolute()
+                                                                            .right(px(6.0))
+                                                                            .top_0()
+                                                                            .h(px(row_h))
+                                                                            .flex()
+                                                                            .items_center()
+                                                                            .px(px(4.0))
+                                                                            .rounded_sm()
+                                                                            .cursor(gpui::CursorStyle::PointingHand)
+                                                                            .hover(|h| h.bg(theme.bg_hover))
+                                                                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
+                                                                                // Without this the row would also move the caret
+                                                                                // into the block.
+                                                                                cx.stop_propagation();
+                                                                                cx.write_to_clipboard(ClipboardItem::new_string(body.clone()));
+                                                                                this.copied_code_block = Some(block_id);
+                                                                                cx.notify();
+
+                                                                                let entity = cx.weak_entity();
+                                                                                let mut async_cx = cx.to_async();
+                                                                                let timer_executor = cx.background_executor().clone();
+                                                                                cx.foreground_executor()
+                                                                                    .spawn(async move {
+                                                                                        timer_executor
+                                                                                            .timer(std::time::Duration::from_millis(2000))
+                                                                                            .await;
+                                                                                        entity
+                                                                                            .update(&mut async_cx, |this, cx| {
+                                                                                                if this.copied_code_block == Some(block_id) {
+                                                                                                    this.copied_code_block = None;
+                                                                                                    cx.notify();
+                                                                                                }
+                                                                                            })
+                                                                                            .ok();
+                                                                                    })
+                                                                                    .detach();
+                                                                            }))
+                                                                            .child(icons::icon(
+                                                                                if just_copied { icons::ICON_CHECK } else { icons::ICON_COPY },
+                                                                                14.0,
+                                                                                if just_copied { theme.accent } else { theme.text_muted },
+                                                                            )),
                                                                     )
                                                                 }),
                                                         ),
@@ -5538,7 +5636,38 @@ fn render_live_styled_row(
             }
         }
         crate::markdown::LineKind::CodeFence { is_opening, lang } => {
-            if show_fences || is_active_line {
+            if *is_opening {
+                if show_fences || is_active_line {
+                    // Editing the block: paint the raw fence so the caret and the
+                    // backticks line up with the source.
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .h_full()
+                        .text_color(theme.text_muted)
+                        .child(line.to_string())
+                } else {
+                    // Collapsed: the language label stands in for the fence, and the row
+                    // loop overlays the copy button at the right end of this same row.
+                    let lang_label = lang.unwrap_or("CODE").to_uppercase();
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .h_full()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .text_color(theme.accent)
+                                .child(lang_label),
+                        )
+                        .child(icons::icon(icons::ICON_CODE, 12.0, theme.text_muted))
+                }
+            } else if show_fences || is_active_line {
+                // Editing the block: paint the raw closing fence.
                 div()
                     .flex()
                     .flex_row()
@@ -5546,49 +5675,23 @@ fn render_live_styled_row(
                     .h_full()
                     .text_color(theme.text_muted)
                     .child(line.to_string())
-            } else if *is_opening {
-                let lang_label = lang.unwrap_or("CODE").to_uppercase();
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .w_full()
-                    .h_full()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .text_color(theme.accent)
-                                    .child(lang_label),
-                            ),
-                    )
-                    .child(icons::icon(icons::ICON_CODE, 12.0, theme.text_muted))
             } else {
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .w_full()
-                    .h_full()
-                    .child(div().h_px().w_full().bg(theme.border_subtle))
+                // Collapsed: the fence is hidden. The row stays empty and only carries
+                // the block's background and its rounded bottom corners, so the panel
+                // still ends in a visible edge.
+                div().h_full()
             }
         }
         crate::markdown::LineKind::CodeLine(_) => {
             let row_slice: String = line.chars().skip(char_start).take(char_end - char_start).collect();
-            let text_color = if is_active_line { theme.text_primary } else { theme.success };
+            // Plain foreground: the block background alone marks this as code. The
+            // green that used to sit here read as an accent colour, not as text.
             div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .h_full()
-                .text_color(text_color)
+                .text_color(theme.text_primary)
                 .child(row_slice)
         }
         crate::markdown::LineKind::Paragraph(_) => {
