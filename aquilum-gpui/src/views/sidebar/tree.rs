@@ -144,20 +144,15 @@ impl AppView {
         let height_index = VisualRowHeightIndex::new(vec![SIDEBAR_ROW_H; sidebar_rows.len()]);
 
         // Real viewport height, so the visible slice is exact rather than guessed from the
-        // window height. Falls back to the old estimate on the very first frame, before the
-        // tree has been laid out.
+        // window height. On the very first frame (and right after creation/maximize, when the
+        // measured bounds lag one frame behind the live window) the handle is not measured yet:
+        // floor the slice at the live window size instead. Overshooting only renders a few
+        // extra clipped rows, while undershooting leaves a blank band of missing last rows
+        // until the next repaint.
         let sidebar_viewport_h = {
             let h = f32::from(self.sidebar_scroll_handle.bounds().size.height);
-            if h > 0.0 {
-                h
-            } else {
-                // Первый кадр: layout ещё не было, bounds пусты. Фиксируем,
-                // что срез строк посчитан от оценки, чтобы `render()` заказал
-                // один внеочередной кадр с реальными bounds (иначе список
-                // «догружается» только когда что-то вызовет перерисовку).
-                self.viewport_unmeasured.set(true);
-                (f32::from(window.bounds().size.height) - 144.0).max(100.0)
-            }
+            let live = (f32::from(window.bounds().size.height) - 100.0).max(100.0);
+            h.max(live)
         };
 
         // Current scroll position measured from the top of the list (>= 0).

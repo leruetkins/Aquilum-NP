@@ -21,11 +21,6 @@ pub struct AppView {
     pub editor_scroll_handle: ScrollHandle,
     pub sidebar_scroll_handle: ScrollHandle,
     pub settings_scroll_handle: ScrollHandle,
-    /// Выставляется, когда виртуализированный список (дерево сайдбара,
-    /// редактор) нарезал видимый диапазон по незамеренному вьюпорту.
-    /// Потребитель — `render()`: один внеочередной `window.refresh()`
-    /// сразу после замера, дальше флаг пуст и цикла перерисовок нет.
-    pub viewport_unmeasured: Cell<bool>,
     pub need_scroll_sidebar_to_active: Cell<bool>,
     pub initial_sidebar_scroll_done: Cell<bool>,
     pub edit_mode: bool,
@@ -187,7 +182,6 @@ impl AppView {
             editor_scroll_handle: ScrollHandle::new(),
             sidebar_scroll_handle: ScrollHandle::new(),
             settings_scroll_handle: ScrollHandle::new(),
-            viewport_unmeasured: Cell::new(false),
             need_scroll_sidebar_to_active: Cell::new(false),
             initial_sidebar_scroll_done: Cell::new(false),
             edit_mode,
@@ -795,20 +789,17 @@ impl AppView {
         self.editor_scroll_handle.set_offset(point(offset_x, px(-scroll_y)));
     }
 
-    pub fn editor_scroll_metrics(&self, total_content_h: f32) -> (f32, f32, f32) {
+    pub fn editor_scroll_metrics(&self, total_content_h: f32, window_h: f32) -> (f32, f32, f32) {
         let bounds = self.editor_scroll_handle.bounds();
         let bounds_h = f32::from(bounds.size.height);
+        // Floor at the live window size: right after window creation/maximize the measured
+        // bounds lag one frame behind, and slicing from them alone leaves a blank band of
+        // missing last rows until the next repaint. Overshooting only renders a few extra
+        // clipped rows.
+        let live = (window_h - 100.0).max(100.0);
         let editor_h = if bounds_h > 50.0 {
-            bounds_h
+            bounds_h.max(live)
         } else {
-            // Замер появится только после layout текущего кадра. Фиксируем,
-            // что срез строк посчитан от оценки, чтобы `render()` заказал
-            // один внеочередной кадр с реальными bounds. Только при пустых
-            // bounds: крошечная, но реально замеренная панель не должна
-            // вызывать перерисовок в цикле.
-            if bounds_h <= 0.0 {
-                self.viewport_unmeasured.set(true);
-            }
             self.last_editor_h.get().max(100.0)
         };
         let max_offset_y = f32::from(self.editor_scroll_handle.max_offset().height);
@@ -825,7 +816,7 @@ impl AppView {
         (editor_h, max_scroll_content, track_top_y)
     }
 
-    fn handle_scrollbar_drag(&mut self, current_y: f32, _window: &Window, cx: &mut Context<Self>) {
+    fn handle_scrollbar_drag(&mut self, current_y: f32, window: &Window, cx: &mut Context<Self>) {
         if !self.is_dragging_scrollbar {
             return;
         }
@@ -834,7 +825,8 @@ impl AppView {
         };
         note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings));
         let total_content_h = note.cached_height_index.total() + 48.0;
-        let (editor_h, max_scroll_content, _) = self.editor_scroll_metrics(total_content_h);
+        let window_h = f32::from(window.bounds().size.height);
+        let (editor_h, max_scroll_content, _) = self.editor_scroll_metrics(total_content_h, window_h);
         let ratio = (editor_h / total_content_h.max(editor_h)).clamp(0.04, 1.0);
         let thumb_h = (editor_h * ratio).max(28.0);
         let track_scrollable = (editor_h - thumb_h).max(1.0);
@@ -2345,6 +2337,10 @@ impl Render for AppView {
 
         let is_maximized = window.is_maximized();
         let bounds = window.bounds();
+        // Live window height for virtualized-list floors (see editor_scroll_metrics,
+        // render_sidebar_tree): measured scroll bounds lag one frame behind on
+        // creation/maximize, the window size itself is current from frame one.
+        let window_h = f32::from(bounds.size.height);
         let geom = (
             f32::from(bounds.size.width),
             f32::from(bounds.size.height),
@@ -2490,7 +2486,7 @@ impl Render for AppView {
         let is_tabs_overflowing = tab_layout.is_overflowing;
         let effective_tab_gap = tab_layout.tab_gap;
 
-        let root = div()
+        div()
             .flex()
             .flex_col()
             .relative()
@@ -3644,7 +3640,7 @@ impl Render for AppView {
                                 let theme_scrollbar = theme.clone();
 
                                 let total_content_h = height_index_arc.total() + 48.0;
-                                let (editor_h, max_scroll_content, track_top_y) = self.editor_scroll_metrics(total_content_h);
+                                let (editor_h, max_scroll_content, track_top_y) = self.editor_scroll_metrics(total_content_h, window_h);
                                 self.last_editor_h.set(editor_h);
                                 let show_scrollbar = max_scroll_content > 1.0;
                                 let (thumb_top, thumb_h) = if show_scrollbar {
@@ -4802,16 +4798,7 @@ impl Render for AppView {
             // ================= COMMUNITY PLUGINS CATALOG =================
             .when(self.plugin_catalog.is_open, |d| {
                 d.child(self.render_plugin_catalog_modal(window, cx))
-            });
-        // Виртуализированные списки нарезали видимый диапазон по оценке
-        // (bounds скролл-хендлов на первом кадре пусты): остаток контента —
-        // пустой спейсер, и без посторонних событий список «догружается»
-        // с задержкой. Один внеочередной кадр сразу после замера схлопывает
-        // глитч до ~16мс; флаг одноразовый, цикла перерисовок нет.
-        if self.viewport_unmeasured.take() {
-            window.refresh();
-        }
-        root
+            })
     }
 }
 
