@@ -802,15 +802,19 @@ impl AppView {
     pub fn editor_scroll_metrics(&self, total_content_h: f32, window_h: f32) -> (f32, f32, f32) {
         let bounds = self.editor_scroll_handle.bounds();
         let bounds_h = f32::from(bounds.size.height);
-        // Floor at the live window size: right after window creation/maximize the measured
-        // bounds lag one frame behind, and slicing from them alone leaves a blank band of
-        // missing last rows until the next repaint. Overshooting only renders a few extra
-        // clipped rows.
+        // Measured bounds are the real viewport height — use them as is. The old
+        // `max(live window)` floor always overestimated it (the window chrome is
+        // taller than 100 px), so the scrollbar thumb travelled on an inflated
+        // scale and slid past the track end, under the status bar.
+        // Before the first layout nothing is measured yet: floor at the live
+        // window size so the first slice does not leave a blank band of missing
+        // last rows. Overshooting only renders a few extra clipped rows, and the
+        // exact height arrives with the next repaint.
         let live = (window_h - 100.0).max(100.0);
         let editor_h = if bounds_h > 50.0 {
-            bounds_h.max(live)
+            bounds_h
         } else {
-            self.last_editor_h.get().max(100.0)
+            live.max(self.last_editor_h.get()).max(100.0)
         };
         let max_offset_y = f32::from(self.editor_scroll_handle.max_offset().height);
         let max_scroll_content = if max_offset_y > 0.0 {
