@@ -1,4 +1,6 @@
+use std::cell::Cell;
 use std::collections::HashSet;
+use std::rc::Rc;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, AnyElement, Context, ElementId, FocusHandle, InteractiveElement, IntoElement,
@@ -267,14 +269,65 @@ impl UiNode {
 }
 
 /// Active interactive text input focus state for plugin UI components.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct PluginInputFocusState {
     pub plugin_id: String,
     pub view_id: u64,
     pub node_id: String,
     pub value: String,
     pub cursor_pos: usize,
+    pub selection_anchor: Option<usize>,
+    pub is_mouse_selecting: bool,
+    pub box_origin_x: Rc<Cell<f32>>,
     pub is_multiline: bool,
+}
+
+impl PluginInputFocusState {
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        if anchor == self.cursor_pos {
+            None
+        } else {
+            Some((anchor.min(self.cursor_pos), anchor.max(self.cursor_pos)))
+        }
+    }
+}
+
+impl PartialEq for PluginInputFocusState {
+    fn eq(&self, other: &Self) -> bool {
+        self.plugin_id == other.plugin_id
+            && self.view_id == other.view_id
+            && self.node_id == other.node_id
+            && self.value == other.value
+            && self.cursor_pos == other.cursor_pos
+            && self.selection_anchor == other.selection_anchor
+            && self.is_mouse_selecting == other.is_mouse_selecting
+            && self.is_multiline == other.is_multiline
+    }
+}
+
+/// Maps a mouse click x (window coords) to a character index in the input text.
+pub fn plugin_input_click_pos(text: &str, click_x: f32, box_origin_x: f32, window: &gpui::Window) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+    let rel_x = (click_x - box_origin_x).max(0.0);
+    let run = gpui::TextRun {
+        len: text.len(),
+        font: gpui::font("Segoe UI"),
+        color: Default::default(),
+        underline: Default::default(),
+        strikethrough: None,
+        background_color: None,
+    };
+    let shaped = window.text_system().shape_line(
+        gpui::SharedString::from(text.to_string()),
+        gpui::px(14.0),
+        &[run],
+        None,
+    );
+    let byte_idx = shaped.closest_index_for_x(gpui::px(rel_x));
+    text[..byte_idx.min(text.len())].chars().count()
 }
 
 /// Validates the tree to prevent excessive depth, memory exhaustion, or duplicated IDs.
@@ -361,10 +414,16 @@ pub fn render_ui_node(
     active_input: Option<&PluginInputFocusState>,
     input_focus_handle: &FocusHandle,
     active_select: Option<&(String, u64, String)>,
+    select_popup: Option<&gpui::Entity<crate::views::tab_list::TabListPopup>>,
+    caret_visible: bool,
+    window: &gpui::Window,
     cx: &Context<AppView>,
 ) -> AnyElement {
     match node {
         UiNode::Column { gap, children } => {
+            if children.is_empty() {
+                return div().into_any_element();
+            }
             let gap_px = gap.to_px();
             div()
                 .flex()
@@ -380,6 +439,9 @@ pub fn render_ui_node(
                         active_input,
                         input_focus_handle,
                         active_select,
+                        select_popup,
+                        caret_visible,
+                        window,
                         cx,
                     )
                 }))
@@ -402,6 +464,9 @@ pub fn render_ui_node(
                         active_input,
                         input_focus_handle,
                         active_select,
+                        select_popup,
+                        caret_visible,
+                        window,
                         cx,
                     )
                 }))
@@ -409,11 +474,13 @@ pub fn render_ui_node(
         }
         UiNode::Text { value, style } => match style {
             TextStyle::Normal => div()
+                .flex_shrink_0()
                 .text_sm()
                 .text_color(theme.text_primary)
                 .child(value.clone())
                 .into_any_element(),
             TextStyle::Muted => div()
+                .flex_shrink_0()
                 .text_xs()
                 .text_color(theme.text_muted)
                 .child(value.clone())
@@ -425,6 +492,7 @@ pub fn render_ui_node(
                 .child(value.clone())
                 .into_any_element(),
             TextStyle::Code => div()
+                .flex_shrink_0()
                 .text_xs()
                 .bg(theme.code_bg)
                 .text_color(theme.success)
@@ -470,11 +538,12 @@ pub fn render_ui_node(
             div()
                 .id(ElementId::from(SharedString::from(format!("ui-btn-{}-{}", view_id, id))))
                 .flex()
+                .flex_shrink_0()
                 .items_center()
                 .justify_center()
+                .h(px(28.0))
                 .px(px(12.0))
-                .py(px(5.0))
-                .rounded(px(5.0))
+                .rounded_md()
                 .bg(bg_color)
                 .border_1()
                 .border_color(border_color)
@@ -528,205 +597,265 @@ pub fn render_ui_node(
                 st.plugin_id == p_id && st.view_id == view_id && st.node_id == n_id
             });
 
-            if is_active {
-                let current_state = active_input.unwrap();
-                let val = &current_state.value;
-                let total_chars = val.chars().count();
-                let pos = current_state.cursor_pos.min(total_chars);
-                let before: String = val.chars().take(pos).collect();
-                let after: String = val.chars().skip(pos).collect();
-                let has_val = !val.is_empty();
-
-                div()
-                    .id(ElementId::from(SharedString::from(format!("ui-input-{}-{}", view_id, id))))
-                    .track_focus(input_focus_handle)
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation();
-                    })
-                    .on_key_down(cx.listener(|app, event: &KeyDownEvent, _, cx| {
-                        cx.stop_propagation();
-                        app.handle_plugin_input_key(event, cx);
-                    }))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .w_full()
-                    .min_w(px(160.0))
-                    .max_w(px(320.0))
-                    .px(px(8.0))
-                    .py(px(4.0))
-                    .rounded(px(4.0))
-                    .border_1()
-                    .border_color(theme.accent)
-                    .bg(theme.bg_editor)
-                    .cursor(gpui::CursorStyle::IBeam)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .min_w_0()
-                            .flex_1()
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(theme.text_primary)
-                                    .child(before),
-                            )
-                            .child(
-                                div()
-                                    .w(px(1.5))
-                                    .h(px(14.0))
-                                    .bg(theme.accent),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(theme.text_primary)
-                                    .child(after),
-                            )
-                            .when(!has_val, |parent| {
-                                parent.when_some(placeholder.clone(), |p, ph| {
-                                    p.child(
-                                        div()
-                                            .text_sm()
-                                            .text_color(theme.text_muted)
-                                            .child(ph),
-                                    )
-                                })
-                            }),
-                    )
-                    .when(has_val, |parent| {
-                        let p_id_clear = p_id.clone();
-                        let n_id_clear = n_id.clone();
-                        parent.child(
-                            div()
-                                .id(ElementId::from(SharedString::from(format!("ui-input-clear-{}-{}", view_id, id))))
-                                .cursor(gpui::CursorStyle::PointingHand)
-                                .px(px(4.0))
-                                .py(px(1.0))
-                                .rounded(px(3.0))
-                                .hover(|h| h.bg(theme.bg_hover))
-                                .text_xs()
-                                .text_color(theme.text_muted)
-                                .child("✕")
-                                .on_click(cx.listener(move |app, _, _, cx| {
-                                    cx.stop_propagation();
-                                    if let Some(ref mut st) = app.active_plugin_input {
-                                        if st.plugin_id == p_id_clear && st.view_id == view_id && st.node_id == n_id_clear {
-                                            st.value.clear();
-                                            st.cursor_pos = 0;
-                                        }
-                                    }
-                                    if let Some(tree) = app.plugin_views.get_mut(&(p_id_clear.clone(), view_id)) {
-                                        tree.update_input_value(&n_id_clear, "");
-                                    }
-                                    let _ = app.state.plugin_host.send_event(
-                                        &p_id_clear,
-                                        crate::plugins::api::HostEvent::UiEvent {
-                                            view_id,
-                                            node_id: n_id_clear.clone(),
-                                            event: "change".to_string(),
-                                            value: Some("".to_string()),
-                                        },
-                                    );
-                                    cx.notify();
-                                })),
-                        )
-                    })
-                    .into_any_element()
+            let current_val = if is_active {
+                active_input.unwrap().value.clone()
             } else {
-                let val_str = value.as_deref().unwrap_or("");
-                let has_value = !val_str.is_empty();
-                let display_text = if has_value {
-                    val_str
-                } else {
-                    placeholder.as_deref().unwrap_or("")
-                };
+                value.clone().unwrap_or_default()
+            };
+            let cursor_pos = if is_active {
+                active_input.unwrap().cursor_pos
+            } else {
+                0
+            };
+            let selection_range = if is_active {
+                active_input.unwrap().selection_range()
+            } else {
+                None
+            };
+            let box_origin_x = if is_active {
+                active_input.unwrap().box_origin_x.clone()
+            } else {
+                Rc::new(Cell::new(0.0))
+            };
 
-                let initial_val = value.clone().unwrap_or_default();
-                let initial_chars = initial_val.chars().count();
-                let p_id_focus = p_id.clone();
-                let n_id_focus = n_id.clone();
+            let pixel_scale = window.scale_factor();
+            let run = gpui::TextRun {
+                len: current_val.len(),
+                font: gpui::font("Segoe UI"),
+                color: Default::default(),
+                underline: Default::default(),
+                strikethrough: None,
+                background_color: None,
+            };
+            let shaped = window.text_system().shape_line(
+                gpui::SharedString::from(current_val.clone()),
+                gpui::px(14.0),
+                &[run],
+                None,
+            );
 
-                div()
-                    .id(ElementId::from(SharedString::from(format!("ui-input-{}-{}", view_id, id))))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .w_full()
-                    .min_w(px(160.0))
-                    .max_w(px(320.0))
-                    .px(px(8.0))
-                    .py(px(4.0))
-                    .rounded(px(4.0))
-                    .border_1()
-                    .border_color(theme.border)
-                    .bg(theme.bg_editor)
-                    .cursor(gpui::CursorStyle::IBeam)
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation();
-                    })
-                    .on_click(cx.listener(move |app, _, window, cx| {
-                        cx.stop_propagation();
-                        app.active_plugin_input = Some(PluginInputFocusState {
-                            plugin_id: p_id_focus.clone(),
-                            view_id,
-                            node_id: n_id_focus.clone(),
-                            value: initial_val.clone(),
-                            cursor_pos: initial_chars,
-                            is_multiline: false,
-                        });
-                        window.focus(&app.plugin_input_focus_handle);
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(if has_value {
-                                theme.text_primary
-                            } else {
-                                theme.text_muted
-                            })
-                            .child(display_text.to_string()),
+            let val_chars: Vec<char> = current_val.chars().collect();
+            let cursor_x = if current_val.is_empty() {
+                0.0
+            } else {
+                let byte_index: usize = val_chars[..cursor_pos.min(val_chars.len())]
+                    .iter()
+                    .map(|c| c.len_utf8())
+                    .sum();
+                crate::snap::snap_x(f32::from(shaped.x_for_index(byte_index)), pixel_scale)
+            };
+
+            let (sel_x1, sel_w) = if let Some((s, e)) = selection_range {
+                if !current_val.is_empty() {
+                    let b1: usize = val_chars[..s.min(val_chars.len())]
+                        .iter()
+                        .map(|c| c.len_utf8())
+                        .sum();
+                    let b2: usize = val_chars[..e.min(val_chars.len())]
+                        .iter()
+                        .map(|c| c.len_utf8())
+                        .sum();
+                    crate::snap::snapped_span(
+                        f32::from(shaped.x_for_index(b1)),
+                        f32::from(shaped.x_for_index(b2)),
+                        pixel_scale,
                     )
-                    .when(has_value, |parent| {
-                        let p_id_clear = p_id.clone();
-                        let n_id_clear = n_id.clone();
-                        parent.child(
-                            div()
-                                .id(ElementId::from(SharedString::from(format!("ui-input-clear-{}-{}", view_id, id))))
-                                .cursor(gpui::CursorStyle::PointingHand)
-                                .px(px(4.0))
-                                .py(px(1.0))
-                                .rounded(px(3.0))
-                                .hover(|h| h.bg(theme.bg_hover))
-                                .text_xs()
-                                .text_color(theme.text_muted)
-                                .child("✕")
-                                .on_click(cx.listener(move |app, _, _, cx| {
-                                    cx.stop_propagation();
-                                    if let Some(tree) = app.plugin_views.get_mut(&(p_id_clear.clone(), view_id)) {
-                                        tree.update_input_value(&n_id_clear, "");
-                                    }
-                                    let _ = app.state.plugin_host.send_event(
-                                        &p_id_clear,
-                                        crate::plugins::api::HostEvent::UiEvent {
-                                            view_id,
-                                            node_id: n_id_clear.clone(),
-                                            event: "change".to_string(),
-                                            value: Some("".to_string()),
-                                        },
-                                    );
-                                    cx.notify();
-                                })),
-                        )
-                    })
-                    .into_any_element()
+                } else {
+                    (0.0, 0.0)
+                }
+            } else {
+                (0.0, 0.0)
+            };
+
+            let show_caret = is_active && caret_visible && selection_range.is_none();
+
+            let p_id_click = p_id.clone();
+            let n_id_click = n_id.clone();
+            let p_id_move = p_id.clone();
+            let n_id_move = n_id.clone();
+            let p_id_up = p_id.clone();
+            let n_id_up = n_id.clone();
+            let p_id_up_out = p_id.clone();
+            let n_id_up_out = n_id.clone();
+            let val_for_click = current_val.clone();
+            let box_cell_click = box_origin_x.clone();
+
+            let mut outer = div()
+                .id(ElementId::from(SharedString::from(format!("ui-input-{}-{}", view_id, id))))
+                .flex()
+                .flex_1()
+                .min_w(px(120.0))
+                .h(px(28.0))
+                .px(px(8.0))
+                .items_center()
+                .rounded_md()
+                .border_1()
+                .border_color(if is_active { theme.accent } else { theme.border })
+                .bg(theme.bg_sidebar)
+                .cursor(gpui::CursorStyle::IBeam)
+                .overflow_hidden();
+
+            if is_active {
+                outer = outer.track_focus(input_focus_handle);
             }
+
+            outer
+                .on_mouse_down(MouseButton::Left, cx.listener(move |app, event: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    window.focus(&app.plugin_input_focus_handle);
+                    app.plugin_input_blink.enable(crate::blink_manager::BlinkTarget::PluginInput, cx);
+                    app.plugin_input_blink.pause_and_show(crate::blink_manager::BlinkTarget::PluginInput, cx);
+
+                    let click_x: f32 = event.position.x.into();
+                    let box_x = box_cell_click.get();
+                    let current_text = if let Some(ref st) = app.active_plugin_input {
+                        if st.plugin_id == p_id_click && st.view_id == view_id && st.node_id == n_id_click {
+                            st.value.clone()
+                        } else {
+                            val_for_click.clone()
+                        }
+                    } else {
+                        val_for_click.clone()
+                    };
+
+                    let pos = plugin_input_click_pos(&current_text, click_x, box_x, window);
+                    let total_chars = current_text.chars().count();
+
+                    let (anchor, new_pos, selecting) = if event.click_count >= 3 {
+                        (Some(0), total_chars, false)
+                    } else if event.click_count == 2 {
+                        let (s, e) = crate::views::goto_search::word_range_at(&current_text, pos);
+                        (Some(s), e, false)
+                    } else if event.modifiers.shift {
+                        let prev_pos = app.active_plugin_input.as_ref()
+                            .and_then(|st| st.selection_anchor)
+                            .or_else(|| app.active_plugin_input.as_ref().map(|st| st.cursor_pos))
+                            .unwrap_or(pos);
+                        (Some(prev_pos), pos, true)
+                    } else {
+                        (Some(pos), pos, true)
+                    };
+
+                    app.active_plugin_input = Some(PluginInputFocusState {
+                        plugin_id: p_id_click.clone(),
+                        view_id,
+                        node_id: n_id_click.clone(),
+                        value: current_text,
+                        cursor_pos: new_pos,
+                        selection_anchor: anchor,
+                        is_mouse_selecting: selecting,
+                        box_origin_x: box_cell_click.clone(),
+                        is_multiline: false,
+                    });
+                    cx.notify();
+                }))
+                .on_mouse_move(cx.listener(move |app, event: &gpui::MouseMoveEvent, window, cx| {
+                    if let Some(ref mut st) = app.active_plugin_input {
+                        if st.is_mouse_selecting && st.plugin_id == p_id_move && st.view_id == view_id && st.node_id == n_id_move {
+                            let click_x: f32 = event.position.x.into();
+                            let box_x = st.box_origin_x.get();
+                            let new_pos = plugin_input_click_pos(&st.value, click_x, box_x, window);
+                            if st.cursor_pos != new_pos {
+                                st.cursor_pos = new_pos;
+                                app.plugin_input_blink.pause_and_show(crate::blink_manager::BlinkTarget::PluginInput, cx);
+                                cx.notify();
+                            }
+                        }
+                    }
+                }))
+                .on_mouse_up(MouseButton::Left, cx.listener(move |app, _, _, cx| {
+                    if let Some(ref mut st) = app.active_plugin_input {
+                        if st.plugin_id == p_id_up && st.view_id == view_id && st.node_id == n_id_up {
+                            st.is_mouse_selecting = false;
+                            if st.selection_anchor == Some(st.cursor_pos) {
+                                st.selection_anchor = None;
+                            }
+                            cx.notify();
+                        }
+                    }
+                }))
+                .on_mouse_up_out(MouseButton::Left, cx.listener(move |app, _, _, cx| {
+                    if let Some(ref mut st) = app.active_plugin_input {
+                        if st.plugin_id == p_id_up_out && st.view_id == view_id && st.node_id == n_id_up_out {
+                            st.is_mouse_selecting = false;
+                            if st.selection_anchor == Some(st.cursor_pos) {
+                                st.selection_anchor = None;
+                            }
+                            cx.notify();
+                        }
+                    }
+                }))
+                .on_key_down(cx.listener(|app, event: &KeyDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    app.handle_plugin_input_key(event, cx);
+                }))
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_w_0()
+                        .h(px(20.0))
+                        .child(
+                            gpui::canvas(
+                                {
+                                    let cell = box_origin_x.clone();
+                                    move |bounds, _, _| {
+                                        cell.set(f32::from(bounds.origin.x));
+                                    }
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .size_full(),
+                        )
+                        .when(selection_range.is_some() && sel_w > 0.0, |s| {
+                            s.child(
+                                div()
+                                    .absolute()
+                                    .left(px(sel_x1))
+                                    .top(px(0.0))
+                                    .w(px(sel_w))
+                                    .h(px(20.0))
+                                    .bg(theme.selection_bg)
+                                    .rounded_xs(),
+                            )
+                        })
+                        .child(
+                            if current_val.is_empty() {
+                                div()
+                                    .font_family("Segoe UI")
+                                    .text_size(px(14.0))
+                                    .line_height(px(20.0))
+                                    .text_color(theme.text_muted)
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(placeholder.as_deref().unwrap_or("").to_string())
+                            } else {
+                                div()
+                                    .font_family("Segoe UI")
+                                    .text_size(px(14.0))
+                                    .line_height(px(20.0))
+                                    .text_color(theme.text_primary)
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .child(current_val.clone())
+                            }
+                        )
+                        .when(show_caret, |s| {
+                            s.child(
+                                div()
+                                    .absolute()
+                                    .left(px(cursor_x))
+                                    .top(px(1.0))
+                                    .w(px(1.5))
+                                    .h(px(18.0))
+                                    .bg(theme.accent)
+                                    .rounded_xs(),
+                            )
+                        }),
+                )
+                .into_any_element()
         }
         UiNode::Textarea {
             id,
@@ -754,9 +883,11 @@ pub fn render_ui_node(
                 div()
                     .id(ElementId::from(SharedString::from(format!("ui-textarea-{}-{}", view_id, id))))
                     .track_focus(input_focus_handle)
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    .on_mouse_down(MouseButton::Left, cx.listener(|app, _, window, cx| {
                         cx.stop_propagation();
-                    })
+                        window.focus(&app.plugin_input_focus_handle);
+                        app.plugin_input_blink.pause_and_show(crate::blink_manager::BlinkTarget::PluginInput, cx);
+                    }))
                     .on_key_down(cx.listener(|app, event: &KeyDownEvent, _, cx| {
                         cx.stop_propagation();
                         app.handle_plugin_input_key(event, cx);
@@ -766,10 +897,10 @@ pub fn render_ui_node(
                     .w_full()
                     .h(px(box_h))
                     .p(px(8.0))
-                    .rounded(px(4.0))
+                    .rounded_md()
                     .border_1()
                     .border_color(theme.accent)
-                    .bg(theme.bg_editor)
+                    .bg(theme.bg_sidebar)
                     .cursor(gpui::CursorStyle::IBeam)
                     .overflow_scroll()
                     .child(
@@ -787,12 +918,14 @@ pub fn render_ui_node(
                                     .text_color(theme.text_primary)
                                     .child(before),
                             )
-                            .child(
-                                div()
-                                    .w(px(2.0))
-                                    .h(px(14.0))
-                                    .bg(theme.accent),
-                            )
+                            .when(caret_visible, |s| {
+                                s.child(
+                                    div()
+                                        .w(px(2.0))
+                                        .h(px(14.0))
+                                        .bg(theme.accent),
+                                )
+                            })
                             .child(
                                 div()
                                     .text_xs()
@@ -834,16 +967,13 @@ pub fn render_ui_node(
                     .w_full()
                     .h(px(box_h))
                     .p(px(8.0))
-                    .rounded(px(4.0))
+                    .rounded_md()
                     .border_1()
                     .border_color(theme.border)
-                    .bg(theme.bg_editor)
+                    .bg(theme.bg_sidebar)
                     .cursor(gpui::CursorStyle::IBeam)
                     .overflow_scroll()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation();
-                    })
-                    .on_click(cx.listener(move |app, _, window, cx| {
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |app, _, window, cx| {
                         cx.stop_propagation();
                         app.active_plugin_input = Some(PluginInputFocusState {
                             plugin_id: p_id_focus.clone(),
@@ -851,8 +981,13 @@ pub fn render_ui_node(
                             node_id: n_id_focus.clone(),
                             value: initial_val.clone(),
                             cursor_pos: initial_chars,
+                            selection_anchor: None,
+                            is_mouse_selecting: false,
+                            box_origin_x: Rc::new(Cell::new(0.0)),
                             is_multiline: true,
                         });
+                        app.plugin_input_blink.enable(crate::blink_manager::BlinkTarget::PluginInput, cx);
+                        app.plugin_input_blink.pause_and_show(crate::blink_manager::BlinkTarget::PluginInput, cx);
                         window.focus(&app.plugin_input_focus_handle);
                         cx.notify();
                     }))
@@ -994,6 +1129,9 @@ pub fn render_ui_node(
                     active_input,
                     input_focus_handle,
                     active_select,
+                    select_popup,
+                    caret_visible,
+                    window,
                     cx,
                 )
             }))
@@ -1046,7 +1184,11 @@ pub fn render_ui_node(
                         .items_center()
                         .justify_end()
                         .flex_shrink_0()
-                        .when(has_header, |this| this.min_w(px(140.0)))
+                        .when(has_header, |this| match control.as_ref() {
+                            UiNode::Input { .. } => this.min_w(px(220.0)).max_w(px(320.0)),
+                            UiNode::Textarea { .. } => this.min_w(px(260.0)).max_w(px(400.0)),
+                            _ => this.min_w(px(140.0)),
+                        })
                         .child(render_ui_node(
                             control,
                             plugin_id,
@@ -1055,6 +1197,9 @@ pub fn render_ui_node(
                             active_input,
                             input_focus_handle,
                             active_select,
+                            select_popup,
+                            caret_visible,
+                            window,
                             cx,
                         )),
                 )
@@ -1168,119 +1313,48 @@ pub fn render_ui_node(
             let n_id_toggle = n_id.clone();
 
             div()
-                .id(ElementId::from(SharedString::from(format!("ui-sel-{}-{}", view_id, id))))
+                .id(ElementId::from(SharedString::from(format!("ui-sel-wrap-{}-{}", view_id, id))))
                 .relative()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .gap(px(8.0))
-                .px(px(10.0))
-                .py(px(5.0))
-                .rounded(px(5.0))
-                .border_1()
-                .border_color(if is_open { theme.accent } else { theme.border })
-                .bg(theme.bg_card)
-                .cursor(gpui::CursorStyle::PointingHand)
-                .hover(|s| s.bg(theme.bg_hover))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                    cx.stop_propagation();
-                })
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    cx.stop_propagation();
-                    let sel_key = (p_id_toggle.clone(), view_id, n_id_toggle.clone());
-                    if app.active_plugin_select.as_ref() == Some(&sel_key) {
-                        app.active_plugin_select = None;
-                    } else {
-                        app.active_plugin_select = Some(sel_key);
-                    }
-                    cx.notify();
-                }))
+                .flex_shrink_0()
                 .child(
                     div()
-                        .text_xs()
-                        .text_color(theme.text_primary)
-                        .child(display_label.to_string()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.text_muted)
-                        .child(if is_open { "▲" } else { "▼" }),
+                        .id(ElementId::from(SharedString::from(format!("ui-sel-{}-{}", view_id, id))))
+                        .cursor_pointer()
+                        .child(crate::views::settings_view::render_select_pill_styled(display_label, theme))
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            cx.stop_propagation();
+                            if app.is_plugin_select_open(&p_id_toggle, view_id, &n_id_toggle) {
+                                app.close_plugin_select(cx);
+                            } else {
+                                app.open_plugin_select(
+                                    p_id_toggle.clone(),
+                                    view_id,
+                                    n_id_toggle.clone(),
+                                    opts.clone(),
+                                    current_val.clone(),
+                                    window,
+                                    cx,
+                                );
+                            }
+                        })),
                 )
                 .when(is_open, |parent| {
-                    parent.child(
-                        gpui::deferred(
-                            div()
-                                .id(ElementId::from(SharedString::from(format!("ui-sel-popup-{}-{}", view_id, id))))
-                                .absolute()
-                                .top(px(32.0))
-                                .right_0()
-                                .min_w(px(180.0))
-                                .max_h(px(240.0))
-                                .overflow_scroll()
-                                .bg(theme.bg_card)
-                                .border_1()
-                                .border_color(theme.border)
-                                .rounded(px(6.0))
-                                .shadow_lg()
-                                .p(px(4.0))
-                                .flex()
-                                .flex_col()
-                                .gap(px(2.0))
-                                .cursor(gpui::CursorStyle::Arrow)
-                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                    cx.stop_propagation();
-                                })
-                                .children(opts.iter().map(|opt| {
-                                    let opt_val = opt.value.clone();
-                                    let is_selected = opt_val == current_val;
-                                    let p_id_item = p_id.clone();
-                                    let n_id_item = n_id.clone();
-                                    div()
-                                        .id(ElementId::from(SharedString::from(format!("ui-sel-opt-{}-{}-{}", view_id, id, opt.value))))
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .justify_between()
-                                        .px(px(8.0))
-                                        .py(px(5.0))
-                                        .rounded(px(4.0))
-                                        .when(is_selected, |s| s.bg(theme.bg_hover))
-                                        .hover(|s| s.bg(theme.bg_hover))
-                                        .cursor(gpui::CursorStyle::PointingHand)
-                                        .on_click(cx.listener(move |app, _, _, cx| {
-                                            cx.stop_propagation();
-                                            app.active_plugin_select = None;
-                                            let _ = app.state.plugin_host.send_event(
-                                                &p_id_item,
-                                                crate::plugins::api::HostEvent::UiEvent {
-                                                    view_id,
-                                                    node_id: n_id_item.clone(),
-                                                    event: "change".to_string(),
-                                                    value: Some(opt_val.clone()),
-                                                },
-                                            );
-                                            cx.notify();
-                                        }))
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(if is_selected { theme.accent } else { theme.text_primary })
-                                                .font_weight(if is_selected { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::NORMAL })
-                                                .child(opt.label.clone()),
-                                        )
-                                        .when(is_selected, |opt_row| {
-                                            opt_row.child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(theme.accent)
-                                                    .child("✓"),
-                                            )
-                                        })
-                                }))
-                        ).with_priority(999)
-                    )
+                    if let Some(popup) = select_popup {
+                        parent.child(
+                            gpui::deferred(
+                                div()
+                                    .id(ElementId::from(SharedString::from(format!("ui-sel-popup-{}-{}", view_id, id))))
+                                    .absolute()
+                                    .top_full()
+                                    .right_0()
+                                    .mt_1()
+                                    .child(popup.clone()),
+                            )
+                            .with_priority(999),
+                        )
+                    } else {
+                        parent
+                    }
                 })
                 .into_any_element()
         }

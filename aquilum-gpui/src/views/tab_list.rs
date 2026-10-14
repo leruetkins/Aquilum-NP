@@ -1028,6 +1028,100 @@ impl AppView {
     pub fn font_popup_is_open(&self) -> bool {
         self.font_popup.is_some()
     }
+
+    /// Opens the plugin select picker: the same smart popup, anchored to the select button.
+    pub fn open_plugin_select(
+        &mut self,
+        plugin_id: String,
+        view_id: u64,
+        node_id: String,
+        options: Vec<crate::plugins::ui::SelectOption>,
+        current_value: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let active_ix = options.iter().position(|o| o.value == current_value).unwrap_or(0);
+        let tabs: Vec<TabEntry> = options
+            .iter()
+            .enumerate()
+            .map(|(id, opt)| TabEntry {
+                id,
+                title: SharedString::from(opt.label.clone()),
+                subtitle: None,
+                icon: icons::ICON_CHEVRON_RIGHT,
+                font_family: None,
+            })
+            .collect();
+
+        let theme = self.theme.clone();
+        let max_rows = options.len().clamp(1, 10) as f32;
+        let popup = cx.new(|cx| {
+            TabListPopup::new(
+                tabs,
+                active_ix,
+                theme,
+                None,
+                Some(px(ROW_HEIGHT * max_rows)),
+                Some(50.0),
+                cx,
+            )
+        });
+
+        let p_id_activate = plugin_id.clone();
+        let n_id_activate = node_id.clone();
+        let opts_activate = options.clone();
+
+        let subscription = cx.subscribe_in(
+            &popup,
+            window,
+            move |this, _popup, event: &TabListEvent, _window, cx| {
+                match event {
+                    TabListEvent::Activate(id) => {
+                        if let Some(opt) = opts_activate.get(*id) {
+                            let chosen_val = opt.value.clone();
+                            if let Some(tree) = this.plugin_views.get_mut(&(p_id_activate.clone(), view_id)) {
+                                tree.update_input_value(&n_id_activate, &chosen_val);
+                            }
+                            let _ = this.state.plugin_host.send_event(
+                                &p_id_activate,
+                                crate::plugins::api::HostEvent::UiEvent {
+                                    view_id,
+                                    node_id: n_id_activate.clone(),
+                                    event: "change".to_string(),
+                                    value: Some(chosen_val),
+                                },
+                            );
+                        }
+                        this.close_plugin_select(cx);
+                    }
+                    TabListEvent::Dismiss => this.close_plugin_select(cx),
+                    _ => {}
+                }
+            },
+        );
+
+        window.focus(&popup.read(cx).focus_handle());
+        self.active_plugin_select = Some((plugin_id, view_id, node_id));
+        self.plugin_select_popup = Some(popup);
+        self.plugin_select_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    /// Closes the plugin select picker, dropping its subscription.
+    pub fn close_plugin_select(&mut self, cx: &mut Context<Self>) {
+        if self.plugin_select_popup.take().is_none() && self.active_plugin_select.take().is_none() {
+            return;
+        }
+        self.active_plugin_select = None;
+        self.plugin_select_subscription = None;
+        cx.notify();
+    }
+
+    /// Whether the plugin select picker is currently shown for this node.
+    pub fn is_plugin_select_open(&self, plugin_id: &str, view_id: u64, node_id: &str) -> bool {
+        self.active_plugin_select.as_ref() == Some(&(plugin_id.to_string(), view_id, node_id.to_string()))
+            && self.plugin_select_popup.is_some()
+    }
 }
 
 #[cfg(test)]

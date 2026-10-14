@@ -2,7 +2,7 @@ use crate::icons;
 use super::app_view::AppView;
 use gpui::{
     canvas, div, point, prelude::*, px, rgba, Context, DispatchPhase, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, ScrollDelta, ScrollWheelEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, ScrollDelta, ScrollWheelEvent, Window,
 };
 
 /// Line-based wheel ticks (mice) are divided down by this: one notch moves
@@ -159,7 +159,8 @@ impl AppView {
         self.is_settings_open = false;
         self.active_color_picker = None;
         self.active_plugin_input = None;
-        self.active_plugin_select = None;
+        self.plugin_input_blink.disable(cx);
+        self.close_plugin_select(cx);
         cx.notify();
     }
 
@@ -173,8 +174,9 @@ impl AppView {
     }
 
     /// Renders the full Settings modal dialog including backdrop and content.
-    pub fn render_settings_modal(&self, cx: &Context<Self>) -> impl IntoElement {
+    pub fn render_settings_modal(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
+        let caret_visible = self.plugin_input_blink.visible();
 
         let plugin_modal_overlay = if let SettingsTab::PluginSettings(ref pid) = self.settings_tab {
             self.plugin_views.get(&(pid.clone(), 1)).and_then(|modal_tree| {
@@ -183,6 +185,20 @@ impl AppView {
                         return None;
                     }
                 }
+                let is_ru = self.config.ui.language.starts_with("ru");
+                let modal_title = if let crate::plugins::ui::UiNode::Column { children, .. } = modal_tree {
+                    children.iter().find_map(|c| {
+                        if let crate::plugins::ui::UiNode::Text { value, style: crate::plugins::ui::TextStyle::Heading } = c {
+                            if !value.trim().is_empty() {
+                                return Some(value.clone());
+                            }
+                        }
+                        None
+                    })
+                } else {
+                    None
+                }.unwrap_or_else(|| if is_ru { "Редактирование".to_string() } else { "Edit".to_string() });
+
                 let rendered_modal = crate::plugins::ui::render_ui_node(
                     modal_tree,
                     pid,
@@ -191,6 +207,9 @@ impl AppView {
                     self.active_plugin_input.as_ref(),
                     &self.plugin_input_focus_handle,
                     self.active_plugin_select.as_ref(),
+                    self.plugin_select_popup.as_ref(),
+                    caret_visible,
+                    window,
                     cx,
                 );
                 Some(
@@ -209,6 +228,12 @@ impl AppView {
                             cx.stop_propagation();
                             this.close_active_plugin_modal(cx);
                         }))
+                        .on_mouse_up(MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation();
+                        })
+                        .on_click(|_, _, cx| {
+                            cx.stop_propagation();
+                        })
                         .on_scroll_wheel(|_, _, cx| {
                             cx.stop_propagation();
                         })
@@ -229,6 +254,12 @@ impl AppView {
                                 .shadow_xl()
                                 .cursor(gpui::CursorStyle::Arrow)
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .on_mouse_up(MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .on_click(|_, _, cx| {
                                     cx.stop_propagation();
                                 })
                                 .on_scroll_wheel(|_, _, cx| {
@@ -258,7 +289,7 @@ impl AppView {
                                                         .text_sm()
                                                         .font_weight(gpui::FontWeight::BOLD)
                                                         .text_color(theme.text_primary)
-                                                        .child("Настройки плагина"),
+                                                        .child(modal_title),
                                                 ),
                                         )
                                         .child(
@@ -318,9 +349,8 @@ impl AppView {
                     .cursor(gpui::CursorStyle::Arrow)
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                         cx.stop_propagation();
-                        if this.active_plugin_select.is_some() {
-                            this.active_plugin_select = None;
-                            cx.notify();
+                        if this.active_plugin_select.is_some() || this.plugin_select_popup.is_some() {
+                            this.close_plugin_select(cx);
                         } else if this.active_color_picker.is_some() {
                             this.active_color_picker = None;
                             cx.notify();
@@ -384,7 +414,7 @@ impl AppView {
                                     // Left navigation panel
                                     .child(self.render_settings_nav(cx))
                                     // Right scrollable content panel
-                                    .child(self.render_settings_content(cx)),
+                                    .child(self.render_settings_content(window, cx)),
                             ),
                     ),
             )
@@ -491,7 +521,7 @@ impl AppView {
     }
 
     /// Renders the active tab's settings content container.
-    fn render_settings_content(&self, cx: &Context<Self>) -> impl IntoElement {
+    fn render_settings_content(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
         let scroll_handle = self.settings_scroll_handle.clone();
         let is_catalog_open = self.plugin_catalog.is_open;
@@ -531,7 +561,7 @@ impl AppView {
                 SettingsTab::Shortcuts => self.render_shortcuts_tab(cx),
                 SettingsTab::CorePlugins => self.render_core_plugins_tab(cx),
                 SettingsTab::CommunityPlugins => self.render_community_plugins_tab(cx),
-                SettingsTab::PluginSettings(ref id) => self.render_plugin_settings_tab(id, cx),
+                SettingsTab::PluginSettings(ref id) => self.render_plugin_settings_tab(id, window, cx),
             })
             .child(
                 canvas(
@@ -1161,24 +1191,31 @@ impl AppView {
     }
 
     /// Renders a clickable styled pill dropdown or selector button.
-    fn render_select_pill(&self, label: &str) -> gpui::Div {
-        let theme = &self.theme;
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .py_1()
-            .bg(theme.bg_sidebar)
-            .border_1()
-            .border_color(theme.border)
-            .rounded_md()
-            .text_xs()
-            .text_color(theme.text_primary)
-            .child(label.to_string())
-            .child(icons::icon(icons::ICON_CHEVRON_DOWN, 12.0, theme.text_muted))
+    pub fn render_select_pill(&self, label: &str) -> gpui::Div {
+        render_select_pill_styled(label, &self.theme)
     }
+}
+
+/// Renders a clickable styled pill dropdown or selector button with given theme.
+pub fn render_select_pill_styled(label: &str, theme: &crate::theme::Theme) -> gpui::Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .py_1()
+        .bg(theme.bg_sidebar)
+        .border_1()
+        .border_color(theme.border)
+        .rounded_md()
+        .text_xs()
+        .text_color(theme.text_primary)
+        .child(label.to_string())
+        .child(icons::icon(icons::ICON_CHEVRON_DOWN, 12.0, theme.text_muted))
+}
+
+impl AppView {
 
     // =========================================================================
     // 1. Interface (Ui) Tab
@@ -3147,7 +3184,7 @@ impl AppView {
     }
 
     /// Renders the individual details and settings tab for a specific community plugin.
-    fn render_plugin_settings_tab(&self, plugin_id: &str, cx: &Context<Self>) -> gpui::Div {
+    fn render_plugin_settings_tab(&self, plugin_id: &str, window: &Window, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
         let is_ru = self.config.ui.language.starts_with("ru");
 
@@ -3650,6 +3687,9 @@ impl AppView {
                 self.active_plugin_input.as_ref(),
                 &self.plugin_input_focus_handle,
                 self.active_plugin_select.as_ref(),
+                self.plugin_select_popup.as_ref(),
+                self.plugin_input_blink.visible(),
+                window,
                 cx,
             );
             div()

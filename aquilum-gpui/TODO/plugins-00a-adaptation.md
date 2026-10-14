@@ -1207,21 +1207,23 @@ pub fn render_ui_node(
         UiNode::Separator => {
             div().w_full().h(px(1.0)).bg(theme.border_subtle).my(px(4.0)).into_any_element()
         }
+        // ВАЖНО: Принцип Component Reuse First (core §5.3)
+        // Поля ввода (Input / Textarea) ОБЯЗАНЫ использовать BlinkManager (530ms пульс,
+        // snap_x для субпиксельного устранения дрожания толщины каретки, shape_line для кликов/выделения мышью).
+        // Выпадающие списки (Select) ОБЯЗАНЫ использовать TabListPopup (фильтрация, клавиатура, оверлей).
         UiNode::Input { id, placeholder, value } => {
-            div()
-                .px(px(6.0))
-                .py(px(3.0))
-                .border_1()
-                .border_color(theme.border)
-                .rounded(px(3.0))
-                .bg(theme.bg_editor)
-                .text_color(theme.text_primary)
-                .child(value.clone().unwrap_or_else(|| placeholder.clone().unwrap_or_default()))
-                .into_any_element()
+            // Реализовано в src/plugins/ui.rs с поддержкой BlinkManager, selection drag,
+            // word_range_at по двойному клику и snap_span для корректного субпиксельного выделения.
+            render_plugin_text_input(id, placeholder, value, false, plugin_id, view_id, theme, window, cx)
+        }
+        UiNode::Select { id, options, value } => {
+            // Переиспользует умный компонент TabListPopup (src/views/tab_list.rs)
+            render_plugin_select(id, options, value, plugin_id, view_id, theme, cx)
         }
     }
 }
 ```
+
 
 А в [`src/views/right_sidebar.rs`](file:///D:/Naben/Github/rust/Aquilum-NP/aquilum-gpui/src/views/right_sidebar.rs) добавляем отрисовку зарегистрированных видов:
 

@@ -58,6 +58,10 @@ pub struct AppView {
     pub font_popup: Option<Entity<crate::views::tab_list::TabListPopup>>,
     /// Keeps the font picker's event subscription alive.
     pub font_popup_subscription: Option<Subscription>,
+    /// Plugin select dropdown popup (same smart list, anchored to the select button).
+    pub plugin_select_popup: Option<Entity<crate::views::tab_list::TabListPopup>>,
+    /// Keeps the plugin select picker's event subscription alive.
+    pub plugin_select_subscription: Option<Subscription>,
     /// Command Palette modal dialog (Ctrl+P, Obsidian-style).
     pub command_palette: crate::views::command_palette::CommandPaletteState,
     pub command_palette_focus_handle: FocusHandle,
@@ -176,6 +180,7 @@ pub struct AppView {
     /// Active interactive text input in plugin UI (plugin_id, view_id, node_id, value, cursor_pos).
     pub active_plugin_input: Option<crate::plugins::ui::PluginInputFocusState>,
     pub plugin_input_focus_handle: FocusHandle,
+    pub plugin_input_blink: BlinkManager,
     /// Active interactive dropdown select popup in plugin UI (plugin_id, view_id, node_id).
     pub active_plugin_select: Option<(String, u64, String)>,
 }
@@ -244,6 +249,8 @@ impl AppView {
             locale_popup_subscription: None,
             font_popup: None,
             font_popup_subscription: None,
+            plugin_select_popup: None,
+            plugin_select_subscription: None,
             command_palette: crate::views::command_palette::CommandPaletteState::default(),
             command_palette_focus_handle: cx.focus_handle(),
             command_palette_blink: BlinkManager::new(),
@@ -323,6 +330,7 @@ impl AppView {
             catalog_window_manager: crate::views::plugin_catalog::CatalogWindowManager::default(),
             active_plugin_input: None,
             plugin_input_focus_handle: cx.focus_handle(),
+            plugin_input_blink: BlinkManager::new(),
             active_plugin_select: None,
             plugin_views: HashMap::new(),
             plugin_runtimes: Vec::new(),
@@ -469,6 +477,9 @@ impl AppView {
         if self.plugin_catalog.is_open {
             self.catalog_blink.suspend_visible(cx);
         }
+        if self.active_plugin_input.is_some() {
+            self.plugin_input_blink.suspend_visible(cx);
+        }
     }
 
     /// Re-arms blinking for whichever caret holds in-app focus. Used when the OS window
@@ -497,6 +508,9 @@ impl AppView {
         }
         if self.plugin_catalog.is_open {
             self.catalog_blink.enable(BlinkTarget::PluginCatalog, cx);
+        }
+        if self.active_plugin_input.is_some() {
+            self.plugin_input_blink.enable(BlinkTarget::PluginInput, cx);
         }
     }
 
@@ -1644,12 +1658,16 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
             return;
         };
 
+        self.plugin_input_blink.pause_and_show(BlinkTarget::PluginInput, cx);
+
         let key = &event.keystroke.key;
         let ctrl = event.keystroke.modifiers.control;
         let alt = event.keystroke.modifiers.alt;
+        let shift = event.keystroke.modifiers.shift;
 
         if key == "escape" {
             self.active_plugin_input = None;
+            self.plugin_input_blink.disable(cx);
             cx.notify();
             return;
         }
@@ -1660,33 +1678,70 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
 
         if key == "enter" {
             if input_state.is_multiline {
-                let pos = input_state.cursor_pos.min(total_chars);
+                if let Some((s, e)) = input_state.selection_range() {
+                    chars.drain(s..e.min(chars.len()));
+                    input_state.cursor_pos = s;
+                    input_state.selection_anchor = None;
+                }
+                let pos = input_state.cursor_pos.min(chars.len());
                 chars.insert(pos, '\n');
                 input_state.cursor_pos = pos + 1;
                 input_state.value = chars.iter().collect();
                 changed = true;
             } else {
                 self.active_plugin_input = None;
+                self.plugin_input_blink.disable(cx);
                 cx.notify();
                 return;
             }
         }
 
         if key == "arrowleft" || key == "left" {
-            input_state.cursor_pos = input_state.cursor_pos.saturating_sub(1);
+            if shift {
+                if input_state.selection_anchor.is_none() {
+                    input_state.selection_anchor = Some(input_state.cursor_pos);
+                }
+                input_state.cursor_pos = input_state.cursor_pos.saturating_sub(1);
+            } else {
+                if let Some((s, _)) = input_state.selection_range() {
+                    input_state.cursor_pos = s;
+                } else {
+                    input_state.cursor_pos = input_state.cursor_pos.saturating_sub(1);
+                }
+                input_state.selection_anchor = None;
+            }
             self.active_plugin_input = Some(input_state);
             cx.notify();
             return;
         }
 
         if key == "arrowright" || key == "right" {
-            input_state.cursor_pos = (input_state.cursor_pos + 1).min(total_chars);
+            if shift {
+                if input_state.selection_anchor.is_none() {
+                    input_state.selection_anchor = Some(input_state.cursor_pos);
+                }
+                input_state.cursor_pos = (input_state.cursor_pos + 1).min(total_chars);
+            } else {
+                if let Some((_, e)) = input_state.selection_range() {
+                    input_state.cursor_pos = e;
+                } else {
+                    input_state.cursor_pos = (input_state.cursor_pos + 1).min(total_chars);
+                }
+                input_state.selection_anchor = None;
+            }
             self.active_plugin_input = Some(input_state);
             cx.notify();
             return;
         }
 
         if key == "home" {
+            if shift {
+                if input_state.selection_anchor.is_none() {
+                    input_state.selection_anchor = Some(input_state.cursor_pos);
+                }
+            } else {
+                input_state.selection_anchor = None;
+            }
             input_state.cursor_pos = 0;
             self.active_plugin_input = Some(input_state);
             cx.notify();
@@ -1694,6 +1749,22 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         }
 
         if key == "end" {
+            if shift {
+                if input_state.selection_anchor.is_none() {
+                    input_state.selection_anchor = Some(input_state.cursor_pos);
+                }
+            } else {
+                input_state.selection_anchor = None;
+            }
+            input_state.cursor_pos = total_chars;
+            self.active_plugin_input = Some(input_state);
+            cx.notify();
+            return;
+        }
+
+        // Ctrl+A select all
+        if ctrl && (key.eq_ignore_ascii_case("a") || key == "ф" || key == "Ф") {
+            input_state.selection_anchor = Some(0);
             input_state.cursor_pos = total_chars;
             self.active_plugin_input = Some(input_state);
             cx.notify();
@@ -1702,10 +1773,26 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
 
         // Ctrl+C copy
         if ctrl && (key.eq_ignore_ascii_case("c") || key == "с" || key == "С") {
-            if !input_state.value.is_empty() {
+            if let Some((s, e)) = input_state.selection_range() {
+                let sub: String = chars[s..e.min(chars.len())].iter().collect();
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(sub));
+            } else if !input_state.value.is_empty() {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(input_state.value.clone()));
             }
             return;
+        }
+
+        // Ctrl+X cut
+        if ctrl && (key.eq_ignore_ascii_case("x") || key == "ч" || key == "Ч") {
+            if let Some((s, e)) = input_state.selection_range() {
+                let sub: String = chars[s..e.min(chars.len())].iter().collect();
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(sub));
+                chars.drain(s..e.min(chars.len()));
+                input_state.cursor_pos = s;
+                input_state.selection_anchor = None;
+                input_state.value = chars.iter().collect();
+                changed = true;
+            }
         }
 
         // Ctrl+V paste
@@ -1718,6 +1805,11 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
                         .filter(|c| (!c.is_control() || (is_multi && (*c == '\n' || *c == '\t'))) && *c != '\r')
                         .collect();
                     if !filtered.is_empty() {
+                        if let Some((s, e)) = input_state.selection_range() {
+                            chars.drain(s..e.min(chars.len()));
+                            input_state.cursor_pos = s;
+                            input_state.selection_anchor = None;
+                        }
                         let pos = input_state.cursor_pos.min(chars.len());
                         for (i, c) in filtered.chars().enumerate() {
                             chars.insert(pos + i, c);
@@ -1729,19 +1821,35 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
                 }
             }
         } else if key == "backspace" {
-            let pos = input_state.cursor_pos.min(chars.len());
-            if pos > 0 {
-                chars.remove(pos - 1);
-                input_state.cursor_pos = pos - 1;
+            if let Some((s, e)) = input_state.selection_range() {
+                chars.drain(s..e.min(chars.len()));
+                input_state.cursor_pos = s;
+                input_state.selection_anchor = None;
                 input_state.value = chars.iter().collect();
                 changed = true;
+            } else {
+                let pos = input_state.cursor_pos.min(chars.len());
+                if pos > 0 {
+                    chars.remove(pos - 1);
+                    input_state.cursor_pos = pos - 1;
+                    input_state.value = chars.iter().collect();
+                    changed = true;
+                }
             }
         } else if key == "delete" {
-            let pos = input_state.cursor_pos.min(chars.len());
-            if pos < chars.len() {
-                chars.remove(pos);
+            if let Some((s, e)) = input_state.selection_range() {
+                chars.drain(s..e.min(chars.len()));
+                input_state.cursor_pos = s;
+                input_state.selection_anchor = None;
                 input_state.value = chars.iter().collect();
                 changed = true;
+            } else {
+                let pos = input_state.cursor_pos.min(chars.len());
+                if pos < chars.len() {
+                    chars.remove(pos);
+                    input_state.value = chars.iter().collect();
+                    changed = true;
+                }
             }
         } else if !ctrl && !alt && !event.keystroke.modifiers.platform && key != "enter" {
             let text_to_insert = if key == "space" {
@@ -1761,6 +1869,11 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
                     .filter(|c| (!c.is_control() || (is_multi && (*c == '\n' || *c == '\t'))) && *c != '\r')
                     .collect();
                 if !filtered.is_empty() {
+                    if let Some((s, e)) = input_state.selection_range() {
+                        chars.drain(s..e.min(chars.len()));
+                        input_state.cursor_pos = s;
+                        input_state.selection_anchor = None;
+                    }
                     let pos = input_state.cursor_pos.min(chars.len());
                     for (i, c) in filtered.chars().enumerate() {
                         chars.insert(pos + i, c);
@@ -2143,6 +2256,11 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
     }
 
     fn handle_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_plugin_input.is_some() {
+            self.handle_plugin_input_key(event, cx);
+            return;
+        }
+
         self.reset_editor_cursor_blink(cx);
         let keystroke = &event.keystroke;
         let ctrl = keystroke.modifiers.control;
@@ -2186,6 +2304,12 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         // Escape closes folder modal if open
         if keystroke.key == "escape" && self.folder_modal != crate::views::sidebar::FolderModal::None {
             self.close_folder_modal(cx);
+            return;
+        }
+
+        // Escape closes plugin select popup if open
+        if keystroke.key == "escape" && self.plugin_select_popup.is_some() {
+            self.close_plugin_select(cx);
             return;
         }
 
@@ -4804,6 +4928,9 @@ impl Render for AppView {
                                                                             self.active_plugin_input.as_ref(),
                                                                             &self.plugin_input_focus_handle,
                                                                             self.active_plugin_select.as_ref(),
+                                                                            self.plugin_select_popup.as_ref(),
+                                                                            self.plugin_input_blink.visible(),
+                                                                            window,
                                                                             cx,
                                                                         )),
                                                                 )
@@ -5108,7 +5235,7 @@ impl Render for AppView {
                     // ----- Right Sidebar Resizer & Right Sidebar -----
                     .when(!self.right_sidebar_collapsed, |s| {
                         s.child(self.render_right_resizer(theme, cx))
-                            .child(self.render_right_sidebar(theme, cx))
+                            .child(self.render_right_sidebar(theme, window, cx))
                     }),
             )
             // ================= FOOTER / STATUS BAR =================
@@ -5180,7 +5307,7 @@ impl Render for AppView {
             })
             // ================= SETTINGS MODAL =================
             .when(self.is_settings_open, |d| {
-                d.child(self.render_settings_modal(cx))
+                d.child(self.render_settings_modal(window, cx))
             })
             // ================= FOLDER CONTEXT MENU =================
             .when(self.folder_context_menu.is_open, |d| {
@@ -5696,6 +5823,9 @@ fn render_live_styled_row(
     active_plugin_input: Option<&crate::plugins::ui::PluginInputFocusState>,
     plugin_input_focus_handle: &FocusHandle,
     active_plugin_select: Option<&(String, u64, String)>,
+    plugin_select_popup: Option<&Entity<crate::views::tab_list::TabListPopup>>,
+    plugin_input_blink_visible: bool,
+    window: &Window,
     cx: &Context<AppView>,
 ) -> gpui::Div {
     if line.is_empty() || char_start >= char_end {
@@ -6236,6 +6366,9 @@ fn render_live_styled_row(
                             active_plugin_input,
                             plugin_input_focus_handle,
                             active_plugin_select,
+                            plugin_select_popup,
+                            plugin_input_blink_visible,
+                            window,
                             cx,
                         ))
                 } else {

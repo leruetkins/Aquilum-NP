@@ -1,6 +1,6 @@
 use gpui::{
     div, prelude::*, px, Context, IntoElement, MouseButton, MouseDownEvent,
-    Styled,
+    Styled, Window,
 };
 use crate::theme::Theme;
 use crate::views::app_view::AppView;
@@ -64,7 +64,7 @@ impl AppView {
     }
 
     /// Renders the right sidebar container (Obsidian-style).
-    pub fn render_right_sidebar(&self, theme: &Theme, cx: &Context<Self>) -> impl IntoElement {
+    pub fn render_right_sidebar(&self, theme: &Theme, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let mut container = div()
             .id("right-sidebar")
             .flex()
@@ -109,6 +109,9 @@ impl AppView {
                             self.active_plugin_input.as_ref(),
                             &self.plugin_input_focus_handle,
                             self.active_plugin_select.as_ref(),
+                            self.plugin_select_popup.as_ref(),
+                            self.plugin_input_blink.visible(),
+                            window,
                             cx,
                         )),
                 );

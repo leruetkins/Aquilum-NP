@@ -1155,6 +1155,10 @@ fn setup_plugin_environment<'js>(
                 };
             }
 
+            if (el.children.length === 0 && (!el.text || !el.text.trim())) {
+                return null;
+            }
+
             const isRow = el.classes.has("row") || el.classes.has("flex-row") || el.classes.has("aiw-currency-row") || el.classes.has("aiw-modal-buttons") || el.classes.has("modal-buttons") || el.classes.has("modal-button-container");
             const children = el.children.map(__velement_to_uinode).filter(Boolean);
             return {

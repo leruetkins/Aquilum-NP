@@ -186,6 +186,7 @@ pub enum BlinkTarget {
     SidebarSearch,
     CommandPalette,
     PluginCatalog,
+    PluginInput,
 }
 
 impl BlinkTarget {
@@ -199,6 +200,7 @@ impl BlinkTarget {
             BlinkTarget::SidebarSearch => &mut view.sidebar_search.blink,
             BlinkTarget::CommandPalette => &mut view.command_palette_blink,
             BlinkTarget::PluginCatalog => &mut view.catalog_blink,
+            BlinkTarget::PluginInput => &mut view.plugin_input_blink,
         }
     }
 }
