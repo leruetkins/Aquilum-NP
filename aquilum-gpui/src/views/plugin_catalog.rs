@@ -1,3 +1,6 @@
+use std::cell::Cell;
+use std::rc::Rc;
+
 pub use crate::plugins::registry::CatalogPluginEntry;
 
 /// Filter and sorting criteria for the catalog browser.
@@ -13,6 +16,11 @@ pub enum CatalogSortOrder {
 pub struct PluginCatalogState {
     pub is_open: bool,
     pub search_query: String,
+    pub cursor_pos: usize,
+    pub selection_anchor: Option<usize>,
+    pub is_mouse_selecting: bool,
+    /// Window x of the input text box; measured via canvas for click mapping.
+    pub box_origin_x: Rc<Cell<f32>>,
     pub sort_order: CatalogSortOrder,
     pub selected_plugin_id: Option<String>,
     pub entries: Vec<CatalogPluginEntry>,
@@ -33,6 +41,10 @@ impl Default for PluginCatalogState {
         Self {
             is_open: false,
             search_query: String::new(),
+            cursor_pos: 0,
+            selection_anchor: None,
+            is_mouse_selecting: false,
+            box_origin_x: Rc::new(Cell::new(0.0)),
             sort_order: CatalogSortOrder::MostPopular,
             selected_plugin_id: None,
             entries: initial_entries,
@@ -48,6 +60,14 @@ impl Default for PluginCatalogState {
 }
 
 impl PluginCatalogState {
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        if let Some(anchor) = self.selection_anchor {
+            if anchor != self.cursor_pos {
+                return Some((anchor.min(self.cursor_pos), anchor.max(self.cursor_pos)));
+            }
+        }
+        None
+    }
     /// Default built-in registry entries available offline or while loading remote registry.
     pub fn default_catalog() -> Vec<CatalogPluginEntry> {
         vec![
@@ -109,25 +129,122 @@ impl PluginCatalogState {
         ]
     }
 
-    /// Returns filtered and sorted list of catalog entries according to current search query.
+    /// Returns filtered and sorted list of catalog entries according to current search query,
+    /// matching full queries and terms identically to file search (`goto_search.rs`).
     pub fn filtered_entries(&self) -> Vec<CatalogPluginEntry> {
-        let q = self.search_query.trim().to_lowercase();
-        let mut list: Vec<CatalogPluginEntry> = self
-            .entries
-            .iter()
-            .filter(|e| {
-                if q.is_empty() {
-                    true
-                } else {
-                    e.name.to_lowercase().contains(&q)
-                        || e.id.to_lowercase().contains(&q)
-                        || e.author.to_lowercase().contains(&q)
-                        || e.description.to_lowercase().contains(&q)
-                }
-            })
-            .cloned()
-            .collect();
+        let raw = self.search_query.trim();
+        if raw.is_empty() {
+            let mut list = self.entries.clone();
+            self.sort_catalog_entries(&mut list);
+            return list;
+        }
 
+        let q = raw.to_lowercase();
+        let terms: Vec<String> = {
+            let mut seen = std::collections::HashSet::new();
+            q.split_whitespace()
+                .filter(|t| !t.is_empty())
+                .filter(|t| seen.insert(t.to_string()))
+                .map(|t| t.to_string())
+                .collect()
+        };
+
+        // Rank and score each entry:
+        // Rank 0: Name/ID hit (whole query or all terms match name/id)
+        // Rank 1: Description/Author hit (all terms found in description or author or name)
+        let mut ranked: Vec<(u8, usize, CatalogPluginEntry)> = Vec::new();
+
+        for entry in &self.entries {
+            let name_lower = entry.name.to_lowercase();
+            let id_lower = entry.id.to_lowercase();
+            let author_lower = entry.author.to_lowercase();
+            let desc_lower = entry.description.to_lowercase();
+
+            // Name/ID match: either query is inside name/id, or all terms are inside name/id
+            let name_id_match = name_lower.contains(&q)
+                || id_lower.contains(&q)
+                || (!terms.is_empty() && terms.iter().all(|t| name_lower.contains(t) || id_lower.contains(t)));
+
+            // General match: either name/id matches, or query is in author/desc,
+            // or all individual terms are found across the plugin's fields (like file search)
+            let all_fields_match = name_id_match
+                || author_lower.contains(&q)
+                || desc_lower.contains(&q)
+                || (!terms.is_empty()
+                    && terms.iter().all(|t| {
+                        name_lower.contains(t)
+                            || id_lower.contains(t)
+                            || author_lower.contains(t)
+                            || desc_lower.contains(t)
+                    }));
+
+            if !all_fields_match {
+                continue;
+            }
+
+            let rank = if name_id_match { 0u8 } else { 1u8 };
+
+            // Calculate match count / relevance score
+            let mut score = 0usize;
+            if name_lower.contains(&q) {
+                score += 20;
+            }
+            if id_lower.contains(&q) {
+                score += 15;
+            }
+            if desc_lower.contains(&q) {
+                score += 5;
+            }
+            if author_lower.contains(&q) {
+                score += 5;
+            }
+            for t in &terms {
+                if name_lower.contains(t) {
+                    score += 5;
+                }
+                if id_lower.contains(t) {
+                    score += 4;
+                }
+                if desc_lower.contains(t) {
+                    score += 2;
+                }
+                if author_lower.contains(t) {
+                    score += 2;
+                }
+            }
+
+            ranked.push((rank, score, entry.clone()));
+        }
+
+        // Sort by rank first (name hits outrank content hits), then by selected sort criteria
+        match self.sort_order {
+            CatalogSortOrder::MostPopular => {
+                ranked.sort_by(|a, b| {
+                    a.0.cmp(&b.0)
+                        .then_with(|| b.2.downloads.cmp(&a.2.downloads))
+                        .then_with(|| b.1.cmp(&a.1))
+                });
+            }
+            CatalogSortOrder::Alphabetical => {
+                ranked.sort_by(|a, b| {
+                    a.0.cmp(&b.0)
+                        .then_with(|| a.2.name.to_lowercase().cmp(&b.2.name.to_lowercase()))
+                });
+            }
+            CatalogSortOrder::RecentlyUpdated => {
+                ranked.sort_by(|a, b| {
+                    a.0.cmp(&b.0)
+                        .then_with(|| b.2.updated.cmp(&a.2.updated))
+                        .then_with(|| b.2.version.cmp(&a.2.version))
+                });
+            }
+        }
+
+        ranked.into_iter().map(|(_, _, entry)| entry).collect()
+    }
+
+    /// Helper to sort an entry list in-place according to current sort order.
+    fn sort_catalog_entries(&self, list: &mut [CatalogPluginEntry]) {
         match self.sort_order {
             CatalogSortOrder::MostPopular => {
                 list.sort_by(|a, b| b.downloads.cmp(&a.downloads));
@@ -139,12 +256,13 @@ impl PluginCatalogState {
                 list.sort_by(|a, b| b.updated.cmp(&a.updated).then_with(|| b.version.cmp(&a.version)));
             }
         }
-        list
     }
 }
 
+use crate::blink_manager::BlinkTarget;
 use crate::icons;
 use crate::views::app_view::AppView;
+use crate::views::goto_search::{highlight_query_terms, highlight_terms, word_range_at};
 use crate::views::scrollbar::{overlay_scrollbar, ScrollbarGeometry, ScrollbarStyle};
 use gpui::prelude::*;
 use gpui::{
@@ -153,8 +271,8 @@ use gpui::{
     ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 
-/// Row height in pixels for each entry in the community plugins list.
-pub const CATALOG_ROW_H: f32 = 106.0;
+/// Row height in pixels for each entry in the community plugins list (expanded to fit full descriptions).
+pub const CATALOG_ROW_H: f32 = 168.0;
 /// Overscan rows above and below the visible viewport to guarantee smooth 120 FPS scrolling.
 pub const CATALOG_OVERSCAN_ROWS: usize = 4;
 
@@ -252,8 +370,27 @@ pub fn catalog_scrollbar_style() -> ScrollbarStyle {
 impl AppView {
     /// Opens the Community Plugins catalog modal.
     pub fn open_plugin_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.plugin_catalog.is_open {
+            self.close_plugin_catalog(window, cx);
+            return;
+        }
+
+        self.close_tabs_popup(cx);
+        self.close_tab_context_menu(cx);
+        self.file_context_menu.is_open = false;
+        self.folder_context_menu.is_open = false;
+        if self.command_palette.is_open {
+            self.close_command_palette(window, cx);
+        }
+        if self.search_dialog.is_open {
+            self.close_search_dialog(window, cx);
+        }
+
         self.plugin_catalog.is_open = true;
         self.plugin_catalog.search_query.clear();
+        self.plugin_catalog.cursor_pos = 0;
+        self.plugin_catalog.selection_anchor = None;
+        self.plugin_catalog.is_mouse_selecting = false;
         self.catalog_details_scroll_handle.set_offset(point(px(0.0), px(0.0)));
         if self.plugin_catalog.selected_plugin_id.is_none() {
             if let Some(first) = self.plugin_catalog.entries.first() {
@@ -264,6 +401,7 @@ impl AppView {
             self.ensure_catalog_plugin_readme_loaded(&sel_id, cx);
         }
         window.focus(&self.catalog_focus_handle);
+        self.catalog_blink.enable(BlinkTarget::PluginCatalog, cx);
 
         // If catalog entries are only the fallback defaults, automatically trigger background fetch from GitHub
         if self.plugin_catalog.entries.len() <= 5 && !self.plugin_catalog.is_loading {
@@ -274,8 +412,15 @@ impl AppView {
     }
 
     /// Closes the Community Plugins catalog modal.
-    pub fn close_plugin_catalog(&mut self, cx: &mut Context<Self>) {
+    pub fn close_plugin_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.plugin_catalog.is_open {
+            return;
+        }
         self.plugin_catalog.is_open = false;
+        self.plugin_catalog.selection_anchor = None;
+        self.plugin_catalog.is_mouse_selecting = false;
+        self.catalog_blink.disable(cx);
+        window.focus(&self.focus_handle);
         cx.notify();
     }
 
@@ -444,13 +589,99 @@ impl AppView {
             .detach();
     }
 
-    /// Handles keyboard events while the plugin catalog is focused.
-    fn handle_catalog_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = &event.keystroke.key;
-        if key == "escape" {
-            self.close_plugin_catalog(cx);
+    /// Inserts text into the Plugin Catalog search query at the current cursor / replacing selection.
+    fn insert_catalog_search_text(&mut self, text: &str) {
+        let mut chars: Vec<char> = self.plugin_catalog.search_query.chars().collect();
+        let pos = if let Some((s, e)) = self.plugin_catalog.selection_range() {
+            chars.drain(s..e);
+            self.plugin_catalog.selection_anchor = None;
+            s
+        } else {
+            self.plugin_catalog.cursor_pos.min(chars.len())
+        };
+        for (i, c) in text.chars().enumerate() {
+            chars.insert(pos + i, c);
+        }
+        self.plugin_catalog.cursor_pos = pos + text.chars().count();
+        self.plugin_catalog.search_query = chars.into_iter().collect();
+    }
+
+    /// Called whenever the search query changes to keep selection in sync.
+    fn on_catalog_search_query_changed(&mut self) {
+        let filtered = self.plugin_catalog.filtered_entries();
+        if !filtered.iter().any(|e| Some(&e.id) == self.plugin_catalog.selected_plugin_id.as_ref()) {
+            self.plugin_catalog.selected_plugin_id = filtered.first().map(|e| e.id.clone());
+        }
+        self.set_catalog_scroll_top(0.0);
+    }
+
+    /// Maps a click x (window coords) to a query char index.
+    pub fn catalog_search_click_pos(&self, click_x: f32, window: &Window) -> usize {
+        let query = &self.plugin_catalog.search_query;
+        if query.is_empty() {
+            return 0;
+        }
+        let box_x = self.plugin_catalog.box_origin_x.get();
+        let rel_x = (click_x - box_x).max(0.0);
+        let run = gpui::TextRun {
+            len: query.len(),
+            font: gpui::font("Segoe UI"),
+            color: Default::default(),
+            underline: Default::default(),
+            strikethrough: None,
+            background_color: None,
+        };
+        let shaped = window.text_system().shape_line(
+            SharedString::from(query.clone()),
+            px(14.0),
+            &[run],
+            None,
+        );
+        let byte_idx = shaped.closest_index_for_x(px(rel_x));
+        query[..byte_idx.min(query.len())].chars().count()
+    }
+
+    /// Follows the pointer while catalog search input selection is being dragged.
+    pub fn handle_catalog_search_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.plugin_catalog.is_open || !self.plugin_catalog.is_mouse_selecting {
             return;
         }
+        let x: f32 = event.position.x.into();
+        let new_pos = self.catalog_search_click_pos(x, window);
+        if self.plugin_catalog.cursor_pos != new_pos {
+            self.plugin_catalog.cursor_pos = new_pos;
+            self.catalog_blink.pause_and_show(BlinkTarget::PluginCatalog, cx);
+            cx.notify();
+        }
+    }
+
+    /// Ends an input drag selection in plugin catalog.
+    pub fn handle_catalog_search_mouse_up(&mut self, cx: &mut Context<Self>) {
+        if self.plugin_catalog.is_mouse_selecting {
+            self.plugin_catalog.is_mouse_selecting = false;
+            if self.plugin_catalog.selection_anchor == Some(self.plugin_catalog.cursor_pos) {
+                self.plugin_catalog.selection_anchor = None;
+            }
+            cx.notify();
+        }
+    }
+
+    /// Handles keyboard events while the plugin catalog is focused.
+    fn handle_catalog_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = &event.keystroke.key;
+        if key == "escape" {
+            self.close_plugin_catalog(window, cx);
+            return;
+        }
+
+        let ctrl = event.keystroke.modifiers.control;
+        let alt = event.keystroke.modifiers.alt;
+        let shift = event.keystroke.modifiers.shift;
 
         let filtered = self.plugin_catalog.filtered_entries();
 
@@ -490,50 +721,160 @@ impl AppView {
             return;
         }
 
-        if key == "backspace" {
-            self.plugin_catalog.search_query.pop();
-            let filtered = self.plugin_catalog.filtered_entries();
-            if !filtered.iter().any(|e| Some(&e.id) == self.plugin_catalog.selected_plugin_id.as_ref()) {
-                self.plugin_catalog.selected_plugin_id = filtered.first().map(|e| e.id.clone());
+        // Home / End
+        if key == "home" || key == "end" {
+            let total = self.plugin_catalog.search_query.chars().count();
+            let pos = if key == "home" { 0 } else { total };
+            if shift {
+                if self.plugin_catalog.selection_anchor.is_none() {
+                    self.plugin_catalog.selection_anchor = Some(self.plugin_catalog.cursor_pos);
+                }
+            } else {
+                self.plugin_catalog.selection_anchor = None;
             }
-            self.set_catalog_scroll_top(0.0);
+            self.plugin_catalog.cursor_pos = pos;
+            self.catalog_blink.pause_and_show(BlinkTarget::PluginCatalog, cx);
             cx.notify();
             return;
         }
 
-        if let Some(ch) = &event.keystroke.key_char {
-            let filtered_chars: String = ch
+        // Left / Right cursor movement
+        if key == "left" || key == "right" {
+            let total = self.plugin_catalog.search_query.chars().count();
+            if shift && self.plugin_catalog.selection_anchor.is_none() {
+                self.plugin_catalog.selection_anchor = Some(self.plugin_catalog.cursor_pos);
+            }
+            if key == "left" {
+                if shift {
+                    self.plugin_catalog.cursor_pos = self.plugin_catalog.cursor_pos.saturating_sub(1);
+                } else if let Some((start, _)) = self.plugin_catalog.selection_range() {
+                    self.plugin_catalog.cursor_pos = start;
+                    self.plugin_catalog.selection_anchor = None;
+                } else {
+                    self.plugin_catalog.cursor_pos = self.plugin_catalog.cursor_pos.saturating_sub(1);
+                }
+            } else if shift {
+                self.plugin_catalog.cursor_pos = (self.plugin_catalog.cursor_pos + 1).min(total);
+            } else if let Some((_, end)) = self.plugin_catalog.selection_range() {
+                self.plugin_catalog.cursor_pos = end;
+                self.plugin_catalog.selection_anchor = None;
+            } else {
+                self.plugin_catalog.cursor_pos = (self.plugin_catalog.cursor_pos + 1).min(total);
+            }
+            self.catalog_blink.pause_and_show(BlinkTarget::PluginCatalog, cx);
+            cx.notify();
+            return;
+        }
+
+        // Ctrl+A select all
+        if ctrl && (key.eq_ignore_ascii_case("a") || key == "ф" || key == "Ф") {
+            self.plugin_catalog.selection_anchor = Some(0);
+            self.plugin_catalog.cursor_pos = self.plugin_catalog.search_query.chars().count();
+            self.catalog_blink.pause_and_show(BlinkTarget::PluginCatalog, cx);
+            cx.notify();
+            return;
+        }
+
+        // Ctrl+C copy
+        if ctrl && (key.eq_ignore_ascii_case("c") || key == "с" || key == "С") {
+            if let Some((s, e)) = self.plugin_catalog.selection_range() {
+                let text: String = self.plugin_catalog.search_query.chars().skip(s).take(e - s).collect();
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+            }
+            return;
+        }
+
+        // Ctrl+X cut
+        if ctrl && (key.eq_ignore_ascii_case("x") || key == "ч" || key == "Ч") {
+            if let Some((s, e)) = self.plugin_catalog.selection_range() {
+                let text: String = self.plugin_catalog.search_query.chars().skip(s).take(e - s).collect();
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                let mut chars: Vec<char> = self.plugin_catalog.search_query.chars().collect();
+                chars.drain(s..e);
+                self.plugin_catalog.search_query = chars.into_iter().collect();
+                self.plugin_catalog.cursor_pos = s;
+                self.plugin_catalog.selection_anchor = None;
+                self.on_catalog_search_query_changed();
+                self.catalog_blink.pause_and_show(BlinkTarget::PluginCatalog, cx);
+                cx.notify();
+            }
+            return;
+        }
+
+        // Ctrl+V paste
+        if ctrl && (key.eq_ignore_ascii_case("v") || key == "м" || key == "М") {
+            if let Some(item) = cx.read_from_clipboard() {
+                if let Some(text) = item.text() {
+                    let filtered: String = text
+                        .chars()
+                        .filter(|c| !c.is_control() && *c != '\n' && *c != '\r')
+                        .collect();
+                    if !filtered.is_empty() {
+                        self.insert_catalog_search_text(&filtered);
+                        self.on_catalog_search_query_changed();
+                        self.catalog_blink.pause_and_show(BlinkTarget::PluginCatalog, cx);
+                        cx.notify();
+                    }
+                }
+            }
+            return;
+        }
+
+        if ctrl || alt || event.keystroke.modifiers.platform {
+            return;
+        }
+
+        // Backspace / Delete
+        if key == "backspace" || key == "delete" {
+            let mut chars: Vec<char> = self.plugin_catalog.search_query.chars().collect();
+            if let Some((s, e)) = self.plugin_catalog.selection_range() {
+                chars.drain(s..e);
+                self.plugin_catalog.cursor_pos = s;
+                self.plugin_catalog.selection_anchor = None;
+            } else if key == "backspace" {
+                let pos = self.plugin_catalog.cursor_pos.min(chars.len());
+                if pos > 0 {
+                    chars.remove(pos - 1);
+                    self.plugin_catalog.cursor_pos = pos - 1;
+                } else {
+                    return;
+                }
+            } else {
+                let pos = self.plugin_catalog.cursor_pos.min(chars.len());
+                if pos < chars.len() {
+                    chars.remove(pos);
+                } else {
+                    return;
+                }
+            }
+            self.plugin_catalog.search_query = chars.into_iter().collect();
+            self.on_catalog_search_query_changed();
+            self.catalog_blink.pause_and_show(BlinkTarget::PluginCatalog, cx);
+            cx.notify();
+            return;
+        }
+
+        // Plain text input
+        let text_to_insert = if key == "space" {
+            Some(" ".to_string())
+        } else if let Some(ch) = &event.keystroke.key_char {
+            Some(ch.to_string())
+        } else if key.chars().count() == 1 {
+            Some(key.clone())
+        } else {
+            None
+        };
+        if let Some(text) = text_to_insert {
+            let filtered: String = text
                 .chars()
                 .filter(|c| !c.is_control() && *c != '\n' && *c != '\r')
                 .collect();
-            if !filtered_chars.is_empty() {
-                self.plugin_catalog.search_query.push_str(&filtered_chars);
-                let filtered = self.plugin_catalog.filtered_entries();
-                if !filtered.iter().any(|e| Some(&e.id) == self.plugin_catalog.selected_plugin_id.as_ref()) {
-                    self.plugin_catalog.selected_plugin_id = filtered.first().map(|e| e.id.clone());
-                }
-                self.set_catalog_scroll_top(0.0);
+            if !filtered.is_empty() {
+                self.insert_catalog_search_text(&filtered);
+                self.on_catalog_search_query_changed();
+                self.catalog_blink.pause_and_show(BlinkTarget::PluginCatalog, cx);
                 cx.notify();
             }
-        } else if key == "space" {
-            self.plugin_catalog.search_query.push(' ');
-            let filtered = self.plugin_catalog.filtered_entries();
-            if !filtered.iter().any(|e| Some(&e.id) == self.plugin_catalog.selected_plugin_id.as_ref()) {
-                self.plugin_catalog.selected_plugin_id = filtered.first().map(|e| e.id.clone());
-            }
-            self.set_catalog_scroll_top(0.0);
-            cx.notify();
-        } else if key.chars().count() == 1
-            && !event.keystroke.modifiers.control
-            && !event.keystroke.modifiers.alt
-        {
-            self.plugin_catalog.search_query.push_str(key);
-            let filtered = self.plugin_catalog.filtered_entries();
-            if !filtered.iter().any(|e| Some(&e.id) == self.plugin_catalog.selected_plugin_id.as_ref()) {
-                self.plugin_catalog.selected_plugin_id = filtered.first().map(|e| e.id.clone());
-            }
-            self.set_catalog_scroll_top(0.0);
-            cx.notify();
         }
     }
 
@@ -637,7 +978,7 @@ impl AppView {
     }
 
     /// Renders the Community Plugins Catalog modal window.
-    pub fn render_plugin_catalog_modal(&self, cx: &Context<Self>) -> impl IntoElement {
+    pub fn render_plugin_catalog_modal(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
         let entries = self.plugin_catalog.filtered_entries();
         let selected_id = self.plugin_catalog.selected_plugin_id.clone();
@@ -654,14 +995,10 @@ impl AppView {
             .left_0()
             .size_full()
             .cursor(gpui::CursorStyle::Arrow)
-            .track_focus(&self.catalog_focus_handle)
             .on_scroll_wheel(|_, _, cx| {
                 cx.stop_propagation();
             })
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                this.handle_catalog_key(event, cx);
-            }))
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 if this.catalog_scrollbar_drag.active {
                     let y: f32 = event.position.y.into();
                     this.handle_catalog_scrollbar_drag(y, cx);
@@ -669,6 +1006,9 @@ impl AppView {
                 } else if this.catalog_details_scrollbar_drag.active {
                     let y: f32 = event.position.y.into();
                     this.handle_catalog_details_scrollbar_drag(y, cx);
+                    cx.stop_propagation();
+                } else if this.plugin_catalog.is_mouse_selecting {
+                    this.handle_catalog_search_mouse_move(event, window, cx);
                     cx.stop_propagation();
                 }
             }))
@@ -682,10 +1022,26 @@ impl AppView {
                     this.catalog_details_scrollbar_drag.end();
                     changed = true;
                 }
+                if this.plugin_catalog.is_mouse_selecting {
+                    this.handle_catalog_search_mouse_up(cx);
+                    changed = true;
+                }
                 if changed {
                     cx.stop_propagation();
                     cx.notify();
                 }
+            }))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if this.plugin_catalog.is_mouse_selecting {
+                    this.handle_catalog_search_mouse_up(cx);
+                }
+                if this.catalog_scrollbar_drag.active {
+                    this.catalog_scrollbar_drag.end();
+                }
+                if this.catalog_details_scrollbar_drag.active {
+                    this.catalog_details_scrollbar_drag.end();
+                }
+                cx.notify();
             }))
             // Backdrop
             .child(
@@ -695,9 +1051,9 @@ impl AppView {
                     .left_0()
                     .size_full()
                     .bg(rgba(0x000000aa))
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
                         cx.stop_propagation();
-                        this.close_plugin_catalog(cx);
+                        this.close_plugin_catalog(window, cx);
                     })),
             )
             // Centered Catalog Dialog Window
@@ -725,7 +1081,7 @@ impl AppView {
                             .border_1()
                             .border_color(theme.border)
                             .shadow_lg()
-                            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                                 if this.catalog_scrollbar_drag.active {
                                     let y: f32 = event.position.y.into();
                                     this.handle_catalog_scrollbar_drag(y, cx);
@@ -733,6 +1089,9 @@ impl AppView {
                                 } else if this.catalog_details_scrollbar_drag.active {
                                     let y: f32 = event.position.y.into();
                                     this.handle_catalog_details_scrollbar_drag(y, cx);
+                                    cx.stop_propagation();
+                                } else if this.plugin_catalog.is_mouse_selecting {
+                                    this.handle_catalog_search_mouse_move(event, window, cx);
                                     cx.stop_propagation();
                                 }
                             }))
@@ -744,6 +1103,10 @@ impl AppView {
                                 }
                                 if this.catalog_details_scrollbar_drag.active {
                                     this.catalog_details_scrollbar_drag.end();
+                                    changed = true;
+                                }
+                                if this.plugin_catalog.is_mouse_selecting {
+                                    this.handle_catalog_search_mouse_up(cx);
                                     changed = true;
                                 }
                                 if changed {
@@ -758,7 +1121,7 @@ impl AppView {
                                 cx.stop_propagation();
                             })
                             // Catalog Header with Search
-                            .child(self.render_catalog_header(cx))
+                            .child(self.render_catalog_header(window, cx))
                             // Catalog Body: List (left) + Details (right)
                             .child(
                                 div()
@@ -775,13 +1138,56 @@ impl AppView {
     }
 
     /// Renders the title bar, search input, count, and sort toggles of the Catalog modal.
-    fn render_catalog_header(&self, cx: &Context<Self>) -> gpui::Div {
+    fn render_catalog_header(&self, window: &Window, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
         let is_ru = self.config.ui.language.starts_with("ru");
         let query = self.plugin_catalog.search_query.clone();
         let total_count = self.plugin_catalog.entries.len();
         let filtered_count = self.plugin_catalog.filtered_entries().len();
         let is_loading = self.plugin_catalog.is_loading;
+        let pixel_scale = window.scale_factor();
+
+        // Input caret geometry
+        let query_chars: Vec<char> = query.chars().collect();
+        let cursor_pos = self.plugin_catalog.cursor_pos.min(query_chars.len());
+        let selection_range = self.plugin_catalog.selection_range();
+        let run = gpui::TextRun {
+            len: query.len(),
+            font: gpui::font("Segoe UI"),
+            color: Default::default(),
+            underline: Default::default(),
+            strikethrough: None,
+            background_color: None,
+        };
+        let shaped = window.text_system().shape_line(
+            SharedString::from(query.clone()),
+            px(14.0),
+            &[run],
+            None,
+        );
+        let cursor_x = if query.is_empty() {
+            0.0
+        } else {
+            let byte_index: usize = query_chars[..cursor_pos].iter().map(|c| c.len_utf8()).sum();
+            crate::snap::snap_x(f32::from(shaped.x_for_index(byte_index)), pixel_scale)
+        };
+        let (sel_x1, sel_w) = if let Some((s, e)) = selection_range {
+            if !query.is_empty() {
+                let b1: usize = query_chars[..s.min(query_chars.len())].iter().map(|c| c.len_utf8()).sum();
+                let b2: usize = query_chars[..e.min(query_chars.len())].iter().map(|c| c.len_utf8()).sum();
+                crate::snap::snapped_span(
+                    f32::from(shaped.x_for_index(b1)),
+                    f32::from(shaped.x_for_index(b2)),
+                    pixel_scale,
+                )
+            } else {
+                (0.0, 0.0)
+            }
+        } else {
+            (0.0, 0.0)
+        };
+        let is_input_focused = self.catalog_focus_handle.is_focused(window);
+        let caret_visible = is_input_focused && self.catalog_blink.visible();
 
         div()
             .flex()
@@ -889,8 +1295,8 @@ impl AppView {
                                     .cursor_pointer()
                                     .hover(|h| h.bg(theme.bg_hover))
                                     .child(icons::icon(icons::ICON_CLOSE, 16.0, theme.text_muted))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.close_plugin_catalog(cx);
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.close_plugin_catalog(window, cx);
                                     })),
                             ),
                     ),
@@ -917,28 +1323,109 @@ impl AppView {
                             .px_3()
                             .py_1p5()
                             .gap_2()
-                            .cursor_text()
-                            .on_click(cx.listener(|this, _, window, _cx| {
+                            .cursor(gpui::CursorStyle::IBeam)
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
                                 window.focus(&this.catalog_focus_handle);
+                                this.catalog_blink.pause_and_show(BlinkTarget::PluginCatalog, cx);
                             }))
                             .child(icons::icon(icons::ICON_SEARCH, 14.0, theme.text_muted))
                             .child(
                                 div()
+                                    .id("catalog-search-input")
+                                    .relative()
                                     .flex_1()
-                                    .text_sm()
-                                    .text_color(if query.is_empty() {
-                                        theme.text_muted
-                                    } else {
-                                        theme.text_primary
+                                    .min_w_0()
+                                    .h(px(22.0))
+                                    .track_focus(&self.catalog_focus_handle)
+                                    .cursor(gpui::CursorStyle::IBeam)
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        window.focus(&this.catalog_focus_handle);
+                                        this.catalog_blink.pause_and_show(BlinkTarget::PluginCatalog, cx);
+                                        let click_x: f32 = event.position.x.into();
+                                        let pos = this.catalog_search_click_pos(click_x, window);
+                                        let total_chars = this.plugin_catalog.search_query.chars().count();
+                                        if event.click_count >= 3 {
+                                            this.plugin_catalog.selection_anchor = Some(0);
+                                            this.plugin_catalog.cursor_pos = total_chars;
+                                            this.plugin_catalog.is_mouse_selecting = false;
+                                        } else if event.click_count == 2 {
+                                            let (s, e) = word_range_at(&this.plugin_catalog.search_query, pos);
+                                            this.plugin_catalog.selection_anchor = Some(s);
+                                            this.plugin_catalog.cursor_pos = e;
+                                            this.plugin_catalog.is_mouse_selecting = false;
+                                        } else if event.modifiers.shift {
+                                            if this.plugin_catalog.selection_anchor.is_none() {
+                                                this.plugin_catalog.selection_anchor = Some(this.plugin_catalog.cursor_pos);
+                                            }
+                                            this.plugin_catalog.cursor_pos = pos;
+                                            this.plugin_catalog.is_mouse_selecting = true;
+                                        } else {
+                                            this.plugin_catalog.cursor_pos = pos;
+                                            this.plugin_catalog.selection_anchor = Some(pos);
+                                            this.plugin_catalog.is_mouse_selecting = true;
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        this.handle_catalog_key(event, window, cx);
+                                    }))
+                                    .child(
+                                        gpui::canvas(
+                                            {
+                                                let cell = self.plugin_catalog.box_origin_x.clone();
+                                                move |bounds, _, _| {
+                                                    cell.set(f32::from(bounds.origin.x));
+                                                }
+                                            },
+                                            |_, _, _, _| {},
+                                        )
+                                        .absolute()
+                                        .size_full(),
+                                    )
+                                    .when(selection_range.is_some() && sel_w > 0.0, |s| {
+                                        s.child(
+                                            div()
+                                                .absolute()
+                                                .left(px(sel_x1))
+                                                .top(px(0.0))
+                                                .w(px(sel_w))
+                                                .h(px(22.0))
+                                                .bg(theme.selection_bg)
+                                                .rounded_xs(),
+                                        )
                                     })
                                     .child(if query.is_empty() {
-                                        if is_ru {
-                                            "Поиск по названию, автору или описанию...".to_string()
-                                        } else {
-                                            "Search community plugins...".to_string()
-                                        }
+                                        div()
+                                            .font_family("Segoe UI")
+                                            .text_size(px(14.0))
+                                            .line_height(px(22.0))
+                                            .text_color(theme.text_muted)
+                                            .child(if is_ru {
+                                                "Поиск по названию, автору или описанию...".to_string()
+                                            } else {
+                                                "Search community plugins...".to_string()
+                                            })
                                     } else {
-                                        query.clone()
+                                        div()
+                                            .font_family("Segoe UI")
+                                            .text_size(px(14.0))
+                                            .line_height(px(22.0))
+                                            .text_color(theme.text_primary)
+                                            .child(query.clone())
+                                    })
+                                    .when(caret_visible, |s| {
+                                        s.child(
+                                            div()
+                                                .absolute()
+                                                .left(px(cursor_x))
+                                                .top(px(2.0))
+                                                .w(px(1.5))
+                                                .h(px(18.0))
+                                                .bg(theme.accent)
+                                                .rounded_xs(),
+                                        )
                                     }),
                             )
                             .when(!query.is_empty(), |parent| {
@@ -948,8 +1435,16 @@ impl AppView {
                                         .cursor_pointer()
                                         .hover(|h| h.text_color(theme.text_primary))
                                         .child(icons::icon(icons::ICON_CLOSE, 12.0, theme.text_muted))
-                                        .on_click(cx.listener(|this, _, _, cx| {
+                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                            cx.stop_propagation();
+                                        })
+                                        .on_click(cx.listener(|this, _, window, cx| {
                                             this.plugin_catalog.search_query.clear();
+                                            this.plugin_catalog.cursor_pos = 0;
+                                            this.plugin_catalog.selection_anchor = None;
+                                            this.on_catalog_search_query_changed();
+                                            window.focus(&this.catalog_focus_handle);
+                                            this.catalog_blink.pause_and_show(BlinkTarget::PluginCatalog, cx);
                                             cx.notify();
                                         })),
                                 )
@@ -992,8 +1487,9 @@ impl AppView {
                                     .text_xs()
                                     .cursor_pointer()
                                     .child(if is_ru { "Популярные" } else { "Popular" })
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                    .on_click(cx.listener(|this, _, window, cx| {
                                         this.plugin_catalog.sort_order = CatalogSortOrder::MostPopular;
+                                        window.focus(&this.catalog_focus_handle);
                                         cx.notify();
                                     })),
                             )
@@ -1016,8 +1512,9 @@ impl AppView {
                                     .text_xs()
                                     .cursor_pointer()
                                     .child(if is_ru { "А-Я" } else { "A-Z" })
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                    .on_click(cx.listener(|this, _, window, cx| {
                                         this.plugin_catalog.sort_order = CatalogSortOrder::Alphabetical;
+                                        window.focus(&this.catalog_focus_handle);
                                         cx.notify();
                                      })),
                             )
@@ -1040,8 +1537,9 @@ impl AppView {
                                     .text_xs()
                                     .cursor_pointer()
                                     .child(if is_ru { "Обновленные" } else { "Updated" })
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                    .on_click(cx.listener(|this, _, window, cx| {
                                         this.plugin_catalog.sort_order = CatalogSortOrder::RecentlyUpdated;
+                                        window.focus(&this.catalog_focus_handle);
                                         cx.notify();
                                      })),
                             ),
@@ -1086,6 +1584,9 @@ impl AppView {
             );
         }
 
+        let query = self.plugin_catalog.search_query.clone();
+        let terms = highlight_query_terms(&query);
+
         for (rel_idx, entry) in entries[visible_start..visible_end].iter().enumerate() {
             let actual_idx = visible_start + rel_idx;
             let is_selected = entry.id == selected_id;
@@ -1105,11 +1606,11 @@ impl AppView {
                 .id(ElementId::from(SharedString::from(format!("cat-item-{}", entry.id))))
                 .flex()
                 .flex_col()
-                .gap_1()
-                .h(px(100.0))
-                .mb(px(6.0))
-                .px_3()
-                .py_2()
+                .gap_2()
+                .h(px(160.0))
+                .mb(px(8.0))
+                .px_3p5()
+                .py_3()
                 .rounded_lg()
                 .border_1()
                 .border_color(theme.border_subtle)
@@ -1122,9 +1623,10 @@ impl AppView {
                 })
                 .hover(|h| h.bg(theme.bg_hover))
                 .cursor_pointer()
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |this, _, window, cx| {
                     this.select_catalog_plugin(&entry_id, cx);
                     this.scroll_catalog_to_selected(actual_idx);
+                    window.focus(&this.catalog_focus_handle);
                 }))
                 // Top row: Plug icon (larger, on the left) + Title + Downloads (with download icon) & Installed badge (on the right)
                 .child(
@@ -1151,8 +1653,7 @@ impl AppView {
                                         .truncate()
                                         .text_sm()
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .text_color(theme.text_primary)
-                                        .child(entry.name.clone()),
+                                        .child(highlight_terms(&entry.name, &terms, theme.text_primary, is_selected, theme)),
                                 ),
                         )
                         // Right: Installed badge + Download count with download icon
@@ -1189,14 +1690,16 @@ impl AppView {
                                 ),
                         ),
                 )
-                // Snippet / description (like file search snippet)
+                // Snippet / description (full description, no 2-line clamp)
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
                         .text_xs()
-                        .line_height(px(18.0))
-                        .text_color(theme.text_secondary)
-                        .line_clamp(2)
-                        .child(entry.description.clone()),
+                        .line_height(px(17.0))
+                        .whitespace_normal()
+                        .child(highlight_terms(&entry.description, &terms, theme.text_secondary, is_selected, theme)),
                 )
                 // Author row
                 .child(
@@ -1205,9 +1708,8 @@ impl AppView {
                         .flex_row()
                         .items_center()
                         .text_xs()
-                        .text_color(theme.text_muted)
                         .truncate()
-                        .child(author_display),
+                        .child(highlight_terms(&author_display, &terms, theme.text_muted, is_selected, theme)),
                 );
 
             item_elements.push(item_el.into_any_element());
@@ -1315,6 +1817,8 @@ impl AppView {
     ) -> impl IntoElement {
         let theme = &self.theme;
         let is_ru = self.config.ui.language.starts_with("ru");
+        let query = self.plugin_catalog.search_query.clone();
+        let terms = highlight_query_terms(&query);
 
         let Some(entry) = entry_opt else {
             return div()
@@ -1532,7 +2036,7 @@ impl AppView {
                             .text_xl()
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(theme.text_primary)
-                            .child(entry.name.clone()),
+                            .child(highlight_terms(&entry.name, &terms, theme.text_primary, false, theme)),
                     )
                     .when(is_installed, |p| {
                         p.child(
@@ -1634,7 +2138,7 @@ impl AppView {
                     .line_height(gpui::relative(1.4))
                     .text_color(theme.text_primary)
                     .whitespace_normal()
-                    .child(entry.description.clone()),
+                    .child(highlight_terms(&entry.description, &terms, theme.text_primary, false, theme)),
             );
 
         // README Section
@@ -1929,5 +2433,28 @@ mod tests {
         for i in 0..updated.len() - 1 {
             assert!(updated[i].updated >= updated[i + 1].updated);
         }
+    }
+
+    #[test]
+    fn test_catalog_selection_range() {
+        let mut state = PluginCatalogState::default();
+        state.search_query = "hello world".to_string();
+        state.cursor_pos = 0;
+        state.selection_anchor = None;
+        assert_eq!(state.selection_range(), None);
+
+        // Same pos as anchor -> no selection
+        state.selection_anchor = Some(0);
+        assert_eq!(state.selection_range(), None);
+
+        // Forward selection
+        state.cursor_pos = 5;
+        state.selection_anchor = Some(0);
+        assert_eq!(state.selection_range(), Some((0, 5)));
+
+        // Backward selection
+        state.cursor_pos = 2;
+        state.selection_anchor = Some(8);
+        assert_eq!(state.selection_range(), Some((2, 8)));
     }
 }

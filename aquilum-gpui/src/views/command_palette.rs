@@ -68,6 +68,9 @@ impl AppView {
         if self.search_dialog.is_open {
             self.close_search_dialog(window, cx);
         }
+        if self.plugin_catalog.is_open {
+            self.close_plugin_catalog(window, cx);
+        }
 
         let all_commands = self.state.commands.all();
         self.command_palette = CommandPaletteState {

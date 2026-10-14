@@ -107,6 +107,9 @@ impl AppView {
         self.folder_context_menu.is_open = false;
         self.close_tab_context_menu(cx);
         self.close_tabs_popup(cx);
+        if self.plugin_catalog.is_open {
+            self.close_plugin_catalog(window, cx);
+        }
 
         self.search_dialog = SearchDialogState {
             is_open: true,

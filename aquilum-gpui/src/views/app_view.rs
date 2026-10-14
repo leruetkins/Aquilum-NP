@@ -136,6 +136,7 @@ pub struct AppView {
     pub catalog_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag,
     pub catalog_details_scroll_handle: ScrollHandle,
     pub catalog_details_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag,
+    pub catalog_blink: BlinkManager,
 }
 
 impl AppView {
@@ -269,6 +270,7 @@ impl AppView {
             catalog_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
             catalog_details_scroll_handle: ScrollHandle::new(),
             catalog_details_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
+            catalog_blink: BlinkManager::new(),
             plugin_views: HashMap::new(),
             plugin_runtimes: Vec::new(),
             code_block_views: HashMap::new(),
@@ -404,6 +406,12 @@ impl AppView {
         if self.sidebar_mode == crate::views::sidebar::SidebarMode::Search {
             self.sidebar_search.blink.suspend_visible(cx);
         }
+        if self.command_palette.is_open {
+            self.command_palette_blink.suspend_visible(cx);
+        }
+        if self.plugin_catalog.is_open {
+            self.catalog_blink.suspend_visible(cx);
+        }
     }
 
     /// Re-arms blinking for whichever caret holds in-app focus. Used when the OS window
@@ -426,6 +434,12 @@ impl AppView {
         }
         if self.sidebar_mode == crate::views::sidebar::SidebarMode::Search {
             self.sidebar_search.blink.enable(BlinkTarget::SidebarSearch, cx);
+        }
+        if self.command_palette.is_open {
+            self.command_palette_blink.enable(BlinkTarget::CommandPalette, cx);
+        }
+        if self.plugin_catalog.is_open {
+            self.catalog_blink.enable(BlinkTarget::PluginCatalog, cx);
         }
     }
 
@@ -4773,7 +4787,7 @@ impl Render for AppView {
             })
             // ================= COMMUNITY PLUGINS CATALOG =================
             .when(self.plugin_catalog.is_open, |d| {
-                d.child(self.render_plugin_catalog_modal(cx))
+                d.child(self.render_plugin_catalog_modal(window, cx))
             })
     }
 }
