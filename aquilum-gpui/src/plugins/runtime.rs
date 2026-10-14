@@ -869,6 +869,13 @@ fn setup_plugin_environment<'js>(
             }
         }
 
+        class TextAreaComponent extends TextComponent {
+            constructor(containerEl) {
+                super(containerEl);
+                this.inputEl = containerEl ? containerEl.createEl("textarea") : new VElement("textarea");
+            }
+        }
+
         class SliderComponent extends ValueComponent {
             constructor(containerEl) {
                 super();
@@ -976,6 +983,12 @@ fn setup_plugin_environment<'js>(
             }
             addText(cb) {
                 const txt = new TextComponent(this.controlEl);
+                this.controls.push(txt);
+                if (typeof cb === "function") cb(txt);
+                return this;
+            }
+            addTextArea(cb) {
+                const txt = new TextAreaComponent(this.controlEl);
                 this.controls.push(txt);
                 if (typeof cb === "function") cb(txt);
                 return this;
@@ -1721,6 +1734,7 @@ fn setup_plugin_environment<'js>(
         globalThis.ExtraButtonComponent = ExtraButtonComponent;
         globalThis.ToggleComponent = ToggleComponent;
         globalThis.TextComponent = TextComponent;
+        globalThis.TextAreaComponent = TextAreaComponent;
         globalThis.SliderComponent = SliderComponent;
         globalThis.DropdownComponent = DropdownComponent;
         globalThis.Menu = Menu;
@@ -1804,6 +1818,7 @@ fn setup_plugin_environment<'js>(
             ExtraButtonComponent,
             ToggleComponent,
             TextComponent,
+            TextAreaComponent,
             SliderComponent,
             DropdownComponent,
             Menu,
@@ -2992,6 +3007,73 @@ mod tests {
             }
         }
         assert!(modal_opened, "Expected SetViewTree for view_id: 1 with Currency Editor modal");
+
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
+    }
+
+    #[test]
+    fn test_obsidian_setting_add_text_area() {
+        let manifest = PluginManifest {
+            id: "test-area-plugin".into(),
+            name: "Test Area Plugin".into(),
+            version: "1.0.0".into(),
+            min_app_version: None,
+            description: "".into(),
+            author: "".into(),
+            permissions: PluginPermissions::default(),
+        };
+
+        let (api_tx, mut api_rx) = unbounded();
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
+
+        let script = r#"
+            const { Plugin, PluginSettingTab, Setting, TextAreaComponent } = require('obsidian');
+
+            class TestAreaPlugin extends Plugin {
+                onload() {
+                    this.addSettingTab(new AreaTab(this.app, this));
+                }
+            }
+
+            class AreaTab extends PluginSettingTab {
+                display() {
+                    const { containerEl } = this;
+                    containerEl.empty();
+                    new Setting(containerEl)
+                        .setName("Multiline Notes")
+                        .setDesc("Enter long notes here")
+                        .addTextArea(text => {
+                            text.setPlaceholder("Notes...")
+                                .setValue("Line 1\nLine 2")
+                                .onChange(val => {});
+                        });
+                }
+            }
+
+            module.exports = TestAreaPlugin;
+        "#;
+
+        let handle = spawn_plugin_runtime(
+            manifest,
+            script.to_string(),
+            api_tx,
+            snapshot,
+        ).expect("failed to spawn runtime");
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let mut found_textarea = false;
+        while let Ok(call) = api_rx.try_recv() {
+            if let ApiRequest::SetViewTree { view_id, tree } = call.request {
+                if view_id == 0 {
+                    let json = serde_json::to_string(&tree).unwrap();
+                    if json.contains("\"type\":\"input\"") && json.contains("Multiline Notes") {
+                        found_textarea = true;
+                    }
+                }
+            }
+        }
+        assert!(found_textarea, "Expected SetViewTree containing setting with textarea input");
 
         let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
     }

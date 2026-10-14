@@ -173,6 +173,9 @@ pub struct AppView {
     pub catalog_details_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag,
     pub catalog_blink: BlinkManager,
     pub catalog_window_manager: crate::views::plugin_catalog::CatalogWindowManager,
+    /// Active interactive text input in plugin UI (plugin_id, view_id, node_id, value, cursor_pos).
+    pub active_plugin_input: Option<crate::plugins::ui::PluginInputFocusState>,
+    pub plugin_input_focus_handle: FocusHandle,
 }
 
 impl AppView {
@@ -316,6 +319,8 @@ impl AppView {
             catalog_details_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
             catalog_blink: BlinkManager::new(),
             catalog_window_manager: crate::views::plugin_catalog::CatalogWindowManager::default(),
+            active_plugin_input: None,
+            plugin_input_focus_handle: cx.focus_handle(),
             plugin_views: HashMap::new(),
             plugin_runtimes: Vec::new(),
             code_block_views: HashMap::new(),
@@ -365,6 +370,7 @@ impl AppView {
         self.code_block_views.clear();
         self.plugin_runtimes.clear();
         self.plugin_views.clear();
+        self.active_plugin_input = None;
     }
 
     pub fn editor_font_family(&self) -> gpui::SharedString {
@@ -1606,6 +1612,152 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
             }
             self.save_settings(cx);
         }
+    }
+
+    /// Handles keyboard navigation and text editing inside an active plugin input field.
+    pub fn handle_plugin_input_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let Some(mut input_state) = self.active_plugin_input.clone() else {
+            return;
+        };
+
+        let key = &event.keystroke.key;
+        let ctrl = event.keystroke.modifiers.control;
+        let alt = event.keystroke.modifiers.alt;
+
+        if key == "escape" || key == "enter" {
+            self.active_plugin_input = None;
+            cx.notify();
+            return;
+        }
+
+        let mut chars: Vec<char> = input_state.value.chars().collect();
+        let total_chars = chars.len();
+        let mut changed = false;
+
+        if key == "arrowleft" || key == "left" {
+            input_state.cursor_pos = input_state.cursor_pos.saturating_sub(1);
+            self.active_plugin_input = Some(input_state);
+            cx.notify();
+            return;
+        }
+
+        if key == "arrowright" || key == "right" {
+            input_state.cursor_pos = (input_state.cursor_pos + 1).min(total_chars);
+            self.active_plugin_input = Some(input_state);
+            cx.notify();
+            return;
+        }
+
+        if key == "home" {
+            input_state.cursor_pos = 0;
+            self.active_plugin_input = Some(input_state);
+            cx.notify();
+            return;
+        }
+
+        if key == "end" {
+            input_state.cursor_pos = total_chars;
+            self.active_plugin_input = Some(input_state);
+            cx.notify();
+            return;
+        }
+
+        // Ctrl+C copy
+        if ctrl && (key.eq_ignore_ascii_case("c") || key == "с" || key == "С") {
+            if !input_state.value.is_empty() {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(input_state.value.clone()));
+            }
+            return;
+        }
+
+        // Ctrl+V paste
+        if ctrl && (key.eq_ignore_ascii_case("v") || key == "м" || key == "М") {
+            if let Some(item) = cx.read_from_clipboard() {
+                if let Some(text) = item.text() {
+                    let filtered: String = text
+                        .chars()
+                        .filter(|c| !c.is_control() && *c != '\n' && *c != '\r')
+                        .collect();
+                    if !filtered.is_empty() {
+                        let pos = input_state.cursor_pos.min(chars.len());
+                        for (i, c) in filtered.chars().enumerate() {
+                            chars.insert(pos + i, c);
+                        }
+                        input_state.cursor_pos = pos + filtered.chars().count();
+                        input_state.value = chars.into_iter().collect();
+                        changed = true;
+                    }
+                }
+            }
+        } else if key == "backspace" {
+            let pos = input_state.cursor_pos.min(chars.len());
+            if pos > 0 {
+                chars.remove(pos - 1);
+                input_state.cursor_pos = pos - 1;
+                input_state.value = chars.into_iter().collect();
+                changed = true;
+            }
+        } else if key == "delete" {
+            let pos = input_state.cursor_pos.min(chars.len());
+            if pos < chars.len() {
+                chars.remove(pos);
+                input_state.value = chars.into_iter().collect();
+                changed = true;
+            }
+        } else if !ctrl && !alt && !event.keystroke.modifiers.platform {
+            let text_to_insert = if key == "space" {
+                Some(" ".to_string())
+            } else if let Some(ch) = &event.keystroke.key_char {
+                Some(ch.to_string())
+            } else if key.chars().count() == 1 {
+                Some(key.clone())
+            } else {
+                None
+            };
+
+            if let Some(text) = text_to_insert {
+                let filtered: String = text
+                    .chars()
+                    .filter(|c| !c.is_control() && *c != '\n' && *c != '\r')
+                    .collect();
+                if !filtered.is_empty() {
+                    let pos = input_state.cursor_pos.min(chars.len());
+                    for (i, c) in filtered.chars().enumerate() {
+                        chars.insert(pos + i, c);
+                    }
+                    input_state.cursor_pos = pos + filtered.chars().count();
+                    input_state.value = chars.into_iter().collect();
+                    changed = true;
+                }
+            }
+        }
+
+        if changed {
+            let new_val = input_state.value.clone();
+            let p_id = input_state.plugin_id.clone();
+            let v_id = input_state.view_id;
+            let n_id = input_state.node_id.clone();
+
+            self.active_plugin_input = Some(input_state);
+
+            if let Some(tree) = self.plugin_views.get_mut(&(p_id.clone(), v_id)) {
+                tree.update_input_value(&n_id, &new_val);
+            }
+
+            let _ = self.state.plugin_host.send_event(
+                &p_id,
+                crate::plugins::api::HostEvent::UiEvent {
+                    view_id: v_id,
+                    node_id: n_id,
+                    event: "change".to_string(),
+                    value: Some(new_val),
+                },
+            );
+        } else {
+            self.active_plugin_input = Some(input_state);
+        }
+
+        cx.notify();
     }
 
     pub(crate) fn commit_title_rename_internal(&mut self) -> bool {
@@ -4609,6 +4761,8 @@ impl Render for AppView {
                                                                             custom_ui_node,
                                                                             custom_plugin_id,
                                                                             is_first_code_line,
+                                                                            self.active_plugin_input.as_ref(),
+                                                                            &self.plugin_input_focus_handle,
                                                                             cx,
                                                                         )),
                                                                 )
@@ -5498,6 +5652,8 @@ fn render_live_styled_row(
     custom_ui_node: Option<&crate::plugins::ui::UiNode>,
     custom_plugin_id: Option<&str>,
     is_first_code_line: bool,
+    active_plugin_input: Option<&crate::plugins::ui::PluginInputFocusState>,
+    plugin_input_focus_handle: &FocusHandle,
     cx: &Context<AppView>,
 ) -> gpui::Div {
     if line.is_empty() || char_start >= char_end {
@@ -6030,9 +6186,15 @@ fn render_live_styled_row(
                     div()
                         .flex()
                         .flex_col()
-                        .w_full()
-                        .py_1()
-                        .child(crate::plugins::ui::render_ui_node(tree, pid, 0, theme, cx))
+                        .child(crate::plugins::ui::render_ui_node(
+                            tree,
+                            pid,
+                            0,
+                            theme,
+                            active_plugin_input,
+                            plugin_input_focus_handle,
+                            cx,
+                        ))
                 } else {
                     div().h_0().overflow_hidden()
                 }

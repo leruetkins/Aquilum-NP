@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, AnyElement, Context, ElementId, InteractiveElement, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled,
+    div, px, AnyElement, Context, ElementId, FocusHandle, InteractiveElement, IntoElement,
+    KeyDownEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled,
 };
 use serde::{Deserialize, Serialize};
 
@@ -210,6 +210,59 @@ impl UiNode {
     pub fn count_nodes(&self) -> usize {
         1 + self.children().iter().map(|c| c.count_nodes()).sum::<usize>()
     }
+
+    /// Recursively updates the value of an `Input` node with id matching `target_id`.
+    pub fn update_input_value(&mut self, target_id: &str, new_val: &str) -> bool {
+        match self {
+            UiNode::Input { id, value, .. } if id == target_id => {
+                *value = Some(new_val.to_string());
+                true
+            }
+            UiNode::Column { children, .. }
+            | UiNode::Row { children, .. }
+            | UiNode::Toolbar { children, .. } => {
+                for child in children {
+                    if child.update_input_value(target_id, new_val) {
+                        return true;
+                    }
+                }
+                false
+            }
+            UiNode::SettingItem { control, .. } => {
+                control.update_input_value(target_id, new_val)
+            }
+            _ => false,
+        }
+    }
+
+    /// Recursively retrieves the current value of an `Input` node with id matching `target_id`.
+    pub fn get_input_value(&self, target_id: &str) -> Option<String> {
+        match self {
+            UiNode::Input { id, value, .. } if id == target_id => value.clone(),
+            UiNode::Column { children, .. }
+            | UiNode::Row { children, .. }
+            | UiNode::Toolbar { children, .. } => {
+                for child in children {
+                    if let Some(v) = child.get_input_value(target_id) {
+                        return Some(v);
+                    }
+                }
+                None
+            }
+            UiNode::SettingItem { control, .. } => control.get_input_value(target_id),
+            _ => None,
+        }
+    }
+}
+
+/// Active interactive text input focus state for plugin UI components.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginInputFocusState {
+    pub plugin_id: String,
+    pub view_id: u64,
+    pub node_id: String,
+    pub value: String,
+    pub cursor_pos: usize,
 }
 
 /// Validates the tree to prevent excessive depth, memory exhaustion, or duplicated IDs.
@@ -293,6 +346,8 @@ pub fn render_ui_node(
     plugin_id: &str,
     view_id: u64,
     theme: &Theme,
+    active_input: Option<&PluginInputFocusState>,
+    input_focus_handle: &FocusHandle,
     cx: &Context<AppView>,
 ) -> AnyElement {
     match node {
@@ -303,7 +358,17 @@ pub fn render_ui_node(
                 .flex_col()
                 .gap(px(gap_px))
                 .w_full()
-                .children(children.iter().map(|child| render_ui_node(child, plugin_id, view_id, theme, cx)))
+                .children(children.iter().map(|child| {
+                    render_ui_node(
+                        child,
+                        plugin_id,
+                        view_id,
+                        theme,
+                        active_input,
+                        input_focus_handle,
+                        cx,
+                    )
+                }))
                 .into_any_element()
         }
         UiNode::Row { gap, children } => {
@@ -314,7 +379,17 @@ pub fn render_ui_node(
                 .items_center()
                 .gap(px(gap_px))
                 .w_full()
-                .children(children.iter().map(|child| render_ui_node(child, plugin_id, view_id, theme, cx)))
+                .children(children.iter().map(|child| {
+                    render_ui_node(
+                        child,
+                        plugin_id,
+                        view_id,
+                        theme,
+                        active_input,
+                        input_focus_handle,
+                        cx,
+                    )
+                }))
                 .into_any_element()
         }
         UiNode::Text { value, style } => match style {
@@ -411,63 +486,200 @@ pub fn render_ui_node(
         } => {
             let p_id = plugin_id.to_string();
             let n_id = id.clone();
-            let has_value = value.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
-            let display_text = value
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .or(placeholder.as_deref())
-                .unwrap_or("");
+            let is_active = active_input.map_or(false, |st| {
+                st.plugin_id == p_id && st.view_id == view_id && st.node_id == n_id
+            });
 
-            div()
-                .id(ElementId::from(SharedString::from(format!("ui-input-{}-{}", view_id, id))))
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .w_full()
-                .px(px(8.0))
-                .py(px(4.0))
-                .rounded(px(4.0))
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.bg_editor)
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(if has_value {
-                            theme.text_primary
-                        } else {
-                            theme.text_muted
-                        })
-                        .child(display_text.to_string()),
-                )
-                .when(has_value, |parent| {
-                    parent.child(
+            if is_active {
+                let current_state = active_input.unwrap();
+                let val = &current_state.value;
+                let total_chars = val.chars().count();
+                let pos = current_state.cursor_pos.min(total_chars);
+                let before: String = val.chars().take(pos).collect();
+                let after: String = val.chars().skip(pos).collect();
+                let has_val = !val.is_empty();
+
+                div()
+                    .id(ElementId::from(SharedString::from(format!("ui-input-{}-{}", view_id, id))))
+                    .track_focus(input_focus_handle)
+                    .on_key_down(cx.listener(|app, event: &KeyDownEvent, _, cx| {
+                        app.handle_plugin_input_key(event, cx);
+                    }))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .min_w(px(160.0))
+                    .max_w(px(320.0))
+                    .px(px(8.0))
+                    .py(px(4.0))
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(theme.accent)
+                    .bg(theme.bg_editor)
+                    .cursor(gpui::CursorStyle::IBeam)
+                    .child(
                         div()
-                            .id(ElementId::from(SharedString::from(format!("ui-input-clear-{}-{}", view_id, id))))
-                            .cursor(gpui::CursorStyle::PointingHand)
-                            .px(px(4.0))
-                            .py(px(1.0))
-                            .rounded(px(3.0))
-                            .hover(|h| h.bg(theme.bg_hover))
-                            .text_xs()
-                            .text_color(theme.text_muted)
-                            .child("✕")
-                            .on_click(cx.listener(move |app, _, _, cx| {
-                                let _ = app.state.plugin_host.send_event(
-                                    &p_id,
-                                    crate::plugins::api::HostEvent::UiEvent {
-                                        view_id,
-                                        node_id: n_id.clone(),
-                                        event: "change".to_string(),
-                                        value: Some("".to_string()),
-                                    },
-                                );
-                                cx.notify();
-                            })),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .min_w_0()
+                            .flex_1()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.text_primary)
+                                    .child(before),
+                            )
+                            .child(
+                                div()
+                                    .w(px(1.5))
+                                    .h(px(14.0))
+                                    .bg(theme.accent),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.text_primary)
+                                    .child(after),
+                            )
+                            .when(!has_val, |parent| {
+                                parent.when_some(placeholder.clone(), |p, ph| {
+                                    p.child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(theme.text_muted)
+                                            .child(ph),
+                                    )
+                                })
+                            }),
                     )
-                })
-                .into_any_element()
+                    .when(has_val, |parent| {
+                        let p_id_clear = p_id.clone();
+                        let n_id_clear = n_id.clone();
+                        parent.child(
+                            div()
+                                .id(ElementId::from(SharedString::from(format!("ui-input-clear-{}-{}", view_id, id))))
+                                .cursor(gpui::CursorStyle::PointingHand)
+                                .px(px(4.0))
+                                .py(px(1.0))
+                                .rounded(px(3.0))
+                                .hover(|h| h.bg(theme.bg_hover))
+                                .text_xs()
+                                .text_color(theme.text_muted)
+                                .child("✕")
+                                .on_click(cx.listener(move |app, _, _, cx| {
+                                    cx.stop_propagation();
+                                    if let Some(ref mut st) = app.active_plugin_input {
+                                        if st.plugin_id == p_id_clear && st.view_id == view_id && st.node_id == n_id_clear {
+                                            st.value.clear();
+                                            st.cursor_pos = 0;
+                                        }
+                                    }
+                                    if let Some(tree) = app.plugin_views.get_mut(&(p_id_clear.clone(), view_id)) {
+                                        tree.update_input_value(&n_id_clear, "");
+                                    }
+                                    let _ = app.state.plugin_host.send_event(
+                                        &p_id_clear,
+                                        crate::plugins::api::HostEvent::UiEvent {
+                                            view_id,
+                                            node_id: n_id_clear.clone(),
+                                            event: "change".to_string(),
+                                            value: Some("".to_string()),
+                                        },
+                                    );
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .into_any_element()
+            } else {
+                let val_str = value.as_deref().unwrap_or("");
+                let has_value = !val_str.is_empty();
+                let display_text = if has_value {
+                    val_str
+                } else {
+                    placeholder.as_deref().unwrap_or("")
+                };
+
+                let initial_val = value.clone().unwrap_or_default();
+                let initial_chars = initial_val.chars().count();
+                let p_id_focus = p_id.clone();
+                let n_id_focus = n_id.clone();
+
+                div()
+                    .id(ElementId::from(SharedString::from(format!("ui-input-{}-{}", view_id, id))))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .min_w(px(160.0))
+                    .max_w(px(320.0))
+                    .px(px(8.0))
+                    .py(px(4.0))
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.bg_editor)
+                    .cursor(gpui::CursorStyle::IBeam)
+                    .on_click(cx.listener(move |app, _, window, cx| {
+                        app.active_plugin_input = Some(PluginInputFocusState {
+                            plugin_id: p_id_focus.clone(),
+                            view_id,
+                            node_id: n_id_focus.clone(),
+                            value: initial_val.clone(),
+                            cursor_pos: initial_chars,
+                        });
+                        window.focus(&app.plugin_input_focus_handle);
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(if has_value {
+                                theme.text_primary
+                            } else {
+                                theme.text_muted
+                            })
+                            .child(display_text.to_string()),
+                    )
+                    .when(has_value, |parent| {
+                        let p_id_clear = p_id.clone();
+                        let n_id_clear = n_id.clone();
+                        parent.child(
+                            div()
+                                .id(ElementId::from(SharedString::from(format!("ui-input-clear-{}-{}", view_id, id))))
+                                .cursor(gpui::CursorStyle::PointingHand)
+                                .px(px(4.0))
+                                .py(px(1.0))
+                                .rounded(px(3.0))
+                                .hover(|h| h.bg(theme.bg_hover))
+                                .text_xs()
+                                .text_color(theme.text_muted)
+                                .child("✕")
+                                .on_click(cx.listener(move |app, _, _, cx| {
+                                    cx.stop_propagation();
+                                    if let Some(tree) = app.plugin_views.get_mut(&(p_id_clear.clone(), view_id)) {
+                                        tree.update_input_value(&n_id_clear, "");
+                                    }
+                                    let _ = app.state.plugin_host.send_event(
+                                        &p_id_clear,
+                                        crate::plugins::api::HostEvent::UiEvent {
+                                            view_id,
+                                            node_id: n_id_clear.clone(),
+                                            event: "change".to_string(),
+                                            value: Some("".to_string()),
+                                        },
+                                    );
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .into_any_element()
+            }
         }
         UiNode::Checkbox { id, label, checked } => {
             let p_id = plugin_id.to_string();
@@ -580,7 +792,17 @@ pub fn render_ui_node(
             .p(px(4.0))
             .bg(theme.bg_card)
             .rounded(px(4.0))
-            .children(children.iter().map(|c| render_ui_node(c, plugin_id, view_id, theme, cx)))
+            .children(children.iter().map(|c| {
+                render_ui_node(
+                    c,
+                    plugin_id,
+                    view_id,
+                    theme,
+                    active_input,
+                    input_focus_handle,
+                    cx,
+                )
+            }))
             .into_any_element(),
         UiNode::SettingItem { name, desc, control } => div()
             .flex()
@@ -621,7 +843,15 @@ pub fn render_ui_node(
                     .justify_end()
                     .flex_shrink_0()
                     .min_w(px(140.0))
-                    .child(render_ui_node(control, plugin_id, view_id, theme, cx)),
+                    .child(render_ui_node(
+                        control,
+                        plugin_id,
+                        view_id,
+                        theme,
+                        active_input,
+                        input_focus_handle,
+                        cx,
+                    )),
             )
             .into_any_element(),
         UiNode::Toggle { id, value } => {
@@ -908,5 +1138,28 @@ mod tests {
 
         let deserialized: UiNode = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, tree);
+    }
+
+    #[test]
+    fn test_ui_node_input_value_update() {
+        let mut tree = UiNode::Column {
+            gap: Gap::Medium,
+            children: vec![
+                UiNode::SettingItem {
+                    name: "Custom Format".into(),
+                    desc: Some("Format template".into()),
+                    control: Box::new(UiNode::Input {
+                        id: "input-format".into(),
+                        placeholder: Some("{words}".into()),
+                        value: Some("initial".into()),
+                    }),
+                },
+            ],
+        };
+
+        assert_eq!(tree.get_input_value("input-format"), Some("initial".to_string()));
+        assert!(tree.update_input_value("input-format", "{words} руб."));
+        assert_eq!(tree.get_input_value("input-format"), Some("{words} руб.".to_string()));
+        assert!(!tree.update_input_value("non-existent", "test"));
     }
 }

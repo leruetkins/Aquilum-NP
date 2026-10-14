@@ -158,6 +158,7 @@ impl AppView {
     pub fn close_settings(&mut self, cx: &mut Context<Self>) {
         self.is_settings_open = false;
         self.active_color_picker = None;
+        self.active_plugin_input = None;
         cx.notify();
     }
 
@@ -181,7 +182,15 @@ impl AppView {
                         return None;
                     }
                 }
-                let rendered_modal = crate::plugins::ui::render_ui_node(modal_tree, pid, 1, theme, cx);
+                let rendered_modal = crate::plugins::ui::render_ui_node(
+                    modal_tree,
+                    pid,
+                    1,
+                    theme,
+                    self.active_plugin_input.as_ref(),
+                    &self.plugin_input_focus_handle,
+                    cx,
+                );
                 Some(
                     div()
                         .id("plugin-modal-backdrop-overlay")
@@ -3564,7 +3573,15 @@ impl AppView {
         let custom_tree = self.plugin_views.get(&(p_id_str.clone(), 0));
 
         let settings_section = if let Some(tree) = custom_tree {
-            let rendered_node = crate::plugins::ui::render_ui_node(tree, plugin_id, 0, theme, cx);
+            let rendered_node = crate::plugins::ui::render_ui_node(
+                tree,
+                plugin_id,
+                0,
+                theme,
+                self.active_plugin_input.as_ref(),
+                &self.plugin_input_focus_handle,
+                cx,
+            );
             div()
                 .flex()
                 .flex_col()

@@ -106,6 +106,8 @@ impl AppView {
                             plugin_id,
                             *view_id,
                             theme,
+                            self.active_plugin_input.as_ref(),
+                            &self.plugin_input_focus_handle,
                             cx,
                         )),
                 );
