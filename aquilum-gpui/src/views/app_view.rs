@@ -21,6 +21,11 @@ pub struct AppView {
     pub editor_scroll_handle: ScrollHandle,
     pub sidebar_scroll_handle: ScrollHandle,
     pub settings_scroll_handle: ScrollHandle,
+    /// Выставляется, когда виртуализированный список (дерево сайдбара,
+    /// редактор) нарезал видимый диапазон по незамеренному вьюпорту.
+    /// Потребитель — `render()`: один внеочередной `window.refresh()`
+    /// сразу после замера, дальше флаг пуст и цикла перерисовок нет.
+    pub viewport_unmeasured: Cell<bool>,
     pub need_scroll_sidebar_to_active: Cell<bool>,
     pub initial_sidebar_scroll_done: Cell<bool>,
     pub edit_mode: bool,
@@ -182,6 +187,7 @@ impl AppView {
             editor_scroll_handle: ScrollHandle::new(),
             sidebar_scroll_handle: ScrollHandle::new(),
             settings_scroll_handle: ScrollHandle::new(),
+            viewport_unmeasured: Cell::new(false),
             need_scroll_sidebar_to_active: Cell::new(false),
             initial_sidebar_scroll_done: Cell::new(false),
             edit_mode,
@@ -795,6 +801,14 @@ impl AppView {
         let editor_h = if bounds_h > 50.0 {
             bounds_h
         } else {
+            // Замер появится только после layout текущего кадра. Фиксируем,
+            // что срез строк посчитан от оценки, чтобы `render()` заказал
+            // один внеочередной кадр с реальными bounds. Только при пустых
+            // bounds: крошечная, но реально замеренная панель не должна
+            // вызывать перерисовок в цикле.
+            if bounds_h <= 0.0 {
+                self.viewport_unmeasured.set(true);
+            }
             self.last_editor_h.get().max(100.0)
         };
         let max_offset_y = f32::from(self.editor_scroll_handle.max_offset().height);
@@ -2476,7 +2490,7 @@ impl Render for AppView {
         let is_tabs_overflowing = tab_layout.is_overflowing;
         let effective_tab_gap = tab_layout.tab_gap;
 
-        div()
+        let root = div()
             .flex()
             .flex_col()
             .relative()
@@ -4788,7 +4802,16 @@ impl Render for AppView {
             // ================= COMMUNITY PLUGINS CATALOG =================
             .when(self.plugin_catalog.is_open, |d| {
                 d.child(self.render_plugin_catalog_modal(window, cx))
-            })
+            });
+        // Виртуализированные списки нарезали видимый диапазон по оценке
+        // (bounds скролл-хендлов на первом кадре пусты): остаток контента —
+        // пустой спейсер, и без посторонних событий список «догружается»
+        // с задержкой. Один внеочередной кадр сразу после замера схлопывает
+        // глитч до ~16мс; флаг одноразовый, цикла перерисовок нет.
+        if self.viewport_unmeasured.take() {
+            window.refresh();
+        }
+        root
     }
 }
 

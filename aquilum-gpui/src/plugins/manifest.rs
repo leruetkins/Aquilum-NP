@@ -55,6 +55,19 @@ impl PluginManifest {
         if self.id.is_empty() {
             return Err("Plugin 'id' cannot be empty".into());
         }
+        if self.id.len() > 64 {
+            return Err(format!("Plugin 'id' is too long ({} > 64 chars)", self.id.len()));
+        }
+
+        // Strict id format: starts with alphanumeric, contains only alphanumeric, dashes, underscores
+        let first_char = self.id.chars().next().unwrap();
+        if !first_char.is_ascii_alphanumeric() {
+            return Err(format!(
+                "Invalid plugin id '{}': must start with an alphanumeric character",
+                self.id
+            ));
+        }
+
         if !self
             .id
             .chars()
@@ -65,6 +78,22 @@ impl PluginManifest {
                 self.id
             ));
         }
+
+        // Check against Windows reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+        let upper_id = self.id.to_ascii_uppercase();
+        let stem = upper_id.split('.').next().unwrap_or(&upper_id);
+        const RESERVED_NAMES: &[&str] = &[
+            "CON", "PRN", "AUX", "NUL",
+            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        ];
+        if RESERVED_NAMES.contains(&stem) {
+            return Err(format!(
+                "Invalid plugin id '{}': matches reserved Windows device name",
+                self.id
+            ));
+        }
+
         if self.name.trim().is_empty() {
             return Err("Plugin 'name' cannot be empty".into());
         }
@@ -133,5 +162,17 @@ mod tests {
         assert!(manifest.validate().is_err());
         manifest.id = "valid-id_123".into();
         assert!(manifest.validate().is_ok());
+
+        // Reserved Windows names must fail
+        manifest.id = "con".into();
+        assert!(manifest.validate().is_err());
+        manifest.id = "aux".into();
+        assert!(manifest.validate().is_err());
+        manifest.id = "com1".into();
+        assert!(manifest.validate().is_err());
+
+        // Leading dash must fail
+        manifest.id = "-invalid-start".into();
+        assert!(manifest.validate().is_err());
     }
 }

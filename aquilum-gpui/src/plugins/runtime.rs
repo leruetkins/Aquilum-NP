@@ -84,14 +84,22 @@ pub fn spawn_plugin_runtime(
                 return;
             }
 
-            // Execute the plugin script inside a CommonJS module wrapper
+            // Execute the plugin script inside a CommonJS module wrapper with active watchdog
             let wrapped_script = format!(
                 "(function(exports, require, module) {{\n{}\n}})(globalThis.module.exports, globalThis.require, globalThis.module);",
                 script_source
             );
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            deadline.store(now + 5000, Ordering::Relaxed); // 5 sec deadline for initial script eval
+
             let eval_res = ctx.with(|ctx| {
                 ctx.eval::<(), _>(wrapped_script.as_str())
             });
+            deadline.store(0, Ordering::Relaxed);
+
             if let Err(e) = eval_res {
                 let err_msg = ctx.with(|ctx| {
                     let ex = ctx.catch();
@@ -109,17 +117,34 @@ pub fn spawn_plugin_runtime(
                 });
                 eprintln!("[plugin:{}] Script evaluation error: {}", p_id, err_msg);
             } else {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                deadline.store(now + 5000, Ordering::Relaxed);
                 let boot_res = ctx.with(|ctx| {
                     ctx.eval::<(), _>("__bootstrap_plugin_instance()")
                 });
+                deadline.store(0, Ordering::Relaxed);
+
                 if let Err(e) = boot_res {
                     eprintln!("[plugin:{}] Plugin bootstrap error: {:?}", p_id, e);
                 }
                 while let Ok(true) = rt.execute_pending_job() {}
             }
 
-            // Plugin worker message loop: process incoming host events and responses
+            // Plugin worker message loop: process incoming host events, timers, and responses
             loop {
+                // Check JS timers and execute callbacks
+                let timer_wait_ms: u64 = ctx.with(|ctx| {
+                    let check_fn: rquickjs::Result<Function> = ctx.globals().get("__check_timers");
+                    if let Ok(func) = check_fn {
+                        func.call::<_, f64>(()).unwrap_or(0.0) as u64
+                    } else {
+                        0
+                    }
+                });
+
                 match host_events_rx.try_recv() {
                     Ok(event) => match event {
                         HostEvent::Response { id, ok, result } => {
@@ -129,7 +154,18 @@ pub fn spawn_plugin_runtime(
                         }
                         HostEvent::Unload => {
                             let _ = ctx.with(|ctx| {
-                                let _ = ctx.eval::<(), _>("if (typeof __plugin_instance !== 'undefined' && __plugin_instance.onunload) { __plugin_instance.onunload(); }");
+                                let _ = ctx.eval::<(), _>(r#"
+                                    try {
+                                        if (typeof __plugin_instance !== 'undefined' && __plugin_instance && typeof __plugin_instance.onunload === 'function') {
+                                            __plugin_instance.onunload();
+                                        }
+                                    } catch (e) {
+                                        console.error("Plugin onunload error:", e);
+                                    }
+                                    if (globalThis.__code_block_handlers) globalThis.__code_block_handlers.clear();
+                                    if (globalThis.__command_handlers) globalThis.__command_handlers.clear();
+                                    if (globalThis.__js_timers) globalThis.__js_timers.clear();
+                                "#);
                             });
                             break;
                         }
@@ -144,11 +180,16 @@ pub fn spawn_plugin_runtime(
                             });
                         }
                         _ => {
-                            // Dispatch other event hooks (file modified, etc.)
+                            // Other event hooks
                         }
                     },
                     Err(TryRecvError::Empty) => {
-                        thread::sleep(Duration::from_millis(5));
+                        let sleep_dur = if timer_wait_ms > 0 {
+                            Duration::from_millis(timer_wait_ms.min(10))
+                        } else {
+                            Duration::from_millis(5)
+                        };
+                        thread::sleep(sleep_dur);
                     }
                     Err(TryRecvError::Closed) => {
                         break;
@@ -208,8 +249,13 @@ fn setup_plugin_environment<'js>(
     globals.set("__raw_host_call", host_call_fn)?;
 
     // 3. Snapshot synchronous getters: __host_get_active_file(), __host_get_markdown_files()
+    // Enforce permission: plugins with vault:none cannot inspect workspace file tree
+    let has_vault_read = manifest.permissions.vault >= crate::plugins::manifest::VaultAccess::Read;
     let snap_active = snapshot.clone();
     let get_active_file_fn = Function::new(ctx.clone(), move || -> rquickjs::Result<Option<String>> {
+        if !has_vault_read {
+            return Ok(None);
+        }
         let snap = snap_active.load();
         Ok(snap.active_file.as_ref().map(|f| f.path.clone()))
     })?;
@@ -217,6 +263,9 @@ fn setup_plugin_environment<'js>(
 
     let snap_files = snapshot.clone();
     let get_files_fn = Function::new(ctx.clone(), move || -> rquickjs::Result<Vec<String>> {
+        if !has_vault_read {
+            return Ok(Vec::new());
+        }
         let snap = snap_files.load();
         Ok(snap.files.iter().map(|f| f.path.clone()).collect())
     })?;
@@ -229,11 +278,64 @@ fn setup_plugin_environment<'js>(
         manifest_json
     ))?;
 
-    // 5. Inject runtime JavaScript bootstrap defining Obsidian-compatible classes
+    // 5. Inject runtime JavaScript bootstrap defining Obsidian-compatible classes & timers
     let bootstrap_js = r#"
         const __pending_promises = new Map();
         globalThis.__code_block_handlers = new Map();
         globalThis.__command_handlers = new Map();
+        globalThis.__js_timers = new Map();
+        let __next_timer_id = 1;
+
+        globalThis.setTimeout = function(fn, delay = 0, ...args) {
+            const id = __next_timer_id++;
+            const due = Date.now() + Math.max(0, delay);
+            globalThis.__js_timers.set(id, { fn, due, repeat: 0, args });
+            return id;
+        };
+
+        globalThis.clearTimeout = function(id) {
+            globalThis.__js_timers.delete(id);
+        };
+
+        globalThis.setInterval = function(fn, delay = 0, ...args) {
+            const id = __next_timer_id++;
+            const period = Math.max(10, delay);
+            const due = Date.now() + period;
+            globalThis.__js_timers.set(id, { fn, due, repeat: period, args });
+            return id;
+        };
+
+        globalThis.clearInterval = function(id) {
+            globalThis.__js_timers.delete(id);
+        };
+
+        globalThis.__check_timers = function() {
+            if (globalThis.__js_timers.size === 0) return 0;
+            const now = Date.now();
+            const ready = [];
+            let nextDue = Infinity;
+            for (const [id, t] of globalThis.__js_timers.entries()) {
+                if (t.due <= now) {
+                    ready.push([id, t]);
+                } else if (t.due < nextDue) {
+                    nextDue = t.due;
+                }
+            }
+            for (const [id, t] of ready) {
+                try {
+                    t.fn(...t.args);
+                } catch (e) {
+                    console.error("Timer callback error:", e);
+                }
+                if (t.repeat > 0) {
+                    t.due = Date.now() + t.repeat;
+                    if (t.due < nextDue) nextDue = t.due;
+                } else {
+                    globalThis.__js_timers.delete(id);
+                }
+            }
+            return nextDue === Infinity ? 0 : Math.max(1, nextDue - Date.now());
+        };
 
         async function __bootstrap_plugin_instance() {
             let exported = globalThis.module ? globalThis.module.exports : null;
@@ -925,6 +1027,59 @@ mod tests {
             exec_req.request_id,
             serde_json::Value::Null,
         ));
+
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
+    }
+
+    #[test]
+    fn test_snapshot_permission_enforcement() {
+        use crate::plugins::manifest::VaultAccess;
+
+        let manifest = PluginManifest {
+            id: "untrusted-plugin".into(),
+            name: "Untrusted".into(),
+            version: "1.0.0".into(),
+            min_app_version: None,
+            description: "".into(),
+            author: "".into(),
+            permissions: PluginPermissions {
+                vault: VaultAccess::None, // NO vault access
+                network: vec![],
+            },
+        };
+
+        let (api_tx, mut api_rx) = unbounded();
+        let mut snapshot_data = Snapshot::default();
+        snapshot_data.files = Arc::new([crate::vault::FileInfo {
+            path: "Secret/Password.md".into(),
+            name: "Password.md".into(),
+            basename: "Password".into(),
+            extension: "md".into(),
+        }]);
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(snapshot_data));
+
+        let script = r#"
+            const files = app.vault.getMarkdownFiles();
+            new Notice("Files count: " + files.length);
+        "#;
+
+        let handle = spawn_plugin_runtime(
+            manifest,
+            script.to_string(),
+            api_tx,
+            snapshot,
+        )
+        .unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let notice_req = api_rx.try_recv().unwrap();
+        if let ApiRequest::Notice { text, .. } = notice_req.request {
+            // Must be 0 because vault:none cannot view snapshot files
+            assert_eq!(text, "Files count: 0");
+        } else {
+            panic!("Expected Notice");
+        }
 
         let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
     }

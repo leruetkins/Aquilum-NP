@@ -82,6 +82,14 @@ impl PluginHostState {
                     return Err(format!("Plugin '{}' lacks vault:read permission", plugin_id));
                 }
             }
+            ApiRequest::OpenFile { .. } => {
+                if plugin.manifest.permissions.vault < VaultAccess::Read {
+                    return Err(format!(
+                        "Plugin '{}' lacks vault:read permission required to open files",
+                        plugin_id
+                    ));
+                }
+            }
             ApiRequest::VaultModify { .. }
             | ApiRequest::VaultCreate { .. }
             | ApiRequest::VaultDelete { .. }
@@ -91,18 +99,9 @@ impl PluginHostState {
                 }
             }
             ApiRequest::Http { url, .. } => {
-                let allowed = plugin.manifest.permissions.network.iter().any(|domain| {
-                    domain == "*" || url.contains(domain)
-                });
-                if !allowed {
-                    return Err(format!(
-                        "Plugin '{}' is not permitted to access network domain for url '{}'",
-                        plugin_id, url
-                    ));
-                }
+                validate_network_url(url, &plugin.manifest.permissions.network)?;
             }
             ApiRequest::Notice { .. }
-            | ApiRequest::OpenFile { .. }
             | ApiRequest::SetViewTree { .. }
             | ApiRequest::RegisterCodeBlockProcessor { .. }
             | ApiRequest::SetCodeBlockView { .. }
@@ -117,6 +116,72 @@ impl PluginHostState {
         }
         Ok(())
     }
+}
+
+/// Validates that an outgoing HTTP request URL is secure against SSRF and matches the plugin's domain whitelist.
+pub fn validate_network_url(url_str: &str, whitelist: &[String]) -> Result<(), String> {
+    if !url_str.starts_with("http://") && !url_str.starts_with("https://") {
+        return Err("Only http:// and https:// URL schemes are permitted".to_string());
+    }
+
+    let url_without_scheme = if let Some(rest) = url_str.strip_prefix("https://") {
+        rest
+    } else if let Some(rest) = url_str.strip_prefix("http://") {
+        rest
+    } else {
+        return Err("Invalid URL scheme".to_string());
+    };
+
+    let host = url_without_scheme
+        .split(&['/', '?', '#', ':'][..])
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+
+    if host.is_empty() {
+        return Err("URL host cannot be empty".to_string());
+    }
+
+    // Reject localhost, link-local, loopback and broadcast
+    if host == "localhost"
+        || host == "127.0.0.1"
+        || host == "0.0.0.0"
+        || host == "::1"
+        || host == "[::1]"
+        || host.starts_with("127.")
+        || host.starts_with("169.254.")
+    {
+        return Err("Access to localhost and loopback interfaces is prohibited for security".to_string());
+    }
+
+    // Reject RFC 1918 private IPv4 ranges (10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12)
+    if host.starts_with("10.") || host.starts_with("192.168.") {
+        return Err("Access to private local network ranges is prohibited".to_string());
+    }
+    if let Some(second_octet) = host.strip_prefix("172.") {
+        if let Some(octet_str) = second_octet.split('.').next() {
+            if let Ok(octet) = octet_str.parse::<u8>() {
+                if (16..=31).contains(&octet) {
+                    return Err("Access to private local network ranges is prohibited".to_string());
+                }
+            }
+        }
+    }
+
+    // Check whitelist matching
+    let allowed = whitelist.iter().any(|allowed_domain| {
+        if allowed_domain == "*" {
+            return true;
+        }
+        let clean = allowed_domain.to_lowercase();
+        host == clean || host.ends_with(&format!(".{}", clean))
+    });
+
+    if !allowed {
+        return Err(format!("Domain '{}' is not in the plugin network whitelist", host));
+    }
+
+    Ok(())
 }
 
 /// Spawns the background asynchronous bridge loop connecting plugin channels with the GPUI UI thread.
@@ -173,19 +238,23 @@ impl AppView {
                 cx.notify();
             }
             ApiRequest::OpenFile { path } => {
-                let note_path = if let Some(vault) = &self.state.vault {
-                    match vault.resolve(&path) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            let _ = self.state.plugin_host.send_event(
-                                &plugin_id,
-                                HostEvent::response_err(request_id, &e.to_string()),
-                            );
-                            return;
-                        }
+                let Some(vault) = &self.state.vault else {
+                    let _ = self.state.plugin_host.send_event(
+                        &plugin_id,
+                        HostEvent::response_err(request_id, "Cannot open file: No vault is currently open"),
+                    );
+                    return;
+                };
+
+                let note_path = match vault.resolve(&path) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let _ = self.state.plugin_host.send_event(
+                            &plugin_id,
+                            HostEvent::response_err(request_id, &e.to_string()),
+                        );
+                        return;
                     }
-                } else {
-                    std::path::PathBuf::from(path)
                 };
 
                 self.state.open_note(note_path);
@@ -485,17 +554,24 @@ mod tests {
             )
             .is_ok());
 
-        // Forbidden network domain fails
+        // OpenFile requires vault:read (readonly passes, none fails)
         assert!(host
             .check_permission(
                 "readonly-plugin",
-                &ApiRequest::Http {
-                    url: "https://evil.com/leak".into(),
-                    method: "POST".into(),
-                    body: None,
+                &ApiRequest::OpenFile {
+                    path: "note.md".into(),
                 }
             )
-            .is_err());
+            .is_ok());
+
+        // SSRF: localhost and private IPs are blocked even if whitelist contains wildcards
+        assert!(validate_network_url("http://localhost:8080/admin", &["*".into()]).is_err());
+        assert!(validate_network_url("http://127.0.0.1:3000/", &["*".into()]).is_err());
+        assert!(validate_network_url("http://192.168.1.1/router", &["*".into()]).is_err());
+        assert!(validate_network_url("http://10.0.0.5/", &["*".into()]).is_err());
+
+        // Subdomain trickery: evil.com/api.github.com is blocked
+        assert!(validate_network_url("https://evil.com/api.github.com", &["api.github.com".into()]).is_err());
     }
 
     #[test]
