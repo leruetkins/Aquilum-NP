@@ -54,7 +54,9 @@
       "font_weight": "Waga czcionki",
       "font_weight_desc": "Grubość czcionek interfejsu",
       "display_card": "Wyświetlacz",
-      "font_card": "Czcionka interfejsu"
+      "font_card": "Czcionka interfejsu",
+      "sidebar_smart_scroll": "Smart file list scrolling",
+      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held."
     },
     "editor": {
       "title": "Edytor Markdownów",

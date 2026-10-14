@@ -54,7 +54,9 @@
       "font_weight": "Tloušťka písma",
       "font_weight_desc": "Tloušťka písem rozhraní",
       "display_card": "Zobrazit",
-      "font_card": "Písmo rozhraní"
+      "font_card": "Písmo rozhraní",
+      "sidebar_smart_scroll": "Smart file list scrolling",
+      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held."
     },
     "editor": {
       "title": "Editor Markdown",

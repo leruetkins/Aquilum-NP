@@ -54,7 +54,9 @@
       "font_weight": "Poids de la police",
       "font_weight_desc": "Épaisseur des polices d'interface",
       "display_card": "Afficher",
-      "font_card": "Police d'interface"
+      "font_card": "Police d'interface",
+      "sidebar_smart_scroll": "Smart file list scrolling",
+      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held."
     },
     "editor": {
       "title": "Éditeur de démarques",

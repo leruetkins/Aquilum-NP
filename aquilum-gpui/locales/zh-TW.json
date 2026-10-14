@@ -54,7 +54,9 @@
       "font_weight": "字體粗細",
       "font_weight_desc": "介面字體粗細",
       "display_card": "展示",
-      "font_card": "介面字體"
+      "font_card": "介面字體",
+      "sidebar_smart_scroll": "Smart file list scrolling",
+      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held."
     },
     "editor": {
       "title": "降價編輯器",

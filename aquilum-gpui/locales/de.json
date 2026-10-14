@@ -54,7 +54,9 @@
       "font_weight": "Schriftstärke",
       "font_weight_desc": "Dicke der Schnittstellenschriftarten",
       "display_card": "Anzeige",
-      "font_card": "Schnittstellenschriftart"
+      "font_card": "Schnittstellenschriftart",
+      "sidebar_smart_scroll": "Smart file list scrolling",
+      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held."
     },
     "editor": {
       "title": "Markdown-Editor",

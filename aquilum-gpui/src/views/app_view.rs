@@ -4,12 +4,13 @@ use crate::state::{AppState, FileNode};
 use crate::theme::Theme;
 use crate::views::scrollbar::ScrollbarDrag;
 use gpui::{
-    div, point, prelude::*, px, rgb, rgba, ClipboardItem, Context, Div, Entity, FocusHandle,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Render, ScrollHandle, ScrollStrategy,
+    div, point, prelude::*, px, rgb, rgba, Bounds, ClipboardItem, Context, Div, Entity, FocusHandle,
+    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Render, ScrollHandle, ScrollStrategy,
     SharedString, Subscription, Window, WindowControlArea,
 };
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -73,6 +74,12 @@ pub struct AppView {
     pub scrollbar_drag_start_scroll_y: f32,
     /// Drag state of the sidebar tree's overlay scrollbar.
     pub sidebar_scrollbar_drag: ScrollbarDrag,
+    /// Measured viewport of the sidebar file tree for cursor-driven smart scrolling.
+    pub sidebar_smart_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Pending cursor-driven scroll target (px from the top); `None` until the mouse moves.
+    pub sidebar_smart_target_y: Cell<Option<f32>>,
+    /// Last observed cursor Y over the file tree; the first event only primes it.
+    pub sidebar_smart_last_mouse_y: Cell<Option<f32>>,
     pub last_editor_h: Cell<f32>,
     pub config: crate::settings::AppConfig,
     pub last_saved_geometry: Option<(f32, f32, Option<f32>, Option<f32>, bool)>,
@@ -215,6 +222,9 @@ impl AppView {
             scrollbar_drag_start_y: 0.0,
             scrollbar_drag_start_scroll_y: 0.0,
             sidebar_scrollbar_drag: ScrollbarDrag::default(),
+            sidebar_smart_bounds: Rc::new(Cell::new(Bounds::default())),
+            sidebar_smart_target_y: Cell::new(None),
+            sidebar_smart_last_mouse_y: Cell::new(None),
             last_editor_h: Cell::new(600.0),
             config,
             last_saved_geometry,

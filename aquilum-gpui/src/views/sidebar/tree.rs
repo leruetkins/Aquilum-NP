@@ -9,7 +9,10 @@
 
 use std::path::PathBuf;
 
-use gpui::{div, point, prelude::*, px, AnyElement, Context, MouseButton, MouseDownEvent, SharedString, Window};
+use gpui::{
+    canvas, div, point, prelude::*, px, AnyElement, Context, DispatchPhase, MouseButton,
+    MouseDownEvent, MouseMoveEvent, Pixels, ScrollWheelEvent, SharedString, Window,
+};
 
 use crate::icons;
 use crate::markdown::VisualRowHeightIndex;
@@ -78,6 +81,60 @@ fn sidebar_scrollbar_style() -> ScrollbarStyle {
         track_right_offset: -SIDEBAR_PADDING,
         ..ScrollbarStyle::default()
     }
+}
+
+/// Dead zone at the top and bottom edge as a fraction of the list height.
+///
+/// Mirrors the cursor-driven list (`tab_list.rs`): while the cursor is inside
+/// the dead zone the list already sits at its extreme position, so the first
+/// and the last row are fully visible without pushing the mouse to the border.
+const SIDEBAR_SMART_EDGE_PAD_FRACTION: f32 = 0.10;
+/// ...but never larger than this on very tall lists.
+const SIDEBAR_SMART_EDGE_PAD_MAX: f32 = 56.0;
+
+/// Mouse movements shorter than this (px) are ignored to suppress jitter.
+const SIDEBAR_SMART_MIN_MOVE: f32 = 0.5;
+/// A scroll range below this (px) counts as "everything fits": no cursor scrolling.
+const SIDEBAR_SMART_MIN_SCROLL_RANGE: f32 = 1.0;
+
+/// Size of the dead zone at the top and at the bottom of the file list.
+///
+/// A fraction of the list height, but at least one row (so the last row is
+/// fully visible while the cursor is still a row away from the border) and at
+/// most [`SIDEBAR_SMART_EDGE_PAD_MAX`]. On very short lists it never takes
+/// more than a third of the height.
+fn sidebar_smart_edge_pad(list_height: Pixels) -> Pixels {
+    (list_height * SIDEBAR_SMART_EDGE_PAD_FRACTION)
+        .clamp(px(SIDEBAR_ROW_H), px(SIDEBAR_SMART_EDGE_PAD_MAX))
+        .min(list_height / 3.0)
+}
+
+/// Target `scroll_top` for the given cursor position: `0` at the top of the
+/// list, `max_scroll` at the bottom, proportional in between.
+///
+/// Same formula as the tabs popup (`cursor_target_offset` in `tab_list.rs`),
+/// but expressed as a top offset instead of gpui's negative scroll offset.
+fn sidebar_smart_cursor_target(
+    cursor_y: Pixels,
+    list_top: Pixels,
+    list_height: Pixels,
+    max_scroll: Pixels,
+) -> Pixels {
+    let pad = sidebar_smart_edge_pad(list_height);
+    let usable = (list_height - pad * 2.0).max(px(1.0));
+    let t = ((cursor_y - list_top - pad) / usable).clamp(0.0, 1.0);
+    max_scroll * t
+}
+
+/// Rounds a value to whole device pixels, so text and icons move together
+/// while the list follows the cursor (same as the tabs popup).
+fn sidebar_smart_snap(value: Pixels, scale: f32) -> Pixels {
+    (value * scale).round() / scale
+}
+
+/// Clamp helper shared with tests: keeps a cursor-driven target inside `[0, max]`.
+fn clamp_sidebar_smart_target(raw: f32, max_offset: f32) -> f32 {
+    raw.clamp(0.0, max_offset.max(0.0))
 }
 
 /// Clamps a raw scroll offset (pixels from the top of the list) into the scrollable range.
@@ -158,6 +215,13 @@ impl AppView {
         // Current scroll position measured from the top of the list (>= 0).
         let mut sidebar_scroll_top = -f32::from(self.sidebar_scroll_handle.offset().y);
 
+        // Cursor-driven ("smart") scrolling, like the tabs popup: while Ctrl
+        // (or Cmd on macOS) is held, the absolute cursor position inside the
+        // list drives the offset and the wheel is swallowed by the canvas
+        // below. Otherwise the list scrolls like a classic wheel list.
+        // Off by default (`ui.sidebarSmartScroll`).
+        let smart = self.config.ui.sidebar_smart_scroll;
+
         // Resolve programmatic scroll requests *before* computing the visible range, so the
         // slice we render matches the offset we are about to apply. Virtualization shifts
         // the child indices (two spacers are inserted), so `scroll_to_top_of_item` can no
@@ -165,16 +229,22 @@ impl AppView {
         let mut scroll_request = false;
         if !self.initial_sidebar_scroll_done.get() {
             self.initial_sidebar_scroll_done.set(true);
-            if self.state.session.sidebar_scroll_top < 0.0 {
-                sidebar_scroll_top = -self.state.session.sidebar_scroll_top;
-                scroll_request = true;
-            } else if let Some(ix) = selected_row_index {
+            // A programmatic jump wins over the cursor: drop its pending target.
+            self.sidebar_smart_target_y.set(None);
+            // At startup the open file is always centered; the saved session
+            // offset is only a fallback when there is no active row.
+            if let Some(ix) = selected_row_index {
                 let half = ((sidebar_viewport_h / SIDEBAR_ROW_H) as usize / 2).max(1);
                 sidebar_scroll_top = height_index.top_of(ix.saturating_sub(half));
+                scroll_request = true;
+            } else if self.state.session.sidebar_scroll_top < 0.0 {
+                sidebar_scroll_top = -self.state.session.sidebar_scroll_top;
                 scroll_request = true;
             }
         } else if self.need_scroll_sidebar_to_active.get() {
             self.need_scroll_sidebar_to_active.set(false);
+            // Same as above: revealing the active file wins over the cursor.
+            self.sidebar_smart_target_y.set(None);
             if let Some(ix) = selected_row_index {
                 let half = ((sidebar_viewport_h / SIDEBAR_ROW_H) as usize / 2).max(1);
                 sidebar_scroll_top = height_index.top_of(ix.saturating_sub(half));
@@ -201,6 +271,24 @@ impl AppView {
                 .set_offset(point(px(0.0), px(-clamped_top)));
         }
         sidebar_scroll_top = clamped_top;
+
+        // Apply a pending cursor-driven target (direct follow, no animation —
+        // the tabs popup behaves the same without smoothing). Consumed even
+        // when it matches the current offset, so a settled list issues no
+        // redundant scroll writes.
+        if smart {
+            if let Some(target) = self.sidebar_smart_target_y.take() {
+                let max = f32::from(self.sidebar_scroll_handle.max_offset().height);
+                let snapped =
+                    sidebar_smart_snap(px(clamp_sidebar_smart_target(target, max)), window.scale_factor());
+                let snapped_f = f32::from(snapped);
+                if (snapped_f - sidebar_scroll_top).abs() > 0.01 {
+                    self.sidebar_scroll_handle
+                        .set_offset(point(px(0.0), px(-snapped_f)));
+                }
+                sidebar_scroll_top = snapped_f;
+            }
+        }
 
         let visible_rows = height_index.visible_range(sidebar_scroll_top, sidebar_viewport_h, SIDEBAR_OVERSCAN_PX);
         let top_spacer_h = height_index.top_of(visible_rows.start);
@@ -254,6 +342,50 @@ impl AppView {
             .min_h_0()
             .child(scroll_container);
 
+        if smart {
+            let bounds = self.sidebar_smart_bounds.clone();
+            viewport = viewport
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                    let ctrl = event.modifiers.control || event.modifiers.platform;
+                    this.on_sidebar_smart_mouse_move(f32::from(event.position.y), ctrl, cx);
+                }))
+                // Leaving the list clears the reference point (see the tabs
+                // popup): without this the first move after re-entering jumps.
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    if !hovered {
+                        this.sidebar_smart_last_mouse_y.set(None);
+                        cx.notify();
+                    }
+                }))
+                .child(
+                    canvas(
+                        move |viewport, _window, _cx| bounds.set(viewport),
+                        |viewport, _state, window, _cx| {
+                            // Swallow the wheel and the trackpad in the capture phase,
+                            // before it reaches the scroll container (same trick as
+                            // the tabs popup: gpui binds the wheel to the scrolled
+                            // element itself, so a plain `on_scroll_wheel` above
+                            // cannot intercept it) — but only while Ctrl (or Cmd
+                            // on macOS) is held. Otherwise the wheel scrolls
+                            // the list as usual.
+                            window.on_mouse_event(
+                                move |event: &ScrollWheelEvent, phase, _window, cx| {
+                                    if phase == DispatchPhase::Capture
+                                        && viewport.contains(&event.position)
+                                        && (event.modifiers.control
+                                            || event.modifiers.platform)
+                                    {
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            );
+                        },
+                    )
+                    .absolute()
+                    .size_full(),
+                );
+        }
+
         if let Some(geometry) = ScrollbarGeometry::from_handle(&self.sidebar_scroll_handle, &style) {
             viewport = viewport.child(overlay_scrollbar(
                 "sidebar-scrollbar-track",
@@ -289,6 +421,51 @@ impl AppView {
     /// Scrolls the sidebar tree to `scroll_y` pixels from the top of the list.
     pub(crate) fn set_sidebar_scroll_top(&self, scroll_y: f32) {
         self.sidebar_scroll_handle.set_offset(point(px(0.0), px(-scroll_y)));
+    }
+
+    /// Maps the absolute cursor position to a pending scroll target.
+    ///
+    /// Mirrors the tabs popup (`on_mouse_move` in `tab_list.rs`): the first
+    /// event only primes the reference point, then the cursor near the top
+    /// edge shows the beginning of the list, near the bottom edge the end,
+    /// and in between the offset is proportional to the cursor position.
+    /// Engages only while `ctrl` (Ctrl, or Cmd on macOS) is held — otherwise
+    /// the list stays classic and the reference point is reset, so pressing
+    /// Ctrl later never jumps from a stale anchor.
+    /// The repaint at the end is unconditional so a cursor landing on the
+    /// list in a single jump still triggers a frame.
+    pub(crate) fn on_sidebar_smart_mouse_move(&self, y: f32, ctrl: bool, cx: &mut Context<Self>) {
+        if !ctrl {
+            self.sidebar_smart_last_mouse_y.set(None);
+            self.sidebar_smart_target_y.set(None);
+            cx.notify();
+            return;
+        }
+        match self.sidebar_smart_last_mouse_y.get() {
+            // The first event only primes the reference point: acting on it
+            // would make the list jump from wherever the wheel left it.
+            None => self.sidebar_smart_last_mouse_y.set(Some(y)),
+            // The distance is measured from the last *accepted* position, so a
+            // slow move accumulates instead of being dropped event by event.
+            Some(anchor) if (y - anchor).abs() >= SIDEBAR_SMART_MIN_MOVE => {
+                self.sidebar_smart_last_mouse_y.set(Some(y));
+
+                let bounds = self.sidebar_smart_bounds.get();
+                let max_scroll = self.sidebar_scroll_handle.max_offset().height;
+                if bounds.size.height > px(0.0) && max_scroll >= px(SIDEBAR_SMART_MIN_SCROLL_RANGE) {
+                    let target = sidebar_smart_cursor_target(
+                        px(y),
+                        bounds.origin.y,
+                        bounds.size.height,
+                        max_scroll,
+                    );
+                    self.sidebar_smart_target_y.set(Some(f32::from(target)));
+                }
+            }
+            Some(_) => {}
+        }
+
+        cx.notify();
     }
 
     /// Follows the pointer while the sidebar scrollbar thumb is being dragged.
@@ -547,5 +724,26 @@ mod tests {
         // an upper bound — that would pin the list to the top on the first frame.
         assert_eq!(clamp_sidebar_scroll_top(250.0, 0.0), 250.0);
         assert_eq!(clamp_sidebar_scroll_top(-40.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn smart_target_is_top_at_the_top_of_the_band_and_max_at_the_bottom() {
+        // list_top = 100, list_height = 300 -> dead zone clamp(300 * 0.10, 29, 56) = 30:
+        // the proportional band is 130..370.
+        let at = |y: f32| sidebar_smart_cursor_target(px(y), px(100.0), px(300.0), px(1000.0));
+        assert!((f32::from(at(130.0)) - 0.0).abs() < 0.01);
+        assert!((f32::from(at(370.0)) - 1000.0).abs() < 0.01);
+        // Middle lands in the middle.
+        assert!((f32::from(at(250.0)) - 500.0).abs() < 0.01);
+        // Outside is clamped.
+        assert!((f32::from(at(0.0)) - 0.0).abs() < 0.01);
+        assert!((f32::from(at(900.0)) - 1000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn smart_target_is_clamped_into_range() {
+        assert_eq!(clamp_sidebar_smart_target(1200.0, 1000.0), 1000.0);
+        assert_eq!(clamp_sidebar_smart_target(-40.0, 1000.0), 0.0);
+        assert_eq!(clamp_sidebar_smart_target(250.0, 1000.0), 250.0);
     }
 }

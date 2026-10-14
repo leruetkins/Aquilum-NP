@@ -54,7 +54,9 @@
       "font_weight": "Trọng lượng phông chữ",
       "font_weight_desc": "Độ dày của phông chữ giao diện",
       "display_card": "Trưng bày",
-      "font_card": "Phông chữ giao diện"
+      "font_card": "Phông chữ giao diện",
+      "sidebar_smart_scroll": "Smart file list scrolling",
+      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held."
     },
     "editor": {
       "title": "Trình chỉnh sửa đánh dấu",

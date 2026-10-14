@@ -1186,6 +1186,21 @@ impl AppView {
                     .child(div().w(px(14.0)).h(px(14.0)).rounded_xs().bg(theme.accent))
                     .child(div().text_xs().text_color(theme.text_primary).child(config.ui.primary_color.clone())),
             ),
+            self.render_setting_row(
+                &self.t("settings.ui.sidebar_smart_scroll"),
+                Some(&self.t("settings.ui.sidebar_smart_scroll_desc")),
+                div()
+                    .id("row-sidebar-smart-scroll")
+                    .child(self.render_toggle_switch(config.ui.sidebar_smart_scroll))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.config.ui.sidebar_smart_scroll = !this.config.ui.sidebar_smart_scroll;
+                        // Сбрасываем курсорное состояние, чтобы при включении
+                        // список не прыгал от устаревшей позиции мыши.
+                        this.sidebar_smart_last_mouse_y.set(None);
+                        this.sidebar_smart_target_y.set(None);
+                        this.save_settings(cx);
+                    })),
+            ),
         ];
 
         let font_rows = vec![

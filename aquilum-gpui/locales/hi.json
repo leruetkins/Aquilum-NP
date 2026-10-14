@@ -54,7 +54,9 @@
       "font_weight": "फ़ॉन्ट वजन",
       "font_weight_desc": "इंटरफ़ेस फ़ॉन्ट की मोटाई",
       "display_card": "प्रदर्शन",
-      "font_card": "इंटरफ़ेस फ़ॉन्ट"
+      "font_card": "इंटरफ़ेस फ़ॉन्ट",
+      "sidebar_smart_scroll": "Smart file list scrolling",
+      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held."
     },
     "editor": {
       "title": "मार्कडाउन संपादक",

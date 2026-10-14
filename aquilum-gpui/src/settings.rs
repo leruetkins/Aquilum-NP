@@ -232,6 +232,7 @@ pub struct UiSettings {
     pub theme: String,
     pub language: String,
     pub primary_color: String,
+    pub sidebar_smart_scroll: bool,
     #[serde(flatten)]
     pub font: FontSettings,
 }
@@ -242,6 +243,7 @@ impl Default for UiSettings {
             theme: "system".to_string(),
             language: String::new(),
             primary_color: "#1471eb".to_string(),
+            sidebar_smart_scroll: false,
             font: FontSettings {
                 font_family: "Inter".to_string(),
                 font_weight: 400,

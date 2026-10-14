@@ -54,7 +54,9 @@
       "font_weight": "Teckensnittsvikt",
       "font_weight_desc": "Tjocklek på gränssnittsteckensnitt",
       "display_card": "Visa",
-      "font_card": "Gränssnittstypsnitt"
+      "font_card": "Gränssnittstypsnitt",
+      "sidebar_smart_scroll": "Smart file list scrolling",
+      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held."
     },
     "editor": {
       "title": "Markdown Editor",

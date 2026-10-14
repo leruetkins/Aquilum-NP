@@ -54,7 +54,9 @@
       "font_weight": "Yazı Tipi Ağırlığı",
       "font_weight_desc": "Arayüz yazı tiplerinin kalınlığı",
       "display_card": "Görüntülemek",
-      "font_card": "Arayüz Yazı Tipi"
+      "font_card": "Arayüz Yazı Tipi",
+      "sidebar_smart_scroll": "Smart file list scrolling",
+      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held."
     },
     "editor": {
       "title": "İşaretleme Düzenleyicisi",

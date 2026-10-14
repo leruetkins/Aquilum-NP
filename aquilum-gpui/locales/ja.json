@@ -54,7 +54,9 @@
       "font_weight": "フォントの太さ",
       "font_weight_desc": "インターフェースフォントの太さ",
       "display_card": "画面",
-      "font_card": "インターフェースフォント"
+      "font_card": "インターフェースフォント",
+      "sidebar_smart_scroll": "Smart file list scrolling",
+      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held."
     },
     "editor": {
       "title": "マークダウンエディター",

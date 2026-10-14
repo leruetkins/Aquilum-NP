@@ -54,7 +54,9 @@
       "font_weight": "Peso del carattere",
       "font_weight_desc": "Spessore dei caratteri dell'interfaccia",
       "display_card": "Display",
-      "font_card": "Carattere dell'interfaccia"
+      "font_card": "Carattere dell'interfaccia",
+      "sidebar_smart_scroll": "Smart file list scrolling",
+      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held."
     },
     "editor": {
       "title": "Editor Markdown",

@@ -54,7 +54,9 @@
       "font_weight": "Peso de fuente",
       "font_weight_desc": "Grosor de las fuentes de la interfaz",
       "display_card": "Mostrar",
-      "font_card": "Fuente de interfaz"
+      "font_card": "Fuente de interfaz",
+      "sidebar_smart_scroll": "Smart file list scrolling",
+      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held."
     },
     "editor": {
       "title": "Editor de rebajas",

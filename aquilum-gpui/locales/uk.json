@@ -54,7 +54,9 @@
       "font_weight": "Товщина шрифту",
       "font_weight_desc": "Товщина інтерфейсних шрифтів",
       "display_card": "Дисплей",
-      "font_card": "Шрифт інтерфейсу"
+      "font_card": "Шрифт інтерфейсу",
+      "sidebar_smart_scroll": "Smart file list scrolling",
+      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held."
     },
     "editor": {
       "title": "Редактор розмітки",

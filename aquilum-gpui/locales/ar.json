@@ -54,7 +54,9 @@
       "font_weight": "وزن الخط",
       "font_weight_desc": "سمك خطوط الواجهة",
       "display_card": "عرض",
-      "font_card": "واجهة الخط"
+      "font_card": "واجهة الخط",
+      "sidebar_smart_scroll": "Smart file list scrolling",
+      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held."
     },
     "editor": {
       "title": "محرر تخفيض السعر",

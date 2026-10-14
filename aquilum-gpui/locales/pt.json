@@ -54,7 +54,9 @@
       "font_weight": "Peso da fonte",
       "font_weight_desc": "Espessura das fontes da interface",
       "display_card": "Mostrar",
-      "font_card": "Fonte da interface"
+      "font_card": "Fonte da interface",
+      "sidebar_smart_scroll": "Smart file list scrolling",
+      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held."
     },
     "editor": {
       "title": "Editor de redução",

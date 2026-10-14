@@ -54,7 +54,9 @@
       "font_weight": "글꼴 두께",
       "font_weight_desc": "인터페이스 글꼴의 두께",
       "display_card": "표시하다",
-      "font_card": "인터페이스 글꼴"
+      "font_card": "인터페이스 글꼴",
+      "sidebar_smart_scroll": "Smart file list scrolling",
+      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held."
     },
     "editor": {
       "title": "마크다운 편집기",
