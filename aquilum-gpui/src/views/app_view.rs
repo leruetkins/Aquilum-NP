@@ -14,6 +14,12 @@ use std::rc::Rc;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// Length of the settle burst that repaints the editor until its scroll handle
+/// has been measured (see `layout_settle_frames`). Three frames is enough: one
+/// drawn from the estimates, one from the freshly measured handle, one that
+/// confirms nothing moved.
+const SCROLL_SETTLE_FRAMES: u8 = 3;
+
 pub struct AppView {
     pub state: AppState,
     pub theme: Theme,
@@ -92,6 +98,20 @@ pub struct AppView {
     /// Validate cursor visibility on the next render (the saved offset may be
     /// stale after a resize/rewrap); the reveal is a no-op when exact.
     pub need_reveal_cursor: bool,
+    /// Frames left in the editor scrollbar's settle burst.
+    ///
+    /// The thumb is drawn from `viewport_h` / `max_scroll`, both read off the
+    /// scroll handle during `render` — but the handle is only measured in
+    /// prepaint of that same frame, so every frame paints the *previous*
+    /// layout's numbers. On the first frame after a note is opened those
+    /// numbers are estimates (a fixed 600 px viewport, the previous note's max
+    /// offset), and nothing asks for another frame, so the thumb sits at the
+    /// wrong size and place until some unrelated notify — a caret blink tick —
+    /// repaints. Arming this counter forces the couple of frames it takes.
+    pub layout_settle_frames: Cell<u8>,
+    /// `(viewport_h, max_scroll)` the thumb was drawn from last frame, rounded
+    /// to whole pixels so sub-pixel jitter cannot keep the burst alive.
+    pub last_scroll_inputs: Cell<(f32, f32)>,
     pub is_hovering_close: bool,
     pub title_focus_handle: FocusHandle,
     pub title_edit_text: String,
@@ -239,6 +259,8 @@ impl AppView {
             initial_scroll_top,
             pending_editor_restore: None,
             need_reveal_cursor: false,
+            layout_settle_frames: Cell::new(SCROLL_SETTLE_FRAMES),
+            last_scroll_inputs: Cell::new((0.0, 0.0)),
             is_hovering_close: false,
             title_focus_handle: cx.focus_handle(),
             title_edit_text,
@@ -514,6 +536,9 @@ impl AppView {
         {
             self.pending_editor_restore = Some(restore_to);
             self.need_reveal_cursor = true;
+            // The note changed, so the handle still describes the old content:
+            // arm the burst that repaints the scrollbar once it is measured.
+            self.layout_settle_frames.set(SCROLL_SETTLE_FRAMES);
         }
     }
 
@@ -2562,6 +2587,34 @@ impl Render for AppView {
         if self.need_reveal_cursor {
             self.need_reveal_cursor = false;
             self.scroll_cursor_into_view();
+        }
+
+        // Draw the frames the scrollbar needs to settle.
+        //
+        // `editor_scroll_metrics` reads the handle's `bounds` / `max_offset`,
+        // which prepaint writes later in this very frame (`clamp_scroll_position`
+        // in div.rs), so the numbers used below are always one layout behind. On
+        // the first frame after a note is opened they are estimates — a fixed
+        // 600 px viewport and the previous note's max — and the thumb is painted
+        // from them until some unrelated notify happens to repaint. Ask for the
+        // next frame here instead, and keep asking while the inputs still move.
+        //
+        // This terminates: `inputs` is a pure function of the layout and the
+        // window size, and the layout does not depend on it — the scrollbar
+        // reserves no width (`scrollbar_width` defaults to 0, so
+        // `overflow_y_scroll` is layout-neutral) — so two consecutive frames
+        // agree and the burst ends. The counter alone is not enough: a resize or
+        // a rewrap moves the inputs without going through the arm sites.
+        if let Some(note) = self.state.active_note.as_ref() {
+            let total = note.cached_height_index.total() + 48.0;
+            let (_, viewport_h, max_scroll, _) = self.editor_scroll_metrics(total, window_h);
+            let inputs = (viewport_h.round(), max_scroll.round());
+            let settling = self.layout_settle_frames.get();
+            if settling > 0 || self.last_scroll_inputs.get() != inputs {
+                self.last_scroll_inputs.set(inputs);
+                self.layout_settle_frames.set(settling.saturating_sub(1));
+                window.request_animation_frame();
+            }
         }
 
         let is_resizer_active = self.is_resizing_sidebar || self.is_hovering_resizer;
