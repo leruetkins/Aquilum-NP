@@ -9,6 +9,7 @@
 | `plugins-01-js-obsidian.md` | JS/TS-плагины (QuickJS) |
 | `plugins-02-wasm.md` | WASM-плагины |
 | `plugins-03-zed-research.md` | что изучено в Zed |
+| `plugins-04-obsidian-compat.md` | совместимость с готовыми плагинами Obsidian (E0–E8) |
 
 ---
 
@@ -967,7 +968,7 @@ impl AppState {
 | 8 | TabItem enum вместо Vec<PathBuf> | Этап 5 плана | 2-3 дня |
 | **Итого** | | | **~2 недели** |
 
-После шагов 1–8 можно начинать **Этап 1** основного плана (core §7): типы `ApiRequest`, `HostEvent`, `PluginRuntime`, контракт рантайма.
+После шагов 1–8 можно начинать **Этап 1** основного плана (core §7): типы `ApiRequest`, `HostEvent`, `PluginRuntime`, контракт рантайма, с последующим развёртыванием этапов запуска готовых плагинов Obsidian E0–E8 (`plugins-04-obsidian-compat.md`).
 
 ---
 
@@ -1083,7 +1084,7 @@ impl AppView {
                 }
             }
             ApiRequest::OpenFile { path } => {
-                // Безопасное открытие файла: строгая проверка через resolve_in_vault
+                // Безопасное открытие файла: строгая проверка через resolve_in_vault и vault >= read
                 if let Some(vault) = &self.state.vault {
                     match resolve_in_vault(vault.root(), &path) {
                         Ok(safe_path) => self.select_note(safe_path, cx),
@@ -1097,6 +1098,10 @@ impl AppView {
                     let content = vault.read_file(&path);
                     self.send_plugin_response(&call.plugin_id, call.request_id, content);
                 }
+            }
+            ApiRequest::Http { url, method, body } => {
+                // Сетевой экран: проверка прав network, блокировка SSRF (localhost, RFC 1918)
+                self.handle_plugin_http(&call.plugin_id, call.request_id, url, method, body, cx);
             }
             ApiRequest::SetViewTree { view_id, tree } => {
                 self.update_plugin_view(&call.plugin_id, view_id, tree, cx);

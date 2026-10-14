@@ -53,3 +53,4 @@ aquilum-app/tmp-fm.*
 /aquilum-native/target/debug
 /operator-panel
 /aquilum-gpui/target
+/obsidian_plugins

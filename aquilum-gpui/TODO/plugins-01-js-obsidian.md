@@ -499,8 +499,8 @@ impl RuntimeVerifier for JsVerifier {
 
 | Вариант | Что это | Оценка |
 |---|---|---|
-| 1. Свой API с похожими названиями (раздел 2) | Те же понятия (`Plugin`, `onload`, `addCommand`, `vault`, `workspace`, `Notice`, `Setting`), но без DOM. Автору легко портировать логику | **Базовый стандарт** |
-| 2. **Micro-DOM эмулятор (Путь Б, раздел 7.8)** | Легковесный полифилл виртуального DOM (~350 строк JS), эмулирующий `createEl`, `contentEl`, `addEventListener`, `ButtonComponent` и на лету транслирующий дерево в `UiNode` | **Выбран для совместимости UI модалок и форм** |
+| 1. Свой API с похожими названиями (раздел 2) | Те же понятия (`Plugin`, `onload`, `addCommand`, `vault`, `workspace`, `Notice`, `Setting`), но без DOM. Автору легко портировать логику | **Базовый стандарт для новых плагинов** |
+| 2. **Слой совместимости с Obsidian (документ `plugins-04-obsidian-compat.md`)** | Полифилл `require("obsidian")`, виртуальный элемент `VElement` для `Setting` и `Modal` с прямой трансляцией в `UiNode`, зеркало редактора `EditorSession` (UTF-16) | **Выбран для запуска готовых плагинов без переписывания** |
 | 3. Webview для UI плагинов | Даёт полноценный DOM, но приносит тяжёлый движок Chromium/WebKit и два параллельных мира UI | Не рекомендуется |
 
 ### 7.3 Совместимость на уровне данных
@@ -510,12 +510,14 @@ impl RuntimeVerifier for JsVerifier {
 - Пользователи смогут открыть существующий vault без миграции.
 - Часть настроек из `.obsidian` (например, горячие клавиши) можно читать, но это не обязательно.
 
-### 7.4 Как принять решение про слой совместимости
+### 7.4 Дорожная карта совместимости
 
-1. Взять 10–20 популярных плагинов Obsidian разных категорий.
-2. Разложить по трём группам: работают без правок, работают с небольшими правками, не работают (DOM или CM6).
-3. Если доля первых двух групп мала (ориентир: меньше пятой части), слой совместимости не оправдан, лучше вложиться в руководство по портированию. Это ориентир для обсуждения, а не измеренное правило.
-4. Если доля заметная, сделать модуль `obsidian` только для той части API, которая реально используется.
+Детальный пошаговый план запуска готовых плагинов, каталог API Obsidian и метрики готовности описаны в **`plugins-04-obsidian-compat.md`**:
+- **Этап E0:** Аудит и сбор тестового корпуса из 20 плагинов.
+- **Этапы E1–E2:** Shim `require("obsidian")`, `lazyFail` для внешних пакетов, реализация `App` и `Vault`.
+- **Этапы E3–E4:** Скелет `VElement` для настроек и модалок, интеграция `ItemView` в сайдбар.
+- **Этап E5:** Зеркало редактора и конвертация смещений UTF-16 $\leftrightarrow$ UTF-8.
+- **Этапы E6–E8:** Блоки кода, автоматический CI-гейт и массовая валидация каталога.
 
 ### 7.5 Руководство по портированию (содержание)
 
@@ -545,42 +547,51 @@ impl RuntimeVerifier for JsVerifier {
 В `src/plugins/runtime.rs` глобальные объекты `app`, `app.vault`, `app.workspace` оборачиваются в `Proxy`:
 
 ```javascript
-// Список методов-пустышек, вызов которых безопасен и может вернуть Promise(null)
+// Набор известных методов Obsidian, для которых безопасен no-op stub
 const SAFE_NOOP_STUBS = new Set([
     'app.workspace.requestSaveHistory',
     'app.metadataCache.trigger',
     'plugin.addRibbonIcon'
 ]);
 
+// Набор известных методов Obsidian, ещё не реализованных в Aquilum
+const KNOWN_UNIMPLEMENTED_OBSIDIAN_METHODS = new Set([
+    'app.vault.copy',
+    'app.workspace.splitActiveLeaf',
+    'app.fileManager.processFrontMatter'
+]);
+
 function makeAuditedProxy(target, targetName, hostBridge) {
     return new Proxy(target, {
         get(obj, prop) {
-            // КРИТИЧНО: Защита от зацикливания thenable-проверок в async/await,
-            // а также сохранение символов рантайма и сериализации в JSON.
+            // 1. КРИТИЧНО: Защита thenable-проверок в async/await, символов и сериализации
             if (typeof prop === 'symbol' || prop === 'then' || prop === 'toJSON') {
                 return obj[prop];
             }
             if (prop in obj) {
                 return obj[prop];
             }
-            const methodName = String(prop);
-            const fullPath = `${targetName}.${methodName}`;
-            hostBridge.auditApiCall(targetName, methodName);
-            console.warn(`[API Audit] Plugin called unimplemented API: ${fullPath}`);
+            const propName = String(prop);
+            const fullPath = `${targetName}.${propName}`;
 
-            // Для безопасных вспомогательных методов возвращаем no-op промис
+            // 2. Если вызывается метод из белого списка безопасных заглушек
             if (SAFE_NOOP_STUBS.has(fullPath)) {
+                hostBridge.auditApiCall(targetName, propName, "stub");
                 return (..._args) => Promise.resolve(null);
             }
 
-            // Для остальных нереализованных методов выбрасываем явную ошибку,
-            // чтобы плагин не работал со скрытыми испорченными данными
-            return (..._args) => {
-                throw new Error(`[Aquilum] Method ${fullPath} is not implemented`);
-            };
+            // 3. Если вызывается известный метод Obsidian, пока не реализованный у нас
+            if (KNOWN_UNIMPLEMENTED_OBSIDIAN_METHODS.has(fullPath)) {
+                hostBridge.auditApiCall(targetName, propName, "unimplemented");
+                return (..._args) => {
+                    throw new Error(`[Aquilum] Method ${fullPath} is not implemented`);
+                };
+            }
+
+            // 4. Если плагин проверяет наличие свойства (feature detection: if (app.foo))
+            // Возвращаем undefined, а не бросаем исключение и не возвращаем truthy-объект!
+            return undefined;
         }
-    });
-}
 ```
 
 #### 3. Модель данных отчёта совместимости (`src/plugins/compat.rs`)
@@ -603,38 +614,40 @@ pub struct CompatibilityReport {
     pub warnings: Vec<String>,
 ```
 
-### 7.8 Архитектура Micro-DOM эмулятора для Obsidian UI (Путь Б)
+### 7.8 Архитектура `VElement` и семантическая трансляция UI (Путь Б)
 
-Большинство утилитарных плагинов Obsidian (очистка заметок, поиск сирот, генераторы шаблонов, диалоги подтверждения) не требуют сложного CSS или Canvas, а используют стандартный набор методов Obsidian для построения интерфейсов модальных окон и настроек. Для запуска таких плагинов без переписывания создаётся легковесный полифилл виртуального DOM (~350 строк JS внутри QuickJS).
+Большинство плагинов Obsidian строят интерфейс настроек и модальных окон не через сырой HTML, а через класс `Setting(containerEl)` и вспомогательные компоненты (`ButtonComponent`, `ToggleComponent`, `SliderComponent`, `DropdownComponent`).
+Поэтому вместо попытки построить полноценный эмулятор браузерного DOM (что невозможно без движка стилей и лэйаута), вводится **скелет виртуального элемента `VElement`** (~250 строк JS), ориентированный на семантическое связывание с GPUI `UiNode`.
 
-#### 1. Поддерживаемое подмножество DOM API
-- Создание элементов: `element.createEl(tag, options)`, `element.createDiv(cls)`, `element.createSpan(cls)`.
-- Дерево элементов: `element.empty()`, `element.remove()`, `element.appendChild(child)`.
+Подробная реализация `VElement`, маппинг компонентов и правила рендеринга специфицированы в **`plugins-04-obsidian-compat.md §5, §6`**.
+
+#### 1. Поддерживаемое подмножество API `VElement`
+- Создание и обход элементов: `element.createEl(tag, options)`, `element.createDiv(cls)`, `element.createSpan(cls)`, `element.empty()`, `element.appendChild(child)`.
 - Стили и классы: `element.addClass(cls)`, `element.removeClass(cls)`, `element.toggleClass(cls, bool)`.
-- Содержимое и свойства: `element.textContent`, `element.innerHTML` (текстовый парсинг), `element.disabled`, `element.checked`.
-- События: `element.addEventListener(type, listener)`, `element.dispatchEvent(event)`.
-- Селекторы: `element.querySelector(selector)`, `element.querySelectorAll(selector)`, `document.getElementById(id)`.
-- Компоненты Obsidian: `ButtonComponent` (`setButtonText`, `setCta`, `onClick`), `ToggleComponent` (`setValue`, `onChange`), `TextComponent` (`setPlaceholder`, `onChange`).
+- Текст и свойства: `element.setText(text)`, `element.textContent`, `element.disabled`, `element.value`.
+- События: `element.addEventListener(type, listener)`, `element.removeEventListener()`.
+- Obsidian UI компоненты: `Setting` (`setName`, `setDesc`, `addToggle`, `addText`, `addSlider`, `addDropdown`, `addButton`), `ButtonComponent`, `ToggleComponent`, `TextComponent`, `SliderComponent`, `DropdownComponent`.
 
-#### 2. Трансляция виртуального DOM в нативные `UiNode` GPUI
-При закрытии сборки модального окна (`Modal.open()`) или панели, корневой виртуальный элемент `contentEl` рекурсивно транслируется в нативное дерево `UiNode`:
+#### 2. Трансляция `VElement` $\to$ нативные `UiNode` GPUI
+При закрытии сборки модального окна (`Modal.open()`) или вызове `display()` в `PluginSettingTab`, дерево `containerEl` / `contentEl` сериализуется в семантические `UiNode`:
 
-| Виртуальный тег / компонент | Трансляция в `UiNode` | Особенности |
+| Компонент / Элемент Obsidian | Целевой `UiNode` | Семантика в GPUI |
 |---|---|---|
-| `button` / `ButtonComponent` | `UiNode::Button` | Класс `mod-cta` / `ef-btn-danger` мапится в `variant: ButtonVariant::Primary / Danger`. Свойство `disabled` поддерживается нативно. |
-| `input[type=checkbox]` / `ToggleComponent` | `UiNode::Checkbox` | Состояние `checked` и событие `change`. |
-| `input[type=text]` / `TextComponent` | `UiNode::Input` | Поле ввода с `placeholder` и `value`. |
-| `h1`, `h2`, `h3`, `h4` | `UiNode::Text { style: Heading }` | Заголовки разделов. |
-| `p`, `span`, текстовые ноды | `UiNode::Text` | Текстовые блоки. Классы `muted` / `subtitle` мапятся в `style: Muted`. |
-| `div` (контейнер) | `UiNode::Column` / `UiNode::Row` | По умолчанию вертикальный стек (`Column`). Если задан flex-row или класс кнопочной панели — горизонтальный ряд (`Row`). |
+| `Setting` | `UiNode::SettingItem` | Горизонтальный ряд: имя + описание слева, контрол справа |
+| `ButtonComponent` / `<button>` | `UiNode::Button` | Кнопка с вариантом `primary`, `danger` или `default` |
+| `ToggleComponent` / `<input type="checkbox">` | `UiNode::Toggle` | Переключатель (акцентный цвет темы) |
+| `SliderComponent` / `<input type="range">` | `UiNode::Slider` | Ползунок с диапазоном `min..max` и шагом `step` |
+| `DropdownComponent` / `<select>` | `UiNode::Select` | Выпадающий список опций |
+| `TextComponent` / `<input type="text">` | `UiNode::Input` | Поле ввода текста с debounce |
+| `<h1>` .. `<h6>` | `UiNode::Text` | Заголовок (`heading`) |
+| `<p>`, `<span>`, текстовый узел | `UiNode::Text` | Текстовый блок / подпись |
+| `<div>` | `UiNode::Column` / `UiNode::Row` | Контейнер компоновки элементов |
 
 #### 3. Маршрутизация событий кликов и ввода
-- Каждый виртуальный элемент получает уникальный идентификатор (`ElementId`).
-- При рендере в GPUI кнопкам и полям назначается этот идентификатор.
-- Когда пользователь кликает по кнопке или переключает чекбокс в окне приложения, хост передает в QuickJS:
-  `HostEvent::UiAction { element_id, action: "click" / "change", value: Option<String> }`.
-- JS-рантайм находит виртуальный элемент и синхронно вызывает привязанные обработчики `addEventListener("click", ...)` с синтетическим объектом `Event`.
-- После завершения обработчика, если дерево изменилось (например, добавлен список удаленных файлов или обновлен текст кнопки), хост получает обновленное дерево `SetViewTree` и перерисовывает окно.
+- Каждый виртуальный элемент получает детерминированный `ElementId`.
+- Хост пересылает события пользователя: `HostEvent::UiAction { element_id, action: "click" | "change", value: Option<String> }`.
+- JS-рантайм находит виртуальный элемент и синхронно вызывает зарегистрированные обработчики `addEventListener` / `onChange`.
+- После завершения коллбэка изменённое дерево сериализуется и отправляется в хост (`SetViewTree`), вызывая перерисовку окна.
 
 ---
 
