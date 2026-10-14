@@ -171,6 +171,7 @@ pub struct AppView {
     pub catalog_details_scroll_handle: ScrollHandle,
     pub catalog_details_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag,
     pub catalog_blink: BlinkManager,
+    pub catalog_window_manager: crate::views::plugin_catalog::CatalogWindowManager,
 }
 
 impl AppView {
@@ -312,6 +313,7 @@ impl AppView {
             catalog_details_scroll_handle: ScrollHandle::new(),
             catalog_details_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
             catalog_blink: BlinkManager::new(),
+            catalog_window_manager: crate::views::plugin_catalog::CatalogWindowManager::default(),
             plugin_views: HashMap::new(),
             plugin_runtimes: Vec::new(),
             code_block_views: HashMap::new(),
@@ -917,7 +919,6 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
             self.last_editor_h.get().max(100.0)
         };
         let slice_h = viewport_h.max(live);
-        let max_offset_y = f32::from(self.editor_scroll_handle.max_offset().height);
         let max_scroll_content = (total_content_h - viewport_h).max(0.0);
         let track_top_y = if bounds.origin.y > px(0.0) {
             f32::from(bounds.origin.y)

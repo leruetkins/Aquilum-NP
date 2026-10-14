@@ -63,7 +63,8 @@ fn main() {
 
                     window.on_window_should_close(cx, move |window, cx| {
                         if let Some(view) = weak.upgrade() {
-                            let _ = view.update(cx, |app, _cx| {
+                            let _ = view.update(cx, |app, cx| {
+                                app.catalog_window_manager.close_if_open(cx);
                                 app.unload_all_plugins();
                                 app.save_on_exit(window);
                             });

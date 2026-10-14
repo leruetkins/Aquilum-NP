@@ -440,15 +440,27 @@ fn setup_plugin_environment<'js>(
 
         class VElement {
             constructor(tag = "div", options = {}) {
+                if (typeof options === "string") {
+                    options = { cls: options };
+                } else if (!options || typeof options !== "object") {
+                    options = {};
+                }
                 this.tag = String(tag).toLowerCase();
                 this.id = options.id || ("el-" + Math.random().toString(36).substr(2, 9));
-                this.classes = new Set(options.cls ? (Array.isArray(options.cls) ? options.cls : options.cls.split(" ").filter(Boolean)) : []);
-                this.text = options.text || "";
+                let clsSet = new Set();
+                if (typeof options.cls === "string") {
+                    options.cls.split(" ").filter(Boolean).forEach(c => clsSet.add(c));
+                } else if (Array.isArray(options.cls)) {
+                    options.cls.filter(Boolean).forEach(c => clsSet.add(c));
+                }
+                this.classes = clsSet;
+                this.text = options.text != null ? String(options.text) : "";
                 this.attributes = Object.assign({}, options.attr || {});
+                if (options.type) this.attributes["type"] = options.type;
                 this.children = [];
                 this.eventListeners = new Map();
                 this.parent = null;
-                this.value = options.value || "";
+                this.value = options.value != null ? String(options.value) : "";
                 this.placeholder = options.placeholder || "";
                 this.disabled = !!options.disabled;
                 this.checked = !!options.checked;
@@ -466,12 +478,12 @@ fn setup_plugin_environment<'js>(
                 return el;
             }
 
-            createDiv(cls = "") {
-                return this.createEl("div", { cls });
+            createDiv(options = "") {
+                return this.createEl("div", options);
             }
 
-            createSpan(cls = "") {
-                return this.createEl("span", { cls });
+            createSpan(options = "") {
+                return this.createEl("span", options);
             }
 
             appendChild(child) {
@@ -989,7 +1001,7 @@ fn setup_plugin_environment<'js>(
                 };
             }
 
-            if (el.tag === "input") {
+            if (el.tag === "textarea" || el.tag === "input") {
                 return {
                     type: "input",
                     id: el.id,
@@ -1006,7 +1018,7 @@ fn setup_plugin_environment<'js>(
                 };
             }
 
-            if (el.tag === "p" || el.tag === "span") {
+            if (el.tag === "p" || el.tag === "span" || (el.tag === "div" && el.children.length === 0 && el.text)) {
                 return {
                     type: "text",
                     style: el.classes.has("muted") ? "muted" : "normal",
@@ -1014,7 +1026,7 @@ fn setup_plugin_environment<'js>(
                 };
             }
 
-            const isRow = el.classes.has("row") || el.classes.has("flex-row");
+            const isRow = el.classes.has("row") || el.classes.has("flex-row") || el.classes.has("aiw-currency-row");
             const children = el.children.map(__velement_to_uinode).filter(Boolean);
             return {
                 type: isRow ? "row" : "column",
@@ -1193,6 +1205,31 @@ fn setup_plugin_environment<'js>(
             getItems() { return []; }
             getItemText(item) { return String(item); }
             onChooseItem(item, evt) {}
+        }
+
+        class AbstractInputSuggest {
+            constructor(app, textInputEl) {
+                this.app = app;
+                this.textInputEl = textInputEl;
+                this.limit = 100;
+            }
+            getSuggestions(query) { return []; }
+            renderSuggestion(value, el) { if (el && el.setText) el.setText(String(value)); }
+            selectSuggestion(value, evt) {}
+            close() {}
+            open() {}
+        }
+
+        class EditorSuggest extends Component {
+            constructor(app) {
+                super();
+                this.app = app;
+                this.scope = new Scope();
+            }
+            getSuggestions(context) { return []; }
+            renderSuggestion(value, el) { if (el && el.setText) el.setText(String(value)); }
+            selectSuggestion(value, evt) {}
+            close() {}
         }
 
         class Menu {
@@ -1510,6 +1547,8 @@ fn setup_plugin_environment<'js>(
         globalThis.Menu = Menu;
         globalThis.MenuItem = MenuItem;
         globalThis.Notice = Notice;
+        globalThis.AbstractInputSuggest = AbstractInputSuggest;
+        globalThis.EditorSuggest = EditorSuggest;
         globalThis.TFile = TFile;
         globalThis.TFolder = TFolder;
         globalThis.TAbstractFile = TAbstractFile;
@@ -1540,6 +1579,8 @@ fn setup_plugin_environment<'js>(
             Modal,
             SuggestModal,
             FuzzySuggestModal,
+            AbstractInputSuggest,
+            EditorSuggest,
             View,
             ItemView,
             MarkdownRenderChild,
@@ -1577,6 +1618,23 @@ fn setup_plugin_environment<'js>(
                 const name = String(prop);
                 if (name.length > 0 && name[0] >= 'A' && name[0] <= 'Z') {
                     return getOrCreateFallbackClass(name);
+                }
+                return undefined;
+            },
+            has(target, prop) {
+                if (typeof prop === "string" && prop.length > 0 && prop[0] >= 'A' && prop[0] <= 'Z') {
+                    return true;
+                }
+                return prop in target;
+            },
+            getOwnPropertyDescriptor(target, prop) {
+                if (prop in target) {
+                    return Object.getOwnPropertyDescriptor(target, prop);
+                }
+                const name = String(prop);
+                if (name.length > 0 && name[0] >= 'A' && name[0] <= 'Z') {
+                    const cls = getOrCreateFallbackClass(name);
+                    return { value: cls, writable: true, enumerable: true, configurable: true };
                 }
                 return undefined;
             }

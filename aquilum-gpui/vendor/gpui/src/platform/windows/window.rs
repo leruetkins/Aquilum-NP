@@ -782,7 +782,12 @@ impl PlatformWindow for WindowsWindow {
     fn zoom(&self) {
         unsafe {
             if IsWindowVisible(self.0.hwnd).as_bool() {
-                ShowWindowAsync(self.0.hwnd, SW_MAXIMIZE).ok().log_err();
+                let cmd = if self.is_maximized() {
+                    SW_RESTORE
+                } else {
+                    SW_MAXIMIZE
+                };
+                ShowWindowAsync(self.0.hwnd, cmd).ok().log_err();
             } else if let Some(status) = self.0.state.borrow_mut().initial_placement.as_mut() {
                 status.state = WindowOpenState::Maximized;
             }
@@ -1153,7 +1158,7 @@ fn register_window_class(icon_handle: HICON) {
             lpfnWndProc: Some(window_procedure),
             hIcon: icon_handle,
             lpszClassName: PCWSTR(WINDOW_CLASS_NAME.as_ptr()),
-            style: CS_HREDRAW | CS_VREDRAW,
+            style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
             hInstance: get_module_handle().into(),
             hbrBackground: unsafe { CreateSolidBrush(COLORREF(0x00000000)) },
             ..Default::default()
