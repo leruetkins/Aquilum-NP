@@ -367,6 +367,7 @@ impl AppView {
     fn render_settings_content(&self, cx: &Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
         let scroll_handle = self.settings_scroll_handle.clone();
+        let is_catalog_open = self.plugin_catalog.is_open;
 
         div()
             .id("settings-content-scroll")
@@ -415,7 +416,8 @@ impl AppView {
                         let current_view = window.current_view();
                         window.on_mouse_event(
                             move |event: &ScrollWheelEvent, phase, window, cx| {
-                                if phase == DispatchPhase::Capture
+                                if !is_catalog_open
+                                    && phase == DispatchPhase::Capture
                                     && viewport.contains(&event.position)
                                 {
                                     let dy = scaled_wheel_dy(
@@ -2509,79 +2511,143 @@ impl AppView {
             })
     }
 
-    /// Renders an individual parsed inline span for the markdown viewer.
-    pub(crate) fn render_markdown_inline_span(
+    /// Converts parsed inline spans into a StyledText or InteractiveText element that wraps across lines
+    fn render_markdown_inlines(
         &self,
-        span: crate::markdown::InlineSpan,
-        span_idx: usize,
-        cx: &Context<Self>,
-    ) -> gpui::Div {
+        spans: Vec<crate::markdown::InlineSpan>,
+        line_idx: usize,
+    ) -> gpui::AnyElement {
         let theme = &self.theme;
-        match span {
-            crate::markdown::InlineSpan::Bold(t) => {
-                div()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(theme.text_primary)
-                    .whitespace_normal()
-                    .child(t)
+        let mut full_text = String::new();
+        let mut runs = Vec::new();
+        let mut ranges = Vec::new();
+        let mut urls = Vec::new();
+
+        let reg_font = gpui::font("Segoe UI");
+        let bold_font = gpui::font("Segoe UI").bold();
+        let italic_font = gpui::font("Segoe UI").italic();
+        let bold_italic_font = gpui::font("Segoe UI").bold().italic();
+        let code_font = gpui::font(self.editor_font_family());
+
+        for span in spans {
+            match span {
+                crate::markdown::InlineSpan::Text(t) => {
+                    let len = t.len();
+                    full_text.push_str(&t);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: reg_font.clone(),
+                        color: theme.text_secondary.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
+                crate::markdown::InlineSpan::Bold(t) => {
+                    let len = t.len();
+                    full_text.push_str(&t);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: bold_font.clone(),
+                        color: theme.text_primary.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
+                crate::markdown::InlineSpan::Italic(t) => {
+                    let len = t.len();
+                    full_text.push_str(&t);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: italic_font.clone(),
+                        color: theme.text_secondary.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
+                crate::markdown::InlineSpan::BoldItalic(t) => {
+                    let len = t.len();
+                    full_text.push_str(&t);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: bold_italic_font.clone(),
+                        color: theme.text_primary.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
+                crate::markdown::InlineSpan::InlineCode(t) => {
+                    let display_code = format!(" {} ", t);
+                    let len = display_code.len();
+                    full_text.push_str(&display_code);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: code_font.clone(),
+                        color: theme.accent.into(),
+                        background_color: Some(theme.code_bg.into()),
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
+                crate::markdown::InlineSpan::Link { label, url } => {
+                    let start = full_text.len();
+                    let len = label.len();
+                    full_text.push_str(&label);
+                    let end = full_text.len();
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: reg_font.clone(),
+                        color: theme.accent.into(),
+                        background_color: None,
+                        underline: Some(gpui::UnderlineStyle {
+                            thickness: px(1.0),
+                            color: Some(theme.accent.into()),
+                            wavy: false,
+                        }),
+                        strikethrough: None,
+                    });
+                    ranges.push(start..end);
+                    urls.push(url);
+                }
+                crate::markdown::InlineSpan::Strikethrough(t) => {
+                    let len = t.len();
+                    full_text.push_str(&t);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: reg_font.clone(),
+                        color: theme.text_muted.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: Some(gpui::StrikethroughStyle {
+                            thickness: px(1.0),
+                            color: Some(theme.text_muted.into()),
+                        }),
+                    });
+                }
             }
-            crate::markdown::InlineSpan::Italic(t) => {
-                div()
-                    .italic()
-                    .text_color(theme.text_secondary)
-                    .whitespace_normal()
-                    .child(t)
-            }
-            crate::markdown::InlineSpan::BoldItalic(t) => {
-                div()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .italic()
-                    .text_color(theme.text_primary)
-                    .whitespace_normal()
-                    .child(t)
-            }
-            crate::markdown::InlineSpan::InlineCode(t) => {
-                div()
-                    .px_1p5()
-                    .py_0p5()
-                    .rounded_sm()
-                    .bg(theme.bg_editor)
-                    .border_1()
-                    .border_color(theme.border)
-                    .font_family(self.editor_font_family())
-                    .text_xs()
-                    .text_color(theme.accent)
-                    .whitespace_normal()
-                    .child(t)
-            }
-            crate::markdown::InlineSpan::Link { label, url } => {
-                let target = url.clone();
-                div().whitespace_normal().child(
-                    div()
-                        .id(gpui::ElementId::from(("readme-link", span_idx)))
-                        .text_color(theme.accent)
-                        .cursor_pointer()
-                        .hover(|h| h.underline())
-                        .whitespace_normal()
-                        .child(label)
-                        .on_click(cx.listener(move |_this, _, _, cx| {
-                            cx.open_url(&target);
-                        })),
-                )
-            }
-            crate::markdown::InlineSpan::Strikethrough(t) => {
-                div()
-                    .line_through()
-                    .text_color(theme.text_muted)
-                    .whitespace_normal()
-                    .child(t)
-            }
-            crate::markdown::InlineSpan::Text(t) => {
-                div()
-                    .text_color(theme.text_secondary)
-                    .whitespace_normal()
-                    .child(t)
-            }
+        }
+
+        if full_text.is_empty() {
+            return div().into_any_element();
+        }
+
+        let styled_text = gpui::StyledText::new(full_text).with_runs(runs);
+        if !ranges.is_empty() {
+            gpui::InteractiveText::new(
+                gpui::ElementId::from(("readme-md-interactive", line_idx)),
+                styled_text,
+            )
+            .on_click(ranges, move |range_ix, _window, cx| {
+                if let Some(url) = urls.get(range_ix) {
+                    cx.open_url(url);
+                }
+            })
+            .into_any_element()
+        } else {
+            styled_text.into_any_element()
         }
     }
 
@@ -2589,12 +2655,12 @@ impl AppView {
     pub(crate) fn render_markdown_content(
         &self,
         text: &str,
-        cx: &Context<Self>,
+        _cx: &Context<Self>,
     ) -> Vec<gpui::Div> {
         let theme = &self.theme;
         let mut rendered_markdown_lines: Vec<gpui::Div> = Vec::new();
         let mut lines_iter = text.lines().peekable();
-        let mut span_counter = 0usize;
+        let mut line_counter = 0usize;
 
         while let Some(line) = lines_iter.next() {
             let trimmed = line.trim();
@@ -2622,6 +2688,7 @@ impl AppView {
                         .flex_col()
                         .w_full()
                         .min_w_0()
+                        .overflow_x_hidden()
                         .my_2()
                         .rounded_md()
                         .bg(theme.bg_editor)
@@ -2632,6 +2699,7 @@ impl AppView {
                             parent.child(
                                 div()
                                     .w_full()
+                                    .min_w_0()
                                     .px_3()
                                     .py_1()
                                     .bg(theme.bg_hover)
@@ -2646,6 +2714,7 @@ impl AppView {
                         .child(
                             div()
                                 .w_full()
+                                .min_w_0()
                                 .p_3()
                                 .font_family(self.editor_font_family())
                                 .text_xs()
@@ -2739,6 +2808,9 @@ impl AppView {
 
             // 5. Blockquote
             if let Some(quote) = trimmed.strip_prefix("> ") {
+                let spans = crate::markdown::parse_inline_spans(quote);
+                let inlines = self.render_markdown_inlines(spans, line_counter);
+                line_counter += 1;
                 rendered_markdown_lines.push(
                     div()
                         .w_full()
@@ -2752,7 +2824,7 @@ impl AppView {
                         .text_sm()
                         .text_color(theme.text_muted)
                         .whitespace_normal()
-                        .child(quote.to_string()),
+                        .child(inlines),
                 );
                 continue;
             }
@@ -2767,14 +2839,8 @@ impl AppView {
             };
             if let Some((checked, task_text)) = task_opt {
                 let spans = crate::markdown::parse_inline_spans(task_text);
-                let span_elements: Vec<gpui::Div> = spans
-                    .into_iter()
-                    .map(|s| {
-                        let idx = span_counter;
-                        span_counter += 1;
-                        self.render_markdown_inline_span(s, idx, cx)
-                    })
-                    .collect();
+                let inlines = self.render_markdown_inlines(spans, line_counter);
+                line_counter += 1;
                 let checkbox = div()
                     .flex_shrink_0()
                     .w_3p5()
@@ -2800,15 +2866,12 @@ impl AppView {
                         .child(checkbox)
                         .child(
                             div()
-                                .flex()
                                 .flex_1()
                                 .min_w_0()
-                                .flex_row()
-                                .flex_wrap()
-                                .items_center()
                                 .text_sm()
+                                .line_height(gpui::relative(1.4))
                                 .whitespace_normal()
-                                .children(span_elements),
+                                .child(inlines),
                         ),
                 );
                 continue;
@@ -2817,14 +2880,8 @@ impl AppView {
             // 7. Bullet list item
             if let Some(bullet) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")).or_else(|| trimmed.strip_prefix("+ ")) {
                 let spans = crate::markdown::parse_inline_spans(bullet);
-                let span_elements: Vec<gpui::Div> = spans
-                    .into_iter()
-                    .map(|s| {
-                        let idx = span_counter;
-                        span_counter += 1;
-                        self.render_markdown_inline_span(s, idx, cx)
-                    })
-                    .collect();
+                let inlines = self.render_markdown_inlines(spans, line_counter);
+                line_counter += 1;
                 rendered_markdown_lines.push(
                     div()
                         .flex()
@@ -2837,15 +2894,12 @@ impl AppView {
                         .child(div().flex_shrink_0().text_color(theme.accent).child("•"))
                         .child(
                             div()
-                                .flex()
                                 .flex_1()
                                 .min_w_0()
-                                .flex_row()
-                                .flex_wrap()
-                                .items_center()
                                 .text_sm()
+                                .line_height(gpui::relative(1.4))
                                 .whitespace_normal()
-                                .children(span_elements),
+                                .child(inlines),
                         ),
                 );
                 continue;
@@ -2857,14 +2911,8 @@ impl AppView {
                 let num = &trimmed[..digits_len];
                 let text = &trimmed[digits_len + 2..];
                 let spans = crate::markdown::parse_inline_spans(text);
-                let span_elements: Vec<gpui::Div> = spans
-                    .into_iter()
-                    .map(|s| {
-                        let idx = span_counter;
-                        span_counter += 1;
-                        self.render_markdown_inline_span(s, idx, cx)
-                    })
-                    .collect();
+                let inlines = self.render_markdown_inlines(spans, line_counter);
+                line_counter += 1;
                 rendered_markdown_lines.push(
                     div()
                         .flex()
@@ -2877,15 +2925,12 @@ impl AppView {
                         .child(div().flex_shrink_0().text_xs().text_color(theme.text_muted).child(format!("{}.", num)))
                         .child(
                             div()
-                                .flex()
                                 .flex_1()
                                 .min_w_0()
-                                .flex_row()
-                                .flex_wrap()
-                                .items_center()
                                 .text_sm()
+                                .line_height(gpui::relative(1.4))
                                 .whitespace_normal()
-                                .children(span_elements),
+                                .child(inlines),
                         ),
                 );
                 continue;
@@ -2893,42 +2938,16 @@ impl AppView {
 
             // 9. Regular paragraph / text line
             let spans = crate::markdown::parse_inline_spans(line);
-            if spans.len() == 1 {
-                if let crate::markdown::InlineSpan::Text(t) = &spans[0] {
-                    rendered_markdown_lines.push(
-                        div()
-                            .w_full()
-                            .min_w_0()
-                            .text_sm()
-                            .line_height(gpui::relative(1.4))
-                            .text_color(theme.text_secondary)
-                            .whitespace_normal()
-                            .child(t.clone()),
-                    );
-                    continue;
-                }
-            }
-
-            let span_elements: Vec<gpui::Div> = spans
-                .into_iter()
-                .map(|s| {
-                    let idx = span_counter;
-                    span_counter += 1;
-                    self.render_markdown_inline_span(s, idx, cx)
-                })
-                .collect();
+            let inlines = self.render_markdown_inlines(spans, line_counter);
+            line_counter += 1;
             rendered_markdown_lines.push(
                 div()
-                    .flex()
-                    .flex_row()
-                    .flex_wrap()
-                    .items_center()
                     .w_full()
                     .min_w_0()
                     .text_sm()
                     .line_height(gpui::relative(1.4))
                     .whitespace_normal()
-                    .children(span_elements),
+                    .child(inlines),
             );
         }
 

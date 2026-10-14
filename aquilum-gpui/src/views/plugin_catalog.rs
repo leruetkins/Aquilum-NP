@@ -150,7 +150,7 @@ use gpui::prelude::*;
 use gpui::{
     div, point, px, rgba, AnyElement, Context, ElementId, InteractiveElement,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, Window,
+    ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 
 /// Row height in pixels for each entry in the community plugins list.
@@ -655,6 +655,9 @@ impl AppView {
             .size_full()
             .cursor(gpui::CursorStyle::Arrow)
             .track_focus(&self.catalog_focus_handle)
+            .on_scroll_wheel(|_, _, cx| {
+                cx.stop_propagation();
+            })
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 this.handle_catalog_key(event, cx);
             }))
@@ -749,6 +752,9 @@ impl AppView {
                                 }
                             }))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .on_scroll_wheel(|_, _, cx| {
                                 cx.stop_propagation();
                             })
                             // Catalog Header with Search
@@ -1107,7 +1113,13 @@ impl AppView {
                 .rounded_lg()
                 .border_1()
                 .border_color(theme.border_subtle)
-                .when(is_selected, |d| d.bg(theme.bg_hover))
+                .bg(if is_selected {
+                    theme.bg_hover
+                } else if theme.is_dark {
+                    theme.bg_card
+                } else {
+                    gpui::rgba(0xffffffff)
+                })
                 .hover(|h| h.bg(theme.bg_hover))
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1221,6 +1233,23 @@ impl AppView {
             .overflow_scroll()
             .p_2()
             .pr_3() // leave breathing room for overlay scrollbar
+            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                let line_h = 36.0;
+                let dy = match event.delta {
+                    gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
+                    gpui::ScrollDelta::Lines(l) => l.y * line_h,
+                };
+                if dy != 0.0 {
+                    let cur = f32::from(this.catalog_scroll_handle.offset().y);
+                    let max = f32::from(this.catalog_scroll_handle.max_offset().height);
+                    let next = (cur + dy).clamp(-max, 0.0);
+                    if next != cur {
+                        this.catalog_scroll_handle.set_offset(point(px(0.0), px(next)));
+                        cx.notify();
+                    }
+                }
+                cx.stop_propagation();
+            }))
             .children(item_elements);
 
         let scroll_style = catalog_scrollbar_style();
@@ -1234,6 +1263,23 @@ impl AppView {
             .h_full()
             .border_r_1()
             .border_color(theme.border_subtle)
+            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                let line_h = 36.0;
+                let dy = match event.delta {
+                    gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
+                    gpui::ScrollDelta::Lines(l) => l.y * line_h,
+                };
+                if dy != 0.0 {
+                    let cur = f32::from(this.catalog_scroll_handle.offset().y);
+                    let max = f32::from(this.catalog_scroll_handle.max_offset().height);
+                    let next = (cur + dy).clamp(-max, 0.0);
+                    if next != cur {
+                        this.catalog_scroll_handle.set_offset(point(px(0.0), px(next)));
+                        cx.notify();
+                    }
+                }
+                cx.stop_propagation();
+            }))
             .child(scroll_container);
 
         if let Some(geometry) = ScrollbarGeometry::from_handle(&self.catalog_scroll_handle, &scroll_style) {
@@ -1667,6 +1713,7 @@ impl AppView {
                         .flex_col()
                         .w_full()
                         .min_w_0()
+                        .overflow_x_hidden()
                         .p_5()
                         .rounded_lg()
                         .bg(theme.bg_card)
@@ -1721,11 +1768,29 @@ impl AppView {
             .flex_col()
             .size_full()
             .min_w_0()
-            .overflow_scroll()
+            .overflow_y_scroll()
+            .overflow_x_hidden()
             .bg(theme.bg_editor)
             .p_6()
             .pr_8() // leave breathing room for overlay scrollbar
             .gap_4()
+            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                let line_h = 36.0;
+                let dy = match event.delta {
+                    gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
+                    gpui::ScrollDelta::Lines(l) => l.y * line_h,
+                };
+                if dy != 0.0 {
+                    let cur = f32::from(this.catalog_details_scroll_handle.offset().y);
+                    let max = f32::from(this.catalog_details_scroll_handle.max_offset().height);
+                    let next = (cur + dy).clamp(-max, 0.0);
+                    if next != cur {
+                        this.catalog_details_scroll_handle.set_offset(point(px(0.0), px(next)));
+                        cx.notify();
+                    }
+                }
+                cx.stop_propagation();
+            }))
             .child(top_actions_bar)
             .when(is_this_downloading, |parent| {
                 parent.child(
@@ -1768,6 +1833,23 @@ impl AppView {
             .min_w_0()
             .min_h_0()
             .h_full()
+            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                let line_h = 36.0;
+                let dy = match event.delta {
+                    gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
+                    gpui::ScrollDelta::Lines(l) => l.y * line_h,
+                };
+                if dy != 0.0 {
+                    let cur = f32::from(this.catalog_details_scroll_handle.offset().y);
+                    let max = f32::from(this.catalog_details_scroll_handle.max_offset().height);
+                    let next = (cur + dy).clamp(-max, 0.0);
+                    if next != cur {
+                        this.catalog_details_scroll_handle.set_offset(point(px(0.0), px(next)));
+                        cx.notify();
+                    }
+                }
+                cx.stop_propagation();
+            }))
             .child(scroll_container);
 
         if let Some(geometry) = ScrollbarGeometry::from_handle(&self.catalog_details_scroll_handle, &scroll_style) {
