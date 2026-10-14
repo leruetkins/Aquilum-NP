@@ -17,6 +17,7 @@ semver = "1"
 futures = "0.3"
 rquickjs = "0.8"
 ureq = { version = "2.10", features = ["json"] }
+sha2 = "0.10"
 
 [build-dependencies]
 winres = "0.1"

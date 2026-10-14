@@ -165,6 +165,7 @@ pub fn spawn_plugin_runtime(
                                     if (globalThis.__code_block_handlers) globalThis.__code_block_handlers.clear();
                                     if (globalThis.__command_handlers) globalThis.__command_handlers.clear();
                                     if (globalThis.__js_timers) globalThis.__js_timers.clear();
+                                    if (globalThis.__velement_registry) globalThis.__velement_registry.clear();
                                 "#);
                             });
                             break;
@@ -177,6 +178,11 @@ pub fn spawn_plugin_runtime(
                         HostEvent::ExecuteCommand { command_id } => {
                             let _ = ctx.with(|ctx| {
                                 dispatch_command_execution(&ctx, command_id);
+                            });
+                        }
+                        HostEvent::UiEvent { view_id, node_id, event, value } => {
+                            let _ = ctx.with(|ctx| {
+                                dispatch_ui_interaction(&ctx, view_id, node_id, event, value);
                             });
                         }
                         _ => {
@@ -284,7 +290,22 @@ fn setup_plugin_environment<'js>(
         globalThis.__code_block_handlers = new Map();
         globalThis.__command_handlers = new Map();
         globalThis.__js_timers = new Map();
+        globalThis.__velement_registry = new Map();
         let __next_timer_id = 1;
+
+        function __dispatch_ui_interaction(nodeId, action, value) {
+            const el = globalThis.__velement_registry.get(nodeId);
+            if (el) {
+                if (action === "change") {
+                    const parsedVal = value === "true" ? true : (value === "false" ? false : value);
+                    el.checked = !!parsedVal;
+                    el.value = value;
+                    el.dispatchEvent({ type: "change", value: parsedVal });
+                } else {
+                    el.dispatchEvent({ type: action });
+                }
+            }
+        }
 
         globalThis.setTimeout = function(fn, delay = 0, ...args) {
             const id = __next_timer_id++;
@@ -417,8 +438,924 @@ fn setup_plugin_environment<'js>(
             }
         }
 
-        class Plugin {
+        class VElement {
+            constructor(tag = "div", options = {}) {
+                this.tag = String(tag).toLowerCase();
+                this.id = options.id || ("el-" + Math.random().toString(36).substr(2, 9));
+                this.classes = new Set(options.cls ? (Array.isArray(options.cls) ? options.cls : options.cls.split(" ").filter(Boolean)) : []);
+                this.text = options.text || "";
+                this.attributes = Object.assign({}, options.attr || {});
+                this.children = [];
+                this.eventListeners = new Map();
+                this.parent = null;
+                this.value = options.value || "";
+                this.placeholder = options.placeholder || "";
+                this.disabled = !!options.disabled;
+                this.checked = !!options.checked;
+                this.dataset = {};
+                this.style = new Proxy({}, {
+                    get: (t, p) => t[p] || "",
+                    set: (t, p, v) => { t[p] = v; return true; }
+                });
+                globalThis.__velement_registry.set(this.id, this);
+            }
+
+            createEl(tag, options = {}) {
+                const el = new VElement(tag, options);
+                this.appendChild(el);
+                return el;
+            }
+
+            createDiv(cls = "") {
+                return this.createEl("div", { cls });
+            }
+
+            createSpan(cls = "") {
+                return this.createEl("span", { cls });
+            }
+
+            appendChild(child) {
+                if (child instanceof VElement) {
+                    child.parent = this;
+                    this.children.push(child);
+                }
+                return child;
+            }
+
+            empty() {
+                for (const c of this.children) {
+                    globalThis.__velement_registry.delete(c.id);
+                }
+                this.children = [];
+                this.text = "";
+                return this;
+            }
+
+            remove() {
+                globalThis.__velement_registry.delete(this.id);
+                if (this.parent) {
+                    const idx = this.parent.children.indexOf(this);
+                    if (idx !== -1) {
+                        this.parent.children.splice(idx, 1);
+                    }
+                    this.parent = null;
+                }
+            }
+
+            detach() {
+                this.remove();
+            }
+
+            addClass(...classes) {
+                for (const c of classes) {
+                    if (c) this.classes.add(c);
+                }
+                return this;
+            }
+
+            removeClass(...classes) {
+                for (const c of classes) {
+                    if (c) this.classes.delete(c);
+                }
+                return this;
+            }
+
+            hasClass(cls) {
+                return this.classes.has(cls);
+            }
+
+            toggleClass(cls, force) {
+                if (typeof force === "boolean") {
+                    if (force) this.addClass(cls);
+                    else this.removeClass(cls);
+                } else {
+                    if (this.classes.has(cls)) this.removeClass(cls);
+                    else this.addClass(cls);
+                }
+                return this;
+            }
+
+            get classList() {
+                return {
+                    add: (...cls) => this.addClass(...cls),
+                    remove: (...cls) => this.removeClass(...cls),
+                    contains: (cls) => this.classes.has(cls),
+                    toggle: (cls, force) => this.toggleClass(cls, force),
+                    forEach: (fn) => this.classes.forEach(fn),
+                };
+            }
+
+            setText(text) {
+                this.text = String(text != null ? text : "");
+                return this;
+            }
+
+            getText() {
+                return this.text;
+            }
+
+            get textContent() {
+                return this.text;
+            }
+
+            set textContent(val) {
+                this.setText(val);
+            }
+
+            get innerHTML() {
+                return this.text;
+            }
+
+            set innerHTML(val) {
+                this.setText(val);
+            }
+
+            get innerText() {
+                return this.text;
+            }
+
+            set innerText(val) {
+                this.setText(val);
+            }
+
+            setAttr(name, val) {
+                this.attributes[name] = val;
+                return this;
+            }
+
+            getAttr(name) {
+                return this.attributes[name];
+            }
+
+            setAttribute(name, val) {
+                this.attributes[name] = val;
+            }
+
+            getAttribute(name) {
+                return this.attributes[name];
+            }
+
+            removeAttribute(name) {
+                delete this.attributes[name];
+            }
+
+            hasAttribute(name) {
+                return name in this.attributes;
+            }
+
+            addEventListener(type, listener) {
+                if (!this.eventListeners.has(type)) {
+                    this.eventListeners.set(type, []);
+                }
+                this.eventListeners.get(type).push(listener);
+            }
+
+            removeEventListener(type, listener) {
+                const list = this.eventListeners.get(type);
+                if (list) {
+                    const idx = list.indexOf(listener);
+                    if (idx !== -1) list.splice(idx, 1);
+                }
+            }
+
+            dispatchEvent(event) {
+                const type = event?.type || "click";
+                const list = this.eventListeners.get(type);
+                if (list) {
+                    for (const fn of list) {
+                        try { fn(event); } catch (e) { console.error("Event listener error:", e); }
+                    }
+                }
+            }
+
+            onClick(callback) {
+                this.addEventListener("click", callback);
+                return this;
+            }
+
+            querySelector(sel) {
+                if (sel.startsWith(".")) {
+                    const c = sel.slice(1);
+                    return this.children.find(ch => ch.classes && ch.classes.has(c)) || null;
+                }
+                return this.children.find(ch => ch.tag === sel) || null;
+            }
+
+            querySelectorAll(sel) {
+                if (sel.startsWith(".")) {
+                    const c = sel.slice(1);
+                    return this.children.filter(ch => ch.classes && ch.classes.has(c));
+                }
+                return this.children.filter(ch => ch.tag === sel);
+            }
+        }
+
+        class BaseComponent {
+            constructor() {
+                this.disabled = false;
+            }
+            setDisabled(disabled) {
+                this.disabled = !!disabled;
+                return this;
+            }
+        }
+
+        class ValueComponent extends BaseComponent {
+            constructor() {
+                super();
+                this.value = undefined;
+            }
+            getValue() {
+                return this.value;
+            }
+            setValue(val) {
+                this.value = val;
+                return this;
+            }
+        }
+
+        class ButtonComponent extends BaseComponent {
+            constructor(containerEl) {
+                super();
+                this.buttonEl = containerEl ? containerEl.createEl("button") : new VElement("button");
+                this.onClickHandler = null;
+            }
+            setButtonText(text) {
+                this.buttonEl.setText(text);
+                return this;
+            }
+            setIcon(icon) {
+                this.buttonEl.attributes["icon"] = icon;
+                return this;
+            }
+            setCta() {
+                this.buttonEl.addClass("mod-cta");
+                return this;
+            }
+            setWarning() {
+                this.buttonEl.addClass("mod-warning");
+                return this;
+            }
+            setDisabled(disabled) {
+                super.setDisabled(disabled);
+                this.buttonEl.disabled = this.disabled;
+                return this;
+            }
+            onClick(callback) {
+                this.onClickHandler = callback;
+                this.buttonEl.addEventListener("click", callback);
+                return this;
+            }
+        }
+
+        class ExtraButtonComponent extends BaseComponent {
+            constructor(containerEl) {
+                super();
+                this.extraSettingsEl = containerEl ? containerEl.createDiv("clickable-icon") : new VElement("div", { cls: "clickable-icon" });
+            }
+            setIcon(icon) {
+                this.extraSettingsEl.setAttr("icon", icon);
+                return this;
+            }
+            setTooltip(tooltip) {
+                this.extraSettingsEl.setAttr("title", tooltip);
+                return this;
+            }
+            setDisabled(disabled) {
+                super.setDisabled(disabled);
+                return this;
+            }
+            onClick(cb) {
+                this.extraSettingsEl.addEventListener("click", cb);
+                return this;
+            }
+        }
+
+        class ToggleComponent extends ValueComponent {
+            constructor(containerEl) {
+                super();
+                this.toggleEl = containerEl ? containerEl.createEl("input", { attr: { type: "checkbox" } }) : new VElement("input");
+                this.value = false;
+                this.onChangeHandler = null;
+            }
+            setValue(val) {
+                super.setValue(!!val);
+                this.toggleEl.checked = this.value;
+                return this;
+            }
+            onChange(callback) {
+                this.onChangeHandler = callback;
+                this.toggleEl.addEventListener("change", (e) => {
+                    this.value = e?.value !== undefined ? e.value : !this.value;
+                    callback(this.value);
+                });
+                return this;
+            }
+        }
+
+        class TextComponent extends ValueComponent {
+            constructor(containerEl) {
+                super();
+                this.inputEl = containerEl ? containerEl.createEl("input", { attr: { type: "text" } }) : new VElement("input");
+                this.value = "";
+            }
+            setPlaceholder(p) {
+                this.inputEl.placeholder = p;
+                return this;
+            }
+            setValue(v) {
+                super.setValue(String(v != null ? v : ""));
+                this.inputEl.value = this.value;
+                return this;
+            }
+            onChange(callback) {
+                this.inputEl.addEventListener("change", (e) => {
+                    this.value = e?.value != null ? e.value : this.value;
+                    callback(this.value);
+                });
+                return this;
+            }
+        }
+
+        class SliderComponent extends ValueComponent {
+            constructor(containerEl) {
+                super();
+                this.sliderEl = containerEl ? containerEl.createEl("input", { attr: { type: "range" } }) : new VElement("input");
+                this.min = 0;
+                this.max = 100;
+                this.step = 1;
+                this.value = 0;
+            }
+            setLimits(min, max, step) {
+                this.min = min;
+                this.max = max;
+                this.step = step;
+                return this;
+            }
+            setValue(v) {
+                super.setValue(Number(v) || 0);
+                this.sliderEl.value = this.value;
+                return this;
+            }
+            onChange(callback) {
+                this.sliderEl.addEventListener("change", (e) => {
+                    this.value = Number(e?.value) || 0;
+                    callback(this.value);
+                });
+                return this;
+            }
+        }
+
+        class DropdownComponent extends ValueComponent {
+            constructor(containerEl) {
+                super();
+                this.selectEl = containerEl ? containerEl.createEl("select") : new VElement("select");
+                this.options = {};
+                this.value = "";
+            }
+            addOption(val, display) {
+                this.options[val] = display;
+                if (!this.value) this.value = val;
+                this.selectEl.attributes["options"] = this.options;
+                return this;
+            }
+            addOptions(opts) {
+                Object.assign(this.options, opts);
+                if (!this.value && Object.keys(opts).length > 0) {
+                    this.value = Object.keys(opts)[0];
+                }
+                this.selectEl.attributes["options"] = this.options;
+                return this;
+            }
+            setValue(v) {
+                super.setValue(String(v));
+                this.selectEl.value = this.value;
+                return this;
+            }
+            onChange(callback) {
+                this.selectEl.addEventListener("change", (e) => {
+                    this.value = e?.value != null ? e.value : this.value;
+                    callback(this.value);
+                });
+                return this;
+            }
+        }
+
+        class Setting {
+            constructor(containerEl) {
+                this.settingEl = containerEl ? containerEl.createDiv("setting-item") : new VElement("div", { cls: "setting-item" });
+                this.infoEl = this.settingEl.createDiv("setting-item-info");
+                this.nameEl = this.infoEl.createDiv("setting-item-name");
+                this.descEl = this.infoEl.createDiv("setting-item-description");
+                this.controlEl = this.settingEl.createDiv("setting-item-control");
+                this.controls = [];
+            }
+            setName(name) {
+                this.nameEl.setText(name);
+                return this;
+            }
+            setDesc(desc) {
+                this.descEl.setText(desc);
+                return this;
+            }
+            setClass(cls) {
+                this.settingEl.addClass(cls);
+                return this;
+            }
+            setTooltip(tooltip) {
+                this.settingEl.setAttr("title", tooltip);
+                return this;
+            }
+            setHeading() {
+                this.settingEl.addClass("setting-item-heading");
+                return this;
+            }
+            addToggle(cb) {
+                const toggle = new ToggleComponent(this.controlEl);
+                this.controls.push(toggle);
+                if (typeof cb === "function") cb(toggle);
+                return this;
+            }
+            addButton(cb) {
+                const btn = new ButtonComponent(this.controlEl);
+                this.controls.push(btn);
+                if (typeof cb === "function") cb(btn);
+                return this;
+            }
+            addText(cb) {
+                const txt = new TextComponent(this.controlEl);
+                this.controls.push(txt);
+                if (typeof cb === "function") cb(txt);
+                return this;
+            }
+            addSlider(cb) {
+                const slider = new SliderComponent(this.controlEl);
+                this.controls.push(slider);
+                if (typeof cb === "function") cb(slider);
+                return this;
+            }
+            addDropdown(cb) {
+                const drop = new DropdownComponent(this.controlEl);
+                this.controls.push(drop);
+                if (typeof cb === "function") cb(drop);
+                return this;
+            }
+            addExtraButton(cb) {
+                const extra = new ExtraButtonComponent(this.controlEl);
+                this.controls.push(extra);
+                if (typeof cb === "function") cb(extra);
+                return this;
+            }
+        }
+
+        class PluginSettingTab {
+            constructor(app, plugin) {
+                this.app = app;
+                this.plugin = plugin;
+                this.containerEl = new VElement("div", { cls: "vertical-tab-content" });
+            }
+            display() {}
+            hide() {}
+        }
+
+        function __velement_to_uinode(el) {
+            if (!el) return { type: "text", value: "" };
+
+            if (el.classes && el.classes.has("vertical-tab-content")) {
+                const children = el.children.map(__velement_to_uinode).filter(Boolean);
+                return { type: "column", gap: "medium", children };
+            }
+
+            if (el.classes && el.classes.has("setting-item")) {
+                const name = el.children.find(c => c.classes?.has("setting-item-info"))?.children?.find(c => c.classes?.has("setting-item-name"))?.text || el.text || "Setting";
+                const desc = el.children.find(c => c.classes?.has("setting-item-info"))?.children?.find(c => c.classes?.has("setting-item-description"))?.text || undefined;
+                const controlDiv = el.children.find(c => c.classes?.has("setting-item-control"));
+
+                let controlNode = { type: "text", value: "" };
+                if (controlDiv && controlDiv.children.length > 0) {
+                    controlNode = __velement_to_uinode(controlDiv.children[0]);
+                }
+
+                return {
+                    type: "setting_item",
+                    name: String(name),
+                    desc: desc ? String(desc) : undefined,
+                    control: controlNode
+                };
+            }
+
+            if (el.tag === "button") {
+                let variant = "default";
+                if (el.classes.has("mod-cta") || el.classes.has("mod-primary")) variant = "primary";
+                if (el.classes.has("mod-warning") || el.classes.has("mod-danger")) variant = "danger";
+                return {
+                    type: "button",
+                    id: el.id,
+                    label: el.text || "Button",
+                    variant,
+                    disabled: !!el.disabled
+                };
+            }
+
+            if (el.tag === "input" && (el.attributes["type"] === "checkbox" || el.checked !== undefined)) {
+                return {
+                    type: "toggle",
+                    id: el.id,
+                    value: !!el.checked
+                };
+            }
+
+            if (el.tag === "input" && el.attributes["type"] === "range") {
+                return {
+                    type: "slider",
+                    id: el.id,
+                    min: Number(el.attributes["min"] || 0),
+                    max: Number(el.attributes["max"] || 100),
+                    step: Number(el.attributes["step"] || 1),
+                    value: Number(el.value || 0)
+                };
+            }
+
+            if (el.tag === "select") {
+                const options = Object.entries(el.attributes["options"] || {}).map(([val, lbl]) => ({
+                    value: String(val),
+                    label: String(lbl)
+                }));
+                return {
+                    type: "select",
+                    id: el.id,
+                    options,
+                    value: String(el.value || "")
+                };
+            }
+
+            if (el.tag === "input") {
+                return {
+                    type: "input",
+                    id: el.id,
+                    placeholder: el.placeholder || undefined,
+                    value: el.value || undefined
+                };
+            }
+
+            if (/^h[1-6]$/.test(el.tag)) {
+                return {
+                    type: "text",
+                    style: "heading",
+                    value: el.text || ""
+                };
+            }
+
+            if (el.tag === "p" || el.tag === "span") {
+                return {
+                    type: "text",
+                    style: el.classes.has("muted") ? "muted" : "normal",
+                    value: el.text || ""
+                };
+            }
+
+            const isRow = el.classes.has("row") || el.classes.has("flex-row");
+            const children = el.children.map(__velement_to_uinode).filter(Boolean);
+            return {
+                type: isRow ? "row" : "column",
+                gap: "medium",
+                children
+            };
+        }
+
+        class Component {
+            constructor() {
+                this._children = [];
+                this._loaded = false;
+            }
+            load() {
+                this._loaded = true;
+                if (typeof this.onload === "function") this.onload();
+            }
+            unload() {
+                this._loaded = false;
+                if (typeof this.onunload === "function") this.onunload();
+                for (const c of this._children) {
+                    if (c && typeof c.unload === "function") c.unload();
+                }
+                this._children = [];
+            }
+            onload() {}
+            onunload() {}
+            addChild(child) {
+                if (child) {
+                    this._children.push(child);
+                    if (this._loaded && typeof child.load === "function") {
+                        child.load();
+                    }
+                }
+                return child;
+            }
+            removeChild(child) {
+                const idx = this._children.indexOf(child);
+                if (idx !== -1) {
+                    this._children.splice(idx, 1);
+                    if (typeof child.unload === "function") child.unload();
+                }
+                return child;
+            }
+            register(cb) {
+                if (typeof cb === "function") {
+                    this._children.push({ unload: cb });
+                }
+            }
+            registerEvent(ref) {
+                return ref;
+            }
+            registerDomEvent(el, type, cb, options) {
+                if (el && typeof el.addEventListener === "function") {
+                    el.addEventListener(type, cb, options);
+                    this.register(() => el.removeEventListener(type, cb, options));
+                }
+            }
+            registerInterval(id) {
+                this.register(() => clearInterval(id));
+                return id;
+            }
+            registerHoverLinkSource(source, info) {}
+        }
+
+        class Events {
+            constructor() {
+                this._events = new Map();
+            }
+            on(name, cb, ctx) {
+                if (!this._events.has(name)) this._events.set(name, []);
+                const ref = { cb, ctx };
+                this._events.get(name).push(ref);
+                return ref;
+            }
+            off(name, cb) {
+                const list = this._events.get(name);
+                if (list) {
+                    const idx = list.findIndex(r => r.cb === cb);
+                    if (idx !== -1) list.splice(idx, 1);
+                }
+            }
+            offref(ref) {
+                for (const list of this._events.values()) {
+                    const idx = list.indexOf(ref);
+                    if (idx !== -1) { list.splice(idx, 1); break; }
+                }
+            }
+            trigger(name, ...args) {
+                const list = this._events.get(name);
+                if (list) {
+                    for (const { cb, ctx } of [...list]) {
+                        try { cb.apply(ctx, args); } catch (e) { console.error(e); }
+                    }
+                }
+            }
+            tryTrigger(name, ...args) {
+                this.trigger(name, ...args);
+            }
+        }
+
+        class Scope {
+            constructor(parent) {
+                this.parent = parent;
+                this.keys = [];
+            }
+            register(modifiers, key, func) { return {}; }
+            unregister(func) {}
+        }
+
+        class View extends Component {
+            constructor(leaf) {
+                super();
+                this.leaf = leaf;
+                this.app = leaf ? leaf.app : globalThis.app;
+                this.containerEl = new VElement("div", { cls: "view" });
+                this.navigation = false;
+            }
+            getViewType() { return "view"; }
+            getDisplayText() { return ""; }
+            getIcon() { return "document"; }
+            onOpen() {}
+            onClose() {}
+            getState() { return {}; }
+            setState(state, result) { return Promise.resolve(); }
+        }
+
+        class ItemView extends View {
+            constructor(leaf) {
+                super(leaf);
+                this.contentEl = this.containerEl.createDiv("item-view-content");
+            }
+            getViewType() { return "empty"; }
+            getDisplayText() { return "Item View"; }
+            async onOpen() {}
+            async onClose() {}
+        }
+
+        class MarkdownRenderChild extends Component {
+            constructor(containerEl) {
+                super();
+                this.containerEl = containerEl;
+            }
+        }
+
+        class Modal extends Component {
+            constructor(app) {
+                super();
+                this.app = app;
+                this.scope = new Scope();
+                this.containerEl = new VElement("div", { cls: "modal-container" });
+                this.modalEl = this.containerEl.createDiv("modal");
+                this.titleEl = this.modalEl.createDiv("modal-title");
+                this.contentEl = this.modalEl.createDiv("modal-content");
+            }
+            open() {
+                this.onOpen();
+                const tree = __velement_to_uinode(this.containerEl);
+                __invoke_host("set_view_tree", { view_id: 1, tree });
+            }
+            close() {
+                this.onClose();
+            }
+            onOpen() {}
+            onClose() {}
+        }
+
+        class SuggestModal extends Modal {
+            constructor(app) { super(app); }
+            getSuggestions(query) { return []; }
+            renderSuggestion(item, el) {}
+            onChooseSuggestion(item, evt) {}
+        }
+
+        class FuzzySuggestModal extends SuggestModal {
+            getItems() { return []; }
+            getItemText(item) { return String(item); }
+            onChooseItem(item, evt) {}
+        }
+
+        class Menu {
+            constructor() { this.items = []; }
+            addItem(cb) { const item = new MenuItem(this); cb(item); this.items.push(item); return this; }
+            addSeparator() { return this; }
+            showAtPosition(pos) { return this; }
+            showAtMouseEvent(evt) { return this; }
+        }
+
+        class MenuItem {
+            constructor(menu) { this.menu = menu; }
+            setTitle(title) { this.title = title; return this; }
+            setIcon(icon) { this.icon = icon; return this; }
+            setChecked(checked) { this.checked = checked; return this; }
+            setDisabled(disabled) { this.disabled = disabled; return this; }
+            onClick(cb) { this.callback = cb; return this; }
+        }
+
+        class WorkspaceLeaf {
+            constructor(workspace) {
+                this.workspace = workspace;
+                this.view = null;
+            }
+            async setViewState(state) {
+                this.viewState = state;
+            }
+            openFile(file) {
+                return this.workspace.openFile(file);
+            }
+        }
+
+        class TAbstractFile {
+            constructor(path) {
+                this.path = String(path);
+                this.name = this.path.split("/").pop();
+            }
+        }
+        class TFile extends TAbstractFile {
+            constructor(path) {
+                super(path);
+                this.basename = this.name.replace(/\.[^/.]+$/, "");
+                this.extension = (this.name.split(".").pop() || "").toLowerCase();
+                this.stat = { mtime: Date.now(), ctime: Date.now(), size: 0 };
+            }
+        }
+        class TFolder extends TAbstractFile {
+            constructor(path) {
+                super(path);
+                this.children = [];
+            }
+        }
+
+        function normalizePath(path) {
+            if (!path) return "";
+            return String(path).replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/|\/$/g, "");
+        }
+
+        function requestUrl(options) {
+            if (typeof options === "string") options = { url: options };
+            return __invoke_host("http", {
+                url: options.url,
+                method: options.method || "GET",
+                body: options.body ? (typeof options.body === "string" ? options.body : JSON.stringify(options.body)) : null
+            }).then(res => {
+                return {
+                    status: 200,
+                    text: typeof res === "string" ? res : JSON.stringify(res),
+                    json: typeof res === "object" ? res : (tryJson(res) || {}),
+                    arrayBuffer: new ArrayBuffer(0),
+                    headers: {}
+                };
+            });
+        }
+        function tryJson(s) { try { return JSON.parse(s); } catch (e) { return null; } }
+
+        function moment(date) {
+            const d = date ? new Date(date) : new Date();
+            return {
+                format: (fmt = "YYYY-MM-DD") => {
+                    const pad = (n) => String(n).padStart(2, '0');
+                    const y = d.getFullYear();
+                    const m = pad(d.getMonth() + 1);
+                    const day = pad(d.getDate());
+                    const h = pad(d.getHours());
+                    const min = pad(d.getMinutes());
+                    const s = pad(d.getSeconds());
+                    return fmt
+                        .replace("YYYY", y)
+                        .replace("MM", m)
+                        .replace("DD", day)
+                        .replace("HH", h)
+                        .replace("mm", min)
+                        .replace("ss", s);
+                },
+                valueOf: () => d.getTime(),
+                toDate: () => d
+            };
+        }
+
+        function createLazyFailProxy(moduleName) {
+            const target = function() {};
+            return new Proxy(target, {
+                get(_tgt, prop) {
+                    if (prop === "__esModule") return true;
+                    if (prop === "default") return createLazyFailProxy(moduleName);
+                    if (typeof prop === "symbol" || prop === "then" || prop === "toJSON") return undefined;
+                    return createLazyFailProxy(`${moduleName}.${String(prop)}`);
+                },
+                apply(_tgt, _thisArg, _args) {
+                    throw new Error(`[Aquilum] External module call '${moduleName}()' is not supported in native GPUI mode`);
+                },
+                construct(_tgt, _args) {
+                    throw new Error(`[Aquilum] External constructor 'new ${moduleName}()' is not supported in native GPUI mode`);
+                }
+            });
+        }
+
+        const SAFE_NOOP_STUBS = new Set([
+            'app.workspace.requestSaveHistory',
+            'app.metadataCache.trigger',
+            'plugin.addRibbonIcon',
+            'app.workspace.trigger',
+            'app.vault.trigger'
+        ]);
+
+        const KNOWN_UNIMPLEMENTED_OBSIDIAN_METHODS = new Set([
+            'app.vault.copy',
+            'app.workspace.splitActiveLeaf',
+            'app.fileManager.processFrontMatter',
+            'app.workspace.iterateAllLeaves'
+        ]);
+
+        function makeAuditedProxy(target, targetName) {
+            return new Proxy(target, {
+                get(obj, prop) {
+                    if (typeof prop === 'symbol' || prop === 'then' || prop === 'toJSON') {
+                        return obj[prop];
+                    }
+                    if (prop in obj) {
+                        return obj[prop];
+                    }
+                    const propName = String(prop);
+                    const fullPath = `${targetName}.${propName}`;
+
+                    if (SAFE_NOOP_STUBS.has(fullPath)) {
+                        return (..._args) => Promise.resolve(null);
+                    }
+
+                    if (KNOWN_UNIMPLEMENTED_OBSIDIAN_METHODS.has(fullPath)) {
+                        return (..._args) => {
+                            throw new Error(`[Aquilum] Method ${fullPath} is not implemented`);
+                        };
+                    }
+
+                    return undefined;
+                }
+            });
+        }
+
+        class Plugin extends Component {
             constructor(app, manifest) {
+                super();
                 this.app = app;
                 this.manifest = manifest;
             }
@@ -447,6 +1384,22 @@ fn setup_plugin_environment<'js>(
                     title: String(title)
                 });
             }
+            addSettingTab(tab) {
+                this.settingTab = tab;
+                if (tab && typeof tab.display === "function") {
+                    try {
+                        tab.display();
+                        const tree = __velement_to_uinode(tab.containerEl);
+                        __invoke_host("set_view_tree", { view_id: 0, tree });
+                    } catch (e) {
+                        // Some plugins rely on asynchronous data loaded after onload.
+                        // We retain this.settingTab for on-demand rendering.
+                    }
+                }
+            }
+            registerEvent(eventRef) {
+                return eventRef;
+            }
             async loadData() {
                 return __invoke_host("load_data", {});
             }
@@ -457,46 +1410,183 @@ fn setup_plugin_environment<'js>(
                 globalThis.__code_block_handlers.set(String(language).toLowerCase(), handler);
                 return __invoke_host("register_code_block_processor", { language: String(language) });
             }
+            registerView(type, viewCreator) {}
+            registerExtensions(extensions, viewType) {}
         }
 
-        const app = {
-            vault: {
-                read: (path) => __invoke_host("vault_read", { path: typeof path === 'object' ? path.path : path }),
-                modify: (path, data) => __invoke_host("vault_modify", { path: typeof path === 'object' ? path.path : path, data }),
-                create: (path, data) => __invoke_host("vault_create", { path, data }),
-                delete: (path) => __invoke_host("vault_delete", { path: typeof path === 'object' ? path.path : path }),
-                getMarkdownFiles: () => {
+        const rawVault = {
+            read: (path) => __invoke_host("vault_read", { path: typeof path === 'object' ? path.path : path }),
+            modify: (path, data) => __invoke_host("vault_modify", { path: typeof path === 'object' ? path.path : path, data }),
+            create: (path, data) => __invoke_host("vault_create", { path, data }),
+            delete: (path) => __invoke_host("vault_delete", { path: typeof path === 'object' ? path.path : path }),
+            process: async (file, fn) => {
+                const path = typeof file === 'object' ? file.path : file;
+                const content = await __invoke_host("vault_read", { path });
+                const newContent = await fn(content);
+                if (typeof newContent === "string") {
+                    await __invoke_host("vault_modify", { path, data: newContent });
+                }
+                return newContent;
+            },
+            getMarkdownFiles: () => {
+                const files = __host_get_markdown_files();
+                return files.map(p => new TFile(p));
+            },
+            getFiles: () => {
+                const files = __host_get_markdown_files();
+                return files.map(p => new TFile(p));
+            },
+            getAbstractFileByPath: (path) => {
+                return new TFile(path);
+            },
+            adapter: {
+                read: (path) => __invoke_host("vault_read", { path }),
+                write: (path, data) => __invoke_host("vault_modify", { path, data }),
+                exists: async (path) => {
                     const files = __host_get_markdown_files();
-                    return files.map(p => ({ path: p, name: p.split("/").pop(), basename: p.split("/").pop().replace(/\.md$/, ""), extension: "md" }));
-                },
-                getAbstractFileByPath: (path) => {
-                    return { path: String(path), name: String(path).split("/").pop(), basename: String(path).split("/").pop().replace(/\.md$/, ""), extension: "md" };
-                },
+                    return files.includes(String(path));
+                }
+            }
+        };
+
+        const rawWorkspace = {
+            getActiveFile: () => {
+                const p = __host_get_active_file();
+                return p ? new TFile(p) : null;
             },
-            workspace: {
-                getActiveFile: () => {
-                    const p = __host_get_active_file();
-                    return p ? { path: p, name: p.split("/").pop() } : null;
-                },
-                openFile: (path) => __invoke_host("open_file", { path: typeof path === 'object' ? path.path : path }),
-                registerMarkdownCodeBlockProcessor: (language, handler) => {
-                    globalThis.__code_block_handlers.set(String(language).toLowerCase(), handler);
-                    return __invoke_host("register_code_block_processor", { language: String(language) });
-                },
+            openFile: (path) => __invoke_host("open_file", { path: typeof path === 'object' ? path.path : path }),
+            getLeaf: () => new WorkspaceLeaf(rawWorkspace),
+            getLeftLeaf: () => new WorkspaceLeaf(rawWorkspace),
+            getRightLeaf: () => new WorkspaceLeaf(rawWorkspace),
+            registerMarkdownCodeBlockProcessor: (language, handler) => {
+                globalThis.__code_block_handlers.set(String(language).toLowerCase(), handler);
+                return __invoke_host("register_code_block_processor", { language: String(language) });
             },
+            on: (_event, _cb) => ({ id: "event-sub" }),
+            trigger: () => {}
+        };
+
+        const rawMetadataCache = {
+            getFileCache: (_file) => ({
+                tags: [],
+                links: [],
+                headings: [],
+                frontmatter: {}
+            }),
+            on: (_event, _cb) => ({ id: "meta-sub" }),
+            trigger: () => {}
+        };
+
+        const app = {
+            vault: makeAuditedProxy(rawVault, "app.vault"),
+            workspace: makeAuditedProxy(rawWorkspace, "app.workspace"),
+            metadataCache: makeAuditedProxy(rawMetadataCache, "app.metadataCache"),
             commands: {
                 executeCommandById: (id) => __invoke_host("execute_command", { id: String(id) }),
             }
         };
 
-        globalThis.Notice = Notice;
+        globalThis.Component = Component;
         globalThis.Plugin = Plugin;
-        globalThis.app = app;
+        globalThis.PluginSettingTab = PluginSettingTab;
+        globalThis.Setting = Setting;
+        globalThis.Modal = Modal;
+        globalThis.SuggestModal = SuggestModal;
+        globalThis.FuzzySuggestModal = FuzzySuggestModal;
+        globalThis.View = View;
+        globalThis.ItemView = ItemView;
+        globalThis.MarkdownRenderChild = MarkdownRenderChild;
+        globalThis.Events = Events;
+        globalThis.Scope = Scope;
+        globalThis.WorkspaceLeaf = WorkspaceLeaf;
+        globalThis.BaseComponent = BaseComponent;
+        globalThis.ValueComponent = ValueComponent;
+        globalThis.ButtonComponent = ButtonComponent;
+        globalThis.ExtraButtonComponent = ExtraButtonComponent;
+        globalThis.ToggleComponent = ToggleComponent;
+        globalThis.TextComponent = TextComponent;
+        globalThis.SliderComponent = SliderComponent;
+        globalThis.DropdownComponent = DropdownComponent;
+        globalThis.Menu = Menu;
+        globalThis.MenuItem = MenuItem;
+        globalThis.Notice = Notice;
+        globalThis.TFile = TFile;
+        globalThis.TFolder = TFolder;
+        globalThis.TAbstractFile = TAbstractFile;
+        globalThis.normalizePath = normalizePath;
+        globalThis.requestUrl = requestUrl;
+        globalThis.moment = moment;
+        globalThis.app = makeAuditedProxy(app, "app");
+
+        const fallbackClasses = new Map();
+        function getOrCreateFallbackClass(className) {
+            if (!fallbackClasses.has(className)) {
+                const stub = class ObsidianClassStub extends Component {
+                    constructor(...args) {
+                        super(...args);
+                    }
+                };
+                Object.defineProperty(stub, "name", { value: className });
+                fallbackClasses.set(className, stub);
+            }
+            return fallbackClasses.get(className);
+        }
+
+        const obsidianExports = {
+            Component,
+            Plugin,
+            PluginSettingTab,
+            Setting,
+            Modal,
+            SuggestModal,
+            FuzzySuggestModal,
+            View,
+            ItemView,
+            MarkdownRenderChild,
+            Events,
+            Scope,
+            WorkspaceLeaf,
+            BaseComponent,
+            ValueComponent,
+            ButtonComponent,
+            ExtraButtonComponent,
+            ToggleComponent,
+            TextComponent,
+            SliderComponent,
+            DropdownComponent,
+            Menu,
+            MenuItem,
+            Notice,
+            TFile,
+            TFolder,
+            TAbstractFile,
+            normalizePath,
+            requestUrl,
+            moment,
+            app: globalThis.app
+        };
+
+        const obsidianProxy = new Proxy(obsidianExports, {
+            get(target, prop) {
+                if (typeof prop === "symbol" || prop === "then" || prop === "toJSON") {
+                    return target[prop];
+                }
+                if (prop in target) {
+                    return target[prop];
+                }
+                const name = String(prop);
+                if (name.length > 0 && name[0] >= 'A' && name[0] <= 'Z') {
+                    return getOrCreateFallbackClass(name);
+                }
+                return undefined;
+            }
+        });
+
         globalThis.require = function(mod) {
             if (mod === "obsidian") {
-                return { Notice, Plugin, app };
+                return obsidianProxy;
             }
-            throw new Error(`Module '${mod}' is not available in sandbox`);
+            return createLazyFailProxy(mod);
         };
     "#;
 
@@ -645,12 +1735,47 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
                 .to_string();
             ApiRequest::ExecuteCommand { id }
         }
+        "set_view_tree" => {
+            let view_id = payload
+                .get("view_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let tree: crate::plugins::ui::UiNode = payload
+                .get("tree")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_else(|| crate::plugins::ui::UiNode::Text {
+                    value: "".to_string(),
+                    style: crate::plugins::ui::TextStyle::default(),
+                });
+            ApiRequest::SetViewTree { view_id, tree }
+        }
+        "http" => {
+            let url = payload.get("url").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let method = payload.get("method").and_then(|v| v.as_str()).unwrap_or("GET").to_string();
+            let body = payload.get("body").and_then(|v| v.as_str()).map(|s| s.to_string());
+            ApiRequest::Http { url, method, body }
+        }
         _ => {
             eprintln!("[plugin] Unknown request kind: {}", kind);
             ApiRequest::Unknown {
                 req_kind: kind.to_string(),
             }
         }
+    }
+}
+
+/// Dispatches a UI interaction event (click, change) into QuickJS.
+fn dispatch_ui_interaction<'js>(
+    ctx: &Ctx<'js>,
+    _view_id: u64,
+    node_id: String,
+    event: String,
+    value: Option<String>,
+) {
+    let dispatch_fn: rquickjs::Result<Function> = ctx.globals().get("__dispatch_ui_interaction");
+    if let Ok(func) = dispatch_fn {
+        let val = value.unwrap_or_default();
+        let _ = func.call::<_, ()>((node_id, event, val));
     }
 }
 
@@ -1079,6 +2204,176 @@ mod tests {
             assert_eq!(text, "Files count: 0");
         } else {
             panic!("Expected Notice");
+        }
+
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
+    }
+
+    #[test]
+    fn test_obsidian_setting_tab_and_velement_flow() {
+        let manifest = PluginManifest {
+            id: "setting-plugin".into(),
+            name: "Setting Test".into(),
+            version: "1.0.0".into(),
+            min_app_version: None,
+            description: "".into(),
+            author: "".into(),
+            permissions: PluginPermissions::default(),
+        };
+
+        let (api_tx, mut api_rx) = unbounded();
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
+
+        let script = r#"
+            const { Plugin, PluginSettingTab, Setting } = require("obsidian");
+
+            class SampleSettingTab extends PluginSettingTab {
+                display() {
+                    const { containerEl } = this;
+                    containerEl.empty();
+                    new Setting(containerEl)
+                        .setName("Enable Autocomplete")
+                        .setDesc("Provides inline suggestions")
+                        .addToggle((toggle) => toggle.setValue(true));
+                }
+            }
+
+            module.exports = class TestPlugin extends Plugin {
+                async onload() {
+                    this.addSettingTab(new SampleSettingTab(this.app, this));
+                }
+            };
+        "#;
+
+        let handle = spawn_plugin_runtime(
+            manifest,
+            script.to_string(),
+            api_tx,
+            snapshot,
+        )
+        .unwrap();
+
+        std::thread::sleep(Duration::from_millis(60));
+
+        let view_tree_call = api_rx.try_recv().expect("Expected SetViewTree call");
+        if let ApiRequest::SetViewTree { tree, .. } = view_tree_call.request {
+            let json = serde_json::to_string(&tree).unwrap();
+            assert!(json.contains("Enable Autocomplete"));
+            assert!(json.contains("Provides inline suggestions"));
+            assert!(json.contains("\"type\":\"setting_item\""));
+            assert!(json.contains("\"type\":\"toggle\""));
+        } else {
+            panic!("Expected SetViewTree request, got {:?}", view_tree_call.request);
+        }
+
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
+    }
+
+    #[test]
+    fn test_lazy_fail_and_audited_proxy() {
+        let manifest = PluginManifest {
+            id: "proxy-test-plugin".into(),
+            name: "Proxy Test".into(),
+            version: "1.0.0".into(),
+            min_app_version: None,
+            description: "".into(),
+            author: "".into(),
+            permissions: PluginPermissions::default(),
+        };
+
+        let (api_tx, mut api_rx) = unbounded();
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
+
+        let script = r#"
+            // 1. External module require returns lazyFail proxy instead of throwing
+            const cm = require("@codemirror/view");
+            const hasCm = typeof cm === "function";
+
+            // 2. Feature detection on app: missing property returns undefined
+            const missing = typeof app.nonExistentFeature === "undefined";
+
+            // 3. Known unimplemented method throws with [Aquilum] prefix
+            let threwExpected = false;
+            try {
+                app.vault.copy("from.md", "to.md");
+            } catch (e) {
+                threwExpected = e.message.includes("[Aquilum] Method app.vault.copy is not implemented");
+            }
+
+            new Notice(`CM:${hasCm}, Missing:${missing}, Unimpl:${threwExpected}`);
+        "#;
+
+        let handle = spawn_plugin_runtime(
+            manifest,
+            script.to_string(),
+            api_tx,
+            snapshot,
+        )
+        .unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let notice_call = api_rx.try_recv().expect("Expected Notice call");
+        if let ApiRequest::Notice { text, .. } = notice_call.request {
+            assert_eq!(text, "CM:true, Missing:true, Unimpl:true");
+        } else {
+            panic!("Expected Notice request");
+        }
+
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
+    }
+
+    #[test]
+    fn test_obsidian_class_extension_and_fallback_stubs() {
+        let manifest = PluginManifest {
+            id: "class-extension-test".into(),
+            name: "Class Extension Test".into(),
+            version: "1.0.0".into(),
+            min_app_version: None,
+            description: "".into(),
+            author: "".into(),
+            permissions: PluginPermissions::default(),
+        };
+
+        let (api_tx, mut api_rx) = unbounded();
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
+
+        let script = r#"
+            const obsidian = require("obsidian");
+
+            // Standard Obsidian classes
+            class MyView extends obsidian.View {}
+            class MyComponent extends obsidian.Component {}
+            class MyModal extends obsidian.Modal {}
+            class MySuggestModal extends obsidian.SuggestModal {}
+
+            // Arbitrary unmodeled Obsidian classes (like Homepage or other plugins)
+            class CustomObsidianExtension extends obsidian.WorkspaceRibbon {}
+            class AnotherUnknownClass extends obsidian.NonExistentClass123 {}
+
+            const v = new MyView();
+            const c = new MyComponent();
+            const ext = new CustomObsidianExtension();
+            const unk = new AnotherUnknownClass();
+
+            new Notice(`SUCCESS:view=${typeof v},comp=${typeof c},ext=${typeof ext},unk=${typeof unk}`);
+        "#;
+
+        let handle = spawn_plugin_runtime(
+            manifest,
+            script.to_string(),
+            api_tx,
+            snapshot,
+        )
+        .unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let notice_call = api_rx.try_recv().expect("Expected Notice call");
+        if let ApiRequest::Notice { text, .. } = notice_call.request {
+            assert_eq!(text, "SUCCESS:view=object,comp=object,ext=object,unk=object");
+        } else {
+            panic!("Expected Notice request, got {:?}", notice_call.request);
         }
 
         let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);

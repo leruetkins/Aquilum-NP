@@ -76,6 +76,13 @@ pub struct ListItem {
     pub description: Option<String>,
 }
 
+/// Option entry for UiNode::Select.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectOption {
+    pub value: String,
+    pub label: String,
+}
+
 /// Declarative UI component tree node transmitted from plugin workers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -124,6 +131,42 @@ pub enum UiNode {
         #[serde(default)]
         checked: bool,
     },
+    /// Obsidian-style toggle switch
+    Toggle {
+        #[serde(default)]
+        id: String,
+        #[serde(default)]
+        value: bool,
+    },
+    /// Numeric slider control
+    Slider {
+        #[serde(default)]
+        id: String,
+        #[serde(default)]
+        min: f64,
+        #[serde(default)]
+        max: f64,
+        #[serde(default)]
+        step: f64,
+        #[serde(default)]
+        value: f64,
+    },
+    /// Dropdown selector
+    Select {
+        #[serde(default)]
+        id: String,
+        #[serde(default)]
+        options: Vec<SelectOption>,
+        #[serde(default)]
+        value: String,
+    },
+    /// Obsidian-style setting row: name and description on left, control on right
+    SettingItem {
+        name: String,
+        #[serde(default)]
+        desc: Option<String>,
+        control: Box<UiNode>,
+    },
     List {
         #[serde(default)]
         id: String,
@@ -144,6 +187,9 @@ impl UiNode {
             UiNode::Button { id, .. }
             | UiNode::Input { id, .. }
             | UiNode::Checkbox { id, .. }
+            | UiNode::Toggle { id, .. }
+            | UiNode::Slider { id, .. }
+            | UiNode::Select { id, .. }
             | UiNode::List { id, .. } => Some(id),
             _ => None,
         }
@@ -155,6 +201,7 @@ impl UiNode {
             UiNode::Column { children, .. }
             | UiNode::Row { children, .. }
             | UiNode::Toolbar { children, .. } => children,
+            UiNode::SettingItem { control, .. } => std::slice::from_ref(control),
             _ => &[],
         }
     }
@@ -214,6 +261,16 @@ pub fn validate_tree(root: &UiNode) -> Result<(), String> {
                 if let Some(v) = value {
                     if v.len() > MAX_STR_LEN {
                         return Err("Input value length exceeds limit (64KB)".into());
+                    }
+                }
+            }
+            UiNode::SettingItem { name, desc, .. } => {
+                if name.len() > MAX_STR_LEN {
+                    return Err("Setting name length exceeds limit (64KB)".into());
+                }
+                if let Some(d) = desc {
+                    if d.len() > MAX_STR_LEN {
+                        return Err("Setting description length exceeds limit (64KB)".into());
                     }
                 }
             }
@@ -486,6 +543,166 @@ pub fn render_ui_node(
             .rounded(px(4.0))
             .children(children.iter().map(|c| render_ui_node(c, plugin_id, view_id, theme, cx)))
             .into_any_element(),
+        UiNode::SettingItem { name, desc, control } => div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .w_full()
+            .py(px(8.0))
+            .border_b_1()
+            .border_color(theme.border_subtle)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .flex_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.text_primary)
+                            .child(name.clone()),
+                    )
+                    .when_some(desc.as_ref(), |this, d| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.text_muted)
+                                .child(d.clone()),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .min_w(px(140.0))
+                    .child(render_ui_node(control, plugin_id, view_id, theme, cx)),
+            )
+            .into_any_element(),
+        UiNode::Toggle { id, value } => {
+            let p_id = plugin_id.to_string();
+            let n_id = id.clone();
+            let is_on = *value;
+
+            div()
+                .id(ElementId::from(SharedString::from(format!("ui-tog-{}-{}", view_id, id))))
+                .w(px(36.0))
+                .h(px(20.0))
+                .rounded(px(10.0))
+                .p(px(2.0))
+                .bg(if is_on { theme.accent } else { theme.bg_card })
+                .border_1()
+                .border_color(if is_on { theme.accent } else { theme.border })
+                .cursor(gpui::CursorStyle::PointingHand)
+                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |app, _, _, _| {
+                    let _ = app.state.plugin_host.send_event(
+                        &p_id,
+                        crate::plugins::api::HostEvent::UiEvent {
+                            view_id,
+                            node_id: n_id.clone(),
+                            event: "change".to_string(),
+                            value: Some((!is_on).to_string()),
+                        },
+                    );
+                }))
+                .flex()
+                .items_center()
+                .when(is_on, |this| this.justify_end())
+                .child(
+                    div()
+                        .w(px(14.0))
+                        .h(px(14.0))
+                        .rounded(px(7.0))
+                        .bg(if is_on { theme.text_on_accent } else { theme.text_muted }),
+                )
+                .into_any_element()
+        }
+        UiNode::Slider {
+            id,
+            min,
+            max,
+            step: _,
+            value,
+        } => {
+            let val = *value;
+            let min_v = *min;
+            let max_v = *max;
+            let pct = if max_v > min_v {
+                ((val - min_v) / (max_v - min_v)).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            let fill_w = (120.0 * pct as f32).max(2.0);
+
+            div()
+                .id(ElementId::from(SharedString::from(format!("ui-slider-{}-{}", view_id, id))))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .relative()
+                        .w(px(120.0))
+                        .h(px(6.0))
+                        .rounded(px(3.0))
+                        .bg(theme.border)
+                        .child(
+                            div()
+                                .h_full()
+                                .w(px(fill_w))
+                                .rounded(px(3.0))
+                                .bg(theme.accent),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.text_muted)
+                        .w(px(32.0))
+                        .child(format!("{:.0}", val)),
+                )
+                .into_any_element()
+        }
+        UiNode::Select { id, options, value } => {
+            let display_label = options
+                .iter()
+                .find(|o| o.value == *value)
+                .map(|o| o.label.as_str())
+                .unwrap_or(value.as_str());
+
+            div()
+                .id(ElementId::from(SharedString::from(format!("ui-sel-{}-{}", view_id, id))))
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .px(px(8.0))
+                .py(px(4.0))
+                .rounded(px(4.0))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.bg_card)
+                .cursor(gpui::CursorStyle::PointingHand)
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.text_primary)
+                        .child(display_label.to_string()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.text_muted)
+                        .child("▼"),
+                )
+                .into_any_element()
+        }
         UiNode::Separator => div()
             .w_full()
             .h(px(1.0))
@@ -572,5 +789,58 @@ mod tests {
         };
 
         assert!(validate_tree(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_setting_item_and_controls_roundtrip() {
+        let tree = UiNode::Column {
+            gap: Gap::Medium,
+            children: vec![
+                UiNode::SettingItem {
+                    name: "Enable Live Preview".into(),
+                    desc: Some("Toggle real-time Markdown rendering".into()),
+                    control: Box::new(UiNode::Toggle {
+                        id: "toggle-live-preview".into(),
+                        value: true,
+                    }),
+                },
+                UiNode::SettingItem {
+                    name: "Editor Font Size".into(),
+                    desc: Some("Adjust base font size in pixels".into()),
+                    control: Box::new(UiNode::Slider {
+                        id: "slider-font-size".into(),
+                        min: 10.0,
+                        max: 32.0,
+                        step: 1.0,
+                        value: 16.0,
+                    }),
+                },
+                UiNode::SettingItem {
+                    name: "Default View".into(),
+                    desc: None,
+                    control: Box::new(UiNode::Select {
+                        id: "select-default-view".into(),
+                        options: vec![
+                            SelectOption { value: "source".into(), label: "Source Mode".into() },
+                            SelectOption { value: "preview".into(), label: "Live Preview".into() },
+                        ],
+                        value: "preview".into(),
+                    }),
+                },
+            ],
+        };
+
+        assert!(validate_tree(&tree).is_ok());
+        // 1 Column + 3 SettingItems + 3 controls (Toggle, Slider, Select) = 7 nodes
+        assert_eq!(tree.count_nodes(), 7);
+
+        let json = serde_json::to_string(&tree).unwrap();
+        assert!(json.contains("\"type\":\"setting_item\""));
+        assert!(json.contains("\"type\":\"toggle\""));
+        assert!(json.contains("\"type\":\"slider\""));
+        assert!(json.contains("\"type\":\"select\""));
+
+        let deserialized: UiNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, tree);
     }
 }

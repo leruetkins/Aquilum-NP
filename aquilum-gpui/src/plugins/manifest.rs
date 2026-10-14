@@ -122,6 +122,87 @@ impl PluginManifest {
     }
 }
 
+use sha2::{Digest, Sha256};
+
+/// Calculates deterministic SHA-256 hex digest of a byte slice.
+pub fn compute_sha256(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+/// A stored user security grant for a specific plugin bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginGrant {
+    pub plugin_id: String,
+    pub bundle_sha256: String,
+    pub granted_permissions: PluginPermissions,
+    pub granted_at_unix_ms: u64,
+}
+
+/// Persistent store for user-approved plugin permissions located in AppData.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PluginGrantsStore {
+    /// Map key: "{plugin_id}:{bundle_sha256}"
+    pub grants: std::collections::HashMap<String, PluginGrant>,
+}
+
+impl PluginGrantsStore {
+    pub fn grant_key(plugin_id: &str, bundle_sha256: &str) -> String {
+        format!("{}:{}", plugin_id, bundle_sha256)
+    }
+
+    pub fn is_trusted(&self, plugin_id: &str, bundle_sha256: &str) -> bool {
+        let key = Self::grant_key(plugin_id, bundle_sha256);
+        self.grants.contains_key(&key)
+    }
+
+    pub fn get_grant(&self, plugin_id: &str, bundle_sha256: &str) -> Option<&PluginGrant> {
+        let key = Self::grant_key(plugin_id, bundle_sha256);
+        self.grants.get(&key)
+    }
+
+    pub fn add_grant(
+        &mut self,
+        plugin_id: &str,
+        bundle_sha256: &str,
+        permissions: PluginPermissions,
+    ) {
+        let key = Self::grant_key(plugin_id, bundle_sha256);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        self.grants.insert(
+            key,
+            PluginGrant {
+                plugin_id: plugin_id.to_string(),
+                bundle_sha256: bundle_sha256.to_string(),
+                granted_permissions: permissions,
+                granted_at_unix_ms: now,
+            },
+        );
+    }
+
+    pub fn load_from_file(path: &std::path::Path) -> Self {
+        if let Ok(data) = std::fs::read_to_string(path) {
+            serde_json::from_str(&data).unwrap_or_default()
+        } else {
+            Self::default()
+        }
+    }
+
+    pub fn save_to_file(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(path, json)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +255,34 @@ mod tests {
         // Leading dash must fail
         manifest.id = "-invalid-start".into();
         assert!(manifest.validate().is_err());
+    }
+
+    #[test]
+    fn test_plugin_grants_store_and_sha256() {
+        let bundle_bytes = b"console.log('Hello Obsidian Plugin');";
+        let hash = compute_sha256(bundle_bytes);
+        assert_eq!(hash.len(), 64);
+
+        let mut store = PluginGrantsStore::default();
+        let plugin_id = "sample-plugin";
+
+        assert!(!store.is_trusted(plugin_id, &hash));
+
+        store.add_grant(
+            plugin_id,
+            &hash,
+            PluginPermissions {
+                vault: VaultAccess::Read,
+                network: vec!["api.example.com".into()],
+            },
+        );
+
+        assert!(store.is_trusted(plugin_id, &hash));
+        assert!(!store.is_trusted(plugin_id, "other_hash"));
+        assert!(!store.is_trusted("other_plugin", &hash));
+
+        let grant = store.get_grant(plugin_id, &hash).unwrap();
+        assert_eq!(grant.granted_permissions.vault, VaultAccess::Read);
+        assert_eq!(grant.granted_permissions.network, vec!["api.example.com".to_string()]);
     }
 }

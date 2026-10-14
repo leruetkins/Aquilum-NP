@@ -817,39 +817,64 @@ impl AppView {
         widths
     }
 
-    pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
-        // Callers must ensure a fresh visual cache first (see `handle_key`):
-        // after an edit the cache is dirty and still describes the old text,
-        // so a new row is invisible to the lookup below and the cursor ends
-        // up hidden under the status bar.
-        //
-        // The reveal is measured against the real viewport (the handle
-        // bounds), not the slicing estimate: the estimate overshoots the
-        // window chrome and would systematically leave the row ~50 px under
-        // the status bar.
-        let measured_h = f32::from(self.editor_scroll_handle.bounds().size.height);
-        let viewport_h = if measured_h > 50.0 {
-            measured_h
-        } else {
-            self.last_editor_h.get().max(100.0)
-        };
-        if let Some(ref note) = self.state.active_note {
-            let (cursor_line, cursor_col) = note.line_col();
-            let visual_rows = &note.cached_visual_rows;
-            if let Some((v_idx, _)) = crate::markdown::find_visual_row_for_cursor(visual_rows, cursor_line, cursor_col) {
-                let row_top = note.cached_height_index.top_of(v_idx);
-                let row_h = note.cached_height_index.height_of(v_idx);
-                let row_bottom = row_top + row_h;
-                let current_scroll = self.current_scroll_top();
+    
+pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
+    // handle_key обновляет визуальный кеш после изменения текста
+    // и перемещения курсора.
+    let measured_h = f32::from(self.editor_scroll_handle.bounds().size.height);
 
-                if row_top < current_scroll {
-                    self.set_editor_scroll_top((row_top - 24.0).max(0.0));
-                } else if row_bottom > current_scroll + viewport_h {
-                    self.set_editor_scroll_top(row_bottom + 24.0 - viewport_h);
-                }
-            }
-        }
+    let viewport_h = if measured_h > 50.0 {
+        measured_h
+    } else {
+        self.last_editor_h.get().max(100.0)
+    };
+
+    let Some(note) = self.state.active_note.as_ref() else {
+        return;
+    };
+
+    let (cursor_line, cursor_col) = note.line_col();
+
+    let Some((v_idx, _)) = crate::markdown::find_visual_row_for_cursor(
+        &note.cached_visual_rows,
+        cursor_line,
+        cursor_col,
+    ) else {
+        return;
+    };
+
+    let row_top = note.cached_height_index.top_of(v_idx);
+    let row_bottom =
+        row_top + note.cached_height_index.height_of(v_idx);
+
+    // Высота содержимого без дополнительного нижнего отступа.
+    let total_content_h = note.cached_height_index.total();
+    let max_scroll = (total_content_h - viewport_h).max(0.0);
+
+    let raw_scroll = self.current_scroll_top();
+    let current_scroll = raw_scroll.clamp(0.0, max_scroll);
+    let viewport_bottom = current_scroll + viewport_h;
+
+    // Никаких дополнительных отступов сверху и снизу.
+    // Прокручиваем только тогда, когда строка выходит за границы.
+    let target_scroll = if row_top < current_scroll {
+        row_top
+    } else if row_bottom > viewport_bottom {
+        row_bottom - viewport_h
+    } else {
+        current_scroll
     }
+    .clamp(0.0, max_scroll);
+
+    // Исправляем устаревшую позицию после изменения высоты содержимого.
+    // Игнорируем субпиксельные изменения, чтобы не провоцировать дрожание.
+    if (target_scroll - raw_scroll).abs() > 0.5 {
+        self.set_editor_scroll_top(target_scroll);
+    }
+}
+
+
+
 
     fn scroll_cursor_into_view(&self) {
         self.scroll_cursor_into_view_with_strategy(ScrollStrategy::Top);
@@ -893,11 +918,7 @@ impl AppView {
         };
         let slice_h = viewport_h.max(live);
         let max_offset_y = f32::from(self.editor_scroll_handle.max_offset().height);
-        let max_scroll_content = if max_offset_y > 0.0 {
-            max_offset_y
-        } else {
-            (total_content_h - viewport_h).max(0.0)
-        };
+        let max_scroll_content = (total_content_h - viewport_h).max(0.0);
         let track_top_y = if bounds.origin.y > px(0.0) {
             f32::from(bounds.origin.y)
         } else {
@@ -914,7 +935,7 @@ impl AppView {
             return;
         };
         note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings));
-        let total_content_h = note.cached_height_index.total() + 48.0;
+        let total_content_h = note.cached_height_index.total();
         let window_h = f32::from(window.bounds().size.height);
         let (_, viewport_h, max_scroll_content, _) = self.editor_scroll_metrics(total_content_h, window_h);
         let ratio = (viewport_h / total_content_h.max(viewport_h)).clamp(0.04, 1.0);
@@ -2571,7 +2592,7 @@ impl Render for AppView {
                         .state
                         .active_note
                         .as_ref()
-                        .map(|n| n.cached_height_index.total() + 48.0)
+                        .map(|n| n.cached_height_index.total())
                         .unwrap_or(0.0);
                     let handle_max = f32::from(self.editor_scroll_handle.max_offset().height);
                     let clamped = Self::clamp_restore_target(target, handle_max, total, viewport_h);
@@ -2606,7 +2627,7 @@ impl Render for AppView {
         // agree and the burst ends. The counter alone is not enough: a resize or
         // a rewrap moves the inputs without going through the arm sites.
         if let Some(note) = self.state.active_note.as_ref() {
-            let total = note.cached_height_index.total() + 48.0;
+            let total = note.cached_height_index.total();
             let (_, viewport_h, max_scroll, _) = self.editor_scroll_metrics(total, window_h);
             let inputs = (viewport_h.round(), max_scroll.round());
             let settling = self.layout_settle_frames.get();
@@ -3795,7 +3816,7 @@ impl Render for AppView {
                                 let theme_copy = theme.clone();
                                 let theme_scrollbar = theme.clone();
 
-                                let total_content_h = height_index_arc.total() + 48.0;
+                                let total_content_h = height_index_arc.total();
                                 let (slice_h, viewport_h, max_scroll_content, track_top_y) =
                                     self.editor_scroll_metrics(total_content_h, window_h);
                                 self.last_editor_h.set(viewport_h);
@@ -4665,7 +4686,6 @@ impl Render for AppView {
                                                 .size_full()
                                                 .px_8()
                                                 .pt_0()
-                                                .pb(px(48.0))
                                                 .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
                                                     cx.stop_propagation();
                                                     this.commit_title_rename(window, cx);
