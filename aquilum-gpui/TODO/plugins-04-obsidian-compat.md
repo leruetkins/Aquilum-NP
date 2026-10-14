@@ -229,6 +229,7 @@ if (process.argv[1].endsWith("scan.mjs")) {
 - Реализация `Setting` и его контролов (`Text`, `Toggle`, `Select`, `Slider`, `Button`, `TextArea`).
 - Интеграция `PluginSettingTab` в настройки хоста.
 - Модальные окна `Modal`, `SuggestModal`, `FuzzySuggestModal`, `Notice`.
+- Контекстные меню `Menu`, `MenuItem`, каскадные подменю `setSubmenu()` и событие `workspace.on("editor-menu")` (прямой кейс `obsidian-amount-in-words-np`).
 - Семантические узлы `UiNode` (`SettingItem`, `Toggle`, `Select`, `Slider`, `Heading`, `Callout`, `Table`).
 
 ### E4. Расширенный DOM и `ItemView` (≈2–3 недели)
@@ -246,6 +247,7 @@ if (process.argv[1].endsWith("scan.mjs")) {
 - UTF-16 кодовые единицы для всех позиций и диапазонов (`EditorPosition`).
 - Модель «локальное зеркало редактора (`EditorSession`) + пакет правок по версии (`ApplyEdits`)».
 - Атомарное применение группы правок одной транзакцией истории хоста (`Ctrl+Z`).
+- Взаимодействие с контекстным меню: `editor.getSelection()`, `editor.replaceSelection()` с атомарной транзакцией Undo.
 - `editor.cm` возвращает `undefined` для совместимости с проверками CM6.
 
 ### E7. Инструменты совместимости (параллельно E1–E6)

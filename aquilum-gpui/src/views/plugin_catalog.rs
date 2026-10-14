@@ -1496,19 +1496,6 @@ impl PluginCatalogView {
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.refresh_remote_catalog(cx);
                                     })),
-                            )
-                            // Close window button
-                            .child(
-                                div()
-                                    .id("btn-close-catalog-window")
-                                    .p_1p5()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .hover(|h| h.bg(theme.bg_hover).text_color(theme.text_primary))
-                                    .child(icons::icon(icons::ICON_CLOSE, 16.0, theme.text_muted))
-                                    .on_click(|_, window, _| {
-                                        window.remove_window();
-                                    }),
                             ),
                     ),
             )
@@ -2161,8 +2148,10 @@ impl PluginCatalogView {
                 div()
                     .flex()
                     .flex_row()
+                    .flex_wrap()
                     .items_center()
-                    .gap_4()
+                    .gap_x_4()
+                    .gap_y_2()
                     .text_xs()
                     .text_color(theme.text_muted)
                     .child(
@@ -2206,7 +2195,7 @@ impl PluginCatalogView {
                                     .text_color(theme.accent)
                                     .cursor_pointer()
                                     .hover(|h| h.underline())
-                                    .child(repo_url)
+                                    .child(entry.repo.clone())
                                     .on_click(move |_, _, cx| {
                                         cx.open_url(&repo_click);
                                     }),
@@ -2224,6 +2213,7 @@ impl PluginCatalogView {
             )
             .child(
                 div()
+                    .w_full()
                     .text_sm()
                     .line_height(gpui::relative(1.5))
                     .text_color(theme.text_secondary)
@@ -2234,17 +2224,25 @@ impl PluginCatalogView {
         let permissions_card = div()
             .flex()
             .flex_row()
-            .items_center()
+            .items_start()
             .gap_2p5()
             .p_3()
             .rounded_md()
             .bg(rgba(0x4285f411))
             .border_1()
             .border_color(rgba(0x4285f433))
-            .child(icons::icon(icons::ICON_BOLT, 15.0, theme.accent))
             .child(
                 div()
+                    .pt_0p5()
+                    .flex_shrink_0()
+                    .child(icons::icon(icons::ICON_BOLT, 15.0, theme.accent)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
                     .text_xs()
+                    .line_height(gpui::relative(1.4))
                     .text_color(theme.text_muted)
                     .child(if is_ru {
                         "Безопасная песочница: плагин запускается в изолированном JS-рантайме с гранулярными правами доступа."
@@ -2528,6 +2526,8 @@ impl PluginCatalogView {
                                 .flex()
                                 .flex_row()
                                 .flex_wrap()
+                                .flex_1()
+                                .min_w_0()
                                 .items_center()
                                 .text_sm()
                                 .children(span_elements),
@@ -2557,6 +2557,8 @@ impl PluginCatalogView {
                                 .flex()
                                 .flex_row()
                                 .flex_wrap()
+                                .flex_1()
+                                .min_w_0()
                                 .items_center()
                                 .text_sm()
                                 .children(span_elements),
@@ -2578,6 +2580,8 @@ impl PluginCatalogView {
                     .flex()
                     .flex_row()
                     .flex_wrap()
+                    .w_full()
+                    .min_w_0()
                     .items_center()
                     .text_sm()
                     .line_height(gpui::relative(1.4))
