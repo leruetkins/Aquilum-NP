@@ -85,6 +85,13 @@ pub struct AppView {
     pub last_saved_geometry: Option<(f32, f32, Option<f32>, Option<f32>, bool)>,
     pub initial_scroll_done: bool,
     pub initial_scroll_top: f32,
+    /// A saved scroll offset waiting to be written once the editor layout is
+    /// measured. A handle write before that is eaten by prepaint clamping
+    /// against a not-yet-measured max — and the restore is lost for good.
+    pub pending_editor_restore: Option<f32>,
+    /// Validate cursor visibility on the next render (the saved offset may be
+    /// stale after a resize/rewrap); the reveal is a no-op when exact.
+    pub need_reveal_cursor: bool,
     pub is_hovering_close: bool,
     pub title_focus_handle: FocusHandle,
     pub title_edit_text: String,
@@ -230,6 +237,8 @@ impl AppView {
             last_saved_geometry,
             initial_scroll_done: false,
             initial_scroll_top,
+            pending_editor_restore: None,
+            need_reveal_cursor: false,
             is_hovering_close: false,
             title_focus_handle: cx.focus_handle(),
             title_edit_text,
@@ -478,13 +487,13 @@ impl AppView {
     }
 
     pub fn apply_note_settings_for_path(&mut self, path: &Path) {
+        let mut restore_to = 0.0;
         if let Some(settings) = self.state.note_states.get(path).cloned() {
             self.edit_mode = settings.edit_mode;
             self.word_wrap = settings.word_wrap;
             if settings.scroll_top > 0.0 {
                 self.set_editor_scroll_top(settings.scroll_top);
-            } else if settings.cursor_offset > 0 {
-                self.scroll_cursor_into_view();
+                restore_to = settings.scroll_top;
             } else {
                 self.set_editor_scroll_top(0.0);
             }
@@ -492,6 +501,19 @@ impl AppView {
             self.edit_mode = true;
             self.word_wrap = true;
             self.set_editor_scroll_top(0.0);
+        }
+        // Same guard as at startup: re-apply once measured (a no-op write
+        // when the direct write above already landed), then validate cursor
+        // visibility against the fresh cache — no extra rebuilds involved.
+        if self
+            .state
+            .active_note
+            .as_ref()
+            .map(|n| n.path.as_path() == path)
+            .unwrap_or(false)
+        {
+            self.pending_editor_restore = Some(restore_to);
+            self.need_reveal_cursor = true;
         }
     }
 
@@ -771,6 +793,21 @@ impl AppView {
     }
 
     pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
+        // Callers must ensure a fresh visual cache first (see `handle_key`):
+        // after an edit the cache is dirty and still describes the old text,
+        // so a new row is invisible to the lookup below and the cursor ends
+        // up hidden under the status bar.
+        //
+        // The reveal is measured against the real viewport (the handle
+        // bounds), not the slicing estimate: the estimate overshoots the
+        // window chrome and would systematically leave the row ~50 px under
+        // the status bar.
+        let measured_h = f32::from(self.editor_scroll_handle.bounds().size.height);
+        let viewport_h = if measured_h > 50.0 {
+            measured_h
+        } else {
+            self.last_editor_h.get().max(100.0)
+        };
         if let Some(ref note) = self.state.active_note {
             let (cursor_line, cursor_col) = note.line_col();
             let visual_rows = &note.cached_visual_rows;
@@ -779,12 +816,11 @@ impl AppView {
                 let row_h = note.cached_height_index.height_of(v_idx);
                 let row_bottom = row_top + row_h;
                 let current_scroll = self.current_scroll_top();
-                let editor_h = self.last_editor_h.get().max(100.0);
 
                 if row_top < current_scroll {
                     self.set_editor_scroll_top((row_top - 24.0).max(0.0));
-                } else if row_bottom > current_scroll + editor_h {
-                    self.set_editor_scroll_top(row_bottom + 24.0 - editor_h);
+                } else if row_bottom > current_scroll + viewport_h {
+                    self.set_editor_scroll_top(row_bottom + 24.0 - viewport_h);
                 }
             }
         }
@@ -799,35 +835,50 @@ impl AppView {
         self.editor_scroll_handle.set_offset(point(offset_x, px(-scroll_y)));
     }
 
-    pub fn editor_scroll_metrics(&self, total_content_h: f32, window_h: f32) -> (f32, f32, f32) {
+    /// Clamps a saved scroll target into the true scrollable range.
+    ///
+    /// The handle's own `max_offset` is only trustworthy once the list has been
+    /// laid out; before that (or after the content changed) the real max is
+    /// `total - viewport`. Taking the larger of the two keeps a restore from
+    /// being eaten by an early clamp against a not-yet-measured max.
+    pub(crate) fn clamp_restore_target(target: f32, handle_max: f32, total_h: f32, viewport_h: f32) -> f32 {
+        let max = handle_max.max(total_h - viewport_h).max(0.0);
+        target.clamp(0.0, max)
+    }
+
+    /// Returns `(slice_h, viewport_h, max_scroll_content, track_top_y)`.
+    ///
+    /// `viewport_h` is the true viewport height — measured bounds, or the last
+    /// known height before the first layout. It is never inflated: scroll math
+    /// (max, thumb travel, cursor reveal) must match the real track, otherwise
+    /// the thumb slides under the status bar and the cursor hides below the
+    /// fold. `slice_h` is additionally floored at the live window size (which
+    /// is current from frame one, like in the sidebar tree), so the first
+    /// frames already cover the whole viewport instead of popping the last
+    /// rows in later. Overshooting the slice only renders a few extra clipped
+    /// rows.
+    pub fn editor_scroll_metrics(&self, total_content_h: f32, window_h: f32) -> (f32, f32, f32, f32) {
         let bounds = self.editor_scroll_handle.bounds();
         let bounds_h = f32::from(bounds.size.height);
-        // Measured bounds are the real viewport height — use them as is. The old
-        // `max(live window)` floor always overestimated it (the window chrome is
-        // taller than 100 px), so the scrollbar thumb travelled on an inflated
-        // scale and slid past the track end, under the status bar.
-        // Before the first layout nothing is measured yet: floor at the live
-        // window size so the first slice does not leave a blank band of missing
-        // last rows. Overshooting only renders a few extra clipped rows, and the
-        // exact height arrives with the next repaint.
         let live = (window_h - 100.0).max(100.0);
-        let editor_h = if bounds_h > 50.0 {
+        let viewport_h = if bounds_h > 50.0 {
             bounds_h
         } else {
-            live.max(self.last_editor_h.get()).max(100.0)
+            self.last_editor_h.get().max(100.0)
         };
+        let slice_h = viewport_h.max(live);
         let max_offset_y = f32::from(self.editor_scroll_handle.max_offset().height);
         let max_scroll_content = if max_offset_y > 0.0 {
             max_offset_y
         } else {
-            (total_content_h - editor_h).max(0.0)
+            (total_content_h - viewport_h).max(0.0)
         };
         let track_top_y = if bounds.origin.y > px(0.0) {
             f32::from(bounds.origin.y)
         } else {
             132.0
         };
-        (editor_h, max_scroll_content, track_top_y)
+        (slice_h, viewport_h, max_scroll_content, track_top_y)
     }
 
     fn handle_scrollbar_drag(&mut self, current_y: f32, window: &Window, cx: &mut Context<Self>) {
@@ -840,10 +891,10 @@ impl AppView {
         note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings));
         let total_content_h = note.cached_height_index.total() + 48.0;
         let window_h = f32::from(window.bounds().size.height);
-        let (editor_h, max_scroll_content, _) = self.editor_scroll_metrics(total_content_h, window_h);
-        let ratio = (editor_h / total_content_h.max(editor_h)).clamp(0.04, 1.0);
-        let thumb_h = (editor_h * ratio).max(28.0);
-        let track_scrollable = (editor_h - thumb_h).max(1.0);
+        let (_, viewport_h, max_scroll_content, _) = self.editor_scroll_metrics(total_content_h, window_h);
+        let ratio = (viewport_h / total_content_h.max(viewport_h)).clamp(0.04, 1.0);
+        let thumb_h = (viewport_h * ratio).max(28.0);
+        let track_scrollable = (viewport_h - thumb_h).max(1.0);
 
         let delta_y = current_y - self.scrollbar_drag_start_y;
         let delta_fraction = delta_y / track_scrollable;
@@ -2072,6 +2123,15 @@ impl AppView {
         if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
             self.schedule_auto_save(cx);
         }
+        // Refresh the rows before revealing: every edit above marked the
+        // cache dirty, and the lookup below must see the new rows already —
+        // otherwise a row created at the very bottom (Enter) stays hidden
+        // under the status bar until the next frame's rebuild.
+        if let Some(ref mut note) = self.state.active_note {
+            let word_wrap = self.word_wrap;
+            let wrap_cols = self.last_wrap_cols;
+            note.ensure_visual_cache_with_headings(word_wrap, wrap_cols, Some(&self.config.editor.headings));
+        }
         self.scroll_cursor_into_view();
         cx.notify();
     }
@@ -2342,11 +2402,12 @@ impl Render for AppView {
 
         if !self.initial_scroll_done {
             self.initial_scroll_done = true;
-            if self.initial_scroll_top > 0.0 {
-                self.set_editor_scroll_top(self.initial_scroll_top);
-            } else {
-                self.scroll_cursor_into_view();
-            }
+            // Not written yet: until the list is laid out, prepaint clamps
+            // against a not-yet-measured max and the restore is lost. The
+            // slice below already reads from the pending target, and the
+            // write is retried once the bounds are measured.
+            self.pending_editor_restore = Some(self.initial_scroll_top);
+            self.need_reveal_cursor = true;
         }
 
         let is_maximized = window.is_maximized();
@@ -2473,6 +2534,34 @@ impl Render for AppView {
         self.last_wrap_cols = wrap_cols;
         if let Some(ref mut note) = self.state.active_note {
             note.ensure_visual_cache_with_headings(self.word_wrap, wrap_cols, Some(&self.config.editor.headings));
+        }
+        // Retry a pending restore until the layout is measured: an early
+        // handle write is eaten by prepaint clamping, but the slice below
+        // already follows the target, so the rows are right from frame one.
+        if self.pending_editor_restore.is_some() {
+            let viewport_h = f32::from(self.editor_scroll_handle.bounds().size.height);
+            if viewport_h > 50.0 {
+                if let Some(target) = self.pending_editor_restore.take() {
+                    let total = self
+                        .state
+                        .active_note
+                        .as_ref()
+                        .map(|n| n.cached_height_index.total() + 48.0)
+                        .unwrap_or(0.0);
+                    let handle_max = f32::from(self.editor_scroll_handle.max_offset().height);
+                    let clamped = Self::clamp_restore_target(target, handle_max, total, viewport_h);
+                    if (clamped - self.current_scroll_top()).abs() > 0.5 {
+                        self.set_editor_scroll_top(clamped);
+                    }
+                    self.need_reveal_cursor = true;
+                }
+            }
+        }
+        // The cache above is freshly built, so this reveal is exact — and a
+        // no-op when the restored offset already shows the cursor.
+        if self.need_reveal_cursor {
+            self.need_reveal_cursor = false;
+            self.scroll_cursor_into_view();
         }
 
         let is_resizer_active = self.is_resizing_sidebar || self.is_hovering_resizer;
@@ -3654,18 +3743,23 @@ impl Render for AppView {
                                 let theme_scrollbar = theme.clone();
 
                                 let total_content_h = height_index_arc.total() + 48.0;
-                                let (editor_h, max_scroll_content, track_top_y) = self.editor_scroll_metrics(total_content_h, window_h);
-                                self.last_editor_h.set(editor_h);
+                                let (slice_h, viewport_h, max_scroll_content, track_top_y) =
+                                    self.editor_scroll_metrics(total_content_h, window_h);
+                                self.last_editor_h.set(viewport_h);
                                 let show_scrollbar = max_scroll_content > 1.0;
                                 let (thumb_top, thumb_h) = if show_scrollbar {
-                                    let ratio = (editor_h / total_content_h.max(editor_h)).clamp(0.04, 1.0);
-                                    let th = (editor_h * ratio).max(28.0);
+                                    // Thumb travel follows the true viewport (the
+                                    // track's own height), never the slicing
+                                    // estimate: otherwise the thumb slides past
+                                    // the track end, under the status bar.
+                                    let ratio = (viewport_h / total_content_h.max(viewport_h)).clamp(0.04, 1.0);
+                                    let th = (viewport_h * ratio).max(28.0);
                                     let scroll_y = {
                                         let offset = self.editor_scroll_handle.offset();
                                         f32::from(-offset.y).clamp(0.0, max_scroll_content)
                                     };
                                     let scroll_fraction = (scroll_y / max_scroll_content).clamp(0.0, 1.0);
-                                    let tt = scroll_fraction * (editor_h - th);
+                                    let tt = scroll_fraction * (viewport_h - th);
                                     (tt, th)
                                 } else {
                                     (0.0, 28.0)
@@ -3965,12 +4059,22 @@ impl Render for AppView {
                                                 }
                                                 (0..visual_rows_arc.len(), 0.0, 0.0)
                                             } else {
-                                                let raw_scroll_y = self.current_scroll_top();
-                                                let scroll_y = raw_scroll_y.clamp(0.0, max_scroll_content);
+                                                // While a restore is pending, slice from its target:
+                                                // the handle write may still be eaten by prepaint
+                                                // clamping, but the rows must be right already.
+                                                // Clamp against the true max: the handle max may
+                                                // still belong to the previous layout/note.
+                                                let raw_scroll_y = self
+                                                    .pending_editor_restore
+                                                    .unwrap_or_else(|| self.current_scroll_top());
+                                                let true_max = max_scroll_content
+                                                    .max(total_content_h - viewport_h)
+                                                    .max(0.0);
+                                                let scroll_y = raw_scroll_y.clamp(0.0, true_max);
                                                 if (raw_scroll_y - scroll_y).abs() > 0.5 {
                                                     self.set_editor_scroll_top(scroll_y);
                                                 }
-                                                let vr = height_index_arc.visible_range(scroll_y, editor_h, 300.0);
+                                                let vr = height_index_arc.visible_range(scroll_y, slice_h, 300.0);
                                                 let top_h = height_index_arc.top_of(vr.start);
                                                 let rendered_bottom = height_index_arc.top_of(vr.end);
                                                 let bot_h = (height_index_arc.total() - rendered_bottom).max(0.0);
@@ -4635,7 +4739,7 @@ impl Render for AppView {
                                                         cx.stop_propagation();
                                                         let click_y: f32 = event.position.y.into();
                                                         let click_rel_y = (click_y - track_top_y).max(0.0);
-                                                        let target_fraction = (click_rel_y / editor_h).clamp(0.0, 1.0);
+                                                        let target_fraction = (click_rel_y / viewport_h).clamp(0.0, 1.0);
                                                         let target_scroll_y = target_fraction * max_scroll_content;
                                                         this.set_editor_scroll_top(target_scroll_y);
                                                         cx.notify();
@@ -6253,6 +6357,23 @@ mod tests {
         // A bold row keeps its bold: there is no heavier bundled face to move up to.
         assert_eq!(inline_code_weight(gpui::FontWeight::BOLD).0, gpui::FontWeight::BOLD.0);
         assert!(inline_code_weight(gpui::FontWeight::LIGHT).0 >= INLINE_CODE_WEIGHT.0);
+    }
+
+    /// A saved restore survives an unmeasured handle max: the true max comes
+    /// from the fresh content height instead of eating the target.
+    #[test]
+    fn restore_target_survives_an_unmeasured_handle_max() {
+        // Handle not laid out yet (max 0): total 6000, viewport 740.
+        assert_eq!(AppView::clamp_restore_target(5000.0, 0.0, 6000.0, 740.0), 5000.0);
+        // Exact restore is untouched once measured.
+        assert_eq!(AppView::clamp_restore_target(5000.0, 5260.0, 6000.0, 740.0), 5000.0);
+        // Stale target (window shrank since exit, max not measured yet).
+        assert_eq!(AppView::clamp_restore_target(5000.0, 0.0, 5400.0, 740.0), 4660.0);
+        // …and with a stale-small handle max the true max still wins.
+        assert_eq!(AppView::clamp_restore_target(5000.0, 100.0, 5400.0, 740.0), 4660.0);
+        // Negative targets and short docs pin to zero.
+        assert_eq!(AppView::clamp_restore_target(-40.0, 5260.0, 6000.0, 740.0), 0.0);
+        assert_eq!(AppView::clamp_restore_target(5000.0, 0.0, 300.0, 740.0), 0.0);
     }
 
     /// The chip has to be visibly shorter than its row at every font size, and never
