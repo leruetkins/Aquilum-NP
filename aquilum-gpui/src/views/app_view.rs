@@ -138,6 +138,7 @@ pub struct AppView {
     pub file_context_menu: crate::views::sidebar::FileContextMenuState,
     pub tab_context_menu: crate::views::tab_context_menu::TabContextMenuState,
     pub ribbon_context_menu: crate::views::ribbon_menu::RibbonContextMenuState,
+    pub editor_context_menu: crate::views::editor_context_menu::ContextMenuState,
     pub ribbon_dragged_id: Option<String>,
     pub ribbon_drag_start_y: Option<f32>,
     pub ribbon_is_dragging: bool,
@@ -288,6 +289,7 @@ impl AppView {
             file_context_menu: crate::views::sidebar::FileContextMenuState::default(),
             tab_context_menu: crate::views::tab_context_menu::TabContextMenuState::default(),
             ribbon_context_menu: crate::views::ribbon_menu::RibbonContextMenuState::default(),
+            editor_context_menu: crate::views::editor_context_menu::ContextMenuState::default(),
             ribbon_dragged_id: None,
             ribbon_drag_start_y: None,
             ribbon_is_dragging: false,
@@ -4063,12 +4065,33 @@ impl Render for AppView {
                                             if this.is_resizing_sidebar {
                                                 return;
                                             }
+                                            this.close_editor_context_menu(cx);
                                             this.commit_title_rename(window, cx);
                                             window.focus(&this.focus_handle);
                                             this.is_mouse_selecting = true;
                                             let click_x: f32 = event.position.x.into();
                                             let click_y: f32 = event.position.y.into();
                                             this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, window, cx);
+                                        }))
+                                        .on_mouse_down(MouseButton::Right, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                            if this.is_resizing_sidebar {
+                                                return;
+                                            }
+                                            this.commit_title_rename(window, cx);
+                                            window.focus(&this.focus_handle);
+                                            let click_x: f32 = event.position.x.into();
+                                            let click_y: f32 = event.position.y.into();
+                                            let has_selection = this.state.active_note.as_ref()
+                                                .and_then(|n| n.selection_range())
+                                                .map(|r| r.start < r.end)
+                                                .unwrap_or(false);
+                                            if !has_selection {
+                                                this.handle_editor_mouse_down(click_x, click_y, false, 1, window, cx);
+                                                if let Some(ref mut note) = this.state.active_note {
+                                                    note.selection_anchor = None;
+                                                }
+                                            }
+                                            this.open_editor_context_menu(click_x, click_y, cx);
                                         }))
                                         .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                                             if this.is_resizing_sidebar {
@@ -4543,6 +4566,8 @@ impl Render for AppView {
                                                                 .flex_row()
                                                                 .items_center()
                                                                 .flex_1()
+                                                                .min_w_0()
+                                                                .whitespace_nowrap()
                                                                 .h(px(row_h))
                                                                 .py_0()
                                                                 .font_family(editor_font.clone())
@@ -4567,6 +4592,7 @@ impl Render for AppView {
                                                                         .flex()
                                                                         .flex_row()
                                                                         .items_center()
+                                                                        .whitespace_nowrap()
                                                                         .child(render_live_styled_row(
                                                                             line,
                                                                             &classified,
@@ -4974,6 +5000,10 @@ impl Render for AppView {
             // ================= RIBBON CONTEXT MENU (Obsidian-style) =================
             .when(self.ribbon_context_menu.is_open, |d| {
                 d.child(self.render_ribbon_context_menu(theme, window, cx))
+            })
+            // ================= EDITOR CONTEXT MENU =================
+            .when(self.editor_context_menu.is_open, |d| {
+                d.child(self.render_editor_context_menu(theme, window, cx))
             })
             // ================= GO TO FILE DIALOG =================
             .when(self.search_dialog.is_open, |d| {

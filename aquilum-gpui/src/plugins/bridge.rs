@@ -51,6 +51,12 @@ impl PluginHostState {
         map.remove(plugin_id);
     }
 
+    /// Returns a list of all currently registered plugin IDs.
+    pub fn registered_plugin_ids(&self) -> Vec<String> {
+        let map = self.plugins.lock().unwrap();
+        map.keys().cloned().collect()
+    }
+
     /// Send an event notification to a specific plugin worker thread.
     pub fn send_event(&self, plugin_id: &str, event: HostEvent) -> bool {
         let map = self.plugins.lock().unwrap();
@@ -108,6 +114,7 @@ impl PluginHostState {
             | ApiRequest::AddCommand { .. }
             | ApiRequest::AddRibbonIcon { .. }
             | ApiRequest::ExecuteCommand { .. }
+            | ApiRequest::EditorReplaceSelection { .. }
             | ApiRequest::Unknown { .. }
             | ApiRequest::LoadData
             | ApiRequest::SaveData { .. } => {
@@ -359,7 +366,15 @@ impl AppView {
                 let validation = crate::plugins::ui::validate_tree(&tree);
                 let event = match validation {
                     Ok(()) => {
-                        self.plugin_views.insert((plugin_id.clone(), view_id), tree);
+                        let is_empty_modal = view_id != 0 && match &tree {
+                            crate::plugins::ui::UiNode::Text { value, .. } => value.is_empty(),
+                            _ => false,
+                        };
+                        if is_empty_modal {
+                            self.plugin_views.remove(&(plugin_id.clone(), view_id));
+                        } else {
+                            self.plugin_views.insert((plugin_id.clone(), view_id), tree);
+                        }
                         cx.notify();
                         HostEvent::response_ok(request_id, serde_json::Value::Null)
                     }
@@ -476,7 +491,28 @@ impl AppView {
                     HostEvent::response_ok(request_id, serde_json::Value::Null),
                 );
             }
+            ApiRequest::EditorReplaceSelection { text } => {
+                let replaced = if let Some(ref mut note) = self.state.active_note {
+                    note.replace_selection(&text)
+                } else {
+                    false
+                };
+                if replaced {
+                    self.state.save_active_note();
+                    cx.notify();
+                }
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Bool(replaced)),
+                );
+            }
             ApiRequest::Unknown { req_kind } => {
+                if let Some(json_str) = req_kind.strip_prefix("editor_menu_result:") {
+                    if let Ok(items) = serde_json::from_str::<Vec<crate::views::editor_context_menu::ContextMenuItem>>(json_str) {
+                        self.append_plugin_context_menu_items(&plugin_id, items, cx);
+                    }
+                    return;
+                }
                 eprintln!("[plugins:{}] Unhandled request kind: {}", plugin_id, req_kind);
                 let _ = self.state.plugin_host.send_event(
                     &plugin_id,

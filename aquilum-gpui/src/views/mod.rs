@@ -1,5 +1,6 @@
 pub mod app_view;
 pub mod command_palette;
+pub mod editor_context_menu;
 pub mod goto_search;
 pub mod new_tab;
 pub mod plugin_catalog;

@@ -174,6 +174,53 @@ impl AppView {
     pub fn render_settings_modal(&self, cx: &Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
 
+        let plugin_modal_overlay = if let SettingsTab::PluginSettings(ref pid) = self.settings_tab {
+            self.plugin_views.get(&(pid.clone(), 1)).and_then(|modal_tree| {
+                if let crate::plugins::ui::UiNode::Text { value, .. } = modal_tree {
+                    if value.is_empty() {
+                        return None;
+                    }
+                }
+                let rendered_modal = crate::plugins::ui::render_ui_node(modal_tree, pid, 1, theme, cx);
+                Some(
+                    div()
+                        .id("plugin-modal-backdrop-overlay")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .bg(rgba(0x000000aa))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor(gpui::CursorStyle::Arrow)
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation();
+                        })
+                        .child(
+                            div()
+                                .id("plugin-modal-dialog-box")
+                                .flex()
+                                .flex_col()
+                                .w(px(540.0))
+                                .max_w(px(680.0))
+                                .max_h(px(540.0))
+                                .overflow_scroll()
+                                .p_6()
+                                .gap_4()
+                                .rounded_xl()
+                                .bg(theme.bg_card)
+                                .border_1()
+                                .border_color(theme.border)
+                                .shadow_lg()
+                                .child(rendered_modal),
+                        ),
+                )
+            })
+        } else {
+            None
+        };
+
         div()
             .id("settings-modal-root")
             .absolute()
@@ -224,6 +271,7 @@ impl AppView {
                     .child(
                         div()
                             .id("settings-modal-dialog")
+                            .relative()
                             .flex()
                             .flex_col()
                             .w(px(900.0))
@@ -259,7 +307,8 @@ impl AppView {
                                     .child(self.render_settings_nav(cx))
                                     // Right scrollable content panel
                                     .child(self.render_settings_content(cx)),
-                            ),
+                            )
+                            .when_some(plugin_modal_overlay, |this, overlay| this.child(overlay)),
                     ),
             )
     }
@@ -2445,6 +2494,15 @@ impl AppView {
                             .child(icons::icon(icons::ICON_SETTINGS, 14.0, theme.text_muted))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.settings_tab = SettingsTab::PluginSettings(settings_btn_id.clone());
+                                let _ = this.state.plugin_host.send_event(
+                                    &settings_btn_id,
+                                    crate::plugins::api::HostEvent::UiEvent {
+                                        view_id: 0,
+                                        node_id: "__refresh_setting_tab__".to_string(),
+                                        event: "refresh".to_string(),
+                                        value: None,
+                                    },
+                                );
                                 cx.notify();
                             })),
                     )
@@ -2452,6 +2510,27 @@ impl AppView {
                 .child(toggle);
 
             let hint = format!("v{} • {}", plugin.manifest.version, plugin.manifest.description);
+            // Calculate compatibility status
+            let script_src = std::fs::read_to_string(&plugin.main_js_path).unwrap_or_default();
+            let compat_report = crate::plugins::compat::analyze_plugin_script(&script_src);
+            let (badge_bg, badge_fg, badge_text) = match compat_report.status {
+                crate::plugins::compat::CompatibilityStatus::Full => (
+                    rgba(0x2ea44f22),
+                    rgba(0x3fb950ff),
+                    if is_ru { "100% Совместим".to_string() } else { "100% Compatible".to_string() },
+                ),
+                crate::plugins::compat::CompatibilityStatus::Partial(score) => (
+                    rgba(0xdbab0922),
+                    rgba(0xd29922ff),
+                    if is_ru { format!("{:.0}% Совместим", score * 100.0) } else { format!("{:.0}% Compatible", score * 100.0) },
+                ),
+                crate::plugins::compat::CompatibilityStatus::Incompatible => (
+                    rgba(0xf8514922),
+                    rgba(0xf85149ff),
+                    if is_ru { "Не поддерживается".to_string() } else { "Incompatible".to_string() },
+                ),
+            };
+
             let row_header = div()
                 .id(gpui::ElementId::from(gpui::SharedString::from(format!("comm-item-title-{}", plugin.manifest.id))))
                 .flex()
@@ -2464,6 +2543,15 @@ impl AppView {
                 .hover(|h| h.opacity(0.85))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.settings_tab = SettingsTab::PluginSettings(details_btn_id.clone());
+                    let _ = this.state.plugin_host.send_event(
+                        &details_btn_id,
+                        crate::plugins::api::HostEvent::UiEvent {
+                            view_id: 0,
+                            node_id: "__refresh_setting_tab__".to_string(),
+                            event: "refresh".to_string(),
+                            value: None,
+                        },
+                    );
                     cx.notify();
                 }))
                 .child(
@@ -2478,6 +2566,17 @@ impl AppView {
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(theme.text_primary)
                                 .child(p_name),
+                        )
+                        .child(
+                            div()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded_sm()
+                                .bg(badge_bg)
+                                .text_xs()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(badge_fg)
+                                .child(badge_text),
                         )
                         .child(
                             div()

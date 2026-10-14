@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, AnyElement, Context, ElementId, InteractiveElement, IntoElement, ParentElement,
-    SharedString, Styled,
+    SharedString, StatefulInteractiveElement, Styled,
 };
 use serde::{Deserialize, Serialize};
 
@@ -388,7 +388,7 @@ pub fn render_ui_node(
                 })
                 .hover(|s| if !is_disabled { s.bg(theme.bg_hover) } else { s })
                 .when(!is_disabled, |this| {
-                    this.on_mouse_down(gpui::MouseButton::Left, cx.listener(move |app, _, _, _| {
+                    this.on_click(cx.listener(move |app, _, _, cx| {
                         let _ = app.state.plugin_host.send_event(
                             &p_id,
                             crate::plugins::api::HostEvent::UiEvent {
@@ -398,6 +398,7 @@ pub fn render_ui_node(
                                 value: None,
                             },
                         );
+                        cx.notify();
                     }))
                 })
                 .child(label.clone())
@@ -445,7 +446,7 @@ pub fn render_ui_node(
                 .items_center()
                 .gap(px(6.0))
                 .cursor(gpui::CursorStyle::PointingHand)
-                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |app, _, _, _| {
+                .on_click(cx.listener(move |app, _, _, cx| {
                     let _ = app.state.plugin_host.send_event(
                         &p_id,
                         crate::plugins::api::HostEvent::UiEvent {
@@ -455,6 +456,7 @@ pub fn render_ui_node(
                             value: Some((!is_checked).to_string()),
                         },
                     );
+                    cx.notify();
                 }))
                 .child(
                     div()
@@ -498,6 +500,7 @@ pub fn render_ui_node(
                     let item_id = item.id.clone();
                     let pid = p_id.clone();
                     div()
+                        .id(ElementId::from(SharedString::from(format!("ui-list-it-{}-{}-{}", view_i, id, item_id))))
                         .flex()
                         .flex_col()
                         .px(px(6.0))
@@ -505,7 +508,7 @@ pub fn render_ui_node(
                         .rounded(px(4.0))
                         .cursor(gpui::CursorStyle::PointingHand)
                         .hover(|s| s.bg(theme.bg_hover))
-                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |app, _, _, _| {
+                        .on_click(cx.listener(move |app, _, _, cx| {
                             let _ = app.state.plugin_host.send_event(
                                 &pid,
                                 crate::plugins::api::HostEvent::UiEvent {
@@ -515,6 +518,7 @@ pub fn render_ui_node(
                                     value: None,
                                 },
                             );
+                            cx.notify();
                         }))
                         .child(
                             div()
@@ -558,6 +562,7 @@ pub fn render_ui_node(
                     .flex_col()
                     .gap(px(2.0))
                     .flex_1()
+                    .min_w_0()
                     .child(
                         div()
                             .text_sm()
@@ -579,6 +584,7 @@ pub fn render_ui_node(
                     .flex()
                     .items_center()
                     .justify_end()
+                    .flex_shrink_0()
                     .min_w(px(140.0))
                     .child(render_ui_node(control, plugin_id, view_id, theme, cx)),
             )
@@ -598,7 +604,8 @@ pub fn render_ui_node(
                 .border_1()
                 .border_color(if is_on { theme.accent } else { theme.border })
                 .cursor(gpui::CursorStyle::PointingHand)
-                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |app, _, _, _| {
+                .hover(|s| s.opacity(0.85))
+                .on_click(cx.listener(move |app, _, _, cx| {
                     let _ = app.state.plugin_host.send_event(
                         &p_id,
                         crate::plugins::api::HostEvent::UiEvent {
@@ -608,6 +615,7 @@ pub fn render_ui_node(
                             value: Some((!is_on).to_string()),
                         },
                     );
+                    cx.notify();
                 }))
                 .flex()
                 .items_center()
@@ -675,6 +683,11 @@ pub fn render_ui_node(
                 .map(|o| o.label.as_str())
                 .unwrap_or(value.as_str());
 
+            let p_id = plugin_id.to_string();
+            let n_id = id.clone();
+            let current_val = value.clone();
+            let opts = options.clone();
+
             div()
                 .id(ElementId::from(SharedString::from(format!("ui-sel-{}-{}", view_id, id))))
                 .flex()
@@ -689,6 +702,24 @@ pub fn render_ui_node(
                 .border_color(theme.border)
                 .bg(theme.bg_card)
                 .cursor(gpui::CursorStyle::PointingHand)
+                .hover(|s| s.bg(theme.bg_hover))
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    if !opts.is_empty() {
+                        let current_idx = opts.iter().position(|o| o.value == current_val).unwrap_or(0);
+                        let next_idx = (current_idx + 1) % opts.len();
+                        let next_val = opts[next_idx].value.clone();
+                        let _ = app.state.plugin_host.send_event(
+                            &p_id,
+                            crate::plugins::api::HostEvent::UiEvent {
+                                view_id,
+                                node_id: n_id.clone(),
+                                event: "change".to_string(),
+                                value: Some(next_val),
+                            },
+                        );
+                        cx.notify();
+                    }
+                }))
                 .child(
                     div()
                         .text_xs()

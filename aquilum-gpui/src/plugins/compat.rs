@@ -73,6 +73,9 @@ const API_PATTERNS: &[ApiPattern] = &[
     ApiPattern { pattern: "workspace.openFile", name: "app.workspace.openFile()", category: PatternCategory::Supported },
     ApiPattern { pattern: "normalizePath", name: "normalizePath()", category: PatternCategory::Supported },
     ApiPattern { pattern: "requestUrl", name: "requestUrl()", category: PatternCategory::Supported },
+    ApiPattern { pattern: "Menu", name: "new Menu()", category: PatternCategory::Supported },
+    ApiPattern { pattern: "editor-menu", name: "workspace.on('editor-menu')", category: PatternCategory::Supported },
+    ApiPattern { pattern: "setSubmenu", name: "MenuItem.setSubmenu()", category: PatternCategory::Supported },
 
     // Missing or safe stubs
     ApiPattern { pattern: "metadataCache.getFileCache", name: "app.metadataCache.getFileCache()", category: PatternCategory::MissingOrStub },

@@ -508,6 +508,33 @@ impl OpenedNote {
         }
     }
 
+    pub fn replace_selection(&mut self, text: &str) -> bool {
+        if let Some(range) = self.selection_range() {
+            self.snapshot_undo();
+            self.doc.apply_edit(range.clone(), text);
+            self.content = self.doc.source.clone();
+            self.version += 1;
+            self.cursor_offset = range.start + text.len();
+            self.selection_anchor = None;
+            self.is_dirty = true;
+            self.visual_cache_dirty = true;
+            self.sync_cursor();
+            true
+        } else {
+            let offset = self.cursor_offset.min(self.content.len());
+            self.snapshot_undo();
+            self.doc.apply_edit(offset..offset, text);
+            self.content = self.doc.source.clone();
+            self.version += 1;
+            self.cursor_offset = offset + text.len();
+            self.selection_anchor = None;
+            self.is_dirty = true;
+            self.visual_cache_dirty = true;
+            self.sync_cursor();
+            true
+        }
+    }
+
     pub fn select_all(&mut self) {
         self.selection_anchor = Some(0);
         self.cursor_offset = self.content.len();
@@ -896,6 +923,7 @@ impl OpenedNote {
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub version: u64,
+    pub language: String,
     pub active_file: Option<crate::vault::FileInfo>,
     pub files: Arc<[crate::vault::FileInfo]>,
 }
@@ -1034,6 +1062,7 @@ impl AppState {
             ));
         }
 
+        state.publish_snapshot();
         state
     }
 
@@ -1082,8 +1111,10 @@ impl AppState {
             .unwrap_or_default();
 
         let version = self.active_note.as_ref().map(|n| n.version).unwrap_or(0);
+        let language = crate::i18n::LocaleInfo::normalize(&self.settings.get_config().ui.language).to_string();
         self.snapshot.store(Arc::new(Snapshot {
             version,
+            language,
             active_file: active,
             files: files.into(),
         }));

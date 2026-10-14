@@ -180,6 +180,16 @@ pub fn spawn_plugin_runtime(
                                 dispatch_command_execution(&ctx, command_id);
                             });
                         }
+                        HostEvent::EditorMenu { menu_session_id, selected_text } => {
+                            let _ = ctx.with(|ctx| {
+                                dispatch_editor_menu(&ctx, &p_id, menu_session_id, selected_text, &api_tx);
+                            });
+                        }
+                        HostEvent::ExecuteMenuAction { action_id } => {
+                            let _ = ctx.with(|ctx| {
+                                dispatch_menu_action(&ctx, action_id);
+                            });
+                        }
                         HostEvent::UiEvent { view_id, node_id, event, value } => {
                             let _ = ctx.with(|ctx| {
                                 dispatch_ui_interaction(&ctx, view_id, node_id, event, value);
@@ -277,6 +287,18 @@ fn setup_plugin_environment<'js>(
     })?;
     globals.set("__host_get_markdown_files", get_files_fn)?;
 
+    let snap_lang = snapshot.clone();
+    let get_lang_fn = Function::new(ctx.clone(), move || -> rquickjs::Result<String> {
+        let snap = snap_lang.load();
+        let lang = if snap.language.is_empty() {
+            "ru".to_string()
+        } else {
+            snap.language.clone()
+        };
+        Ok(lang)
+    })?;
+    globals.set("__host_get_language", get_lang_fn)?;
+
     // 4. Inject manifest and CommonJS module / exports
     let manifest_json = serde_json::to_string(manifest).unwrap_or_else(|_| "{}".to_string());
     ctx.eval::<(), _>(format!(
@@ -291,9 +313,22 @@ fn setup_plugin_environment<'js>(
         globalThis.__command_handlers = new Map();
         globalThis.__js_timers = new Map();
         globalThis.__velement_registry = new Map();
+        globalThis.__menu_callbacks = new Map();
+        globalThis.__workspace_listeners = new Map();
         let __next_timer_id = 1;
 
         function __dispatch_ui_interaction(nodeId, action, value) {
+            if (nodeId === "__refresh_setting_tab__" || action === "refresh") {
+                if (globalThis.__active_setting_tab && typeof globalThis.__active_setting_tab.display === "function") {
+                    try {
+                        globalThis.__active_setting_tab.display();
+                    } catch (e) {
+                        console.error("Refresh setting tab error:", e);
+                    }
+                }
+                return;
+            }
+
             const el = globalThis.__velement_registry.get(nodeId);
             if (el) {
                 if (action === "change") {
@@ -304,6 +339,22 @@ fn setup_plugin_environment<'js>(
                 } else {
                     el.dispatchEvent({ type: action });
                 }
+            }
+
+            // Sync updated setting tab view tree back to host
+            if (globalThis.__active_setting_tab && globalThis.__active_setting_tab.containerEl) {
+                try {
+                    const tree = __velement_to_uinode(globalThis.__active_setting_tab.containerEl);
+                    __invoke_host("set_view_tree", { view_id: 0, tree });
+                } catch (e) {}
+            }
+
+            // Sync updated modal view tree back to host if active
+            if (globalThis.__active_modal && globalThis.__active_modal.containerEl) {
+                try {
+                    const tree = __velement_to_uinode(globalThis.__active_modal.containerEl);
+                    __invoke_host("set_view_tree", { view_id: 1, tree });
+                } catch (e) {}
             }
         }
 
@@ -406,6 +457,34 @@ fn setup_plugin_environment<'js>(
             }
         }
 
+        function __dispatch_editor_menu(menuSessionId, selectedText) {
+            const listeners = globalThis.__workspace_listeners.get("editor-menu") || [];
+            if (listeners.length === 0) {
+                return "[]";
+            }
+            const menu = new Menu();
+            const editor = new Editor(selectedText);
+            for (const cb of listeners) {
+                try {
+                    cb(menu, editor);
+                } catch (e) {
+                    console.error("editor-menu listener error:", e);
+                }
+            }
+            return JSON.stringify(menu.toJSON());
+        }
+
+        function __dispatch_menu_action(actionId) {
+            const cb = globalThis.__menu_callbacks.get(actionId);
+            if (cb) {
+                try {
+                    cb();
+                } catch (e) {
+                    console.error("Menu action callback error:", e);
+                }
+            }
+        }
+
         function __dispatch_code_block_process(lang, source, blockId) {
             const handler = globalThis.__code_block_handlers.get(String(lang).toLowerCase());
             if (!handler) return;
@@ -463,7 +542,7 @@ fn setup_plugin_environment<'js>(
                 this.value = options.value != null ? String(options.value) : "";
                 this.placeholder = options.placeholder || "";
                 this.disabled = !!options.disabled;
-                this.checked = !!options.checked;
+                this.checked = options.checked !== undefined ? !!options.checked : undefined;
                 this.dataset = {};
                 this.style = new Proxy({}, {
                     get: (t, p) => t[p] || "",
@@ -969,7 +1048,7 @@ fn setup_plugin_environment<'js>(
                 };
             }
 
-            if (el.tag === "input" && (el.attributes["type"] === "checkbox" || el.checked !== undefined)) {
+            if (el.tag === "input" && (el.attributes["type"] === "checkbox" || el.classes.has("checkbox-container") || el.classes.has("checkbox") || (el.attributes["type"] === undefined && el.checked !== undefined))) {
                 return {
                     type: "toggle",
                     id: el.id,
@@ -1006,7 +1085,7 @@ fn setup_plugin_environment<'js>(
                     type: "input",
                     id: el.id,
                     placeholder: el.placeholder || undefined,
-                    value: el.value || undefined
+                    value: el.value != null ? String(el.value) : undefined
                 };
             }
 
@@ -1183,12 +1262,17 @@ fn setup_plugin_environment<'js>(
                 this.contentEl = this.modalEl.createDiv("modal-content");
             }
             open() {
+                globalThis.__active_modal = this;
                 this.onOpen();
                 const tree = __velement_to_uinode(this.containerEl);
                 __invoke_host("set_view_tree", { view_id: 1, tree });
             }
             close() {
+                if (globalThis.__active_modal === this) {
+                    globalThis.__active_modal = null;
+                }
                 this.onClose();
+                __invoke_host("set_view_tree", { view_id: 1, tree: { type: "text", value: "" } });
             }
             onOpen() {}
             onClose() {}
@@ -1232,21 +1316,86 @@ fn setup_plugin_environment<'js>(
             close() {}
         }
 
-        class Menu {
-            constructor() { this.items = []; }
-            addItem(cb) { const item = new MenuItem(this); cb(item); this.items.push(item); return this; }
-            addSeparator() { return this; }
-            showAtPosition(pos) { return this; }
-            showAtMouseEvent(evt) { return this; }
+        class Editor {
+            constructor(selection = "") {
+                this._selection = String(selection != null ? selection : "");
+            }
+            getSelection() {
+                return this._selection;
+            }
+            replaceSelection(text) {
+                this._selection = String(text != null ? text : "");
+                __invoke_host("editor_replace_selection", { text: this._selection });
+            }
         }
 
         class MenuItem {
-            constructor(menu) { this.menu = menu; }
-            setTitle(title) { this.title = title; return this; }
-            setIcon(icon) { this.icon = icon; return this; }
-            setChecked(checked) { this.checked = checked; return this; }
-            setDisabled(disabled) { this.disabled = disabled; return this; }
-            onClick(cb) { this.callback = cb; return this; }
+            constructor(menu) {
+                this.menu = menu;
+                this.id = "menu-item-" + Math.random().toString(36).substr(2, 9);
+                this.title = "";
+                this.icon = "";
+                this.checked = false;
+                this.disabled = false;
+                this.is_label = false;
+                this.is_separator = false;
+                this.callback = null;
+                this.submenu = null;
+            }
+            setTitle(title) { this.title = String(title != null ? title : ""); return this; }
+            setIcon(icon) { this.icon = String(icon != null ? icon : ""); return this; }
+            setChecked(checked) { this.checked = !!checked; return this; }
+            setDisabled(disabled) { this.disabled = !!disabled; return this; }
+            setIsLabel(isLabel) { this.is_label = !!isLabel; return this; }
+            onClick(cb) {
+                this.callback = cb;
+                if (cb) {
+                    globalThis.__menu_callbacks.set(this.id, cb);
+                }
+                return this;
+            }
+            setSubmenu() {
+                if (!this.submenu) {
+                    this.submenu = new Menu();
+                }
+                return this.submenu;
+            }
+            toJSON() {
+                return {
+                    id: this.id,
+                    title: this.title,
+                    icon: this.icon,
+                    checked: this.checked,
+                    disabled: this.disabled,
+                    is_label: this.is_label,
+                    is_separator: this.is_separator,
+                    has_callback: !!this.callback,
+                    submenu: this.submenu ? this.submenu.items.map(it => it.toJSON()) : null
+                };
+            }
+        }
+
+        class Menu {
+            constructor() {
+                this.items = [];
+            }
+            addItem(cb) {
+                const item = new MenuItem(this);
+                if (typeof cb === "function") cb(item);
+                this.items.push(item);
+                return this;
+            }
+            addSeparator() {
+                const item = new MenuItem(this);
+                item.is_separator = true;
+                this.items.push(item);
+                return this;
+            }
+            showAtPosition(pos) { return this; }
+            showAtMouseEvent(evt) { return this; }
+            toJSON() {
+                return this.items.map(it => it.toJSON());
+            }
         }
 
         class WorkspaceLeaf {
@@ -1423,11 +1572,22 @@ fn setup_plugin_environment<'js>(
             }
             addSettingTab(tab) {
                 this.settingTab = tab;
+                globalThis.__active_setting_tab = tab;
                 if (tab && typeof tab.display === "function") {
+                    const origDisplay = tab.display.bind(tab);
+                    tab.display = function() {
+                        try {
+                            origDisplay();
+                        } catch (e) {
+                            console.error("tab.display error:", e);
+                        }
+                        try {
+                            const tree = __velement_to_uinode(tab.containerEl);
+                            __invoke_host("set_view_tree", { view_id: 0, tree });
+                        } catch (e) {}
+                    };
                     try {
                         tab.display();
-                        const tree = __velement_to_uinode(tab.containerEl);
-                        __invoke_host("set_view_tree", { view_id: 0, tree });
                     } catch (e) {
                         // Some plugins rely on asynchronous data loaded after onload.
                         // We retain this.settingTab for on-demand rendering.
@@ -1499,7 +1659,25 @@ fn setup_plugin_environment<'js>(
                 globalThis.__code_block_handlers.set(String(language).toLowerCase(), handler);
                 return __invoke_host("register_code_block_processor", { language: String(language) });
             },
-            on: (_event, _cb) => ({ id: "event-sub" }),
+            on: (event, cb) => {
+                const evName = String(event);
+                if (!globalThis.__workspace_listeners.has(evName)) {
+                    globalThis.__workspace_listeners.set(evName, []);
+                }
+                if (typeof cb === "function") {
+                    globalThis.__workspace_listeners.get(evName).push(cb);
+                }
+                return {
+                    id: "workspace-sub-" + Math.random().toString(36).substr(2, 9),
+                    unload: () => {
+                        const list = globalThis.__workspace_listeners.get(evName);
+                        if (list) {
+                            const idx = list.indexOf(cb);
+                            if (idx !== -1) list.splice(idx, 1);
+                        }
+                    }
+                };
+            },
             trigger: () => {}
         };
 
@@ -1546,6 +1724,7 @@ fn setup_plugin_environment<'js>(
         globalThis.DropdownComponent = DropdownComponent;
         globalThis.Menu = Menu;
         globalThis.MenuItem = MenuItem;
+        globalThis.Editor = Editor;
         globalThis.Notice = Notice;
         globalThis.AbstractInputSuggest = AbstractInputSuggest;
         globalThis.EditorSuggest = EditorSuggest;
@@ -1570,6 +1749,37 @@ fn setup_plugin_environment<'js>(
             }
             return fallbackClasses.get(className);
         }
+
+        const getLanguage = () => {
+            try {
+                const l = __host_get_language();
+                if (l && typeof l === "string" && l.length > 0) return l;
+            } catch (e) {}
+            return "ru";
+        };
+        globalThis.getLanguage = getLanguage;
+        globalThis.window = globalThis;
+        moment.locale = () => getLanguage();
+        globalThis.window.moment = moment;
+        globalThis.navigator = {
+            language: "ru-RU",
+            languages: ["ru-RU", "ru", "en"],
+            userAgent: "Aquilum/1.0 (Windows NT 10.0; Win64; x64) Obsidian/1.8.0"
+        };
+        globalThis.document = {
+            documentElement: { lang: "ru" },
+            createElement: (t) => new VElement(t),
+            body: new VElement("body"),
+            head: new VElement("head")
+        };
+        globalThis.localStorage = {
+            getItem: (k) => {
+                if (k === "language") return getLanguage();
+                return null;
+            },
+            setItem: () => {},
+            removeItem: () => {}
+        };
 
         const obsidianExports = {
             Component,
@@ -1597,6 +1807,7 @@ fn setup_plugin_environment<'js>(
             DropdownComponent,
             Menu,
             MenuItem,
+            Editor,
             Notice,
             TFile,
             TFolder,
@@ -1604,6 +1815,7 @@ fn setup_plugin_environment<'js>(
             normalizePath,
             requestUrl,
             moment,
+            getLanguage,
             app: globalThis.app
         };
 
@@ -1807,6 +2019,14 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
                 });
             ApiRequest::SetViewTree { view_id, tree }
         }
+        "editor_replace_selection" => {
+            let text = payload
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::EditorReplaceSelection { text }
+        }
         "http" => {
             let url = payload.get("url").and_then(|v| v.as_str()).unwrap_or_default().to_string();
             let method = payload.get("method").and_then(|v| v.as_str()).unwrap_or("GET").to_string();
@@ -1855,6 +2075,35 @@ fn dispatch_code_block_process<'js>(
     let dispatch_fn: rquickjs::Result<Function> = ctx.globals().get("__dispatch_code_block_process");
     if let Ok(func) = dispatch_fn {
         let _ = func.call::<_, ()>((language, source, block_id as f64));
+    }
+}
+
+/// Dispatches an editor context menu event into QuickJS and reports serialized items back to host.
+fn dispatch_editor_menu<'js>(
+    ctx: &Ctx<'js>,
+    p_id: &str,
+    menu_session_id: u64,
+    selected_text: String,
+    api_tx: &UnboundedSender<ApiCall>,
+) {
+    let dispatch_fn: rquickjs::Result<Function> = ctx.globals().get("__dispatch_editor_menu");
+    if let Ok(func) = dispatch_fn {
+        let res: String = func.call::<_, String>((menu_session_id as f64, selected_text)).unwrap_or_else(|_| "[]".to_string());
+        let _ = api_tx.unbounded_send(ApiCall {
+            plugin_id: p_id.to_string(),
+            request_id: menu_session_id,
+            request: ApiRequest::Unknown {
+                req_kind: format!("editor_menu_result:{}", res),
+            },
+        });
+    }
+}
+
+/// Dispatches a clicked context menu item action callback into QuickJS.
+fn dispatch_menu_action<'js>(ctx: &Ctx<'js>, action_id: String) {
+    let dispatch_fn: rquickjs::Result<Function> = ctx.globals().get("__dispatch_menu_action");
+    if let Ok(func) = dispatch_fn {
+        let _ = func.call::<_, ()>((action_id,));
     }
 }
 
@@ -2433,6 +2682,315 @@ mod tests {
         } else {
             panic!("Expected Notice request, got {:?}", notice_call.request);
         }
+
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
+    }
+
+    #[test]
+    fn test_menu_and_editor_context_menu_dispatch() {
+        let manifest = PluginManifest {
+            id: "menu-test-plugin".into(),
+            name: "Menu Test Plugin".into(),
+            version: "1.0.0".into(),
+            min_app_version: None,
+            description: "".into(),
+            author: "".into(),
+            permissions: PluginPermissions::default(),
+        };
+
+        let (api_tx, mut api_rx) = unbounded();
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
+
+        let script = r#"
+            const { Plugin } = require("obsidian");
+
+            class MyPlugin extends Plugin {
+                async onload() {
+                    this.registerEvent(
+                        this.app.workspace.on("editor-menu", (menu, editor) => {
+                            const sel = editor.getSelection();
+                            menu.addItem((item) => {
+                                item.setTitle("Convert " + sel).setIcon("text");
+                                const sub = item.setSubmenu();
+                                sub.addItem((subItem) => {
+                                    subItem.setTitle("Sub Action").onClick(() => {
+                                        editor.replaceSelection("REPLACED:" + sel);
+                                    });
+                                });
+                            });
+                        })
+                    );
+                }
+            }
+            module.exports = MyPlugin;
+        "#;
+
+        let handle = spawn_plugin_runtime(
+            manifest,
+            script.to_string(),
+            api_tx,
+            snapshot,
+        )
+        .unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        // Dispatch EditorMenu event
+        let session_id = 999;
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::EditorMenu {
+            menu_session_id: session_id,
+            selected_text: "123.45".to_string(),
+        });
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let mut menu_items_res = None;
+        while let Ok(call) = api_rx.try_recv() {
+            if let ApiRequest::Unknown { req_kind } = call.request {
+                if let Some(json_str) = req_kind.strip_prefix("editor_menu_result:") {
+                    menu_items_res = Some(json_str.to_string());
+                    break;
+                }
+            }
+        }
+
+        let json = menu_items_res.expect("Expected editor_menu_result from plugin");
+        assert!(json.contains("Convert 123.45"));
+        assert!(json.contains("Sub Action"));
+
+        // Extract sub action item id and click it
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let sub_id = parsed[0]["submenu"][0]["id"].as_str().unwrap().to_string();
+
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::ExecuteMenuAction {
+            action_id: sub_id,
+        });
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let mut replaced_text = None;
+        while let Ok(call) = api_rx.try_recv() {
+            if let ApiRequest::EditorReplaceSelection { text } = call.request {
+                replaced_text = Some(text);
+                break;
+            }
+        }
+
+        assert_eq!(replaced_text, Some("REPLACED:123.45".to_string()));
+
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
+    }
+
+    #[test]
+    fn test_obsidian_get_language() {
+        let manifest = PluginManifest {
+            id: "lang-test-plugin".into(),
+            name: "Lang Test Plugin".into(),
+            version: "1.0.0".into(),
+            min_app_version: None,
+            description: "".into(),
+            author: "".into(),
+            permissions: PluginPermissions::default(),
+        };
+
+        let (api_tx, mut api_rx) = unbounded();
+        let mut snap = Snapshot::default();
+        snap.language = "ru".to_string();
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(snap));
+
+        let script = r#"
+            const { Plugin, Notice, getLanguage, moment } = require("obsidian");
+
+            class LangPlugin extends Plugin {
+                async onload() {
+                    const langFromObsidian = getLanguage();
+                    const langFromGlobal = globalThis.getLanguage ? globalThis.getLanguage() : "none";
+                    const momentLocale = moment.locale ? moment.locale() : "none";
+                    const winMomentLocale = window.moment ? window.moment.locale() : "none";
+                    new Notice(`LANG:${langFromObsidian}|${langFromGlobal}|${momentLocale}|${winMomentLocale}`);
+                }
+            }
+            module.exports = LangPlugin;
+        "#;
+
+        let handle = spawn_plugin_runtime(
+            manifest,
+            script.to_string(),
+            api_tx,
+            snapshot,
+        )
+        .unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let mut notice_text = None;
+        while let Ok(call) = api_rx.try_recv() {
+            if let ApiRequest::Notice { text, .. } = call.request {
+                notice_text = Some(text);
+                break;
+            }
+        }
+
+        assert_eq!(
+            notice_text,
+            Some("LANG:ru|ru|ru|ru".to_string())
+        );
+
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
+    }
+
+    #[test]
+    fn test_interactive_settings_tab_toggle_and_modal_lifecycle() {
+        let manifest = PluginManifest {
+            id: "interactive-settings-test".into(),
+            name: "Interactive Settings".into(),
+            version: "1.0.0".into(),
+            min_app_version: None,
+            description: "".into(),
+            author: "".into(),
+            permissions: PluginPermissions::default(),
+        };
+
+        let (api_tx, mut api_rx) = unbounded();
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
+
+        let script = r#"
+            const { Plugin, PluginSettingTab, Setting, Modal } = require("obsidian");
+
+            class EditModal extends Modal {
+                constructor(app) {
+                    super(app);
+                }
+                onOpen() {
+                    this.titleEl.setText("Currency Editor");
+                }
+            }
+
+            class MySettingTab extends PluginSettingTab {
+                constructor(app, plugin) {
+                    super(app, plugin);
+                }
+                display() {
+                    const { containerEl } = this;
+                    containerEl.empty();
+                    new Setting(containerEl)
+                        .setName("Auto Detect")
+                        .addToggle(t => {
+                            t.setValue(this.plugin.settings.autoDetect);
+                            t.onChange(val => {
+                                this.plugin.settings.autoDetect = val;
+                            });
+                        });
+                    new Setting(containerEl)
+                        .setName("Edit Currency")
+                        .addButton(b => {
+                            b.setButtonText("Edit");
+                            b.onClick(() => {
+                                new EditModal(this.app).open();
+                            });
+                        });
+                }
+            }
+
+            class InteractivePlugin extends Plugin {
+                async onload() {
+                    this.settings = { autoDetect: false };
+                    this.addSettingTab(new MySettingTab(this.app, this));
+                }
+            }
+            module.exports = InteractivePlugin;
+        "#;
+
+        let handle = spawn_plugin_runtime(
+            manifest,
+            script.to_string(),
+            api_tx,
+            snapshot,
+        )
+        .unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        // 1. Initial SetViewTree for view_id: 0
+        let mut toggle_id = None;
+        let mut button_id = None;
+        while let Ok(call) = api_rx.try_recv() {
+            if let ApiRequest::SetViewTree { view_id, tree } = call.request {
+                if view_id == 0 {
+                    let json = serde_json::to_string(&tree).unwrap();
+                    assert!(json.contains("Auto Detect"));
+                    assert!(json.contains("\"value\":false"));
+                    // Find toggle node id
+                    if let crate::plugins::ui::UiNode::Column { children, .. } = tree {
+                        for c in &children {
+                            if let crate::plugins::ui::UiNode::SettingItem { name, control, .. } = c {
+                                if name == "Auto Detect" {
+                                    if let crate::plugins::ui::UiNode::Toggle { id, value } = &**control {
+                                        assert_eq!(*value, false);
+                                        toggle_id = Some(id.clone());
+                                    }
+                                } else if name == "Edit Currency" {
+                                    if let crate::plugins::ui::UiNode::Button { id, .. } = &**control {
+                                        button_id = Some(id.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let tog_id = toggle_id.expect("Toggle ID should be present");
+        let btn_id = button_id.expect("Button ID should be present");
+
+        // 2. Dispatch toggle change event from host
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::UiEvent {
+            view_id: 0,
+            node_id: tog_id,
+            event: "change".to_string(),
+            value: Some("true".to_string()),
+        });
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        // 3. Plugin should have re-synced SetViewTree with value: true
+        let mut toggle_updated = false;
+        while let Ok(call) = api_rx.try_recv() {
+            if let ApiRequest::SetViewTree { view_id, tree } = call.request {
+                if view_id == 0 {
+                    let json = serde_json::to_string(&tree).unwrap();
+                    if json.contains("\"value\":true") {
+                        toggle_updated = true;
+                    }
+                }
+            }
+        }
+        assert!(toggle_updated, "Expected SetViewTree to be re-synced with toggle value: true");
+
+        // 4. Dispatch button click event from host to open modal
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::UiEvent {
+            view_id: 0,
+            node_id: btn_id,
+            event: "click".to_string(),
+            value: None,
+        });
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        // 5. Plugin should have emitted SetViewTree for view_id: 1 with modal content
+        let mut modal_opened = false;
+        while let Ok(call) = api_rx.try_recv() {
+            if let ApiRequest::SetViewTree { view_id, tree } = call.request {
+                if view_id == 1 {
+                    let json = serde_json::to_string(&tree).unwrap();
+                    if json.contains("Currency Editor") {
+                        modal_opened = true;
+                    }
+                }
+            }
+        }
+        assert!(modal_opened, "Expected SetViewTree for view_id: 1 with Currency Editor modal");
 
         let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
     }

@@ -58,6 +58,10 @@ pub enum ApiRequest {
     ExecuteCommand {
         id: String,
     },
+    /// Replaces the currently selected text in the active editor
+    EditorReplaceSelection {
+        text: String,
+    },
     /// Unhandled request kind (logged to console, does not trigger status bar toast)
     Unknown {
         req_kind: String,
@@ -108,6 +112,15 @@ pub enum HostEvent {
     /// Requests the plugin to execute a registered command by its id
     ExecuteCommand {
         command_id: String,
+    },
+    /// Dispatches an editor context menu event to plugins: app.workspace.on('editor-menu', (menu, editor))
+    EditorMenu {
+        menu_session_id: u64,
+        selected_text: String,
+    },
+    /// Invokes a menu item callback clicked by the user
+    ExecuteMenuAction {
+        action_id: String,
     },
     /// Instructs the plugin runtime to clean up resources and exit.
     Unload,
