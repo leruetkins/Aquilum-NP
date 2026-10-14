@@ -3244,6 +3244,45 @@ impl AppView {
                         }
                     })),
             )
+            // Reload plugin button
+            .when(is_enabled, |parent| {
+                let r_id = plugin_id.to_string();
+                parent.child(
+                    div()
+                        .id("btn-detail-reload-plugin")
+                        .px_2p5()
+                        .py_1p5()
+                        .rounded_md()
+                        .bg(theme.bg_hover)
+                        .cursor_pointer()
+                        .hover(|h| h.bg(theme.border))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1p5()
+                        .child(icons::icon(icons::ICON_REFRESH, 13.0, theme.text_muted))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.text_primary)
+                                .child(if is_ru { "Перезагрузить" } else { "Reload" }),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.load_installed_plugins_for_vault();
+                            // Refresh settings tab
+                            let _ = this.state.plugin_host.send_event(
+                                &r_id,
+                                crate::plugins::api::HostEvent::UiEvent {
+                                    view_id: 0,
+                                    node_id: "__refresh_setting_tab__".to_string(),
+                                    event: "refresh".to_string(),
+                                    value: None,
+                                },
+                            );
+                            cx.notify();
+                        })),
+                )
+            })
             // Open folder in Windows Explorer button
             .when_some(plugin_dir_for_reveal, |parent, p_dir| {
                 parent.child(

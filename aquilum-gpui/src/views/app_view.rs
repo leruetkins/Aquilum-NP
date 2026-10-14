@@ -328,6 +328,8 @@ impl AppView {
 
     /// Discovers and spawns all installed plugins located in `<vault>/.vault/plugins/`.
     pub fn load_installed_plugins_for_vault(&mut self) {
+        self.unload_all_plugins();
+
         let Some(api_tx) = self.plugin_api_tx.clone() else {
             return;
         };
