@@ -227,10 +227,13 @@ pub struct PluginHandle {
     join: Option<std::thread::JoinHandle<()>>,
 }
 
+/// Политика Safe Mode (Безопасный режим):
+/// По умолчанию safe_mode = true. Ни один поток QuickJS не запускается до явного
+/// отключения безопасного режима пользователем через диалог в окне плагинов или настройках.
 pub fn spawn_plugin(
     id: PluginId,
     source: String,
-    api_tx: futures::channel::mpsc::UnboundedSender<ApiCall>,
+    api_tx: futures::channel::mpsc::Sender<ApiCall>,
     snapshot: Arc<arc_swap::ArcSwap<Snapshot>>,
 ) -> PluginHandle {
     let (events_tx, events_rx) = std::sync::mpsc::channel::<HostEvent>();
@@ -243,30 +246,52 @@ pub fn spawn_plugin(
             let rt = rquickjs::Runtime::new().unwrap();
             rt.set_memory_limit(64 * 1024 * 1024);
             rt.set_max_stack_size(512 * 1024);
-            // true = прервать выполнение JS (бросается неперехватываемая ошибка)
+            
+            // Watchdog interrupt handler: прерывает выполнение при превышении дедлайна
             rt.set_interrupt_handler(Some(Box::new(move || now_ms() > d.load(Ordering::Relaxed))));
             let ctx = rquickjs::Context::full(&rt).unwrap();
 
+            // 1. Дедлайн выставляется ДО запуска верхнеуровневого скрипта (защита от while(true))
+            d.store(now_ms() + 2000, Ordering::Relaxed);
             ctx.with(|ctx| {
-                install_globals(&ctx, &api_tx, &snapshot);   // Plugin, Notice, app.*, console
-                // main.js уже собран в один бандл; доступа к fs, net, process, require нет
+                install_globals(&ctx, &api_tx, &snapshot); // Plugin, Notice, app.*, таймеры
+                // Поддержка require("obsidian") через виртуальный модуль хоста
+                install_obsidian_shim_module(&ctx);
                 let _ = ctx.eval::<(), _>(source);
             });
+            d.store(u64::MAX, Ordering::Relaxed);
 
+            // 2. Цикл событий с учётом таймеров хоста (без холостого пробуждения 20 мс)
             loop {
-                match events_rx.recv_timeout(Duration::from_millis(20)) {
-                    Ok(HostEvent::Unload) | Err(RecvTimeoutError::Disconnected) => break,
+                let timeout = get_time_until_next_timer();
+                let next_event = match timeout {
+                    Some(duration) => events_rx.recv_timeout(duration),
+                    None => events_rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                };
+
+                match next_event {
+                    Ok(HostEvent::Unload) => {
+                        // Вежливый вызов onunload() плагина перед выходом
+                        d.store(now_ms() + 500, Ordering::Relaxed);
+                        ctx.with(|ctx| call_plugin_onunload(&ctx));
+                        d.store(u64::MAX, Ordering::Relaxed);
+                        break;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
                     Ok(ev) => {
-                        // бюджет на один вызов JS: событие 100 мс, команда до 1 с
                         d.store(now_ms() + budget_for(&ev), Ordering::Relaxed);
                         ctx.with(|ctx| dispatch_event(&ctx, ev));
-                        // Promise-задачи тоже под тем же дедлайном
                         while rt.is_job_pending() {
                             if rt.execute_pending_job().is_err() { break; }
                         }
                         d.store(u64::MAX, Ordering::Relaxed);
                     }
-                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Timeout) => {
+                        // Сработал таймер (setTimeout / setInterval)
+                        d.store(now_ms() + 100, Ordering::Relaxed);
+                        ctx.with(|ctx| trigger_expired_timers(&ctx));
+                        d.store(u64::MAX, Ordering::Relaxed);
+                    }
                 }
             }
         })
@@ -275,6 +300,9 @@ pub fn spawn_plugin(
     PluginHandle { id, events_tx, deadline_ms, join: Some(join) }
 }
 ```
+
+**Таймеры хоста (`setTimeout`, `setInterval`):**
+В QuickJS нет встроенных таймеров ОС. Хост реализует `setTimeout(fn, ms)`, `clearTimeout(id)`, `setInterval(fn, ms)`, `clearInterval(id)`. Запланированные таймеры хранятся в очереди с приоритетом (`BinaryHeap<ScheduledTimer>`) в потоке плагина. Поток ожидает ровно столько миллисекунд, сколько осталось до ближайшего таймера, устраняя 100% паразитной нагрузки на CPU. Метод `plugin.registerInterval(id)` автоматически заносит таймер в реестр очистки при выгрузке.
 
 Асинхронный вызов API из JS: функция `__host_call(kind, json)` создаёт `Promise`, сохраняет `resolve` и `reject` в таблице `HashMap<RequestId, (Function, Function)>` внутри потока плагина, отправляет `ApiCall` в `api_tx`. Когда в `events_rx` приходит `HostEvent::Response { id, .. }`, поток достаёт пару из таблицы и вызывает `resolve` или `reject`. Таблица очищается по таймауту запроса (например, 30 с).
 
@@ -500,20 +528,38 @@ impl RuntimeVerifier for JsVerifier {
 В `src/plugins/runtime.rs` глобальные объекты `app`, `app.vault`, `app.workspace` оборачиваются в `Proxy`:
 
 ```javascript
+// Список методов-пустышек, вызов которых безопасен и может вернуть Promise(null)
+const SAFE_NOOP_STUBS = new Set([
+    'app.workspace.requestSaveHistory',
+    'app.metadataCache.trigger',
+    'plugin.addRibbonIcon'
+]);
+
 function makeAuditedProxy(target, targetName, hostBridge) {
     return new Proxy(target, {
         get(obj, prop) {
+            // КРИТИЧНО: Защита от зацикливания thenable-проверок в async/await,
+            // а также сохранение символов рантайма и сериализации в JSON.
+            if (typeof prop === 'symbol' || prop === 'then' || prop === 'toJSON') {
+                return obj[prop];
+            }
             if (prop in obj) {
                 return obj[prop];
             }
-            // Метод ещё не реализован в хосте
             const methodName = String(prop);
+            const fullPath = `${targetName}.${methodName}`;
             hostBridge.auditApiCall(targetName, methodName);
-            console.warn(`[API Audit] Plugin called unimplemented API: ${targetName}.${methodName}`);
-            
-            // Возвращаем безопасную заглушку, предотвращающую моментальный краш
-            return (...args) => {
-                return Promise.resolve(null);
+            console.warn(`[API Audit] Plugin called unimplemented API: ${fullPath}`);
+
+            // Для безопасных вспомогательных методов возвращаем no-op промис
+            if (SAFE_NOOP_STUBS.has(fullPath)) {
+                return (..._args) => Promise.resolve(null);
+            }
+
+            // Для остальных нереализованных методов выбрасываем явную ошибку,
+            // чтобы плагин не работал со скрытыми испорченными данными
+            return (..._args) => {
+                throw new Error(`[Aquilum] Method ${fullPath} is not implemented`);
             };
         }
     });
@@ -537,6 +583,7 @@ pub struct CompatibilityReport {
     pub supported_calls: Vec<String>,
     pub missing_calls: Vec<String>,
     pub incompatible_calls: Vec<String>,
+    pub warnings: Vec<String>,
 ```
 
 ### 7.8 Архитектура Micro-DOM эмулятора для Obsidian UI (Путь Б)
