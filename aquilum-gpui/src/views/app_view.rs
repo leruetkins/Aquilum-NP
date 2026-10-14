@@ -176,6 +176,8 @@ pub struct AppView {
     /// Active interactive text input in plugin UI (plugin_id, view_id, node_id, value, cursor_pos).
     pub active_plugin_input: Option<crate::plugins::ui::PluginInputFocusState>,
     pub plugin_input_focus_handle: FocusHandle,
+    /// Active interactive dropdown select popup in plugin UI (plugin_id, view_id, node_id).
+    pub active_plugin_select: Option<(String, u64, String)>,
 }
 
 impl AppView {
@@ -321,6 +323,7 @@ impl AppView {
             catalog_window_manager: crate::views::plugin_catalog::CatalogWindowManager::default(),
             active_plugin_input: None,
             plugin_input_focus_handle: cx.focus_handle(),
+            active_plugin_select: None,
             plugin_views: HashMap::new(),
             plugin_runtimes: Vec::new(),
             code_block_views: HashMap::new(),
@@ -371,6 +374,7 @@ impl AppView {
         self.plugin_runtimes.clear();
         self.plugin_views.clear();
         self.active_plugin_input = None;
+        self.active_plugin_select = None;
     }
 
     pub fn editor_font_family(&self) -> gpui::SharedString {
@@ -1614,6 +1618,26 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         }
     }
 
+    /// Closes an active plugin modal dialog and dispatches the close event to the plugin worker.
+    pub fn close_active_plugin_modal(&mut self, cx: &mut Context<Self>) {
+        if let crate::views::settings_view::SettingsTab::PluginSettings(ref pid) = self.settings_tab {
+            let p_id = pid.clone();
+            let _ = self.state.plugin_host.send_event(
+                &p_id,
+                crate::plugins::api::HostEvent::UiEvent {
+                    view_id: 1,
+                    node_id: "modal".to_string(),
+                    event: "close".to_string(),
+                    value: None,
+                },
+            );
+            self.plugin_views.remove(&(p_id, 1));
+            self.active_plugin_input = None;
+            self.active_plugin_select = None;
+            cx.notify();
+        }
+    }
+
     /// Handles keyboard navigation and text editing inside an active plugin input field.
     pub fn handle_plugin_input_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let Some(mut input_state) = self.active_plugin_input.clone() else {
@@ -1624,7 +1648,7 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         let ctrl = event.keystroke.modifiers.control;
         let alt = event.keystroke.modifiers.alt;
 
-        if key == "escape" || key == "enter" {
+        if key == "escape" {
             self.active_plugin_input = None;
             cx.notify();
             return;
@@ -1633,6 +1657,20 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         let mut chars: Vec<char> = input_state.value.chars().collect();
         let total_chars = chars.len();
         let mut changed = false;
+
+        if key == "enter" {
+            if input_state.is_multiline {
+                let pos = input_state.cursor_pos.min(total_chars);
+                chars.insert(pos, '\n');
+                input_state.cursor_pos = pos + 1;
+                input_state.value = chars.iter().collect();
+                changed = true;
+            } else {
+                self.active_plugin_input = None;
+                cx.notify();
+                return;
+            }
+        }
 
         if key == "arrowleft" || key == "left" {
             input_state.cursor_pos = input_state.cursor_pos.saturating_sub(1);
@@ -1674,9 +1712,10 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         if ctrl && (key.eq_ignore_ascii_case("v") || key == "м" || key == "М") {
             if let Some(item) = cx.read_from_clipboard() {
                 if let Some(text) = item.text() {
+                    let is_multi = input_state.is_multiline;
                     let filtered: String = text
                         .chars()
-                        .filter(|c| !c.is_control() && *c != '\n' && *c != '\r')
+                        .filter(|c| (!c.is_control() || (is_multi && (*c == '\n' || *c == '\t'))) && *c != '\r')
                         .collect();
                     if !filtered.is_empty() {
                         let pos = input_state.cursor_pos.min(chars.len());
@@ -1684,7 +1723,7 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
                             chars.insert(pos + i, c);
                         }
                         input_state.cursor_pos = pos + filtered.chars().count();
-                        input_state.value = chars.into_iter().collect();
+                        input_state.value = chars.iter().collect();
                         changed = true;
                     }
                 }
@@ -1694,17 +1733,17 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
             if pos > 0 {
                 chars.remove(pos - 1);
                 input_state.cursor_pos = pos - 1;
-                input_state.value = chars.into_iter().collect();
+                input_state.value = chars.iter().collect();
                 changed = true;
             }
         } else if key == "delete" {
             let pos = input_state.cursor_pos.min(chars.len());
             if pos < chars.len() {
                 chars.remove(pos);
-                input_state.value = chars.into_iter().collect();
+                input_state.value = chars.iter().collect();
                 changed = true;
             }
-        } else if !ctrl && !alt && !event.keystroke.modifiers.platform {
+        } else if !ctrl && !alt && !event.keystroke.modifiers.platform && key != "enter" {
             let text_to_insert = if key == "space" {
                 Some(" ".to_string())
             } else if let Some(ch) = &event.keystroke.key_char {
@@ -1716,9 +1755,10 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
             };
 
             if let Some(text) = text_to_insert {
+                let is_multi = input_state.is_multiline;
                 let filtered: String = text
                     .chars()
-                    .filter(|c| !c.is_control() && *c != '\n' && *c != '\r')
+                    .filter(|c| (!c.is_control() || (is_multi && (*c == '\n' || *c == '\t'))) && *c != '\r')
                     .collect();
                 if !filtered.is_empty() {
                     let pos = input_state.cursor_pos.min(chars.len());
@@ -1726,7 +1766,7 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
                         chars.insert(pos + i, c);
                     }
                     input_state.cursor_pos = pos + filtered.chars().count();
-                    input_state.value = chars.into_iter().collect();
+                    input_state.value = chars.iter().collect();
                     changed = true;
                 }
             }
@@ -4763,6 +4803,7 @@ impl Render for AppView {
                                                                             is_first_code_line,
                                                                             self.active_plugin_input.as_ref(),
                                                                             &self.plugin_input_focus_handle,
+                                                                            self.active_plugin_select.as_ref(),
                                                                             cx,
                                                                         )),
                                                                 )
@@ -5654,6 +5695,7 @@ fn render_live_styled_row(
     is_first_code_line: bool,
     active_plugin_input: Option<&crate::plugins::ui::PluginInputFocusState>,
     plugin_input_focus_handle: &FocusHandle,
+    active_plugin_select: Option<&(String, u64, String)>,
     cx: &Context<AppView>,
 ) -> gpui::Div {
     if line.is_empty() || char_start >= char_end {
@@ -6193,6 +6235,7 @@ fn render_live_styled_row(
                             theme,
                             active_plugin_input,
                             plugin_input_focus_handle,
+                            active_plugin_select,
                             cx,
                         ))
                 } else {

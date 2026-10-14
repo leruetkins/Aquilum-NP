@@ -159,6 +159,7 @@ impl AppView {
         self.is_settings_open = false;
         self.active_color_picker = None;
         self.active_plugin_input = None;
+        self.active_plugin_select = None;
         cx.notify();
     }
 
@@ -189,6 +190,7 @@ impl AppView {
                     theme,
                     self.active_plugin_input.as_ref(),
                     &self.plugin_input_focus_handle,
+                    self.active_plugin_select.as_ref(),
                     cx,
                 );
                 Some(
@@ -198,31 +200,95 @@ impl AppView {
                         .top_0()
                         .left_0()
                         .size_full()
-                        .bg(rgba(0x000000aa))
+                        .bg(rgba(0x000000cc))
                         .flex()
                         .items_center()
                         .justify_center()
                         .cursor(gpui::CursorStyle::Arrow)
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.close_active_plugin_modal(cx);
+                        }))
+                        .on_scroll_wheel(|_, _, cx| {
                             cx.stop_propagation();
                         })
                         .child(
                             div()
                                 .id("plugin-modal-dialog-box")
+                                .relative()
                                 .flex()
                                 .flex_col()
-                                .w(px(540.0))
-                                .max_w(px(680.0))
-                                .max_h(px(540.0))
-                                .overflow_scroll()
-                                .p_6()
-                                .gap_4()
+                                .w(px(660.0))
+                                .max_w(px(760.0))
+                                .max_h(px(640.0))
                                 .rounded_xl()
+                                .overflow_hidden()
                                 .bg(theme.bg_card)
                                 .border_1()
                                 .border_color(theme.border)
-                                .shadow_lg()
-                                .child(rendered_modal),
+                                .shadow_xl()
+                                .cursor(gpui::CursorStyle::Arrow)
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .on_scroll_wheel(|_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                // Title header with close button
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .justify_between()
+                                        .px_5()
+                                        .py_3()
+                                        .border_b_1()
+                                        .border_color(theme.border_subtle)
+                                        .bg(theme.bg_sidebar)
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .gap_2()
+                                                .child(icons::icon(icons::ICON_SETTINGS, 15.0, theme.accent))
+                                                .child(
+                                                    div()
+                                                        .text_sm()
+                                                        .font_weight(gpui::FontWeight::BOLD)
+                                                        .text_color(theme.text_primary)
+                                                        .child("Настройки плагина"),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("plugin-modal-close-x")
+                                                .cursor(gpui::CursorStyle::PointingHand)
+                                                .p_1()
+                                                .rounded_md()
+                                                .hover(|s| s.bg(theme.bg_hover))
+                                                .text_color(theme.text_muted)
+                                                .child(icons::icon(icons::ICON_CLOSE, 14.0, theme.text_muted))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    cx.stop_propagation();
+                                                    this.close_active_plugin_modal(cx);
+                                                })),
+                                        ),
+                                )
+                                // Scrollable body
+                                .child(
+                                    div()
+                                        .id("plugin-modal-body-scroll")
+                                        .flex()
+                                        .flex_col()
+                                        .flex_1()
+                                        .min_h_0()
+                                        .p_6()
+                                        .gap_4()
+                                        .overflow_scroll()
+                                        .child(rendered_modal),
+                                ),
                         ),
                 )
             })
@@ -252,7 +318,10 @@ impl AppView {
                     .cursor(gpui::CursorStyle::Arrow)
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                         cx.stop_propagation();
-                        if this.active_color_picker.is_some() {
+                        if this.active_plugin_select.is_some() {
+                            this.active_plugin_select = None;
+                            cx.notify();
+                        } else if this.active_color_picker.is_some() {
                             this.active_color_picker = None;
                             cx.notify();
                         } else {
@@ -316,10 +385,10 @@ impl AppView {
                                     .child(self.render_settings_nav(cx))
                                     // Right scrollable content panel
                                     .child(self.render_settings_content(cx)),
-                            )
-                            .when_some(plugin_modal_overlay, |this, overlay| this.child(overlay)),
+                            ),
                     ),
             )
+            .when_some(plugin_modal_overlay, |this, overlay| this.child(overlay))
     }
 
     /// Renders the title bar and close button of the Settings dialog.
@@ -3580,6 +3649,7 @@ impl AppView {
                 theme,
                 self.active_plugin_input.as_ref(),
                 &self.plugin_input_focus_handle,
+                self.active_plugin_select.as_ref(),
                 cx,
             );
             div()

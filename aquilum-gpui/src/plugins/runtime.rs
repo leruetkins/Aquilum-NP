@@ -318,6 +318,17 @@ fn setup_plugin_environment<'js>(
         let __next_timer_id = 1;
 
         function __dispatch_ui_interaction(nodeId, action, value) {
+            if (nodeId === "modal" && action === "close") {
+                if (globalThis.__active_modal && typeof globalThis.__active_modal.close === "function") {
+                    try {
+                        globalThis.__active_modal.close();
+                    } catch (e) {
+                        console.error("Close active modal error:", e);
+                    }
+                }
+                return;
+            }
+
             if (nodeId === "__refresh_setting_tab__" || action === "refresh") {
                 if (globalThis.__active_setting_tab && typeof globalThis.__active_setting_tab.display === "function") {
                     try {
@@ -332,13 +343,20 @@ fn setup_plugin_environment<'js>(
             const el = globalThis.__velement_registry.get(nodeId);
             if (el) {
                 if (action === "change") {
-                    const parsedVal = value === "true" ? true : (value === "false" ? false : value);
-                    el.checked = !!parsedVal;
-                    el.value = value;
-                    el.dispatchEvent({ type: "change", value: parsedVal });
-                    el.dispatchEvent({ type: "input", value: parsedVal });
+                    const isCheckbox = el.tag === "input" && (el.attributes?.type === "checkbox" || el.type === "checkbox" || el.classes?.has("checkbox") || el.classes?.has("checkbox-container"));
+                    let parsedVal;
+                    if (isCheckbox) {
+                        el.checked = (value === "true" || value === true);
+                        el.value = el.checked ? "true" : "false";
+                        parsedVal = el.checked;
+                    } else {
+                        el.value = value != null ? String(value) : "";
+                        parsedVal = el.value;
+                    }
+                    el.dispatchEvent({ type: "change", target: el, value: parsedVal });
+                    el.dispatchEvent({ type: "input", target: el, value: parsedVal });
                 } else {
-                    el.dispatchEvent({ type: action });
+                    el.dispatchEvent({ type: action, target: el });
                 }
             }
 
@@ -1026,13 +1044,21 @@ fn setup_plugin_environment<'js>(
         function __velement_to_uinode(el) {
             if (!el) return { type: "text", value: "" };
 
-            if (el.classes && el.classes.has("vertical-tab-content")) {
+            if (el.classes && (el.classes.has("vertical-tab-content") || el.classes.has("modal-container") || el.classes.has("modal"))) {
                 const children = el.children.map(__velement_to_uinode).filter(Boolean);
                 return { type: "column", gap: "medium", children };
             }
 
+            if (el.classes && (el.classes.has("modal-title") || el.classes.has("aiw-modal-title"))) {
+                return {
+                    type: "text",
+                    style: "heading",
+                    value: el.text || ""
+                };
+            }
+
             if (el.classes && el.classes.has("setting-item")) {
-                const name = el.children.find(c => c.classes?.has("setting-item-info"))?.children?.find(c => c.classes?.has("setting-item-name"))?.text || el.text || "Setting";
+                const name = el.children.find(c => c.classes?.has("setting-item-info"))?.children?.find(c => c.classes?.has("setting-item-name"))?.text || el.text || "";
                 const desc = el.children.find(c => c.classes?.has("setting-item-info"))?.children?.find(c => c.classes?.has("setting-item-description"))?.text || undefined;
                 const controlDiv = el.children.find(c => c.classes?.has("setting-item-control"));
 
@@ -1062,7 +1088,7 @@ fn setup_plugin_environment<'js>(
                 };
             }
 
-            if (el.tag === "input" && (el.attributes["type"] === "checkbox" || el.classes.has("checkbox-container") || el.classes.has("checkbox") || (el.attributes["type"] === undefined && el.checked !== undefined))) {
+            if (el.tag === "input" && (el.attributes["type"] === "checkbox" || el.classes.has("checkbox-container") || el.classes.has("checkbox") || el.type === "checkbox")) {
                 return {
                     type: "toggle",
                     id: el.id,
@@ -1094,7 +1120,17 @@ fn setup_plugin_environment<'js>(
                 };
             }
 
-            if (el.tag === "textarea" || el.tag === "input") {
+            if (el.tag === "textarea") {
+                return {
+                    type: "textarea",
+                    id: el.id,
+                    placeholder: el.placeholder || undefined,
+                    value: el.value != null ? String(el.value) : undefined,
+                    rows: el.attributes["rows"] ? Number(el.attributes["rows"]) : undefined
+                };
+            }
+
+            if (el.tag === "input") {
                 return {
                     type: "input",
                     id: el.id,
@@ -1119,7 +1155,7 @@ fn setup_plugin_environment<'js>(
                 };
             }
 
-            const isRow = el.classes.has("row") || el.classes.has("flex-row") || el.classes.has("aiw-currency-row");
+            const isRow = el.classes.has("row") || el.classes.has("flex-row") || el.classes.has("aiw-currency-row") || el.classes.has("aiw-modal-buttons") || el.classes.has("modal-buttons") || el.classes.has("modal-button-container");
             const children = el.children.map(__velement_to_uinode).filter(Boolean);
             return {
                 type: isRow ? "row" : "column",
