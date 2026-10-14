@@ -336,6 +336,7 @@ fn setup_plugin_environment<'js>(
                     el.checked = !!parsedVal;
                     el.value = value;
                     el.dispatchEvent({ type: "change", value: parsedVal });
+                    el.dispatchEvent({ type: "input", value: parsedVal });
                 } else {
                     el.dispatchEvent({ type: action });
                 }

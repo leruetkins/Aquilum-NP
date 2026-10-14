@@ -409,6 +409,9 @@ pub fn render_ui_node(
             placeholder,
             value,
         } => {
+            let p_id = plugin_id.to_string();
+            let n_id = id.clone();
+            let has_value = value.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
             let display_text = value
                 .as_deref()
                 .filter(|s| !s.is_empty())
@@ -418,6 +421,9 @@ pub fn render_ui_node(
             div()
                 .id(ElementId::from(SharedString::from(format!("ui-input-{}-{}", view_id, id))))
                 .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
                 .w_full()
                 .px(px(8.0))
                 .py(px(4.0))
@@ -425,13 +431,42 @@ pub fn render_ui_node(
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.bg_editor)
-                .text_sm()
-                .text_color(if value.is_some() {
-                    theme.text_primary
-                } else {
-                    theme.text_muted
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(if has_value {
+                            theme.text_primary
+                        } else {
+                            theme.text_muted
+                        })
+                        .child(display_text.to_string()),
+                )
+                .when(has_value, |parent| {
+                    parent.child(
+                        div()
+                            .id(ElementId::from(SharedString::from(format!("ui-input-clear-{}-{}", view_id, id))))
+                            .cursor(gpui::CursorStyle::PointingHand)
+                            .px(px(4.0))
+                            .py(px(1.0))
+                            .rounded(px(3.0))
+                            .hover(|h| h.bg(theme.bg_hover))
+                            .text_xs()
+                            .text_color(theme.text_muted)
+                            .child("✕")
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                let _ = app.state.plugin_host.send_event(
+                                    &p_id,
+                                    crate::plugins::api::HostEvent::UiEvent {
+                                        view_id,
+                                        node_id: n_id.clone(),
+                                        event: "change".to_string(),
+                                        value: Some("".to_string()),
+                                    },
+                                );
+                                cx.notify();
+                            })),
+                    )
                 })
-                .child(display_text.to_string())
                 .into_any_element()
         }
         UiNode::Checkbox { id, label, checked } => {
