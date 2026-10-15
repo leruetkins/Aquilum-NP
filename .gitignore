@@ -15,13 +15,7 @@ node_modules/
 /.artifacts/
 
 # Safety net: old locations before .artifacts layout (must never return to git)
-/aquilum-app/dist/
-/aquilum-app/dist-ssr/
-/aquilum-app/.build/
-/aquilum-app/releases/
-/aquilum-app/src-tauri/target/
-/aquilum-app/core/target/
-/aquilum-app/core/Cargo.lock
+/aquilum-app
 
 coverage/
 *.tsbuildinfo
@@ -50,7 +44,7 @@ aquilum-app/tmp-fm.*
 /*debug/
 /aquilum-gpui/target/debug
 /vibecodium/target/debug
-/aquilum-native/target/debug
 /operator-panel
 /aquilum-gpui/target
 /obsidian_plugins
+

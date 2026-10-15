@@ -160,6 +160,7 @@ pub struct EditorSettings {
     pub save_debounce_ms: u32,
     pub line_height: f32,
     pub max_width_ch: u32,
+    pub word_wrap: bool,
     pub smart_dashes: bool,
     pub list_callouts: bool,
     pub auto_link_title: bool,
@@ -178,6 +179,7 @@ impl Default for EditorSettings {
             save_debounce_ms: 1000,
             line_height: 1.8,
             max_width_ch: 65,
+            word_wrap: true,
             smart_dashes: true,
             list_callouts: true,
             auto_link_title: true,
@@ -416,4 +418,424 @@ fn write_config(path: &Path, config: &AppConfig) -> Result<(), String> {
     fs::write(&temp_path, json.as_bytes()).map_err(|e| e.to_string())?;
     fs::rename(&temp_path, path).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// =========================================================================
+// Multi-Window Shared Settings Model & Events
+// =========================================================================
+
+pub const APP_URL_SCHEME: &str = "vibecodium";
+pub const APP_IPC_PIPE_NAME: &str = r"\\.\pipe\vibecodium-ipc";
+
+#[derive(Debug, Clone)]
+pub enum SettingsEvent {
+    ConfigChanged,
+    ThemeChanged,
+    PluginToggled { plugin_id: String, enabled: bool },
+    WordWrapToggled(bool),
+}
+
+pub struct SettingsModel {
+    pub config: AppConfig,
+    pub manager: std::sync::Arc<SettingsManager>,
+}
+
+impl SettingsModel {
+    pub fn new(manager: std::sync::Arc<SettingsManager>) -> Self {
+        let config = manager.get_config();
+        Self { config, manager }
+    }
+
+    pub fn save(&mut self, cx: &mut gpui::Context<Self>) {
+        if let Err(e) = self.manager.update_config(self.config.clone()) {
+            eprintln!("[settings] error saving config: {}", e);
+        }
+        cx.emit(SettingsEvent::ConfigChanged);
+        cx.notify();
+    }
+
+    pub fn set_theme(&mut self, theme_name: String, cx: &mut gpui::Context<Self>) {
+        self.config.ui.theme = theme_name;
+        self.save(cx);
+        cx.emit(SettingsEvent::ThemeChanged);
+    }
+
+    pub fn set_word_wrap(&mut self, word_wrap: bool, cx: &mut gpui::Context<Self>) {
+        self.config.editor.word_wrap = word_wrap;
+        self.save(cx);
+        cx.emit(SettingsEvent::WordWrapToggled(word_wrap));
+    }
+}
+
+impl gpui::EventEmitter<SettingsEvent> for SettingsModel {}
+
+// =========================================================================
+// Setting Registry & JsonPath Accessor
+// =========================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingType {
+    Bool,
+    String,
+    U32,
+    Usize,
+    F32,
+}
+
+#[derive(Debug, Clone)]
+pub struct SettingDescriptor {
+    pub id: &'static str,
+    pub tab_id: &'static str,
+    pub title_ru: &'static str,
+    pub title_en: &'static str,
+    pub desc_ru: &'static str,
+    pub desc_en: &'static str,
+    pub keywords: &'static [&'static str],
+    pub aliases: &'static [&'static str],
+    pub setting_type: SettingType,
+}
+
+impl SettingDescriptor {
+    pub fn url(&self) -> String {
+        format!("{}://settings/{}", APP_URL_SCHEME, self.id)
+    }
+
+    pub fn title(&self, is_ru: bool) -> &'static str {
+        if is_ru { self.title_ru } else { self.title_en }
+    }
+
+    pub fn description(&self, is_ru: bool) -> &'static str {
+        if is_ru { self.desc_ru } else { self.desc_en }
+    }
+}
+
+pub static SETTINGS: &[SettingDescriptor] = &[
+    SettingDescriptor {
+        id: "ui.theme",
+        tab_id: "ui",
+        title_ru: "Тема оформления",
+        title_en: "Appearance Theme",
+        desc_ru: "Выбор цветовой темы интерфейса: системная, тёмная или светлая",
+        desc_en: "Color theme for the user interface: system, dark, or light",
+        keywords: &["theme", "dark", "light", "тема", "тёмная", "светлая"],
+        aliases: &["appearance.theme"],
+        setting_type: SettingType::String,
+    },
+    SettingDescriptor {
+        id: "ui.language",
+        tab_id: "ui",
+        title_ru: "Язык интерфейса",
+        title_en: "Interface Language",
+        desc_ru: "Язык локализации интерфейса приложения (ru / en)",
+        desc_en: "Interface localization language (ru / en)",
+        keywords: &["language", "locale", "язык", "локализация", "русский", "english"],
+        aliases: &["system.language"],
+        setting_type: SettingType::String,
+    },
+    SettingDescriptor {
+        id: "ui.primaryColor",
+        tab_id: "ui",
+        title_ru: "Основной акцентный цвет",
+        title_en: "Primary Accent Color",
+        desc_ru: "Пользовательский акцентный цвет для кнопок, выделений и активных вкладок",
+        desc_en: "Custom brand accent color for buttons, selections, and active tabs",
+        keywords: &["color", "accent", "цвет", "акцент", "hex"],
+        aliases: &["appearance.accent"],
+        setting_type: SettingType::String,
+    },
+    SettingDescriptor {
+        id: "ui.sidebarSmartScroll",
+        tab_id: "ui",
+        title_ru: "Умная прокрутка сайдбара",
+        title_en: "Sidebar Smart Scroll",
+        desc_ru: "Автоматически центрировать активный файл в проводнике при переключении заметок",
+        desc_en: "Automatically center the active file in the sidebar tree when switching notes",
+        keywords: &["sidebar", "scroll", "сайдбар", "прокрутка", "проводник"],
+        aliases: &[],
+        setting_type: SettingType::Bool,
+    },
+    SettingDescriptor {
+        id: "editor.fontSizeBase",
+        tab_id: "editor",
+        title_ru: "Размер шрифта редактора",
+        title_en: "Editor Font Size",
+        desc_ru: "Базовый кегль шрифта в окне редактирования заметок (px)",
+        desc_en: "Base font size in the note editor viewport (px)",
+        keywords: &["font", "size", "editor", "шрифт", "размер", "кегль"],
+        aliases: &["editor.font.font_size_base"],
+        setting_type: SettingType::U32,
+    },
+    SettingDescriptor {
+        id: "editor.fontFamily",
+        tab_id: "editor",
+        title_ru: "Семейство шрифта редактора",
+        title_en: "Editor Font Family",
+        desc_ru: "Гарнитура шрифта для отображения и редактирования заметок",
+        desc_en: "Typeface family for displaying and editing note contents",
+        keywords: &["font", "family", "гарнитура", "моноширинный", "monospace"],
+        aliases: &["editor.font.font_family"],
+        setting_type: SettingType::String,
+    },
+    SettingDescriptor {
+        id: "editor.wordWrap",
+        tab_id: "editor",
+        title_ru: "Перенос строк по словам",
+        title_en: "Word Wrap",
+        desc_ru: "Мягкий перенос длинных строк по границе видимой области редактора",
+        desc_en: "Wrap long lines gracefully at the editor viewport edge",
+        keywords: &["wrap", "word", "lines", "перенос", "строки"],
+        aliases: &["editor.wrap"],
+        setting_type: SettingType::Bool,
+    },
+    SettingDescriptor {
+        id: "editor.liveTabs",
+        tab_id: "editor",
+        title_ru: "Количество активных вкладок",
+        title_en: "Live Tabs Count",
+        desc_ru: "Максимальное число одновременно удерживаемых в памяти вкладок редактора",
+        desc_en: "Maximum number of editor tabs retained active in memory",
+        keywords: &["tabs", "live", "вкладки", "память"],
+        aliases: &[],
+        setting_type: SettingType::Usize,
+    },
+    SettingDescriptor {
+        id: "editor.hideCurrentLineOnSelection",
+        tab_id: "editor",
+        title_ru: "Скрывать подсветку строки при выделении",
+        title_en: "Hide Current Line Highlight on Selection",
+        desc_ru: "Не подсвечивать текущую строку, когда выделен диапазон текста",
+        desc_en: "Hide current line highlight when a text range is selected",
+        keywords: &["selection", "highlight", "выделение", "подсветка"],
+        aliases: &[],
+        setting_type: SettingType::Bool,
+    },
+    SettingDescriptor {
+        id: "reader.lineHeight",
+        tab_id: "reader",
+        title_ru: "Высота строки в режиме чтения",
+        title_en: "Reader Line Height",
+        desc_ru: "Межстрочный интервал текста в режиме комфортного чтения",
+        desc_en: "Line height multiplier for comfortable reading mode",
+        keywords: &["reader", "line", "height", "чтение", "интервал"],
+        aliases: &[],
+        setting_type: SettingType::F32,
+    },
+    SettingDescriptor {
+        id: "reader.maxWidthCh",
+        tab_id: "reader",
+        title_ru: "Максимальная ширина колонки чтения",
+        title_en: "Reader Max Column Width",
+        desc_ru: "Ограничение ширины текстового блока в символах (ch)",
+        desc_en: "Maximum text container column width in characters (ch)",
+        keywords: &["width", "reader", "ширина", "колонка", "символы"],
+        aliases: &[],
+        setting_type: SettingType::U32,
+    },
+    SettingDescriptor {
+        id: "communityPlugins.safeMode",
+        tab_id: "community-plugins",
+        title_ru: "Безопасный режим сторонних плагинов",
+        title_en: "Community Plugins Safe Mode",
+        desc_ru: "Блокирует загрузку и выполнение сторонних плагинов для защиты системы",
+        desc_en: "Blocks community plugins execution for system stability and data protection",
+        keywords: &["safe", "mode", "plugins", "безопасный", "режим", "плагины"],
+        aliases: &[],
+        setting_type: SettingType::Bool,
+    },
+    SettingDescriptor {
+        id: "mcp.enabled",
+        tab_id: "mcp",
+        title_ru: "Включить локальный MCP сервер",
+        title_en: "Enable Local MCP Server",
+        desc_ru: "Model Context Protocol сервер для интеграции с внешними AI-агентами",
+        desc_en: "Model Context Protocol server for integration with external AI coding assistants",
+        keywords: &["mcp", "ai", "server", "сервер", "агенты"],
+        aliases: &[],
+        setting_type: SettingType::Bool,
+    },
+    SettingDescriptor {
+        id: "trash.retentionDays",
+        tab_id: "trash",
+        title_ru: "Срок хранения файлов в корзине",
+        title_en: "Trash Retention Days",
+        desc_ru: "Количество дней хранения удалённых заметок до окончательной очистки",
+        desc_en: "Number of days deleted notes remain in trash before purge",
+        keywords: &["trash", "retention", "days", "корзина", "дни", "очистка"],
+        aliases: &[],
+        setting_type: SettingType::U32,
+    },
+];
+
+pub fn get_setting_by_id(id_or_alias: &str) -> Option<&'static SettingDescriptor> {
+    SETTINGS.iter().find(|s| {
+        s.id.eq_ignore_ascii_case(id_or_alias)
+            || s.aliases.iter().any(|a| a.eq_ignore_ascii_case(id_or_alias))
+    })
+}
+
+pub fn get_config_value(config: &AppConfig, path: &str) -> Option<serde_json::Value> {
+    let json = serde_json::to_value(config).ok()?;
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut current = &json;
+    for part in parts {
+        current = current.get(part)?;
+    }
+    Some(current.clone())
+}
+
+pub fn set_config_value(config: &mut AppConfig, path: &str, value: serde_json::Value) -> Result<(), String> {
+    let mut json = serde_json::to_value(&*config).map_err(|e| e.to_string())?;
+    let parts: Vec<&str> = path.split('.').collect();
+    if parts.is_empty() {
+        return Err("Empty path".to_string());
+    }
+    let mut current = &mut json;
+    for &part in &parts[..parts.len() - 1] {
+        if !current.is_object() {
+            return Err(format!("Expected object at part {}", part));
+        }
+        current = current.get_mut(part).ok_or_else(|| format!("Key not found: {}", part))?;
+    }
+    let last = parts[parts.len() - 1];
+    if let Some(target) = current.get_mut(last) {
+        *target = value;
+    } else {
+        return Err(format!("Leaf key not found: {}", last));
+    }
+    *config = serde_json::from_value(json).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn is_setting_modified(config: &AppConfig, path: &str) -> bool {
+    let default_config = AppConfig::default();
+    let cur = get_config_value(config, path);
+    let def = get_config_value(&default_config, path);
+    cur != def
+}
+
+pub fn search_settings(query: &str) -> Vec<&'static SettingDescriptor> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return Vec::new();
+    }
+
+    // Direct link or ID match
+    let direct_id = if let Some(stripped) = q.strip_prefix(&format!("{}://settings/", APP_URL_SCHEME)) {
+        stripped
+    } else {
+        &q
+    };
+
+    if let Some(s) = get_setting_by_id(direct_id) {
+        return vec![s];
+    }
+
+    let terms: Vec<&str> = q.split_whitespace().collect();
+    let mut matches = Vec::new();
+
+    for setting in SETTINGS {
+        let id_lower = setting.id.to_lowercase();
+        let title_ru = setting.title_ru.to_lowercase();
+        let title_en = setting.title_en.to_lowercase();
+        let desc_ru = setting.desc_ru.to_lowercase();
+        let desc_en = setting.desc_en.to_lowercase();
+
+        let mut score = 0i32;
+
+        if id_lower == q || title_ru == q || title_en == q {
+            score += 1000;
+        } else if id_lower.contains(&q) || title_ru.contains(&q) || title_en.contains(&q) {
+            score += 500;
+        }
+
+        let all_matched = terms.iter().all(|term| {
+            id_lower.contains(term)
+                || title_ru.contains(term)
+                || title_en.contains(term)
+                || desc_ru.contains(term)
+                || desc_en.contains(term)
+                || setting.keywords.iter().any(|kw| kw.to_lowercase().contains(term))
+                || setting.aliases.iter().any(|al| al.to_lowercase().contains(term))
+        });
+
+        if all_matched {
+            for term in &terms {
+                if id_lower.contains(term) { score += 50; }
+                if title_ru.contains(term) || title_en.contains(term) { score += 40; }
+                if setting.keywords.iter().any(|kw| kw.to_lowercase().contains(term)) { score += 30; }
+                if desc_ru.contains(term) || desc_en.contains(term) { score += 10; }
+            }
+            matches.push((score, setting));
+        }
+    }
+
+    matches.sort_by(|a, b| b.0.cmp(&a.0));
+    matches.into_iter().map(|(_, s)| s).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_settings_registry_ids_unique() {
+        let mut ids = HashSet::new();
+        for s in SETTINGS {
+            assert!(ids.insert(s.id), "Duplicate setting id: {}", s.id);
+            assert_eq!(s.url(), format!("{}://settings/{}", APP_URL_SCHEME, s.id));
+        }
+    }
+
+    #[test]
+    fn test_get_setting_by_id_and_alias() {
+        let s = get_setting_by_id("ui.theme").expect("ui.theme must exist");
+        assert_eq!(s.id, "ui.theme");
+
+        let s_alias = get_setting_by_id("appearance.theme").expect("appearance.theme alias must resolve");
+        assert_eq!(s_alias.id, "ui.theme");
+
+        assert!(get_setting_by_id("non.existent.id").is_none());
+    }
+
+    #[test]
+    fn test_get_and_set_config_value() {
+        let mut config = AppConfig::default();
+        let val = get_config_value(&config, "ui.theme").expect("ui.theme value");
+        assert_eq!(val, serde_json::json!("system"));
+
+        assert!(!is_setting_modified(&config, "ui.theme"));
+
+        set_config_value(&mut config, "ui.theme", serde_json::json!("dark")).expect("set ui.theme");
+        assert_eq!(config.ui.theme, "dark");
+        assert!(is_setting_modified(&config, "ui.theme"));
+
+        set_config_value(&mut config, "editor.wordWrap", serde_json::json!(false)).expect("set editor.wordWrap");
+        assert!(!config.editor.word_wrap);
+        assert!(is_setting_modified(&config, "editor.wordWrap"));
+    }
+
+    #[test]
+    fn test_search_settings() {
+        // Direct ID and URL match
+        let res_id = search_settings("editor.wordWrap");
+        assert_eq!(res_id.len(), 1);
+        assert_eq!(res_id[0].id, "editor.wordWrap");
+
+        let res_url = search_settings(&format!("{}://settings/editor.wordWrap", APP_URL_SCHEME));
+        assert_eq!(res_url.len(), 1);
+        assert_eq!(res_url[0].id, "editor.wordWrap");
+
+        // Russian keyword search
+        let res_ru = search_settings("перенос");
+        assert!(res_ru.iter().any(|s| s.id == "editor.wordWrap"));
+
+        // English keyword search
+        let res_en = search_settings("wrap");
+        assert!(res_en.iter().any(|s| s.id == "editor.wordWrap"));
+
+        // Multi-keyword search
+        let res_font = search_settings("шрифт размер");
+        assert!(res_font.iter().any(|s| s.id == "editor.fontSizeBase"));
+    }
 }

@@ -1,18 +1,22 @@
 use std::cell::Cell;
+use std::path::Path;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui::{
-    canvas, div, point, prelude::*, px, rgba, Context,
-    DispatchPhase, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
+    canvas, div, point, prelude::*, px, rgb, rgba, App, ClipboardItem, Context,
+    DispatchPhase, Entity, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Render, ScrollDelta,
     ScrollHandle, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, WeakEntity, Window,
+    Subscription, WeakEntity, Window, WindowControlArea, WindowOptions,
 };
 
 use crate::blink_manager::BlinkManager;
 use crate::icons;
 use crate::plugins::ui::{PluginInputFocusState, SelectOption, UiSink};
-use crate::settings::AppConfig;
+use crate::settings::{
+    get_setting_by_id, search_settings, AppConfig, SettingsEvent, SettingsModel,
+};
 use crate::theme::Theme;
 use super::app_view::AppView;
 use crate::views::tab_list::{TabEntry, TabListEvent, TabListPopup, ROW_HEIGHT};
@@ -147,62 +151,151 @@ impl AppView {
         crate::i18n::t_fmt(key, &self.config.ui.language, args)
     }
 
-    /// Toggles visibility of the Settings modal window.
+    /// Toggles visibility of the Settings separate window.
     pub fn toggle_settings(&mut self, cx: &mut Context<Self>) {
-        if self.is_settings_open {
+        if self.settings_window_manager.is_open() {
             self.close_settings(cx);
         } else {
             self.open_settings(None, cx);
         }
     }
 
-    /// Opens the Settings modal, optionally navigating directly to the given tab.
+    /// Opens or focuses the Settings window, optionally navigating directly to the given tab.
     pub fn open_settings(&mut self, tab: Option<SettingsTab>, cx: &mut Context<Self>) {
-        self.is_settings_open = true;
-        self.config = self.state.settings.get_config();
-        let target_tab = tab.unwrap_or_else(|| self.settings_tab.clone());
-        self.settings_tab = target_tab.clone();
-
-        if let Some(ref view) = self.settings_view {
-            let config = self.config.clone();
-            let theme = self.theme.clone();
-            let word_wrap = self.word_wrap;
-            view.update(cx, |view, cx| {
-                view.settings_tab = target_tab;
-                view.config = config;
-                view.theme = theme;
-                view.word_wrap = word_wrap;
-                cx.notify();
-            });
-        } else {
-            let weak_app = cx.weak_entity();
-            let config = self.config.clone();
-            let theme = self.theme.clone();
-            let word_wrap = self.word_wrap;
-            self.settings_view = Some(cx.new(|cx| {
-                SettingsView::new(weak_app, target_tab, config, theme, word_wrap, cx)
-            }));
-        }
-        cx.notify();
+        self.open_settings_with_id(tab, None, cx);
     }
 
-    /// Closes the Settings modal window and restores editor focus.
+    /// Opens or focuses the Settings window, navigating to a specific tab and highlighted setting id.
+    pub fn open_settings_with_id(&mut self, tab: Option<SettingsTab>, setting_id: Option<String>, cx: &mut Context<Self>) {
+        self.is_settings_open = true;
+        let weak_self = cx.weak_entity();
+        let model = self.settings_model.clone();
+        let app_data_dir = crate::state::app_data_dir();
+        let target_tab = tab.or_else(|| Some(self.settings_tab.clone()));
+
+        cx.defer(move |cx| {
+            // 1. If window is already open, activate and focus it without holding a long-lived borrow
+            let already_open = weak_self.update(cx, |this, cx| {
+                if let Some(existing) = &this.settings_window_manager.window {
+                    if existing
+                        .update(cx, |view, window, cx| {
+                            if let Some(tab) = target_tab.clone() {
+                                view.settings_tab = tab;
+                            }
+                            if let Some(id) = setting_id.clone() {
+                                view.navigate_to_setting(&id, cx);
+                            }
+                            window.focus(&view.focus_handle);
+                            window.activate_window();
+                            cx.notify();
+                        })
+                        .is_ok()
+                    {
+                        return true;
+                    }
+                }
+                false
+            }).unwrap_or(false);
+
+            if already_open {
+                return;
+            }
+
+            // 2. Open new Settings window outside of AppView borrow to avoid double-lease panics during render
+            let state_path = app_data_dir.join("settings-window.json");
+            let saved_state = crate::state::WindowState::load_file(&state_path);
+            let bounds = saved_state.to_validated_bounds(cx, 980.0, 720.0);
+
+            let config = model.read(cx).config.clone();
+            let is_ru = config.ui.language.starts_with("ru");
+            let window_title = if is_ru {
+                "Настройки — Vibecodium"
+            } else {
+                "Settings — Vibecodium"
+            };
+
+            let options = WindowOptions {
+                window_bounds: Some(bounds),
+                titlebar: Some(gpui::TitlebarOptions {
+                    title: Some(window_title.into()),
+                    appears_transparent: true,
+                    traffic_light_position: None,
+                }),
+                window_min_size: Some(gpui::size(px(680.0), px(500.0))),
+                ..Default::default()
+            };
+
+            let save_path = state_path.clone();
+            let target_tab_init = target_tab.unwrap_or(SettingsTab::Ui);
+            let model_clone = model.clone();
+            let target_id_init = setting_id.clone();
+            let weak_app = weak_self.clone();
+
+            let handle_res = cx.open_window(options, |window, cx| {
+                let view = cx.new(|cx| {
+                    let mut v = SettingsView::new(model_clone, weak_app, target_tab_init, cx);
+                    if let Some(id) = target_id_init {
+                        v.navigate_to_setting(&id, cx);
+                    }
+                    window.focus(&v.search_focus_handle);
+                    v.search_filter.is_focused = true;
+                    v.search_filter.enable_cursor_blink(cx);
+                    v
+                });
+
+                window.on_window_should_close(cx, move |window, _cx| {
+                    let is_maximized = window.is_maximized();
+                    let bounds = window.bounds();
+                    let mut state = crate::state::WindowState::load_file(&save_path);
+                    state.maximized = is_maximized;
+                    if !is_maximized {
+                        state.width = f32::from(bounds.size.width);
+                        state.height = f32::from(bounds.size.height);
+                        state.x = Some(f32::from(bounds.origin.x));
+                        state.y = Some(f32::from(bounds.origin.y));
+                    }
+                    state.save_file(&save_path);
+                    true
+                });
+
+                view
+            });
+
+            match handle_res {
+                Ok(handle) => {
+                    let _ = weak_self.update(cx, |this, _cx| {
+                        this.settings_window_manager.window = Some(handle);
+                    });
+                }
+                Err(e) => {
+                    eprintln!("[SettingsWindowManager] Failed to open settings window: {:?}", e);
+                }
+            }
+        });
+    }
+
+    /// Closes the Settings window if open.
     pub fn close_settings(&mut self, cx: &mut Context<Self>) {
         self.is_settings_open = false;
-        self.settings_view = None;
-        self.active_color_picker = None;
-        self.active_plugin_input = None;
-        self.plugin_input_blink.disable(cx);
-        self.close_plugin_select(cx);
+        let weak_self = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = weak_self.update(cx, |this, cx| {
+                this.settings_window_manager.close_if_open(cx);
+            });
+        });
         cx.notify();
     }
 
-    /// Persists the modified AppConfig to disk via SettingsManager.
+    /// Persists the modified AppConfig to disk via SettingsModel.
     pub fn save_settings(&mut self, cx: &mut Context<Self>) {
         if let Some(ref mut note) = self.state.active_note {
             note.visual_cache_dirty = true;
         }
-        let _ = self.state.settings.update_config(self.config.clone());
+        let config = self.config.clone();
+        self.settings_model.update(cx, |m, cx| {
+            m.config = config;
+            m.save(cx);
+        });
         cx.notify();
     }
 
@@ -231,13 +324,152 @@ impl AppView {
     }
 }
 
+pub struct SettingsWindowManager {
+    pub window: Option<gpui::WindowHandle<SettingsView>>,
+}
 
-/// Independent view entity hosting all settings tabs and modal dialog UI.
+impl Default for SettingsWindowManager {
+    fn default() -> Self {
+        Self { window: None }
+    }
+}
+
+impl SettingsWindowManager {
+    pub fn is_open(&self) -> bool {
+        self.window.is_some()
+    }
+
+    pub fn open_or_focus(
+        &mut self,
+        model: Entity<SettingsModel>,
+        weak_app: WeakEntity<AppView>,
+        target_tab: Option<SettingsTab>,
+        target_setting_id: Option<String>,
+        app_data_dir: &Path,
+        cx: &mut App,
+    ) {
+        // 1. If window is already open, activate and focus it
+        if let Some(existing) = &self.window {
+            let target_tab = target_tab.clone();
+            let target_setting_id = target_setting_id.clone();
+            if existing
+                .update(cx, |view, window, cx| {
+                    window.activate_window();
+                    if let Some(tab) = target_tab {
+                        view.settings_tab = tab;
+                    }
+                    if let Some(id) = target_setting_id {
+                        view.navigate_to_setting(&id, cx);
+                    }
+                    cx.notify();
+                })
+                .is_ok()
+            {
+                return;
+            }
+        }
+
+        // 2. Validate saved window geometry
+        let state_path = app_data_dir.join("settings-window.json");
+        let saved_state = crate::state::WindowState::load_file(&state_path);
+        let bounds = saved_state.to_validated_bounds(cx, 980.0, 720.0);
+
+        let config = model.read(cx).config.clone();
+        let is_ru = config.ui.language.starts_with("ru");
+        let window_title = if is_ru {
+            "Настройки — Vibecodium"
+        } else {
+            "Settings — Vibecodium"
+        };
+
+        let options = WindowOptions {
+            window_bounds: Some(bounds),
+            titlebar: Some(gpui::TitlebarOptions {
+                title: Some(window_title.into()),
+                appears_transparent: true,
+                traffic_light_position: None,
+            }),
+            window_min_size: Some(gpui::size(px(680.0), px(500.0))),
+            ..Default::default()
+        };
+
+        let save_path = state_path.clone();
+        let target_tab_init = target_tab.unwrap_or(SettingsTab::Ui);
+        let model_clone = model.clone();
+        let target_id_init = target_setting_id.clone();
+
+        let handle_res = cx.open_window(options, |window, cx| {
+            let view = cx.new(|cx| {
+                let mut v = SettingsView::new(model_clone, weak_app, target_tab_init, cx);
+                if let Some(id) = target_id_init {
+                    v.navigate_to_setting(&id, cx);
+                }
+                window.focus(&v.search_focus_handle);
+                v.search_filter.is_focused = true;
+                v.search_filter.enable_cursor_blink(cx);
+                v
+            });
+
+            window.on_window_should_close(cx, move |window, _cx| {
+                let is_maximized = window.is_maximized();
+                let bounds = window.bounds();
+                let mut state = crate::state::WindowState::load_file(&save_path);
+                state.maximized = is_maximized;
+                if !is_maximized {
+                    state.width = f32::from(bounds.size.width);
+                    state.height = f32::from(bounds.size.height);
+                    state.x = Some(f32::from(bounds.origin.x));
+                    state.y = Some(f32::from(bounds.origin.y));
+                }
+                state.save_file(&save_path);
+                true
+            });
+
+            view
+        });
+
+        match handle_res {
+            Ok(handle) => {
+                self.window = Some(handle);
+            }
+            Err(e) => {
+                eprintln!("[SettingsWindowManager] Failed to open settings window: {:?}", e);
+            }
+        }
+    }
+
+    pub fn close_if_open(&mut self, cx: &mut App) {
+        if let Some(handle) = self.window.take() {
+            let _ = handle.update(cx, |_view, window, _cx| {
+                window.remove_window();
+            });
+        }
+    }
+
+    pub fn toggle(
+        &mut self,
+        model: Entity<SettingsModel>,
+        weak_app: WeakEntity<AppView>,
+        target_tab: Option<SettingsTab>,
+        app_data_dir: &Path,
+        cx: &mut App,
+    ) {
+        if self.is_open() {
+            self.close_if_open(cx);
+        } else {
+            self.open_or_focus(model, weak_app, target_tab, None, app_data_dir, cx);
+        }
+    }
+}
+
+/// Independent view entity hosting all settings tabs in a standalone OS window.
 pub struct SettingsView {
+    pub model: Entity<SettingsModel>,
     pub weak_app: WeakEntity<AppView>,
     pub settings_tab: SettingsTab,
     pub config: AppConfig,
     pub theme: Theme,
+    pub focus_handle: FocusHandle,
     pub settings_scroll_handle: ScrollHandle,
     pub settings_nav_scroll_handle: ScrollHandle,
     pub active_color_picker: Option<&'static str>,
@@ -261,22 +493,181 @@ pub struct SettingsView {
     pub plugin_select_popup: Option<gpui::Entity<TabListPopup>>,
     pub plugin_select_subscription: Option<Subscription>,
     pub word_wrap: bool,
+    // Step 4 & 7: Window and Search state
+    pub is_hovering_close: bool,
+    pub search_query: String,
+    pub search_focus_handle: FocusHandle,
+    pub search_filter: SearchFilterState,
+    pub highlighted_setting_id: Option<String>,
+    pub copied_setting_url_id: Option<String>,
+}
+
+/// Encapsulates the complete state of the settings search input (based on quick_filter.rs).
+#[derive(Clone)]
+pub struct SearchFilterState {
+    pub cursor_pos: usize,
+    pub selection_anchor: Option<usize>,
+    pub is_mouse_selecting: bool,
+    pub is_focused: bool,
+    pub blink: BlinkManager,
+    pub box_origin_x: Rc<Cell<f32>>,
+    pub box_width: Rc<Cell<f32>>,
+    pub scroll_offset: Rc<Cell<f32>>,
+}
+
+impl Default for SearchFilterState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SearchFilterState {
+    pub fn new() -> Self {
+        Self {
+            cursor_pos: 0,
+            selection_anchor: None,
+            is_mouse_selecting: false,
+            is_focused: false,
+            blink: BlinkManager::new(),
+            box_origin_x: Rc::new(Cell::new(0.0)),
+            box_width: Rc::new(Cell::new(0.0)),
+            scroll_offset: Rc::new(Cell::new(0.0)),
+        }
+    }
+
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        if let Some(anchor) = self.selection_anchor {
+            let pos = self.cursor_pos;
+            if anchor != pos {
+                return Some((anchor.min(pos), anchor.max(pos)));
+            }
+        }
+        None
+    }
+
+    pub fn reset_cursor_blink(&mut self, cx: &mut Context<SettingsView>) {
+        self.blink.pause_and_show_view(|s| &mut s.search_filter.blink, cx);
+    }
+
+    pub fn enable_cursor_blink(&mut self, cx: &mut Context<SettingsView>) {
+        self.blink.enable_view(|s| &mut s.search_filter.blink, cx);
+    }
+
+    pub fn disable_cursor_blink(&mut self, cx: &mut Context<SettingsView>) {
+        self.blink.disable_view(cx);
+    }
+
+    #[inline]
+    pub fn cursor_visible(&self) -> bool {
+        self.blink.visible()
+    }
+
+    pub fn sync_focus(&mut self, is_focused: bool, cx: &mut Context<SettingsView>) {
+        if !self.is_focused && is_focused {
+            self.is_focused = true;
+            self.enable_cursor_blink(cx);
+        } else if self.is_focused && !is_focused {
+            self.is_focused = false;
+            self.disable_cursor_blink(cx);
+            self.selection_anchor = None;
+            self.is_mouse_selecting = false;
+        }
+    }
+
+    pub fn handle_mouse_move(&mut self, event: &MouseMoveEvent, query: &str, window: &Window, cx: &mut Context<SettingsView>) {
+        if !self.is_mouse_selecting {
+            return;
+        }
+        let x: f32 = event.position.x.into();
+        let box_x = self.box_origin_x.get();
+        let scroll_x = self.scroll_offset.get();
+        let rel_x = (x - box_x + scroll_x).max(0.0);
+        let new_pos = if query.is_empty() {
+            0
+        } else {
+            let run = gpui::TextRun {
+                len: query.len(),
+                font: gpui::font("Segoe UI"),
+                color: Default::default(),
+                underline: Default::default(),
+                strikethrough: None,
+                background_color: None,
+            };
+            let shaped = window.text_system().shape_line(
+                SharedString::from(query.to_string()),
+                px(12.0),
+                &[run],
+                None,
+            );
+            let byte_idx = shaped.closest_index_for_x(px(rel_x));
+            query[..byte_idx.min(query.len())].chars().count()
+        };
+        if self.cursor_pos != new_pos {
+            self.cursor_pos = new_pos;
+            self.reset_cursor_blink(cx);
+            cx.notify();
+        }
+    }
+
+    pub fn handle_mouse_up(&mut self, cx: &mut Context<SettingsView>) {
+        if self.is_mouse_selecting {
+            self.is_mouse_selecting = false;
+            if self.selection_anchor == Some(self.cursor_pos) {
+                self.selection_anchor = None;
+            }
+            cx.notify();
+        }
+    }
+
+    pub fn clear(&mut self, query: &mut String, cx: &mut Context<SettingsView>) {
+        query.clear();
+        self.cursor_pos = 0;
+        self.selection_anchor = None;
+        self.is_mouse_selecting = false;
+        self.scroll_offset.set(0.0);
+        self.reset_cursor_blink(cx);
+        cx.notify();
+    }
 }
 
 impl SettingsView {
     pub fn new(
+        model: Entity<SettingsModel>,
         weak_app: WeakEntity<AppView>,
         tab: SettingsTab,
-        config: AppConfig,
-        theme: Theme,
-        word_wrap: bool,
         cx: &mut Context<Self>,
     ) -> Self {
+        let config = model.read(cx).config.clone();
+        let theme = Theme::from_config(&config.ui.theme, None);
+        let word_wrap = config.editor.word_wrap;
+
+        let model_sub = cx.subscribe(&model, |this, model, event: &SettingsEvent, cx| {
+            match event {
+                SettingsEvent::ConfigChanged => {
+                    this.config = model.read(cx).config.clone();
+                    cx.notify();
+                }
+                SettingsEvent::ThemeChanged => {
+                    let theme_name = model.read(cx).config.ui.theme.clone();
+                    this.theme = Theme::from_config(&theme_name, None);
+                    cx.notify();
+                }
+                SettingsEvent::WordWrapToggled(wrap) => {
+                    this.word_wrap = *wrap;
+                    cx.notify();
+                }
+                _ => {}
+            }
+        });
+        model_sub.detach();
+
         Self {
+            model,
             weak_app,
             settings_tab: tab,
             config,
             theme,
+            focus_handle: cx.focus_handle(),
             settings_scroll_handle: ScrollHandle::new(),
             settings_nav_scroll_handle: ScrollHandle::new(),
             active_color_picker: None,
@@ -300,7 +691,18 @@ impl SettingsView {
             plugin_select_popup: None,
             plugin_select_subscription: None,
             word_wrap,
+            is_hovering_close: false,
+            search_query: String::new(),
+            search_focus_handle: cx.focus_handle(),
+            search_filter: SearchFilterState::new(),
+            highlighted_setting_id: None,
+            copied_setting_url_id: None,
         }
+    }
+
+    #[inline]
+    pub fn search_query(&self) -> &str {
+        &self.search_query
     }
 
     /// Helper to get localized string using current UI language
@@ -313,36 +715,92 @@ impl SettingsView {
         crate::i18n::t_fmt(key, &self.config.ui.language, args)
     }
 
-    /// Closes the Settings modal window and restores editor focus.
-    pub fn close(&mut self, cx: &mut Context<Self>) {
-        if let Some(app) = self.weak_app.upgrade() {
-            app.update(cx, |app, cx| {
-                app.close_settings(cx);
-            });
-        }
+    /// Closes the Settings window.
+    pub fn close(&mut self, window: &mut Window) {
+        window.remove_window();
     }
 
-    /// Persists the modified AppConfig to disk via SettingsManager.
+    /// Persists the modified AppConfig to disk via SettingsModel.
     pub fn save_settings(&mut self, cx: &mut Context<Self>) {
         self.theme = crate::theme::Theme::from_config(&self.config.ui.theme, None);
-        if let Some(app) = self.weak_app.upgrade() {
-            let config = self.config.clone();
-            app.update(cx, |app, cx| {
-                app.config = config;
-                app.save_settings(cx);
-            });
-        }
+        let config = self.config.clone();
+        let old_theme = self.model.read(cx).config.ui.theme.clone();
+        let theme_changed = old_theme != config.ui.theme;
+        let old_wrap = self.model.read(cx).config.editor.word_wrap;
+        let wrap_changed = old_wrap != config.editor.word_wrap;
+
+        self.model.update(cx, |model, cx| {
+            model.config = config;
+            model.save(cx);
+            if theme_changed {
+                cx.emit(SettingsEvent::ThemeChanged);
+            }
+            if wrap_changed {
+                cx.emit(SettingsEvent::WordWrapToggled(model.config.editor.word_wrap));
+            }
+        });
         cx.notify();
     }
 
     pub fn toggle_word_wrap(&mut self, cx: &mut Context<Self>) {
         self.word_wrap = !self.word_wrap;
-        if let Some(app) = self.weak_app.upgrade() {
-            app.update(cx, |app, cx| {
-                app.toggle_word_wrap(cx);
-            });
-        }
+        let word_wrap = self.word_wrap;
+        self.model.update(cx, |model, cx| {
+            model.set_word_wrap(word_wrap, cx);
+        });
         cx.notify();
+    }
+
+    pub fn navigate_to_setting(&mut self, setting_id: &str, cx: &mut Context<Self>) {
+        if let Some(setting) = get_setting_by_id(setting_id) {
+            match setting.tab_id {
+                "ui" => self.settings_tab = SettingsTab::Ui,
+                "editor" => self.settings_tab = SettingsTab::Editor,
+                "reader" => self.settings_tab = SettingsTab::Reader,
+                "search" => self.settings_tab = SettingsTab::Search,
+                "templates" => self.settings_tab = SettingsTab::Templates,
+                "files" => self.settings_tab = SettingsTab::Files,
+                "analysis" => self.settings_tab = SettingsTab::Analysis,
+                "mcp" => self.settings_tab = SettingsTab::Mcp,
+                "history" => self.settings_tab = SettingsTab::History,
+                "trash" => self.settings_tab = SettingsTab::Trash,
+                "system" => self.settings_tab = SettingsTab::System,
+                "shortcuts" => self.settings_tab = SettingsTab::Shortcuts,
+                "core-plugins" => self.settings_tab = SettingsTab::CorePlugins,
+                "community-plugins" => self.settings_tab = SettingsTab::CommunityPlugins,
+                tab => self.settings_tab = SettingsTab::PluginSettings(tab.to_string()),
+            }
+            self.highlighted_setting_id = Some(setting.id.to_string());
+            let target_id = setting.id.to_string();
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(Duration::from_millis(1500)).await;
+                let _ = this.update(cx, |view, cx| {
+                    if view.highlighted_setting_id.as_deref() == Some(&target_id) {
+                        view.highlighted_setting_id = None;
+                        cx.notify();
+                    }
+                });
+            }).detach();
+            cx.notify();
+        }
+    }
+
+    pub fn copy_setting_link(&mut self, setting_id: &str, cx: &mut Context<Self>) {
+        if let Some(setting) = get_setting_by_id(setting_id) {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(setting.url()));
+            self.copied_setting_url_id = Some(setting.id.to_string());
+            let target_id = setting.id.to_string();
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(Duration::from_millis(1500)).await;
+                let _ = this.update(cx, |view, cx| {
+                    if view.copied_setting_url_id.as_deref() == Some(&target_id) {
+                        view.copied_setting_url_id = None;
+                        cx.notify();
+                    }
+                });
+            }).detach();
+            cx.notify();
+        }
     }
 
     pub fn unload_all_plugins(&mut self, cx: &mut Context<Self>) {
@@ -1078,203 +1536,853 @@ impl SettingsView {
         };
 
         div()
-            .id("settings-modal-root")
-            .absolute()
-            .top_0()
-            .left_0()
+            .id("settings-window")
+            .key_context("settings_window")
+            .track_focus(&self.focus_handle)
             .size_full()
+            .flex()
+            .flex_col()
+            .bg(theme.bg_editor)
+            .text_color(theme.text_primary)
+            .font_family("Segoe UI")
             .cursor(gpui::CursorStyle::Arrow)
-            .on_scroll_wheel(|_, _, cx| {
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 cx.stop_propagation();
-            })
-            // 1. Semi-transparent backdrop overlay: clicking here closes the modal
+                this.handle_window_key(event, window, cx);
+            }))
+            .child(self.render_titlebar(window, cx))
             .child(
                 div()
-                    .id("settings-modal-backdrop")
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .bg(rgba(0x000000aa))
-                    .cursor(gpui::CursorStyle::Arrow)
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                        cx.stop_propagation();
-                        if this.active_plugin_select.is_some() || this.plugin_select_popup.is_some() {
-                            this.close_plugin_select(cx);
-                        } else if this.active_color_picker.is_some() {
-                            this.active_color_picker = None;
-                            cx.notify();
-                        } else {
-                            this.close(cx);
-                        }
-                    }))
-                    .on_scroll_wheel(|_, _, cx| {
-                        cx.stop_propagation();
-                    }),
-            )
-            // 2. Centered dialog layout container (non-blocking sibling)
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
                     .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor(gpui::CursorStyle::Arrow)
-                    .on_scroll_wheel(|_, _, cx| {
-                        cx.stop_propagation();
-                    })
-                    .child(
-                        div()
-                            .id("settings-modal-dialog")
-                            .relative()
-                            .flex()
-                            .flex_col()
-                            .w(px(900.0))
-                            .h(px(660.0))
-                            .max_w(px(980.0))
-                            .max_h(px(760.0))
-                            .rounded_xl()
-                            .overflow_hidden()
-                            .bg(theme.bg_sidebar)
-                            .border_1()
-                            .border_color(theme.border)
-                            .shadow_lg()
-                            .cursor(gpui::CursorStyle::Arrow)
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                cx.stop_propagation();
-                            })
-                            .on_scroll_wheel(|_, _, cx| {
-                                cx.stop_propagation();
-                            })
-                            // Dialog Header
-                            .child(self.render_dialog_header(cx))
-                            // Dialog Body: Sidebar + Main Content Area
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .flex_1()
-                                    .min_h_0()
-                                    .w_full()
-                                    .rounded_b_xl()
-                                    .cursor(gpui::CursorStyle::Arrow)
-                                    // Left navigation panel
-                                    .child(self.render_settings_nav(cx))
-                                    // Right scrollable content panel
-                                    .child(self.render_settings_content(window, cx)),
-                            ),
-                    ),
+                    .flex_row()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(self.render_settings_nav(window, cx))
+                    .child(self.render_settings_content(window, cx)),
             )
             .when_some(plugin_modal_overlay, |this, overlay| this.child(overlay))
     }
 
-    /// Renders the title bar and close button of the Settings dialog.
-    fn render_dialog_header(&self, cx: &Context<Self>) -> gpui::Div {
+    /// Renders the standalone title bar for the Settings window.
+    fn render_titlebar(&self, window: &Window, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
+        let is_maximized = window.is_maximized();
+        let is_ru = self.config.ui.language.starts_with("ru");
+        let title = if is_ru {
+            "Настройки — Vibecodium"
+        } else {
+            "Settings — Vibecodium"
+        };
+
         div()
             .flex()
             .flex_row()
             .items_center()
             .justify_between()
-            .px_5()
-            .py_3()
+            .h(px(34.0))
+            .w_full()
+            .bg(theme.bg_sidebar)
             .border_b_1()
             .border_color(theme.border_subtle)
-            .rounded_t_xl()
-            .cursor(gpui::CursorStyle::Arrow)
+            .flex_shrink_0()
+            // Draggable area with title and icon
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .items_center()
+                    .h_full()
+                    .window_control_area(WindowControlArea::Drag)
+                    .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, window, _| {
+                        if event.click_count == 2 {
+                            window.zoom_window();
+                        }
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .w(px(138.0))
+                            .px_3()
+                            .gap_2()
+                            .h_full()
+                            .child(icons::icon(icons::ICON_SETTINGS, 14.0, theme.accent))
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_1()
+                            .items_center()
+                            .justify_center()
+                            .h_full()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(theme.text_secondary)
+                                    .child(title)
+                            )
+                    )
+            )
+            // Window controls (Minimize, Maximize/Restore, Close)
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap_2()
-                    .child(icons::icon(icons::ICON_SETTINGS, 16.0, theme.accent))
+                    .h_full()
+                    .w(px(138.0))
+                    .flex_shrink_0()
                     .child(
                         div()
-                            .text_base()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(theme.text_primary)
-                            .child(self.t("settings.title")),
-                    ),
-            )
-            .child(
-                div()
-                    .id("btn-close-settings")
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .p_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|h| h.bg(theme.bg_hover))
-                    .child(icons::icon(icons::ICON_CLOSE, 16.0, theme.text_muted))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.close(cx);
-                    })),
+                            .id("set-win-ctrl-min")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(46.0))
+                            .h_full()
+                            .cursor(gpui::CursorStyle::PointingHand)
+                            .hover(|s| s.bg(theme.bg_hover))
+                            .child(icons::icon(icons::ICON_MINIMIZE, 11.0, theme.text_secondary))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .on_click(cx.listener(|_, _, window, _| {
+                                window.minimize_window();
+                            }))
+                    )
+                    .child(
+                        div()
+                            .id("set-win-ctrl-max")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(46.0))
+                            .h_full()
+                            .cursor(gpui::CursorStyle::PointingHand)
+                            .hover(|s| s.bg(theme.bg_hover))
+                            .child(icons::icon(
+                                if is_maximized { icons::ICON_RESTORE } else { icons::ICON_MAXIMIZE },
+                                11.0,
+                                theme.text_secondary,
+                            ))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .on_click(cx.listener(|_, _, window, _| {
+                                window.zoom_window();
+                            }))
+                    )
+                    .child(
+                        div()
+                            .id("set-win-ctrl-close")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(46.0))
+                            .h_full()
+                            .cursor(gpui::CursorStyle::PointingHand)
+                            .hover(|s| s.bg(rgb(0xe81123)))
+                            .child(icons::icon(icons::ICON_CLOSE, 13.0, theme.text_secondary))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .on_click(cx.listener(|_, _, window, _| {
+                                window.remove_window();
+                            }))
+                    )
             )
     }
 
-    /// Renders the vertical tab navigation sidebar inside the Settings dialog.
-    fn render_settings_nav(&self, cx: &Context<Self>) -> impl IntoElement {
+    /// Handles keyboard events for the Settings window.
+    pub fn handle_window_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key == "escape" {
+            if self.active_plugin_select.is_some() || self.plugin_select_popup.is_some() {
+                self.close_plugin_select(cx);
+            } else if self.active_color_picker.is_some() {
+                self.active_color_picker = None;
+                cx.notify();
+            } else if !self.search_query.is_empty() {
+                self.search_filter.clear(&mut self.search_query, cx);
+            } else {
+                window.remove_window();
+            }
+            return;
+        }
+
+        if event.keystroke.modifiers.control && (event.keystroke.key == "," || event.keystroke.key == "<" || event.keystroke.key == "б" || event.keystroke.key == "Б") {
+            window.remove_window();
+            return;
+        }
+
+        if !self.search_focus_handle.is_focused(window)
+            && self.active_color_picker.is_none()
+            && self.active_plugin_input.is_none()
+        {
+            window.focus(&self.search_focus_handle);
+            self.search_filter.is_focused = true;
+            self.handle_search_key(event, window, cx);
+        }
+    }
+
+    /// Dispatches keyboard events for the settings search input (based on quick_filter.rs).
+    pub fn handle_search_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_filter.reset_cursor_blink(cx);
+        let key = &event.keystroke.key;
+        let ctrl = event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
+        let shift = event.keystroke.modifiers.shift;
+        let alt = event.keystroke.modifiers.alt;
+
+        // Escape: clear query or close window if already empty
+        if key == "escape" {
+            if !self.search_query.is_empty() {
+                self.search_filter.clear(&mut self.search_query, cx);
+            } else {
+                window.remove_window();
+            }
+            cx.notify();
+            return;
+        }
+
+        // Ctrl + A (Select All)
+        if ctrl && (key.eq_ignore_ascii_case("a") || key == "ф" || key == "Ф") {
+            self.search_filter.selection_anchor = Some(0);
+            self.search_filter.cursor_pos = self.search_query.chars().count();
+            cx.notify();
+            return;
+        }
+
+        // Ctrl + C (Copy selected text)
+        if ctrl && (key.eq_ignore_ascii_case("c") || key == "с" || key == "С") {
+            if let Some((s_start, s_end)) = self.search_filter.selection_range() {
+                let selected: String = self.search_query.chars().skip(s_start).take(s_end - s_start).collect();
+                cx.write_to_clipboard(ClipboardItem::new_string(selected));
+            }
+            return;
+        }
+
+        // Ctrl + X (Cut selected text)
+        if ctrl && (key.eq_ignore_ascii_case("x") || key == "ч" || key == "Ч") {
+            if let Some((s_start, s_end)) = self.search_filter.selection_range() {
+                let selected: String = self.search_query.chars().skip(s_start).take(s_end - s_start).collect();
+                cx.write_to_clipboard(ClipboardItem::new_string(selected));
+                let mut chars: Vec<char> = self.search_query.chars().collect();
+                chars.drain(s_start..s_end);
+                self.search_query = chars.into_iter().collect();
+                self.search_filter.cursor_pos = s_start;
+                self.search_filter.selection_anchor = None;
+                cx.notify();
+            }
+            return;
+        }
+
+        // Ctrl + V (Paste over selection or at cursor)
+        if ctrl && (key.eq_ignore_ascii_case("v") || key == "м" || key == "М") {
+            if let Some(item) = cx.read_from_clipboard() {
+                if let Some(text) = item.text() {
+                    let filtered: String = text
+                        .chars()
+                        .filter(|c| !c.is_control() && *c != '\n' && *c != '\r')
+                        .collect();
+                    if !filtered.is_empty() {
+                        let mut chars: Vec<char> = self.search_query.chars().collect();
+                        let pos = if let Some((s_start, s_end)) = self.search_filter.selection_range() {
+                            chars.drain(s_start..s_end);
+                            self.search_filter.selection_anchor = None;
+                            s_start
+                        } else {
+                            self.search_filter.cursor_pos.min(chars.len())
+                        };
+                        for (i, c) in filtered.chars().enumerate() {
+                            chars.insert(pos + i, c);
+                        }
+                        self.search_filter.cursor_pos = pos + filtered.chars().count();
+                        self.search_query = chars.into_iter().collect();
+
+                        // If user pastes a deep link like vibecodium://settings/ui.theme, navigate to it!
+                        let trimmed = self.search_query.trim();
+                        let target_id = if let Some(stripped) = trimmed.strip_prefix("vibecodium://settings/") {
+                            Some(stripped)
+                        } else if get_setting_by_id(trimmed).is_some() {
+                            Some(trimmed)
+                        } else {
+                            None
+                        };
+                        if let Some(id) = target_id {
+                            if let Some(setting) = get_setting_by_id(id) {
+                                self.navigate_to_setting(&setting.id, cx);
+                            }
+                        }
+
+                        cx.notify();
+                    }
+                }
+            }
+            return;
+        }
+
+        // Enter key (navigate to first match if any)
+        if key == "enter" {
+            let query = self.search_query.trim();
+            let results = search_settings(query);
+            if let Some(first) = results.first() {
+                let id = first.id;
+                self.navigate_to_setting(id, cx);
+            }
+            return;
+        }
+
+        if ctrl {
+            if key == "," || key == "<" || key == "б" || key == "Б" {
+                window.remove_window();
+            }
+            return;
+        }
+
+        // Left Arrow
+        if key == "left" {
+            if shift {
+                if self.search_filter.selection_anchor.is_none() {
+                    self.search_filter.selection_anchor = Some(self.search_filter.cursor_pos);
+                }
+                if self.search_filter.cursor_pos > 0 {
+                    self.search_filter.cursor_pos -= 1;
+                }
+            } else if let Some((s_start, _)) = self.search_filter.selection_range() {
+                self.search_filter.cursor_pos = s_start;
+                self.search_filter.selection_anchor = None;
+            } else if self.search_filter.cursor_pos > 0 {
+                self.search_filter.cursor_pos -= 1;
+            }
+            cx.notify();
+            return;
+        }
+
+        // Right Arrow
+        if key == "right" {
+            let total_chars = self.search_query.chars().count();
+            if shift {
+                if self.search_filter.selection_anchor.is_none() {
+                    self.search_filter.selection_anchor = Some(self.search_filter.cursor_pos);
+                }
+                if self.search_filter.cursor_pos < total_chars {
+                    self.search_filter.cursor_pos += 1;
+                }
+            } else if let Some((_, s_end)) = self.search_filter.selection_range() {
+                self.search_filter.cursor_pos = s_end;
+                self.search_filter.selection_anchor = None;
+            } else if self.search_filter.cursor_pos < total_chars {
+                self.search_filter.cursor_pos += 1;
+            }
+            cx.notify();
+            return;
+        }
+
+        // Home
+        if key == "home" {
+            if shift {
+                if self.search_filter.selection_anchor.is_none() {
+                    self.search_filter.selection_anchor = Some(self.search_filter.cursor_pos);
+                }
+                self.search_filter.cursor_pos = 0;
+            } else {
+                self.search_filter.selection_anchor = None;
+                self.search_filter.cursor_pos = 0;
+            }
+            cx.notify();
+            return;
+        }
+
+        // End
+        if key == "end" {
+            let total_chars = self.search_query.chars().count();
+            if shift {
+                if self.search_filter.selection_anchor.is_none() {
+                    self.search_filter.selection_anchor = Some(self.search_filter.cursor_pos);
+                }
+                self.search_filter.cursor_pos = total_chars;
+            } else {
+                self.search_filter.selection_anchor = None;
+                self.search_filter.cursor_pos = total_chars;
+            }
+            cx.notify();
+            return;
+        }
+
+        // Backspace
+        if key == "backspace" {
+            let mut chars: Vec<char> = self.search_query.chars().collect();
+            if let Some((s_start, s_end)) = self.search_filter.selection_range() {
+                chars.drain(s_start..s_end);
+                self.search_filter.cursor_pos = s_start;
+                self.search_filter.selection_anchor = None;
+                self.search_query = chars.into_iter().collect();
+                cx.notify();
+            } else {
+                let pos = self.search_filter.cursor_pos.min(chars.len());
+                if pos > 0 {
+                    chars.remove(pos - 1);
+                    self.search_filter.cursor_pos = pos - 1;
+                    self.search_query = chars.into_iter().collect();
+                    cx.notify();
+                }
+            }
+            return;
+        }
+
+        // Delete
+        if key == "delete" {
+            let mut chars: Vec<char> = self.search_query.chars().collect();
+            if let Some((s_start, s_end)) = self.search_filter.selection_range() {
+                chars.drain(s_start..s_end);
+                self.search_filter.cursor_pos = s_start;
+                self.search_filter.selection_anchor = None;
+                self.search_query = chars.into_iter().collect();
+                cx.notify();
+            } else {
+                let pos = self.search_filter.cursor_pos.min(chars.len());
+                if pos < chars.len() {
+                    chars.remove(pos);
+                    self.search_query = chars.into_iter().collect();
+                    cx.notify();
+                }
+            }
+            return;
+        }
+
+        // Normal character input
+        if !ctrl && !alt && !event.keystroke.modifiers.platform {
+            let text_to_insert = if key == "space" {
+                Some(" ")
+            } else if let Some(ch) = &event.keystroke.key_char {
+                Some(ch.as_str())
+            } else if key.chars().count() == 1 {
+                Some(key.as_str())
+            } else {
+                None
+            };
+
+            if let Some(text) = text_to_insert {
+                let filtered: String = text
+                    .chars()
+                    .filter(|c| !c.is_control() && *c != '\n' && *c != '\r')
+                    .collect();
+                if !filtered.is_empty() {
+                    let mut chars: Vec<char> = self.search_query.chars().collect();
+                    let pos = if let Some((s_start, s_end)) = self.search_filter.selection_range() {
+                        chars.drain(s_start..s_end);
+                        self.search_filter.selection_anchor = None;
+                        s_start
+                    } else {
+                        self.search_filter.cursor_pos.min(chars.len())
+                    };
+                    for (i, c) in filtered.chars().enumerate() {
+                        chars.insert(pos + i, c);
+                    }
+                    self.search_filter.cursor_pos = pos + filtered.chars().count();
+                    self.search_query = chars.into_iter().collect();
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    fn render_search_bar(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
-        let active_tab = &self.settings_tab;
+        let is_search_focused = self.search_focus_handle.is_focused(window);
+        let pixel_scale = window.scale_factor();
+        let is_ru = self.config.ui.language.starts_with("ru");
+        let placeholder = if is_ru { "Поиск параметров..." } else { "Search settings..." };
 
         div()
-            .id("settings-nav-scroll")
+            .id("settings-search-box")
+            .track_focus(&self.search_focus_handle)
             .flex()
-            .flex_col()
-            .w(px(210.0))
-            .min_w(px(210.0))
-            .h_full()
-            .overflow_scroll()
-            .border_r_1()
-            .border_color(theme.border_subtle)
-            .rounded_bl_xl()
-            .cursor(gpui::CursorStyle::Arrow)
-            .p_2()
-            .gap_1()
-            .children(SettingsTab::all().iter().enumerate().map(|(idx, tab)| {
-                let is_active = tab == active_tab;
-                let text_color = if is_active { theme.text_primary } else { theme.text_secondary };
-                let icon_color = if is_active { theme.accent } else { theme.text_muted };
-                let bg_color = if is_active { theme.bg_hover } else { rgba(0x00000000) };
-                let tab_clone = tab.clone();
+            .flex_row()
+            .items_center()
+            .gap_1p5()
+            .px_2()
+            .py_1()
+            .bg(theme.bg_editor)
+            .border_1()
+            .border_color(if is_search_focused { theme.accent } else { theme.border_subtle })
+            .rounded_md()
+            .cursor(gpui::CursorStyle::IBeam)
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                window.focus(&this.search_focus_handle);
+                this.search_filter.is_focused = true;
+                this.search_filter.reset_cursor_blink(cx);
+
+                let click_x: f32 = event.position.x.into();
+                let box_x = this.search_filter.box_origin_x.get();
+                let scroll_x = this.search_filter.scroll_offset.get();
+                let rel_x = (click_x - box_x + scroll_x).max(0.0);
+
+                let clicked_pos = if this.search_query.is_empty() {
+                    0
+                } else {
+                    let run = gpui::TextRun {
+                        len: this.search_query.len(),
+                        font: gpui::font("Segoe UI"),
+                        color: Default::default(),
+                        underline: Default::default(),
+                        strikethrough: None,
+                        background_color: None,
+                    };
+                    let shaped = window.text_system().shape_line(
+                        SharedString::from(this.search_query.clone()),
+                        px(12.0),
+                        &[run],
+                        None,
+                    );
+                    let byte_idx = shaped.closest_index_for_x(px(rel_x));
+                    this.search_query[..byte_idx.min(this.search_query.len())].chars().count()
+                };
+
+                let total_chars = this.search_query.chars().count();
+                if event.click_count == 2 {
+                    let chars: Vec<char> = this.search_query.chars().collect();
+                    if !chars.is_empty() {
+                        let pos = clicked_pos.min(chars.len().saturating_sub(1));
+                        let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+                        let target_is_word = is_word_char(chars[pos]);
+                        let mut start = pos;
+                        while start > 0 && is_word_char(chars[start - 1]) == target_is_word && !chars[start - 1].is_whitespace() {
+                            start -= 1;
+                        }
+                        let mut end = pos + 1;
+                        while end < chars.len() && is_word_char(chars[end]) == target_is_word && !chars[end].is_whitespace() {
+                            end += 1;
+                        }
+                        this.search_filter.selection_anchor = Some(start);
+                        this.search_filter.cursor_pos = end;
+                    }
+                    this.search_filter.is_mouse_selecting = false;
+                } else if event.click_count >= 3 {
+                    this.search_filter.selection_anchor = Some(0);
+                    this.search_filter.cursor_pos = total_chars;
+                    this.search_filter.is_mouse_selecting = false;
+                } else if event.modifiers.shift {
+                    if this.search_filter.selection_anchor.is_none() {
+                        this.search_filter.selection_anchor = Some(this.search_filter.cursor_pos);
+                    }
+                    this.search_filter.cursor_pos = clicked_pos;
+                    this.search_filter.is_mouse_selecting = true;
+                } else {
+                    this.search_filter.cursor_pos = clicked_pos;
+                    this.search_filter.selection_anchor = Some(clicked_pos);
+                    this.search_filter.is_mouse_selecting = true;
+                }
+                cx.notify();
+            }))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                let query = this.search_query.clone();
+                this.search_filter.handle_mouse_move(event, &query, window, cx);
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                this.search_filter.handle_mouse_up(cx);
+            }))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                cx.stop_propagation();
+                this.handle_search_key(event, window, cx);
+            }))
+            .child(icons::icon(icons::ICON_SEARCH, 13.0, theme.text_muted))
+            .child({
+                let query = &self.search_query;
+                let query_chars: Vec<char> = query.chars().collect();
+                let cursor_pos = self.search_filter.cursor_pos.min(query_chars.len());
+                let selection_range = self.search_filter.selection_range();
+
+                let run = gpui::TextRun {
+                    len: query.len(),
+                    font: gpui::font("Segoe UI"),
+                    color: Default::default(),
+                    underline: Default::default(),
+                    strikethrough: None,
+                    background_color: None,
+                };
+                let shaped = window.text_system().shape_line(
+                    SharedString::from(query.clone()),
+                    px(12.0),
+                    &[run],
+                    None,
+                );
+
+                let cursor_x = if query.is_empty() {
+                    0.0
+                } else {
+                    let byte_index: usize = query_chars[..cursor_pos].iter().map(|c| c.len_utf8()).sum();
+                    crate::snap::snap_x(f32::from(shaped.x_for_index(byte_index)), pixel_scale)
+                };
+
+                let visible_w = self.search_filter.box_width.get();
+                let mut scroll_offset = self.search_filter.scroll_offset.get();
+                if visible_w > 10.0 {
+                    let text_w = f32::from(shaped.width);
+                    if text_w + 4.0 <= visible_w {
+                        scroll_offset = 0.0;
+                    } else if cursor_x < scroll_offset {
+                        scroll_offset = (cursor_x - 4.0).max(0.0);
+                    } else if cursor_x > scroll_offset + visible_w - 6.0 {
+                        scroll_offset = (cursor_x - visible_w + 6.0).max(0.0);
+                    }
+                } else if query.is_empty() {
+                    scroll_offset = 0.0;
+                }
+                self.search_filter.scroll_offset.set(scroll_offset);
+
+                let (sel_x1, sel_w) = if let Some((s_start, s_end)) = selection_range {
+                    if !query.is_empty() {
+                        let b1: usize = query_chars[..s_start.min(query_chars.len())].iter().map(|c| c.len_utf8()).sum();
+                        let b2: usize = query_chars[..s_end.min(query_chars.len())].iter().map(|c| c.len_utf8()).sum();
+                        crate::snap::snapped_span(
+                            f32::from(shaped.x_for_index(b1)),
+                            f32::from(shaped.x_for_index(b2)),
+                            pixel_scale,
+                        )
+                    } else {
+                        (0.0, 0.0)
+                    }
+                } else {
+                    (0.0, 0.0)
+                };
 
                 div()
-                    .id(gpui::ElementId::from(("nav-tab", idx)))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2p5()
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .bg(bg_color)
-                    .cursor_pointer()
-                    .hover(|h| h.bg(theme.bg_hover))
-                    .child(icons::icon(tab.icon(), 15.0, icon_color))
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(16.0))
+                    .overflow_hidden()
                     .child(
-                        div()
-                            .text_sm()
-                            .font_weight(if is_active { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::NORMAL })
-                            .text_color(text_color)
-                            .child(tab.title(&self.config.ui.language)),
+                        gpui::canvas(
+                            {
+                                let cell_x = self.search_filter.box_origin_x.clone();
+                                let cell_w = self.search_filter.box_width.clone();
+                                move |bounds, _, _| {
+                                    cell_x.set(f32::from(bounds.origin.x));
+                                    cell_w.set(f32::from(bounds.size.width));
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
                     )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.settings_tab = tab_clone.clone();
-                        cx.notify();
-                    }))
-            }))
+                    // 1. Selection background
+                    .when(selection_range.is_some() && sel_w > 0.0, |s| {
+                        s.child(
+                            div()
+                                .absolute()
+                                .left(px(sel_x1 - scroll_offset))
+                                .top(px(0.0))
+                                .w(px(sel_w))
+                                .h(px(16.0))
+                                .bg(theme.selection_bg)
+                                .rounded_xs(),
+                        )
+                    })
+                    // 2. Text or placeholder
+                    .child(
+                        if query.is_empty() {
+                            div()
+                                .font_family("Segoe UI")
+                                .text_xs()
+                                .line_height(px(16.0))
+                                .text_color(theme.text_muted)
+                                .whitespace_nowrap()
+                                .child(placeholder.to_string())
+                        } else {
+                            div()
+                                .absolute()
+                                .left(px(-scroll_offset))
+                                .top(px(0.0))
+                                .font_family("Segoe UI")
+                                .text_xs()
+                                .line_height(px(16.0))
+                                .text_color(theme.text_primary)
+                                .whitespace_nowrap()
+                                .child(query.clone())
+                        }
+                    )
+                    // 3. Caret
+                    .when(is_search_focused && self.search_filter.cursor_visible(), |s| {
+                        s.child(
+                            div()
+                                .absolute()
+                                .left(px(cursor_x - scroll_offset))
+                                .top(px(0.0))
+                                .w(px(1.5))
+                                .h(px(16.0))
+                                .bg(theme.accent)
+                                .rounded_xs(),
+                        )
+                    })
+            })
+            .when(!self.search_query.is_empty(), |s| {
+                s.child(
+                    div()
+                        .id("btn-clear-settings-search")
+                        .cursor_pointer()
+                        .p_0p5()
+                        .hover(|h| h.bg(theme.bg_hover))
+                        .rounded_xs()
+                        .child(icons::icon(icons::ICON_CLOSE, 10.0, theme.text_muted))
+                        .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| {
+                            cx.stop_propagation();
+                        }))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.search_filter.clear(&mut this.search_query, cx);
+                            window.focus(&this.search_focus_handle);
+                        }))
+                )
+            })
+    }
+
+    /// Renders the vertical tab navigation sidebar inside the Settings window with search.
+    fn render_settings_nav(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+        let theme = &self.theme;
+        let active_tab = &self.settings_tab;
+        let is_ru = self.config.ui.language.starts_with("ru");
+        let query = self.search_query.trim();
+        let search_results = if !query.is_empty() {
+            search_settings(query)
+        } else {
+            Vec::new()
+        };
+
+        div()
+            .id("settings-nav-sidebar")
+            .flex()
+            .flex_col()
+            .w(px(220.0))
+            .min_w(px(220.0))
+            .h_full()
+            .border_r_1()
+            .border_color(theme.border_subtle)
+            .bg(theme.bg_sidebar)
+            // Top: Search input
+            .child(
+                div()
+                    .p_2()
+                    .border_b_1()
+                    .border_color(theme.border_subtle)
+                    .child(self.render_search_bar(window, cx))
+            )
+            // Tab list or search results
+            .child(
+                div()
+                    .id("settings-nav-scroll")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_scroll()
+                    .p_2()
+                    .gap_1()
+                    .when(!query.is_empty(), |this| {
+                        if search_results.is_empty() {
+                            this.child(
+                                div()
+                                    .p_3()
+                                    .text_xs()
+                                    .text_color(theme.text_muted)
+                                    .child(if is_ru { "Ничего не найдено" } else { "No settings found" })
+                            )
+                        } else {
+                            this.children(search_results.into_iter().enumerate().map(|(idx, setting)| {
+                                let is_active = match setting.tab_id {
+                                    "ui" => *active_tab == SettingsTab::Ui,
+                                    "editor" => *active_tab == SettingsTab::Editor,
+                                    "reader" => *active_tab == SettingsTab::Reader,
+                                    "search" => *active_tab == SettingsTab::Search,
+                                    "templates" => *active_tab == SettingsTab::Templates,
+                                    "files" => *active_tab == SettingsTab::Files,
+                                    "analysis" => *active_tab == SettingsTab::Analysis,
+                                    "mcp" => *active_tab == SettingsTab::Mcp,
+                                    "history" => *active_tab == SettingsTab::History,
+                                    "trash" => *active_tab == SettingsTab::Trash,
+                                    "system" => *active_tab == SettingsTab::System,
+                                    "shortcuts" => *active_tab == SettingsTab::Shortcuts,
+                                    "core-plugins" => *active_tab == SettingsTab::CorePlugins,
+                                    "community-plugins" => *active_tab == SettingsTab::CommunityPlugins,
+                                    other => *active_tab == SettingsTab::PluginSettings(other.to_string()),
+                                };
+                                let text_color = if is_active { theme.text_primary } else { theme.text_secondary };
+                                let s_id = setting.id;
+
+                                div()
+                                    .id(gpui::ElementId::from(("search-res", idx)))
+                                    .flex()
+                                    .flex_col()
+                                    .px_2()
+                                    .py_1p5()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .hover(|h| h.bg(theme.bg_hover))
+                                    .bg(if is_active { theme.bg_hover } else { rgba(0x00000000) })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.navigate_to_setting(s_id, cx);
+                                    }))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(text_color)
+                                            .child(setting.title(is_ru))
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(theme.text_muted)
+                                            .child(format!("{}: {}", setting.tab_id, setting.id))
+                                    )
+                            }))
+                        }
+                    })
+                    .when(query.is_empty(), |this| {
+                        this.children(SettingsTab::all().iter().enumerate().map(|(idx, tab)| {
+                            let is_active = tab == active_tab;
+                            let text_color = if is_active { theme.text_primary } else { theme.text_secondary };
+                            let icon_color = if is_active { theme.accent } else { theme.text_muted };
+                            let bg_color = if is_active { theme.bg_hover } else { rgba(0x00000000) };
+                            let tab_clone = tab.clone();
+
+                            div()
+                                .id(gpui::ElementId::from(("nav-tab", idx)))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_2p5()
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .bg(bg_color)
+                                .cursor_pointer()
+                                .hover(|h| h.bg(theme.bg_hover))
+                                .child(icons::icon(tab.icon(), 15.0, icon_color))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(if is_active { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::NORMAL })
+                                        .text_color(text_color)
+                                        .child(tab.title(&self.config.ui.language)),
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.settings_tab = tab_clone.clone();
+                                    cx.notify();
+                                }))
+                        }))
+                    })
+            )
     }
 
     /// Renders the active tab's settings content container.
     fn render_settings_content(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
         let scroll_handle = self.settings_scroll_handle.clone();
-        let is_catalog_open = self.weak_app.upgrade().map(|app| app.read(cx).plugin_catalog.is_open).unwrap_or(false);
+        let is_catalog_open = false;
 
         div()
             .id("settings-content-scroll")
@@ -1390,6 +2498,95 @@ impl SettingsView {
                     .border_color(theme.border_subtle)
                     .px_4()
                     .children(formatted_rows),
+            )
+    }
+
+    /// Renders an individual setting row with deep link copy button, highlight effect, label, optional hint, and control widget.
+    fn render_setting_row_with_id(
+        &self,
+        setting_id: Option<&'static str>,
+        label: &str,
+        hint: Option<&str>,
+        control: impl IntoElement,
+        cx: &Context<Self>,
+    ) -> gpui::Div {
+        let theme = &self.theme;
+        let is_highlighted = setting_id
+            .map(|id| self.highlighted_setting_id.as_deref() == Some(id))
+            .unwrap_or(false);
+        let is_copied = setting_id
+            .map(|id| self.copied_setting_url_id.as_deref() == Some(id))
+            .unwrap_or(false);
+
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .py_3()
+            .px_2()
+            .rounded_md()
+            .border_b_1()
+            .border_color(if is_highlighted { theme.accent } else { theme.border_subtle })
+            .bg(if is_highlighted {
+                gpui::Rgba { a: 0.12, ..theme.accent }
+            } else {
+                rgba(0x00000000)
+            })
+            .when_some(setting_id, |this, s_id| {
+                this.child(
+                    div()
+                        .w(px(24.0))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .mr_2()
+                        .child(
+                            div()
+                                .id(gpui::ElementId::from(gpui::SharedString::from(format!("copy-link-{}", s_id))))
+                                .p_1()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .hover(|h| h.bg(theme.bg_hover))
+                                .child(if is_copied {
+                                    icons::icon(icons::ICON_CHECK, 13.0, theme.accent)
+                                } else {
+                                    icons::icon(icons::ICON_LINK, 13.0, theme.text_muted)
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.copy_setting_link(s_id, cx);
+                                }))
+                        )
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .mr_4()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme.text_primary)
+                            .child(label.to_string()),
+                    )
+                    .when_some(hint, |this, h| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.text_muted)
+                                .child(h.to_string()),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .child(control),
             )
     }
 
@@ -1977,7 +3174,8 @@ impl SettingsView {
         let config = &self.config;
 
         let display_rows = vec![
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("ui.theme"),
                 &self.t("settings.ui.theme"),
                 Some(&self.t("settings.ui.theme_desc")),
                 div()
@@ -2040,8 +3238,10 @@ impl SettingsView {
                                 this.save_settings(cx);
                             })),
                     ),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("ui.language"),
                 &self.t("settings.ui.language"),
                 Some(&self.t("settings.ui.language_desc")),
                 {
@@ -2082,8 +3282,10 @@ impl SettingsView {
                             )
                         })
                 },
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("ui.primaryColor"),
                 &self.t("settings.ui.accent_color"),
                 Some(&self.t("settings.ui.accent_color_desc")),
                 div()
@@ -2099,8 +3301,10 @@ impl SettingsView {
                     .rounded_md()
                     .child(div().w(px(14.0)).h(px(14.0)).rounded_xs().bg(theme.accent))
                     .child(div().text_xs().text_color(theme.text_primary).child(config.ui.primary_color.clone())),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("ui.sidebarSmartScroll"),
                 &self.t("settings.ui.sidebar_smart_scroll"),
                 Some(&self.t("settings.ui.sidebar_smart_scroll_desc")),
                 div()
@@ -2118,6 +3322,7 @@ impl SettingsView {
                         }
                         this.save_settings(cx);
                     })),
+                cx,
             ),
         ];
 
@@ -2550,7 +3755,8 @@ impl SettingsView {
                     cx,
                 ),
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("editor.wordWrap"),
                 &self.t("settings.editor.word_wrap"),
                 Some(&self.t("settings.editor.word_wrap_desc")),
                 div()
@@ -2559,6 +3765,7 @@ impl SettingsView {
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toggle_word_wrap(cx);
                     })),
+                cx,
             ),
             self.render_setting_row(
                 &self.t("settings.editor.live_tabs"),
@@ -4528,6 +5735,8 @@ impl SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_search_focused = self.search_focus_handle.is_focused(window);
+        self.search_filter.sync_focus(is_search_focused, cx);
         self.render_settings_modal(window, cx)
     }
 }

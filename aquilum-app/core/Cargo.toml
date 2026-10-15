@@ -1,11 +1,11 @@
 [package]
 name = "aquilum-core"
-version = "0.2.6"
+version = "0.3.6"
 description = "Aquilum core: documents, files, search, history and settings without any UI"
 authors = ["Dmitriy Chaplinskiy"]
 license = "AGPL-3.0-only"
 edition = "2021"
-workspace = "../src-tauri"
+workspace = ".."
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

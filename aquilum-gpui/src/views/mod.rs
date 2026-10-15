@@ -12,3 +12,4 @@ pub mod sidebar;
 pub mod tab_context_menu;
 pub mod tab_list;
 pub mod tabs_menu;
+pub mod text_input;

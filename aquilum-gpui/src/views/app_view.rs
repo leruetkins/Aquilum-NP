@@ -79,7 +79,8 @@ pub struct AppView {
     pub last_wrap_cols: usize,
     pub is_settings_open: bool,
     pub settings_tab: crate::views::settings_view::SettingsTab,
-    pub settings_view: Option<gpui::Entity<crate::views::settings_view::SettingsView>>,
+    pub settings_model: gpui::Entity<crate::settings::SettingsModel>,
+    pub settings_window_manager: crate::views::settings_view::SettingsWindowManager,
     pub is_dragging_scrollbar: bool,
     pub scrollbar_drag_start_y: f32,
     pub scrollbar_drag_start_scroll_y: f32,
@@ -220,6 +221,9 @@ impl AppView {
             260.0
         };
         let sidebar_mode = state.session.sidebar_mode;
+        let settings_model = cx.new(|_cx| {
+            crate::settings::SettingsModel::new(state.settings.clone())
+        });
 
         let mut this = Self {
             state,
@@ -260,7 +264,8 @@ impl AppView {
             last_wrap_cols: 80,
             is_settings_open: false,
             settings_tab: crate::views::settings_view::SettingsTab::Ui,
-            settings_view: None,
+            settings_model,
+            settings_window_manager: crate::views::settings_view::SettingsWindowManager::default(),
             is_dragging_scrollbar: false,
             scrollbar_drag_start_y: 0.0,
             scrollbar_drag_start_scroll_y: 0.0,
@@ -341,6 +346,56 @@ impl AppView {
         };
         this.editor_blink.enable(BlinkTarget::Editor, cx);
         crate::commands_builtin::register_builtin_commands(&this.state.commands);
+
+        cx.subscribe(&this.settings_model, |this, model, event: &crate::settings::SettingsEvent, cx| {
+            match event {
+                crate::settings::SettingsEvent::ConfigChanged => {
+                    this.config = model.read(cx).config.clone();
+                    if let Some(ref mut note) = this.state.active_note {
+                        note.visual_cache_dirty = true;
+                    }
+                    cx.notify();
+                }
+                crate::settings::SettingsEvent::ThemeChanged => {
+                    let theme_name = model.read(cx).config.ui.theme.clone();
+                    let theme = crate::theme::Theme::from_config(&theme_name, None);
+                    this.theme = theme.clone();
+                    cx.set_global(crate::theme::ActiveTheme(std::sync::Arc::new(theme)));
+                    cx.notify();
+                }
+                crate::settings::SettingsEvent::WordWrapToggled(wrap) => {
+                    this.word_wrap = *wrap;
+                    if let Some(ref mut note) = this.state.active_note {
+                        note.visual_cache_dirty = true;
+                    }
+                    cx.notify();
+                }
+                crate::settings::SettingsEvent::PluginToggled { plugin_id, enabled } => {
+                    if *enabled {
+                        if let Some(vault) = &this.state.vault {
+                            let _ = vault.enable_community_plugin(plugin_id);
+                            this.load_installed_plugins_for_vault();
+                        }
+                    } else {
+                        if let Some(vault) = &this.state.vault {
+                            let _ = vault.disable_community_plugin(plugin_id);
+                            if let Some(pos) = this.plugin_runtimes.iter().position(|r| &r.manifest.id == plugin_id) {
+                                let handle = this.plugin_runtimes.remove(pos);
+                                let _ = handle.host_events_tx.unbounded_send(crate::plugins::api::HostEvent::Unload);
+                                this.state.plugin_host.unregister_plugin(plugin_id);
+                                this.state.commands.unregister_all_of(plugin_id);
+                                this.state.ribbon.unregister_all_of(plugin_id);
+                                this.state.status_bar.unregister_all_of(plugin_id);
+                                this.state.code_block_processors.unregister_all_of(plugin_id);
+                                this.code_block_views.retain(|_, (pid, _)| pid != plugin_id);
+                            }
+                        }
+                    }
+                    cx.notify();
+                }
+            }
+        }).detach();
+
         this
     }
 
@@ -2315,14 +2370,8 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
             return;
         }
 
-        // Escape closes settings modal if open
-        if keystroke.key == "escape" && self.is_settings_open {
-            if let Some(ref sv) = self.settings_view {
-                let handled = sv.update(cx, |view, cx| view.handle_escape(cx));
-                if handled {
-                    return;
-                }
-            }
+        // Escape closes settings window if open
+        if keystroke.key == "escape" && self.settings_window_manager.is_open() {
             self.close_settings(cx);
             return;
         }
@@ -5330,10 +5379,6 @@ impl Render for AppView {
             // ================= COMMAND PALETTE MODAL =================
             .when(self.command_palette.is_open, |d| {
                 d.child(self.render_command_palette(theme, window, cx))
-            })
-            // ================= SETTINGS MODAL =================
-            .when_some(self.settings_view.as_ref(), |d, settings_view| {
-                d.child(settings_view.clone())
             })
             // ================= FOLDER CONTEXT MENU =================
             .when(self.folder_context_menu.is_open, |d| {

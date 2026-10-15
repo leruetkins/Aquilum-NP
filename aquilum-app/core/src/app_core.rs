@@ -5,6 +5,7 @@ use crate::history::HistoryService;
 use crate::mcp::active::ActiveNote;
 use crate::mcp::bridge::Navigation;
 use crate::mcp::{McpServer, McpStatus};
+use crate::search::paths::is_markdown;
 use crate::search::{ChangeNotifier, IndexNotifier, IndexRevision, SearchService};
 use crate::settings::SettingsManager;
 use crate::ui_state::UiStateService;
@@ -13,8 +14,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
-/// What the core tells its host: the Tauri shell turns each event into a frontend event with the
-/// same name, a native UI would route it into its event loop.
+/// What the core tells its host.
 #[derive(Clone, Serialize)]
 #[serde(untagged)]
 pub enum CoreEvent {
@@ -25,6 +25,8 @@ pub enum CoreEvent {
     NotesRelocated(Relocation),
     NoteHistoryChanged(NoteHistoryChanged),
     WorkspaceChanged(Vec<String>),
+    ContentChanged(Vec<String>),
+    WorkspaceRescanned,
     LinksChanged(IndexRevision),
     Navigate(Navigation),
 }
@@ -39,6 +41,8 @@ impl CoreEvent {
             Self::NotesRelocated(_) => "notes-relocated",
             Self::NoteHistoryChanged(_) => "note-history-changed",
             Self::WorkspaceChanged(_) => "workspace-changed",
+            Self::ContentChanged(_) => "content-changed",
+            Self::WorkspaceRescanned => "workspace-rescanned",
             Self::LinksChanged(_) => "links-changed",
             Self::Navigate(_) => "mcp-navigate",
         }
@@ -83,8 +87,7 @@ pub struct Core {
 }
 
 impl Core {
-    /// Opens all stores under `app_data_dir`, which the host picks: the Tauri shell passes its own
-    /// app data directory, so the data stays where previous versions kept it.
+    /// Opens all stores under `app_data_dir`, which the host picks.
     pub fn open(app_data_dir: &Path, events: Arc<dyn EventSink>) -> Arc<Self> {
         let core = Arc::new_cyclic(|this: &Weak<Core>| {
             let changed = Arc::clone(&events);
@@ -140,11 +143,18 @@ impl Core {
     }
 
     fn ingest_watch(&self, batch: WatchBatch) {
-        if batch.scope >= WatchScope::Structure {
-            self.emit(CoreEvent::WorkspaceChanged(path_names(&batch.paths)));
+        match batch.scope {
+            WatchScope::Content => self.emit(CoreEvent::ContentChanged(path_names(&batch.paths))),
+            WatchScope::Rescan if batch.paths.is_empty() => self.emit(CoreEvent::WorkspaceRescanned),
+            WatchScope::Listing | WatchScope::Structure | WatchScope::Rescan => self.emit(CoreEvent::WorkspaceChanged(path_names(&batch.paths))),
         }
-        self.documents.reconcile_paths(self, &batch.paths);
-        self.search.ingest_watch(batch.paths, batch.scope == WatchScope::Rescan);
+        let rescan = batch.scope == WatchScope::Rescan;
+        let notes: Vec<PathBuf> = if rescan { batch.paths } else { batch.paths.into_iter().filter(|path| is_markdown(path)).collect() };
+        if notes.is_empty() && !rescan {
+            return;
+        }
+        self.documents.reconcile_paths(self, &notes);
+        self.search.ingest_watch(notes, rescan);
     }
 }
 

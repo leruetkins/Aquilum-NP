@@ -121,3 +121,16 @@ impl Default for Theme {
         Self::dark()
     }
 }
+
+/// Global GPUI resource wrapping the active theme.
+#[derive(Clone, Debug)]
+pub struct ActiveTheme(pub std::sync::Arc<Theme>);
+
+impl gpui::Global for ActiveTheme {}
+
+impl std::ops::Deref for ActiveTheme {
+    type Target = Theme;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}

@@ -72,76 +72,6 @@ impl Default for FontSettings {
     }
 }
 
-fn default_true() -> bool {
-    true
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", default)]
-pub struct HeadingStyle {
-    pub font_size: u32,
-    pub color_name: String,
-    #[serde(default = "default_true")]
-    pub bold: bool,
-    #[serde(default)]
-    pub italic: bool,
-}
-
-impl HeadingStyle {
-    pub fn new(font_size: u32, color_name: &str) -> Self {
-        Self {
-            font_size,
-            color_name: color_name.to_string(),
-            bold: true,
-            italic: false,
-        }
-    }
-
-    pub fn with_style(font_size: u32, color_name: &str, bold: bool, italic: bool) -> Self {
-        Self {
-            font_size,
-            color_name: color_name.to_string(),
-            bold,
-            italic,
-        }
-    }
-}
-
-impl Default for HeadingStyle {
-    fn default() -> Self {
-        Self {
-            font_size: 16,
-            color_name: "blue".to_string(),
-            bold: true,
-            italic: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", default)]
-pub struct HeadingsSettings {
-    pub h1: HeadingStyle,
-    pub h2: HeadingStyle,
-    pub h3: HeadingStyle,
-    pub h4: HeadingStyle,
-    pub h5: HeadingStyle,
-    pub h6: HeadingStyle,
-}
-
-impl Default for HeadingsSettings {
-    fn default() -> Self {
-        Self {
-            h1: HeadingStyle::new(22, "blue"),
-            h2: HeadingStyle::new(19, "sky_blue"),
-            h3: HeadingStyle::new(17, "bluish_green"),
-            h4: HeadingStyle::new(15, "orange"),
-            h5: HeadingStyle::new(14, "vermilion"),
-            h6: HeadingStyle::new(13, "reddish_purple"),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct EditorSettings {
@@ -150,12 +80,11 @@ pub struct EditorSettings {
     pub max_width_ch: u32,
     pub smart_dashes: bool,
     pub list_callouts: bool,
+    pub colored_tags: bool,
     pub auto_link_title: bool,
     pub live_tabs: u32,
     pub link_suggest: bool,
     pub link_suggest_min_chars: u32,
-    pub headings: HeadingsSettings,
-    pub hide_current_line_on_selection: bool,
     #[serde(flatten)]
     pub font: FontSettings,
 }
@@ -168,12 +97,11 @@ impl Default for EditorSettings {
             max_width_ch: 65,
             smart_dashes: true,
             list_callouts: true,
+            colored_tags: true,
             auto_link_title: true,
             live_tabs: 3,
             link_suggest: true,
             link_suggest_min_chars: 2,
-            headings: HeadingsSettings::default(),
-            hide_current_line_on_selection: true,
             font: FontSettings {
                 font_family: "iA Writer Mono".to_string(),
                 font_weight: 400,
@@ -220,6 +148,7 @@ pub struct UiSettings {
     pub theme: String,
     pub language: String,
     pub primary_color: String,
+    pub animations: bool,
     #[serde(flatten)]
     pub font: FontSettings,
 }
@@ -230,6 +159,7 @@ impl Default for UiSettings {
             theme: "system".to_string(),
             language: String::new(),
             primary_color: "#1471eb".to_string(),
+            animations: true,
             font: FontSettings {
                 font_family: "Inter".to_string(),
                 font_weight: 400,
