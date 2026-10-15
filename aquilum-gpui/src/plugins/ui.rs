@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, AnyElement, Context, ElementId, FocusHandle, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, ParentElement, SharedString, StatefulInteractiveElement, Styled,
+    div, point, px, AnyElement, Context, ElementId, FocusHandle, InteractiveElement, IntoElement,
+    KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled,
 };
 use serde::{Deserialize, Serialize};
 
@@ -95,6 +95,8 @@ pub enum UiNode {
         #[serde(default)]
         id: Option<String>,
         #[serde(default)]
+        class: Option<String>,
+        #[serde(default)]
         gap: Gap,
         #[serde(default)]
         children: Vec<UiNode>,
@@ -103,12 +105,16 @@ pub enum UiNode {
         #[serde(default)]
         id: Option<String>,
         #[serde(default)]
+        class: Option<String>,
+        #[serde(default)]
         gap: Gap,
         #[serde(default)]
         children: Vec<UiNode>,
     },
     Text {
         value: String,
+        #[serde(default)]
+        class: Option<String>,
         #[serde(default)]
         style: TextStyle,
     },
@@ -119,6 +125,8 @@ pub enum UiNode {
         #[serde(default)]
         id: String,
         label: String,
+        #[serde(default)]
+        class: Option<String>,
         #[serde(default)]
         variant: ButtonVariant,
         #[serde(default)]
@@ -339,7 +347,7 @@ pub fn plugin_input_click_pos(text: &str, click_x: f32, box_origin_x: f32, windo
 /// Validates the tree to prevent excessive depth, memory exhaustion, or duplicated IDs.
 pub fn validate_tree(root: &UiNode) -> Result<(), String> {
     const MAX_DEPTH: usize = 32;
-    const MAX_NODES: usize = 2000;
+    const MAX_NODES: usize = 50_000;
     const MAX_STR_LEN: usize = 64 * 1024;
 
     let mut total_nodes = 0;
@@ -356,7 +364,7 @@ pub fn validate_tree(root: &UiNode) -> Result<(), String> {
             return Err("Tree hierarchy depth exceeds limit (32)".into());
         }
         if *total_nodes > MAX_NODES {
-            return Err("Tree total node count exceeds limit (2000)".into());
+            return Err(format!("Tree total node count exceeds limit ({MAX_NODES})"));
         }
 
         if let Some(id) = node.id() {
@@ -441,6 +449,15 @@ pub trait UiSink: 'static + Sized {
     );
     fn close_plugin_select(&mut self, cx: &mut Context<Self>);
     fn is_plugin_select_open(&self, plugin_id: &str, view_id: u64, node_id: &str) -> bool;
+
+    fn plugin_modal_scrollbar_drag_active(&self) -> bool { false }
+    fn start_plugin_modal_scrollbar_drag(&mut self, _pointer_y: f32, _scroll_y: f32, _cx: &mut Context<Self>) {}
+    fn set_plugin_modal_scroll_y(&mut self, _scroll_y: f32, _cx: &mut Context<Self>) {}
+    fn plugin_modal_middle_active(&self) -> bool { false }
+    fn start_plugin_modal_middle_scroll(&mut self, _cx: &mut Context<Self>) {}
+    fn stop_plugin_modal_middle_scroll(&mut self, _cx: &mut Context<Self>) {}
+    fn on_plugin_modal_middle_mouse_move(&self, _y: f32, _cx: &mut Context<Self>) {}
+    fn plugin_modal_smart_bounds(&self) -> Option<std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>> { None }
 }
 
 impl UiSink for AppView {
@@ -513,6 +530,49 @@ impl UiSink for AppView {
     fn is_plugin_select_open(&self, plugin_id: &str, view_id: u64, node_id: &str) -> bool {
         self.is_plugin_select_open(plugin_id, view_id, node_id)
     }
+
+    fn plugin_modal_scrollbar_drag_active(&self) -> bool {
+        self.plugin_modal_scrollbar_drag.active
+    }
+
+    fn start_plugin_modal_scrollbar_drag(&mut self, pointer_y: f32, scroll_y: f32, cx: &mut Context<Self>) {
+        self.plugin_modal_scrollbar_drag.begin(pointer_y, scroll_y);
+        cx.notify();
+    }
+
+    fn set_plugin_modal_scroll_y(&mut self, scroll_y: f32, cx: &mut Context<Self>) {
+        self.plugin_modal_scroll_handle.set_offset(point(px(0.0), px(-scroll_y)));
+        cx.notify();
+    }
+
+    fn plugin_modal_middle_active(&self) -> bool {
+        self.plugin_modal_middle_active
+    }
+
+    fn start_plugin_modal_middle_scroll(&mut self, cx: &mut Context<Self>) {
+        self.start_plugin_modal_middle_scroll(cx);
+    }
+
+    fn stop_plugin_modal_middle_scroll(&mut self, cx: &mut Context<Self>) {
+        self.stop_plugin_modal_middle_scroll(cx);
+    }
+
+    fn on_plugin_modal_middle_mouse_move(&self, y: f32, cx: &mut Context<Self>) {
+        self.on_plugin_modal_middle_mouse_move(y, cx);
+    }
+
+    fn plugin_modal_smart_bounds(&self) -> Option<std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>> {
+        Some(self.plugin_modal_smart_bounds.clone())
+    }
+}
+
+/// Scroll context and state passed down to declarative UI rendering.
+#[derive(Clone, Default)]
+pub struct PluginScrollContext<'a> {
+    pub scroll_handle: Option<&'a gpui::ScrollHandle>,
+    pub scrollbar_drag_active: bool,
+    pub middle_scroll_active: bool,
+    pub smart_bounds: Option<std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
 }
 
 /// Renders a declarative UI node into GPUI elements using application theme tokens.
@@ -528,18 +588,63 @@ pub fn render_ui_node<V: UiSink>(
     caret_visible: bool,
     window: &gpui::Window,
     cx: &Context<V>,
+    scroll_ctx: Option<&PluginScrollContext>,
 ) -> AnyElement {
     match node {
-        UiNode::Column { id, gap, children } => {
+        UiNode::Column { id, class, gap, children } => {
             if children.is_empty() {
                 return div().into_any_element();
             }
             let gap_px = gap.to_px();
+            let cls = class.as_deref().unwrap_or("");
+            let is_modal_container = cls.contains("modal-container") || cls.contains("modal") || cls.contains("modal-content") || cls.contains("vertical-tab-content");
+            let is_header = cls.contains("header");
+            let is_item_info = cls.contains("item-info") || cls.contains("-info") || cls.contains("info");
+            let is_list = cls.contains("list") || cls.contains("scroll");
+
+            let col_id = id.clone().unwrap_or_else(|| if is_list { "list".into() } else { "col".into() });
             let mut col = div()
+                .id(ElementId::from(SharedString::from(format!("ui-col-{}-{}", view_id, col_id))))
                 .flex()
                 .flex_col()
-                .gap(px(gap_px))
                 .w_full();
+
+            if is_modal_container {
+                col = col
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden();
+            } else if is_header {
+                col = col
+                    .flex_shrink_0()
+                    .px(px(24.0))
+                    .pt(px(24.0))
+                    .pb(px(14.0))
+                    .gap(px(4.0));
+            } else if is_item_info {
+                col = col
+                    .flex_1()
+                    .min_w_0()
+                    .gap(px(2.0))
+                    .overflow_hidden();
+            } else if is_list {
+                col = col
+                    .flex_1()
+                    .min_h_0()
+                    .max_h(px(340.0))
+                    .overflow_scroll()
+                    .pr(px(18.0))
+                    .py(px(4.0));
+
+                if let Some(ctx) = scroll_ctx {
+                    if let Some(handle) = ctx.scroll_handle {
+                        col = col.track_scroll(handle);
+                    }
+                }
+            } else {
+                col = col.gap(px(gap_px));
+            }
+
             if let Some(node_id) = id {
                 let p_id = plugin_id.to_string();
                 let n_id = node_id.clone();
@@ -551,7 +656,8 @@ pub fn render_ui_node<V: UiSink>(
                         this.send_plugin_ui_event(&p_id, view_id, n_id.clone(), "click", None, cx);
                     }));
             }
-            col.children(children.iter().map(|child| {
+
+            let rendered_children: Vec<_> = children.iter().map(|child| {
                 render_ui_node(
                     child,
                     plugin_id,
@@ -564,32 +670,173 @@ pub fn render_ui_node<V: UiSink>(
                     caret_visible,
                     window,
                     cx,
+                    scroll_ctx,
                 )
-            }))
-            .into_any_element()
+            }).collect();
+
+            if is_list {
+                if let Some(ctx) = scroll_ctx {
+                    if let Some(handle) = ctx.scroll_handle {
+                        let scroll_style = crate::views::scrollbar::ScrollbarStyle {
+                            track_w: 16.0,
+                            thumb_w: 6.0,
+                            thumb_w_active: 8.0,
+                            thumb_inset: 3.0,
+                            min_thumb_h: 24.0,
+                            track_right_offset: 2.0,
+                        };
+                        let is_dragging = ctx.scrollbar_drag_active;
+                        let is_middle = ctx.middle_scroll_active;
+
+                        let mut wrapper = div()
+                            .relative()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_h_0()
+                            .max_h(px(340.0))
+                            .w_full()
+                            .on_mouse_down(MouseButton::Middle, cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.start_plugin_modal_middle_scroll(cx);
+                            }))
+                            .on_mouse_up(MouseButton::Middle, cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.stop_plugin_modal_middle_scroll(cx);
+                            }))
+                            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                                this.on_plugin_modal_middle_mouse_move(event.position.y.into(), cx);
+                            }))
+                            .child(col.children(rendered_children));
+
+                        if let Some(bounds_cell) = ctx.smart_bounds.clone() {
+                            wrapper = wrapper.child(
+                                gpui::canvas(
+                                    move |bounds, _window, _cx| {
+                                        bounds_cell.set(bounds);
+                                    },
+                                    |_, _, _, _| {},
+                                )
+                                .absolute()
+                                .size_full(),
+                            );
+                        }
+
+                        if is_middle {
+                            wrapper = wrapper.child(
+                                div()
+                                    .absolute()
+                                    .top(px(6.0))
+                                    .left(px(8.0))
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded_md()
+                                    .bg(theme.bg_card)
+                                    .border_1()
+                                    .border_color(theme.border)
+                                    .text_xs()
+                                    .text_color(theme.text_muted)
+                                    .child("⇅ СКМ-скролл"),
+                            );
+                        }
+
+                        if let Some(geometry) = crate::views::scrollbar::ScrollbarGeometry::from_handle(handle, &scroll_style) {
+                            let bar = crate::views::scrollbar::overlay_scrollbar(
+                                "ui-list-scrollbar-track",
+                                &geometry,
+                                &scroll_style,
+                                theme,
+                                is_dragging,
+                                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    let pointer_y: f32 = event.position.y.into();
+                                    let target_y = geometry.offset_for_track_click(pointer_y);
+                                    this.set_plugin_modal_scroll_y(target_y, cx);
+                                }),
+                                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    this.start_plugin_modal_scrollbar_drag(event.position.y.into(), geometry.scroll_y, cx);
+                                }),
+                            );
+                            wrapper = wrapper.child(bar);
+                        }
+
+                        return wrapper.into_any_element();
+                    }
+                }
+            }
+
+            col.children(rendered_children).into_any_element()
         }
-        UiNode::Row { id, gap, children } => {
+        UiNode::Row { id, class, gap, children } => {
             let gap_px = gap.to_px();
+            let is_item = class.as_deref().map_or(false, |c| c.contains("item") || c.contains("entry") || c.contains("row"));
+            let is_stats = class.as_deref().map_or(false, |c| c.contains("stats") || c.contains("count") || c.contains("summary"));
+            let is_controls = class.as_deref().map_or(false, |c| c.contains("controls") || c.contains("actions") || c.contains("toolbar"));
+            let is_footer = class.as_deref().map_or(false, |c| c.contains("footer") || c.contains("buttons") || c.contains("button-container"));
+
+            let row_id = id.clone().unwrap_or_else(|| "row".into());
             let mut row = div()
+                .id(ElementId::from(SharedString::from(format!("ui-row-{}-{}", view_id, row_id))))
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(gap_px))
                 .w_full();
+
+            if is_item {
+                row = row
+                    .px(px(24.0))
+                    .py(px(8.0))
+                    .gap(px(12.0))
+                    .border_b_1()
+                    .border_color(theme.border_subtle)
+                    .hover(|h| h.bg(theme.bg_hover));
+            } else if is_stats {
+                row = row
+                    .flex_shrink_0()
+                    .px(px(24.0))
+                    .py(px(10.0))
+                    .bg(theme.bg_sidebar)
+                    .border_b_1()
+                    .border_color(theme.border_subtle);
+            } else if is_controls {
+                row = row
+                    .flex_shrink_0()
+                    .px(px(24.0))
+                    .py(px(10.0))
+                    .gap(px(8.0))
+                    .border_b_1()
+                    .border_color(theme.border_subtle);
+            } else if is_footer {
+                row = row
+                    .flex_shrink_0()
+                    .px(px(24.0))
+                    .py(px(14.0))
+                    .gap(px(10.0))
+                    .justify_end()
+                    .bg(theme.bg_card)
+                    .border_t_1()
+                    .border_color(theme.border_subtle);
+            } else {
+                row = row.gap(px(gap_px));
+            }
+
             if let Some(node_id) = id {
                 let p_id = plugin_id.to_string();
                 let n_id = node_id.clone();
-                row = row
-                    .justify_between()
-                    .px_2()
-                    .py_0p5()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|h| h.bg(theme.bg_hover))
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.send_plugin_ui_event(&p_id, view_id, n_id.clone(), "click", None, cx);
-                    }));
+                if !is_item {
+                    row = row
+                        .justify_between()
+                        .px_2()
+                        .py_0p5()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|h| h.bg(theme.bg_hover));
+                }
+                row = row.on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.send_plugin_ui_event(&p_id, view_id, n_id.clone(), "click", None, cx);
+                }));
             }
             row.children(children.iter().map(|child| {
                 render_ui_node(
@@ -604,40 +851,86 @@ pub fn render_ui_node<V: UiSink>(
                     caret_visible,
                     window,
                     cx,
+                    scroll_ctx,
                 )
             }))
             .into_any_element()
         }
-        UiNode::Text { value, style } => match style {
-            TextStyle::Normal => div()
-                .flex_shrink_0()
-                .text_xs()
-                .text_color(theme.text_primary)
-                .child(value.clone())
-                .into_any_element(),
-            TextStyle::Muted => div()
-                .flex_shrink_0()
-                .text_xs()
-                .text_color(theme.text_muted)
-                .child(value.clone())
-                .into_any_element(),
-            TextStyle::Heading => div()
-                .text_sm()
-                .font_weight(gpui::FontWeight::BOLD)
-                .text_color(theme.text_primary)
-                .child(value.clone())
-                .into_any_element(),
-            TextStyle::Code => div()
-                .flex_shrink_0()
-                .text_xs()
-                .bg(theme.code_bg)
-                .text_color(theme.success)
-                .px(px(4.0))
-                .py(px(2.0))
-                .rounded(px(3.0))
-                .child(value.clone())
-                .into_any_element(),
-        },
+        UiNode::Text { value, class, style } => {
+            let cls = class.as_deref().unwrap_or("");
+            if cls.contains("name") || cls.contains("title") {
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text_primary)
+                    .overflow_hidden()
+                    .child(value.clone())
+                    .into_any_element()
+            } else if cls.contains("path") || cls.contains("desc") || cls.contains("faint") {
+                div()
+                    .text_xs()
+                    .text_color(theme.text_muted)
+                    .overflow_hidden()
+                    .child(value.clone())
+                    .into_any_element()
+            } else if cls.contains("count") || cls.contains("badge") || cls.contains("stats") {
+                div()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.text_muted)
+                    .child(value.to_uppercase())
+                    .into_any_element()
+            } else if cls.contains("subtitle") || cls.contains("subtext") {
+                div()
+                    .text_xs()
+                    .text_color(theme.text_muted)
+                    .child(value.clone())
+                    .into_any_element()
+            } else if cls.contains("scanning") || cls.contains("loading") || cls.contains("empty-state") || cls.contains("empty") || cls.contains("status") {
+                div()
+                    .flex()
+                    .w_full()
+                    .items_center()
+                    .justify_center()
+                    .py(px(32.0))
+                    .px(px(24.0))
+                    .text_sm()
+                    .text_color(theme.text_muted)
+                    .child(value.clone())
+                    .into_any_element()
+            } else {
+                match style {
+                    TextStyle::Normal => div()
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(theme.text_primary)
+                        .child(value.clone())
+                        .into_any_element(),
+                    TextStyle::Muted => div()
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(theme.text_muted)
+                        .child(value.clone())
+                        .into_any_element(),
+                    TextStyle::Heading => div()
+                        .text_base()
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(theme.text_primary)
+                        .child(value.clone())
+                        .into_any_element(),
+                    TextStyle::Code => div()
+                        .flex_shrink_0()
+                        .text_xs()
+                        .bg(theme.code_bg)
+                        .text_color(theme.success)
+                        .px(px(4.0))
+                        .py(px(2.0))
+                        .rounded(px(3.0))
+                        .child(value.clone())
+                        .into_any_element(),
+                }
+            }
+        }
         UiNode::Markdown { value } => div()
             .text_sm()
             .text_color(theme.text_primary)
@@ -646,62 +939,25 @@ pub fn render_ui_node<V: UiSink>(
         UiNode::Button {
             id,
             label,
+            class,
             variant,
             disabled,
         } => {
             let is_disabled = *disabled;
-            let is_secondary = matches!(variant, ButtonVariant::Secondary);
-            let (bg_color, border_color, text_color) = match variant {
-                ButtonVariant::Default => (
-                    theme.bg_card,
-                    theme.border,
-                    theme.text_primary,
-                ),
-                ButtonVariant::Primary => (
-                    theme.accent,
-                    theme.accent,
-                    theme.text_on_accent,
-                ),
-                ButtonVariant::Danger => (
-                    gpui::rgb(0xed8796),
-                    gpui::rgb(0xed8796),
-                    gpui::rgb(0x181825),
-                ),
-                ButtonVariant::Secondary => (
-                    gpui::rgba(0x00000000),
-                    gpui::rgba(0x00000000),
-                    theme.text_muted,
-                ),
-            };
+            let cls = class.as_deref().unwrap_or("");
+            let is_danger_btn = matches!(variant, ButtonVariant::Danger) || cls.contains("danger") || cls.contains("warning");
+            let is_danger_active = cls.contains("danger--active") || cls.contains("active") || (is_danger_btn && !is_disabled);
+            let is_secondary_btn = matches!(variant, ButtonVariant::Secondary) || cls.contains("secondary") || cls.contains("ghost") || cls.contains("cancel");
 
             let p_id = plugin_id.to_string();
             let n_id = id.clone();
 
-            div()
+            let mut btn = div()
                 .id(ElementId::from(SharedString::from(format!("ui-btn-{}-{}", view_id, id))))
                 .flex()
                 .flex_shrink_0()
                 .items_center()
                 .justify_center()
-                .when(!is_secondary, |d| {
-                    d.h(px(28.0))
-                        .px(px(12.0))
-                        .rounded_md()
-                        .bg(bg_color)
-                        .border_1()
-                        .border_color(border_color)
-                        .shadow_xs()
-                        .text_color(text_color)
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                })
-                .when(is_secondary, |d| {
-                    d.px(px(4.0))
-                        .py(px(2.0))
-                        .rounded(px(4.0))
-                        .text_xs()
-                        .text_color(text_color)
-                })
                 .cursor(if is_disabled {
                     gpui::CursorStyle::Arrow
                 } else {
@@ -709,33 +965,113 @@ pub fn render_ui_node<V: UiSink>(
                 })
                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                     cx.stop_propagation();
-                })
-                .when(!is_disabled, |this| {
+                });
+
+            if is_danger_btn {
+                if is_danger_active {
+                    btn = btn
+                        .h(px(30.0))
+                        .px(px(14.0))
+                        .rounded_md()
+                        .bg(gpui::rgb(0xd23f4d))
+                        .text_color(gpui::rgb(0xffffff))
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .shadow_xs();
+                } else {
+                    btn = btn
+                        .h(px(30.0))
+                        .px(px(14.0))
+                        .rounded_md()
+                        .bg(gpui::rgba(0xed879620))
+                        .border_1()
+                        .border_color(gpui::rgba(0xed879640))
+                        .text_color(gpui::rgb(0xed8796))
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .opacity(0.6);
+                }
+            } else if is_secondary_btn {
+                btn = btn
+                    .h(px(28.0))
+                    .px(px(12.0))
+                    .rounded_md()
+                    .bg(theme.bg_sidebar)
+                    .border_1()
+                    .border_color(theme.border)
+                    .text_color(theme.text_primary)
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .shadow_xs();
+            } else {
+                let (bg_color, border_color, text_color) = match variant {
+                    ButtonVariant::Default => (
+                        theme.bg_card,
+                        theme.border,
+                        theme.text_primary,
+                    ),
+                    ButtonVariant::Primary => (
+                        theme.accent,
+                        theme.accent,
+                        theme.text_on_accent,
+                    ),
+                    ButtonVariant::Danger => (
+                        gpui::rgb(0xed8796),
+                        gpui::rgb(0xed8796),
+                        gpui::rgb(0x181825),
+                    ),
+                    ButtonVariant::Secondary => (
+                        gpui::rgba(0x00000000),
+                        gpui::rgba(0x00000000),
+                        theme.text_muted,
+                    ),
+                };
+                btn = btn
+                    .h(px(28.0))
+                    .px(px(12.0))
+                    .rounded_md()
+                    .bg(bg_color)
+                    .border_1()
+                    .border_color(border_color)
+                    .shadow_xs()
+                    .text_color(text_color)
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::MEDIUM);
+            }
+
+            if !is_disabled {
+                if is_danger_active {
+                    btn = btn.hover(|s| s.opacity(0.88)).active(|s| s.opacity(0.75));
+                } else if is_secondary_btn {
+                    btn = btn.hover(|s| s.bg(theme.bg_hover)).active(|s| s.bg(theme.bg_card));
+                } else {
                     match variant {
-                        ButtonVariant::Default => this
+                        ButtonVariant::Default => btn = btn
                             .hover(|s| s.bg(theme.bg_hover).border_color(theme.accent))
                             .active(|s| s.bg(theme.bg_hover)),
-                        ButtonVariant::Primary | ButtonVariant::Danger => this
+                        ButtonVariant::Primary | ButtonVariant::Danger => btn = btn
                             .hover(|s| s.opacity(0.88))
                             .active(|s| s.opacity(0.75)),
-                        ButtonVariant::Secondary => this
+                        ButtonVariant::Secondary => btn = btn
                             .hover(|s| s.bg(theme.bg_hover).text_color(theme.text_primary)),
                     }
-                    .on_click(cx.listener(move |app, _, _, cx| {
-                        cx.stop_propagation();
-                        app.send_plugin_ui_event(
-                            &p_id,
-                            view_id,
-                            n_id.clone(),
-                            "click",
-                            None,
-                            cx,
-                        );
-                    }))
-                })
-                .when(is_disabled, |this| this.opacity(0.5))
-                .child(label.clone())
-                .into_any_element()
+                }
+                btn = btn.on_click(cx.listener(move |app, _, _, cx| {
+                    cx.stop_propagation();
+                    app.send_plugin_ui_event(
+                        &p_id,
+                        view_id,
+                        n_id.clone(),
+                        "click",
+                        None,
+                        cx,
+                    );
+                }));
+            } else if !is_danger_btn {
+                btn = btn.opacity(0.5);
+            }
+
+            btn.child(label.clone()).into_any_element()
         }
         UiNode::Input {
             id,
@@ -1206,12 +1542,14 @@ pub fn render_ui_node<V: UiSink>(
                             )
                         }),
                 )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme.text_primary)
-                        .child(label.clone()),
-                )
+                .when(!label.is_empty(), |this| {
+                    this.child(
+                        div()
+                            .text_sm()
+                            .text_color(theme.text_primary)
+                            .child(label.clone()),
+                    )
+                })
                 .into_any_element()
         }
         UiNode::List { id, items } => {
@@ -1284,6 +1622,7 @@ pub fn render_ui_node<V: UiSink>(
                     caret_visible,
                     window,
                     cx,
+                    scroll_ctx,
                 )
             }))
             .into_any_element(),
@@ -1352,6 +1691,7 @@ pub fn render_ui_node<V: UiSink>(
                             caret_visible,
                             window,
                             cx,
+                            scroll_ctx,
                         )),
                 )
                 .into_any_element()
@@ -1524,15 +1864,18 @@ mod tests {
     fn test_ui_node_serialization_and_count() {
         let tree = UiNode::Column {
             id: None,
+            class: None,
             gap: Gap::Medium,
             children: vec![
                 UiNode::Text {
                     value: "Header".into(),
+                    class: None,
                     style: TextStyle::Heading,
                 },
                 UiNode::Button {
                     id: "submit-btn".into(),
                     label: "Submit".into(),
+                    class: None,
                     variant: ButtonVariant::Primary,
                     disabled: false,
                 },
@@ -1555,17 +1898,20 @@ mod tests {
     fn test_validate_tree_duplicate_ids() {
         let tree = UiNode::Column {
             id: None,
+            class: None,
             gap: Gap::None,
             children: vec![
                 UiNode::Button {
                     id: "btn-1".into(),
                     label: "One".into(),
+                    class: None,
                     variant: ButtonVariant::Default,
                     disabled: false,
                 },
                 UiNode::Button {
                     id: "btn-1".into(),
                     label: "Two".into(),
+                    class: None,
                     variant: ButtonVariant::Default,
                     disabled: false,
                 },
@@ -1581,10 +1927,12 @@ mod tests {
     fn test_validate_tree_ok() {
         let tree = UiNode::Column {
             id: None,
+            class: None,
             gap: Gap::Small,
             children: vec![
                 UiNode::Text {
                     value: "Description".into(),
+                    class: None,
                     style: TextStyle::Normal,
                 },
                 UiNode::Checkbox {
@@ -1602,6 +1950,7 @@ mod tests {
     fn test_setting_item_and_controls_roundtrip() {
         let tree = UiNode::Column {
             id: None,
+            class: None,
             gap: Gap::Medium,
             children: vec![
                 UiNode::SettingItem {
@@ -1656,6 +2005,7 @@ mod tests {
     fn test_ui_node_input_value_update() {
         let mut tree = UiNode::Column {
             id: None,
+            class: None,
             gap: Gap::Medium,
             children: vec![
                 UiNode::SettingItem {
@@ -1680,6 +2030,7 @@ mod tests {
     fn test_ui_node_textarea() {
         let mut tree = UiNode::Column {
             id: None,
+            class: None,
             gap: Gap::Medium,
             children: vec![
                 UiNode::Textarea {

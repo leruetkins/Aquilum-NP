@@ -1450,7 +1450,7 @@ impl SettingsView {
                 let is_ru = self.config.ui.language.starts_with("ru");
                 let modal_title = if let crate::plugins::ui::UiNode::Column { ref children, .. } = modal_tree {
                     children.iter().find_map(|c| {
-                        if let crate::plugins::ui::UiNode::Text { value, style: crate::plugins::ui::TextStyle::Heading } = c {
+                        if let crate::plugins::ui::UiNode::Text { value, style: crate::plugins::ui::TextStyle::Heading, .. } = c {
                             if !value.trim().is_empty() {
                                 return Some(value.clone());
                             }
@@ -1473,6 +1473,7 @@ impl SettingsView {
                     caret_visible,
                     window,
                     cx,
+                    None,
                 );
                 Some(
                     div()
@@ -1563,6 +1564,10 @@ impl SettingsView {
                                                 .hover(|s| s.bg(theme.bg_hover))
                                                 .text_color(theme.text_muted)
                                                 .child(icons::icon(icons::ICON_CLOSE, 14.0, theme.text_muted))
+                                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                    cx.stop_propagation();
+                                                    this.close_active_plugin_modal(cx);
+                                                }))
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     cx.stop_propagation();
                                                     this.close_active_plugin_modal(cx);
@@ -5770,6 +5775,7 @@ impl SettingsView {
                 self.plugin_input_blink.visible(),
                 window,
                 cx,
+                None,
             );
             div()
                 .flex()

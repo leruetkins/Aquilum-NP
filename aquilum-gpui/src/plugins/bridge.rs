@@ -281,6 +281,7 @@ impl AppView {
                 cx.notify();
             }
             ApiRequest::VaultRead { path } => {
+                println!("[bridge:{}] ApiRequest::VaultRead path: '{}'", plugin_id, path);
                 let result = match &self.state.vault {
                     Some(vault) => vault.read_file(&path).map(|c| serde_json::json!(c)),
                     None => Err(VaultError::NotFound("No vault opened".into())),
@@ -288,7 +289,10 @@ impl AppView {
 
                 let event = match result {
                     Ok(val) => HostEvent::response_ok(request_id, val),
-                    Err(e) => HostEvent::response_err(request_id, &e.to_string()),
+                    Err(e) => {
+                        eprintln!("[bridge:{}] VaultRead error for '{}': {}", plugin_id, path, e);
+                        HostEvent::response_err(request_id, &e.to_string())
+                    }
                 };
                 let _ = self.state.plugin_host.send_event(&plugin_id, event);
             }
@@ -380,14 +384,19 @@ impl AppView {
                             _ => false,
                         };
                         if is_empty_modal {
+                            println!("[bridge:{}] Removing empty modal for view_id: {}", plugin_id, view_id);
                             self.plugin_views.remove(&(plugin_id.clone(), view_id));
                         } else {
+                            println!("[bridge:{}] Stored view tree for view_id: {}", plugin_id, view_id);
                             self.plugin_views.insert((plugin_id.clone(), view_id), tree);
                         }
                         cx.notify();
                         HostEvent::response_ok(request_id, serde_json::Value::Null)
                     }
-                    Err(err) => HostEvent::response_err(request_id, &err),
+                    Err(err) => {
+                        eprintln!("[bridge:{}] SetViewTree validation error for view_id {}: {}", plugin_id, view_id, err);
+                        HostEvent::response_err(request_id, &err)
+                    }
                 };
                 let _ = self.state.plugin_host.send_event(&plugin_id, event);
             }
@@ -514,12 +523,15 @@ impl AppView {
                 } else {
                     format!("{}: {}", p_name, name)
                 };
+                let full_cmd_id = format!("{}:{}", plugin_id, id);
+                println!("[bridge:{}] Registering command: '{}' (full id: '{}')", plugin_id, command_name, full_cmd_id);
                 let cmd = crate::commands::Command {
-                    id: format!("{}:{}", plugin_id, id),
+                    id: full_cmd_id,
                     name: command_name,
                     owner: Some(plugin_id.clone()),
                     hotkey,
                     callback: std::sync::Arc::new(move || {
+                        println!("[bridge:{}] Command callback triggered! Sending HostEvent::ExecuteCommand for '{}'", p_id, cmd_id);
                         let _ = host.send_event(
                             &p_id,
                             HostEvent::ExecuteCommand {
@@ -539,12 +551,15 @@ impl AppView {
                 let icon_id = id.clone();
                 let host = self.state.plugin_host.clone();
                 let icon_static = crate::icons::map_obsidian_icon(&icon);
+                let full_action_id = format!("{}:{}", plugin_id, id);
+                println!("[bridge:{}] Registering ribbon icon: '{}' (title: '{}', full id: '{}')", plugin_id, icon, title, full_action_id);
                 let action = crate::ribbon::RibbonAction {
-                    id: format!("{}:{}", plugin_id, id),
+                    id: full_action_id,
                     icon: icon_static,
                     tooltip: title,
                     owner: Some(plugin_id.clone()),
                     callback: std::sync::Arc::new(move || {
+                        println!("[bridge:{}] Ribbon callback triggered! Sending HostEvent::ExecuteCommand for '{}'", p_id, icon_id);
                         let _ = host.send_event(
                             &p_id,
                             HostEvent::ExecuteCommand {

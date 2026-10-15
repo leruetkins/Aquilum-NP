@@ -127,8 +127,10 @@ impl AppView {
 
     /// Central command execution dispatcher.
     pub fn execute_command(&mut self, cmd_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        println!("[command-palette] execute_command requested: '{}'", cmd_id);
         // 1. Try registered callback first
         let executed = self.state.commands.execute(cmd_id);
+        println!("[command-palette] Command '{}' registered callback executed = {}", cmd_id, executed);
 
         // 2. Execute built-in host actions
         match cmd_id {

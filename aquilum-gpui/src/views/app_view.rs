@@ -112,6 +112,11 @@ pub struct AppView {
     pub command_palette_focus_handle: FocusHandle,
     pub command_palette_blink: BlinkManager,
     pub command_palette_scroll_handle: ScrollHandle,
+    pub plugin_modal_scroll_handle: ScrollHandle,
+    pub plugin_modal_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag,
+    pub plugin_modal_middle_active: bool,
+    pub plugin_modal_smart_last_y: std::cell::Cell<Option<f32>>,
+    pub plugin_modal_smart_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     /// Active declarative UI trees registered by plugins, keyed by (plugin_id, view_id).
     pub plugin_views: HashMap<(String, u64), crate::plugins::ui::UiNode>,
     /// Active workspace leaf views registered by plugins (ItemView in right/left/center).
@@ -336,6 +341,7 @@ impl AppView {
             command_palette_focus_handle: cx.focus_handle(),
             command_palette_blink: BlinkManager::new(),
             command_palette_scroll_handle: ScrollHandle::new(),
+            plugin_modal_scroll_handle: ScrollHandle::new(),
             word_wrap,
             last_wrap_cols: 80,
             is_settings_open: false,
@@ -352,6 +358,10 @@ impl AppView {
             sidebar_smart_target_y: Cell::new(None),
             sidebar_smart_last_mouse_y: Cell::new(None),
             sidebar_middle_active: false,
+            plugin_modal_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
+            plugin_modal_middle_active: false,
+            plugin_modal_smart_last_y: std::cell::Cell::new(None),
+            plugin_modal_smart_bounds: std::rc::Rc::new(std::cell::Cell::new(gpui::Bounds::default())),
             editor_middle_active: false,
             editor_middle_last_y: Cell::new(None),
             last_editor_h: Cell::new(600.0),
@@ -1245,6 +1255,77 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         cx.notify();
     }
 
+    /// Starts middle-button smart scroll for an active plugin modal list.
+    pub(crate) fn start_plugin_modal_middle_scroll(&mut self, cx: &mut Context<Self>) {
+        if self.plugin_modal_middle_active {
+            return;
+        }
+        self.plugin_modal_middle_active = true;
+        self.plugin_modal_smart_last_y.set(None);
+        cx.notify();
+    }
+
+    /// Stops plugin modal middle-button smart scroll (idempotent).
+    pub(crate) fn stop_plugin_modal_middle_scroll(&mut self, cx: &mut Context<Self>) {
+        if !self.plugin_modal_middle_active {
+            return;
+        }
+        self.plugin_modal_middle_active = false;
+        self.plugin_modal_smart_last_y.set(None);
+        cx.notify();
+    }
+
+    /// Cursor-driven smart scroll for plugin modal lists while middle mouse button is held.
+    pub(crate) fn on_plugin_modal_middle_mouse_move(&self, y: f32, cx: &mut Context<Self>) {
+        if !self.plugin_modal_middle_active {
+            self.plugin_modal_smart_last_y.set(None);
+            cx.notify();
+            return;
+        }
+        match self.plugin_modal_smart_last_y.get() {
+            None => self.plugin_modal_smart_last_y.set(Some(y)),
+            Some(anchor) if (y - anchor).abs() >= 0.5 => {
+                self.plugin_modal_smart_last_y.set(Some(y));
+                let mut bounds = self.plugin_modal_smart_bounds.get();
+                if bounds.size.height <= px(20.0) {
+                    bounds = self.plugin_modal_scroll_handle.bounds();
+                }
+                let viewport_h = f32::from(bounds.size.height);
+                let viewport_top = f32::from(bounds.origin.y);
+                let max_scroll = f32::from(self.plugin_modal_scroll_handle.max_offset().height);
+                if viewport_h > 20.0 && max_scroll >= 1.0 {
+                    let pad = (viewport_h * 0.10).clamp(16.0, 48.0).min(viewport_h / 3.0);
+                    let usable = (viewport_h - pad * 2.0).max(1.0);
+                    let t = ((y - viewport_top - pad) / usable).clamp(0.0, 1.0);
+                    let target = (max_scroll * t).clamp(0.0, max_scroll);
+                    self.plugin_modal_scroll_handle.set_offset(gpui::point(px(0.0), px(-target)));
+                }
+            }
+            Some(_) => {}
+        }
+        cx.notify();
+    }
+
+    /// Follows pointer Y while dragging the plugin modal scrollbar thumb.
+    pub(crate) fn handle_plugin_modal_scrollbar_drag(&mut self, pointer_y: f32, cx: &mut Context<Self>) {
+        if !self.plugin_modal_scrollbar_drag.active {
+            return;
+        }
+        let style = crate::views::scrollbar::ScrollbarStyle {
+            track_w: 16.0,
+            thumb_w: 6.0,
+            thumb_w_active: 8.0,
+            thumb_inset: 3.0,
+            min_thumb_h: 24.0,
+            track_right_offset: 2.0,
+        };
+        let Some(geometry) = crate::views::scrollbar::ScrollbarGeometry::from_handle(&self.plugin_modal_scroll_handle, &style) else {
+            return;
+        };
+        geometry.apply_drag(&self.plugin_modal_scroll_handle, &self.plugin_modal_scrollbar_drag, pointer_y);
+        cx.notify();
+    }
+
     /// Viewport geometry for editor middle-button smart scroll.
     ///
     /// Returns `(viewport_top, viewport_h, max_scroll)` in window coordinates.
@@ -2065,24 +2146,252 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         }
     }
 
+    /// Checks whether any plugin modal dialog is currently active.
+    pub fn has_active_plugin_modal(&self) -> bool {
+        self.plugin_views.iter().any(|((_, vid), tree)| {
+            if *vid != 1 {
+                return false;
+            }
+            if let crate::plugins::ui::UiNode::Text { ref value, .. } = tree {
+                !value.is_empty()
+            } else {
+                true
+            }
+        })
+    }
+
     /// Closes an active plugin modal dialog and dispatches the close event to the plugin worker.
     pub fn close_active_plugin_modal(&mut self, cx: &mut Context<Self>) {
-        if let crate::views::settings_view::SettingsTab::PluginSettings(ref pid) = self.settings_tab {
-            let p_id = pid.clone();
+        println!("[app_view] close_active_plugin_modal called");
+        let modal_keys: Vec<(String, u64)> = self.plugin_views.keys()
+            .filter(|(_, vid)| *vid == 1)
+            .cloned()
+            .collect();
+        for (p_id, vid) in modal_keys {
+            println!("[app_view] Closing active modal for plugin '{}' (view_id = {})", p_id, vid);
             let _ = self.state.plugin_host.send_event(
                 &p_id,
                 crate::plugins::api::HostEvent::UiEvent {
-                    view_id: 1,
+                    view_id: vid,
                     node_id: "modal".to_string(),
                     event: "close".to_string(),
                     value: None,
                 },
             );
-            self.plugin_views.remove(&(p_id, 1));
-            self.active_plugin_input = None;
-            self.active_plugin_select = None;
-            cx.notify();
+            self.plugin_views.remove(&(p_id, vid));
         }
+        self.active_plugin_input = None;
+        self.active_plugin_select = None;
+        self.plugin_modal_scrollbar_drag.end();
+        self.plugin_modal_middle_active = false;
+        self.plugin_modal_smart_last_y.set(None);
+        cx.notify();
+    }
+
+    /// Renders an active plugin modal dialog overlay matching Obsidian modal style.
+    pub fn render_plugin_modal_overlay(
+        &self,
+        theme: &Theme,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Option<impl IntoElement> {
+        let active_modal = self.plugin_views.iter().find(|((_, vid), tree)| {
+            if *vid != 1 {
+                return false;
+            }
+            if let crate::plugins::ui::UiNode::Text { ref value, .. } = tree {
+                !value.is_empty()
+            } else {
+                true
+            }
+        });
+
+        let ((p_id, _), modal_tree) = active_modal?;
+        let p_id = p_id.clone();
+        let caret_visible = self.plugin_input_blink.visible();
+
+        let is_ru = self.config.ui.language.starts_with("ru");
+        fn find_heading(node: &crate::plugins::ui::UiNode) -> Option<String> {
+            match node {
+                crate::plugins::ui::UiNode::Text { value, style: crate::plugins::ui::TextStyle::Heading, .. } => {
+                    if !value.trim().is_empty() {
+                        Some(value.clone())
+                    } else {
+                        None
+                    }
+                }
+                crate::plugins::ui::UiNode::Column { children, .. } | crate::plugins::ui::UiNode::Row { children, .. } => {
+                    children.iter().find_map(find_heading)
+                }
+                _ => None,
+            }
+        }
+
+        let has_heading = find_heading(modal_tree).is_some();
+        let modal_title = find_heading(modal_tree).unwrap_or_else(|| {
+            if is_ru { "Окно плагина".to_string() } else { "Plugin Dialog".to_string() }
+        });
+
+        let scroll_ctx = crate::plugins::ui::PluginScrollContext {
+            scroll_handle: Some(&self.plugin_modal_scroll_handle),
+            scrollbar_drag_active: self.plugin_modal_scrollbar_drag.active,
+            middle_scroll_active: self.plugin_modal_middle_active,
+            smart_bounds: Some(self.plugin_modal_smart_bounds.clone()),
+        };
+
+        let rendered_modal = crate::plugins::ui::render_ui_node(
+            modal_tree,
+            &p_id,
+            1,
+            theme,
+            self.active_plugin_input.as_ref(),
+            &self.plugin_input_focus_handle,
+            self.active_plugin_select.as_ref(),
+            self.plugin_select_popup.as_ref(),
+            caret_visible,
+            window,
+            cx,
+            Some(&scroll_ctx),
+        );
+
+        Some(
+            gpui::deferred(
+                div()
+                    .id("global-plugin-modal-backdrop-overlay")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(rgba(0x000000cc))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor(gpui::CursorStyle::Arrow)
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.close_active_plugin_modal(cx);
+                    }))
+                    .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.plugin_modal_scrollbar_drag.end();
+                    }))
+                    .on_mouse_up(MouseButton::Middle, cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.stop_plugin_modal_middle_scroll(cx);
+                    }))
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                        if this.plugin_modal_middle_active {
+                            let y: f32 = event.position.y.into();
+                            this.on_plugin_modal_middle_mouse_move(y, cx);
+                        } else if this.plugin_modal_scrollbar_drag.active {
+                            let y: f32 = event.position.y.into();
+                            this.handle_plugin_modal_scrollbar_drag(y, cx);
+                        }
+                    }))
+                    .on_click(|_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .on_scroll_wheel(|_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .child(
+                        div()
+                            .id("global-plugin-modal-dialog-box")
+                            .relative()
+                            .flex()
+                            .flex_col()
+                            .w(px(580.0))
+                            .max_w(px(660.0))
+                            .max_h(px(640.0))
+                            .rounded_xl()
+                            .overflow_hidden()
+                            .bg(theme.bg_card)
+                            .border_1()
+                            .border_color(theme.border)
+                            .shadow_xl()
+                            .cursor(gpui::CursorStyle::Arrow)
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.plugin_modal_scrollbar_drag.end();
+                            }))
+                            .on_mouse_up(MouseButton::Middle, cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.stop_plugin_modal_middle_scroll(cx);
+                            }))
+                            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                                if this.plugin_modal_middle_active {
+                                    let y: f32 = event.position.y.into();
+                                    this.on_plugin_modal_middle_mouse_move(y, cx);
+                                } else if this.plugin_modal_scrollbar_drag.active {
+                                    let y: f32 = event.position.y.into();
+                                    this.handle_plugin_modal_scrollbar_drag(y, cx);
+                                }
+                            }))
+                            .on_click(|_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .on_scroll_wheel(|_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            // Optional fallback title if modal tree didn't provide its own heading
+                            .when(!has_heading, |this| {
+                                this.child(
+                                    div()
+                                        .px(px(24.0))
+                                        .pt(px(20.0))
+                                        .pb(px(8.0))
+                                        .text_base()
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .text_color(theme.text_primary)
+                                        .child(modal_title),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .id("global-plugin-modal-body")
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .w_full()
+                                    .overflow_hidden()
+                                    .child(rendered_modal),
+                            )
+                            // Obsidian top-right [X] close button (rendered last so it sits above body)
+                            .child(
+                                div()
+                                    .id("global-plugin-modal-close-x")
+                                    .absolute()
+                                    .top(px(14.0))
+                                    .right(px(16.0))
+                                    .w(px(24.0))
+                                    .h(px(24.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor(gpui::CursorStyle::PointingHand)
+                                    .rounded_md()
+                                    .hover(|s| s.bg(theme.bg_hover))
+                                    .text_color(theme.text_muted)
+                                    .child(icons::icon(icons::ICON_CLOSE, 14.0, theme.text_muted))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        println!("[app_view] Close button [X] mouse down!");
+                                        this.close_active_plugin_modal(cx);
+                                    }))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        println!("[app_view] Close button [X] clicked!");
+                                        this.close_active_plugin_modal(cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .with_priority(9999),
+        )
     }
 
     /// Handles keyboard navigation and text editing inside an active plugin input field.
@@ -2532,6 +2841,7 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
                     self.plugin_input_blink.visible(),
                     window,
                     cx,
+                    None,
                 )),
         );
 
@@ -2899,6 +3209,12 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         // Alt + Right (Navigate Forward in note history)
         if alt && keystroke.key == "right" {
             self.navigate_forward(_window, cx);
+            return;
+        }
+
+        // Escape closes plugin modal dialog if open
+        if keystroke.key == "escape" && self.has_active_plugin_modal() {
+            self.close_active_plugin_modal(cx);
             return;
         }
 
@@ -3671,6 +3987,12 @@ impl Render for AppView {
                 } else if this.sidebar_scrollbar_drag.active {
                     let y: f32 = event.position.y.into();
                     this.handle_sidebar_scrollbar_drag(y, cx);
+                } else if this.plugin_modal_middle_active {
+                    let y: f32 = event.position.y.into();
+                    this.on_plugin_modal_middle_mouse_move(y, cx);
+                } else if this.plugin_modal_scrollbar_drag.active {
+                    let y: f32 = event.position.y.into();
+                    this.handle_plugin_modal_scrollbar_drag(y, cx);
                 } else if this.title_is_mouse_selecting {
                     let x: f32 = event.position.x.into();
                     let editor_left_x = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
@@ -3748,6 +4070,7 @@ impl Render for AppView {
                 this.is_mouse_selecting = false;
                 this.is_dragging_scrollbar = false;
                 this.sidebar_scrollbar_drag.end();
+                this.plugin_modal_scrollbar_drag.end();
                 if let Some(ref mut n) = this.state.active_note {
                     if n.selection_anchor == Some(n.cursor_offset) {
                         n.selection_anchor = None;
@@ -3775,17 +4098,20 @@ impl Render for AppView {
                 this.is_mouse_selecting = false;
                 this.is_dragging_scrollbar = false;
                 this.sidebar_scrollbar_drag.end();
+                this.plugin_modal_scrollbar_drag.end();
                 cx.notify();
             }))
             .on_mouse_up(MouseButton::Middle, cx.listener(|this, _, _, cx| {
-                // Releasing the middle button anywhere ends both smart-scroll
+                // Releasing the middle button anywhere ends smart-scroll
                 // gestures (covers releases outside the originating viewport).
                 this.stop_sidebar_middle_scroll(cx);
                 this.stop_editor_middle_scroll(cx);
+                this.stop_plugin_modal_middle_scroll(cx);
             }))
             .on_mouse_up_out(MouseButton::Middle, cx.listener(|this, _, _, cx| {
                 this.stop_sidebar_middle_scroll(cx);
                 this.stop_editor_middle_scroll(cx);
+                this.stop_plugin_modal_middle_scroll(cx);
             }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let keystroke = &event.keystroke;
@@ -5264,6 +5590,7 @@ impl Render for AppView {
                                             this.is_resizing_sidebar = false;
                                             this.is_dragging_scrollbar = false;
                                             this.sidebar_scrollbar_drag.end();
+                                            this.plugin_modal_scrollbar_drag.end();
                                             this.is_mouse_selecting = false;
                                             if let Some(ref mut n) = this.state.active_note {
                                                 if n.selection_anchor == Some(n.cursor_offset) {
@@ -5276,14 +5603,17 @@ impl Render for AppView {
                                             this.is_resizing_sidebar = false;
                                             this.is_dragging_scrollbar = false;
                                             this.sidebar_scrollbar_drag.end();
+                                            this.plugin_modal_scrollbar_drag.end();
                                             this.is_mouse_selecting = false;
                                             cx.notify();
                                         }))
                                         .on_mouse_up(MouseButton::Middle, cx.listener(|this, _, _, cx| {
                                             this.stop_editor_middle_scroll(cx);
+                                            this.stop_plugin_modal_middle_scroll(cx);
                                         }))
                                         .on_mouse_up_out(MouseButton::Middle, cx.listener(|this, _, _, cx| {
                                             this.stop_editor_middle_scroll(cx);
+                                            this.stop_plugin_modal_middle_scroll(cx);
                                         }))
                                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                                             this.handle_key(event, window, cx);
@@ -6035,6 +6365,7 @@ impl Render for AppView {
                                                     self.plugin_input_blink.visible(),
                                                     window,
                                                     cx,
+                                                    None,
                                                 )),
                                         )
                                     } else {
@@ -6186,6 +6517,10 @@ impl Render for AppView {
             // ================= COMMUNITY PLUGINS CATALOG =================
             .when(self.plugin_catalog.is_open, |d| {
                 d.child(self.render_plugin_catalog_modal(window, cx))
+            })
+            // ================= PLUGIN MODAL DIALOG OVERLAY =================
+            .when_some(self.render_plugin_modal_overlay(theme, window, cx), |d, overlay| {
+                d.child(overlay)
             })
             // ================= MIDDLE-BUTTON SMART SCROLL HINT (editor) =================
             .when(self.editor_middle_active, |d| {
@@ -7288,6 +7623,7 @@ fn render_live_styled_row(
                             plugin_input_blink_visible,
                             window,
                             cx,
+                            None,
                         ))
                 } else {
                     div().h_0().overflow_hidden()

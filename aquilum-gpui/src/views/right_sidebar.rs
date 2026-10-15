@@ -231,6 +231,7 @@ impl AppView {
                         self.plugin_input_blink.visible(),
                         window,
                         cx,
+                        None,
                     )),
             );
         } else {

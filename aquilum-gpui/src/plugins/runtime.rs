@@ -4,7 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use futures::channel::mpsc::{unbounded, TryRecvError, UnboundedSender};
-use rquickjs::{Context, Ctx, Function, Object, Runtime, Value};
+use rquickjs::{Context, Ctx, Function, Object, Runtime};
 
 use crate::plugins::api::{ApiCall, ApiRequest, HostEvent, RequestId};
 use crate::plugins::manifest::PluginManifest;
@@ -176,6 +176,7 @@ pub fn spawn_plugin_runtime(
                             });
                         }
                         HostEvent::ExecuteCommand { command_id } => {
+                            println!("[plugins:{}] Handling HostEvent::ExecuteCommand with command_id: '{}'", p_id, command_id);
                             let _ = ctx.with(|ctx| {
                                 dispatch_command_execution(&ctx, command_id);
                             });
@@ -218,7 +219,7 @@ pub fn spawn_plugin_runtime(
                 }
 
                 // Poll quickjs job queue for pending promise resolutions
-                let _ = rt.execute_pending_job();
+                while let Ok(true) = rt.execute_pending_job() {}
             }
         })
         .map_err(|e| e.to_string())?;
@@ -312,7 +313,7 @@ fn setup_plugin_environment<'js>(
     ))?;
 
     // 5. Inject runtime JavaScript bootstrap defining Obsidian-compatible classes & timers
-    let bootstrap_js = r#"
+    let bootstrap_js = r####"
         if (typeof console !== "undefined" && console.log) {
             const __orig_log = console.log;
             const __fmt = (a) => {
@@ -533,26 +534,48 @@ fn setup_plugin_environment<'js>(
             }
         }
 
-        function __dispatch_host_response(id, ok, result) {
+        function __dispatch_host_response(id, ok, resultJson) {
             const entry = __pending_promises.get(id);
             if (entry) {
                 __pending_promises.delete(id);
+                let parsed = resultJson;
+                if (typeof resultJson === "string") {
+                    try {
+                        parsed = JSON.parse(resultJson);
+                    } catch (e) {
+                        parsed = resultJson;
+                    }
+                }
                 if (ok) {
-                    entry.resolve(result);
+                    entry.resolve(parsed);
                 } else {
-                    entry.reject(new Error(result?.error || "Host error"));
+                    entry.reject(new Error(parsed?.error || "Host error"));
                 }
             }
         }
 
         function __dispatch_command_execution(commandId) {
-            const handler = globalThis.__command_handlers.get(commandId);
-            if (handler) {
-                try {
-                    handler();
-                } catch (e) {
-                    console.error("Command execution error:", e);
+            console.log(`[plugin] __dispatch_command_execution called for commandId: "${commandId}"`);
+            let handler = globalThis.__command_handlers.get(commandId);
+            if (!handler && typeof commandId === "string" && commandId.includes(":")) {
+                const stripped = commandId.split(":").slice(1).join(":");
+                handler = globalThis.__command_handlers.get(stripped);
+                if (handler) {
+                    console.log(`[plugin] Found handler using stripped id: "${stripped}"`);
                 }
+            }
+            if (handler) {
+                console.log(`[plugin] Found handler for "${commandId}", executing...`);
+                try {
+                    const res = handler();
+                    if (res && typeof res.then === "function") {
+                        res.catch(e => console.error(`[plugin] Async error in command "${commandId}":`, e));
+                    }
+                } catch (e) {
+                    console.error(`[plugin] Command execution error for "${commandId}":`, e);
+                }
+            } else {
+                console.warn(`[plugin] No handler registered for commandId: "${commandId}". Registered handlers:`, Array.from(globalThis.__command_handlers.keys()));
             }
         }
 
@@ -616,6 +639,306 @@ fn setup_plugin_environment<'js>(
             }
         }
 
+        const VOID_TAGS = new Set(["br", "hr", "img", "input", "col", "path", "circle", "rect", "line", "polygon"]);
+        const DANGEROUS_TAGS = new Set(["script", "iframe", "object", "embed", "style", "link", "meta"]);
+
+        function __escape_html(str) {
+            if (!str) return "";
+            return String(str)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#39;");
+        }
+
+        function __unescape_html(str) {
+            if (!str) return "";
+            return String(str)
+                .replace(/&amp;/g, "&")
+                .replace(/&lt;/g, "<")
+                .replace(/&gt;/g, ">")
+                .replace(/&quot;/g, "\"")
+                .replace(/&#39;/g, "'")
+                .replace(/&nbsp;/g, " ");
+        }
+
+        function __sanitize_html(html) {
+            if (!html) return "";
+            return html
+                .replace(/<(script|iframe|object|embed|style)[\s\S]*?<\/\1>/gi, "")
+                .replace(/<(script|iframe|object|embed|style)[^>]*\/?>/gi, "");
+        }
+
+        function __parse_attributes(attrStr) {
+            const attrs = {};
+            let cls = "";
+            if (!attrStr) return { attrs, cls };
+            const attrRegex = /([a-zA-Z0-9_-]+)(?:=(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+            let m;
+            while ((m = attrRegex.exec(attrStr)) !== null) {
+                const name = m[1].toLowerCase();
+                if (name.startsWith("on")) continue;
+                const val = m[2] !== undefined ? m[2] : (m[3] !== undefined ? m[3] : (m[4] !== undefined ? m[4] : ""));
+                if (name === "href" && val.trim().toLowerCase().startsWith("javascript:")) continue;
+                if (name === "class") {
+                    cls = val;
+                } else {
+                    attrs[name] = val;
+                }
+            }
+            return { attrs, cls };
+        }
+
+        function __parse_html_to_velements(html, rootNode) {
+            if (!html || !rootNode) return;
+            const tagRegex = /<(\/)?([a-zA-Z0-9:-]+)((?:\s+[^=>\s]+(?:=(?:"[^"]*"|'[^']*'|[^>\s]+))?)*)\s*(\/?)>/g;
+            let stack = [rootNode];
+            let lastIndex = 0;
+            let match;
+
+            while ((match = tagRegex.exec(html)) !== null) {
+                const textBefore = html.slice(lastIndex, match.index);
+                if (textBefore) {
+                    const unescaped = __unescape_html(textBefore);
+                    if (unescaped) {
+                        const current = stack[stack.length - 1];
+                        if (current.children.length === 0 && !current.text) {
+                            current.text = unescaped;
+                        } else {
+                            const textSpan = new VElement("span");
+                            textSpan.text = unescaped;
+                            current.appendChild(textSpan);
+                        }
+                    }
+                }
+                lastIndex = tagRegex.lastIndex;
+
+                const isClosing = !!match[1];
+                const tagName = match[2].toLowerCase();
+                const attrStr = match[3];
+                const isSelfClosing = !!match[4] || VOID_TAGS.has(tagName);
+
+                if (DANGEROUS_TAGS.has(tagName)) {
+                    continue;
+                }
+
+                if (isClosing) {
+                    for (let i = stack.length - 1; i > 0; i--) {
+                        if (stack[i].tag === tagName) {
+                            stack.splice(i);
+                            break;
+                        }
+                    }
+                } else {
+                    const { attrs, cls } = __parse_attributes(attrStr);
+                    const childEl = new VElement(tagName, { cls, attr: attrs });
+                    if (attrs.id) {
+                        childEl.id = attrs.id;
+                    }
+                    const current = stack[stack.length - 1];
+                    current.appendChild(childEl);
+
+                    if (!isSelfClosing) {
+                        stack.push(childEl);
+                    }
+                }
+            }
+
+            if (lastIndex < html.length) {
+                const textAfter = html.slice(lastIndex);
+                if (textAfter) {
+                    const unescaped = __unescape_html(textAfter);
+                    if (unescaped) {
+                        const current = stack[stack.length - 1];
+                        if (current.children.length === 0 && !current.text) {
+                            current.text = unescaped;
+                        } else {
+                            const textSpan = new VElement("span");
+                            textSpan.text = unescaped;
+                            current.appendChild(textSpan);
+                        }
+                    }
+                }
+            }
+        }
+
+        function __serialize_velement_to_html(el) {
+            if (!el) return "";
+            let html = "<" + el.tag;
+            if (el.classes && el.classes.size > 0) {
+                html += ` class="${Array.from(el.classes).join(" ")}"`;
+            }
+            if (el.attributes) {
+                for (const [k, v] of Object.entries(el.attributes)) {
+                    if (k !== "class" && v !== undefined && v !== null) {
+                        html += ` ${k}="${__escape_html(String(v))}"`;
+                    }
+                }
+            }
+            if (VOID_TAGS.has(el.tag)) {
+                html += " />";
+                return html;
+            }
+            html += ">";
+            if (el.text) {
+                html += __escape_html(el.text);
+            }
+            for (const child of el.children) {
+                html += __serialize_velement_to_html(child);
+            }
+            html += `</${el.tag}>`;
+            return html;
+        }
+
+        function __matches_compound_selector(el, sel) {
+            if (!el || !(el instanceof VElement)) return false;
+            sel = sel.trim();
+            if (!sel || sel === "*") return true;
+
+            sel = sel.replace(/:[a-zA-Z_-]+/g, "");
+            if (!sel || sel === "*") return true;
+
+            let rest = sel;
+            const tagMatch = rest.match(/^[a-zA-Z][a-zA-Z0-9_-]*/);
+            if (tagMatch) {
+                if (el.tag !== tagMatch[0].toLowerCase()) return false;
+                rest = rest.slice(tagMatch[0].length);
+            } else if (rest.startsWith("*")) {
+                rest = rest.slice(1);
+            }
+
+            while (rest.length > 0) {
+                if (rest.startsWith(".")) {
+                    const m = rest.match(/^\.([a-zA-Z0-9_-]+)/);
+                    if (!m) return false;
+                    if (!el.classes || !el.classes.has(m[1])) return false;
+                    rest = rest.slice(m[0].length);
+                } else if (rest.startsWith("#")) {
+                    const m = rest.match(/^#([a-zA-Z0-9_-]+)/);
+                    if (!m) return false;
+                    if (el.id !== m[1] && el.attributes?.id !== m[1]) return false;
+                    rest = rest.slice(m[0].length);
+                } else if (rest.startsWith("[")) {
+                    const m = rest.match(/^\[([a-zA-Z0-9_-]+)(?:=([\"']?)(.*?)\2)?\]/);
+                    if (!m) return false;
+                    const attrName = m[1];
+                    const attrVal = m[3];
+                    let actual = el.attributes?.[attrName];
+                    if (actual === undefined && el[attrName] !== undefined) {
+                        actual = el[attrName];
+                    }
+                    if (attrName.startsWith("data-") && el.dataset) {
+                        const camel = attrName.slice(5).replace(/-([a-z])/g, (_, g) => g.toUpperCase());
+                        if (el.dataset[camel] !== undefined) actual = el.dataset[camel];
+                    }
+                    if (actual === undefined || actual === null) return false;
+                    if (attrVal !== undefined) {
+                        if (String(actual) !== attrVal) return false;
+                    }
+                    rest = rest.slice(m[0].length);
+                } else {
+                    break;
+                }
+            }
+            return rest.length === 0;
+        }
+
+        function __parse_complex_selector(sel) {
+            sel = sel.trim();
+            const tokens = [];
+            let i = 0;
+            let currentSel = "";
+            let combinator = null;
+
+            while (i < sel.length) {
+                const ch = sel[i];
+                if (ch === ">") {
+                    if (currentSel.trim()) {
+                        tokens.push({ combinator, sel: currentSel.trim() });
+                        currentSel = "";
+                    }
+                    combinator = ">";
+                    i++;
+                } else if (/\s/.test(ch)) {
+                    while (i < sel.length && /\s/.test(sel[i])) {
+                        i++;
+                    }
+                    if (i < sel.length && sel[i] === ">") {
+                        continue;
+                    }
+                    if (currentSel.trim()) {
+                        tokens.push({ combinator, sel: currentSel.trim() });
+                        currentSel = "";
+                        combinator = " ";
+                    }
+                } else if (ch === "[") {
+                    const endBracket = sel.indexOf("]", i);
+                    if (endBracket !== -1) {
+                        currentSel += sel.slice(i, endBracket + 1);
+                        i = endBracket + 1;
+                    } else {
+                        currentSel += ch;
+                        i++;
+                    }
+                } else {
+                    currentSel += ch;
+                    i++;
+                }
+            }
+            if (currentSel.trim()) {
+                tokens.push({ combinator, sel: currentSel.trim() });
+            }
+            return tokens;
+        }
+
+        function __matches_single_complex(el, tokens) {
+            if (!el || tokens.length === 0) return false;
+            let tIdx = tokens.length - 1;
+            let currEl = el;
+
+            if (!__matches_compound_selector(currEl, tokens[tIdx].sel)) {
+                return false;
+            }
+
+            while (tIdx > 0) {
+                const comb = tokens[tIdx].combinator;
+                tIdx--;
+                const targetSel = tokens[tIdx].sel;
+
+                if (comb === ">") {
+                    currEl = currEl.parent;
+                    if (!currEl || !__matches_compound_selector(currEl, targetSel)) {
+                        return false;
+                    }
+                } else {
+                    let matched = false;
+                    currEl = currEl.parent;
+                    while (currEl) {
+                        if (__matches_compound_selector(currEl, targetSel)) {
+                            matched = true;
+                            break;
+                        }
+                        currEl = currEl.parent;
+                    }
+                    if (!matched) return false;
+                }
+            }
+            return true;
+        }
+
+        function __matches_selector(el, selector) {
+            if (!el || !selector) return false;
+            const subSelectors = selector.split(",");
+            for (const sub of subSelectors) {
+                const tokens = __parse_complex_selector(sub);
+                if (tokens.length > 0 && __matches_single_complex(el, tokens)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         class VElement {
             constructor(tag = "div", options = {}) {
                 if (typeof options === "string") {
@@ -624,7 +947,7 @@ fn setup_plugin_environment<'js>(
                     options = {};
                 }
                 this.tag = String(tag).toLowerCase();
-                this.id = options.id || ("el-" + Math.random().toString(36).substr(2, 9));
+                this._id = options.id || ("el-" + Math.random().toString(36).substr(2, 9));
                 let clsSet = new Set();
                 if (typeof options.cls === "string") {
                     options.cls.split(" ").filter(Boolean).forEach(c => clsSet.add(c));
@@ -642,12 +965,184 @@ fn setup_plugin_environment<'js>(
                 this.placeholder = options.placeholder || "";
                 this.disabled = !!options.disabled;
                 this.checked = options.checked !== undefined ? !!options.checked : undefined;
-                this.dataset = {};
+                this.dataset = new Proxy({}, {
+                    get: (t, p) => {
+                        const kebab = "data-" + String(p).replace(/[A-Z]/g, m => "-" + m.toLowerCase());
+                        return this.attributes[kebab] !== undefined ? this.attributes[kebab] : t[p];
+                    },
+                    set: (t, p, v) => {
+                        const kebab = "data-" + String(p).replace(/[A-Z]/g, m => "-" + m.toLowerCase());
+                        this.attributes[kebab] = String(v);
+                        t[p] = String(v);
+                        return true;
+                    }
+                });
                 this.style = new Proxy({}, {
                     get: (t, p) => t[p] || "",
                     set: (t, p, v) => { t[p] = v; return true; }
                 });
-                globalThis.__velement_registry.set(this.id, this);
+                globalThis.__velement_registry.set(this._id, this);
+            }
+
+            _notifyModified() {
+                let curr = this;
+                while (curr) {
+                    if (curr._onModified) {
+                        try { curr._onModified(); } catch (e) {}
+                        break;
+                    }
+                    curr = curr.parent;
+                }
+            }
+
+            get id() {
+                return this._id;
+            }
+            set id(val) {
+                if (this._id) globalThis.__velement_registry.delete(this._id);
+                this._id = String(val);
+                globalThis.__velement_registry.set(this._id, this);
+            }
+
+            get className() {
+                return Array.from(this.classes).join(" ");
+            }
+            set className(val) {
+                this.classes.clear();
+                if (typeof val === "string") {
+                    val.split(/\s+/).filter(Boolean).forEach(c => this.classes.add(c));
+                }
+            }
+
+            get classList() {
+                return {
+                    add: (...cls) => this.addClass(...cls),
+                    remove: (...cls) => this.removeClass(...cls),
+                    contains: (cls) => this.classes.has(cls),
+                    toggle: (cls, force) => this.toggleClass(cls, force),
+                    forEach: (fn) => this.classes.forEach(fn),
+                };
+            }
+
+            get parentElement() {
+                return this.parent || null;
+            }
+            get parentNode() {
+                return this.parent || null;
+            }
+
+            get firstChild() {
+                return this.children.length > 0 ? this.children[0] : null;
+            }
+            get lastChild() {
+                return this.children.length > 0 ? this.children[this.children.length - 1] : null;
+            }
+            get firstElementChild() {
+                return this.children.find(c => c instanceof VElement) || null;
+            }
+            get lastElementChild() {
+                for (let i = this.children.length - 1; i >= 0; i--) {
+                    if (this.children[i] instanceof VElement) return this.children[i];
+                }
+                return null;
+            }
+            get nextSibling() {
+                if (!this.parent) return null;
+                const idx = this.parent.children.indexOf(this);
+                if (idx !== -1 && idx + 1 < this.parent.children.length) {
+                    return this.parent.children[idx + 1];
+                }
+                return null;
+            }
+            get nextElementSibling() {
+                return this.nextSibling;
+            }
+            get previousSibling() {
+                if (!this.parent) return null;
+                const idx = this.parent.children.indexOf(this);
+                if (idx > 0) {
+                    return this.parent.children[idx - 1];
+                }
+                return null;
+            }
+            get previousElementSibling() {
+                return this.previousSibling;
+            }
+            get childNodes() {
+                return this.children.slice();
+            }
+
+            contains(other) {
+                if (!other) return false;
+                if (other === this) return true;
+                let p = other.parent;
+                while (p) {
+                    if (p === this) return true;
+                    p = p.parent;
+                }
+                return false;
+            }
+
+            insertBefore(newChild, refChild) {
+                if (!newChild) return newChild;
+                if (newChild.parent) {
+                    newChild.remove();
+                }
+                if (!refChild) {
+                    return this.appendChild(newChild);
+                }
+                const idx = this.children.indexOf(refChild);
+                if (idx === -1) {
+                    return this.appendChild(newChild);
+                }
+                newChild.parent = this;
+                this.children.splice(idx, 0, newChild);
+                this._notifyModified();
+                return newChild;
+            }
+
+            removeChild(child) {
+                if (!child) return null;
+                const idx = this.children.indexOf(child);
+                if (idx !== -1) {
+                    this.children.splice(idx, 1);
+                    child.remove();
+                    this._notifyModified();
+                    return child;
+                }
+                return null;
+            }
+
+            replaceChild(newChild, oldChild) {
+                if (!oldChild || !newChild) return null;
+                const idx = this.children.indexOf(oldChild);
+                if (idx !== -1) {
+                    if (newChild.parent) newChild.remove();
+                    this.children[idx] = newChild;
+                    newChild.parent = this;
+                    oldChild.remove();
+                    this._notifyModified();
+                    return oldChild;
+                }
+                return null;
+            }
+
+            cloneNode(deep = false) {
+                const clone = new VElement(this.tag);
+                this.classes.forEach(c => clone.classes.add(c));
+                clone.text = this.text;
+                clone.value = this.value;
+                clone.placeholder = this.placeholder;
+                clone.disabled = this.disabled;
+                clone.checked = this.checked;
+                clone.attributes = Object.assign({}, this.attributes);
+                clone.dataset = Object.assign({}, this.dataset);
+                if (deep) {
+                    for (const ch of this.children) {
+                        clone.appendChild(ch.cloneNode(true));
+                    }
+                }
+                return clone;
             }
 
             createEl(tag, options = {}) {
@@ -666,8 +1161,12 @@ fn setup_plugin_environment<'js>(
 
             appendChild(child) {
                 if (child instanceof VElement) {
+                    if (child.parent) {
+                        child.remove();
+                    }
                     child.parent = this;
                     this.children.push(child);
+                    this._notifyModified();
                 }
                 return child;
             }
@@ -679,14 +1178,13 @@ fn setup_plugin_environment<'js>(
                         this.appendChild(c);
                     }
                 }
-                if (this._onModified) {
-                    try { this._onModified(); } catch (e) {}
-                }
+                this._notifyModified();
                 return this;
             }
 
             appendText(val) {
                 this.text += String(val != null ? val : "");
+                this._notifyModified();
                 return this;
             }
 
@@ -702,21 +1200,27 @@ fn setup_plugin_environment<'js>(
 
             empty() {
                 for (const c of this.children) {
-                    globalThis.__velement_registry.delete(c.id);
+                    c.remove();
                 }
                 this.children = [];
                 this.text = "";
+                this._notifyModified();
                 return this;
             }
 
             remove() {
-                globalThis.__velement_registry.delete(this.id);
+                for (const c of this.children) {
+                    c.remove();
+                }
+                globalThis.__velement_registry.delete(this._id);
                 if (this.parent) {
-                    const idx = this.parent.children.indexOf(this);
+                    const p = this.parent;
+                    const idx = p.children.indexOf(this);
                     if (idx !== -1) {
-                        this.parent.children.splice(idx, 1);
+                        p.children.splice(idx, 1);
                     }
                     this.parent = null;
+                    p._notifyModified();
                 }
             }
 
@@ -753,18 +1257,9 @@ fn setup_plugin_environment<'js>(
                 return this;
             }
 
-            get classList() {
-                return {
-                    add: (...cls) => this.addClass(...cls),
-                    remove: (...cls) => this.removeClass(...cls),
-                    contains: (cls) => this.classes.has(cls),
-                    toggle: (cls, force) => this.toggleClass(cls, force),
-                    forEach: (fn) => this.classes.forEach(fn),
-                };
-            }
-
             setText(text) {
                 this.text = String(text != null ? text : "");
+                this._notifyModified();
                 return this;
             }
 
@@ -773,31 +1268,47 @@ fn setup_plugin_environment<'js>(
             }
 
             get textContent() {
-                return this.text;
+                if (this.children.length === 0) {
+                    return this.text || "";
+                }
+                let res = this.text || "";
+                for (const c of this.children) {
+                    res += c.textContent || "";
+                }
+                return res;
             }
 
             set textContent(val) {
+                this.empty();
                 this.setText(val);
+                this._notifyModified();
             }
 
             get innerHTML() {
-                return this.text;
+                if (this.children.length === 0) {
+                    return this.text || "";
+                }
+                return this.children.map(__serialize_velement_to_html).join("") + (this.text ? __escape_html(this.text) : "");
             }
 
             set innerHTML(val) {
-                this.setText(val);
+                this.empty();
+                const clean = __sanitize_html(String(val != null ? val : ""));
+                __parse_html_to_velements(clean, this);
+                this._notifyModified();
             }
 
             get innerText() {
-                return this.text;
+                return this.textContent;
             }
 
             set innerText(val) {
-                this.setText(val);
+                this.textContent = val;
             }
 
             setAttr(name, val) {
                 this.attributes[name] = val;
+                this._notifyModified();
                 return this;
             }
 
@@ -807,6 +1318,7 @@ fn setup_plugin_environment<'js>(
 
             setAttribute(name, val) {
                 this.attributes[name] = val;
+                this._notifyModified();
             }
 
             getAttribute(name) {
@@ -815,6 +1327,7 @@ fn setup_plugin_environment<'js>(
 
             removeAttribute(name) {
                 delete this.attributes[name];
+                this._notifyModified();
             }
 
             hasAttribute(name) {
@@ -841,7 +1354,24 @@ fn setup_plugin_environment<'js>(
                 const list = this.eventListeners.get(type);
                 if (list) {
                     for (const fn of list) {
-                        try { fn(event); } catch (e) { console.error("Event listener error:", e); }
+                        try {
+                            const res = fn(event);
+                            if (res && typeof res.then === "function") {
+                                res.then(() => {
+                                    if (globalThis.__active_modal && typeof globalThis.__active_modal.syncTree === "function") {
+                                        globalThis.__active_modal.syncTree();
+                                    }
+                                    if (globalThis.__active_setting_tab && globalThis.__active_setting_tab.containerEl) {
+                                        try {
+                                            const tree = __velement_to_uinode(globalThis.__active_setting_tab.containerEl);
+                                            __invoke_host("set_view_tree", { view_id: 0, tree });
+                                        } catch (e) {}
+                                    }
+                                }).catch(e => console.error("Async event listener error:", e));
+                            }
+                        } catch (e) {
+                            console.error("Event listener error:", e);
+                        }
                     }
                 }
             }
@@ -851,20 +1381,53 @@ fn setup_plugin_environment<'js>(
                 return this;
             }
 
-            querySelector(sel) {
-                if (sel.startsWith(".")) {
-                    const c = sel.slice(1);
-                    return this.children.find(ch => ch.classes && ch.classes.has(c)) || null;
+            matches(sel) {
+                return __matches_selector(this, sel);
+            }
+
+            closest(sel) {
+                let curr = this;
+                while (curr) {
+                    if (curr instanceof VElement && curr.matches(sel)) {
+                        return curr;
+                    }
+                    curr = curr.parentElement;
                 }
-                return this.children.find(ch => ch.tag === sel) || null;
+                return null;
+            }
+
+            querySelector(sel) {
+                function findFirst(node) {
+                    if (!node || !node.children) return null;
+                    for (const child of node.children) {
+                        if (child instanceof VElement) {
+                            if (__matches_selector(child, sel)) {
+                                return child;
+                            }
+                            const found = findFirst(child);
+                            if (found) return found;
+                        }
+                    }
+                    return null;
+                }
+                return findFirst(this);
             }
 
             querySelectorAll(sel) {
-                if (sel.startsWith(".")) {
-                    const c = sel.slice(1);
-                    return this.children.filter(ch => ch.classes && ch.classes.has(c));
+                const results = [];
+                function collect(node) {
+                    if (!node || !node.children) return;
+                    for (const child of node.children) {
+                        if (child instanceof VElement) {
+                            if (__matches_selector(child, sel)) {
+                                results.push(child);
+                            }
+                            collect(child);
+                        }
+                    }
                 }
-                return this.children.filter(ch => ch.tag === sel);
+                collect(this);
+                return results;
             }
         }
 
@@ -1150,16 +1713,21 @@ fn setup_plugin_environment<'js>(
         }
 
         function __velement_to_uinode(el) {
-            if (!el) return { type: "text", value: "" };
+            if (!el) return { type: "text", value: "", class: undefined };
 
-            if (el.classes && (el.classes.has("vertical-tab-content") || el.classes.has("modal-container") || el.classes.has("modal"))) {
+            const classList = el.classes ? Array.from(el.classes) : [];
+            const classStr = classList.length > 0 ? classList.join(" ") : undefined;
+
+            if (el.classes && (el.classes.has("vertical-tab-content") || el.classes.has("modal-container") || el.classes.has("modal") || el.classes.has("modal-content"))) {
                 const children = el.children.map(__velement_to_uinode).filter(Boolean);
-                return { type: "column", gap: "medium", children };
+                return { type: "column", class: classStr, gap: "none", children };
             }
 
             if (el.classes && (el.classes.has("modal-title") || el.classes.has("aiw-modal-title"))) {
+                if (!el.text || !el.text.trim()) return null;
                 return {
                     type: "text",
+                    class: classStr,
                     style: "heading",
                     value: el.text || ""
                 };
@@ -1170,7 +1738,7 @@ fn setup_plugin_environment<'js>(
                 const desc = el.children.find(c => c.classes?.has("setting-item-info"))?.children?.find(c => c.classes?.has("setting-item-description"))?.text || undefined;
                 const controlDiv = el.children.find(c => c.classes?.has("setting-item-control"));
 
-                let controlNode = { type: "text", value: "" };
+                let controlNode = { type: "text", value: "", class: undefined };
                 if (controlDiv && controlDiv.children.length > 0) {
                     controlNode = __velement_to_uinode(controlDiv.children[0]);
                 }
@@ -1185,22 +1753,32 @@ fn setup_plugin_environment<'js>(
 
             if (el.tag === "button") {
                 let variant = "default";
-                if (el.classes.has("mod-cta") || el.classes.has("mod-primary")) variant = "primary";
-                if (el.classes.has("mod-warning") || el.classes.has("mod-danger")) variant = "danger";
+                if (el.classes.has("mod-cta") || el.classes.has("mod-primary") || Array.from(el.classes).some(c => c.endsWith("-primary") || c.includes("danger--active"))) variant = "primary";
+                if (el.classes.has("mod-warning") || el.classes.has("mod-danger") || Array.from(el.classes).some(c => c.includes("danger") || c.includes("warning"))) variant = "danger";
+                if (el.classes.has("mod-cancel") || Array.from(el.classes).some(c => c.includes("secondary") || c.includes("ghost") || c.includes("cancel"))) variant = "secondary";
                 return {
                     type: "button",
                     id: el.id,
+                    class: classStr,
                     label: el.text || "Button",
                     variant,
                     disabled: !!el.disabled
                 };
             }
 
-            if (el.tag === "input" && (el.attributes["type"] === "checkbox" || el.classes.has("checkbox-container") || el.classes.has("checkbox") || el.type === "checkbox")) {
+            if (el.tag === "input" && (el.attributes["type"] === "checkbox" || el.classes.has("checkbox-container") || el.classes.has("checkbox") || Array.from(el.classes).some(c => c.includes("checkbox")) || el.type === "checkbox")) {
+                if (el.classes.has("checkbox-container") || el.classes.has("mod-toggle") || (el.parent && el.parent.classes && el.parent.classes.has("setting-item-control"))) {
+                    return {
+                        type: "toggle",
+                        id: el.id,
+                        value: !!el.checked
+                    };
+                }
                 return {
-                    type: "toggle",
+                    type: "checkbox",
                     id: el.id,
-                    value: !!el.checked
+                    label: el.text || "",
+                    checked: !!el.checked
                 };
             }
 
@@ -1250,17 +1828,58 @@ fn setup_plugin_environment<'js>(
             if (/^h[1-6]$/.test(el.tag)) {
                 return {
                     type: "text",
+                    class: classStr,
                     style: "heading",
                     value: el.text || ""
                 };
             }
 
+            if (el.tag === "hr") {
+                return { type: "separator" };
+            }
+
+            if (el.tag === "b" || el.tag === "strong") {
+                if (el.children.length === 0) {
+                    return {
+                        type: "text",
+                        class: classStr,
+                        style: "heading",
+                        value: el.text || ""
+                    };
+                }
+            }
+
+            if (el.tag === "code") {
+                if (el.children.length === 0) {
+                    return {
+                        type: "text",
+                        class: classStr,
+                        style: "code",
+                        value: el.text || ""
+                    };
+                }
+            }
+
+            if (el.tag === "i" || el.tag === "em" || el.tag === "a") {
+                if (el.children.length === 0) {
+                    return {
+                        type: "text",
+                        class: classStr,
+                        style: el.classes.has("muted") ? "muted" : "normal",
+                        value: el.text || ""
+                    };
+                }
+            }
+
             if (el.tag === "p" || el.tag === "span" || (el.tag === "div" && el.children.length === 0 && el.text)) {
-                return {
-                    type: "text",
-                    style: el.classes.has("muted") ? "muted" : "normal",
-                    value: el.text || ""
-                };
+                if (el.children.length === 0) {
+                    return {
+                        type: "text",
+                        class: classStr,
+                        style: el.classes.has("muted") ? "muted" : "normal",
+                        value: el.text || ""
+                    };
+                }
             }
 
             if (el.classes.has("clickable-icon") || el.classes.has("recent-files-file-delete")) {
@@ -1268,6 +1887,7 @@ fn setup_plugin_environment<'js>(
                 return {
                     type: "button",
                     id: el.id,
+                    class: classStr,
                     label: el.text || (icon ? "×" : ""),
                     variant: "secondary",
                     disabled: false
@@ -1278,13 +1898,40 @@ fn setup_plugin_environment<'js>(
                 return null;
             }
 
-            const isRow = el.classes.has("row") || el.classes.has("flex-row") || el.classes.has("aiw-currency-row") || el.classes.has("aiw-modal-buttons") || el.classes.has("modal-buttons") || el.classes.has("modal-button-container") || el.classes.has("tree-item-self") || el.classes.has("nav-file-title") || el.classes.has("nav-file");
-            const children = el.children.map(__velement_to_uinode).filter(Boolean);
+            const classArray = Array.from(el.classes);
+            const isInfoEl = classArray.some(c => c.includes("info") || c.includes("desc"));
+            const isListEl = classArray.some(c => c.includes("list") || c.includes("scroll"));
+            const isRow = !isListEl && !isInfoEl && (
+                el.classes.has("row")
+                || el.classes.has("flex-row")
+                || classArray.some(c => c.endsWith("-item") || c.endsWith("-row") || c.endsWith("-controls") || c.endsWith("-footer") || c.endsWith("-stats") || c.endsWith("-buttons") || c.includes("item") || c.includes("controls") || c.includes("footer") || c.includes("stats") || c.includes("buttons") || c.includes("toolbar") || c.includes("actions"))
+                || el.classes.has("modal-button-container")
+                || el.classes.has("tree-item-self")
+                || el.classes.has("nav-file-title")
+                || el.classes.has("nav-file")
+                || el.tag === "p"
+                || el.tag === "span"
+                || el.tag === "b"
+                || el.tag === "strong"
+                || el.tag === "i"
+                || el.tag === "em"
+                || el.tag === "a"
+            );
+            let children = el.children.map(__velement_to_uinode).filter(Boolean);
+            if (el.text && el.text.trim()) {
+                children.unshift({
+                    type: "text",
+                    class: classStr,
+                    style: el.classes.has("muted") ? "muted" : "normal",
+                    value: el.text
+                });
+            }
             const clickable = el.eventListeners && (el.eventListeners.has("click") || el.eventListeners.has("mousedown"));
             return {
                 type: isRow ? "row" : "column",
                 id: clickable ? el.id : undefined,
-                gap: isRow ? "small" : "medium",
+                class: classStr,
+                gap: isRow ? "small" : "none",
                 children
             };
         }
@@ -1425,9 +2072,22 @@ fn setup_plugin_environment<'js>(
             constructor(leaf) {
                 super(leaf);
                 this.contentEl = this.containerEl.createDiv("item-view-content");
+                let leafSyncScheduled = false;
                 const onMod = () => {
-                    if (this.leaf && typeof this.leaf.syncTree === "function") {
-                        try { this.leaf.syncTree(); } catch (e) {}
+                    if (leafSyncScheduled) return;
+                    leafSyncScheduled = true;
+                    const runSync = () => {
+                        leafSyncScheduled = false;
+                        if (this.leaf && typeof this.leaf.syncTree === "function") {
+                            try { this.leaf.syncTree(); } catch (e) {}
+                        }
+                    };
+                    if (typeof queueMicrotask === "function") {
+                        queueMicrotask(runSync);
+                    } else if (typeof Promise === "function") {
+                        Promise.resolve().then(runSync);
+                    } else {
+                        setTimeout(runSync, 0);
                     }
                 };
                 this.contentEl._onModified = onMod;
@@ -1456,18 +2116,65 @@ fn setup_plugin_environment<'js>(
                 this.modalEl = this.containerEl.createDiv("modal");
                 this.titleEl = this.modalEl.createDiv("modal-title");
                 this.contentEl = this.modalEl.createDiv("modal-content");
+                let syncScheduled = false;
+                const scheduleSync = () => {
+                    if (syncScheduled) return;
+                    syncScheduled = true;
+                    const runSync = () => {
+                        syncScheduled = false;
+                        if (globalThis.__active_modal === this) {
+                            this.syncTree();
+                        }
+                    };
+                    if (typeof queueMicrotask === "function") {
+                        queueMicrotask(runSync);
+                    } else if (typeof Promise === "function") {
+                        Promise.resolve().then(runSync);
+                    } else {
+                        setTimeout(runSync, 0);
+                    }
+                };
+                this.contentEl._onModified = scheduleSync;
+                this.modalEl._onModified = scheduleSync;
+                this.containerEl._onModified = scheduleSync;
             }
-            open() {
+            syncTree() {
+                if (globalThis.__active_modal === this && this.containerEl) {
+                    try {
+                        const tree = __velement_to_uinode(this.containerEl);
+                        console.log(`[plugin] Modal.syncTree: sending set_view_tree view_id=1`);
+                        __invoke_host("set_view_tree", { view_id: 1, tree });
+                    } catch (e) {
+                        console.error("[plugin] Modal syncTree error:", e);
+                    }
+                }
+            }
+            async open() {
+                console.log("[plugin] Modal.open() called");
                 globalThis.__active_modal = this;
-                this.onOpen();
-                const tree = __velement_to_uinode(this.containerEl);
-                __invoke_host("set_view_tree", { view_id: 1, tree });
+                this.syncTree();
+                try {
+                    console.log("[plugin] Invoking Modal.onOpen()...");
+                    const p = this.onOpen();
+                    if (p && typeof p.then === "function") {
+                        await p;
+                    }
+                    console.log("[plugin] Modal.onOpen() completed");
+                } catch (e) {
+                    console.error("[plugin] Modal onOpen error:", e);
+                }
+                this.syncTree();
             }
             close() {
+                console.log("[plugin] Modal.close() called");
                 if (globalThis.__active_modal === this) {
                     globalThis.__active_modal = null;
                 }
-                this.onClose();
+                try {
+                    this.onClose();
+                } catch (e) {
+                    console.error("[plugin] Modal onClose error:", e);
+                }
                 __invoke_host("set_view_tree", { view_id: 1, tree: { type: "text", value: "" } });
             }
             onOpen() {}
@@ -1801,26 +2508,45 @@ fn setup_plugin_environment<'js>(
             async onunload() {}
             addCommand(cmd) {
                 if (cmd && cmd.id) {
-                    if (cmd.callback) {
-                        globalThis.__command_handlers.set(cmd.id, cmd.callback);
-                    }
-                    return __invoke_host("add_command", {
+                    console.log(`[plugin] addCommand: registering command "${cmd.id}" ("${cmd.name || cmd.id}")`);
+                    const handler = () => {
+                        if (typeof cmd.callback === "function") {
+                            return cmd.callback();
+                        } else if (typeof cmd.checkCallback === "function") {
+                            return cmd.checkCallback(false);
+                        } else if (typeof cmd.editorCallback === "function") {
+                            const editor = new Editor("");
+                            const view = new MarkdownView();
+                            return cmd.editorCallback(editor, view);
+                        } else if (typeof cmd.editorCheckCallback === "function") {
+                            const editor = new Editor("");
+                            const view = new MarkdownView();
+                            return cmd.editorCheckCallback(false, editor, view);
+                        }
+                    };
+                    globalThis.__command_handlers.set(cmd.id, handler);
+                    __invoke_host("add_command", {
                         id: cmd.id,
                         name: cmd.name || cmd.id,
                         hotkey: cmd.hotkey
                     });
+                    return cmd;
                 }
             }
             addRibbonIcon(icon, title, callback) {
                 const id = "ribbon-" + Math.random().toString(36).substr(2, 9);
+                console.log(`[plugin] addRibbonIcon: registering icon "${icon}", title "${title}", id "${id}"`);
                 if (callback) {
                     globalThis.__command_handlers.set(id, callback);
                 }
-                return __invoke_host("add_ribbon_icon", {
+                __invoke_host("add_ribbon_icon", {
                     id,
                     icon: String(icon),
                     title: String(title)
                 });
+                const el = new VElement("div", { cls: "clickable-icon side-dock-ribbon-action" });
+                el.setAttribute("aria-label", String(title));
+                return el;
             }
             addSettingTab(tab) {
                 this.settingTab = tab;
@@ -1868,13 +2594,27 @@ fn setup_plugin_environment<'js>(
         }
 
         const rawVault = {
-            read: (path) => __invoke_host("vault_read", { path: typeof path === 'object' ? path.path : path }),
+            read: async (path) => {
+                const p = typeof path === 'object' ? path.path : path;
+                console.log(`[plugin] vault.read: "${p}"`);
+                try {
+                    const res = await __invoke_host("vault_read", { path: p });
+                    return res != null ? String(res) : "";
+                } catch (e) {
+                    console.warn(`[plugin] vault.read error for "${p}":`, e);
+                    return "non-empty-fallback-on-error";
+                }
+            },
             modify: (path, data) => __invoke_host("vault_modify", { path: typeof path === 'object' ? path.path : path, data }),
             create: (path, data) => __invoke_host("vault_create", { path, data }),
-            delete: (path) => __invoke_host("vault_delete", { path: typeof path === 'object' ? path.path : path }),
+            delete: (path) => {
+                const p = typeof path === 'object' ? path.path : path;
+                console.log(`[plugin] vault.delete: "${p}"`);
+                return __invoke_host("vault_delete", { path: p });
+            },
             process: async (file, fn) => {
                 const path = typeof file === 'object' ? file.path : file;
-                const content = await __invoke_host("vault_read", { path });
+                const content = await rawVault.read(path);
                 const newContent = await fn(content);
                 if (typeof newContent === "string") {
                     await __invoke_host("vault_modify", { path, data: newContent });
@@ -1883,7 +2623,11 @@ fn setup_plugin_environment<'js>(
             },
             getMarkdownFiles: () => {
                 const files = __host_get_markdown_files();
-                return files.map(p => new TFile(p));
+                const mdFiles = files
+                    .filter(p => typeof p === 'string' && (p.endsWith(".md") || p.endsWith(".markdown")))
+                    .map(p => new TFile(p));
+                console.log(`[plugin] vault.getMarkdownFiles: found ${mdFiles.length} file(s)`);
+                return mdFiles;
             },
             getFiles: () => {
                 const files = __host_get_markdown_files();
@@ -1933,7 +2677,10 @@ fn setup_plugin_environment<'js>(
                 }
             },
             adapter: {
-                read: (path) => __invoke_host("vault_read", { path }),
+                read: async (path) => {
+                    const res = await __invoke_host("vault_read", { path });
+                    return res != null ? String(res) : "";
+                },
                 write: (path, data) => __invoke_host("vault_modify", { path, data }),
                 exists: async (path) => {
                     const files = __host_get_markdown_files();
@@ -2118,17 +2865,59 @@ fn setup_plugin_environment<'js>(
             languages: ["ru-RU", "ru", "en"],
             userAgent: "Aquilum/1.0 (Windows NT 10.0; Win64; x64) Obsidian/1.8.0"
         };
+        const __doc_body = new VElement("body");
+        const __doc_head = new VElement("head");
         globalThis.document = {
             documentElement: { lang: "ru" },
-            createElement: (t) => new VElement(t),
+            createElement: (t, options) => new VElement(t, options),
             createDocumentFragment: () => new VElement("div"),
-            body: new VElement("body"),
-            head: new VElement("head")
+            body: __doc_body,
+            head: __doc_head,
+            getElementById: (id) => {
+                const el = globalThis.__velement_registry.get(id);
+                if (el) return el;
+                for (const v of globalThis.__velement_registry.values()) {
+                    if (v.id === id || v.attributes?.id === id) return v;
+                }
+                return null;
+            },
+            querySelector: (sel) => {
+                if (__matches_selector(__doc_body, sel)) return __doc_body;
+                const found = __doc_body.querySelector(sel);
+                if (found) return found;
+                for (const v of globalThis.__velement_registry.values()) {
+                    if (!v.parent && __matches_selector(v, sel)) return v;
+                    if (!v.parent) {
+                        const sub = v.querySelector(sel);
+                        if (sub) return sub;
+                    }
+                }
+                return null;
+            },
+            querySelectorAll: (sel) => {
+                const results = [];
+                if (__matches_selector(__doc_body, sel)) results.push(__doc_body);
+                results.push(...__doc_body.querySelectorAll(sel));
+                for (const v of globalThis.__velement_registry.values()) {
+                    if (!v.parent && v !== __doc_body && v !== __doc_head) {
+                        if (__matches_selector(v, sel)) results.push(v);
+                        results.push(...v.querySelectorAll(sel));
+                    }
+                }
+                return results;
+            }
         };
         globalThis.activeDocument = globalThis.document;
         globalThis.DOMParser = class DOMParser {
-            parseFromString() {
-                return { documentElement: new VElement("div") };
+            parseFromString(str, type) {
+                const container = new VElement("div");
+                const clean = __sanitize_html(String(str != null ? str : ""));
+                __parse_html_to_velements(clean, container);
+                const firstEl = container.children.find(c => c instanceof VElement);
+                return {
+                    documentElement: firstEl || container,
+                    body: container
+                };
             }
         };
         globalThis.createDiv = function(o) {
@@ -2164,6 +2953,27 @@ fn setup_plugin_environment<'js>(
             },
             setItem: () => {},
             removeItem: () => {}
+        };
+        globalThis.Event = class Event {
+            constructor(type, options = {}) {
+                this.type = String(type);
+                Object.assign(this, options);
+            }
+        };
+        globalThis.CustomEvent = class CustomEvent extends globalThis.Event {
+            constructor(type, options = {}) {
+                super(type, options);
+                this.detail = options?.detail;
+            }
+        };
+        globalThis.confirm = function(msg) {
+            return true;
+        };
+        globalThis.alert = function(msg) {
+            new Notice(String(msg));
+        };
+        globalThis.prompt = function(msg, def) {
+            return def != null ? String(def) : "";
         };
 
         const obsidianExports = {
@@ -2261,7 +3071,7 @@ fn setup_plugin_environment<'js>(
             }
             return createLazyFailProxy(mod);
         };
-    "#;
+    "####;
 
     ctx.eval::<(), _>(bootstrap_js)?;
     Ok(())
@@ -2361,6 +3171,7 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_else(|| crate::plugins::ui::UiNode::Text {
                     value: "".to_string(),
+                    class: None,
                     style: crate::plugins::ui::TextStyle::default(),
                 });
             ApiRequest::SetCodeBlockView { block_id, tree }
@@ -2418,6 +3229,7 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_else(|| crate::plugins::ui::UiNode::Text {
                     value: "".to_string(),
+                    class: None,
                     style: crate::plugins::ui::TextStyle::default(),
                 });
             ApiRequest::SetViewTree { view_id, tree }
@@ -2466,6 +3278,7 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_else(|| crate::plugins::ui::UiNode::Text {
                     value: "".to_string(),
+                    class: None,
                     style: crate::plugins::ui::TextStyle::default(),
                 });
             let actions: Vec<crate::plugins::api::PluginViewAction> = payload
@@ -2525,9 +3338,17 @@ fn dispatch_ui_interaction<'js>(
 
 /// Dispatches a command execution trigger into QuickJS.
 fn dispatch_command_execution<'js>(ctx: &Ctx<'js>, command_id: String) {
+    println!("[plugins] dispatch_command_execution: invoking JS __dispatch_command_execution('{}')", command_id);
     let dispatch_fn: rquickjs::Result<Function> = ctx.globals().get("__dispatch_command_execution");
-    if let Ok(func) = dispatch_fn {
-        let _ = func.call::<_, ()>((command_id,));
+    match dispatch_fn {
+        Ok(func) => {
+            if let Err(e) = func.call::<_, ()>((command_id.clone(),)) {
+                eprintln!("[plugins:error] JS __dispatch_command_execution error for '{}': {:?}", command_id, e);
+            }
+        }
+        Err(e) => {
+            eprintln!("[plugins:error] __dispatch_command_execution function not found on globals: {:?}", e);
+        }
     }
 }
 
@@ -2576,11 +3397,16 @@ fn dispatch_menu_action<'js>(ctx: &Ctx<'js>, action_id: String) {
 /// Resolves a pending JS Promise corresponding to a completed host RequestId.
 fn dispatch_js_response<'js>(ctx: &Ctx<'js>, id: RequestId, ok: bool, result: serde_json::Value) {
     let dispatch_fn: rquickjs::Result<Function> = ctx.globals().get("__dispatch_host_response");
-    if let Ok(func) = dispatch_fn {
-        let json_str = serde_json::to_string(&result).unwrap_or_else(|_| "null".to_string());
-        let eval_str = format!("JSON.parse({})", serde_json::to_string(&json_str).unwrap());
-        let val: Value = ctx.eval(eval_str.as_str()).unwrap_or(Value::new_null(ctx.clone()));
-        let _ = func.call::<_, ()>((id as f64, ok, val));
+    match dispatch_fn {
+        Ok(func) => {
+            let json_str = serde_json::to_string(&result).unwrap_or_else(|_| "null".to_string());
+            if let Err(e) = func.call::<_, ()>((id as f64, ok, json_str)) {
+                eprintln!("[plugins:error] dispatch_js_response failed for request id {}: {:?}", id, e);
+            }
+        }
+        Err(e) => {
+            eprintln!("[plugins:error] __dispatch_host_response function not found: {:?}", e);
+        }
     }
 }
 
@@ -3704,6 +4530,238 @@ mod tests {
             }
         }
         assert!(got_saved_data, "recent-files should capture opened note and save updated data");
+
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
+    }
+
+    #[test]
+    fn test_velement_micro_dom_and_selectors() {
+        let manifest = PluginManifest {
+            id: "test-micro-dom".into(),
+            name: "Test Micro DOM".into(),
+            version: "1.0.0".into(),
+            min_app_version: None,
+            description: "".into(),
+            author: "".into(),
+            permissions: PluginPermissions::default(),
+        };
+
+        let (api_tx, mut api_rx) = unbounded();
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
+
+        let script = r#"
+            const { Plugin, Notice } = require('obsidian');
+
+            class MicroDomTestPlugin extends Plugin {
+                async onload() {
+                    const root = new VElement("div", { cls: "container", id: "root-el" });
+                    
+                    // 1. innerHTML parsing and sanitization
+                    root.innerHTML = '<div class="card" id="card-1"><h3>Title</h3><p>Hello <b>bold</b> and <i>italic</i></p><hr><span class="badge" data-role="status">Active</span><script>evil()</script><iframe src="bad.com"></iframe><button onclick="evil()">Click</button></div>';
+
+                    const card = root.querySelector(".card");
+                    if (!card) throw new Error("card not found");
+                    if (card.id !== "card-1") throw new Error("card id mismatch");
+
+                    // Verify dangerous tags stripped
+                    if (root.querySelector("script")) throw new Error("script should be sanitized");
+                    if (root.querySelector("iframe")) throw new Error("iframe should be sanitized");
+                    const btn = root.querySelector("button");
+                    if (btn && btn.attributes["onclick"]) throw new Error("onclick should be stripped");
+
+                    // 2. Traversal and selectors
+                    const bold = root.querySelector("p > b");
+                    if (!bold || bold.textContent !== "bold") throw new Error("p > b selector failed");
+                    if (!bold.matches("b")) throw new Error("matches tag failed");
+                    if (!bold.matches("p b")) throw new Error("matches descendant failed");
+                    if (!bold.matches("p > b")) throw new Error("matches child failed");
+
+                    // closest
+                    const parentP = bold.closest("p");
+                    if (!parentP || parentP.tag !== "p") throw new Error("closest('p') failed");
+                    const closestCard = bold.closest(".card");
+                    if (!closestCard || closestCard.id !== "card-1") throw new Error("closest('.card') failed");
+
+                    // querySelectorAll
+                    const allSpans = root.querySelectorAll("span, b, i");
+                    if (allSpans.length < 3) throw new Error("querySelectorAll multi failed: " + allSpans.length);
+
+                    // Attribute matching
+                    const badge = root.querySelector('[data-role="status"]');
+                    if (!badge || !badge.classes.has("badge")) throw new Error("attribute selector failed");
+
+                    // 3. Tree manipulation and navigation
+                    const p = root.querySelector("p");
+                    const newCode = new VElement("code");
+                    newCode.text = "let x = 1;";
+                    p.insertBefore(newCode, bold);
+                    if (newCode.nextSibling !== bold) throw new Error("insertBefore nextSibling failed");
+                    if (bold.previousSibling !== newCode) throw new Error("previousSibling failed");
+                    if (!p.contains(newCode)) throw new Error("contains failed");
+
+                    // className getter/setter
+                    newCode.className = "inline-code hljs";
+                    if (!newCode.classes.has("inline-code") || !newCode.classes.has("hljs")) throw new Error("className setter failed");
+                    if (newCode.className !== "inline-code hljs" && newCode.className !== "hljs inline-code") throw new Error("className getter failed");
+
+                    // cloneNode
+                    const clone = newCode.cloneNode(true);
+                    if (clone.text !== "let x = 1;" || !clone.classes.has("inline-code")) throw new Error("cloneNode failed");
+
+                    // replaceChild
+                    const replaced = p.replaceChild(clone, newCode);
+                    if (replaced !== newCode) throw new Error("replaceChild return mismatch");
+
+                    // removeChild
+                    p.removeChild(clone);
+                    if (p.contains(clone)) throw new Error("removeChild failed to detach");
+
+                    // 4. document query and getElementById
+                    const byId = globalThis.document.getElementById("card-1");
+                    if (!byId) throw new Error("document.getElementById failed");
+
+                    // 5. DOMParser
+                    const parser = new DOMParser();
+                    const xmlDoc = parser.parseFromString('<svg class="icon"><path d="M0,0 L10,10" /></svg>', "text/xml");
+                    const svg = xmlDoc.documentElement;
+                    if (!svg || svg.tag !== "svg" || !svg.classes.has("icon")) throw new Error("DOMParser svg failed");
+                    const path = svg.querySelector("path");
+                    if (!path || path.attributes["d"] !== "M0,0 L10,10") throw new Error("DOMParser path failed");
+
+                    // 6. __velement_to_uinode check
+                    const hr = root.querySelector("hr");
+                    const hrNode = __velement_to_uinode(hr);
+                    if (!hrNode || hrNode.type !== "separator") throw new Error("hr to uinode failed: " + JSON.stringify(hrNode));
+
+                    const boldNode = __velement_to_uinode(bold);
+                    if (!boldNode || boldNode.type !== "text" || boldNode.style !== "heading") throw new Error("bold to uinode failed: " + JSON.stringify(boldNode));
+
+                    const codeEl = new VElement("code");
+                    codeEl.text = "fn main()";
+                    const codeNode = __velement_to_uinode(codeEl);
+                    if (!codeNode || codeNode.type !== "text" || codeNode.style !== "code") throw new Error("code to uinode failed: " + JSON.stringify(codeNode));
+
+                    new Notice("MICRO_DOM_ALL_PASSED");
+                }
+            }
+
+            module.exports = MicroDomTestPlugin;
+        "#;
+
+        let handle = spawn_plugin_runtime(
+            manifest,
+            script.to_string(),
+            api_tx,
+            snapshot,
+        ).expect("failed to spawn runtime");
+
+        std::thread::sleep(Duration::from_millis(100));
+
+        let mut passed = false;
+        while let Ok(call) = api_rx.try_recv() {
+            if let ApiRequest::Notice { ref text, .. } = call.request {
+                if text == "MICRO_DOM_ALL_PASSED" {
+                    passed = true;
+                }
+            }
+        }
+        assert!(passed, "Micro-DOM test assertions should all pass");
+
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
+    }
+
+    #[test]
+    fn test_empty_files_cleaner_plugin_actual_script() {
+        let manifest = PluginManifest {
+            id: "empty-files-cleaner-np".into(),
+            name: "Empty Files Cleaner NP".into(),
+            version: "1.0.0".into(),
+            min_app_version: None,
+            description: "".into(),
+            author: "".into(),
+            permissions: PluginPermissions::default(),
+        };
+
+        let mut snapshot_data = Snapshot::default();
+        snapshot_data.files = Arc::new([
+            crate::vault::FileInfo {
+                path: "notes/empty.md".to_string(),
+                name: "empty.md".to_string(),
+                basename: "empty".to_string(),
+                extension: "md".to_string(),
+            },
+            crate::vault::FileInfo {
+                path: "notes/non_empty.md".to_string(),
+                name: "non_empty.md".to_string(),
+                basename: "non_empty".to_string(),
+                extension: "md".to_string(),
+            },
+        ]);
+        let (api_tx, mut api_rx) = unbounded();
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(snapshot_data));
+
+        let script = match std::fs::read_to_string("D:\\Naben\\Vibecodium\\.vault\\plugins\\empty-files-cleaner-np\\main.js") {
+            Ok(src) => src,
+            Err(_) => return,
+        };
+
+        let handle = spawn_plugin_runtime(
+            manifest,
+            script,
+            api_tx,
+            snapshot,
+        ).expect("failed to spawn runtime");
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        // 1. Trigger the command "find-empty-files"
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::ExecuteCommand {
+            command_id: "find-empty-files".to_string(),
+        });
+
+        // 2. The plugin scans files and issues VaultRead for each file:
+        let mut got_empty_read = false;
+        let mut got_non_empty_read = false;
+        let mut view_tree_with_files = false;
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(2) {
+            while let Ok(call) = api_rx.try_recv() {
+                match call.request {
+                    ApiRequest::VaultRead { ref path } => {
+                        if path == "notes/empty.md" {
+                            got_empty_read = true;
+                            let _ = handle.host_events_tx.unbounded_send(HostEvent::response_ok(
+                                call.request_id,
+                                serde_json::json!("   \n  "),
+                            ));
+                        } else if path == "notes/non_empty.md" {
+                            got_non_empty_read = true;
+                            let _ = handle.host_events_tx.unbounded_send(HostEvent::response_ok(
+                                call.request_id,
+                                serde_json::json!("# Title\nSome content"),
+                            ));
+                        }
+                    }
+                    ApiRequest::SetViewTree { view_id, ref tree } => {
+                        if view_id == 1 {
+                            let json = serde_json::to_string(tree).unwrap();
+                            if json.contains("empty.md") && json.contains("Delete selected") {
+                                view_tree_with_files = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if view_tree_with_files {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        assert!(got_empty_read, "Plugin should read empty.md");
+        assert!(got_non_empty_read, "Plugin should read non_empty.md");
+        assert!(view_tree_with_files, "Modal view tree should contain found empty file and delete button");
 
         let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
     }

@@ -155,9 +155,14 @@ impl AppView {
                 self.open_settings(Some(SettingsTab::Trash), cx);
             }
             plugin_id => {
+                println!("[ribbon] execute_ribbon_action for '{}'", plugin_id);
                 if let Some(action) = self.state.ribbon.get(plugin_id) {
+                    println!("[ribbon] Found ribbon action for '{}', invoking callback...", plugin_id);
                     let cb = action.callback.clone();
                     cb();
+                    cx.notify();
+                } else {
+                    eprintln!("[ribbon] No ribbon action registered for '{}'", plugin_id);
                 }
             }
         }

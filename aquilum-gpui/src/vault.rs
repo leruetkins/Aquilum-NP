@@ -157,6 +157,16 @@ impl VaultCore {
         if !abs.exists() {
             return Err(VaultError::NotFound(rel_path.to_string()));
         }
+        let meta = std::fs::metadata(&abs).map_err(|e| VaultError::Io(e.to_string()))?;
+        if meta.len() > 10 * 1024 * 1024 {
+            // Read at most 1 MB for oversized files to prevent QuickJS heap exhaustion or freezing
+            use std::io::Read;
+            let mut file = std::fs::File::open(&abs).map_err(|e| VaultError::Io(e.to_string()))?;
+            let mut buffer = vec![0u8; 1024 * 1024];
+            let n = file.read(&mut buffer).map_err(|e| VaultError::Io(e.to_string()))?;
+            buffer.truncate(n);
+            return Ok(String::from_utf8_lossy(&buffer).into_owned());
+        }
         std::fs::read_to_string(&abs).map_err(|e| VaultError::Io(e.to_string()))
     }
 
