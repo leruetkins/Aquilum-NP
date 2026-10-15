@@ -582,7 +582,7 @@ pub fn render_ui_node<V: UiSink>(
                 row = row
                     .justify_between()
                     .px_2()
-                    .py_1()
+                    .py_0p5()
                     .rounded_md()
                     .cursor_pointer()
                     .hover(|h| h.bg(theme.bg_hover))
@@ -611,7 +611,7 @@ pub fn render_ui_node<V: UiSink>(
         UiNode::Text { value, style } => match style {
             TextStyle::Normal => div()
                 .flex_shrink_0()
-                .text_sm()
+                .text_xs()
                 .text_color(theme.text_primary)
                 .child(value.clone())
                 .into_any_element(),
@@ -622,7 +622,7 @@ pub fn render_ui_node<V: UiSink>(
                 .child(value.clone())
                 .into_any_element(),
             TextStyle::Heading => div()
-                .text_base()
+                .text_sm()
                 .font_weight(gpui::FontWeight::BOLD)
                 .text_color(theme.text_primary)
                 .child(value.clone())
