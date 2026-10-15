@@ -39,7 +39,7 @@ use crate::views::app_view::AppView;
 use crate::views::tabs_menu::format_bookmark_label;
 
 /// Height of a single row (px). The keyboard navigation relies on it.
-const ROW_HEIGHT: f32 = 28.0;
+pub const ROW_HEIGHT: f32 = 28.0;
 
 /// Dead zone at the top and bottom edge, as a fraction of the list height...
 const EDGE_PAD_FRACTION: f32 = 0.10;

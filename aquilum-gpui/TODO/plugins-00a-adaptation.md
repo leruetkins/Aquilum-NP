@@ -1541,7 +1541,7 @@ plugin.addSettingTab({
 - **Входные точки:**
   - Кнопка в окне настроек `[ Обзор плагинов ]`.
   - Команда палитры: `«Плагины: Обзор сторонних плагинов»`.
-  - Глубокие ссылки URL-схемы: `aquilum://show-plugin?id={id}` (автоматически открывает каталог сразу на странице выбранного плагина).
+  - Глубокие ссылки URL-схемы: `vibecodium://show-plugin?id={id}` (автоматически открывает каталог сразу на странице выбранного плагина).
 
 ### 15.8 Межоконное взаимодействие и синхронизация (GPUI 0.2)
 1. Окно каталога связывается с родительским окном через `WeakEntity<AppView>`.
@@ -1989,12 +1989,14 @@ impl SettingsWindowManager {
 
 ---
 
-### 17.10 Реестр параметров `SETTINGS`, быстрый поиск и ссылки на параметры (`aquilum://settings/...`)
+### 17.10 Реестр параметров `SETTINGS`, быстрый поиск и ссылки на параметры (`vibecodium://settings/...`)
 
 Каждый параметр описывается один раз в центральном реестре `SETTINGS`. Его строковый идентификатор `id` одновременно служит:
 1. Путем в JSON Pointer в `config.json` (`/editor/word_wrap`).
-2. Частью глубокой ссылки `aquilum://settings/editor.word_wrap`.
+2. Частью глубокой ссылки `vibecodium://settings/editor.word_wrap`.
 3. Якорем плавной прокрутки и подсветки в окне настроек.
+
+Все URL-схемы, пути и имена каналов IPC вынесены в константы для лёгкой смены брендинга или параметризации.
 
 #### 1. Декларативный реестр параметров и JSON Pointer
 
@@ -2081,15 +2083,21 @@ pub fn is_modified(cfg: &Config, id: &str) -> bool {
 #### 2. Ссылки и кнопка «Copy Link»
 
 ```rust
-pub const LINK_PREFIX: &str = "aquilum://settings/";
+// Конфигурируемые константы брендинга схемы URL и IPC
+pub const APP_URL_SCHEME: &str = "vibecodium";
+pub const SETTINGS_URL_PATH: &str = "settings/";
+pub const LINK_PREFIX: &str = "vibecodium://settings/";
 
 pub fn setting_url(id: &str) -> String {
-    format!("{LINK_PREFIX}{id}")
+    format!("{APP_URL_SCHEME}://{SETTINGS_URL_PATH}{id}")
 }
 
 pub fn resolve_link(input: &str) -> Option<&'static SettingDef> {
     let s = input.trim();
-    let id = s.strip_prefix(LINK_PREFIX).unwrap_or(s);
+    let id = s
+        .strip_prefix(LINK_PREFIX)
+        .or_else(|| s.strip_prefix(&format!("{APP_URL_SCHEME}://settings/")))
+        .unwrap_or(s);
     SETTINGS.iter().find(|d| d.id == id || d.aliases.contains(&id))
 }
 
@@ -2261,9 +2269,9 @@ impl SettingsView {
 ```
 
 #### 5. Межпроцессное взаимодействие на Windows (Single Instance URL forwarding)
-При клике по ссылке `aquilum://settings/editor.word_wrap` операционная система запускает `aquilum.exe "%1"`.
+При клике по ссылке `vibecodium://settings/editor.word_wrap` операционная система запускает `vibecodium.exe "%1"`.
 - В точке входа `main.rs` проверяется наличие уже запущенного процесса через named mutex/pipe.
-- Если процесс уже работает: аргумент URL пересылается через именованный канал `\\.\pipe\aquilum-ipc` в главный процесс, а вторичный процесс мгновенно завершается.
+- Если процесс уже работает: аргумент URL пересылается через именованный канал `\\.\pipe\vibecodium-ipc` (константа `APP_IPC_PIPE_NAME`) в главный процесс, а вторичный процесс мгновенно завершается.
 - Главный процесс перехватывает URL, вызывает `resolve_link(url)` и активирует окно через `SettingsWindowManager::open_or_focus(SettingsTarget { tab: def.tab, anchor: Some(def.id) }, cx)`.
 
 

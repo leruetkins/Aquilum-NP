@@ -79,6 +79,7 @@ pub struct AppView {
     pub last_wrap_cols: usize,
     pub is_settings_open: bool,
     pub settings_tab: crate::views::settings_view::SettingsTab,
+    pub settings_view: Option<gpui::Entity<crate::views::settings_view::SettingsView>>,
     pub is_dragging_scrollbar: bool,
     pub scrollbar_drag_start_y: f32,
     pub scrollbar_drag_start_scroll_y: f32,
@@ -259,6 +260,7 @@ impl AppView {
             last_wrap_cols: 80,
             is_settings_open: false,
             settings_tab: crate::views::settings_view::SettingsTab::Ui,
+            settings_view: None,
             is_dragging_scrollbar: false,
             scrollbar_drag_start_y: 0.0,
             scrollbar_drag_start_scroll_y: 0.0,
@@ -2315,6 +2317,12 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
 
         // Escape closes settings modal if open
         if keystroke.key == "escape" && self.is_settings_open {
+            if let Some(ref sv) = self.settings_view {
+                let handled = sv.update(cx, |view, cx| view.handle_escape(cx));
+                if handled {
+                    return;
+                }
+            }
             self.close_settings(cx);
             return;
         }
@@ -5324,8 +5332,8 @@ impl Render for AppView {
                 d.child(self.render_command_palette(theme, window, cx))
             })
             // ================= SETTINGS MODAL =================
-            .when(self.is_settings_open, |d| {
-                d.child(self.render_settings_modal(window, cx))
+            .when_some(self.settings_view.as_ref(), |d, settings_view| {
+                d.child(settings_view.clone())
             })
             // ================= FOLDER CONTEXT MENU =================
             .when(self.folder_context_menu.is_open, |d| {

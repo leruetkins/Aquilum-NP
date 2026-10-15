@@ -173,6 +173,95 @@ impl BlinkManager {
             }
         }).detach();
     }
+
+    /// Enables blinking for an arbitrary view entity (e.g. `SettingsView`).
+    pub fn enable_view<V: 'static>(&mut self, get_bm: fn(&mut V) -> &mut BlinkManager, cx: &mut Context<V>) {
+        self.suspended = false;
+
+        if self.enabled {
+            self.pause_and_show_view(get_bm, cx);
+            return;
+        }
+
+        self.enabled = true;
+        self.visible = true;
+        self.blinking_paused = false;
+        self.epoch = self.epoch.wrapping_add(1);
+        let epoch = self.epoch;
+
+        self.spawn_blink_cycle_view(epoch, get_bm, cx);
+        cx.notify();
+    }
+
+    /// Disables blinking for an arbitrary view entity.
+    pub fn disable_view<V: 'static>(&mut self, cx: &mut Context<V>) {
+        self.suspended = false;
+
+        if !self.enabled && !self.visible {
+            return;
+        }
+
+        self.enabled = false;
+        self.visible = false;
+        self.blinking_paused = false;
+        self.epoch = self.epoch.wrapping_add(1);
+        cx.notify();
+    }
+
+    /// Pauses and shows the cursor for an arbitrary view entity.
+    pub fn pause_and_show_view<V: 'static>(&mut self, get_bm: fn(&mut V) -> &mut BlinkManager, cx: &mut Context<V>) {
+        self.suspended = false;
+        self.enabled = true;
+        self.visible = true;
+        self.blinking_paused = true;
+        self.epoch = self.epoch.wrapping_add(1);
+        let epoch = self.epoch;
+
+        let entity = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let timer_executor = cx.background_executor().clone();
+        let interval = self.interval;
+
+        cx.foreground_executor().spawn(async move {
+            timer_executor.timer(interval).await;
+            entity.update(&mut async_cx, |this, cx| {
+                let bm = get_bm(this);
+                if bm.epoch == epoch && bm.enabled {
+                    bm.blinking_paused = false;
+                    bm.spawn_blink_cycle_view(epoch, get_bm, cx);
+                }
+            }).ok();
+        }).detach();
+
+        cx.notify();
+    }
+
+    fn spawn_blink_cycle_view<V: 'static>(&mut self, epoch: usize, get_bm: fn(&mut V) -> &mut BlinkManager, cx: &mut Context<V>) {
+        let entity = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let timer_executor = cx.background_executor().clone();
+        let interval = self.interval;
+
+        cx.foreground_executor().spawn(async move {
+            loop {
+                timer_executor.timer(interval).await;
+                let should_continue = entity.update(&mut async_cx, |this, cx| {
+                    let bm = get_bm(this);
+                    if bm.epoch != epoch || !bm.enabled || bm.blinking_paused {
+                        false
+                    } else {
+                        bm.visible = !bm.visible;
+                        cx.notify();
+                        true
+                    }
+                }).unwrap_or(false);
+
+                if !should_continue {
+                    break;
+                }
+            }
+        }).detach();
+    }
 }
 
 /// Identifies which blink manager in `AppView` is being animated.

@@ -1,9 +1,21 @@
-use crate::icons;
-use super::app_view::AppView;
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui::{
-    canvas, div, point, prelude::*, px, rgba, Context, DispatchPhase, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, ScrollDelta, ScrollWheelEvent, Window,
+    canvas, div, point, prelude::*, px, rgba, Context,
+    DispatchPhase, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Render, ScrollDelta,
+    ScrollHandle, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, WeakEntity, Window,
 };
+
+use crate::blink_manager::BlinkManager;
+use crate::icons;
+use crate::plugins::ui::{PluginInputFocusState, SelectOption, UiSink};
+use crate::settings::AppConfig;
+use crate::theme::Theme;
+use super::app_view::AppView;
+use crate::views::tab_list::{TabEntry, TabListEvent, TabListPopup, ROW_HEIGHT};
 
 /// Line-based wheel ticks (mice) are divided down by this: one notch moves
 /// roughly one UI line instead of the system default (usually 3 lines ≈
@@ -137,19 +149,39 @@ impl AppView {
 
     /// Toggles visibility of the Settings modal window.
     pub fn toggle_settings(&mut self, cx: &mut Context<Self>) {
-        self.is_settings_open = !self.is_settings_open;
         if self.is_settings_open {
-            self.config = self.state.settings.get_config();
+            self.close_settings(cx);
+        } else {
+            self.open_settings(None, cx);
         }
-        cx.notify();
     }
 
     /// Opens the Settings modal, optionally navigating directly to the given tab.
     pub fn open_settings(&mut self, tab: Option<SettingsTab>, cx: &mut Context<Self>) {
         self.is_settings_open = true;
         self.config = self.state.settings.get_config();
-        if let Some(t) = tab {
-            self.settings_tab = t;
+        let target_tab = tab.unwrap_or_else(|| self.settings_tab.clone());
+        self.settings_tab = target_tab.clone();
+
+        if let Some(ref view) = self.settings_view {
+            let config = self.config.clone();
+            let theme = self.theme.clone();
+            let word_wrap = self.word_wrap;
+            view.update(cx, |view, cx| {
+                view.settings_tab = target_tab;
+                view.config = config;
+                view.theme = theme;
+                view.word_wrap = word_wrap;
+                cx.notify();
+            });
+        } else {
+            let weak_app = cx.weak_entity();
+            let config = self.config.clone();
+            let theme = self.theme.clone();
+            let word_wrap = self.word_wrap;
+            self.settings_view = Some(cx.new(|cx| {
+                SettingsView::new(weak_app, target_tab, config, theme, word_wrap, cx)
+            }));
         }
         cx.notify();
     }
@@ -157,6 +189,7 @@ impl AppView {
     /// Closes the Settings modal window and restores editor focus.
     pub fn close_settings(&mut self, cx: &mut Context<Self>) {
         self.is_settings_open = false;
+        self.settings_view = None;
         self.active_color_picker = None;
         self.active_plugin_input = None;
         self.plugin_input_blink.disable(cx);
@@ -173,20 +206,737 @@ impl AppView {
         cx.notify();
     }
 
+    /// Toggles a community plugin state (enable/disable) and manages its runtime lifecycle.
+    pub fn toggle_community_plugin(&mut self, plugin_id: &str, cx: &mut Context<Self>) {
+        if let Some(vault) = &self.state.vault {
+            let is_enabled = vault.is_community_plugin_enabled(plugin_id);
+            if is_enabled {
+                let _ = vault.disable_community_plugin(plugin_id);
+                if let Some(pos) = self.plugin_runtimes.iter().position(|r| r.manifest.id == plugin_id) {
+                    let handle = self.plugin_runtimes.remove(pos);
+                    let _ = handle.host_events_tx.unbounded_send(crate::plugins::api::HostEvent::Unload);
+                    self.state.plugin_host.unregister_plugin(plugin_id);
+                    self.state.commands.unregister_all_of(plugin_id);
+                    self.state.ribbon.unregister_all_of(plugin_id);
+                    self.state.status_bar.unregister_all_of(plugin_id);
+                    self.state.code_block_processors.unregister_all_of(plugin_id);
+                    self.code_block_views.retain(|_, (pid, _)| pid != plugin_id);
+                }
+            } else {
+                let _ = vault.enable_community_plugin(plugin_id);
+                self.load_installed_plugins_for_vault();
+            }
+            cx.notify();
+        }
+    }
+}
+
+
+/// Independent view entity hosting all settings tabs and modal dialog UI.
+pub struct SettingsView {
+    pub weak_app: WeakEntity<AppView>,
+    pub settings_tab: SettingsTab,
+    pub config: AppConfig,
+    pub theme: Theme,
+    pub settings_scroll_handle: ScrollHandle,
+    pub settings_nav_scroll_handle: ScrollHandle,
+    pub active_color_picker: Option<&'static str>,
+    pub custom_hex_input: String,
+    pub hex_is_focused: bool,
+    pub hex_cursor_pos: usize,
+    pub hex_selection_anchor: Option<usize>,
+    pub custom_hex_focus_handle: FocusHandle,
+    pub hex_box_origin_x: Rc<Cell<f32>>,
+    pub hex_is_mouse_selecting: bool,
+    pub hex_mouse_drag_start_x: Option<f32>,
+    pub hex_blink: BlinkManager,
+    pub locale_popup: Option<gpui::Entity<TabListPopup>>,
+    pub locale_popup_subscription: Option<Subscription>,
+    pub font_popup: Option<gpui::Entity<TabListPopup>>,
+    pub font_popup_subscription: Option<Subscription>,
+    pub active_plugin_input: Option<PluginInputFocusState>,
+    pub plugin_input_blink: BlinkManager,
+    pub plugin_input_focus_handle: FocusHandle,
+    pub active_plugin_select: Option<(String, u64, String)>,
+    pub plugin_select_popup: Option<gpui::Entity<TabListPopup>>,
+    pub plugin_select_subscription: Option<Subscription>,
+    pub word_wrap: bool,
+}
+
+impl SettingsView {
+    pub fn new(
+        weak_app: WeakEntity<AppView>,
+        tab: SettingsTab,
+        config: AppConfig,
+        theme: Theme,
+        word_wrap: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            weak_app,
+            settings_tab: tab,
+            config,
+            theme,
+            settings_scroll_handle: ScrollHandle::new(),
+            settings_nav_scroll_handle: ScrollHandle::new(),
+            active_color_picker: None,
+            custom_hex_input: String::new(),
+            hex_is_focused: false,
+            hex_cursor_pos: 0,
+            hex_selection_anchor: None,
+            custom_hex_focus_handle: cx.focus_handle(),
+            hex_box_origin_x: Rc::new(Cell::new(0.0)),
+            hex_is_mouse_selecting: false,
+            hex_mouse_drag_start_x: None,
+            hex_blink: BlinkManager::new(),
+            locale_popup: None,
+            locale_popup_subscription: None,
+            font_popup: None,
+            font_popup_subscription: None,
+            active_plugin_input: None,
+            plugin_input_blink: BlinkManager::new(),
+            plugin_input_focus_handle: cx.focus_handle(),
+            active_plugin_select: None,
+            plugin_select_popup: None,
+            plugin_select_subscription: None,
+            word_wrap,
+        }
+    }
+
+    /// Helper to get localized string using current UI language
+    pub fn t(&self, key: &str) -> String {
+        crate::i18n::t(key, &self.config.ui.language)
+    }
+
+    /// Helper to get localized string with positional `{}` formatting
+    pub fn t_fmt(&self, key: &str, args: &[&str]) -> String {
+        crate::i18n::t_fmt(key, &self.config.ui.language, args)
+    }
+
+    /// Closes the Settings modal window and restores editor focus.
+    pub fn close(&mut self, cx: &mut Context<Self>) {
+        if let Some(app) = self.weak_app.upgrade() {
+            app.update(cx, |app, cx| {
+                app.close_settings(cx);
+            });
+        }
+    }
+
+    /// Persists the modified AppConfig to disk via SettingsManager.
+    pub fn save_settings(&mut self, cx: &mut Context<Self>) {
+        self.theme = crate::theme::Theme::from_config(&self.config.ui.theme, None);
+        if let Some(app) = self.weak_app.upgrade() {
+            let config = self.config.clone();
+            app.update(cx, |app, cx| {
+                app.config = config;
+                app.save_settings(cx);
+            });
+        }
+        cx.notify();
+    }
+
+    pub fn toggle_word_wrap(&mut self, cx: &mut Context<Self>) {
+        self.word_wrap = !self.word_wrap;
+        if let Some(app) = self.weak_app.upgrade() {
+            app.update(cx, |app, cx| {
+                app.toggle_word_wrap(cx);
+            });
+        }
+        cx.notify();
+    }
+
+    pub fn unload_all_plugins(&mut self, cx: &mut Context<Self>) {
+        if let Some(app) = self.weak_app.upgrade() {
+            app.update(cx, |app, cx| {
+                app.unload_all_plugins();
+                cx.notify();
+            });
+        }
+    }
+
+    pub fn load_installed_plugins_for_vault(&mut self, cx: &mut Context<Self>) {
+        if let Some(app) = self.weak_app.upgrade() {
+            app.update(cx, |app, cx| {
+                app.load_installed_plugins_for_vault();
+                cx.notify();
+            });
+        }
+    }
+
+    pub fn uninstall_plugin_from_catalog(&mut self, plugin_id: &str, cx: &mut Context<Self>) {
+        if let Some(app) = self.weak_app.upgrade() {
+            let pid = plugin_id.to_string();
+            app.update(cx, |app, cx| {
+                app.uninstall_plugin_from_catalog(&pid, cx);
+                app.load_installed_plugins_for_vault();
+                cx.notify();
+            });
+        }
+    }
+
+    pub fn handle_escape(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.locale_popup.is_some() {
+            self.close_locale_popup(cx);
+            return true;
+        }
+        if self.font_popup.is_some() {
+            self.close_font_popup(cx);
+            return true;
+        }
+        if self.plugin_select_popup.is_some() {
+            self.close_plugin_select(cx);
+            return true;
+        }
+        if self.active_color_picker.is_some() {
+            self.active_color_picker = None;
+            self.hex_is_focused = false;
+            cx.notify();
+            return true;
+        }
+        if self.active_plugin_input.is_some() {
+            self.active_plugin_input = None;
+            self.plugin_input_blink.disable_view(cx);
+            cx.notify();
+            return true;
+        }
+        false
+    }
+
+    pub fn editor_font_family(&self) -> SharedString {
+        SharedString::from(self.config.editor.font.font_family.clone())
+    }
+
+    pub fn hex_selection_range(&self) -> Option<(usize, usize)> {
+        if let Some(anchor) = self.hex_selection_anchor {
+            let pos = self.hex_cursor_pos;
+            if anchor != pos {
+                return Some((anchor.min(pos), anchor.max(pos)));
+            }
+        }
+        None
+    }
+
+    pub fn reset_hex_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.hex_blink.pause_and_show_view(|s| &mut s.hex_blink, cx);
+    }
+
+    pub fn enable_hex_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.hex_blink.enable_view(|s| &mut s.hex_blink, cx);
+    }
+
+    pub fn disable_hex_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.hex_blink.disable_view(cx);
+    }
+
+    pub fn handle_custom_hex_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        self.reset_hex_cursor_blink(cx);
+        let key = &event.keystroke.key;
+        let total_chars = self.custom_hex_input.chars().count();
+        let sel_range = self.hex_selection_range();
+
+        if event.keystroke.modifiers.control && (key.eq_ignore_ascii_case("a") || key == "ф" || key == "Ф") {
+            self.hex_selection_anchor = Some(0);
+            self.hex_cursor_pos = total_chars;
+            cx.notify();
+            return;
+        }
+
+        if event.keystroke.modifiers.control && (key.eq_ignore_ascii_case("c") || key == "с" || key == "С") {
+            let text_to_copy = if let Some((start, end)) = sel_range {
+                self.custom_hex_input.chars().skip(start).take(end - start).collect::<String>()
+            } else {
+                self.custom_hex_input.clone()
+            };
+            if !text_to_copy.is_empty() {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text_to_copy));
+            }
+            return;
+        }
+
+        if key == "escape" {
+            self.active_color_picker = None;
+            self.hex_is_focused = false;
+            self.hex_selection_anchor = None;
+            cx.notify();
+            return;
+        }
+
+        if key == "enter" {
+            self.apply_custom_hex_if_valid(cx);
+            self.active_color_picker = None;
+            self.hex_is_focused = false;
+            self.hex_selection_anchor = None;
+            cx.notify();
+            return;
+        }
+
+        if key == "arrowleft" || key == "left" {
+            if event.keystroke.modifiers.shift {
+                if self.hex_selection_anchor.is_none() {
+                    self.hex_selection_anchor = Some(self.hex_cursor_pos);
+                }
+                self.hex_cursor_pos = self.hex_cursor_pos.saturating_sub(1);
+            } else if let Some((start, _)) = sel_range {
+                self.hex_selection_anchor = None;
+                self.hex_cursor_pos = start;
+            } else {
+                self.hex_selection_anchor = None;
+                self.hex_cursor_pos = self.hex_cursor_pos.saturating_sub(1);
+            }
+            cx.notify();
+            return;
+        }
+
+        if key == "arrowright" || key == "right" {
+            if event.keystroke.modifiers.shift {
+                if self.hex_selection_anchor.is_none() {
+                    self.hex_selection_anchor = Some(self.hex_cursor_pos);
+                }
+                self.hex_cursor_pos = (self.hex_cursor_pos + 1).min(total_chars);
+            } else if let Some((_, end)) = sel_range {
+                self.hex_selection_anchor = None;
+                self.hex_cursor_pos = end;
+            } else {
+                self.hex_selection_anchor = None;
+                self.hex_cursor_pos = (self.hex_cursor_pos + 1).min(total_chars);
+            }
+            cx.notify();
+            return;
+        }
+
+        if key == "home" {
+            if event.keystroke.modifiers.shift {
+                if self.hex_selection_anchor.is_none() {
+                    self.hex_selection_anchor = Some(self.hex_cursor_pos);
+                }
+            } else {
+                self.hex_selection_anchor = None;
+            }
+            self.hex_cursor_pos = 0;
+            cx.notify();
+            return;
+        }
+
+        if key == "end" {
+            if event.keystroke.modifiers.shift {
+                if self.hex_selection_anchor.is_none() {
+                    self.hex_selection_anchor = Some(self.hex_cursor_pos);
+                }
+            } else {
+                self.hex_selection_anchor = None;
+            }
+            self.hex_cursor_pos = total_chars;
+            cx.notify();
+            return;
+        }
+
+        let delete_selection = |input: &mut String, start: usize, end: usize| {
+            let before: String = input.chars().take(start).collect();
+            let after: String = input.chars().skip(end).collect();
+            *input = format!("{before}{after}");
+        };
+
+        if key == "backspace" {
+            if let Some((start, end)) = sel_range {
+                delete_selection(&mut self.custom_hex_input, start, end);
+                self.hex_cursor_pos = start;
+                self.hex_selection_anchor = None;
+                self.apply_custom_hex_if_valid(cx);
+                cx.notify();
+            } else if self.hex_cursor_pos > 0 {
+                let mut chars: Vec<char> = self.custom_hex_input.chars().collect();
+                chars.remove(self.hex_cursor_pos - 1);
+                self.custom_hex_input = chars.into_iter().collect();
+                self.hex_cursor_pos -= 1;
+                self.apply_custom_hex_if_valid(cx);
+                cx.notify();
+            }
+            return;
+        }
+
+        if key == "delete" {
+            if let Some((start, end)) = sel_range {
+                delete_selection(&mut self.custom_hex_input, start, end);
+                self.hex_cursor_pos = start;
+                self.hex_selection_anchor = None;
+                self.apply_custom_hex_if_valid(cx);
+                cx.notify();
+            } else if self.hex_cursor_pos < total_chars {
+                let mut chars: Vec<char> = self.custom_hex_input.chars().collect();
+                chars.remove(self.hex_cursor_pos);
+                self.custom_hex_input = chars.into_iter().collect();
+                self.apply_custom_hex_if_valid(cx);
+                cx.notify();
+            }
+            return;
+        }
+
+        if event.keystroke.modifiers.control && (key.eq_ignore_ascii_case("v") || key == "м" || key == "М") {
+            if let Some(item) = cx.read_from_clipboard() {
+                if let Some(text) = item.text() {
+                    let filtered: String = text.trim().chars().filter(|c| c.is_ascii_hexdigit() || *c == '#').take(7).collect();
+                    if !filtered.is_empty() {
+                        let formatted = if filtered.starts_with('#') { filtered } else { format!("#{filtered}") };
+                        self.custom_hex_input = formatted;
+                        self.hex_cursor_pos = self.custom_hex_input.chars().count();
+                        self.hex_selection_anchor = None;
+                        self.apply_custom_hex_if_valid(cx);
+                        cx.notify();
+                    }
+                }
+            }
+            return;
+        }
+
+        let ch = if let Some(c) = &event.keystroke.key_char {
+            c.as_str()
+        } else if key.chars().count() == 1 {
+            key.as_str()
+        } else {
+            ""
+        };
+
+        for c in ch.chars() {
+            if c.is_ascii_hexdigit() || c == '#' {
+                let upper = c.to_ascii_uppercase();
+                if let Some((start, end)) = sel_range {
+                    delete_selection(&mut self.custom_hex_input, start, end);
+                    self.hex_cursor_pos = start;
+                    self.hex_selection_anchor = None;
+                }
+                if self.custom_hex_input.chars().count() < 7 {
+                    let mut chars: Vec<char> = self.custom_hex_input.chars().collect();
+                    chars.insert(self.hex_cursor_pos, upper);
+                    self.custom_hex_input = chars.into_iter().collect();
+                    self.hex_cursor_pos += 1;
+                    self.apply_custom_hex_if_valid(cx);
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    pub fn apply_custom_hex_if_valid(&mut self, cx: &mut Context<Self>) {
+        let Some(picker_id) = self.active_color_picker else {
+            return;
+        };
+        if crate::markdown::parse_hex_color(&self.custom_hex_input).is_some() {
+            let hex_val = if self.custom_hex_input.starts_with('#') {
+                self.custom_hex_input.clone()
+            } else {
+                format!("#{}", self.custom_hex_input)
+            };
+            match picker_id {
+                "h1-color" => self.config.editor.headings.h1.color_name = hex_val,
+                "h2-color" => self.config.editor.headings.h2.color_name = hex_val,
+                "h3-color" => self.config.editor.headings.h3.color_name = hex_val,
+                "h4-color" => self.config.editor.headings.h4.color_name = hex_val,
+                "h5-color" => self.config.editor.headings.h5.color_name = hex_val,
+                "h6-color" => self.config.editor.headings.h6.color_name = hex_val,
+                _ => {}
+            }
+            self.save_settings(cx);
+        }
+    }
+
+    pub fn open_locale_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::i18n::{LocaleInfo, SUPPORTED_LOCALES};
+
+        let current = LocaleInfo::normalize(&self.config.ui.language);
+        let tabs: Vec<TabEntry> = SUPPORTED_LOCALES
+            .iter()
+            .enumerate()
+            .map(|(id, loc)| TabEntry {
+                id,
+                title: SharedString::from(loc.native_name),
+                subtitle: Some(SharedString::from(loc.english_name)),
+                icon: icons::ICON_GLOBE,
+                font_family: None,
+            })
+            .collect();
+        let active_ix = SUPPORTED_LOCALES
+            .iter()
+            .position(|loc| loc.code == current)
+            .unwrap_or(0);
+        let theme = self.theme.clone();
+
+        let popup = cx.new(|cx| {
+            TabListPopup::new(
+                tabs,
+                active_ix,
+                theme,
+                None,
+                Some(px(ROW_HEIGHT * 10.0)),
+                Some(50.0),
+                cx,
+            )
+        });
+        let subscription = cx.subscribe_in(
+            &popup,
+            window,
+            |this, _popup, event: &TabListEvent, _window, cx| {
+                match event {
+                    TabListEvent::Activate(id) => {
+                        if let Some(loc) = SUPPORTED_LOCALES.get(*id) {
+                            this.config.ui.language = loc.code.to_string();
+                            this.save_settings(cx);
+                        }
+                        this.close_locale_popup(cx);
+                    }
+                    TabListEvent::FoldTabs
+                    | TabListEvent::BookmarkTabs
+                    | TabListEvent::CloseAllTabs => {}
+                    TabListEvent::Dismiss => this.close_locale_popup(cx),
+                }
+            },
+        );
+
+        window.focus(&popup.read(cx).focus_handle());
+        self.locale_popup = Some(popup);
+        self.locale_popup_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    pub fn close_locale_popup(&mut self, cx: &mut Context<Self>) {
+        if self.locale_popup.take().is_none() {
+            return;
+        }
+        self.locale_popup_subscription = None;
+        cx.notify();
+    }
+
+    pub fn locale_popup_is_open(&self) -> bool {
+        self.locale_popup.is_some()
+    }
+
+    pub fn open_font_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.config.editor.font.font_family.clone();
+        let tabs: Vec<TabEntry> = crate::fonts::EDITOR_FONT_CHOICES
+            .iter()
+            .enumerate()
+            .map(|(id, name)| TabEntry {
+                id,
+                title: SharedString::from(*name),
+                subtitle: None,
+                icon: icons::ICON_TYPE,
+                font_family: Some(SharedString::from(*name)),
+            })
+            .collect();
+        let active_ix = crate::fonts::EDITOR_FONT_CHOICES
+            .iter()
+            .position(|name| *name == current)
+            .unwrap_or(0);
+        let theme = self.theme.clone();
+
+        let popup = cx.new(|cx| TabListPopup::new(tabs, active_ix, theme, None, None, None, cx));
+        let subscription = cx.subscribe_in(
+            &popup,
+            window,
+            |this, _popup, event: &TabListEvent, _window, cx| {
+                match event {
+                    TabListEvent::Activate(id) => {
+                        if let Some(name) = crate::fonts::EDITOR_FONT_CHOICES.get(*id) {
+                            this.config.editor.font.font_family = name.to_string();
+                            this.save_settings(cx);
+                        }
+                        this.close_font_popup(cx);
+                    }
+                    TabListEvent::FoldTabs
+                    | TabListEvent::BookmarkTabs
+                    | TabListEvent::CloseAllTabs => {}
+                    TabListEvent::Dismiss => this.close_font_popup(cx),
+                }
+            },
+        );
+
+        window.focus(&popup.read(cx).focus_handle());
+        self.font_popup = Some(popup);
+        self.font_popup_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    pub fn close_font_popup(&mut self, cx: &mut Context<Self>) {
+        if self.font_popup.take().is_none() {
+            return;
+        }
+        self.font_popup_subscription = None;
+        cx.notify();
+    }
+
+    pub fn font_popup_is_open(&self) -> bool {
+        self.font_popup.is_some()
+    }
+
+    pub fn open_plugin_select(
+        &mut self,
+        plugin_id: String,
+        view_id: u64,
+        node_id: String,
+        options: Vec<SelectOption>,
+        current_value: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let active_ix = options.iter().position(|o| o.value == current_value).unwrap_or(0);
+        let tabs: Vec<TabEntry> = options
+            .iter()
+            .enumerate()
+            .map(|(id, opt)| TabEntry {
+                id,
+                title: SharedString::from(opt.label.clone()),
+                subtitle: None,
+                icon: icons::ICON_CHEVRON_RIGHT,
+                font_family: None,
+            })
+            .collect();
+
+        let theme = self.theme.clone();
+        let max_rows = options.len().clamp(1, 10) as f32;
+        let popup = cx.new(|cx| {
+            TabListPopup::new(
+                tabs,
+                active_ix,
+                theme,
+                None,
+                Some(px(ROW_HEIGHT * max_rows)),
+                Some(50.0),
+                cx,
+            )
+        });
+
+        let p_id_activate = plugin_id.clone();
+        let n_id_activate = node_id.clone();
+        let opts_activate = options.clone();
+
+        let subscription = cx.subscribe_in(
+            &popup,
+            window,
+            move |this, _popup, event: &TabListEvent, _window, cx| {
+                match event {
+                    TabListEvent::Activate(id) => {
+                        if let Some(opt) = opts_activate.get(*id) {
+                            let chosen_val = opt.value.clone();
+                            if let Some(app) = this.weak_app.upgrade() {
+                                let pid = p_id_activate.clone();
+                                let nid = n_id_activate.clone();
+                                let cval = chosen_val.clone();
+                                app.update(cx, |app, cx| {
+                                    if let Some(tree) = app.plugin_views.get_mut(&(pid.clone(), view_id)) {
+                                        tree.update_input_value(&nid, &cval);
+                                    }
+                                    let _ = app.state.plugin_host.send_event(
+                                        &pid,
+                                        crate::plugins::api::HostEvent::UiEvent {
+                                            view_id,
+                                            node_id: nid,
+                                            event: "change".to_string(),
+                                            value: Some(cval),
+                                        },
+                                    );
+                                    cx.notify();
+                                });
+                            }
+                        }
+                        this.close_plugin_select(cx);
+                    }
+                    TabListEvent::FoldTabs
+                    | TabListEvent::BookmarkTabs
+                    | TabListEvent::CloseAllTabs => {}
+                    TabListEvent::Dismiss => this.close_plugin_select(cx),
+                }
+            },
+        );
+
+        window.focus(&popup.read(cx).focus_handle());
+        self.active_plugin_select = Some((plugin_id, view_id, node_id));
+        self.plugin_select_popup = Some(popup);
+        self.plugin_select_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    pub fn close_plugin_select(&mut self, cx: &mut Context<Self>) {
+        if self.plugin_select_popup.take().is_none() {
+            return;
+        }
+        self.active_plugin_select = None;
+        self.plugin_select_subscription = None;
+        cx.notify();
+    }
+
+    pub fn is_plugin_select_open(&self, plugin_id: &str, view_id: u64, node_id: &str) -> bool {
+        self.active_plugin_select.as_ref() == Some(&(plugin_id.to_string(), view_id, node_id.to_string()))
+            && self.plugin_select_popup.is_some()
+    }
+
+    pub fn toggle_community_plugin(&mut self, plugin_id: &str, cx: &mut Context<Self>) {
+        if let Some(app) = self.weak_app.upgrade() {
+            let pid = plugin_id.to_string();
+            app.update(cx, |app, cx| {
+                app.toggle_community_plugin(&pid, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    pub fn uninstall_community_plugin(&mut self, plugin_id: &str, cx: &mut Context<Self>) {
+        if let Some(app) = self.weak_app.upgrade() {
+            let pid = plugin_id.to_string();
+            app.update(cx, |app, cx| {
+                app.uninstall_plugin_from_catalog(&pid, cx);
+                app.load_installed_plugins_for_vault();
+                cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
+    pub fn open_plugin_catalog(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(app) = self.weak_app.upgrade() {
+            app.update(cx, |app, cx| {
+                app.open_plugin_catalog(window, cx);
+            });
+        }
+    }
+
+    pub fn close_active_plugin_modal(&mut self, cx: &mut Context<Self>) {
+        if let SettingsTab::PluginSettings(ref pid) = self.settings_tab {
+            let p_id = pid.clone();
+            if let Some(app) = self.weak_app.upgrade() {
+                app.update(cx, |app, cx| {
+                    let _ = app.state.plugin_host.send_event(
+                        &p_id,
+                        crate::plugins::api::HostEvent::UiEvent {
+                            view_id: 1,
+                            node_id: "modal".to_string(),
+                            event: "close".to_string(),
+                            value: None,
+                        },
+                    );
+                    app.plugin_views.remove(&(p_id, 1));
+                    cx.notify();
+                });
+            }
+        }
+    }
+
     /// Renders the full Settings modal dialog including backdrop and content.
     pub fn render_settings_modal(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
         let caret_visible = self.plugin_input_blink.visible();
 
         let plugin_modal_overlay = if let SettingsTab::PluginSettings(ref pid) = self.settings_tab {
-            self.plugin_views.get(&(pid.clone(), 1)).and_then(|modal_tree| {
-                if let crate::plugins::ui::UiNode::Text { value, .. } = modal_tree {
+            let p_id_query = pid.clone();
+            let modal_tree = self.weak_app.upgrade().and_then(|app| {
+                app.read(cx).plugin_views.get(&(p_id_query, 1)).cloned()
+            });
+            modal_tree.and_then(|modal_tree| {
+                if let crate::plugins::ui::UiNode::Text { ref value, .. } = modal_tree {
                     if value.is_empty() {
                         return None;
                     }
                 }
                 let is_ru = self.config.ui.language.starts_with("ru");
-                let modal_title = if let crate::plugins::ui::UiNode::Column { children, .. } = modal_tree {
+                let modal_title = if let crate::plugins::ui::UiNode::Column { ref children, .. } = modal_tree {
                     children.iter().find_map(|c| {
                         if let crate::plugins::ui::UiNode::Text { value, style: crate::plugins::ui::TextStyle::Heading } = c {
                             if !value.trim().is_empty() {
@@ -200,7 +950,7 @@ impl AppView {
                 }.unwrap_or_else(|| if is_ru { "Редактирование".to_string() } else { "Edit".to_string() });
 
                 let rendered_modal = crate::plugins::ui::render_ui_node(
-                    modal_tree,
+                    &modal_tree,
                     pid,
                     1,
                     theme,
@@ -355,7 +1105,7 @@ impl AppView {
                             this.active_color_picker = None;
                             cx.notify();
                         } else {
-                            this.close_settings(cx);
+                            this.close(cx);
                         }
                     }))
                     .on_scroll_wheel(|_, _, cx| {
@@ -462,7 +1212,7 @@ impl AppView {
                     .hover(|h| h.bg(theme.bg_hover))
                     .child(icons::icon(icons::ICON_CLOSE, 16.0, theme.text_muted))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.close_settings(cx);
+                        this.close(cx);
                     })),
             )
     }
@@ -524,7 +1274,7 @@ impl AppView {
     fn render_settings_content(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
         let scroll_handle = self.settings_scroll_handle.clone();
-        let is_catalog_open = self.plugin_catalog.is_open;
+        let is_catalog_open = self.weak_app.upgrade().map(|app| app.read(cx).plugin_catalog.is_open).unwrap_or(false);
 
         div()
             .id("settings-content-scroll")
@@ -721,8 +1471,8 @@ impl AppView {
         cx: &Context<Self>,
     ) -> gpui::Div
     where
-        F1: Fn(&mut AppView, &mut Context<AppView>) + 'static,
-        F2: Fn(&mut AppView, &mut Context<AppView>) + 'static,
+        F1: Fn(&mut SettingsView, &mut Context<SettingsView>) + 'static,
+        F2: Fn(&mut SettingsView, &mut Context<SettingsView>) + 'static,
     {
         let theme = &self.theme;
         div()
@@ -747,7 +1497,7 @@ impl AppView {
                     .cursor_pointer()
                     .hover(|h| h.bg(theme.bg_hover))
                     .child(div().text_sm().text_color(theme.text_secondary).child("−"))
-                    .on_click(cx.listener(move |this: &mut AppView, _, _, cx| {
+                    .on_click(cx.listener(move |this: &mut SettingsView, _, _, cx| {
                         on_dec(this, cx);
                     })),
             )
@@ -774,7 +1524,7 @@ impl AppView {
                     .cursor_pointer()
                     .hover(|h| h.bg(theme.bg_hover))
                     .child(div().text_sm().text_color(theme.text_secondary).child("+"))
-                    .on_click(cx.listener(move |this: &mut AppView, _, _, cx| {
+                    .on_click(cx.listener(move |this: &mut SettingsView, _, _, cx| {
                         on_inc(this, cx);
                     })),
             )
@@ -791,8 +1541,8 @@ impl AppView {
         cx: &Context<Self>,
     ) -> gpui::Div
     where
-        F1: Fn(&mut AppView, &mut Context<AppView>) + 'static,
-        F2: Fn(&mut AppView, &mut Context<AppView>) + 'static,
+        F1: Fn(&mut SettingsView, &mut Context<SettingsView>) + 'static,
+        F2: Fn(&mut SettingsView, &mut Context<SettingsView>) + 'static,
     {
         let theme = &self.theme;
         div()
@@ -828,7 +1578,7 @@ impl AppView {
                             .font_weight(gpui::FontWeight::BOLD)
                             .child("B"),
                     )
-                    .on_click(cx.listener(move |this: &mut AppView, _, _, cx| {
+                    .on_click(cx.listener(move |this: &mut SettingsView, _, _, cx| {
                         on_toggle_bold(this, cx);
                     })),
             )
@@ -861,7 +1611,7 @@ impl AppView {
                             .font_weight(gpui::FontWeight::BOLD)
                             .child("I"),
                     )
-                    .on_click(cx.listener(move |this: &mut AppView, _, _, cx| {
+                    .on_click(cx.listener(move |this: &mut SettingsView, _, _, cx| {
                         on_toggle_italic(this, cx);
                     })),
             )
@@ -888,7 +1638,7 @@ impl AppView {
                     .bg(current_color_rgb)
                     .cursor_pointer()
                     .hover(|h| h.opacity(0.85))
-                    .on_click(cx.listener(move |this: &mut AppView, _, window, cx| {
+                    .on_click(cx.listener(move |this: &mut SettingsView, _, window, cx| {
                         if this.active_color_picker == Some(picker_id) {
                             this.active_color_picker = None;
                             this.hex_is_focused = false;
@@ -990,7 +1740,7 @@ impl AppView {
                             .bg(prgb)
                             .cursor_pointer()
                             .hover(|h| h.opacity(0.85))
-                            .on_click(cx.listener(move |this: &mut AppView, _, _, cx| {
+                            .on_click(cx.listener(move |this: &mut SettingsView, _, _, cx| {
                                 this.active_color_picker = None;
                                 this.hex_is_focused = false;
                                 this.custom_hex_input = phex.to_string();
@@ -1215,7 +1965,7 @@ pub fn render_select_pill_styled(label: &str, theme: &crate::theme::Theme) -> gp
         .child(icons::icon(icons::ICON_CHEVRON_DOWN, 12.0, theme.text_muted))
 }
 
-impl AppView {
+impl SettingsView {
 
     // =========================================================================
     // 1. Interface (Ui) Tab
@@ -1360,8 +2110,12 @@ impl AppView {
                         this.config.ui.sidebar_smart_scroll = !this.config.ui.sidebar_smart_scroll;
                         // Сбрасываем курсорное состояние, чтобы при включении
                         // список не прыгал от устаревшей позиции мыши.
-                        this.sidebar_smart_last_mouse_y.set(None);
-                        this.sidebar_smart_target_y.set(None);
+                        if let Some(app) = this.weak_app.upgrade() {
+                            app.update(cx, |app, _| {
+                                app.sidebar_smart_last_mouse_y.set(None);
+                                app.sidebar_smart_target_y.set(None);
+                            });
+                        }
                         this.save_settings(cx);
                     })),
             ),
@@ -1384,13 +2138,13 @@ impl AppView {
                 self.render_stepper(
                     "ui-font-size",
                     &format!("{} px", config.ui.font.font_size_base),
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         if this.config.ui.font.font_size_base > 11 {
                             this.config.ui.font.font_size_base -= 1;
                             this.save_settings(cx);
                         }
                     },
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         if this.config.ui.font.font_size_base < 24 {
                             this.config.ui.font.font_size_base += 1;
                             this.save_settings(cx);
@@ -1735,13 +2489,13 @@ impl AppView {
                 self.render_stepper(
                     "editor-font-size",
                     &format!("{} px", config.editor.font.font_size_base),
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         if this.config.editor.font.font_size_base > 12 {
                             this.config.editor.font.font_size_base -= 1;
                             this.save_settings(cx);
                         }
                     },
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         if this.config.editor.font.font_size_base < 32 {
                             this.config.editor.font.font_size_base += 1;
                             this.save_settings(cx);
@@ -1756,13 +2510,13 @@ impl AppView {
                 self.render_stepper(
                     "editor-line-height",
                     &format!("{:.2}", config.editor.line_height),
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         if this.config.editor.line_height > 1.2 {
                             this.config.editor.line_height = (this.config.editor.line_height - 0.05).max(1.2);
                             this.save_settings(cx);
                         }
                     },
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         if this.config.editor.line_height < 2.5 {
                             this.config.editor.line_height = (this.config.editor.line_height + 0.05).min(2.5);
                             this.save_settings(cx);
@@ -1781,13 +2535,13 @@ impl AppView {
                 self.render_stepper(
                     "editor-max-width",
                     &format!("{} ch", config.editor.max_width_ch),
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         if this.config.editor.max_width_ch > 40 {
                             this.config.editor.max_width_ch -= 5;
                             this.save_settings(cx);
                         }
                     },
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         if this.config.editor.max_width_ch < 140 {
                             this.config.editor.max_width_ch += 5;
                             this.save_settings(cx);
@@ -1812,13 +2566,13 @@ impl AppView {
                 self.render_stepper(
                     "editor-tabs",
                     &tabs_display,
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         if this.config.editor.live_tabs > 1 {
                             this.config.editor.live_tabs -= 1;
                             this.save_settings(cx);
                         }
                     },
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         if this.config.editor.live_tabs < 8 {
                             this.config.editor.live_tabs += 1;
                             this.save_settings(cx);
@@ -1881,13 +2635,13 @@ impl AppView {
                 self.render_stepper(
                     "editor-debounce",
                     &debounce_display,
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         if this.config.editor.save_debounce_ms > 250 {
                             this.config.editor.save_debounce_ms -= 250;
                             this.save_settings(cx);
                         }
                     },
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         if this.config.editor.save_debounce_ms < 5000 {
                             this.config.editor.save_debounce_ms += 250;
                             this.save_settings(cx);
@@ -1928,11 +2682,11 @@ impl AppView {
                 self.render_stepper(
                     "reader-line-height",
                     &format!("{:.2}", config.reader.line_height),
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         this.config.reader.line_height = (this.config.reader.line_height - 0.05).max(1.2);
                         this.save_settings(cx);
                     },
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         this.config.reader.line_height = (this.config.reader.line_height + 0.05).min(2.5);
                         this.save_settings(cx);
                     },
@@ -1985,13 +2739,13 @@ impl AppView {
                 self.render_stepper(
                     "search-pool",
                     &format!("{}", config.search.candidate_pool_size),
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         if this.config.search.candidate_pool_size > 64 {
                             this.config.search.candidate_pool_size -= 32;
                             this.save_settings(cx);
                         }
                     },
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         if this.config.search.candidate_pool_size < 1024 {
                             this.config.search.candidate_pool_size += 32;
                             this.save_settings(cx);
@@ -2006,13 +2760,13 @@ impl AppView {
                 self.render_stepper(
                     "search-terms",
                     &format!("{}", config.search.max_query_terms),
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         if this.config.search.max_query_terms > 8 {
                             this.config.search.max_query_terms -= 8;
                             this.save_settings(cx);
                         }
                     },
-                    |this: &mut AppView, cx| {
+                    |this: &mut SettingsView, cx| {
                         if this.config.search.max_query_terms < 128 {
                             this.config.search.max_query_terms += 8;
                             this.save_settings(cx);
@@ -2443,10 +3197,15 @@ impl AppView {
             .map(|(id, name, desc, default_val)| {
                 let p_id = id.to_string();
                 let is_enabled = self
-                    .state
-                    .vault
-                    .as_ref()
-                    .map(|v| v.is_core_plugin_enabled(id))
+                    .weak_app
+                    .upgrade()
+                    .and_then(|app| {
+                        app.read(cx)
+                            .state
+                            .vault
+                            .as_ref()
+                            .map(|v| v.is_core_plugin_enabled(id))
+                    })
                     .unwrap_or(default_val);
 
                 let toggle_id = p_id.clone();
@@ -2455,13 +3214,19 @@ impl AppView {
                     .cursor_pointer()
                     .child(self.render_toggle_switch(is_enabled))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(vault) = &this.state.vault {
-                            if is_enabled {
-                                let _ = vault.disable_core_plugin(&toggle_id);
-                            } else {
-                                let _ = vault.enable_core_plugin(&toggle_id);
-                            }
-                            this.state.status_text = format!("Core plugin '{}' updated", toggle_id);
+                        if let Some(app) = this.weak_app.upgrade() {
+                            let tid = toggle_id.clone();
+                            app.update(cx, |app, cx| {
+                                if let Some(vault) = &app.state.vault {
+                                    if is_enabled {
+                                        let _ = vault.disable_core_plugin(&tid);
+                                    } else {
+                                        let _ = vault.enable_core_plugin(&tid);
+                                    }
+                                    app.state.status_text = format!("Core plugin '{}' updated", tid);
+                                    cx.notify();
+                                }
+                            });
                             cx.notify();
                         }
                     }));
@@ -2497,12 +3262,10 @@ impl AppView {
                 this.config.community_plugins.safe_mode = !this.config.community_plugins.safe_mode;
                 if this.config.community_plugins.safe_mode {
                     // Safe mode turned ON -> unload all plugins immediately
-                    this.unload_all_plugins();
-                    this.state.status_text = "Safe mode enabled: community plugins unloaded".to_string();
+                    this.unload_all_plugins(cx);
                 } else {
                     // Safe mode turned OFF -> reload enabled plugins
-                    this.load_installed_plugins_for_vault();
-                    this.state.status_text = "Safe mode disabled: community plugins loaded".to_string();
+                    this.load_installed_plugins_for_vault(cx);
                 }
                 this.save_settings(cx);
             }));
@@ -2546,9 +3309,13 @@ impl AppView {
         );
 
         // Scan installed plugins in the vault
-        let installed_plugins = if let Some(vault) = &self.state.vault {
-            let plugins_dir = vault.root.join(".vault").join("plugins");
-            crate::plugins::loader::discover_plugins(&plugins_dir)
+        let installed_plugins = if let Some(app) = self.weak_app.upgrade() {
+            if let Some(vault) = &app.read(cx).state.vault {
+                let plugins_dir = vault.root.join(".vault").join("plugins");
+                crate::plugins::loader::discover_plugins(&plugins_dir)
+            } else {
+                Vec::new()
+            }
         } else {
             Vec::new()
         };
@@ -2556,7 +3323,9 @@ impl AppView {
         let mut plugin_rows = Vec::new();
         for plugin in &installed_plugins {
             let p_id = plugin.manifest.id.clone();
-            let is_enabled = self.state.vault.as_ref().map(|v| v.is_community_plugin_enabled(&p_id)).unwrap_or(false);
+            let is_enabled = self.weak_app.upgrade().map(|app| {
+                app.read(cx).state.vault.as_ref().map(|v| v.is_community_plugin_enabled(&p_id)).unwrap_or(false)
+            }).unwrap_or(false);
 
             let toggle_id = p_id.clone();
             let toggle = div()
@@ -2564,27 +3333,7 @@ impl AppView {
                 .cursor_pointer()
                 .child(self.render_toggle_switch(is_enabled))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(vault) = &this.state.vault {
-                        if is_enabled {
-                            let _ = vault.disable_community_plugin(&toggle_id);
-                            // Unload runtime if running
-                            if let Some(pos) = this.plugin_runtimes.iter().position(|r| r.manifest.id == toggle_id) {
-                                let handle = this.plugin_runtimes.remove(pos);
-                                let _ = handle.host_events_tx.unbounded_send(crate::plugins::api::HostEvent::Unload);
-                                this.state.plugin_host.unregister_plugin(&toggle_id);
-                                this.state.commands.unregister_all_of(&toggle_id);
-                                this.state.ribbon.unregister_all_of(&toggle_id);
-                                this.state.status_bar.unregister_all_of(&toggle_id);
-                                this.state.code_block_processors.unregister_all_of(&toggle_id);
-                                this.code_block_views.retain(|_, (pid, _)| pid != &toggle_id);
-                            }
-                        } else {
-                            let _ = vault.enable_community_plugin(&toggle_id);
-                            // Reload plugins for vault
-                            this.load_installed_plugins_for_vault();
-                        }
-                        cx.notify();
-                    }
+                    this.toggle_community_plugin(&toggle_id, cx);
                 }));
 
             let p_name = plugin.manifest.name.clone();
@@ -2609,15 +3358,20 @@ impl AppView {
                             .child(icons::icon(icons::ICON_SETTINGS, 14.0, theme.text_muted))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.settings_tab = SettingsTab::PluginSettings(settings_btn_id.clone());
-                                let _ = this.state.plugin_host.send_event(
-                                    &settings_btn_id,
-                                    crate::plugins::api::HostEvent::UiEvent {
-                                        view_id: 0,
-                                        node_id: "__refresh_setting_tab__".to_string(),
-                                        event: "refresh".to_string(),
-                                        value: None,
-                                    },
-                                );
+                                if let Some(app) = this.weak_app.upgrade() {
+                                    let s_id = settings_btn_id.clone();
+                                    app.update(cx, |app, _cx| {
+                                        let _ = app.state.plugin_host.send_event(
+                                            &s_id,
+                                            crate::plugins::api::HostEvent::UiEvent {
+                                                view_id: 0,
+                                                node_id: "__refresh_setting_tab__".to_string(),
+                                                event: "refresh".to_string(),
+                                                value: None,
+                                            },
+                                        );
+                                    });
+                                }
                                 cx.notify();
                             })),
                     )
@@ -2658,15 +3412,20 @@ impl AppView {
                 .hover(|h| h.opacity(0.85))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.settings_tab = SettingsTab::PluginSettings(details_btn_id.clone());
-                    let _ = this.state.plugin_host.send_event(
-                        &details_btn_id,
-                        crate::plugins::api::HostEvent::UiEvent {
-                            view_id: 0,
-                            node_id: "__refresh_setting_tab__".to_string(),
-                            event: "refresh".to_string(),
-                            value: None,
-                        },
-                    );
+                    if let Some(app) = this.weak_app.upgrade() {
+                        let d_id = details_btn_id.clone();
+                        app.update(cx, |app, _cx| {
+                            let _ = app.state.plugin_host.send_event(
+                                &d_id,
+                                crate::plugins::api::HostEvent::UiEvent {
+                                    view_id: 0,
+                                    node_id: "__refresh_setting_tab__".to_string(),
+                                    event: "refresh".to_string(),
+                                    value: None,
+                                },
+                            );
+                        });
+                    }
                     cx.notify();
                 }))
                 .child(
@@ -3217,20 +3976,24 @@ impl AppView {
         // Retrieve plugin folder, manifest, and README.
         // The directory name on disk might not match manifest.id (e.g. "obsidian-new-note-np" vs "new-note-np").
         // Search through discovered plugins or fallback to direct id lookup.
-        let (plugin_dir, manifest, manifest_json) = if let Some(vault) = &self.state.vault {
-            let plugins_dir = vault.root.join(".vault").join("plugins");
-            let discovered = crate::plugins::loader::discover_plugins(&plugins_dir);
-            if let Some(found) = discovered.into_iter().find(|p| p.manifest.id == plugin_id || p.dir_path.file_name().and_then(|n| n.to_str()) == Some(plugin_id)) {
-                let m_path = found.dir_path.join("manifest.json");
-                let raw_val: Option<serde_json::Value> = std::fs::read_to_string(&m_path).ok().and_then(|c| serde_json::from_str(&c).ok());
-                (Some(found.dir_path), Some(found.manifest), raw_val)
+        let (plugin_dir, manifest, manifest_json) = if let Some(app) = self.weak_app.upgrade() {
+            if let Some(vault) = &app.read(cx).state.vault {
+                let plugins_dir = vault.root.join(".vault").join("plugins");
+                let discovered = crate::plugins::loader::discover_plugins(&plugins_dir);
+                if let Some(found) = discovered.into_iter().find(|p| p.manifest.id == plugin_id || p.dir_path.file_name().and_then(|n| n.to_str()) == Some(plugin_id)) {
+                    let m_path = found.dir_path.join("manifest.json");
+                    let raw_val: Option<serde_json::Value> = std::fs::read_to_string(&m_path).ok().and_then(|c| serde_json::from_str(&c).ok());
+                    (Some(found.dir_path), Some(found.manifest), raw_val)
+                } else {
+                    let direct_dir = plugins_dir.join(plugin_id);
+                    let m_path = direct_dir.join("manifest.json");
+                    let content = std::fs::read_to_string(&m_path).ok();
+                    let m = content.as_deref().and_then(|c| serde_json::from_str(c).ok());
+                    let raw_val: Option<serde_json::Value> = content.as_deref().and_then(|c| serde_json::from_str(c).ok());
+                    (Some(direct_dir), m, raw_val)
+                }
             } else {
-                let direct_dir = plugins_dir.join(plugin_id);
-                let m_path = direct_dir.join("manifest.json");
-                let content = std::fs::read_to_string(&m_path).ok();
-                let m = content.as_deref().and_then(|c| serde_json::from_str(c).ok());
-                let raw_val: Option<serde_json::Value> = content.as_deref().and_then(|c| serde_json::from_str(c).ok());
-                (Some(direct_dir), m, raw_val)
+                (None, None, None)
             }
         } else {
             (None, None, None)
@@ -3262,7 +4025,7 @@ impl AppView {
             None
         });
 
-        let is_enabled = self.state.vault.as_ref().map(|v| v.is_community_plugin_enabled(plugin_id)).unwrap_or(false);
+        let is_enabled = self.weak_app.upgrade().map(|app| app.read(cx).state.vault.as_ref().map(|v| v.is_community_plugin_enabled(plugin_id)).unwrap_or(false)).unwrap_or(false);
         let toggle_id = plugin_id.to_string();
         let uninstall_id = plugin_id.to_string();
         let plugin_dir_for_reveal = plugin_dir.clone();
@@ -3338,25 +4101,7 @@ impl AppView {
                         if is_ru { "Включить" } else { "Enable" }
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(vault) = &this.state.vault {
-                            if is_enabled {
-                                let _ = vault.disable_community_plugin(&toggle_id);
-                                if let Some(pos) = this.plugin_runtimes.iter().position(|r| r.manifest.id == toggle_id) {
-                                    let handle = this.plugin_runtimes.remove(pos);
-                                    let _ = handle.host_events_tx.unbounded_send(crate::plugins::api::HostEvent::Unload);
-                                    this.state.plugin_host.unregister_plugin(&toggle_id);
-                                    this.state.commands.unregister_all_of(&toggle_id);
-                                    this.state.ribbon.unregister_all_of(&toggle_id);
-                                    this.state.status_bar.unregister_all_of(&toggle_id);
-                                    this.state.code_block_processors.unregister_all_of(&toggle_id);
-                                    this.code_block_views.retain(|_, (pid, _)| pid != &toggle_id);
-                                }
-                            } else {
-                                let _ = vault.enable_community_plugin(&toggle_id);
-                                this.load_installed_plugins_for_vault();
-                            }
-                            cx.notify();
-                        }
+                        this.toggle_community_plugin(&toggle_id, cx);
                     })),
             )
             // Reload plugin button
@@ -3383,17 +4128,22 @@ impl AppView {
                                 .child(if is_ru { "Перезагрузить" } else { "Reload" }),
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.load_installed_plugins_for_vault();
+                            this.load_installed_plugins_for_vault(cx);
                             // Refresh settings tab
-                            let _ = this.state.plugin_host.send_event(
-                                &r_id,
-                                crate::plugins::api::HostEvent::UiEvent {
-                                    view_id: 0,
-                                    node_id: "__refresh_setting_tab__".to_string(),
-                                    event: "refresh".to_string(),
-                                    value: None,
-                                },
-                            );
+                            if let Some(app) = this.weak_app.upgrade() {
+                                let r_id_clone = r_id.clone();
+                                app.update(cx, |app, _cx| {
+                                    let _ = app.state.plugin_host.send_event(
+                                        &r_id_clone,
+                                        crate::plugins::api::HostEvent::UiEvent {
+                                            view_id: 0,
+                                            node_id: "__refresh_setting_tab__".to_string(),
+                                            event: "refresh".to_string(),
+                                            value: None,
+                                        },
+                                    );
+                                });
+                            }
                             cx.notify();
                         })),
                 )
@@ -3676,11 +4426,13 @@ impl AppView {
 
         // Declarative UI or data.json configuration inspect section
         let p_id_str = plugin_id.to_string();
-        let custom_tree = self.plugin_views.get(&(p_id_str.clone(), 0));
+        let custom_tree = self.weak_app.upgrade().and_then(|app| {
+            app.read(cx).plugin_views.get(&(p_id_str.clone(), 0)).cloned()
+        });
 
         let settings_section = if let Some(tree) = custom_tree {
             let rendered_node = crate::plugins::ui::render_ui_node(
-                tree,
+                &tree,
                 plugin_id,
                 0,
                 theme,
@@ -3716,10 +4468,15 @@ impl AppView {
                 )
         } else {
             let current_data = self
-                .state
-                .vault
-                .as_ref()
-                .and_then(|v| v.load_plugin_data(plugin_id))
+                .weak_app
+                .upgrade()
+                .and_then(|app| {
+                    app.read(cx)
+                        .state
+                        .vault
+                        .as_ref()
+                        .and_then(|v| v.load_plugin_data(plugin_id))
+                })
                 .unwrap_or(serde_json::json!({}));
 
             let data_str = serde_json::to_string_pretty(&current_data).unwrap_or_else(|_| "{}".to_string());
@@ -3766,6 +4523,282 @@ impl AppView {
             .child(self.render_settings_card(if is_ru { "Метаданные" } else { "Metadata" }, meta_rows))
             .child(content_section)
             .child(settings_section)
+    }
+}
+
+impl Render for SettingsView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.render_settings_modal(window, cx)
+    }
+}
+
+impl UiSink for SettingsView {
+    fn send_plugin_ui_event(
+        &mut self,
+        plugin_id: &str,
+        view_id: u64,
+        node_id: String,
+        event: &str,
+        value: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(app) = self.weak_app.upgrade() {
+            let pid = plugin_id.to_string();
+            app.update(cx, |app, cx| {
+                app.send_plugin_ui_event(&pid, view_id, node_id, event, value, cx);
+            });
+        }
+    }
+
+    fn plugin_input_focus_handle(&self) -> &FocusHandle {
+        &self.plugin_input_focus_handle
+    }
+
+    fn plugin_input_blink_enable(&mut self, cx: &mut Context<Self>) {
+        self.plugin_input_blink.enable_view(|s| &mut s.plugin_input_blink, cx);
+    }
+
+    fn plugin_input_blink_pause_and_show(&mut self, cx: &mut Context<Self>) {
+        self.plugin_input_blink.pause_and_show_view(|s| &mut s.plugin_input_blink, cx);
+    }
+
+    fn active_plugin_input(&self) -> Option<&PluginInputFocusState> {
+        self.active_plugin_input.as_ref()
+    }
+
+    fn set_active_plugin_input(&mut self, state: Option<PluginInputFocusState>) {
+        self.active_plugin_input = state;
+    }
+
+    fn active_plugin_input_mut(&mut self) -> Option<&mut PluginInputFocusState> {
+        self.active_plugin_input.as_mut()
+    }
+
+    fn handle_plugin_input_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let Some(mut input_state) = self.active_plugin_input.clone() else {
+            return;
+        };
+
+        self.plugin_input_blink.pause_and_show_view(|s| &mut s.plugin_input_blink, cx);
+
+        let key = &event.keystroke.key;
+        let ctrl = event.keystroke.modifiers.control;
+        let shift = event.keystroke.modifiers.shift;
+
+        if key == "escape" {
+            self.active_plugin_input = None;
+            self.plugin_input_blink.disable_view(cx);
+            cx.notify();
+            return;
+        }
+
+        let mut chars: Vec<char> = input_state.value.chars().collect();
+        let total_chars = chars.len();
+        let mut pos = input_state.cursor_pos.min(total_chars);
+        let sel_range = if let Some(anchor) = input_state.selection_anchor {
+            if anchor != pos {
+                Some((anchor.min(pos), anchor.max(pos)))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if ctrl && (key.eq_ignore_ascii_case("a") || key == "ф" || key == "Ф") {
+            input_state.selection_anchor = Some(0);
+            input_state.cursor_pos = total_chars;
+            self.active_plugin_input = Some(input_state);
+            cx.notify();
+            return;
+        }
+
+        if ctrl && (key.eq_ignore_ascii_case("c") || key == "с" || key == "С") {
+            let text_to_copy = if let Some((start, end)) = sel_range {
+                chars.iter().skip(start).take(end - start).collect::<String>()
+            } else {
+                input_state.value.clone()
+            };
+            if !text_to_copy.is_empty() {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text_to_copy));
+            }
+            return;
+        }
+
+        let mut text_changed = false;
+
+        let delete_selection = |chars: &mut Vec<char>, start: usize, end: usize| {
+            chars.drain(start..end);
+        };
+
+        if key == "backspace" {
+            if let Some((start, end)) = sel_range {
+                delete_selection(&mut chars, start, end);
+                pos = start;
+                input_state.selection_anchor = None;
+                text_changed = true;
+            } else if pos > 0 {
+                chars.remove(pos - 1);
+                pos -= 1;
+                text_changed = true;
+            }
+        } else if key == "delete" {
+            if let Some((start, end)) = sel_range {
+                delete_selection(&mut chars, start, end);
+                pos = start;
+                input_state.selection_anchor = None;
+                text_changed = true;
+            } else if pos < total_chars {
+                chars.remove(pos);
+                text_changed = true;
+            }
+        } else if key == "arrowleft" || key == "left" {
+            if shift {
+                if input_state.selection_anchor.is_none() {
+                    input_state.selection_anchor = Some(pos);
+                }
+                pos = pos.saturating_sub(1);
+            } else if let Some((start, _)) = sel_range {
+                input_state.selection_anchor = None;
+                pos = start;
+            } else {
+                input_state.selection_anchor = None;
+                pos = pos.saturating_sub(1);
+            }
+        } else if key == "arrowright" || key == "right" {
+            if shift {
+                if input_state.selection_anchor.is_none() {
+                    input_state.selection_anchor = Some(pos);
+                }
+                pos = (pos + 1).min(total_chars);
+            } else if let Some((_, end)) = sel_range {
+                input_state.selection_anchor = None;
+                pos = end;
+            } else {
+                input_state.selection_anchor = None;
+                pos = (pos + 1).min(total_chars);
+            }
+        } else if key == "home" {
+            if shift {
+                if input_state.selection_anchor.is_none() {
+                    input_state.selection_anchor = Some(pos);
+                }
+            } else {
+                input_state.selection_anchor = None;
+            }
+            pos = 0;
+        } else if key == "end" {
+            if shift {
+                if input_state.selection_anchor.is_none() {
+                    input_state.selection_anchor = Some(pos);
+                }
+            } else {
+                input_state.selection_anchor = None;
+            }
+            pos = total_chars;
+        } else if ctrl && (key.eq_ignore_ascii_case("v") || key == "м" || key == "М") {
+            if let Some(item) = cx.read_from_clipboard() {
+                if let Some(text) = item.text() {
+                    let paste = if input_state.is_multiline {
+                        text
+                    } else {
+                        text.replace('\n', " ").replace('\r', "")
+                    };
+                    if let Some((start, end)) = sel_range {
+                        delete_selection(&mut chars, start, end);
+                        pos = start;
+                        input_state.selection_anchor = None;
+                    }
+                    for c in paste.chars() {
+                        chars.insert(pos, c);
+                        pos += 1;
+                    }
+                    text_changed = true;
+                }
+            }
+        } else if key == "enter" {
+            if input_state.is_multiline {
+                if let Some((start, end)) = sel_range {
+                    delete_selection(&mut chars, start, end);
+                    pos = start;
+                    input_state.selection_anchor = None;
+                }
+                chars.insert(pos, '\n');
+                pos += 1;
+                text_changed = true;
+            }
+        } else {
+            let typed = if let Some(c) = &event.keystroke.key_char {
+                c.as_str()
+            } else if key.chars().count() == 1 {
+                key.as_str()
+            } else {
+                ""
+            };
+            if !typed.is_empty() && !ctrl {
+                if let Some((start, end)) = sel_range {
+                    delete_selection(&mut chars, start, end);
+                    pos = start;
+                    input_state.selection_anchor = None;
+                }
+                for c in typed.chars() {
+                    chars.insert(pos, c);
+                    pos += 1;
+                }
+                text_changed = true;
+            }
+        }
+
+        input_state.value = chars.into_iter().collect();
+        input_state.cursor_pos = pos;
+
+        if text_changed {
+            if let Some(app) = self.weak_app.upgrade() {
+                let pid = input_state.plugin_id.clone();
+                let vid = input_state.view_id;
+                let nid = input_state.node_id.clone();
+                let val = input_state.value.clone();
+                app.update(cx, |app, cx| {
+                    if let Some(tree) = app.plugin_views.get_mut(&(pid.clone(), vid)) {
+                        tree.update_input_value(&nid, &val);
+                    }
+                    let _ = app.state.plugin_host.send_event(
+                        &pid,
+                        crate::plugins::api::HostEvent::UiEvent {
+                            view_id: vid,
+                            node_id: nid,
+                            event: "change".to_string(),
+                            value: Some(val),
+                        },
+                    );
+                    cx.notify();
+                });
+            }
+        }
+
+        self.active_plugin_input = Some(input_state);
+        cx.notify();
+    }
+
+    fn open_plugin_select(
+        &mut self,
+        plugin_id: String,
+        view_id: u64,
+        node_id: String,
+        options: Vec<SelectOption>,
+        current_value: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_plugin_select(plugin_id, view_id, node_id, options, current_value, window, cx);
+    }
+
+    fn close_plugin_select(&mut self, cx: &mut Context<Self>) {
+        self.close_plugin_select(cx);
+    }
+
+    fn is_plugin_select_open(&self, plugin_id: &str, view_id: u64, node_id: &str) -> bool {
+        self.is_plugin_select_open(plugin_id, view_id, node_id)
     }
 }
 
@@ -3853,6 +4886,22 @@ mod tests {
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0], (true, "Done task"));
         assert_eq!(tasks[1], (false, "Todo task"));
+    }
+
+    #[test]
+    fn test_settings_tab_navigation_and_variants() {
+        let tabs = vec![
+            SettingsTab::Ui,
+            SettingsTab::Editor,
+            SettingsTab::Shortcuts,
+            SettingsTab::CorePlugins,
+            SettingsTab::CommunityPlugins,
+            SettingsTab::System,
+            SettingsTab::PluginSettings("dataview".to_string()),
+        ];
+        assert_eq!(tabs.len(), 7);
+        assert!(matches!(tabs[0], SettingsTab::Ui));
+        assert!(matches!(tabs[6], SettingsTab::PluginSettings(ref id) if id == "dataview"));
     }
 }
 

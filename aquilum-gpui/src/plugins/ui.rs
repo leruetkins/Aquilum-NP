@@ -405,8 +405,112 @@ pub fn validate_tree(root: &UiNode) -> Result<(), String> {
     walk(root, 0, &mut total_nodes, &mut ids)
 }
 
+/// Trait implemented by views that host declarative plugin UI elements (e.g. `AppView`, `SettingsView`).
+pub trait UiSink: 'static + Sized {
+    fn send_plugin_ui_event(
+        &mut self,
+        plugin_id: &str,
+        view_id: u64,
+        node_id: String,
+        event: &str,
+        value: Option<String>,
+        cx: &mut Context<Self>,
+    );
+    fn plugin_input_focus_handle(&self) -> &FocusHandle;
+    fn plugin_input_blink_enable(&mut self, cx: &mut Context<Self>);
+    fn plugin_input_blink_pause_and_show(&mut self, cx: &mut Context<Self>);
+    fn active_plugin_input(&self) -> Option<&PluginInputFocusState>;
+    fn set_active_plugin_input(&mut self, state: Option<PluginInputFocusState>);
+    fn active_plugin_input_mut(&mut self) -> Option<&mut PluginInputFocusState>;
+    fn handle_plugin_input_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>);
+    fn open_plugin_select(
+        &mut self,
+        plugin_id: String,
+        view_id: u64,
+        node_id: String,
+        options: Vec<SelectOption>,
+        current_value: String,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    );
+    fn close_plugin_select(&mut self, cx: &mut Context<Self>);
+    fn is_plugin_select_open(&self, plugin_id: &str, view_id: u64, node_id: &str) -> bool;
+}
+
+impl UiSink for AppView {
+    fn send_plugin_ui_event(
+        &mut self,
+        plugin_id: &str,
+        view_id: u64,
+        node_id: String,
+        event: &str,
+        value: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let _ = self.state.plugin_host.send_event(
+            plugin_id,
+            crate::plugins::api::HostEvent::UiEvent {
+                view_id,
+                node_id,
+                event: event.to_string(),
+                value,
+            },
+        );
+        cx.notify();
+    }
+
+    fn plugin_input_focus_handle(&self) -> &FocusHandle {
+        &self.plugin_input_focus_handle
+    }
+
+    fn plugin_input_blink_enable(&mut self, cx: &mut Context<Self>) {
+        self.plugin_input_blink.enable(crate::blink_manager::BlinkTarget::PluginInput, cx);
+    }
+
+    fn plugin_input_blink_pause_and_show(&mut self, cx: &mut Context<Self>) {
+        self.plugin_input_blink.pause_and_show(crate::blink_manager::BlinkTarget::PluginInput, cx);
+    }
+
+    fn active_plugin_input(&self) -> Option<&PluginInputFocusState> {
+        self.active_plugin_input.as_ref()
+    }
+
+    fn set_active_plugin_input(&mut self, state: Option<PluginInputFocusState>) {
+        self.active_plugin_input = state;
+    }
+
+    fn active_plugin_input_mut(&mut self) -> Option<&mut PluginInputFocusState> {
+        self.active_plugin_input.as_mut()
+    }
+
+    fn handle_plugin_input_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        self.handle_plugin_input_key(event, cx);
+    }
+
+    fn open_plugin_select(
+        &mut self,
+        plugin_id: String,
+        view_id: u64,
+        node_id: String,
+        options: Vec<SelectOption>,
+        current_value: String,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_plugin_select(plugin_id, view_id, node_id, options, current_value, window, cx);
+    }
+
+    fn close_plugin_select(&mut self, cx: &mut Context<Self>) {
+        self.close_plugin_select(cx);
+    }
+
+    fn is_plugin_select_open(&self, plugin_id: &str, view_id: u64, node_id: &str) -> bool {
+        self.is_plugin_select_open(plugin_id, view_id, node_id)
+    }
+}
+
 /// Renders a declarative UI node into GPUI elements using application theme tokens.
-pub fn render_ui_node(
+pub fn render_ui_node<V: UiSink>(
     node: &UiNode,
     plugin_id: &str,
     view_id: u64,
@@ -417,7 +521,7 @@ pub fn render_ui_node(
     select_popup: Option<&gpui::Entity<crate::views::tab_list::TabListPopup>>,
     caret_visible: bool,
     window: &gpui::Window,
-    cx: &Context<AppView>,
+    cx: &Context<V>,
 ) -> AnyElement {
     match node {
         UiNode::Column { gap, children } => {
@@ -570,16 +674,14 @@ pub fn render_ui_node(
                     }
                     .on_click(cx.listener(move |app, _, _, cx| {
                         cx.stop_propagation();
-                        let _ = app.state.plugin_host.send_event(
+                        app.send_plugin_ui_event(
                             &p_id,
-                            crate::plugins::api::HostEvent::UiEvent {
-                                view_id,
-                                node_id: n_id.clone(),
-                                event: "click".to_string(),
-                                value: None,
-                            },
+                            view_id,
+                            n_id.clone(),
+                            "click",
+                            None,
+                            cx,
                         );
-                        cx.notify();
                     }))
                 })
                 .when(is_disabled, |this| this.opacity(0.5))
@@ -702,13 +804,13 @@ pub fn render_ui_node(
             outer
                 .on_mouse_down(MouseButton::Left, cx.listener(move |app, event: &gpui::MouseDownEvent, window, cx| {
                     cx.stop_propagation();
-                    window.focus(&app.plugin_input_focus_handle);
-                    app.plugin_input_blink.enable(crate::blink_manager::BlinkTarget::PluginInput, cx);
-                    app.plugin_input_blink.pause_and_show(crate::blink_manager::BlinkTarget::PluginInput, cx);
+                    window.focus(app.plugin_input_focus_handle());
+                    app.plugin_input_blink_enable(cx);
+                    app.plugin_input_blink_pause_and_show(cx);
 
                     let click_x: f32 = event.position.x.into();
                     let box_x = box_cell_click.get();
-                    let current_text = if let Some(ref st) = app.active_plugin_input {
+                    let current_text = if let Some(st) = app.active_plugin_input() {
                         if st.plugin_id == p_id_click && st.view_id == view_id && st.node_id == n_id_click {
                             st.value.clone()
                         } else {
@@ -727,16 +829,16 @@ pub fn render_ui_node(
                         let (s, e) = crate::views::goto_search::word_range_at(&current_text, pos);
                         (Some(s), e, false)
                     } else if event.modifiers.shift {
-                        let prev_pos = app.active_plugin_input.as_ref()
+                        let prev_pos = app.active_plugin_input()
                             .and_then(|st| st.selection_anchor)
-                            .or_else(|| app.active_plugin_input.as_ref().map(|st| st.cursor_pos))
+                            .or_else(|| app.active_plugin_input().map(|st| st.cursor_pos))
                             .unwrap_or(pos);
                         (Some(prev_pos), pos, true)
                     } else {
                         (Some(pos), pos, true)
                     };
 
-                    app.active_plugin_input = Some(PluginInputFocusState {
+                    app.set_active_plugin_input(Some(PluginInputFocusState {
                         plugin_id: p_id_click.clone(),
                         view_id,
                         node_id: n_id_click.clone(),
@@ -746,25 +848,29 @@ pub fn render_ui_node(
                         is_mouse_selecting: selecting,
                         box_origin_x: box_cell_click.clone(),
                         is_multiline: false,
-                    });
+                    }));
                     cx.notify();
                 }))
                 .on_mouse_move(cx.listener(move |app, event: &gpui::MouseMoveEvent, window, cx| {
-                    if let Some(ref mut st) = app.active_plugin_input {
+                    let mut changed = false;
+                    if let Some(st) = app.active_plugin_input_mut() {
                         if st.is_mouse_selecting && st.plugin_id == p_id_move && st.view_id == view_id && st.node_id == n_id_move {
                             let click_x: f32 = event.position.x.into();
                             let box_x = st.box_origin_x.get();
                             let new_pos = plugin_input_click_pos(&st.value, click_x, box_x, window);
                             if st.cursor_pos != new_pos {
                                 st.cursor_pos = new_pos;
-                                app.plugin_input_blink.pause_and_show(crate::blink_manager::BlinkTarget::PluginInput, cx);
-                                cx.notify();
+                                changed = true;
                             }
                         }
                     }
+                    if changed {
+                        app.plugin_input_blink_pause_and_show(cx);
+                        cx.notify();
+                    }
                 }))
                 .on_mouse_up(MouseButton::Left, cx.listener(move |app, _, _, cx| {
-                    if let Some(ref mut st) = app.active_plugin_input {
+                    if let Some(st) = app.active_plugin_input_mut() {
                         if st.plugin_id == p_id_up && st.view_id == view_id && st.node_id == n_id_up {
                             st.is_mouse_selecting = false;
                             if st.selection_anchor == Some(st.cursor_pos) {
@@ -775,7 +881,7 @@ pub fn render_ui_node(
                     }
                 }))
                 .on_mouse_up_out(MouseButton::Left, cx.listener(move |app, _, _, cx| {
-                    if let Some(ref mut st) = app.active_plugin_input {
+                    if let Some(st) = app.active_plugin_input_mut() {
                         if st.plugin_id == p_id_up_out && st.view_id == view_id && st.node_id == n_id_up_out {
                             st.is_mouse_selecting = false;
                             if st.selection_anchor == Some(st.cursor_pos) {
@@ -885,8 +991,8 @@ pub fn render_ui_node(
                     .track_focus(input_focus_handle)
                     .on_mouse_down(MouseButton::Left, cx.listener(|app, _, window, cx| {
                         cx.stop_propagation();
-                        window.focus(&app.plugin_input_focus_handle);
-                        app.plugin_input_blink.pause_and_show(crate::blink_manager::BlinkTarget::PluginInput, cx);
+                        window.focus(app.plugin_input_focus_handle());
+                        app.plugin_input_blink_pause_and_show(cx);
                     }))
                     .on_key_down(cx.listener(|app, event: &KeyDownEvent, _, cx| {
                         cx.stop_propagation();
@@ -975,7 +1081,7 @@ pub fn render_ui_node(
                     .overflow_scroll()
                     .on_mouse_down(MouseButton::Left, cx.listener(move |app, _, window, cx| {
                         cx.stop_propagation();
-                        app.active_plugin_input = Some(PluginInputFocusState {
+                        app.set_active_plugin_input(Some(PluginInputFocusState {
                             plugin_id: p_id_focus.clone(),
                             view_id,
                             node_id: n_id_focus.clone(),
@@ -985,10 +1091,10 @@ pub fn render_ui_node(
                             is_mouse_selecting: false,
                             box_origin_x: Rc::new(Cell::new(0.0)),
                             is_multiline: true,
-                        });
-                        app.plugin_input_blink.enable(crate::blink_manager::BlinkTarget::PluginInput, cx);
-                        app.plugin_input_blink.pause_and_show(crate::blink_manager::BlinkTarget::PluginInput, cx);
-                        window.focus(&app.plugin_input_focus_handle);
+                        }));
+                        app.plugin_input_blink_enable(cx);
+                        app.plugin_input_blink_pause_and_show(cx);
+                        window.focus(app.plugin_input_focus_handle());
                         cx.notify();
                     }))
                     .child(
@@ -1022,16 +1128,14 @@ pub fn render_ui_node(
                 })
                 .on_click(cx.listener(move |app, _, _, cx| {
                     cx.stop_propagation();
-                    let _ = app.state.plugin_host.send_event(
+                    app.send_plugin_ui_event(
                         &p_id,
-                        crate::plugins::api::HostEvent::UiEvent {
-                            view_id,
-                            node_id: n_id.clone(),
-                            event: "change".to_string(),
-                            value: Some((!is_checked).to_string()),
-                        },
+                        view_id,
+                        n_id.clone(),
+                        "change",
+                        Some((!is_checked).to_string()),
+                        cx,
                     );
-                    cx.notify();
                 }))
                 .child(
                     div()
@@ -1084,16 +1188,14 @@ pub fn render_ui_node(
                         .cursor(gpui::CursorStyle::PointingHand)
                         .hover(|s| s.bg(theme.bg_hover))
                         .on_click(cx.listener(move |app, _, _, cx| {
-                            let _ = app.state.plugin_host.send_event(
+                            app.send_plugin_ui_event(
                                 &pid,
-                                crate::plugins::api::HostEvent::UiEvent {
-                                    view_id: view_i,
-                                    node_id: item_id.clone(),
-                                    event: "select".to_string(),
-                                    value: None,
-                                },
+                                view_i,
+                                item_id.clone(),
+                                "select",
+                                None,
+                                cx,
                             );
-                            cx.notify();
                         }))
                         .child(
                             div()
@@ -1226,16 +1328,14 @@ pub fn render_ui_node(
                 })
                 .on_click(cx.listener(move |app, _, _, cx| {
                     cx.stop_propagation();
-                    let _ = app.state.plugin_host.send_event(
+                    app.send_plugin_ui_event(
                         &p_id,
-                        crate::plugins::api::HostEvent::UiEvent {
-                            view_id,
-                            node_id: n_id.clone(),
-                            event: "change".to_string(),
-                            value: Some((!is_on).to_string()),
-                        },
+                        view_id,
+                        n_id.clone(),
+                        "change",
+                        Some((!is_on).to_string()),
+                        cx,
                     );
-                    cx.notify();
                 }))
                 .flex()
                 .items_center()
