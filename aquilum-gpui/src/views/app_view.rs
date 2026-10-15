@@ -120,6 +120,16 @@ pub struct AppView {
     pub sidebar_smart_target_y: Cell<Option<f32>>,
     /// Last observed cursor Y over the file tree; the first event only primes it.
     pub sidebar_smart_last_mouse_y: Cell<Option<f32>>,
+    /// Middle-button smart scroll for the sidebar tree: while held, the absolute
+    /// cursor Y inside the tree drives the offset (same formula as Ctrl smart
+    /// scroll, but activated by the middle button and always available).
+    pub sidebar_middle_active: bool,
+    /// Middle-button smart scroll for the main editor: while held, the absolute
+    /// cursor Y inside the editor viewport drives `editor_scroll`.
+    pub editor_middle_active: bool,
+    /// Last observed cursor Y while editor middle-scroll is active; the first
+    /// event only primes it so the content never jumps on entry.
+    pub editor_middle_last_y: Cell<Option<f32>>,
     pub last_editor_h: Cell<f32>,
     pub config: crate::settings::AppConfig,
     pub last_saved_geometry: Option<(f32, f32, Option<f32>, Option<f32>, bool)>,
@@ -304,6 +314,9 @@ impl AppView {
             sidebar_smart_bounds: Rc::new(Cell::new(Bounds::default())),
             sidebar_smart_target_y: Cell::new(None),
             sidebar_smart_last_mouse_y: Cell::new(None),
+            sidebar_middle_active: false,
+            editor_middle_active: false,
+            editor_middle_last_y: Cell::new(None),
             last_editor_h: Cell::new(600.0),
             config,
             last_saved_geometry,
@@ -1091,6 +1104,130 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         // Written directly, not through `set_editor_scroll_top`: that would end
         // this very animation.
         self.editor_scroll.set(next.max(0.0));
+    }
+
+    /// Starts middle-button smart scroll for the editor.
+    ///
+    /// While active, the absolute cursor Y inside the editor viewport drives
+    /// `editor_scroll` (same idea as the sidebar's Ctrl smart scroll): cursor
+    /// near the top shows the beginning, near the bottom the end. The first
+    /// mouse-move only primes the reference point so the content never jumps
+    /// on entry.
+    pub(crate) fn start_editor_middle_scroll(&mut self, cx: &mut Context<Self>) {
+        if self.editor_middle_active {
+            return;
+        }
+        self.editor_middle_active = true;
+        self.editor_middle_last_y.set(None);
+        // A running wheel ease would fight the cursor: it is no longer heading
+        // where the user is.
+        self.scroll_target.set(None);
+        self.scroll_anim_last_tick.set(None);
+        cx.notify();
+    }
+
+    /// Stops editor middle-button smart scroll (idempotent).
+    pub(crate) fn stop_editor_middle_scroll(&mut self, cx: &mut Context<Self>) {
+        if !self.editor_middle_active {
+            return;
+        }
+        self.editor_middle_active = false;
+        self.editor_middle_last_y.set(None);
+        cx.notify();
+    }
+
+    /// Follows the cursor while editor middle-button smart scroll is active.
+    ///
+    /// Mirrors `on_sidebar_smart_mouse_move`: absolute mapping of the cursor Y
+    /// inside the editor viewport to `[0, max_scroll]`, with an edge dead zone
+    /// so the first/last row is fully visible before the cursor hits the
+    /// border. Small jitter is ignored. Writes directly through
+    /// `set_editor_scroll_top_f64`, which also ends any wheel ease.
+    pub(crate) fn on_editor_middle_mouse_move(
+        &self,
+        cursor_y: f32,
+        viewport_top: f32,
+        viewport_h: f32,
+        max_scroll: f64,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.editor_middle_active {
+            return;
+        }
+        if max_scroll <= 1.0 || viewport_h <= 50.0 {
+            cx.notify();
+            return;
+        }
+        match self.editor_middle_last_y.get() {
+            // First event only primes the reference point.
+            None => self.editor_middle_last_y.set(Some(cursor_y)),
+            Some(anchor) if (cursor_y - anchor).abs() >= 0.5 => {
+                self.editor_middle_last_y.set(Some(cursor_y));
+                let target = editor_middle_cursor_target(cursor_y, viewport_top, viewport_h, max_scroll);
+                let current = self.current_scroll_top_f64();
+                if (target - current).abs() > 0.5 {
+                    self.set_editor_scroll_top_f64(target);
+                }
+            }
+            Some(_) => {}
+        }
+        cx.notify();
+    }
+
+    /// Starts middle-button smart scroll for the sidebar tree.
+    pub(crate) fn start_sidebar_middle_scroll(&mut self, cx: &mut Context<Self>) {
+        if self.sidebar_middle_active {
+            return;
+        }
+        self.sidebar_middle_active = true;
+        // Prime the shared reference point so the list never jumps on entry.
+        self.sidebar_smart_last_mouse_y.set(None);
+        self.sidebar_smart_target_y.set(None);
+        cx.notify();
+    }
+
+    /// Stops sidebar middle-button smart scroll (idempotent).
+    pub(crate) fn stop_sidebar_middle_scroll(&mut self, cx: &mut Context<Self>) {
+        if !self.sidebar_middle_active {
+            return;
+        }
+        self.sidebar_middle_active = false;
+        self.sidebar_smart_last_mouse_y.set(None);
+        self.sidebar_smart_target_y.set(None);
+        cx.notify();
+    }
+
+    /// Viewport geometry for editor middle-button smart scroll.
+    ///
+    /// Returns `(viewport_top, viewport_h, max_scroll)` in window coordinates.
+    /// `None` when there is no active note or nothing to scroll. Ensures the
+    /// visual cache so `max_scroll` matches the painted content.
+    pub(crate) fn editor_middle_metrics(&mut self) -> Option<(f32, f32, f64)> {
+        let bounds = self.editor_scroll_handle.bounds();
+        let bounds_h = f32::from(bounds.size.height);
+        let viewport_h = if bounds_h > 50.0 {
+            bounds_h
+        } else {
+            self.last_editor_h.get().max(100.0)
+        };
+        if viewport_h <= 50.0 {
+            return None;
+        }
+        let viewport_top = if bounds.origin.y > px(0.0) {
+            f32::from(bounds.origin.y)
+        } else {
+            132.0
+        };
+        let Some(ref mut note) = self.state.active_note else {
+            return None;
+        };
+        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings));
+        let total = note.cached_height_index.total();
+        let max_scroll = (total - f64::from(viewport_h)).max(0.0);
+        if max_scroll <= 1.0 {
+            return None;
+        }
+        Some((viewport_top, viewport_h, max_scroll))
     }
 
     /// Clamps a saved scroll target into the true scrollable range.
@@ -3209,6 +3346,20 @@ impl Render for AppView {
                         this.right_sidebar_width = right_w.clamp(160.0, 600.0);
                     }
                     cx.notify();
+                } else if this.sidebar_middle_active {
+                    // Middle-button smart scroll keeps working even when the
+                    // cursor leaves the tree: the target clamps to the ends.
+                    // Takes precedence over scrollbar/selection drags — the
+                    // middle button is a separate gesture.
+                    let y: f32 = event.position.y.into();
+                    this.on_sidebar_smart_mouse_move(y, true, cx);
+                } else if this.editor_middle_active {
+                    let y: f32 = event.position.y.into();
+                                                if let Some((top, h, max)) = this.editor_middle_metrics() {
+                        this.on_editor_middle_mouse_move(y, top, h, max, cx);
+                    } else {
+                        cx.notify();
+                    }
                 } else if this.is_dragging_scrollbar {
                     let y: f32 = event.position.y.into();
                     this.handle_scrollbar_drag(y, window, cx);
@@ -3326,6 +3477,16 @@ impl Render for AppView {
                 this.is_dragging_scrollbar = false;
                 this.sidebar_scrollbar_drag.end();
                 cx.notify();
+            }))
+            .on_mouse_up(MouseButton::Middle, cx.listener(|this, _, _, cx| {
+                // Releasing the middle button anywhere ends both smart-scroll
+                // gestures (covers releases outside the originating viewport).
+                this.stop_sidebar_middle_scroll(cx);
+                this.stop_editor_middle_scroll(cx);
+            }))
+            .on_mouse_up_out(MouseButton::Middle, cx.listener(|this, _, _, cx| {
+                this.stop_sidebar_middle_scroll(cx);
+                this.stop_editor_middle_scroll(cx);
             }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let keystroke = &event.keystroke;
@@ -4602,6 +4763,19 @@ impl Render for AppView {
                                             }
                                             this.open_editor_context_menu(click_x, click_y, cx);
                                         }))
+                                        .on_mouse_down(MouseButton::Middle, cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                                            if this.is_resizing_sidebar {
+                                                return;
+                                            }
+                                            // Middle-button smart scroll: no caret move, no
+                                            // selection — the cursor position drives
+                                            // the offset until the button is released.
+                                            cx.stop_propagation();
+                                            window.focus(&this.focus_handle);
+                                            this.close_editor_context_menu(cx);
+                                            this.is_mouse_selecting = false;
+                                            this.start_editor_middle_scroll(cx);
+                                        }))
                                         .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                                             if this.is_resizing_sidebar {
                                                 let x: f32 = event.position.x.into();
@@ -4612,6 +4786,13 @@ impl Render for AppView {
                                                     this.sidebar_width = x.clamp(160.0, 600.0);
                                                 }
                                                 cx.notify();
+                                            } else if this.editor_middle_active {
+                                                let y: f32 = event.position.y.into();
+                    if let Some((top, h, max)) = this.editor_middle_metrics() {
+                                                    this.on_editor_middle_mouse_move(y, top, h, max, cx);
+                                                } else {
+                                                    cx.notify();
+                                                }
                                             } else if this.is_dragging_scrollbar {
                                                 let y: f32 = event.position.y.into();
                                                 this.handle_scrollbar_drag(y, window, cx);
@@ -4640,6 +4821,12 @@ impl Render for AppView {
                                             this.sidebar_scrollbar_drag.end();
                                             this.is_mouse_selecting = false;
                                             cx.notify();
+                                        }))
+                                        .on_mouse_up(MouseButton::Middle, cx.listener(|this, _, _, cx| {
+                                            this.stop_editor_middle_scroll(cx);
+                                        }))
+                                        .on_mouse_up_out(MouseButton::Middle, cx.listener(|this, _, _, cx| {
+                                            this.stop_editor_middle_scroll(cx);
                                         }))
                                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                                             this.handle_key(event, window, cx);
@@ -5436,6 +5623,28 @@ impl Render for AppView {
             .when(self.plugin_catalog.is_open, |d| {
                 d.child(self.render_plugin_catalog_modal(window, cx))
             })
+            // ================= MIDDLE-BUTTON SMART SCROLL HINT (editor) =================
+            .when(self.editor_middle_active, |d| {
+                d.child(
+                    gpui::deferred(
+                        div()
+                            .id("editor-middle-scroll-hint")
+                            .absolute()
+                            .top(px(48.0))
+                            .right(px(16.0))
+                            .px(px(10.0))
+                            .py(px(4.0))
+                            .rounded_full()
+                            .bg(theme.bg_hover)
+                            .border_1()
+                            .border_color(theme.border)
+                            .text_xs()
+                            .text_color(theme.text_muted)
+                            .child("⇅ СКМ-скролл — двигайте мышь, отпустите СКМ"),
+                    )
+                    .with_priority(1000),
+                )
+            })
     }
 }
 
@@ -5447,6 +5656,27 @@ impl Render for AppView {
 /// fraction applied to a variable frame time does not guarantee.
 fn scroll_ease_fraction(dt: f32) -> f32 {
     1.0 - (-dt / SCROLL_SMOOTH_TAU).exp()
+}
+
+/// Dead zone at the top/bottom of the editor viewport for middle-button smart
+/// scroll, as a fraction of the viewport height. Mirrors the sidebar smart
+/// scroll so both lists feel the same.
+const EDITOR_MIDDLE_EDGE_PAD_FRACTION: f32 = 0.10;
+/// ...but never larger than this, so short notes keep a usable band.
+const EDITOR_MIDDLE_EDGE_PAD_MAX: f32 = 56.0;
+
+/// Target editor `scroll_top` for the given cursor Y: `0` at the top of the
+/// viewport, `max_scroll` at the bottom, proportional in between.
+///
+/// Same formula as the sidebar smart scroll (`sidebar_smart_cursor_target`),
+/// expressed with plain floats because the editor scroll position is `f64`.
+fn editor_middle_cursor_target(cursor_y: f32, viewport_top: f32, viewport_h: f32, max_scroll: f64) -> f64 {
+    let pad = (viewport_h * EDITOR_MIDDLE_EDGE_PAD_FRACTION)
+        .clamp(24.0, EDITOR_MIDDLE_EDGE_PAD_MAX)
+        .min(viewport_h / 3.0);
+    let usable = (viewport_h - pad * 2.0).max(1.0);
+    let t = ((cursor_y - viewport_top - pad) / usable).clamp(0.0, 1.0);
+    max_scroll * f64::from(t)
 }
 
 /// Weight inline code is painted at.
@@ -7056,6 +7286,29 @@ mod tests {
                     "px {px} at scroll {scroll_y}"
                 );
             }
+        }
+    }
+
+    /// Middle-button smart scroll maps the cursor to the document the same way
+    /// the sidebar does: top of the usable band is 0, bottom is max, and the
+    /// result never leaves the range even when the cursor does.
+    #[test]
+    fn editor_middle_scroll_maps_cursor_to_document() {
+        // Viewport [100, 400), max 1000: pad is 10% = 30px, usable [130, 370).
+        let at = |y: f32| editor_middle_cursor_target(y, 100.0, 300.0, 1000.0);
+        assert_eq!(at(100.0), 0.0);
+        assert_eq!(at(130.0), 0.0);
+        assert_eq!(at(370.0), 1000.0);
+        assert_eq!(at(400.0), 1000.0);
+        let mid = at(250.0);
+        assert!((mid - 500.0).abs() < 1.0, "mid {mid} should sit near the middle");
+        // Monotonic across the band.
+        let (mut prev, mut y) = (at(130.0), 131.0);
+        while y <= 370.0 {
+            let cur = at(y);
+            assert!(cur >= prev, "y {y}: {cur} went backwards from {prev}");
+            prev = cur;
+            y += 7.0;
         }
     }
 }

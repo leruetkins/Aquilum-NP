@@ -275,8 +275,9 @@ impl AppView {
         // Apply a pending cursor-driven target (direct follow, no animation —
         // the tabs popup behaves the same without smoothing). Consumed even
         // when it matches the current offset, so a settled list issues no
-        // redundant scroll writes.
-        if smart {
+        // redundant scroll writes. Runs for Ctrl smart scroll (`smart`) and for
+        // middle-button smart scroll (always available while held).
+        if smart || self.sidebar_middle_active {
             if let Some(target) = self.sidebar_smart_target_y.take() {
                 let max = f32::from(self.sidebar_scroll_handle.max_offset().height);
                 let snapped =
@@ -347,12 +348,24 @@ impl AppView {
             .min_h_0()
             .child(scroll_container);
 
-        if smart {
+        // Cursor-driven ("smart") scrolling: Ctrl/Cmd mode (`smart`) plus
+        // middle-button mode (always available while the middle button is
+        // held). Both share the same absolute mapping — cursor near the top
+        // shows the beginning, near the bottom the end — so the bounds tracker
+        // below is always mounted, not only when `smart` is on.
+        {
             let bounds = self.sidebar_smart_bounds.clone();
+            let smart_enabled = smart;
             viewport = viewport
-                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                    let ctrl = event.modifiers.control || event.modifiers.platform;
-                    this.on_sidebar_smart_mouse_move(f32::from(event.position.y), ctrl, cx);
+                .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                    if this.sidebar_middle_active {
+                        // Middle-button smart scroll: explicit gesture, works
+                        // even when the Ctrl mode is disabled in settings.
+                        this.on_sidebar_smart_mouse_move(f32::from(event.position.y), true, cx);
+                    } else if smart_enabled {
+                        let ctrl = event.modifiers.control || event.modifiers.platform;
+                        this.on_sidebar_smart_mouse_move(f32::from(event.position.y), ctrl, cx);
+                    }
                 }))
                 // Leaving the list clears the reference point (see the tabs
                 // popup): without this the first move after re-entering jumps.
@@ -362,17 +375,37 @@ impl AppView {
                         cx.notify();
                     }
                 }))
+                .on_mouse_down(MouseButton::Middle, cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    // One gesture at a time: a border drag already owns the pointer.
+                    if this.is_resizing_sidebar {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    this.start_sidebar_middle_scroll(cx);
+                }))
+                .on_mouse_up(MouseButton::Middle, cx.listener(|this, _, _, cx| {
+                    this.stop_sidebar_middle_scroll(cx);
+                }))
+                .on_mouse_up_out(MouseButton::Middle, cx.listener(|this, _, _, cx| {
+                    this.stop_sidebar_middle_scroll(cx);
+                }))
                 .child(
                     canvas(
                         move |viewport, _window, _cx| bounds.set(viewport),
-                        |viewport, _state, window, _cx| {
+                        move |viewport, _state, window, _cx| {
                             // Swallow the wheel and the trackpad in the capture phase,
                             // before it reaches the scroll container (same trick as
                             // the tabs popup: gpui binds the wheel to the scrolled
                             // element itself, so a plain `on_scroll_wheel` above
                             // cannot intercept it) — but only while Ctrl (or Cmd
-                            // on macOS) is held. Otherwise the wheel scrolls
-                            // the list as usual.
+                            // on macOS) is held and the Ctrl mode is enabled.
+                            // Otherwise the wheel scrolls the list as usual.
+                            // Middle-button mode keeps the wheel alive: the user
+                            // holds the button with one finger and can still
+                            // fine-tune with the wheel.
+                            if !smart_enabled {
+                                return;
+                            }
                             window.on_mouse_event(
                                 move |event: &ScrollWheelEvent, phase, _window, cx| {
                                     if phase == DispatchPhase::Capture
@@ -389,6 +422,26 @@ impl AppView {
                     .absolute()
                     .size_full(),
                 );
+        }
+
+        // Middle-button indicator: a small pill so it is obvious the list now
+        // follows the cursor; releasing the middle button dismisses it.
+        if self.sidebar_middle_active {
+            viewport = viewport.child(
+                div()
+                    .absolute()
+                    .top(px(8.0))
+                    .left(px(8.0))
+                    .px(px(8.0))
+                    .py(px(2.0))
+                    .rounded_full()
+                    .bg(theme.bg_hover)
+                    .border_1()
+                    .border_color(theme.border)
+                    .text_xs()
+                    .text_color(theme.text_muted)
+                    .child("⇅ СКМ-скролл"),
+            );
         }
 
         if let Some(geometry) = ScrollbarGeometry::from_handle(&self.sidebar_scroll_handle, &style) {
