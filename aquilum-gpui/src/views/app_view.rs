@@ -31,6 +31,10 @@ const WHEEL_LINE_PX: f32 = 24.0;
 /// instantly and the text stops dead.
 const WHEEL_EASE_DURATION: f32 = 0.09;
 
+/// Fixed thumb height (px) of the Zed-style wide scrollbar lane: a position
+/// marker that never resizes with the document.
+const WIDE_THUMB_H: f64 = 25.0;
+
 /// One in-flight wheel ease: `start` is where the motion began, `target`
 /// where it lands, `t0` when it began. Stepped in `render` against the hard
 /// deadline [`WHEEL_EASE_DURATION`]; a fresh notch re-anchors `start` at the
@@ -1256,16 +1260,15 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
     /// Thumb height for the editor scrollbar lane.
     ///
     /// Proportional to the viewport share, floored at 28 px so it stays
-    /// grabbable. The Zed-style wide lane instead uses a slim thumb at roughly
-    /// a third of that height — it marks position rather than viewport share.
+    /// grabbable. The Zed-style wide lane instead uses a fixed slim thumb —
+    /// it marks position rather than viewport share, so it never resizes
+    /// with the document length.
     pub(crate) fn editor_thumb_h(viewport_h: f32, total_content_h: f64, wide: bool) -> f64 {
-        let ratio = (f64::from(viewport_h) / total_content_h.max(f64::from(viewport_h))).clamp(0.04, 1.0);
-        let proportional = (f64::from(viewport_h) * ratio).max(28.0);
         if wide {
-            (proportional / 3.0).max(9.0)
-        } else {
-            proportional
+            return WIDE_THUMB_H;
         }
+        let ratio = (f64::from(viewport_h) / total_content_h.max(f64::from(viewport_h))).clamp(0.04, 1.0);
+        (f64::from(viewport_h) * ratio).max(28.0)
     }
 
     /// Clamps a saved scroll target into the true scrollable range.
@@ -7578,17 +7581,18 @@ mod tests {
     }
 
     /// The narrow thumb mirrors the viewport share (floored so it stays
-    /// grabbable); the wide Zed-style thumb is a slim third of that.
+    /// grabbable); the wide Zed-style thumb is a fixed slim marker.
     #[test]
     fn editor_thumb_h_scales_for_wide_lane() {
         // 800 px viewport over 8000 px of content: a 10% thumb.
         assert_eq!(AppView::editor_thumb_h(800.0, 8000.0, false), 80.0);
-        assert!((AppView::editor_thumb_h(800.0, 8000.0, true) - 80.0 / 3.0).abs() < 1e-9);
-        // Floors stay grabbable in both lanes.
+        // Floors stay grabbable in the narrow lane.
         assert_eq!(AppView::editor_thumb_h(600.0, 1.0e8, false), 28.0);
-        assert_eq!(AppView::editor_thumb_h(600.0, 1.0e8, true), 28.0 / 3.0);
-        // A fitting document fills the lane either way.
+        // A fitting document fills the narrow lane.
         assert_eq!(AppView::editor_thumb_h(800.0, 800.0, false), 800.0);
-        assert!((AppView::editor_thumb_h(800.0, 800.0, true) - 800.0 / 3.0).abs() < 1e-9);
+        // Wide lane: one constant height whatever the document.
+        assert_eq!(AppView::editor_thumb_h(800.0, 8000.0, true), WIDE_THUMB_H);
+        assert_eq!(AppView::editor_thumb_h(600.0, 1.0e8, true), WIDE_THUMB_H);
+        assert_eq!(AppView::editor_thumb_h(800.0, 800.0, true), WIDE_THUMB_H);
     }
 }
