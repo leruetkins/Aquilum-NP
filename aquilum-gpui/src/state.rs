@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -314,6 +315,16 @@ impl FileNode {
     }
 }
 
+/// Above this size the exact word/char count is not computed: two full passes
+/// over hundreds of MB on the UI thread are a freeze by themselves.
+pub const TEXT_STATS_EXACT_LIMIT: usize = 2 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextStats {
+    Exact { words: usize, chars: usize },
+    Large { bytes: usize },
+}
+
 pub struct OpenedNote {
     pub path: PathBuf,
     pub title: String,
@@ -339,6 +350,9 @@ pub struct OpenedNote {
     pub cached_wrap_cols: usize,
     pub cached_word_wrap: bool,
     pub visual_cache_dirty: bool,
+
+    /// (version, content.len(), stats). Recomputed only when the text changes.
+    pub stats_cache: Cell<Option<(u64, usize, TextStats)>>,
 }
 
 impl OpenedNote {
@@ -367,7 +381,30 @@ impl OpenedNote {
             cached_wrap_cols: 0,
             cached_word_wrap: true,
             visual_cache_dirty: true,
+            stats_cache: Cell::new(None),
         }
+    }
+
+    /// Word/char statistics for the navigation bar. Cheap for large documents:
+    /// above `TEXT_STATS_EXACT_LIMIT` it reports the byte size instead of
+    /// running two full passes over the text on the UI thread.
+    pub fn text_stats(&self) -> TextStats {
+        let len = self.content.len();
+        if let Some((v, l, s)) = self.stats_cache.get() {
+            if v == self.version && l == len {
+                return s;
+            }
+        }
+        let stats = if len > TEXT_STATS_EXACT_LIMIT {
+            TextStats::Large { bytes: len }
+        } else {
+            TextStats::Exact {
+                words: self.content.split_whitespace().count(),
+                chars: self.content.chars().count(),
+            }
+        };
+        self.stats_cache.set(Some((self.version, len, stats)));
+        stats
     }
 
     pub fn sync_cursor(&mut self) {
@@ -2209,6 +2246,42 @@ mod tests {
         assert_eq!(snap.files[0].name, "Note1.md");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn text_stats_exact_for_small_and_cached() {
+        let mut note = OpenedNote::new(
+            PathBuf::from("test.md"),
+            "test".to_string(),
+            String::new(),
+            1,
+        );
+        note.content = "hello  world\nтест".to_string();
+        note.version += 1;
+        assert_eq!(note.text_stats(), TextStats::Exact { words: 3, chars: 17 });
+
+        // The cache must return the same value without recomputing.
+        let first = note.stats_cache.get();
+        let _ = note.text_stats();
+        assert_eq!(note.stats_cache.get(), first);
+
+        // Editing the text invalidates the cache.
+        note.content.push_str(" ещё");
+        note.version += 1;
+        assert_eq!(note.text_stats(), TextStats::Exact { words: 4, chars: 21 });
+    }
+
+    #[test]
+    fn text_stats_large_skips_exact_count() {
+        let mut note = OpenedNote::new(
+            PathBuf::from("test.md"),
+            "test".to_string(),
+            String::new(),
+            1,
+        );
+        note.content = "a ".repeat(TEXT_STATS_EXACT_LIMIT); // 4 MB > limit
+        note.version += 1;
+        assert!(matches!(note.text_stats(), TextStats::Large { .. }));
     }
 }
 

@@ -2705,14 +2705,19 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
                     .gap_1p5()
                     .flex_shrink_0()
                     .when_some(self.state.active_note.as_ref(), |r, note| {
-                        let words: usize = note.content.split_whitespace().count();
-                        let chars = note.content.chars().count();
+                        use crate::state::TextStats;
+                        let label = match note.text_stats() {
+                            TextStats::Exact { words, chars } => format!("{}w • {}c", words, chars),
+                            TextStats::Large { bytes } => {
+                                format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+                            }
+                        };
                         r.child(
                             div()
                                 .text_sm()
                                 .text_color(theme.text_muted)
                                 .mr_2()
-                                .child(format!("{}w • {}c", words, chars)),
+                                .child(label),
                         )
                     })
                     // Toggle wrap
@@ -4780,25 +4785,14 @@ impl Render for AppView {
 
                                                 // A collapsed code block paints its language label in place of
                                                 // the opening fence, so the copy button belongs to that row. The
-                                                // payload is the block's body: the `InsideCode` lines that follow
-                                                // the fence, up to the closing fence (exclusive).
-                                                let copy_payload: Option<(usize, String)> =
+                                                // payload is only the block's identity here: the body is built
+                                                // on click, in `code_block_body`, so that a frame never walks a
+                                                // block's lines to assemble a `String` nobody may use.
+                                                let copy_payload: Option<(usize, usize)> =
                                                     if is_opening_fence && !is_in_active_block {
-                                                        code_states_arc[v.line_idx].as_ref().map(|st| {
-                                                            let mut body = String::new();
-                                                            let mut i = v.line_idx + 1;
-                                                            while let Some(next) = code_states_arc.get(i).and_then(|s| s.as_ref()) {
-                                                                if next.block_id != st.block_id
-                                                                    || next.kind != crate::markdown::CodeBlockKind::InsideCode
-                                                                {
-                                                                    break;
-                                                                }
-                                                                body.push_str(&lines_arc[i]);
-                                                                body.push('\n');
-                                                                i += 1;
-                                                            }
-                                                            (st.block_id, body)
-                                                        })
+                                                        code_states_arc[v.line_idx]
+                                                            .as_ref()
+                                                            .map(|st| (st.block_id, v.line_idx))
                                                     } else {
                                                         None
                                                     };
@@ -5030,7 +5024,7 @@ impl Render for AppView {
                                                                 // of the block header and copies the block body to the
                                                                 // clipboard, flashing a check mark for a moment.
                                                                 .when(copy_payload.is_some(), |s| {
-                                                                    let (block_id, body) = copy_payload.clone().unwrap();
+                                                                    let (block_id, fence_line) = copy_payload.unwrap();
                                                                     let just_copied = self.copied_code_block == Some(block_id);
                                                                     s.child(
                                                                         div()
@@ -5049,7 +5043,11 @@ impl Render for AppView {
                                                                                 // Without this the row would also move the caret
                                                                                 // into the block.
                                                                                 cx.stop_propagation();
-                                                                                cx.write_to_clipboard(ClipboardItem::new_string(body.clone()));
+                                                                                let body = match this.state.active_note.as_ref() {
+                                                                                    Some(n) => code_block_body(&n.cached_lines, &n.cached_code_states, fence_line, block_id),
+                                                                                    None => return,
+                                                                                };
+                                                                                cx.write_to_clipboard(ClipboardItem::new_string(body));
                                                                                 this.copied_code_block = Some(block_id);
                                                                                 cx.notify();
 
@@ -5437,6 +5435,29 @@ const CODE_CHIP_INSET_RATIO: f32 = 1.0 / 12.0;
 /// keeps its bold.
 fn inline_code_weight(base: gpui::FontWeight) -> gpui::FontWeight {
     if base.0 > INLINE_CODE_WEIGHT.0 { base } else { INLINE_CODE_WEIGHT }
+}
+
+/// Body of a code block: the `InsideCode` lines that follow the opening fence.
+/// Called only when the copy button is clicked, never while building a frame.
+fn code_block_body(
+    lines: &[String],
+    states: &[Option<crate::markdown::CodeBlockState>],
+    fence_line: usize,
+    block_id: usize,
+) -> String {
+    let mut body = String::new();
+    let mut i = fence_line + 1;
+    while let Some(next) = states.get(i).and_then(|s| s.as_ref()) {
+        if next.block_id != block_id || next.kind != crate::markdown::CodeBlockKind::InsideCode {
+            break;
+        }
+        if let Some(l) = lines.get(i) {
+            body.push_str(l);
+            body.push('\n');
+        }
+        i += 1;
+    }
+    body
 }
 
 /// Vertical gap above and below an inline-code chip, in logical px, for a row `row_h`
