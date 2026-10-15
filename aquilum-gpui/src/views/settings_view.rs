@@ -3814,6 +3814,19 @@ impl SettingsView {
                     })),
                 cx,
             ),
+            self.render_setting_row_with_id(
+                Some("editor.wideScrollbar"),
+                &self.t("settings.editor.wide_scrollbar"),
+                Some(&self.t("settings.editor.wide_scrollbar_desc")),
+                div()
+                    .id("row-wide-scrollbar")
+                    .child(self.render_toggle_switch(config.editor.wide_scrollbar))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.config.editor.wide_scrollbar = !this.config.editor.wide_scrollbar;
+                        this.save_settings(cx);
+                    })),
+                cx,
+            ),
         ];
 
         let debounce_display = self.t_fmt("settings.editor.debounce_unit", &[&config.editor.save_debounce_ms.to_string()]);

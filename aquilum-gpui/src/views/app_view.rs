@@ -1253,6 +1253,21 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         Some((viewport_top, viewport_h, max_scroll))
     }
 
+    /// Thumb height for the editor scrollbar lane.
+    ///
+    /// Proportional to the viewport share, floored at 28 px so it stays
+    /// grabbable. The Zed-style wide lane instead uses a slim thumb at roughly
+    /// a third of that height — it marks position rather than viewport share.
+    pub(crate) fn editor_thumb_h(viewport_h: f32, total_content_h: f64, wide: bool) -> f64 {
+        let ratio = (f64::from(viewport_h) / total_content_h.max(f64::from(viewport_h))).clamp(0.04, 1.0);
+        let proportional = (f64::from(viewport_h) * ratio).max(28.0);
+        if wide {
+            (proportional / 3.0).max(9.0)
+        } else {
+            proportional
+        }
+    }
+
     /// Clamps a saved scroll target into the true scrollable range.
     ///
     /// The real max is `total - viewport`: the list paints a slice anchored near
@@ -1347,8 +1362,7 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         let total_content_h = note.cached_height_index.total();
         let window_h = f32::from(window.bounds().size.height);
         let (_, viewport_h, max_scroll_content, _) = self.editor_scroll_metrics(total_content_h, window_h);
-        let ratio = (f64::from(viewport_h) / total_content_h.max(f64::from(viewport_h))).clamp(0.04, 1.0);
-        let thumb_h = (f64::from(viewport_h) * ratio).max(28.0);
+        let thumb_h = Self::editor_thumb_h(viewport_h, total_content_h, self.config.editor.wide_scrollbar);
         let track_scrollable = (f64::from(viewport_h) - thumb_h).max(1.0);
 
         let delta_y = f64::from(current_y - self.scrollbar_drag_start_y);
@@ -4564,16 +4578,19 @@ impl Render for AppView {
                                 let (slice_h, viewport_h, max_scroll_content, track_top_y) =
                                     self.editor_scroll_metrics(total_content_h, window_h);
                                 self.last_editor_h.set(viewport_h);
+                                // `editor.wideScrollbar` switches to the Zed-style
+                                // lane: a 16 px track with a visible background
+                                // and a full-bleed slim square thumb in a single
+                                // uniform gray — constant size, no side gaps,
+                                // no state colors.
+                                let wide_scrollbar = self.config.editor.wide_scrollbar;
                                 let show_scrollbar = max_scroll_content > 1.0;
                                 let (thumb_top, thumb_h) = if show_scrollbar {
                                     // Thumb travel follows the true viewport (the
                                     // track's own height), never the slicing
                                     // estimate: otherwise the thumb slides past
                                     // the track end, under the status bar.
-                                    let ratio =
-                                        (f64::from(viewport_h) / total_content_h.max(f64::from(viewport_h)))
-                                            .clamp(0.04, 1.0);
-                                    let th = (f64::from(viewport_h) * ratio).max(28.0);
+                                    let th = Self::editor_thumb_h(viewport_h, total_content_h, wide_scrollbar);
                                     let scroll_y = self.current_scroll_top_f64().clamp(0.0, max_scroll_content);
                                     let scroll_fraction = (scroll_y / max_scroll_content).clamp(0.0, 1.0);
                                     let tt = scroll_fraction * (f64::from(viewport_h) - th);
@@ -4587,11 +4604,30 @@ impl Render for AppView {
                                 // stretch full width; otherwise they collapse into a
                                 // thin pill centered like the thumb.
                                 let ruler_expanded = self.is_hovering_editor_scrollbar;
-                                // Idle pill geometry follows the thumb exactly (track
-                                // is 14 wide, the thumb sits 3 off the right edge),
-                                // so the two always share one center line.
-                                let ruler_pill_w = if is_scrollbar_dragging { 8.0 } else { 6.0 };
-                                let ruler_pill_left = 14.0 - 3.0 - ruler_pill_w;
+                                // Idle pill geometry follows the thumb exactly, so the
+                                // two always share one center line.
+                                let track_w = if wide_scrollbar { 16.0 } else { 14.0 };
+                                let thumb_right = if wide_scrollbar { 0.0 } else { 3.0 };
+                                let thumb_w_idle = if wide_scrollbar { track_w } else { 6.0 };
+                                let thumb_w_active = if wide_scrollbar { track_w } else { 8.0 };
+                                let thumb_w = if is_scrollbar_dragging { thumb_w_active } else { thumb_w_idle };
+                                let thumb_left = track_w - thumb_right - thumb_w;
+                                let ruler_pill_w = if is_scrollbar_dragging { thumb_w } else { 6.0 };
+                                let ruler_pill_left = thumb_left + (thumb_w - ruler_pill_w) / 2.0;
+                                // In the wide lane the marks never collapse: like
+                                // Zed's overview ruler they span the track at all
+                                // times. The narrow lane keeps the hover behavior.
+                                let ruler_full = ruler_expanded || wide_scrollbar;
+                                // Thumb wash: the narrow pill states itself
+                                // (accent while dragged, lighter on hover); the
+                                // wide thumb is one gray in every state.
+                                let thumb_bg = if wide_scrollbar {
+                                    theme_scrollbar.border
+                                } else if is_scrollbar_dragging {
+                                    theme_scrollbar.accent
+                                } else {
+                                    theme_scrollbar.border
+                                };
 
                                 // Overview-ruler marks on the scrollbar track: a thin
                                 // cursor line plus the selection span underneath it.
@@ -4632,10 +4668,13 @@ impl Render for AppView {
                                     } else {
                                         (0.0, None)
                                     };
-                                // Gray the cursor line only while the thumb is dragged
-                                // or hovered and the line is actually under it:
-                                // anywhere else it stays accent.
+                                // Gray the cursor line only in the narrow lane, while
+                                // the thumb is dragged or hovered and the line is
+                                // actually under it. The wide lane keeps the accent
+                                // line everywhere: its thumb is one flat gray, so
+                                // the accent never blends into it.
                                 let ruler_cursor_under_thumb = show_scrollbar
+                                    && !wide_scrollbar
                                     && (is_scrollbar_dragging || self.is_hovering_editor_thumb)
                                     && ruler_cursor_y < thumb_top + thumb_h
                                     && ruler_cursor_y + 2.0 > thumb_top;
@@ -5557,13 +5596,22 @@ impl Render for AppView {
                                                 div()
                                                     .id("editor-scrollbar-track")
                                                     .absolute()
-                                                    .top_0()
-                                                    .bottom_0()
-                                                    .right_0()
-                                                    .w(px(14.0))
-                                                    .h_full()
+                                                     .top_0()
+                                                     .bottom_0()
+                                                     .right_0()
+                                                     .w(px(track_w))
+                                                     .h_full()
                                                      .cursor_pointer()
-                                                     .hover(|h| h.bg(rgba(0x00000015)))
+                                                     // The narrow lane only washes on hover; the wide
+                                                     // lane carries its own background at all times.
+                                                     .when(!wide_scrollbar, |d| {
+                                                         d.hover(|h| h.bg(rgba(0x00000015)))
+                                                     })
+                                                     // Zed-style lane: the track is always visible
+                                                     // through its lane wash alone, no border.
+                                                     .when(wide_scrollbar, |d| {
+                                                         d.bg(theme_scrollbar.bg_sidebar)
+                                                     })
                                                      .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                                          if this.is_hovering_editor_scrollbar != *hovered {
                                                              this.is_hovering_editor_scrollbar = *hovered;
@@ -5589,16 +5637,18 @@ impl Render for AppView {
                                                              .id("editor-scrollbar-thumb")
                                                              .absolute()
                                                              .top(px(thumb_top))
-                                                             .right(px(3.0))
-                                                             .w(px(if is_scrollbar_dragging { 8.0 } else { 6.0 }))
+                                                             .right(px(thumb_right))
+                                                             .w(px(thumb_w))
                                                              .h(px(thumb_h))
-                                                             .rounded_full()
-                                                             .bg(if is_scrollbar_dragging {
-                                                                 theme_scrollbar.accent
-                                                             } else {
-                                                                 theme_scrollbar.border
+                                                             .when(wide_scrollbar, |d| d.rounded_none())
+                                                             .when(!wide_scrollbar, |d| d.rounded_full())
+                                                             .bg(thumb_bg)
+                                                             // The narrow pill fattens and lights up on
+                                                             // hover; the wide thumb never changes shape
+                                                             // or color.
+                                                             .when(!wide_scrollbar, |d| {
+                                                                 d.hover(|h| h.bg(theme_scrollbar.text_secondary).w(px(8.0)))
                                                              })
-                                                             .hover(|h| h.bg(theme_scrollbar.text_secondary).w(px(8.0)))
                                                              .cursor_pointer()
                                                              .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                                                  if this.is_hovering_editor_thumb != *hovered {
@@ -5620,12 +5670,13 @@ impl Render for AppView {
                                                                  .absolute()
                                                                  .top(px(top))
                                                                  .h(px(h))
-                                                                 // Hovered: full track width. Idle: a thin
+                                                                 // Full track width when hovered (or always in
+                                                                 // the wide lane). Idle narrow lane: a thin
                                                                  // pill aligned with the thumb.
-                                                                 .when(ruler_expanded, |d| {
+                                                                 .when(ruler_full, |d| {
                                                                      d.left(px(0.0)).w_full().rounded_xs()
                                                                  })
-                                                                 .when(!ruler_expanded, |d| {
+                                                                 .when(!ruler_full, |d| {
                                                                      d.left(px(ruler_pill_left))
                                                                          .w(px(ruler_pill_w))
                                                                          .rounded_full()
@@ -5640,10 +5691,10 @@ impl Render for AppView {
                                                              .absolute()
                                                              .top(px(ruler_cursor_y))
                                                              .h(px(2.0))
-                                                             .when(ruler_expanded, |d| {
+                                                             .when(ruler_full, |d| {
                                                                  d.left(px(0.0)).w_full().rounded_xs()
                                                              })
-                                                             .when(!ruler_expanded, |d| {
+                                                             .when(!ruler_full, |d| {
                                                                  d.left(px(ruler_pill_left))
                                                                      .w(px(ruler_pill_w))
                                                                      .rounded_full()
@@ -7524,5 +7575,20 @@ mod tests {
         assert_eq!(at(1000), 48.0);
         // Empty caches sit at zero instead of panicking.
         assert_eq!(AppView::editor_doc_y_for_offset(0, &[], &[], &[], &index), 0.0);
+    }
+
+    /// The narrow thumb mirrors the viewport share (floored so it stays
+    /// grabbable); the wide Zed-style thumb is a slim third of that.
+    #[test]
+    fn editor_thumb_h_scales_for_wide_lane() {
+        // 800 px viewport over 8000 px of content: a 10% thumb.
+        assert_eq!(AppView::editor_thumb_h(800.0, 8000.0, false), 80.0);
+        assert!((AppView::editor_thumb_h(800.0, 8000.0, true) - 80.0 / 3.0).abs() < 1e-9);
+        // Floors stay grabbable in both lanes.
+        assert_eq!(AppView::editor_thumb_h(600.0, 1.0e8, false), 28.0);
+        assert_eq!(AppView::editor_thumb_h(600.0, 1.0e8, true), 28.0 / 3.0);
+        // A fitting document fills the lane either way.
+        assert_eq!(AppView::editor_thumb_h(800.0, 800.0, false), 800.0);
+        assert!((AppView::editor_thumb_h(800.0, 800.0, true) - 800.0 / 3.0).abs() < 1e-9);
     }
 }

@@ -111,6 +111,8 @@
       "wheel_smooth_scroll_desc": "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
       "scrollbar_ruler": "Scrollbar Ruler Marks",
       "scrollbar_ruler_desc": "Thin cursor line and selection span over the editor scrollbar thumb",
+      "wide_scrollbar": "Wide Scrollbar (Zed-style)",
+      "wide_scrollbar_desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
       "debounce": "Fördröjning för automatisk sparning",
       "debounce_desc": "Tidsgräns efter inmatning innan skrivning till disk",
       "debounce_unit": "{} ms"

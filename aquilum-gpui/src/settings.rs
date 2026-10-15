@@ -175,6 +175,9 @@ pub struct EditorSettings {
     /// Overview-ruler marks on the editor scrollbar: cursor line + selection
     /// span. On by default.
     pub scrollbar_ruler: bool,
+    /// Wide Zed-style editor scrollbar: a 16 px lane with a visible track and
+    /// a full-width square thumb instead of the floating pill. Off by default.
+    pub wide_scrollbar: bool,
     #[serde(flatten)]
     pub font: FontSettings,
 }
@@ -196,6 +199,7 @@ impl Default for EditorSettings {
             hide_current_line_on_selection: true,
             wheel_smooth_scroll: false,
             scrollbar_ruler: true,
+            wide_scrollbar: false,
             font: FontSettings {
                 font_family: "iA Writer Mono".to_string(),
                 font_weight: 400,
@@ -636,6 +640,17 @@ pub static SETTINGS: &[SettingDescriptor] = &[
         desc_ru: "Тонкая линия курсора и область выделения поверх ползунка редактора",
         desc_en: "Thin cursor line and selection span over the editor scrollbar thumb",
         keywords: &["scrollbar", "ruler", "cursor", "selection", "скроллбар", "курсор", "выделение", "метки"],
+        aliases: &[],
+        setting_type: SettingType::Bool,
+    },
+    SettingDescriptor {
+        id: "editor.wideScrollbar",
+        tab_id: "editor",
+        title_ru: "Широкий скроллбар (как в Zed)",
+        title_en: "Wide Scrollbar (Zed-style)",
+        desc_ru: "Широкая лента 16 px с видимым треком и квадратным ползунком на всю ширину вместо узкой пилюли",
+        desc_en: "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
+        keywords: &["scrollbar", "wide", "zed", "скроллбар", "широкий", "ползунок"],
         aliases: &[],
         setting_type: SettingType::Bool,
     },
