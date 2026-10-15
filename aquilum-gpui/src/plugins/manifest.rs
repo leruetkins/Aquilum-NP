@@ -22,7 +22,7 @@ pub enum VaultAccess {
 
 impl Default for VaultAccess {
     fn default() -> Self {
-        Self::Read
+        Self::Write
     }
 }
 

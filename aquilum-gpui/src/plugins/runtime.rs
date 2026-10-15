@@ -10,8 +10,8 @@ use crate::plugins::api::{ApiCall, ApiRequest, HostEvent, RequestId};
 use crate::plugins::manifest::PluginManifest;
 use crate::state::Snapshot;
 
-/// Maximum heap memory allocated for a single plugin instance (32 MB).
-const PLUGIN_MEMORY_LIMIT: usize = 32 * 1024 * 1024;
+/// Maximum heap memory allocated for a single plugin instance (256 MB).
+const PLUGIN_MEMORY_LIMIT: usize = 256 * 1024 * 1024;
 
 /// Controller for communicating with and shutting down a running plugin worker thread.
 pub struct PluginRuntimeHandle {
@@ -547,9 +547,17 @@ fn setup_plugin_environment<'js>(
                     }
                 }
                 if (ok) {
-                    entry.resolve(parsed);
+                    try {
+                        entry.resolve(parsed);
+                    } catch (e) {
+                        console.error("[plugin] Unhandled error during entry.resolve:", e);
+                    }
                 } else {
-                    entry.reject(new Error(parsed?.error || "Host error"));
+                    try {
+                        entry.reject(new Error(parsed?.error || "Host error"));
+                    } catch (e) {
+                        console.error("[plugin] Unhandled error during entry.reject:", e);
+                    }
                 }
             }
         }
@@ -2612,6 +2620,11 @@ fn setup_plugin_environment<'js>(
                 console.log(`[plugin] vault.delete: "${p}"`);
                 return __invoke_host("vault_delete", { path: p });
             },
+            trash: (path, system) => {
+                const p = typeof path === 'object' ? path.path : path;
+                console.log(`[plugin] vault.trash: "${p}"`);
+                return __invoke_host("vault_delete", { path: p });
+            },
             process: async (file, fn) => {
                 const path = typeof file === 'object' ? file.path : file;
                 const content = await rawVault.read(path);
@@ -3332,8 +3345,29 @@ fn dispatch_ui_interaction<'js>(
     let dispatch_fn: rquickjs::Result<Function> = ctx.globals().get("__dispatch_ui_interaction");
     if let Ok(func) = dispatch_fn {
         let val = value.unwrap_or_default();
-        let _ = func.call::<_, ()>((node_id, event, val));
+        if let Err(_) = func.call::<_, ()>((node_id.clone(), event, val)) {
+            log_js_exception(ctx, &format!("__dispatch_ui_interaction error for node '{}'", node_id));
+        }
     }
+}
+
+/// Drains and formats any active QuickJS exception, ensuring the context is not left in an error state.
+fn log_js_exception<'js>(ctx: &Ctx<'js>, context_desc: &str) {
+    let ex = ctx.catch();
+    let err_msg = if let Some(obj) = ex.as_object() {
+        let msg: String = obj.get("message").unwrap_or_default();
+        let stack: String = obj.get("stack").unwrap_or_default();
+        if !stack.is_empty() {
+            format!("{}\n{}", msg, stack)
+        } else if !msg.is_empty() {
+            msg
+        } else {
+            format!("{:?}", ex)
+        }
+    } else {
+        format!("{:?}", ex)
+    };
+    eprintln!("[plugins:error] {}: {}", context_desc, err_msg);
 }
 
 /// Dispatches a command execution trigger into QuickJS.
@@ -3342,8 +3376,8 @@ fn dispatch_command_execution<'js>(ctx: &Ctx<'js>, command_id: String) {
     let dispatch_fn: rquickjs::Result<Function> = ctx.globals().get("__dispatch_command_execution");
     match dispatch_fn {
         Ok(func) => {
-            if let Err(e) = func.call::<_, ()>((command_id.clone(),)) {
-                eprintln!("[plugins:error] JS __dispatch_command_execution error for '{}': {:?}", command_id, e);
+            if let Err(_) = func.call::<_, ()>((command_id.clone(),)) {
+                log_js_exception(ctx, &format!("JS __dispatch_command_execution error for '{}'", command_id));
             }
         }
         Err(e) => {
@@ -3361,7 +3395,9 @@ fn dispatch_code_block_process<'js>(
 ) {
     let dispatch_fn: rquickjs::Result<Function> = ctx.globals().get("__dispatch_code_block_process");
     if let Ok(func) = dispatch_fn {
-        let _ = func.call::<_, ()>((language, source, block_id as f64));
+        if let Err(_) = func.call::<_, ()>((language.clone(), source, block_id as f64)) {
+            log_js_exception(ctx, &format!("__dispatch_code_block_process error for lang '{}'", language));
+        }
     }
 }
 
@@ -3375,7 +3411,13 @@ fn dispatch_editor_menu<'js>(
 ) {
     let dispatch_fn: rquickjs::Result<Function> = ctx.globals().get("__dispatch_editor_menu");
     if let Ok(func) = dispatch_fn {
-        let res: String = func.call::<_, String>((menu_session_id as f64, selected_text)).unwrap_or_else(|_| "[]".to_string());
+        let res: String = match func.call::<_, String>((menu_session_id as f64, selected_text)) {
+            Ok(s) => s,
+            Err(_) => {
+                log_js_exception(ctx, &format!("__dispatch_editor_menu error for session {}", menu_session_id));
+                "[]".to_string()
+            }
+        };
         let _ = api_tx.unbounded_send(ApiCall {
             plugin_id: p_id.to_string(),
             request_id: menu_session_id,
@@ -3390,7 +3432,9 @@ fn dispatch_editor_menu<'js>(
 fn dispatch_menu_action<'js>(ctx: &Ctx<'js>, action_id: String) {
     let dispatch_fn: rquickjs::Result<Function> = ctx.globals().get("__dispatch_menu_action");
     if let Ok(func) = dispatch_fn {
-        let _ = func.call::<_, ()>((action_id,));
+        if let Err(_) = func.call::<_, ()>((action_id.clone(),)) {
+            log_js_exception(ctx, &format!("__dispatch_menu_action error for '{}'", action_id));
+        }
     }
 }
 
@@ -3400,8 +3444,8 @@ fn dispatch_js_response<'js>(ctx: &Ctx<'js>, id: RequestId, ok: bool, result: se
     match dispatch_fn {
         Ok(func) => {
             let json_str = serde_json::to_string(&result).unwrap_or_else(|_| "null".to_string());
-            if let Err(e) = func.call::<_, ()>((id as f64, ok, json_str)) {
-                eprintln!("[plugins:error] dispatch_js_response failed for request id {}: {:?}", id, e);
+            if let Err(_) = func.call::<_, ()>((id as f64, ok, json_str)) {
+                log_js_exception(ctx, &format!("dispatch_js_response failed for request id {}", id));
             }
         }
         Err(e) => {
@@ -3415,7 +3459,9 @@ fn dispatch_file_open<'js>(ctx: &Ctx<'js>, path: Option<String>) {
     let dispatch_fn: rquickjs::Result<Function> = ctx.globals().get("__dispatch_file_open");
     if let Ok(func) = dispatch_fn {
         let p_val = path.unwrap_or_default();
-        let _ = func.call::<_, ()>((p_val,));
+        if let Err(_) = func.call::<_, ()>((p_val,)) {
+            log_js_exception(ctx, "dispatch_file_open error");
+        }
     }
 }
 

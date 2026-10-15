@@ -657,9 +657,75 @@ pub fn render_ui_node<V: UiSink>(
                     }));
             }
 
-            let rendered_children: Vec<_> = children.iter().map(|child| {
-                render_ui_node(
-                    child,
+            let is_modal = cls.contains("modal-container") || cls.contains("modal") || cls.contains("modal-content");
+
+            let mut rendered_children: Vec<AnyElement> = Vec::new();
+            let mut i = 0;
+            while i < children.len() {
+                if let UiNode::Button { class: btn_cls, .. } = &children[i] {
+                    let is_full = btn_cls.as_deref().map_or(false, |c| c.contains("w-full") || c.contains("full-width") || c.contains("is-fullwidth"));
+                    if !is_full {
+                        let mut btn_elements = Vec::new();
+                        while i < children.len() {
+                            if let UiNode::Button { class: inner_cls, .. } = &children[i] {
+                                let inner_full = inner_cls.as_deref().map_or(false, |c| c.contains("w-full") || c.contains("full-width") || c.contains("is-fullwidth"));
+                                if !inner_full {
+                                    btn_elements.push(render_ui_node(
+                                        &children[i],
+                                        plugin_id,
+                                        view_id,
+                                        theme,
+                                        active_input,
+                                        input_focus_handle,
+                                        active_select,
+                                        select_popup,
+                                        caret_visible,
+                                        window,
+                                        cx,
+                                        scroll_ctx,
+                                    ));
+                                    i += 1;
+                                    continue;
+                                }
+                            }
+                            break;
+                        }
+
+                        if is_modal {
+                            rendered_children.push(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .w_full()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap(px(12.0))
+                                    .pt(px(14.0))
+                                    .pb(px(24.0))
+                                    .px(px(24.0))
+                                    .children(btn_elements)
+                                    .into_any_element(),
+                            );
+                        } else {
+                            rendered_children.push(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .w_full()
+                                    .items_center()
+                                    .justify_start()
+                                    .gap(px(8.0))
+                                    .py(px(4.0))
+                                    .children(btn_elements)
+                                    .into_any_element(),
+                            );
+                        }
+                        continue;
+                    }
+                }
+
+                rendered_children.push(render_ui_node(
+                    &children[i],
                     plugin_id,
                     view_id,
                     theme,
@@ -671,8 +737,9 @@ pub fn render_ui_node<V: UiSink>(
                     window,
                     cx,
                     scroll_ctx,
-                )
-            }).collect();
+                ));
+                i += 1;
+            }
 
             if is_list {
                 if let Some(ctx) = scroll_ctx {
@@ -967,11 +1034,14 @@ pub fn render_ui_node<V: UiSink>(
                     cx.stop_propagation();
                 });
 
+            let is_primary_btn = matches!(variant, ButtonVariant::Primary) || cls.contains("mod-cta") || cls.contains("mod-primary") || cls.contains("primary");
+
             if is_danger_btn {
                 if is_danger_active {
                     btn = btn
                         .h(px(30.0))
                         .px(px(14.0))
+                        .min_w(px(80.0))
                         .rounded_md()
                         .bg(gpui::rgb(0xd23f4d))
                         .text_color(gpui::rgb(0xffffff))
@@ -982,6 +1052,7 @@ pub fn render_ui_node<V: UiSink>(
                     btn = btn
                         .h(px(30.0))
                         .px(px(14.0))
+                        .min_w(px(80.0))
                         .rounded_md()
                         .bg(gpui::rgba(0xed879620))
                         .border_1()
@@ -995,6 +1066,7 @@ pub fn render_ui_node<V: UiSink>(
                 btn = btn
                     .h(px(28.0))
                     .px(px(12.0))
+                    .min_w(px(70.0))
                     .rounded_md()
                     .bg(theme.bg_sidebar)
                     .border_1()
@@ -1027,8 +1099,9 @@ pub fn render_ui_node<V: UiSink>(
                     ),
                 };
                 btn = btn
-                    .h(px(28.0))
-                    .px(px(12.0))
+                    .h(if is_primary_btn { px(32.0) } else { px(28.0) })
+                    .px(if is_primary_btn { px(18.0) } else { px(12.0) })
+                    .min_w(if is_primary_btn { px(90.0) } else { px(64.0) })
                     .rounded_md()
                     .bg(bg_color)
                     .border_1()
