@@ -107,6 +107,8 @@
       "link_suggest_desc": "Popupmeny med förslag vid inmatning av dubbla klamrar '[['",
       "hide_current_line_on_selection": "Dölj radmarkering vid markering",
       "hide_current_line_on_selection_desc": "Inaktivera markering av aktiv rad när text är markerad (Zed-stil)",
+      "wheel_smooth_scroll": "Smooth Wheel Scroll (90 ms ease)",
+      "wheel_smooth_scroll_desc": "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
       "debounce": "Fördröjning för automatisk sparning",
       "debounce_desc": "Tidsgräns efter inmatning innan skrivning till disk",
       "debounce_unit": "{} ms"

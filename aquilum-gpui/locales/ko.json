@@ -107,6 +107,8 @@
       "link_suggest_desc": "이중 대괄호 '[[' 입력 시 팝업 제안 창",
       "hide_current_line_on_selection": "선택 영역 시 활성 줄 강조 숨기기",
       "hide_current_line_on_selection_desc": "텍스트 선택 시 현재 줄 하이라이트 끄기 (Zed 스타일)",
+      "wheel_smooth_scroll": "Smooth Wheel Scroll (90 ms ease)",
+      "wheel_smooth_scroll_desc": "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
       "debounce": "자동 저장 대기 시간",
       "debounce_desc": "입력 후 디스크에 저장하기 전의 대기 시간",
       "debounce_unit": "{}밀리초"

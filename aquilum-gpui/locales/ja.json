@@ -107,6 +107,8 @@
       "link_suggest_desc": "二重角括弧 '[[' 入力時のサジェストポップアップ",
       "hide_current_line_on_selection": "選択時に行ハイライトを非表示",
       "hide_current_line_on_selection_desc": "テキスト選択中はカーソル行のハイライトを無効化 (Zedスタイル)",
+      "wheel_smooth_scroll": "Smooth Wheel Scroll (90 ms ease)",
+      "wheel_smooth_scroll_desc": "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
       "debounce": "自動保存の遅延",
       "debounce_desc": "入力完了からディスク書き込みまでの待機時間",
       "debounce_unit": "{} MS"

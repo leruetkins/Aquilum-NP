@@ -107,6 +107,8 @@
       "link_suggest_desc": "輸入雙中括號 '[[' 時彈出推薦選項",
       "hide_current_line_on_selection": "選取文字時隱藏當前行突顯",
       "hide_current_line_on_selection_desc": "有選取文字時停用游標所在行突顯 (Zed 風格)",
+      "wheel_smooth_scroll": "Smooth Wheel Scroll (90 ms ease)",
+      "wheel_smooth_scroll_desc": "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
       "debounce": "自動儲存防抖延遲",
       "debounce_desc": "輸入完成後寫入磁碟前的防抖延時",
       "debounce_unit": "{} 毫秒"

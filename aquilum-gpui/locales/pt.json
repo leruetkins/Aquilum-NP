@@ -107,6 +107,8 @@
       "link_suggest_desc": "Menu pop-up com sugestões ao digitar colchetes duplos '[['",
       "hide_current_line_on_selection": "Ocultar destaque de linha com seleção",
       "hide_current_line_on_selection_desc": "Desativar destaque da linha ativa quando houver texto selecionado (estilo Zed)",
+      "wheel_smooth_scroll": "Smooth Wheel Scroll (90 ms ease)",
+      "wheel_smooth_scroll_desc": "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
       "debounce": "Atraso de salvamento automático",
       "debounce_desc": "Tempo de espera após digitar antes de gravar no disco",
       "debounce_unit": "{} EM"

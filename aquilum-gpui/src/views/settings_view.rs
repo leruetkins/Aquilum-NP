@@ -3788,6 +3788,19 @@ impl SettingsView {
                     cx,
                 ),
             ),
+            self.render_setting_row_with_id(
+                Some("editor.wheelSmoothScroll"),
+                &self.t("settings.editor.wheel_smooth_scroll"),
+                Some(&self.t("settings.editor.wheel_smooth_scroll_desc")),
+                div()
+                    .id("row-wheel-smooth-scroll")
+                    .child(self.render_toggle_switch(config.editor.wheel_smooth_scroll))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.config.editor.wheel_smooth_scroll = !this.config.editor.wheel_smooth_scroll;
+                        this.save_settings(cx);
+                    })),
+                cx,
+            ),
         ];
 
         let debounce_display = self.t_fmt("settings.editor.debounce_unit", &[&config.editor.save_debounce_ms.to_string()]);

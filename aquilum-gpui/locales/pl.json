@@ -107,6 +107,8 @@
       "link_suggest_desc": "Wyskakujące menu sugestii przy wpisywaniu podwójnych nawiasów '[['",
       "hide_current_line_on_selection": "Ukryj podświetlenie wiersza przy zaznaczeniu",
       "hide_current_line_on_selection_desc": "Wyłącz podświetlenie bieżącego wiersza, gdy tekst jest zaznaczony (styl Zed)",
+      "wheel_smooth_scroll": "Smooth Wheel Scroll (90 ms ease)",
+      "wheel_smooth_scroll_desc": "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
       "debounce": "Opóźnienie autozapisu",
       "debounce_desc": "Czas oczekiwania po wpisaniu tekstu przed zapisaniem na dysk",
       "debounce_unit": "{} SM"

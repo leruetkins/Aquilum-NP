@@ -24,9 +24,23 @@ const SCROLL_SETTLE_FRAMES: u8 = 3;
 /// lines on Windows) moves three rows of text.
 const WHEEL_LINE_PX: f32 = 24.0;
 
-/// Time constant of the wheel smoothing, seconds. Smaller is snappier, larger
-/// is softer; the step itself is `1 - exp(-dt / tau)` (see `step_scroll_animation`).
-const SCROLL_SMOOTH_TAU: f32 = 0.07;
+/// Duration of the optional wheel ease, seconds. Short on purpose (~90 ms):
+/// the motion hands the eye a direction cue and then lands exactly on a hard
+/// deadline — no exponential tail, no re-settle. Off by default
+/// (`editor.wheelSmoothScroll`): with the flag off every notch applies
+/// instantly and the text stops dead.
+const WHEEL_EASE_DURATION: f32 = 0.09;
+
+/// One in-flight wheel ease: `start` is where the motion began, `target`
+/// where it lands, `t0` when it began. Stepped in `render` against the hard
+/// deadline [`WHEEL_EASE_DURATION`]; a fresh notch re-anchors `start` at the
+/// live position and extends `target`, so fast scrolling never stutters.
+#[derive(Clone, Copy)]
+pub struct WheelEase {
+    start: f64,
+    target: f64,
+    t0: std::time::Instant,
+}
 
 /// Rows rendered above and below the viewport.
 ///
@@ -41,9 +55,6 @@ pub struct AppView {
     pub focus_handle: FocusHandle,
     pub search_focus_handle: FocusHandle,
     pub editor_scroll_handle: ScrollHandle,
-    /// Where the wheel animation is heading, in px from the top of the content;
-    /// `None` when nothing is being animated.
-    pub scroll_target: Cell<Option<f64>>,
     /// The editor's scroll position, and the single source of truth for it.
     ///
     /// gpui's own offset is *not* used for the editor any more: the visible rows
@@ -52,8 +63,10 @@ pub struct AppView {
     /// here also keeps it exact — an offset of 2×10^8 px in `f32` can only move
     /// in 16 px steps, which is coarser than a 24 px row.
     pub editor_scroll: Cell<f64>,
-    /// Timestamp of the previous animation frame, for a rate-independent step.
-    pub scroll_anim_last_tick: Cell<Option<std::time::Instant>>,
+    /// In-flight optional wheel ease (`None` when the wheel applies instantly).
+    /// Any direct write through `set_editor_scroll_top_f64` cancels it: the
+    /// position came from elsewhere, so there is nothing left to ease towards.
+    pub wheel_ease: Cell<Option<WheelEase>>,
     pub sidebar_scroll_handle: ScrollHandle,
     pub settings_scroll_handle: ScrollHandle,
     pub need_scroll_sidebar_to_active: Cell<bool>,
@@ -269,9 +282,8 @@ impl AppView {
             focus_handle: cx.focus_handle(),
             search_focus_handle: cx.focus_handle(),
             editor_scroll_handle: ScrollHandle::new(),
-            scroll_target: Cell::new(None),
             editor_scroll: Cell::new(0.0),
-            scroll_anim_last_tick: Cell::new(None),
+            wheel_ease: Cell::new(None),
             sidebar_scroll_handle: ScrollHandle::new(),
             settings_scroll_handle: ScrollHandle::new(),
             need_scroll_sidebar_to_active: Cell::new(false),
@@ -1019,20 +1031,24 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
 
     /// Moves the editor to `scroll_y`.
     ///
-    /// Any write through here also ends a running wheel ease: the position came
-    /// from somewhere else (a restore, a thumb drag, a cursor reveal, the
-    /// keyboard), so the animation is no longer heading where the user is.
+    /// Any write through here also cancels an in-flight wheel ease: the
+    /// position came from somewhere else (a restore, a thumb drag, a cursor
+    /// reveal, the keyboard), so there is nothing left to ease towards.
     pub(crate) fn set_editor_scroll_top(&self, scroll_y: f32) {
         self.set_editor_scroll_top_f64(scroll_y as f64);
     }
 
     pub(crate) fn set_editor_scroll_top_f64(&self, scroll_y: f64) {
-        self.scroll_target.set(None);
-        self.scroll_anim_last_tick.set(None);
+        self.wheel_ease.set(None);
         self.editor_scroll.set(scroll_y.max(0.0));
     }
 
-    /// Owns the editor wheel: a notch is eased towards instead of applied.
+    /// Owns the editor wheel.
+    ///
+    /// With `editor.wheelSmoothScroll` off (the default) every notch applies
+    /// instantly: when the wheel stops, the text stops — no settle tail. With
+    /// the flag on, a notch starts a ~90 ms ease-out with a hard landing
+    /// instead, so the two behaviours can be compared live.
     ///
     /// The editor's rows are painted as a slice anchored near y = 0 and shifted
     /// by the leftover of the scroll position, so nothing else may move them:
@@ -1054,8 +1070,8 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
                 if f32::from(p.y) == 0.0 {
                     return;
                 }
-                // A trackpad already delivers a smooth stream: applying it as it
-                // arrives is smoother than easing a target that lags behind it.
+                // A trackpad delivers its own smooth stream: it always applies
+                // directly and takes over from any running ease.
                 let next = (current - f64::from(f32::from(p.y))).clamp(0.0, max_scroll);
                 self.set_editor_scroll_top_f64(next);
             }
@@ -1063,47 +1079,50 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
                 if l.y == 0.0 {
                     return;
                 }
-                // Accumulate, so notches arriving faster than the frame rate add
-                // up instead of overwriting one another.
-                let base = self.scroll_target.get().unwrap_or(current);
-                let target = (base - f64::from(l.y) * f64::from(WHEEL_LINE_PX)).clamp(0.0, max_scroll);
-                self.scroll_target.set(Some(target));
-                self.scroll_anim_last_tick.set(None);
+                let next = (current - f64::from(l.y) * f64::from(WHEEL_LINE_PX)).clamp(0.0, max_scroll);
+                if !self.config.editor.wheel_smooth_scroll {
+                    self.set_editor_scroll_top_f64(next);
+                } else if (next - current).abs() > 0.01 {
+                    // Accumulate onto the in-flight landing so notches arriving
+                    // faster than the frame rate add up, and re-anchor the
+                    // start at the live position so the motion never jumps.
+                    let base = self.wheel_ease.get().map(|a| a.target).unwrap_or(current);
+                    let target = (base - f64::from(l.y) * f64::from(WHEEL_LINE_PX)).clamp(0.0, max_scroll);
+                    self.wheel_ease.set(Some(WheelEase {
+                        start: current,
+                        target,
+                        t0: std::time::Instant::now(),
+                    }));
+                } else {
+                    self.wheel_ease.set(None);
+                }
             }
         }
         cx.notify();
     }
 
-    /// Eases the editor one frame towards `scroll_target`. Called from `render`.
+    /// Steps the optional wheel ease one frame towards its landing. Called from
+    /// `render` when `editor.wheelSmoothScroll` is on.
     ///
-    /// The step is `1 - exp(-dt / tau)`, i.e. frame-rate independent: a frame
-    /// that took twice as long covers twice the (remaining) distance, so the
-    /// motion looks the same at 60 and at 144 Hz.
-    fn step_scroll_animation(&mut self, window: &mut Window) {
-        let Some(target) = self.scroll_target.get() else {
+    /// Unlike an exponential ease this has a hard deadline: past
+    /// [`WHEEL_EASE_DURATION`] the position lands exactly on `target` and the
+    /// animation is over — no sub-pixel creep, no final re-settle.
+    fn step_wheel_ease(&self, window: &mut Window) {
+        let Some(anim) = self.wheel_ease.get() else {
             return;
         };
-        let current = self.current_scroll_top_f64();
-        let now = std::time::Instant::now();
-        let dt = self
-            .scroll_anim_last_tick
-            .get()
-            .map(|t| now.duration_since(t).as_secs_f32())
-            .unwrap_or(1.0 / 60.0)
-            .min(0.05);
-        self.scroll_anim_last_tick.set(Some(now));
-        let diff = target - current;
-        let next = if diff.abs() < 0.5 {
-            self.scroll_target.set(None);
-            self.scroll_anim_last_tick.set(None);
-            target
-        } else {
-            window.request_animation_frame();
-            current + diff * f64::from(scroll_ease_fraction(dt))
-        };
-        // Written directly, not through `set_editor_scroll_top`: that would end
-        // this very animation.
-        self.editor_scroll.set(next.max(0.0));
+        let t = std::time::Instant::now().duration_since(anim.t0).as_secs_f32() / WHEEL_EASE_DURATION;
+        if t >= 1.0 {
+            self.wheel_ease.set(None);
+            // Direct write, not through `set_editor_scroll_top_f64`: that
+            // would cancel this very landing.
+            self.editor_scroll.set(anim.target.max(0.0));
+            return;
+        }
+        window.request_animation_frame();
+        let eased = anim.start + (anim.target - anim.start) * f64::from(wheel_ease_factor(t));
+        // Direct write for the same reason as above.
+        self.editor_scroll.set(eased.max(0.0));
     }
 
     /// Starts middle-button smart scroll for the editor.
@@ -1119,10 +1138,6 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         }
         self.editor_middle_active = true;
         self.editor_middle_last_y.set(None);
-        // A running wheel ease would fight the cursor: it is no longer heading
-        // where the user is.
-        self.scroll_target.set(None);
-        self.scroll_anim_last_tick.set(None);
         cx.notify();
     }
 
@@ -3087,11 +3102,15 @@ impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         log_fps_tick();
 
-        // Advance the wheel animation before anything else touches the offset.
-        // The restore/reveal further down are one-shot and write after this, so
-        // they win; the next frame's guard then drops the animation instead of
-        // letting the two fight over the offset.
-        self.step_scroll_animation(window);
+        // Advance the optional wheel ease before anything else touches the
+        // offset. One-shot writes below (restore/reveal) go through
+        // `set_editor_scroll_top_f64`, which cancels the ease, so they win.
+        // With the flag off any stray in-flight ease is dropped instead.
+        if self.config.editor.wheel_smooth_scroll {
+            self.step_wheel_ease(window);
+        } else {
+            self.wheel_ease.set(None);
+        }
 
         // Device-pixel grid for thin carets: GPUI paints quads at raw float
         // coordinates, so an unsnapped 1.5-2px caret visibly changes thickness
@@ -5648,14 +5667,14 @@ impl Render for AppView {
     }
 }
 
-/// Fraction of the remaining wheel distance covered by a frame of length `dt`.
+/// Ease-out curve for the optional wheel animation: fast start, soft finish.
 ///
-/// `1 - exp(-dt / tau)` rather than a fixed per-frame factor: a frame that took
-/// twice as long covers twice the (remaining) distance, so the motion is the
-/// same at 60 and at 144 Hz. It also converges without overshoot, which a fixed
-/// fraction applied to a variable frame time does not guarantee.
-fn scroll_ease_fraction(dt: f32) -> f32 {
-    1.0 - (-dt / SCROLL_SMOOTH_TAU).exp()
+/// Cubic ease-out over the normalized `[0, 1]` lifetime; the animation itself
+/// ends on a hard deadline ([`WHEEL_EASE_DURATION`]), so unlike an exponential
+/// ease this never leaves a sub-pixel tail behind.
+fn wheel_ease_factor(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
 }
 
 /// Dead zone at the top/bottom of the editor viewport for middle-button smart
@@ -7189,29 +7208,6 @@ mod tests {
         assert!(4.0 - 2.0 * code_chip_inset(4.0) > 0.0);
     }
 
-    /// The wheel ease must not depend on the frame rate: a frame twice as long
-    /// covers exactly the distance two half-frames would.
-    #[test]
-    fn scroll_ease_is_frame_rate_independent() {
-        let one_frame = scroll_ease_fraction(1.0 / 60.0);
-        let two_half_frames = 1.0 - (1.0 - scroll_ease_fraction(1.0 / 120.0)).powi(2);
-        assert!(
-            (one_frame - two_half_frames).abs() < 1e-6,
-            "60 Hz step {one_frame} != two 120 Hz steps {two_half_frames}"
-        );
-
-        // Same again for a janky frame against three ordinary ones.
-        let janky = scroll_ease_fraction(0.05);
-        let three_smooth = 1.0 - (1.0 - scroll_ease_fraction(0.05 / 3.0)).powi(3);
-        assert!((janky - three_smooth).abs() < 1e-5, "janky {janky} != {three_smooth}");
-
-        // Never overshoots, and always makes progress.
-        for dt in [0.001f32, 1.0 / 144.0, 1.0 / 60.0, 0.016, 0.05] {
-            let f = scroll_ease_fraction(dt);
-            assert!(f > 0.0 && f < 1.0, "dt {dt}: fraction {f} out of range");
-        }
-    }
-
     /// The rows are painted as a slice shifted by `top_of(start) - scroll`, so
     /// two things have to hold at every scroll position, including the very end
     /// of a document far past the f32 grid:
@@ -7309,6 +7305,27 @@ mod tests {
             assert!(cur >= prev, "y {y}: {cur} went backwards from {prev}");
             prev = cur;
             y += 7.0;
+        }
+    }
+
+    /// The optional wheel ease covers the distance fast and lands exactly at
+    /// the deadline: 0 at the start, 1 at the end, monotonic in between, and
+    /// over halfway there by the midpoint (ease-out, not linear).
+    #[test]
+    fn wheel_ease_factor_starts_fast_and_lands_exact() {
+        assert_eq!(wheel_ease_factor(0.0), 0.0);
+        assert_eq!(wheel_ease_factor(1.0), 1.0);
+        // Clamped outside the lifetime.
+        assert_eq!(wheel_ease_factor(-0.5), 0.0);
+        assert_eq!(wheel_ease_factor(1.5), 1.0);
+        assert!((wheel_ease_factor(0.5) - 0.875).abs() < 1e-6);
+        let mut prev = 0.0;
+        let mut t = 0.0;
+        while t <= 1.0 {
+            let cur = wheel_ease_factor(t);
+            assert!(cur >= prev, "t {t}: {cur} went backwards from {prev}");
+            prev = cur;
+            t += 0.05;
         }
     }
 }

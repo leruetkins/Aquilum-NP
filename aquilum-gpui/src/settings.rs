@@ -169,6 +169,9 @@ pub struct EditorSettings {
     pub link_suggest_min_chars: u32,
     pub headings: HeadingsSettings,
     pub hide_current_line_on_selection: bool,
+    /// Short wheel ease (~90 ms, hard landing) instead of instant steps.
+    /// Off by default: when the wheel stops, the text stops.
+    pub wheel_smooth_scroll: bool,
     #[serde(flatten)]
     pub font: FontSettings,
 }
@@ -188,6 +191,7 @@ impl Default for EditorSettings {
             link_suggest_min_chars: 2,
             headings: HeadingsSettings::default(),
             hide_current_line_on_selection: true,
+            wheel_smooth_scroll: false,
             font: FontSettings {
                 font_family: "iA Writer Mono".to_string(),
                 font_weight: 400,
@@ -606,6 +610,17 @@ pub static SETTINGS: &[SettingDescriptor] = &[
         desc_ru: "Не подсвечивать текущую строку, когда выделен диапазон текста",
         desc_en: "Hide current line highlight when a text range is selected",
         keywords: &["selection", "highlight", "выделение", "подсветка"],
+        aliases: &[],
+        setting_type: SettingType::Bool,
+    },
+    SettingDescriptor {
+        id: "editor.wheelSmoothScroll",
+        tab_id: "editor",
+        title_ru: "Плавная прокрутка колесом (ease 90 мс)",
+        title_en: "Smooth Wheel Scroll (90 ms ease)",
+        desc_ru: "Короткая анимация колеса с жёсткой посадкой вместо мгновенных шагов. Выкл — текст останавливается сразу",
+        desc_en: "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
+        keywords: &["scroll", "smooth", "wheel", "прокрутка", "плавная", "колесо", "ease"],
         aliases: &[],
         setting_type: SettingType::Bool,
     },

@@ -107,6 +107,8 @@
       "link_suggest_desc": "Menú emergente de sugerencias al escribir corchetes dobles '[['",
       "hide_current_line_on_selection": "Ocultar resalte de línea con selección",
       "hide_current_line_on_selection_desc": "Desactivar resalte de línea activa cuando hay texto seleccionado (estilo Zed)",
+      "wheel_smooth_scroll": "Smooth Wheel Scroll (90 ms ease)",
+      "wheel_smooth_scroll_desc": "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
       "debounce": "Retardo de autoguardado",
       "debounce_desc": "Tiempo de espera tras escribir antes de guardar en disco",
       "debounce_unit": "{} EM"

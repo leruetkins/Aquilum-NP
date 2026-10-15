@@ -107,6 +107,8 @@
       "link_suggest_desc": "Suggestions contextuelles lors de la saisie de doubles crochets '[['",
       "hide_current_line_on_selection": "Masquer la ligne active lors de la sélection",
       "hide_current_line_on_selection_desc": "Désactiver le surlignage de la ligne courante lorsqu'un texte est sélectionné (style Zed)",
+      "wheel_smooth_scroll": "Smooth Wheel Scroll (90 ms ease)",
+      "wheel_smooth_scroll_desc": "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
       "debounce": "Délai de sauvegarde automatique",
       "debounce_desc": "Délai d'inactivité après la saisie avant l'enregistrement sur disque",
       "debounce_unit": "{} MS"

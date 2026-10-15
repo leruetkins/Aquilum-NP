@@ -107,6 +107,8 @@
       "link_suggest_desc": "दोहरे कोष्ठक '[[' टाइप करने पर पॉपअप सुझाव",
       "hide_current_line_on_selection": "चयन होने पर वर्तमान पंक्ति हाइलाइट छिपाएं",
       "hide_current_line_on_selection_desc": "टेक्स्ट चयन होने पर सक्रिय पंक्ति हाइलाइट बंद करें (Zed शैली)",
+      "wheel_smooth_scroll": "Smooth Wheel Scroll (90 ms ease)",
+      "wheel_smooth_scroll_desc": "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
       "debounce": "स्वतः-सहेजें देरी",
       "debounce_desc": "टाइप करने के बाद डिस्क पर लिखने से पहले विलंब",
       "debounce_unit": "{} मिलीसेकंड"

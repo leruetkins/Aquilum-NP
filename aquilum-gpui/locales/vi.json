@@ -107,6 +107,8 @@
       "link_suggest_desc": "Hộp thoại gợi ý khi gõ hai dấu ngoặc vuông '[['",
       "hide_current_line_on_selection": "Ẩn làm nổi dòng khi đang chọn",
       "hide_current_line_on_selection_desc": "Tắt viền làm nổi dòng hiện tại khi văn bản đang được bôi đen (kiểu Zed)",
+      "wheel_smooth_scroll": "Smooth Wheel Scroll (90 ms ease)",
+      "wheel_smooth_scroll_desc": "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
       "debounce": "Độ trễ tự động lưu",
       "debounce_desc": "Thời gian chờ sau khi nhập trước khi ghi vào đĩa",
       "debounce_unit": "{} bệnh đa xơ cứng"

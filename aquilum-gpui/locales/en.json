@@ -107,6 +107,8 @@
       "link_suggest_desc": "Popup suggestions when typing double brackets '[['",
       "hide_current_line_on_selection": "Hide Current Line Highlight on Selection",
       "hide_current_line_on_selection_desc": "Disable active line highlighting when text is selected (Zed style)",
+      "wheel_smooth_scroll": "Smooth Wheel Scroll (90 ms ease)",
+      "wheel_smooth_scroll_desc": "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
       "debounce": "Autosave Debounce Delay",
       "debounce_desc": "Timeout after typing before saving to disk",
       "debounce_unit": "{} ms"

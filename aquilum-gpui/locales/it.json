@@ -107,6 +107,8 @@
       "link_suggest_desc": "Finestra popup di suggerimenti digitando doppie parentesi quadre '[['",
       "hide_current_line_on_selection": "Nascondi evidenziazione riga con selezione",
       "hide_current_line_on_selection_desc": "Disattiva l'evidenziazione della riga corrente quando il testo è selezionato (stile Zed)",
+      "wheel_smooth_scroll": "Smooth Wheel Scroll (90 ms ease)",
+      "wheel_smooth_scroll_desc": "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
       "debounce": "Ritardo salvataggio automatico",
       "debounce_desc": "Tempo di attesa dopo la digitazione prima del salvataggio su disco",
       "debounce_unit": "{} SM"
