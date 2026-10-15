@@ -3801,6 +3801,19 @@ impl SettingsView {
                     })),
                 cx,
             ),
+            self.render_setting_row_with_id(
+                Some("editor.scrollbarRuler"),
+                &self.t("settings.editor.scrollbar_ruler"),
+                Some(&self.t("settings.editor.scrollbar_ruler_desc")),
+                div()
+                    .id("row-scrollbar-ruler")
+                    .child(self.render_toggle_switch(config.editor.scrollbar_ruler))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.config.editor.scrollbar_ruler = !this.config.editor.scrollbar_ruler;
+                        this.save_settings(cx);
+                    })),
+                cx,
+            ),
         ];
 
         let debounce_display = self.t_fmt("settings.editor.debounce_unit", &[&config.editor.save_debounce_ms.to_string()]);

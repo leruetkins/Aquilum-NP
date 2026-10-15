@@ -125,6 +125,12 @@ pub struct AppView {
     pub is_dragging_scrollbar: bool,
     pub scrollbar_drag_start_y: f32,
     pub scrollbar_drag_start_scroll_y: f64,
+    /// Whether the pointer is over the editor scrollbar track. While hovered
+    /// the overview-ruler marks stretch across the full track width; otherwise
+    /// they collapse into a thin pill centered like the thumb.
+    pub is_hovering_editor_scrollbar: bool,
+    /// Whether the pointer is over the editor scrollbar thumb itself.
+    pub is_hovering_editor_thumb: bool,
     /// Drag state of the sidebar tree's overlay scrollbar.
     pub sidebar_scrollbar_drag: ScrollbarDrag,
     /// Measured viewport of the sidebar file tree for cursor-driven smart scrolling.
@@ -322,6 +328,8 @@ impl AppView {
             is_dragging_scrollbar: false,
             scrollbar_drag_start_y: 0.0,
             scrollbar_drag_start_scroll_y: 0.0,
+            is_hovering_editor_scrollbar: false,
+            is_hovering_editor_thumb: false,
             sidebar_scrollbar_drag: ScrollbarDrag::default(),
             sidebar_smart_bounds: Rc::new(Cell::new(Bounds::default())),
             sidebar_smart_target_y: Cell::new(None),
@@ -1252,6 +1260,46 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
     pub(crate) fn clamp_restore_target(target: f64, total_h: f64, viewport_h: f64) -> f64 {
         let max = (total_h - viewport_h).max(0.0);
         target.clamp(0.0, max)
+    }
+
+    /// Document Y (px from the top of the content) of the visual row holding
+    /// byte `offset`.
+    ///
+    /// Maps through line → char column → visual row, so an offset on a wrapped
+    /// line resolves to its exact sub-row instead of the line top. Drives the
+    /// overview-ruler marks on the editor scrollbar (cursor line, selection
+    /// span). Out-of-range offsets clamp to the document, empty caches sit at
+    /// zero.
+    pub(crate) fn editor_doc_y_for_offset(
+        offset: usize,
+        lines: &[String],
+        line_starts: &[usize],
+        visual_rows: &[crate::markdown::VisualRow],
+        height_index: &crate::markdown::VisualRowHeightIndex,
+    ) -> f64 {
+        if lines.is_empty() || visual_rows.is_empty() || line_starts.is_empty() {
+            return 0.0;
+        }
+        let doc_end = line_starts
+            .last()
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(lines.last().map(|l| l.len()).unwrap_or(0));
+        let offset = offset.min(doc_end);
+        let line_idx = match line_starts.binary_search(&offset) {
+            Ok(idx) => idx,
+            Err(idx) => idx.saturating_sub(1),
+        }
+        .min(lines.len().saturating_sub(1));
+        let line = &lines[line_idx];
+        let mut byte_in_line = offset.saturating_sub(line_starts[line_idx]).min(line.len());
+        while byte_in_line > 0 && !line.is_char_boundary(byte_in_line) {
+            byte_in_line -= 1;
+        }
+        let col = line[..byte_in_line].chars().count();
+        let (v_idx, _) =
+            crate::markdown::find_visual_row_for_cursor(visual_rows, line_idx, col).unwrap_or((0, 0));
+        height_index.top_of(v_idx)
     }
 
     /// Returns `(slice_h, viewport_h, max_scroll_content, track_top_y)`.
@@ -4535,6 +4583,62 @@ impl Render for AppView {
                                 };
                                 let is_scrollbar_dragging = self.is_dragging_scrollbar;
                                 let scroll_y_current = self.current_scroll_top_f64().clamp(0.0, max_scroll_content);
+                                // While the pointer is over the track the ruler marks
+                                // stretch full width; otherwise they collapse into a
+                                // thin pill centered like the thumb.
+                                let ruler_expanded = self.is_hovering_editor_scrollbar;
+                                // Idle pill geometry follows the thumb exactly (track
+                                // is 14 wide, the thumb sits 3 off the right edge),
+                                // so the two always share one center line.
+                                let ruler_pill_w = if is_scrollbar_dragging { 8.0 } else { 6.0 };
+                                let ruler_pill_left = 14.0 - 3.0 - ruler_pill_w;
+
+                                // Overview-ruler marks on the scrollbar track: a thin
+                                // cursor line plus the selection span underneath it.
+                                // Content Y maps onto the full track height, the same
+                                // proportion the thumb uses for the scroll position.
+                                // Only when the document actually scrolls and the
+                                // `editor.scrollbarRuler` flag is on — without a
+                                // scrollbar there is no track to mark.
+                                let show_ruler = self.config.editor.scrollbar_ruler;
+                                let (ruler_cursor_y, ruler_sel_span): (f32, Option<(f32, f32)>) =
+                                    if show_ruler && show_scrollbar && total_content_h > 1.0 {
+                                        let to_track = |doc_y: f64| {
+                                            ((doc_y / total_content_h) * f64::from(viewport_h))
+                                                .clamp(0.0, f64::from(viewport_h) - 2.0)
+                                                as f32
+                                        };
+                                        let cursor_y = to_track(height_index_arc.top_of(active_v_idx));
+                                        let sel_span = note.selection_range().map(|sel| {
+                                            let a = Self::editor_doc_y_for_offset(
+                                                sel.start,
+                                                &lines_arc,
+                                                &line_starts_arc,
+                                                &visual_rows_arc,
+                                                &height_index_arc,
+                                            );
+                                            let b = Self::editor_doc_y_for_offset(
+                                                sel.end,
+                                                &lines_arc,
+                                                &line_starts_arc,
+                                                &visual_rows_arc,
+                                                &height_index_arc,
+                                            );
+                                            let top = to_track(a.min(b));
+                                            let bottom = to_track(a.max(b)) + 2.0;
+                                            (top, (bottom - top).max(3.0))
+                                        });
+                                        (cursor_y, sel_span)
+                                    } else {
+                                        (0.0, None)
+                                    };
+                                // Gray the cursor line only while the thumb is dragged
+                                // or hovered and the line is actually under it:
+                                // anywhere else it stays accent.
+                                let ruler_cursor_under_thumb = show_scrollbar
+                                    && (is_scrollbar_dragging || self.is_hovering_editor_thumb)
+                                    && ruler_cursor_y < thumb_top + thumb_h
+                                    && ruler_cursor_y + 2.0 > thumb_top;
 
                                 let is_title_focused = self.title_focus_handle.is_focused(window);
                                 let title_text = &self.title_edit_text;
@@ -5458,41 +5562,103 @@ impl Render for AppView {
                                                     .right_0()
                                                     .w(px(14.0))
                                                     .h_full()
-                                                    .cursor_pointer()
-                                                    .hover(|h| h.bg(rgba(0x00000015)))
-                                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                                        cx.stop_propagation();
-                                                        let click_y: f32 = event.position.y.into();
-                                                        let click_rel_y = f64::from((click_y - track_top_y).max(0.0));
-                                                        let target_fraction = (click_rel_y / f64::from(viewport_h)).clamp(0.0, 1.0);
-                                                        let target_scroll_y = target_fraction * max_scroll_content;
-                                                        this.set_editor_scroll_top_f64(target_scroll_y);
-                                                        cx.notify();
-                                                    }))
-                                                    .child(
-                                                        div()
-                                                            .id("editor-scrollbar-thumb")
-                                                            .absolute()
-                                                            .top(px(thumb_top))
-                                                            .right(px(3.0))
-                                                            .w(px(if is_scrollbar_dragging { 8.0 } else { 6.0 }))
-                                                            .h(px(thumb_h))
-                                                            .rounded_full()
-                                                            .bg(if is_scrollbar_dragging {
-                                                                theme_scrollbar.accent
-                                                            } else {
-                                                                theme_scrollbar.border
-                                                            })
-                                                            .hover(|h| h.bg(theme_scrollbar.text_secondary).w(px(8.0)))
-                                                            .cursor_pointer()
-                                                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                                                cx.stop_propagation();
-                                                                this.is_dragging_scrollbar = true;
-                                                                this.scrollbar_drag_start_y = event.position.y.into();
-                                                                this.scrollbar_drag_start_scroll_y = scroll_y_current;
-                                                                cx.notify();
-                                                            }))
-                                                    )
+                                                     .cursor_pointer()
+                                                     .hover(|h| h.bg(rgba(0x00000015)))
+                                                     .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                                         if this.is_hovering_editor_scrollbar != *hovered {
+                                                             this.is_hovering_editor_scrollbar = *hovered;
+                                                             cx.notify();
+                                                         }
+                                                     }))
+                                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                                         cx.stop_propagation();
+                                                         let click_y: f32 = event.position.y.into();
+                                                         let click_rel_y = f64::from((click_y - track_top_y).max(0.0));
+                                                         let target_fraction = (click_rel_y / f64::from(viewport_h)).clamp(0.0, 1.0);
+                                                         let target_scroll_y = target_fraction * max_scroll_content;
+                                                         this.set_editor_scroll_top_f64(target_scroll_y);
+                                                         cx.notify();
+                                                     }))
+                                                     // Overview ruler: the selection span and the cursor
+                                                     // line stretch across the full track width and paint
+                                                     // above the thumb, so the thumb never hides them.
+                                                     // Neither owns the pointer — a click still falls
+                                                     // through to the track jump above.
+                                                     .child(
+                                                         div()
+                                                             .id("editor-scrollbar-thumb")
+                                                             .absolute()
+                                                             .top(px(thumb_top))
+                                                             .right(px(3.0))
+                                                             .w(px(if is_scrollbar_dragging { 8.0 } else { 6.0 }))
+                                                             .h(px(thumb_h))
+                                                             .rounded_full()
+                                                             .bg(if is_scrollbar_dragging {
+                                                                 theme_scrollbar.accent
+                                                             } else {
+                                                                 theme_scrollbar.border
+                                                             })
+                                                             .hover(|h| h.bg(theme_scrollbar.text_secondary).w(px(8.0)))
+                                                             .cursor_pointer()
+                                                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                                                 if this.is_hovering_editor_thumb != *hovered {
+                                                                     this.is_hovering_editor_thumb = *hovered;
+                                                                     cx.notify();
+                                                                 }
+                                                             }))
+                                                             .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                                                 cx.stop_propagation();
+                                                                 this.is_dragging_scrollbar = true;
+                                                                 this.scrollbar_drag_start_y = event.position.y.into();
+                                                                 this.scrollbar_drag_start_scroll_y = scroll_y_current;
+                                                                 cx.notify();
+                                                             }))
+                                                     )
+                                                     .when_some(ruler_sel_span, |d, (top, h)| {
+                                                         d.child(
+                                                             div()
+                                                                 .absolute()
+                                                                 .top(px(top))
+                                                                 .h(px(h))
+                                                                 // Hovered: full track width. Idle: a thin
+                                                                 // pill aligned with the thumb.
+                                                                 .when(ruler_expanded, |d| {
+                                                                     d.left(px(0.0)).w_full().rounded_xs()
+                                                                 })
+                                                                 .when(!ruler_expanded, |d| {
+                                                                     d.left(px(ruler_pill_left))
+                                                                         .w(px(ruler_pill_w))
+                                                                         .rounded_full()
+                                                                 })
+                                                                 .bg(theme_scrollbar.selection_bg),
+                                                         )
+                                                     })
+                                                     .when(show_ruler, |d| {
+                                                         d.child(
+                                                             div()
+                                                                 .id("editor-ruler-cursor")
+                                                             .absolute()
+                                                             .top(px(ruler_cursor_y))
+                                                             .h(px(2.0))
+                                                             .when(ruler_expanded, |d| {
+                                                                 d.left(px(0.0)).w_full().rounded_xs()
+                                                             })
+                                                             .when(!ruler_expanded, |d| {
+                                                                 d.left(px(ruler_pill_left))
+                                                                     .w(px(ruler_pill_w))
+                                                                     .rounded_full()
+                                                             })
+                                                             // While the thumb is dragged or hovered it
+                                                             // turns dark itself, so the line goes gray
+                                                             // wherever it runs under the thumb —
+                                                             // anywhere else it stays accent.
+                                                             .bg(if ruler_cursor_under_thumb {
+                                                                 theme_scrollbar.border
+                                                             } else {
+                                                                 theme_scrollbar.accent
+                                                             }),
+                                                         )
+                                                     })
                                             )
                                         })
                                 )
@@ -7327,5 +7493,36 @@ mod tests {
             prev = cur;
             t += 0.05;
         }
+    }
+
+    /// Byte offsets resolve to the document Y of their visual row: plain lines
+    /// map to the line top, offsets on a wrapped line to the exact sub-row,
+    /// and out-of-range offsets clamp to the document.
+    #[test]
+    fn ruler_offset_maps_to_visual_row_top() {
+        use crate::markdown::{VisualRow, VisualRowHeightIndex};
+        // Two lines: "hello" (one row) + "world!" wrapped 3/3 (two sub-rows).
+        let lines = vec!["hello".to_string(), "world!".to_string()];
+        let starts = vec![0usize, 6usize];
+        let rows = vec![
+            VisualRow { line_idx: 0, sub_idx: 0, is_last_sub: true, char_start: 0, char_end: 5 },
+            VisualRow { line_idx: 1, sub_idx: 0, is_last_sub: false, char_start: 0, char_end: 3 },
+            VisualRow { line_idx: 1, sub_idx: 1, is_last_sub: true, char_start: 3, char_end: 6 },
+        ];
+        let index = VisualRowHeightIndex::new(vec![24.0, 24.0, 24.0]);
+        let at = |off: usize| AppView::editor_doc_y_for_offset(off, &lines, &starts, &rows, &index);
+        // First line and the gap (newline byte 5 belongs to line 0 end).
+        assert_eq!(at(0), 0.0);
+        assert_eq!(at(5), 0.0);
+        // Second line, first sub-row ("wor", bytes 6..9).
+        assert_eq!(at(6), 24.0);
+        assert_eq!(at(8), 24.0);
+        // Second sub-row ("ld!", bytes 9..12).
+        assert_eq!(at(9), 48.0);
+        assert_eq!(at(12), 48.0);
+        // Past the end clamps to the last row.
+        assert_eq!(at(1000), 48.0);
+        // Empty caches sit at zero instead of panicking.
+        assert_eq!(AppView::editor_doc_y_for_offset(0, &[], &[], &[], &index), 0.0);
     }
 }

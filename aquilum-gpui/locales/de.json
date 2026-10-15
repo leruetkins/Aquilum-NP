@@ -109,6 +109,8 @@
       "hide_current_line_on_selection_desc": "Zeilenmarkierung deaktivieren, wenn Text ausgewählt ist (wie in Zed)",
       "wheel_smooth_scroll": "Smooth Wheel Scroll (90 ms ease)",
       "wheel_smooth_scroll_desc": "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
+      "scrollbar_ruler": "Scrollbar Ruler Marks",
+      "scrollbar_ruler_desc": "Thin cursor line and selection span over the editor scrollbar thumb",
       "debounce": "Verzögerung des automatischen Speicherns",
       "debounce_desc": "Wartezeit nach Texteingabe vor dem Schreiben auf Festplatte",
       "debounce_unit": "{} MS"

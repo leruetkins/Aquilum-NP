@@ -172,6 +172,9 @@ pub struct EditorSettings {
     /// Short wheel ease (~90 ms, hard landing) instead of instant steps.
     /// Off by default: when the wheel stops, the text stops.
     pub wheel_smooth_scroll: bool,
+    /// Overview-ruler marks on the editor scrollbar: cursor line + selection
+    /// span. On by default.
+    pub scrollbar_ruler: bool,
     #[serde(flatten)]
     pub font: FontSettings,
 }
@@ -192,6 +195,7 @@ impl Default for EditorSettings {
             headings: HeadingsSettings::default(),
             hide_current_line_on_selection: true,
             wheel_smooth_scroll: false,
+            scrollbar_ruler: true,
             font: FontSettings {
                 font_family: "iA Writer Mono".to_string(),
                 font_weight: 400,
@@ -621,6 +625,17 @@ pub static SETTINGS: &[SettingDescriptor] = &[
         desc_ru: "Короткая анимация колеса с жёсткой посадкой вместо мгновенных шагов. Выкл — текст останавливается сразу",
         desc_en: "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
         keywords: &["scroll", "smooth", "wheel", "прокрутка", "плавная", "колесо", "ease"],
+        aliases: &[],
+        setting_type: SettingType::Bool,
+    },
+    SettingDescriptor {
+        id: "editor.scrollbarRuler",
+        tab_id: "editor",
+        title_ru: "Метки курсора и выделения на скроллбаре",
+        title_en: "Scrollbar Ruler Marks",
+        desc_ru: "Тонкая линия курсора и область выделения поверх ползунка редактора",
+        desc_en: "Thin cursor line and selection span over the editor scrollbar thumb",
+        keywords: &["scrollbar", "ruler", "cursor", "selection", "скроллбар", "курсор", "выделение", "метки"],
         aliases: &[],
         setting_type: SettingType::Bool,
     },

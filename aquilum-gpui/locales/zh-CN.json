@@ -109,6 +109,8 @@
       "hide_current_line_on_selection_desc": "有文本选中时禁用光标所在行高亮 (Zed 风格)",
       "wheel_smooth_scroll": "Smooth Wheel Scroll (90 ms ease)",
       "wheel_smooth_scroll_desc": "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
+      "scrollbar_ruler": "Scrollbar Ruler Marks",
+      "scrollbar_ruler_desc": "Thin cursor line and selection span over the editor scrollbar thumb",
       "debounce": "自动保存防抖延迟",
       "debounce_desc": "输入完成后写入磁盘前的防抖延时",
       "debounce_unit": "{} 毫秒"

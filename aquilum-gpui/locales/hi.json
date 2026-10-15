@@ -109,6 +109,8 @@
       "hide_current_line_on_selection_desc": "टेक्स्ट चयन होने पर सक्रिय पंक्ति हाइलाइट बंद करें (Zed शैली)",
       "wheel_smooth_scroll": "Smooth Wheel Scroll (90 ms ease)",
       "wheel_smooth_scroll_desc": "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
+      "scrollbar_ruler": "Scrollbar Ruler Marks",
+      "scrollbar_ruler_desc": "Thin cursor line and selection span over the editor scrollbar thumb",
       "debounce": "स्वतः-सहेजें देरी",
       "debounce_desc": "टाइप करने के बाद डिस्क पर लिखने से पहले विलंब",
       "debounce_unit": "{} मिलीसेकंड"
