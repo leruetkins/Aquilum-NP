@@ -20,6 +20,7 @@ impl AppView {
         self.state
             .snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         self.state.open_empty_tab();
+        self.active_center_leaf = None;
         self.title_editing_path = None;
         self.title_edit_text.clear();
         self.title_cursor_pos = 0;
@@ -48,6 +49,7 @@ impl AppView {
         let sidebar_offset_y: f32 = self.sidebar_scroll_handle.offset().y.into();
         self.state.session.sidebar_scroll_top = sidebar_offset_y;
         self.state.activate_empty_tab(path);
+        self.active_center_leaf = None;
         self.title_editing_path = None;
         self.title_edit_text.clear();
         self.title_cursor_pos = 0;

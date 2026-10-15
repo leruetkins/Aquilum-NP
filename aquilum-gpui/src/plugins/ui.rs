@@ -61,6 +61,8 @@ pub enum ButtonVariant {
     Default,
     Primary,
     Danger,
+    #[serde(other)]
+    Secondary,
 }
 
 impl Default for ButtonVariant {
@@ -91,11 +93,15 @@ pub struct SelectOption {
 pub enum UiNode {
     Column {
         #[serde(default)]
+        id: Option<String>,
+        #[serde(default)]
         gap: Gap,
         #[serde(default)]
         children: Vec<UiNode>,
     },
     Row {
+        #[serde(default)]
+        id: Option<String>,
         #[serde(default)]
         gap: Gap,
         #[serde(default)]
@@ -524,57 +530,83 @@ pub fn render_ui_node<V: UiSink>(
     cx: &Context<V>,
 ) -> AnyElement {
     match node {
-        UiNode::Column { gap, children } => {
+        UiNode::Column { id, gap, children } => {
             if children.is_empty() {
                 return div().into_any_element();
             }
             let gap_px = gap.to_px();
-            div()
+            let mut col = div()
                 .flex()
                 .flex_col()
                 .gap(px(gap_px))
-                .w_full()
-                .children(children.iter().map(|child| {
-                    render_ui_node(
-                        child,
-                        plugin_id,
-                        view_id,
-                        theme,
-                        active_input,
-                        input_focus_handle,
-                        active_select,
-                        select_popup,
-                        caret_visible,
-                        window,
-                        cx,
-                    )
-                }))
-                .into_any_element()
+                .w_full();
+            if let Some(node_id) = id {
+                let p_id = plugin_id.to_string();
+                let n_id = node_id.clone();
+                col = col
+                    .cursor_pointer()
+                    .hover(|h| h.bg(theme.bg_hover))
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.send_plugin_ui_event(&p_id, view_id, n_id.clone(), "click", None, cx);
+                    }));
+            }
+            col.children(children.iter().map(|child| {
+                render_ui_node(
+                    child,
+                    plugin_id,
+                    view_id,
+                    theme,
+                    active_input,
+                    input_focus_handle,
+                    active_select,
+                    select_popup,
+                    caret_visible,
+                    window,
+                    cx,
+                )
+            }))
+            .into_any_element()
         }
-        UiNode::Row { gap, children } => {
+        UiNode::Row { id, gap, children } => {
             let gap_px = gap.to_px();
-            div()
+            let mut row = div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap(px(gap_px))
-                .w_full()
-                .children(children.iter().map(|child| {
-                    render_ui_node(
-                        child,
-                        plugin_id,
-                        view_id,
-                        theme,
-                        active_input,
-                        input_focus_handle,
-                        active_select,
-                        select_popup,
-                        caret_visible,
-                        window,
-                        cx,
-                    )
-                }))
-                .into_any_element()
+                .w_full();
+            if let Some(node_id) = id {
+                let p_id = plugin_id.to_string();
+                let n_id = node_id.clone();
+                row = row
+                    .justify_between()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(|h| h.bg(theme.bg_hover))
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.send_plugin_ui_event(&p_id, view_id, n_id.clone(), "click", None, cx);
+                    }));
+            }
+            row.children(children.iter().map(|child| {
+                render_ui_node(
+                    child,
+                    plugin_id,
+                    view_id,
+                    theme,
+                    active_input,
+                    input_focus_handle,
+                    active_select,
+                    select_popup,
+                    caret_visible,
+                    window,
+                    cx,
+                )
+            }))
+            .into_any_element()
         }
         UiNode::Text { value, style } => match style {
             TextStyle::Normal => div()
@@ -618,6 +650,7 @@ pub fn render_ui_node<V: UiSink>(
             disabled,
         } => {
             let is_disabled = *disabled;
+            let is_secondary = matches!(variant, ButtonVariant::Secondary);
             let (bg_color, border_color, text_color) = match variant {
                 ButtonVariant::Default => (
                     theme.bg_card,
@@ -634,6 +667,11 @@ pub fn render_ui_node<V: UiSink>(
                     gpui::rgb(0xed8796),
                     gpui::rgb(0x181825),
                 ),
+                ButtonVariant::Secondary => (
+                    gpui::rgba(0x00000000),
+                    gpui::rgba(0x00000000),
+                    theme.text_muted,
+                ),
             };
 
             let p_id = plugin_id.to_string();
@@ -645,16 +683,25 @@ pub fn render_ui_node<V: UiSink>(
                 .flex_shrink_0()
                 .items_center()
                 .justify_center()
-                .h(px(28.0))
-                .px(px(12.0))
-                .rounded_md()
-                .bg(bg_color)
-                .border_1()
-                .border_color(border_color)
-                .shadow_xs()
-                .text_color(text_color)
-                .text_sm()
-                .font_weight(gpui::FontWeight::MEDIUM)
+                .when(!is_secondary, |d| {
+                    d.h(px(28.0))
+                        .px(px(12.0))
+                        .rounded_md()
+                        .bg(bg_color)
+                        .border_1()
+                        .border_color(border_color)
+                        .shadow_xs()
+                        .text_color(text_color)
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                })
+                .when(is_secondary, |d| {
+                    d.px(px(4.0))
+                        .py(px(2.0))
+                        .rounded(px(4.0))
+                        .text_xs()
+                        .text_color(text_color)
+                })
                 .cursor(if is_disabled {
                     gpui::CursorStyle::Arrow
                 } else {
@@ -671,6 +718,8 @@ pub fn render_ui_node<V: UiSink>(
                         ButtonVariant::Primary | ButtonVariant::Danger => this
                             .hover(|s| s.opacity(0.88))
                             .active(|s| s.opacity(0.75)),
+                        ButtonVariant::Secondary => this
+                            .hover(|s| s.bg(theme.bg_hover).text_color(theme.text_primary)),
                     }
                     .on_click(cx.listener(move |app, _, _, cx| {
                         cx.stop_propagation();
@@ -1474,6 +1523,7 @@ mod tests {
     #[test]
     fn test_ui_node_serialization_and_count() {
         let tree = UiNode::Column {
+            id: None,
             gap: Gap::Medium,
             children: vec![
                 UiNode::Text {
@@ -1504,6 +1554,7 @@ mod tests {
     #[test]
     fn test_validate_tree_duplicate_ids() {
         let tree = UiNode::Column {
+            id: None,
             gap: Gap::None,
             children: vec![
                 UiNode::Button {
@@ -1529,6 +1580,7 @@ mod tests {
     #[test]
     fn test_validate_tree_ok() {
         let tree = UiNode::Column {
+            id: None,
             gap: Gap::Small,
             children: vec![
                 UiNode::Text {
@@ -1549,6 +1601,7 @@ mod tests {
     #[test]
     fn test_setting_item_and_controls_roundtrip() {
         let tree = UiNode::Column {
+            id: None,
             gap: Gap::Medium,
             children: vec![
                 UiNode::SettingItem {
@@ -1602,6 +1655,7 @@ mod tests {
     #[test]
     fn test_ui_node_input_value_update() {
         let mut tree = UiNode::Column {
+            id: None,
             gap: Gap::Medium,
             children: vec![
                 UiNode::SettingItem {
@@ -1625,6 +1679,7 @@ mod tests {
     #[test]
     fn test_ui_node_textarea() {
         let mut tree = UiNode::Column {
+            id: None,
             gap: Gap::Medium,
             children: vec![
                 UiNode::Textarea {

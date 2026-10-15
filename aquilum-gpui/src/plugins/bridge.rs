@@ -51,6 +51,12 @@ impl PluginHostState {
         map.remove(plugin_id);
     }
 
+    /// Returns the human-readable display name of a plugin.
+    pub fn get_plugin_name(&self, plugin_id: &str) -> Option<String> {
+        let map = self.plugins.lock().unwrap();
+        map.get(plugin_id).map(|p| p.manifest.name.clone())
+    }
+
     /// Returns a list of all currently registered plugin IDs.
     pub fn registered_plugin_ids(&self) -> Vec<String> {
         let map = self.plugins.lock().unwrap();
@@ -109,6 +115,9 @@ impl PluginHostState {
             }
             ApiRequest::Notice { .. }
             | ApiRequest::SetViewTree { .. }
+            | ApiRequest::SetLeafView { .. }
+            | ApiRequest::RevealLeaf { .. }
+            | ApiRequest::CloseLeaf { .. }
             | ApiRequest::RegisterCodeBlockProcessor { .. }
             | ApiRequest::SetCodeBlockView { .. }
             | ApiRequest::AddCommand { .. }
@@ -382,6 +391,73 @@ impl AppView {
                 };
                 let _ = self.state.plugin_host.send_event(&plugin_id, event);
             }
+            ApiRequest::SetLeafView {
+                leaf_id,
+                location,
+                view_type,
+                title,
+                icon,
+                tree,
+                actions,
+            } => {
+                let validation = crate::plugins::ui::validate_tree(&tree);
+                let event = match validation {
+                    Ok(()) => {
+                        let leaf = crate::plugins::api::PluginLeafView {
+                            leaf_id: leaf_id.clone(),
+                            plugin_id: plugin_id.clone(),
+                            location: location.clone(),
+                            view_type,
+                            title,
+                            icon,
+                            tree,
+                            actions,
+                        };
+                        self.plugin_leaf_views.insert(leaf_id.clone(), leaf);
+                        if location == "right" {
+                            if self.active_right_leaf.is_none() {
+                                self.active_right_leaf = Some(leaf_id);
+                            }
+                        } else if location == "left" {
+                            if self.active_left_leaf.is_none() {
+                                self.active_left_leaf = Some(leaf_id.clone());
+                            }
+                        } else if location == "center" {
+                            self.active_center_leaf = Some(leaf_id);
+                        }
+                        cx.notify();
+                        HostEvent::response_ok(request_id, serde_json::Value::Null)
+                    }
+                    Err(err) => HostEvent::response_err(request_id, &err),
+                };
+                let _ = self.state.plugin_host.send_event(&plugin_id, event);
+            }
+            ApiRequest::RevealLeaf { leaf_id } => {
+                if let Some(leaf) = self.plugin_leaf_views.get(&leaf_id) {
+                    if leaf.location == "right" {
+                        self.right_sidebar_collapsed = false;
+                        self.active_right_leaf = Some(leaf_id.clone());
+                    } else if leaf.location == "left" {
+                        self.sidebar_collapsed = false;
+                        self.active_left_leaf = Some(leaf_id.clone());
+                        self.sidebar_mode = crate::views::sidebar::SidebarMode::Plugin(leaf_id.clone());
+                    } else if leaf.location == "center" {
+                        self.active_center_leaf = Some(leaf_id.clone());
+                    }
+                }
+                cx.notify();
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Null),
+                );
+            }
+            ApiRequest::CloseLeaf { leaf_id } => {
+                self.close_plugin_leaf(&leaf_id, cx);
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Null),
+                );
+            }
             ApiRequest::RegisterCodeBlockProcessor { language } => {
                 self.state.code_block_processors.register(&language, &plugin_id);
                 let _ = self.state.plugin_host.send_event(
@@ -432,9 +508,15 @@ impl AppView {
                 let p_id = plugin_id.clone();
                 let cmd_id = id.clone();
                 let host = self.state.plugin_host.clone();
+                let p_name = host.get_plugin_name(&plugin_id).unwrap_or_else(|| plugin_id.clone());
+                let command_name = if name.to_lowercase().starts_with(&p_name.to_lowercase()) {
+                    name.clone()
+                } else {
+                    format!("{}: {}", p_name, name)
+                };
                 let cmd = crate::commands::Command {
                     id: format!("{}:{}", plugin_id, id),
-                    name: name.clone(),
+                    name: command_name,
                     owner: Some(plugin_id.clone()),
                     hotkey,
                     callback: std::sync::Arc::new(move || {

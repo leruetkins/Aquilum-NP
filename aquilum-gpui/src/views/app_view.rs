@@ -114,6 +114,14 @@ pub struct AppView {
     pub command_palette_scroll_handle: ScrollHandle,
     /// Active declarative UI trees registered by plugins, keyed by (plugin_id, view_id).
     pub plugin_views: HashMap<(String, u64), crate::plugins::ui::UiNode>,
+    /// Active workspace leaf views registered by plugins (ItemView in right/left/center).
+    pub plugin_leaf_views: std::collections::BTreeMap<String, crate::plugins::api::PluginLeafView>,
+    /// Currently active leaf_id in the right sidebar.
+    pub active_right_leaf: Option<String>,
+    /// Currently active leaf_id in the left sidebar (if any).
+    pub active_left_leaf: Option<String>,
+    /// Currently active leaf_id in the central area (if any).
+    pub active_center_leaf: Option<String>,
     /// Active plugin runtime handles keeping QuickJS worker threads and communication channels alive.
     pub plugin_runtimes: Vec<crate::plugins::runtime::PluginRuntimeHandle>,
     /// Custom declarative UI trees rendered for markdown code blocks, keyed by block_id.
@@ -281,7 +289,12 @@ impl AppView {
         } else {
             260.0
         };
-        let sidebar_mode = state.session.sidebar_mode;
+        let sidebar_mode = state.session.sidebar_mode.clone();
+        let sidebar_mode = if matches!(sidebar_mode, crate::views::sidebar::SidebarMode::Plugin(_)) {
+            crate::views::sidebar::SidebarMode::Files
+        } else {
+            sidebar_mode
+        };
         let settings_model = cx.new(|_cx| {
             crate::settings::SettingsModel::new(state.settings.clone())
         });
@@ -408,6 +421,10 @@ impl AppView {
             plugin_input_blink: BlinkManager::new(),
             active_plugin_select: None,
             plugin_views: HashMap::new(),
+            plugin_leaf_views: std::collections::BTreeMap::new(),
+            active_right_leaf: None,
+            active_left_leaf: None,
+            active_center_leaf: None,
             plugin_runtimes: Vec::new(),
             code_block_views: HashMap::new(),
             plugin_api_tx: None,
@@ -506,6 +523,10 @@ impl AppView {
         self.code_block_views.clear();
         self.plugin_runtimes.clear();
         self.plugin_views.clear();
+        self.plugin_leaf_views.clear();
+        self.active_right_leaf = None;
+        self.active_left_leaf = None;
+        self.active_center_leaf = None;
         self.active_plugin_input = None;
         self.active_plugin_select = None;
     }
@@ -726,7 +747,7 @@ impl AppView {
         let sidebar_offset_y: f32 = self.sidebar_scroll_handle.offset().y.into();
         self.state.session.sidebar_scroll_top = sidebar_offset_y;
         self.state.session.sidebar_width = self.sidebar_width;
-        self.state.session.sidebar_mode = self.sidebar_mode;
+        self.state.session.sidebar_mode = self.sidebar_mode.clone();
         self.state.save_session_state();
     }
 
@@ -1447,6 +1468,18 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         let sidebar_offset_y: f32 = self.sidebar_scroll_handle.offset().y.into();
         self.state.session.sidebar_scroll_top = sidebar_offset_y;
         self.state.open_note(path.clone());
+        self.active_center_leaf = None;
+        let rel_str = if let Some(ref vault) = self.state.vault {
+            path.strip_prefix(&vault.root)
+                .ok()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|| path.to_string_lossy().replace('\\', "/"))
+        } else {
+            path.to_string_lossy().replace('\\', "/")
+        };
+        self.state.plugin_host.broadcast_event(&crate::plugins::api::HostEvent::FileOpen {
+            path: Some(rel_str),
+        });
         self.apply_note_settings_for_path(&path);
         if let Some(ref note) = self.state.active_note {
             self.title_editing_path = Some(note.path.clone());
@@ -2311,6 +2344,198 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         }
 
         cx.notify();
+    }
+
+    /// Triggers a view action registered via view.addAction(icon, title, callback)
+    pub fn trigger_plugin_action(&mut self, plugin_id: &str, action_id: &str, cx: &mut Context<Self>) {
+        let _ = self.state.plugin_host.send_event(
+            plugin_id,
+            crate::plugins::api::HostEvent::UiEvent {
+                view_id: 0,
+                node_id: action_id.to_string(),
+                event: "action_click".to_string(),
+                value: None,
+            },
+        );
+        cx.notify();
+    }
+
+    /// Closes a plugin workspace leaf and notifies the plugin runtime (ItemView onClose)
+    pub fn close_plugin_leaf(&mut self, leaf_id: &str, cx: &mut Context<Self>) {
+        if let Some(leaf) = self.plugin_leaf_views.remove(leaf_id) {
+            let _ = self.state.plugin_host.send_event(
+                &leaf.plugin_id,
+                crate::plugins::api::HostEvent::UiEvent {
+                    view_id: 0,
+                    node_id: leaf_id.to_string(),
+                    event: "leaf_close".to_string(),
+                    value: None,
+                },
+            );
+        }
+        if self.active_right_leaf.as_deref() == Some(leaf_id) {
+            self.active_right_leaf = self
+                .plugin_leaf_views
+                .values()
+                .find(|l| l.location == "right")
+                .map(|l| l.leaf_id.clone());
+        }
+        if self.active_left_leaf.as_deref() == Some(leaf_id) {
+            self.active_left_leaf = self
+                .plugin_leaf_views
+                .values()
+                .find(|l| l.location == "left")
+                .map(|l| l.leaf_id.clone());
+            if let Some(ref next_id) = self.active_left_leaf {
+                self.sidebar_mode = crate::views::sidebar::SidebarMode::Plugin(next_id.clone());
+            } else if matches!(self.sidebar_mode, crate::views::sidebar::SidebarMode::Plugin(_)) {
+                self.sidebar_mode = crate::views::sidebar::SidebarMode::Files;
+            }
+        }
+        if self.active_center_leaf.as_deref() == Some(leaf_id) {
+            self.active_center_leaf = None;
+        }
+        cx.notify();
+    }
+
+    /// Activates a plugin workspace leaf tab in the left sidebar
+    pub fn select_left_leaf(&mut self, leaf_id: &str, cx: &mut Context<Self>) {
+        self.active_left_leaf = Some(leaf_id.to_string());
+        self.sidebar_mode = crate::views::sidebar::SidebarMode::Plugin(leaf_id.to_string());
+        self.sidebar_collapsed = false;
+        cx.notify();
+    }
+
+    /// Activates a plugin workspace leaf tab in the right sidebar
+    pub fn select_right_leaf(&mut self, leaf_id: &str, cx: &mut Context<Self>) {
+        self.active_right_leaf = Some(leaf_id.to_string());
+        self.right_sidebar_collapsed = false;
+        cx.notify();
+    }
+
+    /// Renders the plugin leaf view placed in the left sidebar
+    pub fn render_left_plugin_leaf(
+        &self,
+        leaf: &crate::plugins::api::PluginLeafView,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let mut container = div()
+            .id(gpui::ElementId::Name(format!("left-sidebar-leaf-{}", leaf.leaf_id).into()))
+            .flex()
+            .flex_col()
+            .flex_1()
+            .overflow_hidden()
+            .gap(px(4.0));
+
+        // 1. Header with title and action buttons
+        let mut header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(theme.border_subtle);
+
+        header = header.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(crate::icons::icon(
+                    crate::icons::map_obsidian_icon(leaf.icon.as_deref().unwrap_or("clock")),
+                    13.0,
+                    theme.accent,
+                ))
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme.text_primary)
+                        .truncate()
+                        .child(leaf.title.clone()),
+                ),
+        );
+
+        let mut actions_bar = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1();
+
+        for act in &leaf.actions {
+            let act_id = act.id.clone();
+            let act_plugin_id = leaf.plugin_id.clone();
+            let act_icon = crate::icons::map_obsidian_icon(&act.icon);
+            actions_bar = actions_bar.child(
+                div()
+                    .p(px(3.0))
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .hover(|h| h.bg(theme.bg_hover))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.trigger_plugin_action(&act_plugin_id, &act_id, cx);
+                        }),
+                    )
+                    .child(crate::icons::icon(act_icon, 13.0, theme.text_muted)),
+            );
+        }
+
+        let leaf_id_close = leaf.leaf_id.clone();
+        actions_bar = actions_bar.child(
+            div()
+                .px(px(4.0))
+                .py(px(2.0))
+                .rounded(px(4.0))
+                .cursor_pointer()
+                .text_xs()
+                .text_color(theme.text_muted)
+                .hover(|h| h.bg(theme.bg_hover).text_color(theme.text_primary))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.close_plugin_leaf(&leaf_id_close, cx);
+                    }),
+                )
+                .child("×"),
+        );
+
+        header = header.child(actions_bar);
+        container = container.child(header);
+
+        // 2. Leaf content
+        container = container.child(
+            div()
+                .id(gpui::ElementId::Name(format!("left-sidebar-leaf-content-{}", leaf.leaf_id).into()))
+                .flex()
+                .flex_col()
+                .flex_1()
+                .overflow_scroll()
+                .px_2()
+                .py_1()
+                .child(crate::plugins::ui::render_ui_node(
+                    &leaf.tree,
+                    &leaf.plugin_id,
+                    0,
+                    theme,
+                    self.active_plugin_input.as_ref(),
+                    &self.plugin_input_focus_handle,
+                    self.active_plugin_select.as_ref(),
+                    self.plugin_select_popup.as_ref(),
+                    self.plugin_input_blink.visible(),
+                    window,
+                    cx,
+                )),
+        );
+
+        container
     }
 
     pub(crate) fn commit_title_rename_internal(&mut self) -> bool {
@@ -3756,6 +3981,42 @@ impl Render for AppView {
                                                         .on_click(cx.listener(|this, _, window, cx| {
                                                             this.open_sidebar_search(window, cx);
                                                         })),
+                                                )
+                                                .children(
+                                                    self.plugin_leaf_views
+                                                        .values()
+                                                        .filter(|leaf| leaf.location == "left")
+                                                        .map(|leaf| {
+                                                            let is_active = match &self.sidebar_mode {
+                                                                crate::views::sidebar::SidebarMode::Plugin(id) => id == &leaf.leaf_id,
+                                                                _ => false,
+                                                            };
+                                                            let leaf_id = leaf.leaf_id.clone();
+                                                            let icon_asset = crate::icons::map_obsidian_icon(leaf.icon.as_deref().unwrap_or("clock"));
+                                                            div()
+                                                                .id(gpui::ElementId::Name(format!("btn-sidebar-plugin-{}", leaf.leaf_id).into()))
+                                                                .flex()
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .w(px(28.0))
+                                                                .h(px(28.0))
+                                                                .rounded_md()
+                                                                .cursor_pointer()
+                                                                .when(is_active, |d| d.bg(theme.bg_hover))
+                                                                .hover(|h| h.bg(theme.bg_hover))
+                                                                .child(icons::icon(
+                                                                    icon_asset,
+                                                                    14.0,
+                                                                    if is_active {
+                                                                        theme.accent
+                                                                    } else {
+                                                                        theme.text_muted
+                                                                    },
+                                                                ))
+                                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                                    this.select_left_leaf(&leaf_id, cx);
+                                                                }))
+                                                        }),
                                                 ),
                                         )
                                         .child(
@@ -4327,64 +4588,69 @@ impl Render for AppView {
                                         cx.notify();
                                     }
                                 }))
-                            // Vault Header
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .justify_between()
-                                    .px_2()
-                                    .py_1()
-                                    .child(
+                            // Vault Header (Files and Search modes)
+                            .when(
+                                !matches!(self.sidebar_mode, crate::views::sidebar::SidebarMode::Plugin(_)),
+                                |d| {
+                                    d.child(
                                         div()
                                             .flex()
                                             .flex_row()
                                             .items_center()
-                                            .gap_2()
-                                            .child(icons::icon(icons::ICON_FOLDER, 15.0, theme.accent))
+                                            .justify_between()
+                                            .px_2()
+                                            .py_1()
                                             .child(
                                                 div()
-                                                    .text_sm()
-                                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                    .text_color(theme.text_primary)
-                                                    .truncate()
-                                                    .child(self.state.workspace_name.clone()),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_row()
-                                            .items_center()
-                                            .gap_1()
-                                            .child(
-                                                div()
-                                                    .id("btn-new-note")
-                                                    .p_1()
-                                                    .rounded_md()
-                                                    .cursor_pointer()
-                                                    .hover(|h| h.bg(theme.bg_hover))
-                                                    .child(icons::icon(icons::ICON_PLUS, 13.0, theme.text_primary))
-                                                    .on_click(cx.listener(|this, _, window, cx| {
-                                                        this.create_new_note(window, cx);
-                                                    })),
+                                                    .flex()
+                                                    .flex_row()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .child(icons::icon(icons::ICON_FOLDER, 15.0, theme.accent))
+                                                    .child(
+                                                        div()
+                                                            .text_sm()
+                                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                            .text_color(theme.text_primary)
+                                                            .truncate()
+                                                            .child(self.state.workspace_name.clone()),
+                                                    ),
                                             )
                                             .child(
                                                 div()
-                                                    .id("btn-open-vault")
-                                                    .p_1()
-                                                    .rounded_md()
-                                                    .cursor_pointer()
-                                                    .hover(|h| h.bg(theme.bg_hover))
-                                                    .child(icons::icon(icons::ICON_FOLDER_OPEN, 13.0, theme.text_primary))
-                                                    .on_click(cx.listener(|this, _, window, cx| {
-                                                        this.open_folder_dialog_deferred(window, cx);
-                                                    })),
+                                                    .flex()
+                                                    .flex_row()
+                                                    .items_center()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .id("btn-new-note")
+                                                            .p_1()
+                                                            .rounded_md()
+                                                            .cursor_pointer()
+                                                            .hover(|h| h.bg(theme.bg_hover))
+                                                            .child(icons::icon(icons::ICON_PLUS, 13.0, theme.text_primary))
+                                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                                this.create_new_note(window, cx);
+                                                            })),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .id("btn-open-vault")
+                                                            .p_1()
+                                                            .rounded_md()
+                                                            .cursor_pointer()
+                                                            .hover(|h| h.bg(theme.bg_hover))
+                                                            .child(icons::icon(icons::ICON_FOLDER_OPEN, 13.0, theme.text_primary))
+                                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                                this.open_folder_dialog_deferred(window, cx);
+                                                            })),
+                                                    ),
                                             ),
-                                    ),
+                                    )
+                                },
                             )
-                            // Search Filter Bar + Tree (Files mode) or Search Panel
+                            // Search Filter Bar + Tree (Files mode) or Search Panel or Plugin Leaf View
                             .when(
                                 self.sidebar_mode
                                     == crate::views::sidebar::SidebarMode::Files,
@@ -4403,6 +4669,20 @@ impl Render for AppView {
                                 self.sidebar_mode
                                     == crate::views::sidebar::SidebarMode::Search,
                                 |d| d.child(self.render_search_panel(theme, window, cx)),
+                            )
+                            .when(
+                                matches!(self.sidebar_mode, crate::views::sidebar::SidebarMode::Plugin(_)),
+                                |d| {
+                                    if let crate::views::sidebar::SidebarMode::Plugin(ref active_id) = self.sidebar_mode {
+                                        if let Some(leaf) = self.plugin_leaf_views.get(active_id) {
+                                            d.child(self.render_left_plugin_leaf(leaf, theme, window, cx))
+                                        } else {
+                                            d
+                                        }
+                                    } else {
+                                        d
+                                    }
+                                },
                             )
                             // Sidebar Footer (Vault switcher button + Reload button)
                             .child(
@@ -4525,7 +4805,13 @@ impl Render for AppView {
                             .bg(theme.bg_editor)
                             // Панель навигации (Obsidian-style) сразу под вкладками
                             .child(self.render_navigation_bar(theme, cx))
-                            .when_some(self.state.active_note.as_ref(), |this, note| {
+                            .when_some(
+                                if self.active_center_leaf.is_none() {
+                                    self.state.active_note.as_ref()
+                                } else {
+                                    None
+                                },
+                                |this, note| {
                                 let note_title = note
                                     .path
                                     .file_stem()
@@ -5726,9 +6012,42 @@ impl Render for AppView {
                             .when(self.state.active_empty_tab.is_some(), |this| {
                                 this.child(self.render_new_tab_page(theme, cx))
                             })
+                            .when(self.active_center_leaf.is_some(), |this| {
+                                if let Some(leaf_id) = &self.active_center_leaf {
+                                    if let Some(leaf) = self.plugin_leaf_views.get(leaf_id) {
+                                        this.child(
+                                            div()
+                                                .id("central-leaf-view")
+                                                .flex()
+                                                .flex_col()
+                                                .size_full()
+                                                .p(px(16.0))
+                                                .overflow_scroll()
+                                                .child(crate::plugins::ui::render_ui_node(
+                                                    &leaf.tree,
+                                                    &leaf.plugin_id,
+                                                    0,
+                                                    theme,
+                                                    self.active_plugin_input.as_ref(),
+                                                    &self.plugin_input_focus_handle,
+                                                    self.active_plugin_select.as_ref(),
+                                                    self.plugin_select_popup.as_ref(),
+                                                    self.plugin_input_blink.visible(),
+                                                    window,
+                                                    cx,
+                                                )),
+                                        )
+                                    } else {
+                                        this
+                                    }
+                                } else {
+                                    this
+                                }
+                            })
                             .when(
                                 self.state.active_note.is_none()
-                                    && self.state.active_empty_tab.is_none(),
+                                    && self.state.active_empty_tab.is_none()
+                                    && self.active_center_leaf.is_none(),
                                 |this| {
                                 this.child(
                                     div()

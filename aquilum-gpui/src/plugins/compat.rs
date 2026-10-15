@@ -76,9 +76,11 @@ const API_PATTERNS: &[ApiPattern] = &[
     ApiPattern { pattern: "Menu", name: "new Menu()", category: PatternCategory::Supported },
     ApiPattern { pattern: "editor-menu", name: "workspace.on('editor-menu')", category: PatternCategory::Supported },
     ApiPattern { pattern: "setSubmenu", name: "MenuItem.setSubmenu()", category: PatternCategory::Supported },
+    ApiPattern { pattern: "metadataCache.getFileCache", name: "app.metadataCache.getFileCache()", category: PatternCategory::Supported },
+    ApiPattern { pattern: "ItemView", name: "ItemView", category: PatternCategory::Supported },
+    ApiPattern { pattern: "WorkspaceLeaf", name: "WorkspaceLeaf", category: PatternCategory::Supported },
 
     // Missing or safe stubs
-    ApiPattern { pattern: "metadataCache.getFileCache", name: "app.metadataCache.getFileCache()", category: PatternCategory::MissingOrStub },
     ApiPattern { pattern: "requestSaveHistory", name: "app.workspace.requestSaveHistory()", category: PatternCategory::MissingOrStub },
     ApiPattern { pattern: "vault.adapter", name: "app.vault.adapter", category: PatternCategory::MissingOrStub },
     ApiPattern { pattern: "vault.copy", name: "app.vault.copy()", category: PatternCategory::MissingOrStub },

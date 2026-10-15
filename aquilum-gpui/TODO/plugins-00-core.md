@@ -552,7 +552,7 @@ plugin-host: resolve Promise в рантайме плагина
 - [ ] **E1. Модульная изоляция и shim `require("obsidian")`:** поддержка CJS require, проксирование внешних модулей (`electron`, `@codemirror/*`) через `lazyFail`.
 - [ ] **E2. Obsidian App Runtime и Snapshot:** реализация `app.vault`, `app.workspace`, `app.metadataCache` поверх `Snapshot` хоста (доступ строго при `vault >= read`).
 - [ ] **E3. Скелет виртуального элемента (`VElement`) и семантический UI:** поддержка `Setting(containerEl)` и `Modal`, прямое преобразование в `UiNode` (без раздувания эмулятора DOM).
-- [ ] **E4. Расширение `VElement` для `ItemView` и шина событий:** монтирование вкладок в боковые панели, диспетчеризация событий `click` и `input`.
+- [x] **E4. Расширение `VElement` для `ItemView` и шина событий:** монтирование вкладок в боковые панели (левую и правую), диспетчеризация событий `click` и `input`, переключение `SidebarMode::Plugin`, авто-синхронизация `leaf.syncTree()`.
 - [ ] **E5. Зеркало редактора (`EditorSession`):** синхронизация позиций UTF-16 (JS) $\leftrightarrow$ UTF-8 (Rust), версионирование и атомарные пакетные правки.
 - [ ] **E6. Асинхронные блоки кода (`registerMarkdownCodeBlockProcessor`):** асинхронный рендер в `UiNode`, кэш по хэшу содержимого, стабильный скролл.
 - [ ] **E7. Автоматический CI-гейт совместимости:** прогон бандлов корпуса на каждом коммите.

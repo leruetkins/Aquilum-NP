@@ -195,6 +195,11 @@ pub fn spawn_plugin_runtime(
                                 dispatch_ui_interaction(&ctx, view_id, node_id, event, value);
                             });
                         }
+                        HostEvent::FileOpen { path } => {
+                            let _ = ctx.with(|ctx| {
+                                dispatch_file_open(&ctx, path);
+                            });
+                        }
                         _ => {
                             // Other event hooks
                         }
@@ -308,6 +313,22 @@ fn setup_plugin_environment<'js>(
 
     // 5. Inject runtime JavaScript bootstrap defining Obsidian-compatible classes & timers
     let bootstrap_js = r#"
+        if (typeof console !== "undefined" && console.log) {
+            const __orig_log = console.log;
+            const __fmt = (a) => {
+                if (a instanceof Error) return `${a.name || 'Error'}: ${a.message}\n${a.stack || ''}`;
+                if (typeof a === "object" && a !== null) {
+                    try { return JSON.stringify(a); } catch (e) { return String(a); }
+                }
+                return String(a);
+            };
+            console.log = (...args) => __orig_log(args.map(__fmt).join(" "));
+            console.warn = (...args) => __orig_log("[WARN] " + args.map(__fmt).join(" "));
+            console.error = (...args) => __orig_log("[ERROR] " + args.map(__fmt).join(" "));
+            console.debug = console.log;
+            console.info = console.log;
+        }
+
         const __pending_promises = new Map();
         globalThis.__code_block_handlers = new Map();
         globalThis.__command_handlers = new Map();
@@ -315,9 +336,22 @@ fn setup_plugin_environment<'js>(
         globalThis.__velement_registry = new Map();
         globalThis.__menu_callbacks = new Map();
         globalThis.__workspace_listeners = new Map();
+        globalThis.__vault_listeners = new Map();
+        globalThis.__registered_views = new Map();
+        globalThis.__action_callbacks = new Map();
+        globalThis.__workspace_leaves = new Map();
         let __next_timer_id = 1;
 
         function __dispatch_ui_interaction(nodeId, action, value) {
+            if (globalThis.__action_callbacks && globalThis.__action_callbacks.has(nodeId)) {
+                try {
+                    globalThis.__action_callbacks.get(nodeId)();
+                } catch (e) {
+                    console.error("Leaf action click error:", e);
+                }
+                return;
+            }
+
             if (nodeId === "modal" && action === "close") {
                 if (globalThis.__active_modal && typeof globalThis.__active_modal.close === "function") {
                     try {
@@ -375,6 +409,26 @@ fn setup_plugin_environment<'js>(
                     __invoke_host("set_view_tree", { view_id: 1, tree });
                 } catch (e) {}
             }
+
+            // Sync updated leaf views back to host
+            if (globalThis.__workspace_leaves) {
+                for (const leaf of globalThis.__workspace_leaves.values()) {
+                    if (leaf && leaf.view && typeof leaf.syncTree === "function") {
+                        try { leaf.syncTree(); } catch (e) {}
+                    }
+                }
+            }
+        }
+
+        function __dispatch_file_open(path) {
+            const file = path ? new TFile(path) : null;
+            if (globalThis.app && globalThis.app.workspace && typeof globalThis.app.workspace.trigger === "function") {
+                try {
+                    globalThis.app.workspace.trigger("file-open", file);
+                } catch (e) {
+                    console.error("dispatch file-open error:", e);
+                }
+            }
         }
 
         globalThis.setTimeout = function(fn, delay = 0, ...args) {
@@ -428,6 +482,26 @@ fn setup_plugin_environment<'js>(
             return nextDue === Infinity ? 0 : Math.max(1, nextDue - Date.now());
         };
 
+        if (!Array.prototype.first) {
+            Array.prototype.first = function() { return this[0]; };
+        }
+        if (!Array.prototype.last) {
+            Array.prototype.last = function() { return this[this.length - 1]; };
+        }
+        if (!Array.prototype.contains) {
+            Array.prototype.contains = function(target) { return this.includes(target); };
+        }
+        if (!Array.prototype.remove) {
+            Array.prototype.remove = function(target) {
+                const idx = this.indexOf(target);
+                if (idx !== -1) this.splice(idx, 1);
+                return this;
+            };
+        }
+        if (!String.prototype.contains) {
+            String.prototype.contains = function(target) { return this.includes(target); };
+        }
+
         async function __bootstrap_plugin_instance() {
             let exported = globalThis.module ? globalThis.module.exports : null;
             if (exported && exported.default && typeof exported !== "function") {
@@ -440,6 +514,9 @@ fn setup_plugin_environment<'js>(
                     if (typeof inst.onload === "function") {
                         await inst.onload();
                     }
+                    if (typeof inst.onUserEnable === "function") {
+                        await inst.onUserEnable();
+                    }
                 } catch (e) {
                     console.error("Plugin instantiation or onload error:", e);
                 }
@@ -447,6 +524,9 @@ fn setup_plugin_environment<'js>(
                 globalThis.__plugin_instance = exported;
                 try {
                     await exported.onload();
+                    if (typeof exported.onUserEnable === "function") {
+                        await exported.onUserEnable();
+                    }
                 } catch (e) {
                     console.error("Plugin onload error:", e);
                 }
@@ -590,6 +670,34 @@ fn setup_plugin_environment<'js>(
                     this.children.push(child);
                 }
                 return child;
+            }
+
+            setChildrenInPlace(children) {
+                this.empty();
+                if (Array.isArray(children)) {
+                    for (const c of children) {
+                        this.appendChild(c);
+                    }
+                }
+                if (this._onModified) {
+                    try { this._onModified(); } catch (e) {}
+                }
+                return this;
+            }
+
+            appendText(val) {
+                this.text += String(val != null ? val : "");
+                return this;
+            }
+
+            append(...nodes) {
+                for (const n of nodes) {
+                    if (typeof n === "string") {
+                        this.appendText(n);
+                    } else if (n) {
+                        this.appendChild(n);
+                    }
+                }
             }
 
             empty() {
@@ -1155,15 +1263,28 @@ fn setup_plugin_environment<'js>(
                 };
             }
 
+            if (el.classes.has("clickable-icon") || el.classes.has("recent-files-file-delete")) {
+                const icon = el.attributes["icon"] || (el.text ? undefined : "cross");
+                return {
+                    type: "button",
+                    id: el.id,
+                    label: el.text || (icon ? "×" : ""),
+                    variant: "secondary",
+                    disabled: false
+                };
+            }
+
             if (el.children.length === 0 && (!el.text || !el.text.trim())) {
                 return null;
             }
 
-            const isRow = el.classes.has("row") || el.classes.has("flex-row") || el.classes.has("aiw-currency-row") || el.classes.has("aiw-modal-buttons") || el.classes.has("modal-buttons") || el.classes.has("modal-button-container");
+            const isRow = el.classes.has("row") || el.classes.has("flex-row") || el.classes.has("aiw-currency-row") || el.classes.has("aiw-modal-buttons") || el.classes.has("modal-buttons") || el.classes.has("modal-button-container") || el.classes.has("tree-item-self") || el.classes.has("nav-file-title") || el.classes.has("nav-file");
             const children = el.children.map(__velement_to_uinode).filter(Boolean);
+            const clickable = el.eventListeners && (el.eventListeners.has("click") || el.eventListeners.has("mousedown"));
             return {
                 type: isRow ? "row" : "column",
-                gap: "medium",
+                id: clickable ? el.id : undefined,
+                gap: isRow ? "small" : "medium",
                 children
             };
         }
@@ -1274,13 +1395,26 @@ fn setup_plugin_environment<'js>(
             constructor(leaf) {
                 super();
                 this.leaf = leaf;
-                this.app = leaf ? leaf.app : globalThis.app;
+                this.app = (leaf && leaf.app) || globalThis.app;
                 this.containerEl = new VElement("div", { cls: "view" });
                 this.navigation = false;
+                this.__actions = [];
             }
             getViewType() { return "view"; }
             getDisplayText() { return ""; }
             getIcon() { return "document"; }
+            addAction(icon, title, callback) {
+                const id = "action-" + Math.random().toString(36).substr(2, 9);
+                this.__actions.push({ id, icon: String(icon), title: String(title), callback });
+                if (typeof callback === "function") {
+                    globalThis.__action_callbacks.set(id, callback);
+                }
+                const el = new VElement("div", { cls: "clickable-icon view-action" });
+                if (typeof callback === "function") {
+                    el.addEventListener("click", callback);
+                }
+                return el;
+            }
             onOpen() {}
             onClose() {}
             getState() { return {}; }
@@ -1291,9 +1425,17 @@ fn setup_plugin_environment<'js>(
             constructor(leaf) {
                 super(leaf);
                 this.contentEl = this.containerEl.createDiv("item-view-content");
+                const onMod = () => {
+                    if (this.leaf && typeof this.leaf.syncTree === "function") {
+                        try { this.leaf.syncTree(); } catch (e) {}
+                    }
+                };
+                this.contentEl._onModified = onMod;
+                this.containerEl._onModified = onMod;
             }
             getViewType() { return "empty"; }
             getDisplayText() { return "Item View"; }
+            getIcon() { return "layout"; }
             async onOpen() {}
             async onClose() {}
         }
@@ -1453,15 +1595,71 @@ fn setup_plugin_environment<'js>(
         }
 
         class WorkspaceLeaf {
-            constructor(workspace) {
+            constructor(workspace, location = "right") {
                 this.workspace = workspace;
+                this.app = (workspace && workspace.app) || globalThis.app;
+                this.location = location;
+                this.id = "leaf-" + Math.random().toString(36).substr(2, 9);
                 this.view = null;
+                this.viewState = { type: "empty" };
+                globalThis.__workspace_leaves.set(this.id, this);
             }
+            getRoot() { return this.workspace.rootSplit; }
             async setViewState(state) {
-                this.viewState = state;
+                try {
+                    this.viewState = state;
+                    const type = state && state.type;
+                    if (type && globalThis.__registered_views.has(type)) {
+                        const creator = globalThis.__registered_views.get(type);
+                        const view = creator(this);
+                        this.view = view;
+                        if (typeof view.onOpen === "function") {
+                            await view.onOpen();
+                        }
+                        const title = typeof view.getDisplayText === "function" ? view.getDisplayText() : type;
+                        const icon = typeof view.getIcon === "function" ? view.getIcon() : "layout";
+                        const actions = (view.__actions || []).map(a => ({ id: a.id, icon: a.icon, title: a.title }));
+                        const tree = __velement_to_uinode(view.containerEl || view.contentEl);
+                        await __invoke_host("set_leaf_view", {
+                            leaf_id: this.id,
+                            location: this.location,
+                            view_type: type,
+                            title: String(title),
+                            icon: String(icon),
+                            tree: tree,
+                            actions: actions
+                        });
+                    }
+                } catch (e) {
+                    console.error("setViewState error:", e);
+                }
+            }
+            async syncTree() {
+                if (!this.view) return;
+                const type = this.viewState && this.viewState.type ? this.viewState.type : "";
+                const title = typeof this.view.getDisplayText === "function" ? this.view.getDisplayText() : type;
+                const icon = typeof this.view.getIcon === "function" ? this.view.getIcon() : "layout";
+                const actions = (this.view.__actions || []).map(a => ({ id: a.id, icon: a.icon, title: a.title }));
+                const tree = __velement_to_uinode(this.view.containerEl || this.view.contentEl);
+                await __invoke_host("set_leaf_view", {
+                    leaf_id: this.id,
+                    location: this.location,
+                    view_type: type,
+                    title: String(title),
+                    icon: String(icon),
+                    tree: tree,
+                    actions: actions
+                });
             }
             openFile(file) {
                 return this.workspace.openFile(file);
+            }
+            detach() {
+                globalThis.__workspace_leaves.delete(this.id);
+                if (this.view && typeof this.view.onClose === "function") {
+                    try { this.view.onClose(); } catch (e) { console.error("ItemView onClose error:", e); }
+                }
+                return __invoke_host("close_leaf", { leaf_id: this.id });
             }
         }
 
@@ -1661,8 +1859,12 @@ fn setup_plugin_environment<'js>(
                 globalThis.__code_block_handlers.set(String(language).toLowerCase(), handler);
                 return __invoke_host("register_code_block_processor", { language: String(language) });
             }
-            registerView(type, viewCreator) {}
+            registerView(type, viewCreator) {
+                globalThis.__registered_views.set(String(type), viewCreator);
+            }
             registerExtensions(extensions, viewType) {}
+            registerHoverLinkSource(id, info) {}
+            registerEditorExtension(extension) {}
         }
 
         const rawVault = {
@@ -1687,8 +1889,48 @@ fn setup_plugin_environment<'js>(
                 const files = __host_get_markdown_files();
                 return files.map(p => new TFile(p));
             },
+            getFileByPath: (path) => {
+                const p = typeof path === 'object' ? path.path : path;
+                return p ? new TFile(p) : null;
+            },
             getAbstractFileByPath: (path) => {
-                return new TFile(path);
+                const p = typeof path === 'object' ? path.path : path;
+                return p ? new TFile(p) : null;
+            },
+            on: (event, cb) => {
+                const evName = String(event);
+                if (!globalThis.__vault_listeners.has(evName)) {
+                    globalThis.__vault_listeners.set(evName, []);
+                }
+                if (typeof cb === "function") {
+                    globalThis.__vault_listeners.get(evName).push(cb);
+                }
+                return {
+                    id: "vault-sub-" + Math.random().toString(36).substr(2, 9),
+                    unload: () => {
+                        const list = globalThis.__vault_listeners.get(evName);
+                        if (list) {
+                            const idx = list.indexOf(cb);
+                            if (idx !== -1) list.splice(idx, 1);
+                        }
+                    }
+                };
+            },
+            off: (event, cb) => {
+                const evName = String(event);
+                const list = globalThis.__vault_listeners.get(evName);
+                if (list) {
+                    const idx = list.indexOf(cb);
+                    if (idx !== -1) list.splice(idx, 1);
+                }
+            },
+            trigger: (event, ...args) => {
+                const list = globalThis.__vault_listeners.get(String(event));
+                if (list) {
+                    for (const cb of [...list]) {
+                        try { cb(...args); } catch (e) { console.error("Vault event error:", e); }
+                    }
+                }
             },
             adapter: {
                 read: (path) => __invoke_host("vault_read", { path }),
@@ -1706,9 +1948,37 @@ fn setup_plugin_environment<'js>(
                 return p ? new TFile(p) : null;
             },
             openFile: (path) => __invoke_host("open_file", { path: typeof path === 'object' ? path.path : path }),
-            getLeaf: () => new WorkspaceLeaf(rawWorkspace),
-            getLeftLeaf: () => new WorkspaceLeaf(rawWorkspace),
-            getRightLeaf: () => new WorkspaceLeaf(rawWorkspace),
+            getLeaf: (create) => new WorkspaceLeaf(rawWorkspace, "center"),
+            getLeftLeaf: (split) => new WorkspaceLeaf(rawWorkspace, "left"),
+            getRightLeaf: (split) => new WorkspaceLeaf(rawWorkspace, "right"),
+            getLeavesOfType: (type) => {
+                return [...globalThis.__workspace_leaves.values()].filter(l => l.viewState && l.viewState.type === type);
+            },
+            detachLeavesOfType: (type) => {
+                const toDetach = rawWorkspace.getLeavesOfType(type);
+                toDetach.forEach(l => l.detach());
+            },
+            ensureSideLeaf: (type, side, options) => {
+                let leaves = rawWorkspace.getLeavesOfType(type);
+                if (leaves.length === 0) {
+                    const leaf = side === "left" ? rawWorkspace.getLeftLeaf() : rawWorkspace.getRightLeaf();
+                    leaf.setViewState({ type, active: true });
+                    if (options && options.reveal) {
+                        rawWorkspace.revealLeaf(leaf);
+                    }
+                    return leaf;
+                }
+                return leaves[0];
+            },
+            onLayoutReady: (cb) => {
+                if (typeof cb === "function") setTimeout(cb, 10);
+            },
+            revealLeaf: (leaf) => {
+                if (leaf && leaf.id) {
+                    return __invoke_host("reveal_leaf", { leaf_id: leaf.id });
+                }
+                return Promise.resolve();
+            },
             registerMarkdownCodeBlockProcessor: (language, handler) => {
                 globalThis.__code_block_handlers.set(String(language).toLowerCase(), handler);
                 return __invoke_host("register_code_block_processor", { language: String(language) });
@@ -1732,7 +2002,22 @@ fn setup_plugin_environment<'js>(
                     }
                 };
             },
-            trigger: () => {}
+            off: (event, cb) => {
+                const evName = String(event);
+                const list = globalThis.__workspace_listeners.get(evName);
+                if (list) {
+                    const idx = list.indexOf(cb);
+                    if (idx !== -1) list.splice(idx, 1);
+                }
+            },
+            trigger: (event, ...args) => {
+                const list = globalThis.__workspace_listeners.get(String(event));
+                if (list) {
+                    for (const cb of [...list]) {
+                        try { cb(...args); } catch (e) { console.error("Workspace event error:", e); }
+                    }
+                }
+            }
         };
 
         const rawMetadataCache = {
@@ -1742,6 +2027,7 @@ fn setup_plugin_environment<'js>(
                 headings: [],
                 frontmatter: {}
             }),
+            getFirstLinkpathDest: (path, _sourcePath) => path,
             on: (_event, _cb) => ({ id: "meta-sub" }),
             trigger: () => {}
         };
@@ -1752,6 +2038,17 @@ fn setup_plugin_environment<'js>(
             metadataCache: makeAuditedProxy(rawMetadataCache, "app.metadataCache"),
             commands: {
                 executeCommandById: (id) => __invoke_host("execute_command", { id: String(id) }),
+            },
+            internalPlugins: {
+                getEnabledPluginById: (_id) => null
+            },
+            dragManager: {
+                dragFile: () => ({}),
+                onDragStart: () => {}
+            },
+            fileManager: {
+                getNewFileParent: () => new TFolder("/"),
+                generateMarkdownLink: () => "",
             }
         };
 
@@ -1824,8 +2121,41 @@ fn setup_plugin_environment<'js>(
         globalThis.document = {
             documentElement: { lang: "ru" },
             createElement: (t) => new VElement(t),
+            createDocumentFragment: () => new VElement("div"),
             body: new VElement("body"),
             head: new VElement("head")
+        };
+        globalThis.activeDocument = globalThis.document;
+        globalThis.DOMParser = class DOMParser {
+            parseFromString() {
+                return { documentElement: new VElement("div") };
+            }
+        };
+        globalThis.createDiv = function(o) {
+            const el = new VElement("div");
+            if (typeof o === "string") el.className = o;
+            else if (o && typeof o === "object") {
+                if (o.cls) el.className = o.cls;
+                if (o.text) el.textContent = o.text;
+            }
+            return el;
+        };
+        globalThis.createSpan = function(o) {
+            const el = new VElement("span");
+            if (typeof o === "string") el.className = o;
+            else if (o && typeof o === "object") {
+                if (o.cls) el.className = o.cls;
+                if (o.text) el.textContent = o.text;
+            }
+            return el;
+        };
+        globalThis.createEl = function(tag, o) {
+            const el = new VElement(tag || "div");
+            if (o && typeof o === "object") {
+                if (o.cls) el.className = o.cls;
+                if (o.text) el.textContent = o.text;
+            }
+            return el;
         };
         globalThis.localStorage = {
             getItem: (k) => {
@@ -1872,6 +2202,23 @@ fn setup_plugin_environment<'js>(
             requestUrl,
             moment,
             getLanguage,
+            addIcon: (name, svg) => {},
+            setIcon: (el, icon) => {
+                if (el) {
+                    if (typeof el.setAttr === "function") el.setAttr("icon", String(icon));
+                    if (icon === "lucide-x" || icon === "cross" || icon === "close") {
+                        if (typeof el.setText === "function") el.setText("×");
+                    }
+                }
+            },
+            setTooltip: (el, tip) => {
+                if (el && typeof el.setAttr === "function") el.setAttr("title", tip);
+            },
+            Keymap: { isModEvent: (_e) => false },
+            debounce: (fn, _delay) => fn,
+            finishRenderMath: () => {},
+            loadPdfJs: () => Promise.resolve(),
+            loadMathJax: () => Promise.resolve(),
             app: globalThis.app
         };
 
@@ -2089,6 +2436,69 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
             let body = payload.get("body").and_then(|v| v.as_str()).map(|s| s.to_string());
             ApiRequest::Http { url, method, body }
         }
+        "set_leaf_view" => {
+            let leaf_id = payload
+                .get("leaf_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let location = payload
+                .get("location")
+                .and_then(|v| v.as_str())
+                .unwrap_or("right")
+                .to_string();
+            let view_type = payload
+                .get("view_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let title = payload
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let icon = payload
+                .get("icon")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let tree: crate::plugins::ui::UiNode = payload
+                .get("tree")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_else(|| crate::plugins::ui::UiNode::Text {
+                    value: "".to_string(),
+                    style: crate::plugins::ui::TextStyle::default(),
+                });
+            let actions: Vec<crate::plugins::api::PluginViewAction> = payload
+                .get("actions")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+
+            ApiRequest::SetLeafView {
+                leaf_id,
+                location,
+                view_type,
+                title,
+                icon,
+                tree,
+                actions,
+            }
+        }
+        "reveal_leaf" => {
+            let leaf_id = payload
+                .get("leaf_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::RevealLeaf { leaf_id }
+        }
+        "close_leaf" => {
+            let leaf_id = payload
+                .get("leaf_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::CloseLeaf { leaf_id }
+        }
         _ => {
             eprintln!("[plugin] Unknown request kind: {}", kind);
             ApiRequest::Unknown {
@@ -2171,6 +2581,15 @@ fn dispatch_js_response<'js>(ctx: &Ctx<'js>, id: RequestId, ok: bool, result: se
         let eval_str = format!("JSON.parse({})", serde_json::to_string(&json_str).unwrap());
         let val: Value = ctx.eval(eval_str.as_str()).unwrap_or(Value::new_null(ctx.clone()));
         let _ = func.call::<_, ()>((id as f64, ok, val));
+    }
+}
+
+/// Dispatches a file-open event into QuickJS.
+fn dispatch_file_open<'js>(ctx: &Ctx<'js>, path: Option<String>) {
+    let dispatch_fn: rquickjs::Result<Function> = ctx.globals().get("__dispatch_file_open");
+    if let Ok(func) = dispatch_fn {
+        let p_val = path.unwrap_or_default();
+        let _ = func.call::<_, ()>((p_val,));
     }
 }
 
@@ -3117,5 +3536,177 @@ mod tests {
 
         let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
     }
+
+    #[test]
+    fn test_obsidian_item_view_and_workspace_leaf_lifecycle() {
+        let manifest = PluginManifest {
+            id: "test-itemview-plugin".into(),
+            name: "Test ItemView Plugin".into(),
+            version: "1.0.0".into(),
+            min_app_version: None,
+            description: "".into(),
+            author: "".into(),
+            permissions: PluginPermissions::default(),
+        };
+
+        let (api_tx, mut api_rx) = unbounded();
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
+
+        let script = r#"
+            const { Plugin, ItemView } = require('obsidian');
+
+            class CustomView extends ItemView {
+                constructor(leaf) {
+                    super(leaf);
+                }
+                getViewType() {
+                    return "custom-tool";
+                }
+                getDisplayText() {
+                    return "Tool Panel";
+                }
+                getIcon() {
+                    return "hammer";
+                }
+                async onOpen() {
+                    this.addAction("refresh", "Refresh Tool", () => {
+                        this.containerEl.createDiv({ text: "Action Triggered" });
+                    });
+                    const container = this.contentEl;
+                    container.createDiv({ text: "ItemView Body Text" });
+                }
+            }
+
+            class TestItemViewPlugin extends Plugin {
+                async onload() {
+                    this.registerView("custom-tool", (leaf) => new CustomView(leaf));
+                    const leaf = this.app.workspace.getRightLeaf(false);
+                    await leaf.setViewState({ type: "custom-tool" });
+                }
+            }
+
+            module.exports = TestItemViewPlugin;
+        "#;
+
+        let handle = spawn_plugin_runtime(
+            manifest,
+            script.to_string(),
+            api_tx,
+            snapshot,
+        ).expect("failed to spawn runtime");
+
+        std::thread::sleep(Duration::from_millis(60));
+
+        let mut found_leaf = false;
+        let mut leaf_action_id = String::new();
+        while let Ok(call) = api_rx.try_recv() {
+            if let ApiRequest::SetLeafView { leaf_id: _, location, view_type, title, icon, tree, actions } = call.request {
+                assert_eq!(location, "right");
+                assert_eq!(view_type, "custom-tool");
+                assert_eq!(title, "Tool Panel");
+                assert_eq!(icon.as_deref(), Some("hammer"));
+                assert_eq!(actions.len(), 1);
+                assert_eq!(actions[0].icon, "refresh");
+                assert_eq!(actions[0].title, "Refresh Tool");
+                leaf_action_id = actions[0].id.clone();
+
+                let json = serde_json::to_string(&tree).unwrap();
+                assert!(json.contains("ItemView Body Text"), "tree should contain ItemView body text");
+                found_leaf = true;
+            }
+        }
+        assert!(found_leaf, "Expected SetLeafView from WorkspaceLeaf.setViewState");
+
+        // Test triggering action
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::UiEvent {
+            view_id: 0,
+            node_id: leaf_action_id,
+            event: "action_click".to_string(),
+            value: None,
+        });
+
+        std::thread::sleep(Duration::from_millis(30));
+
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
+    }
+
+    #[test]
+    fn test_load_actual_recent_files_script() {
+        let path = std::path::Path::new(r"D:\Naben\Vibecodium\.vault\plugins\recent-files-obsidian\main.js");
+        if !path.exists() {
+            return;
+        }
+        let script = std::fs::read_to_string(path).unwrap();
+        let manifest = PluginManifest {
+            id: "recent-files-obsidian".into(),
+            name: "Recent Files".into(),
+            version: "1.3.11".into(),
+            min_app_version: None,
+            description: "".into(),
+            author: "".into(),
+            permissions: PluginPermissions::default(),
+        };
+
+        let (api_tx, mut api_rx) = unbounded();
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
+
+        let handle = spawn_plugin_runtime(
+            manifest,
+            script,
+            api_tx,
+            snapshot,
+        ).expect("failed to spawn runtime");
+
+        let mut got_left_leaf = false;
+        let mut got_reveal = false;
+
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_millis(600) {
+            while let Ok(call) = api_rx.try_recv() {
+                match call.request {
+                    ApiRequest::LoadData => {
+                        let _ = handle.host_events_tx.unbounded_send(HostEvent::response_ok(call.request_id, serde_json::json!({ "recentFiles": [] })));
+                    }
+                    ApiRequest::SetLeafView { ref location, ref view_type, ref icon, .. } => {
+                        if location == "left" && view_type == "recent-files" {
+                            got_left_leaf = true;
+                            assert_eq!(icon.as_deref(), Some("clock"));
+                        }
+                    }
+                    ApiRequest::RevealLeaf { .. } => {
+                        got_reveal = true;
+                    }
+                    _ => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        assert!(got_left_leaf, "Should have received SetLeafView for left leaf recent-files");
+        assert!(got_reveal, "Should have received RevealLeaf for recent-files leaf");
+
+        // Simulate opening a file in the app:
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::FileOpen {
+            path: Some("notes/daily.md".to_string()),
+        });
+        std::thread::sleep(Duration::from_millis(100));
+
+        let mut got_saved_data = false;
+        while let Ok(call) = api_rx.try_recv() {
+            match call.request {
+                ApiRequest::SaveData { ref data } => {
+                    let s = data.to_string();
+                    if s.contains("daily.md") {
+                        got_saved_data = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(got_saved_data, "recent-files should capture opened note and save updated data");
+
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
+    }
 }
+
 

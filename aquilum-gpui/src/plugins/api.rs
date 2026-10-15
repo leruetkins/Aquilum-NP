@@ -62,10 +62,49 @@ pub enum ApiRequest {
     EditorReplaceSelection {
         text: String,
     },
+    /// Registers or updates a workspace leaf view (ItemView in sidebar or center)
+    SetLeafView {
+        leaf_id: String,
+        location: String,
+        view_type: String,
+        title: String,
+        icon: Option<String>,
+        tree: crate::plugins::ui::UiNode,
+        actions: Vec<PluginViewAction>,
+    },
+    /// Reveals a workspace leaf view (e.g. uncollapses sidebar)
+    RevealLeaf {
+        leaf_id: String,
+    },
+    /// Closes a workspace leaf view
+    CloseLeaf {
+        leaf_id: String,
+    },
     /// Unhandled request kind (logged to console, does not trigger status bar toast)
     Unknown {
         req_kind: String,
     },
+}
+
+/// Action button registered in the view header: view.addAction(icon, title, callback)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PluginViewAction {
+    pub id: String,
+    pub icon: String,
+    pub title: String,
+}
+
+/// Represents an instantiated workspace leaf view (ItemView in sidebar or center).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PluginLeafView {
+    pub leaf_id: String,
+    pub plugin_id: String,
+    pub location: String,
+    pub view_type: String,
+    pub title: String,
+    pub icon: Option<String>,
+    pub tree: crate::plugins::ui::UiNode,
+    pub actions: Vec<PluginViewAction>,
 }
 
 /// Envelops an API request sent from a plugin worker to the host bridge.
