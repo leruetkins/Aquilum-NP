@@ -4191,6 +4191,13 @@ impl Render for AppView {
                                             .child(self.render_right_sidebar_toggle_button(theme, cx)),
                                     )
                                     // 2. Native Windows Titlebar Control Buttons (Minimize, Maximize/Restore, Close)
+                                    //
+                                    // Each button claims its own mouse-down. Marking it as a platform
+                                    // control area makes the OS repeat the action on mouse-up
+                                    // (`nc_button_pressed` is recorded only when the non-client
+                                    // mouse-down is NOT handled), so without this the action would run
+                                    // twice: minimize survives it, maximize toggles back, close is
+                                    // delivered twice. Same guard as in the settings window.
                                     .child(
                                         div()
                                             .flex()
@@ -4210,6 +4217,9 @@ impl Render for AppView {
                                                     .window_control_area(WindowControlArea::Min)
                                                     .hover(|h| h.bg(theme.bg_hover))
                                                     .child(icons::icon(icons::ICON_MINIMIZE, 12.0, theme.text_secondary))
+                                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                        cx.stop_propagation();
+                                                    })
                                                     .on_click(cx.listener(|_, _, window, _| {
                                                         window.minimize_window();
                                                     })),
@@ -4230,6 +4240,9 @@ impl Render for AppView {
                                                         12.0,
                                                         theme.text_secondary,
                                                     ))
+                                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                        cx.stop_propagation();
+                                                    })
                                                     .on_click(cx.listener(|_, _, window, _| {
                                                         window.zoom_window();
                                                     })),
@@ -4257,6 +4270,9 @@ impl Render for AppView {
                                                         12.0,
                                                         if is_hovering_close { rgb(0xffffff) } else { theme.text_secondary },
                                                     ))
+                                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                        cx.stop_propagation();
+                                                    })
                                                     .on_click(cx.listener(|this, _, window, cx| {
                                                         this.save_on_exit(window);
                                                         cx.quit();

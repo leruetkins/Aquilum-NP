@@ -1649,9 +1649,24 @@ impl SettingsView {
                     .items_center()
                     .h_full()
                     .window_control_area(WindowControlArea::Drag)
+                    // `occlude()` keeps the full-window root out of the hit test
+                    // over this region. The root carries `track_focus`, and a
+                    // tracked element calls `Window::prevent_default()` on
+                    // mouse-down; the Windows backend treats a prevented-default
+                    // non-client mouse-down as handled and therefore skips the
+                    // OS window move, so the title bar stopped dragging. With the
+                    // root blocked behind this hitbox `default_prevented` stays
+                    // false and the platform handles the drag itself.
+                    .occlude()
                     .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, window, _| {
-                        if event.click_count == 2 {
-                            window.zoom_window();
+                        if event.click_count >= 2 {
+                            // The click reaches DefWindowProc now, so it would
+                            // toggle maximize on its own. Claim the event to keep
+                            // our zoom the only toggle (and only on the 2nd click).
+                            window.prevent_default();
+                            if event.click_count == 2 {
+                                window.zoom_window();
+                            }
                         }
                     }))
                     .child(
@@ -1680,7 +1695,16 @@ impl SettingsView {
                             )
                     )
             )
-            // Window controls (Minimize, Maximize/Restore, Close)
+            // Window controls (Minimize, Maximize/Restore, Close). Marking them as
+            // platform control areas gives the OS its own non-client handling of
+            // these buttons — the Snap Layouts flyout over "maximize" in particular —
+            // matching the main and catalog windows.
+            //
+            // The `on_mouse_down`/`stop_propagation` on each button is load-bearing:
+            // the platform sets its own `nc_button_pressed` only when the non-client
+            // mouse-down is NOT handled, and then repeats the action on mouse-up.
+            // Claiming the down is what keeps the action single — otherwise a
+            // maximize would toggle once here and once in the platform, cancelling out.
             .child(
                 div()
                     .flex()
@@ -1698,6 +1722,7 @@ impl SettingsView {
                             .w(px(46.0))
                             .h_full()
                             .cursor(gpui::CursorStyle::PointingHand)
+                            .window_control_area(WindowControlArea::Min)
                             .hover(|s| s.bg(theme.bg_hover))
                             .child(icons::icon(icons::ICON_MINIMIZE, 11.0, theme.text_secondary))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| {
@@ -1716,6 +1741,7 @@ impl SettingsView {
                             .w(px(46.0))
                             .h_full()
                             .cursor(gpui::CursorStyle::PointingHand)
+                            .window_control_area(WindowControlArea::Max)
                             .hover(|s| s.bg(theme.bg_hover))
                             .child(icons::icon(
                                 if is_maximized { icons::ICON_RESTORE } else { icons::ICON_MAXIMIZE },
@@ -1738,6 +1764,7 @@ impl SettingsView {
                             .w(px(46.0))
                             .h_full()
                             .cursor(gpui::CursorStyle::PointingHand)
+                            .window_control_area(WindowControlArea::Close)
                             .hover(|s| s.bg(rgb(0xe81123)))
                             .child(icons::icon(icons::ICON_CLOSE, 13.0, theme.text_secondary))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| {

@@ -1249,9 +1249,24 @@ impl PluginCatalogView {
                     .items_center()
                     .h_full()
                     .window_control_area(WindowControlArea::Drag)
+                    // `occlude()` keeps the full-window root out of the hit test
+                    // over this region. The root carries `track_focus`, and a
+                    // tracked element calls `Window::prevent_default()` on
+                    // mouse-down; the Windows backend treats a prevented-default
+                    // non-client mouse-down as handled and therefore skips the
+                    // OS window move, so the title bar stopped dragging. With the
+                    // root blocked behind this hitbox `default_prevented` stays
+                    // false and the platform handles the drag itself.
+                    .occlude()
                     .on_mouse_down(MouseButton::Left, cx.listener(|_, event: &MouseDownEvent, window, _| {
-                        if event.click_count == 2 {
-                            window.zoom_window();
+                        if event.click_count >= 2 {
+                            // The click reaches DefWindowProc now, so it would
+                            // toggle maximize on its own. Claim the event to keep
+                            // our zoom the only toggle (and only on the 2nd click).
+                            window.prevent_default();
+                            if event.click_count == 2 {
+                                window.zoom_window();
+                            }
                         }
                     }))
                     .child(
@@ -1283,6 +1298,13 @@ impl PluginCatalogView {
                     )
             )
             // Right window controls (Minimize, Maximize/Restore, Close)
+            //
+            // Each button claims its own mouse-down. A platform control area makes
+            // the OS repeat the action on mouse-up (`nc_button_pressed` is recorded
+            // only when the non-client mouse-down is NOT handled); without the guard
+            // this window only escaped the double action through the root's
+            // `track_focus`/`prevent_default`, which is fragile. Same guard as in the
+            // settings window and the main title bar.
             .child(
                 div()
                     .flex()
@@ -1303,6 +1325,9 @@ impl PluginCatalogView {
                             .window_control_area(WindowControlArea::Min)
                             .hover(|h| h.bg(theme.bg_hover))
                             .child(icons::icon(icons::ICON_MINIMIZE, 11.0, theme.text_secondary))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
                             .on_click(cx.listener(|_, _, window, _| {
                                 window.minimize_window();
                             }))
@@ -1323,6 +1348,9 @@ impl PluginCatalogView {
                                 11.0,
                                 theme.text_secondary,
                             ))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
                             .on_click(cx.listener(|_, _, window, _| {
                                 window.zoom_window();
                             }))
@@ -1350,6 +1378,9 @@ impl PluginCatalogView {
                                 11.0,
                                 if is_hovering_close { rgb(0xffffff) } else { theme.text_secondary },
                             ))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
                             .on_click(cx.listener(|_, _, window, _| {
                                 window.remove_window();
                             }))
