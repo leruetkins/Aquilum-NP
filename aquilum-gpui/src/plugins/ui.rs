@@ -837,7 +837,17 @@ pub fn render_ui_node<V: UiSink>(
         }
         UiNode::Row { id, class, gap, children } => {
             let gap_px = gap.to_px();
-            let is_item = class.as_deref().map_or(false, |c| c.contains("item") || c.contains("entry") || c.contains("row"));
+            let is_tree_row = class.as_deref().map_or(false, |c| {
+                c.contains("tree-item-self")
+                    || c.contains("nav-file-title")
+                    || c.contains("nav-folder-title")
+                    || c.contains("recent-files-title")
+                    || c.contains("tree-row")
+                    || (c.contains("nav-file") && !c.contains("nav-folder"))
+            });
+            let is_modal_item = !is_tree_row && class.as_deref().map_or(false, |c| {
+                c.contains("ef-item") || c.contains("modal-item") || (view_id != 0 && (c.contains("item") || c.contains("entry")))
+            });
             let is_stats = class.as_deref().map_or(false, |c| c.contains("stats") || c.contains("count") || c.contains("summary"));
             let is_controls = class.as_deref().map_or(false, |c| c.contains("controls") || c.contains("actions") || c.contains("toolbar"));
             let is_footer = class.as_deref().map_or(false, |c| c.contains("footer") || c.contains("buttons") || c.contains("button-container"));
@@ -850,7 +860,27 @@ pub fn render_ui_node<V: UiSink>(
                 .items_center()
                 .w_full();
 
-            if is_item {
+            if is_tree_row {
+                let is_active = class.as_deref().map_or(false, |c| c.contains("is-active") || c.contains("active"));
+                row = row
+                    .px(px(8.0))
+                    .py(px(3.0))
+                    .min_h(px(24.0))
+                    .gap(px(6.0))
+                    .rounded_md()
+                    .cursor_pointer()
+                    .justify_between();
+
+                if is_active {
+                    row = row
+                        .bg(theme.bg_selected)
+                        .text_color(theme.accent);
+                } else {
+                    row = row
+                        .hover(|h| h.bg(theme.bg_hover))
+                        .text_color(theme.text_secondary);
+                }
+            } else if is_modal_item {
                 row = row
                     .px(px(24.0))
                     .py(px(8.0))
@@ -891,7 +921,7 @@ pub fn render_ui_node<V: UiSink>(
             if let Some(node_id) = id {
                 let p_id = plugin_id.to_string();
                 let n_id = node_id.clone();
-                if !is_item {
+                if !is_modal_item && !is_tree_row {
                     row = row
                         .justify_between()
                         .px_2()
@@ -925,7 +955,17 @@ pub fn render_ui_node<V: UiSink>(
         }
         UiNode::Text { value, class, style } => {
             let cls = class.as_deref().unwrap_or("");
-            if cls.contains("name") || cls.contains("title") {
+            if cls.contains("tree-item-inner") || cls.contains("nav-file-title-content") {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(theme.text_primary)
+                    .overflow_hidden()
+                    .truncate()
+                    .child(value.clone())
+                    .into_any_element()
+            } else if cls.contains("name") || cls.contains("title") {
                 div()
                     .text_sm()
                     .font_weight(gpui::FontWeight::MEDIUM)
@@ -1012,9 +1052,17 @@ pub fn render_ui_node<V: UiSink>(
         } => {
             let is_disabled = *disabled;
             let cls = class.as_deref().unwrap_or("");
-            let is_danger_btn = matches!(variant, ButtonVariant::Danger) || cls.contains("danger") || cls.contains("warning");
+            let is_icon_btn = cls.contains("clickable-icon")
+                || cls.contains("menu-item-icon")
+                || cls.contains("file-delete")
+                || cls.contains("delete")
+                || cls.contains("icon")
+                || label == "×"
+                || label == "✕";
+            let is_danger_btn = !is_icon_btn && (matches!(variant, ButtonVariant::Danger) || cls.contains("danger") || cls.contains("warning"));
             let is_danger_active = cls.contains("danger--active") || cls.contains("active") || (is_danger_btn && !is_disabled);
-            let is_secondary_btn = matches!(variant, ButtonVariant::Secondary) || cls.contains("secondary") || cls.contains("ghost") || cls.contains("cancel");
+            let is_secondary_btn = !is_icon_btn && (matches!(variant, ButtonVariant::Secondary) || cls.contains("secondary") || cls.contains("ghost") || cls.contains("cancel"));
+            let is_primary_btn = !is_icon_btn && (matches!(variant, ButtonVariant::Primary) || cls.contains("mod-cta") || cls.contains("mod-primary") || cls.contains("primary"));
 
             let p_id = plugin_id.to_string();
             let n_id = id.clone();
@@ -1034,9 +1082,15 @@ pub fn render_ui_node<V: UiSink>(
                     cx.stop_propagation();
                 });
 
-            let is_primary_btn = matches!(variant, ButtonVariant::Primary) || cls.contains("mod-cta") || cls.contains("mod-primary") || cls.contains("primary");
-
-            if is_danger_btn {
+            if is_icon_btn {
+                btn = btn
+                    .w(px(20.0))
+                    .h(px(20.0))
+                    .rounded_md()
+                    .text_xs()
+                    .text_color(theme.text_muted)
+                    .hover(|s| s.bg(theme.bg_hover).text_color(theme.text_primary));
+            } else if is_danger_btn {
                 if is_danger_active {
                     btn = btn
                         .h(px(30.0))
@@ -1113,7 +1167,9 @@ pub fn render_ui_node<V: UiSink>(
             }
 
             if !is_disabled {
-                if is_danger_active {
+                if is_icon_btn {
+                    btn = btn.hover(|s| s.bg(theme.bg_hover).text_color(theme.text_primary)).active(|s| s.opacity(0.7));
+                } else if is_danger_active {
                     btn = btn.hover(|s| s.opacity(0.88)).active(|s| s.opacity(0.75));
                 } else if is_secondary_btn {
                     btn = btn.hover(|s| s.bg(theme.bg_hover)).active(|s| s.bg(theme.bg_card));

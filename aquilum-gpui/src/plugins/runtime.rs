@@ -1906,6 +1906,10 @@ fn setup_plugin_environment<'js>(
                 return null;
             }
 
+            if (el.classes && el.classes.has("tree-item") && !el.classes.has("tree-item-self") && el.children.length === 1 && el.children[0].classes && el.children[0].classes.has("tree-item-self")) {
+                return __velement_to_uinode(el.children[0]);
+            }
+
             const classArray = Array.from(el.classes);
             const isInfoEl = classArray.some(c => c.includes("info") || c.includes("desc"));
             const isListEl = classArray.some(c => c.includes("list") || c.includes("scroll"));
