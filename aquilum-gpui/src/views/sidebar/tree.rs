@@ -235,7 +235,7 @@ impl AppView {
             // offset is only a fallback when there is no active row.
             if let Some(ix) = selected_row_index {
                 let half = ((sidebar_viewport_h / SIDEBAR_ROW_H) as usize / 2).max(1);
-                sidebar_scroll_top = height_index.top_of(ix.saturating_sub(half));
+                sidebar_scroll_top = height_index.top_of(ix.saturating_sub(half)) as f32;
                 scroll_request = true;
             } else if self.state.session.sidebar_scroll_top < 0.0 {
                 sidebar_scroll_top = -self.state.session.sidebar_scroll_top;
@@ -247,7 +247,7 @@ impl AppView {
             self.sidebar_smart_target_y.set(None);
             if let Some(ix) = selected_row_index {
                 let half = ((sidebar_viewport_h / SIDEBAR_ROW_H) as usize / 2).max(1);
-                sidebar_scroll_top = height_index.top_of(ix.saturating_sub(half));
+                sidebar_scroll_top = height_index.top_of(ix.saturating_sub(half)) as f32;
                 scroll_request = true;
             }
         }
@@ -290,9 +290,14 @@ impl AppView {
             }
         }
 
-        let visible_rows = height_index.visible_range(sidebar_scroll_top, sidebar_viewport_h, SIDEBAR_OVERSCAN_PX);
-        let top_spacer_h = height_index.top_of(visible_rows.start);
-        let bottom_spacer_h = (height_index.total() - height_index.top_of(visible_rows.end)).max(0.0);
+        let visible_rows = height_index.visible_range(
+            sidebar_scroll_top as f64,
+            sidebar_viewport_h as f64,
+            SIDEBAR_OVERSCAN_PX as f64,
+        );
+        let top_spacer_h = height_index.top_of(visible_rows.start) as f32;
+        let bottom_spacer_h =
+            (height_index.total() - height_index.top_of(visible_rows.end)).max(0.0) as f32;
 
         // The two spacers keep the scrollable content as tall as the full list, so the
         // scrollbar stays proportional to the whole tree.

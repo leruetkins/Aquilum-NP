@@ -350,14 +350,14 @@ mod tests {
             let iters = 10_000;
             let t1 = Instant::now();
             for i in 0..iters {
-                let scroll_y = ((i % 1000) as f32) * 50.0;
+                let scroll_y = ((i % 1000) as f64) * 50.0;
                 let _ = index.visible_range(scroll_y, 800.0, 300.0);
             }
             let range_time = t1.elapsed() / (iters as u32);
 
             let t2 = Instant::now();
             for i in 0..iters {
-                let y = ((i % 1000) as f32) * 60.0;
+                let y = ((i % 1000) as f64) * 60.0;
                 let _ = index.v_idx_at_y(y);
             }
             let lookup_time = t2.elapsed() / (iters as u32);

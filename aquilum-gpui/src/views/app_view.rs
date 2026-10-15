@@ -4,7 +4,7 @@ use crate::state::{AppState, FileNode};
 use crate::theme::Theme;
 use crate::views::scrollbar::ScrollbarDrag;
 use gpui::{
-    div, point, prelude::*, px, rgb, rgba, Bounds, ClipboardItem, Context, Div, Entity, FocusHandle,
+    div, prelude::*, px, rgb, rgba, Bounds, ClipboardItem, Context, Div, Entity, FocusHandle,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Render, ScrollHandle, ScrollStrategy,
     SharedString, Subscription, Window, WindowControlArea,
 };
@@ -20,12 +20,40 @@ use std::sync::Arc;
 /// confirms nothing moved.
 const SCROLL_SETTLE_FRAMES: u8 = 3;
 
+/// Px one wheel "line" is worth. 24 = the editor row height, so a notch (three
+/// lines on Windows) moves three rows of text.
+const WHEEL_LINE_PX: f32 = 24.0;
+
+/// Time constant of the wheel smoothing, seconds. Smaller is snappier, larger
+/// is softer; the step itself is `1 - exp(-dt / tau)` (see `step_scroll_animation`).
+const SCROLL_SMOOTH_TAU: f32 = 0.07;
+
+/// Rows rendered above and below the viewport.
+///
+/// It also bounds how far the painted slice is shifted from the scroll position
+/// (see the slice in `render`), which is what keeps every layout coordinate near
+/// zero — the reason a huge note no longer drifts apart at the tail.
+const EDITOR_OVERSCAN_PX: f32 = 300.0;
+
 pub struct AppView {
     pub state: AppState,
     pub theme: Theme,
     pub focus_handle: FocusHandle,
     pub search_focus_handle: FocusHandle,
     pub editor_scroll_handle: ScrollHandle,
+    /// Where the wheel animation is heading, in px from the top of the content;
+    /// `None` when nothing is being animated.
+    pub scroll_target: Cell<Option<f64>>,
+    /// The editor's scroll position, and the single source of truth for it.
+    ///
+    /// gpui's own offset is *not* used for the editor any more: the visible rows
+    /// are painted as a slice anchored near y = 0, and the scroll position only
+    /// decides which slice that is and how far it is shifted. Keeping the number
+    /// here also keeps it exact — an offset of 2×10^8 px in `f32` can only move
+    /// in 16 px steps, which is coarser than a 24 px row.
+    pub editor_scroll: Cell<f64>,
+    /// Timestamp of the previous animation frame, for a rate-independent step.
+    pub scroll_anim_last_tick: Cell<Option<std::time::Instant>>,
     pub sidebar_scroll_handle: ScrollHandle,
     pub settings_scroll_handle: ScrollHandle,
     pub need_scroll_sidebar_to_active: Cell<bool>,
@@ -83,7 +111,7 @@ pub struct AppView {
     pub settings_window_manager: crate::views::settings_view::SettingsWindowManager,
     pub is_dragging_scrollbar: bool,
     pub scrollbar_drag_start_y: f32,
-    pub scrollbar_drag_start_scroll_y: f32,
+    pub scrollbar_drag_start_scroll_y: f64,
     /// Drag state of the sidebar tree's overlay scrollbar.
     pub sidebar_scrollbar_drag: ScrollbarDrag,
     /// Measured viewport of the sidebar file tree for cursor-driven smart scrolling.
@@ -100,7 +128,7 @@ pub struct AppView {
     /// A saved scroll offset waiting to be written once the editor layout is
     /// measured. A handle write before that is eaten by prepaint clamping
     /// against a not-yet-measured max — and the restore is lost for good.
-    pub pending_editor_restore: Option<f32>,
+    pub pending_editor_restore: Option<f64>,
     /// Validate cursor visibility on the next render (the saved offset may be
     /// stale after a resize/rewrap); the reveal is a no-op when exact.
     pub need_reveal_cursor: bool,
@@ -117,7 +145,7 @@ pub struct AppView {
     pub layout_settle_frames: Cell<u8>,
     /// `(viewport_h, max_scroll)` the thumb was drawn from last frame, rounded
     /// to whole pixels so sub-pixel jitter cannot keep the burst alive.
-    pub last_scroll_inputs: Cell<(f32, f32)>,
+    pub last_scroll_inputs: Cell<(f32, f64)>,
     pub is_hovering_close: bool,
     pub title_focus_handle: FocusHandle,
     pub title_edit_text: String,
@@ -231,6 +259,9 @@ impl AppView {
             focus_handle: cx.focus_handle(),
             search_focus_handle: cx.focus_handle(),
             editor_scroll_handle: ScrollHandle::new(),
+            scroll_target: Cell::new(None),
+            editor_scroll: Cell::new(0.0),
+            scroll_anim_last_tick: Cell::new(None),
             sidebar_scroll_handle: ScrollHandle::new(),
             settings_scroll_handle: ScrollHandle::new(),
             need_scroll_sidebar_to_active: Cell::new(false),
@@ -591,8 +622,14 @@ impl AppView {
     }
 
     pub fn current_scroll_top(&self) -> f32 {
-        let offset = self.editor_scroll_handle.offset();
-        f32::from(-offset.y).max(0.0)
+        self.current_scroll_top_f64() as f32
+    }
+
+    /// Full-precision scroll position. Geometry must use this one: at the tail of
+    /// a huge note the f32 grid is 16 px wide, i.e. coarser than a 24 px row, so
+    /// rounding here would snap the slice to the wrong row.
+    pub fn current_scroll_top_f64(&self) -> f64 {
+        self.editor_scroll.get().max(0.0)
     }
 
     pub fn apply_note_settings_for_path(&mut self, path: &Path) {
@@ -621,7 +658,7 @@ impl AppView {
             .map(|n| n.path.as_path() == path)
             .unwrap_or(false)
         {
-            self.pending_editor_restore = Some(restore_to);
+            self.pending_editor_restore = Some(f64::from(restore_to));
             self.need_reveal_cursor = true;
             // The note changed, so the handle still describes the old content:
             // arm the burst that repaints the scrollbar once it is measured.
@@ -932,22 +969,22 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
 
     let row_top = note.cached_height_index.top_of(v_idx);
     let row_bottom =
-        row_top + note.cached_height_index.height_of(v_idx);
+        row_top + f64::from(note.cached_height_index.height_of(v_idx));
 
     // Высота содержимого без дополнительного нижнего отступа.
     let total_content_h = note.cached_height_index.total();
-    let max_scroll = (total_content_h - viewport_h).max(0.0);
+    let max_scroll = (total_content_h - f64::from(viewport_h)).max(0.0);
 
-    let raw_scroll = self.current_scroll_top();
+    let raw_scroll = self.current_scroll_top_f64();
     let current_scroll = raw_scroll.clamp(0.0, max_scroll);
-    let viewport_bottom = current_scroll + viewport_h;
+    let viewport_bottom = current_scroll + f64::from(viewport_h);
 
     // Никаких дополнительных отступов сверху и снизу.
     // Прокручиваем только тогда, когда строка выходит за границы.
     let target_scroll = if row_top < current_scroll {
         row_top
     } else if row_bottom > viewport_bottom {
-        row_bottom - viewport_h
+        row_bottom - f64::from(viewport_h)
     } else {
         current_scroll
     }
@@ -956,7 +993,7 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
     // Исправляем устаревшую позицию после изменения высоты содержимого.
     // Игнорируем субпиксельные изменения, чтобы не провоцировать дрожание.
     if (target_scroll - raw_scroll).abs() > 0.5 {
-        self.set_editor_scroll_top(target_scroll);
+        self.set_editor_scroll_top_f64(target_scroll);
     }
 }
 
@@ -967,19 +1004,101 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         self.scroll_cursor_into_view_with_strategy(ScrollStrategy::Top);
     }
 
+    /// Moves the editor to `scroll_y`.
+    ///
+    /// Any write through here also ends a running wheel ease: the position came
+    /// from somewhere else (a restore, a thumb drag, a cursor reveal, the
+    /// keyboard), so the animation is no longer heading where the user is.
     pub(crate) fn set_editor_scroll_top(&self, scroll_y: f32) {
-        let offset_x = self.editor_scroll_handle.offset().x;
-        self.editor_scroll_handle.set_offset(point(offset_x, px(-scroll_y)));
+        self.set_editor_scroll_top_f64(scroll_y as f64);
+    }
+
+    pub(crate) fn set_editor_scroll_top_f64(&self, scroll_y: f64) {
+        self.scroll_target.set(None);
+        self.scroll_anim_last_tick.set(None);
+        self.editor_scroll.set(scroll_y.max(0.0));
+    }
+
+    /// Owns the editor wheel: a notch is eased towards instead of applied.
+    ///
+    /// The editor's rows are painted as a slice anchored near y = 0 and shifted
+    /// by the leftover of the scroll position, so nothing else may move them:
+    /// the list no longer uses gpui's own scrolling (`overflow_hidden`), and the
+    /// built-in wheel listener ignores an element that is not `Overflow::Scroll`,
+    /// so this listener is the only writer.
+    pub fn handle_editor_wheel(
+        &mut self,
+        event: &gpui::ScrollWheelEvent,
+        max_scroll: f64,
+        cx: &mut Context<Self>,
+    ) {
+        if max_scroll <= 1.0 {
+            return;
+        }
+        let current = self.current_scroll_top_f64().clamp(0.0, max_scroll);
+        match event.delta {
+            gpui::ScrollDelta::Pixels(p) => {
+                if f32::from(p.y) == 0.0 {
+                    return;
+                }
+                // A trackpad already delivers a smooth stream: applying it as it
+                // arrives is smoother than easing a target that lags behind it.
+                let next = (current - f64::from(f32::from(p.y))).clamp(0.0, max_scroll);
+                self.set_editor_scroll_top_f64(next);
+            }
+            gpui::ScrollDelta::Lines(l) => {
+                if l.y == 0.0 {
+                    return;
+                }
+                // Accumulate, so notches arriving faster than the frame rate add
+                // up instead of overwriting one another.
+                let base = self.scroll_target.get().unwrap_or(current);
+                let target = (base - f64::from(l.y) * f64::from(WHEEL_LINE_PX)).clamp(0.0, max_scroll);
+                self.scroll_target.set(Some(target));
+                self.scroll_anim_last_tick.set(None);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Eases the editor one frame towards `scroll_target`. Called from `render`.
+    ///
+    /// The step is `1 - exp(-dt / tau)`, i.e. frame-rate independent: a frame
+    /// that took twice as long covers twice the (remaining) distance, so the
+    /// motion looks the same at 60 and at 144 Hz.
+    fn step_scroll_animation(&mut self, window: &mut Window) {
+        let Some(target) = self.scroll_target.get() else {
+            return;
+        };
+        let current = self.current_scroll_top_f64();
+        let now = std::time::Instant::now();
+        let dt = self
+            .scroll_anim_last_tick
+            .get()
+            .map(|t| now.duration_since(t).as_secs_f32())
+            .unwrap_or(1.0 / 60.0)
+            .min(0.05);
+        self.scroll_anim_last_tick.set(Some(now));
+        let diff = target - current;
+        let next = if diff.abs() < 0.5 {
+            self.scroll_target.set(None);
+            self.scroll_anim_last_tick.set(None);
+            target
+        } else {
+            window.request_animation_frame();
+            current + diff * f64::from(scroll_ease_fraction(dt))
+        };
+        // Written directly, not through `set_editor_scroll_top`: that would end
+        // this very animation.
+        self.editor_scroll.set(next.max(0.0));
     }
 
     /// Clamps a saved scroll target into the true scrollable range.
     ///
-    /// The handle's own `max_offset` is only trustworthy once the list has been
-    /// laid out; before that (or after the content changed) the real max is
-    /// `total - viewport`. Taking the larger of the two keeps a restore from
-    /// being eaten by an early clamp against a not-yet-measured max.
-    pub(crate) fn clamp_restore_target(target: f32, handle_max: f32, total_h: f32, viewport_h: f32) -> f32 {
-        let max = handle_max.max(total_h - viewport_h).max(0.0);
+    /// The real max is `total - viewport`: the list paints a slice anchored near
+    /// y = 0, so gpui's own `max_offset` describes the slice, not the document.
+    pub(crate) fn clamp_restore_target(target: f64, total_h: f64, viewport_h: f64) -> f64 {
+        let max = (total_h - viewport_h).max(0.0);
         target.clamp(0.0, max)
     }
 
@@ -994,7 +1113,11 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
     /// frames already cover the whole viewport instead of popping the last
     /// rows in later. Overshooting the slice only renders a few extra clipped
     /// rows.
-    pub fn editor_scroll_metrics(&self, total_content_h: f32, window_h: f32) -> (f32, f32, f32, f32) {
+    ///
+    /// `max_scroll_content` is `f64`: it is an absolute offset into the
+    /// document, and at 2×10^8 px an f32 cannot express it more finely than
+    /// every 16 px.
+    pub fn editor_scroll_metrics(&self, total_content_h: f64, window_h: f32) -> (f32, f32, f64, f32) {
         let bounds = self.editor_scroll_handle.bounds();
         let bounds_h = f32::from(bounds.size.height);
         let live = (window_h - 100.0).max(100.0);
@@ -1004,7 +1127,7 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
             self.last_editor_h.get().max(100.0)
         };
         let slice_h = viewport_h.max(live);
-        let max_scroll_content = (total_content_h - viewport_h).max(0.0);
+        let max_scroll_content = (total_content_h - viewport_h as f64).max(0.0);
         let track_top_y = if bounds.origin.y > px(0.0) {
             f32::from(bounds.origin.y)
         } else {
@@ -1024,14 +1147,15 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         let total_content_h = note.cached_height_index.total();
         let window_h = f32::from(window.bounds().size.height);
         let (_, viewport_h, max_scroll_content, _) = self.editor_scroll_metrics(total_content_h, window_h);
-        let ratio = (viewport_h / total_content_h.max(viewport_h)).clamp(0.04, 1.0);
-        let thumb_h = (viewport_h * ratio).max(28.0);
-        let track_scrollable = (viewport_h - thumb_h).max(1.0);
+        let ratio = (f64::from(viewport_h) / total_content_h.max(f64::from(viewport_h))).clamp(0.04, 1.0);
+        let thumb_h = (f64::from(viewport_h) * ratio).max(28.0);
+        let track_scrollable = (f64::from(viewport_h) - thumb_h).max(1.0);
 
-        let delta_y = current_y - self.scrollbar_drag_start_y;
+        let delta_y = f64::from(current_y - self.scrollbar_drag_start_y);
         let delta_fraction = delta_y / track_scrollable;
-        let new_scroll_y = (self.scrollbar_drag_start_scroll_y + delta_fraction * max_scroll_content).clamp(0.0, max_scroll_content);
-        self.set_editor_scroll_top(new_scroll_y);
+        let new_scroll_y = (self.scrollbar_drag_start_scroll_y + delta_fraction * max_scroll_content)
+            .clamp(0.0, max_scroll_content);
+        self.set_editor_scroll_top_f64(new_scroll_y);
         cx.notify();
     }
 
@@ -1225,8 +1349,10 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         }
 
         let editor_rows_top_y = 132.0;
-        let current_scroll_y = self.current_scroll_top();
-        let rel_y = click_y - editor_rows_top_y + current_scroll_y;
+        // f64: at the tail of a huge note an f32 scroll position is only good to
+        // 16 px, which is enough to pick the neighbouring row.
+        let current_scroll_y = self.current_scroll_top_f64();
+        let rel_y = f64::from(click_y) - editor_rows_top_y + current_scroll_y;
 
         let editor_font = self.editor_font_family();
         let font_id = cx.text_system().resolve_font(&gpui::font(&editor_font));
@@ -1352,19 +1478,19 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         // Top of rows area: Titlebar (38px) + Nav bar (40px) + note-title-panel (54px) = 132px
         let editor_rows_top_y = 132.0;
         let editor_bottom_y = (viewport_h - 28.0).max(editor_rows_top_y + 100.0);
-        let scroll_y = self.current_scroll_top();
+        let scroll_y = self.current_scroll_top_f64();
 
         // Edge autoscroll when dragging outside or near the top/bottom bounds
         if pos_y < editor_rows_top_y && scroll_y > 0.0 {
-            let step = ((editor_rows_top_y - pos_y).max(1.0) * 0.8).min(30.0);
-            self.set_editor_scroll_top((scroll_y - step).max(0.0));
+            let step = f64::from(((editor_rows_top_y - pos_y).max(1.0) * 0.8).min(30.0));
+            self.set_editor_scroll_top_f64((scroll_y - step).max(0.0));
         } else if pos_y > editor_bottom_y - 16.0 {
-            let step = ((pos_y - (editor_bottom_y - 16.0)).max(1.0) * 0.8).min(30.0);
-            self.set_editor_scroll_top(scroll_y + step);
+            let step = f64::from(((pos_y - (editor_bottom_y - 16.0)).max(1.0) * 0.8).min(30.0));
+            self.set_editor_scroll_top_f64(scroll_y + step);
         }
 
-        let current_scroll_y = self.current_scroll_top();
-        let rel_y = pos_y - editor_rows_top_y + current_scroll_y;
+        let current_scroll_y = self.current_scroll_top_f64();
+        let rel_y = f64::from(pos_y) - f64::from(editor_rows_top_y) + current_scroll_y;
 
         let editor_font = self.editor_font_family();
         let font_id = cx.text_system().resolve_font(&gpui::font(&editor_font));
@@ -2824,6 +2950,12 @@ impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         log_fps_tick();
 
+        // Advance the wheel animation before anything else touches the offset.
+        // The restore/reveal further down are one-shot and write after this, so
+        // they win; the next frame's guard then drops the animation instead of
+        // letting the two fight over the offset.
+        self.step_scroll_animation(window);
+
         // Device-pixel grid for thin carets: GPUI paints quads at raw float
         // coordinates, so an unsnapped 1.5-2px caret visibly changes thickness
         // while typing. Captured once per frame, reused at every caret site.
@@ -2835,7 +2967,7 @@ impl Render for AppView {
             // against a not-yet-measured max and the restore is lost. The
             // slice below already reads from the pending target, and the
             // write is retried once the bounds are measured.
-            self.pending_editor_restore = Some(self.initial_scroll_top);
+            self.pending_editor_restore = Some(f64::from(self.initial_scroll_top));
             self.need_reveal_cursor = true;
         }
 
@@ -2964,8 +3096,7 @@ impl Render for AppView {
         if let Some(ref mut note) = self.state.active_note {
             note.ensure_visual_cache_with_headings(self.word_wrap, wrap_cols, Some(&self.config.editor.headings));
         }
-        // Retry a pending restore until the layout is measured: an early
-        // handle write is eaten by prepaint clamping, but the slice below
+        // Retry a pending restore until the viewport is measured: the slice below
         // already follows the target, so the rows are right from frame one.
         if self.pending_editor_restore.is_some() {
             let viewport_h = f32::from(self.editor_scroll_handle.bounds().size.height);
@@ -2977,10 +3108,10 @@ impl Render for AppView {
                         .as_ref()
                         .map(|n| n.cached_height_index.total())
                         .unwrap_or(0.0);
-                    let handle_max = f32::from(self.editor_scroll_handle.max_offset().height);
-                    let clamped = Self::clamp_restore_target(target, handle_max, total, viewport_h);
-                    if (clamped - self.current_scroll_top()).abs() > 0.5 {
-                        self.set_editor_scroll_top(clamped);
+                    let clamped =
+                        Self::clamp_restore_target(target, total, f64::from(viewport_h));
+                    if (clamped - self.current_scroll_top_f64()).abs() > 0.5 {
+                        self.set_editor_scroll_top_f64(clamped);
                     }
                     self.need_reveal_cursor = true;
                 }
@@ -3005,10 +3136,10 @@ impl Render for AppView {
         //
         // This terminates: `inputs` is a pure function of the layout and the
         // window size, and the layout does not depend on it — the scrollbar
-        // reserves no width (`scrollbar_width` defaults to 0, so
-        // `overflow_y_scroll` is layout-neutral) — so two consecutive frames
-        // agree and the burst ends. The counter alone is not enough: a resize or
-        // a rewrap moves the inputs without going through the arm sites.
+        // reserves no width, and the list does not scroll through gpui at all —
+        // so two consecutive frames agree and the burst ends. The counter alone
+        // is not enough: a resize or a rewrap moves the inputs without going
+        // through the arm sites.
         if let Some(note) = self.state.active_note.as_ref() {
             let total = note.cached_height_index.total();
             let (_, viewport_h, max_scroll, _) = self.editor_scroll_metrics(total, window_h);
@@ -4211,23 +4342,19 @@ impl Render for AppView {
                                     // track's own height), never the slicing
                                     // estimate: otherwise the thumb slides past
                                     // the track end, under the status bar.
-                                    let ratio = (viewport_h / total_content_h.max(viewport_h)).clamp(0.04, 1.0);
-                                    let th = (viewport_h * ratio).max(28.0);
-                                    let scroll_y = {
-                                        let offset = self.editor_scroll_handle.offset();
-                                        f32::from(-offset.y).clamp(0.0, max_scroll_content)
-                                    };
+                                    let ratio =
+                                        (f64::from(viewport_h) / total_content_h.max(f64::from(viewport_h)))
+                                            .clamp(0.04, 1.0);
+                                    let th = (f64::from(viewport_h) * ratio).max(28.0);
+                                    let scroll_y = self.current_scroll_top_f64().clamp(0.0, max_scroll_content);
                                     let scroll_fraction = (scroll_y / max_scroll_content).clamp(0.0, 1.0);
-                                    let tt = scroll_fraction * (viewport_h - th);
-                                    (tt, th)
+                                    let tt = scroll_fraction * (f64::from(viewport_h) - th);
+                                    (tt as f32, th as f32)
                                 } else {
                                     (0.0, 28.0)
                                 };
                                 let is_scrollbar_dragging = self.is_dragging_scrollbar;
-                                let scroll_y_current = {
-                                    let offset = self.editor_scroll_handle.offset();
-                                    f32::from(-offset.y).clamp(0.0, max_scroll_content)
-                                };
+                                let scroll_y_current = self.current_scroll_top_f64().clamp(0.0, max_scroll_content);
 
                                 let is_title_focused = self.title_focus_handle.is_focused(window);
                                 let title_text = &self.title_edit_text;
@@ -4533,56 +4660,48 @@ impl Render for AppView {
                                             let hide_current_line_on_selection = self.config.editor.hide_current_line_on_selection;
                                             let has_selection = selection_range.as_ref().map_or(false, |sel| sel.start < sel.end);
 
-                                            let (visible_range, top_spacer_h, bottom_spacer_h) = if !show_scrollbar {
-                                                if self.current_scroll_top() > 0.0 {
-                                                    self.set_editor_scroll_top(0.0);
+                                            // The rows are painted as a slice that starts at
+                                            // `visible_range.start`, positioned so that the
+                                            // row lands exactly where the scroll position says
+                                            // it is. `slice_shift` is that leftover, and it is
+                                            // always small (a row plus the overscan), which is
+                                            // the whole point: absolute row coordinates in a
+                                            // 600 MB note reach 2×10^8 px, where f32 cannot
+                                            // even tell a 24 px row from a 32 px one, so the
+                                            // selection rectangles used to be spaced 32 px
+                                            // apart while being 24 px tall — gaps and
+                                            // overlaps. Every coordinate the layout sees is
+                                            // now near zero.
+                                            let (visible_range, slice_shift) = if !show_scrollbar {
+                                                if self.current_scroll_top_f64() > 0.0 {
+                                                    self.set_editor_scroll_top_f64(0.0);
                                                 }
-                                                (0..visual_rows_arc.len(), 0.0, 0.0)
+                                                (0..visual_rows_arc.len(), 0.0)
                                             } else {
-                                                // While a restore is pending, slice from its target:
-                                                // the handle write may still be eaten by prepaint
-                                                // clamping, but the rows must be right already.
-                                                // Clamp against the true max: the handle max may
-                                                // still belong to the previous layout/note.
+                                                // While a restore is pending, slice from its
+                                                // target: the position is not written yet, but
+                                                // the rows must be right already.
                                                 let raw_scroll_y = self
                                                     .pending_editor_restore
-                                                    .unwrap_or_else(|| self.current_scroll_top());
+                                                    .unwrap_or_else(|| self.current_scroll_top_f64());
                                                 let true_max = max_scroll_content
-                                                    .max(total_content_h - viewport_h)
+                                                    .max(total_content_h - f64::from(viewport_h))
                                                     .max(0.0);
                                                 let scroll_y = raw_scroll_y.clamp(0.0, true_max);
                                                 if (raw_scroll_y - scroll_y).abs() > 0.5 {
-                                                    self.set_editor_scroll_top(scroll_y);
+                                                    self.set_editor_scroll_top_f64(scroll_y);
                                                 }
-                                                let vr = height_index_arc.visible_range(scroll_y, slice_h, 300.0);
-                                                let top_h = height_index_arc.top_of(vr.start);
-                                                let rendered_bottom = height_index_arc.top_of(vr.end);
-                                                let bot_h = (height_index_arc.total() - rendered_bottom).max(0.0);
-                                                (vr, top_h, bot_h)
+                                                let vr = height_index_arc.visible_range(
+                                                    scroll_y,
+                                                    f64::from(slice_h),
+                                                    f64::from(EDITOR_OVERSCAN_PX),
+                                                );
+                                                let shift = height_index_arc.top_of(vr.start) - scroll_y;
+                                                (vr, shift)
                                             };
 
                                             crate::perf::PERF.shape_calls.fetch_add(visible_range.len() as u64, std::sync::atomic::Ordering::Relaxed);
-                                            let mut items = Vec::with_capacity(visible_range.len() + 2);
-
-                                            if top_spacer_h > 0.0 {
-                                                items.push(
-                                                    div()
-                                                        .id("top-spacer")
-                                                        .w_full()
-                                                        .h(px(top_spacer_h))
-                                                        .flex_shrink_0()
-                                                        .cursor(gpui::CursorStyle::IBeam)
-                                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                                                            cx.stop_propagation();
-                                                            this.commit_title_rename(window, cx);
-                                                            window.focus(&this.focus_handle);
-                                                            this.is_mouse_selecting = true;
-                                                            let click_x: f32 = event.position.x.into();
-                                                            let click_y: f32 = event.position.y.into();
-                                                            this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, window, cx);
-                                                        }))
-                                                );
-                                            }
+                                            let mut items = Vec::with_capacity(visible_range.len());
 
                                             let calc_v_row_sel_range = |target_v_idx: usize| -> Option<(usize, usize)> {
                                                 let sel = selection_range.as_ref()?;
@@ -5081,32 +5200,20 @@ impl Render for AppView {
                                                 );
                                             }
 
-                                            if bottom_spacer_h > 0.0 {
-                                                items.push(
-                                                    div()
-                                                        .id("bottom-spacer")
-                                                        .w_full()
-                                                        .h(px(bottom_spacer_h))
-                                                        .flex_shrink_0()
-                                                        .cursor(gpui::CursorStyle::IBeam)
-                                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                                                            cx.stop_propagation();
-                                                            this.commit_title_rename(window, cx);
-                                                            window.focus(&this.focus_handle);
-                                                            this.is_mouse_selecting = true;
-                                                            let click_x: f32 = event.position.x.into();
-                                                            let click_y: f32 = event.position.y.into();
-                                                            this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, window, cx);
-                                                        }))
-                                                );
-                                            }
-
                                             div()
                                                 .id("note-editor-list")
                                                 .track_scroll(&self.editor_scroll_handle)
                                                 .flex()
                                                 .flex_col()
-                                                .when(show_scrollbar, |d| d.overflow_y_scroll())
+                                                // Hidden, not `overflow_y_scroll`: the list scrolls
+                                                // itself (see `handle_editor_wheel`), and gpui's
+                                                // built-in wheel listener ignores an element that
+                                                // is not `Overflow::Scroll`. The mask still clips
+                                                // the slice, whose shift is allowed to be
+                                                // negative. `track_scroll` stays because prepaint
+                                                // fills the handle's `bounds` from it, which is
+                                                // how the viewport height is measured.
+                                                .when(show_scrollbar, |d| d.overflow_hidden())
                                                 .size_full()
                                                 .px_8()
                                                 .pt_0()
@@ -5120,50 +5227,7 @@ impl Render for AppView {
                                                     this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, window, cx);
                                                 }))
                                                 .on_scroll_wheel(cx.listener(move |this, event: &gpui::ScrollWheelEvent, _, cx| {
-                                                    let delta_y = match event.delta {
-                                                        gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
-                                                        gpui::ScrollDelta::Lines(l) => l.y,
-                                                    };
-                                                    if !show_scrollbar {
-                                                        cx.stop_propagation();
-                                                        return;
-                                                    }
-                                                    let current_scroll = this.current_scroll_top();
-                                                    if delta_y < 0.0 {
-                                                        if current_scroll >= max_scroll_content - 1.0 {
-                                                            this.set_editor_scroll_top(max_scroll_content);
-                                                            cx.stop_propagation();
-                                                            return;
-                                                        }
-                                                        let line_h = 24.0;
-                                                        let px_delta_y = match event.delta {
-                                                            gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
-                                                            gpui::ScrollDelta::Lines(l) => l.y * line_h,
-                                                        };
-                                                        if current_scroll - px_delta_y >= max_scroll_content {
-                                                            this.set_editor_scroll_top(max_scroll_content);
-                                                            cx.stop_propagation();
-                                                            cx.notify();
-                                                            return;
-                                                        }
-                                                    } else if delta_y > 0.0 {
-                                                        if current_scroll <= 1.0 {
-                                                            this.set_editor_scroll_top(0.0);
-                                                            cx.stop_propagation();
-                                                            return;
-                                                        }
-                                                        let line_h = 24.0;
-                                                        let px_delta_y = match event.delta {
-                                                            gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
-                                                            gpui::ScrollDelta::Lines(l) => l.y * line_h,
-                                                        };
-                                                        if current_scroll - px_delta_y <= 0.0 {
-                                                            this.set_editor_scroll_top(0.0);
-                                                            cx.stop_propagation();
-                                                            cx.notify();
-                                                            return;
-                                                        }
-                                                    }
+                                                    this.handle_editor_wheel(event, max_scroll_content, cx);
                                                 }))
                                                 .child(
                                                     div()
@@ -5171,52 +5235,10 @@ impl Render for AppView {
                                                         .w_full()
                                                         .flex()
                                                         .flex_col()
-                                                        .on_scroll_wheel(cx.listener(move |this, event: &gpui::ScrollWheelEvent, _, cx| {
-                                                            let delta_y = match event.delta {
-                                                                gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
-                                                                gpui::ScrollDelta::Lines(l) => l.y,
-                                                            };
-                                                            if !show_scrollbar {
-                                                                cx.stop_propagation();
-                                                                return;
-                                                            }
-                                                            let current_scroll = this.current_scroll_top();
-                                                            if delta_y < 0.0 {
-                                                                if current_scroll >= max_scroll_content - 1.0 {
-                                                                    this.set_editor_scroll_top(max_scroll_content);
-                                                                    cx.stop_propagation();
-                                                                    return;
-                                                                }
-                                                                let line_h = 24.0;
-                                                                let px_delta_y = match event.delta {
-                                                                    gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
-                                                                    gpui::ScrollDelta::Lines(l) => l.y * line_h,
-                                                                };
-                                                                if current_scroll - px_delta_y >= max_scroll_content {
-                                                                    this.set_editor_scroll_top(max_scroll_content);
-                                                                    cx.stop_propagation();
-                                                                    cx.notify();
-                                                                    return;
-                                                                }
-                                                            } else if delta_y > 0.0 {
-                                                                if current_scroll <= 1.0 {
-                                                                    this.set_editor_scroll_top(0.0);
-                                                                    cx.stop_propagation();
-                                                                    return;
-                                                                }
-                                                                let line_h = 24.0;
-                                                                let px_delta_y = match event.delta {
-                                                                    gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
-                                                                    gpui::ScrollDelta::Lines(l) => l.y * line_h,
-                                                                };
-                                                                if current_scroll - px_delta_y <= 0.0 {
-                                                                    this.set_editor_scroll_top(0.0);
-                                                                    cx.stop_propagation();
-                                                                    cx.notify();
-                                                                    return;
-                                                                }
-                                                            }
-                                                        }))
+                                                        // Relative inset: shifts the slice without
+                                                        // touching its layout, and may be negative
+                                                        // when the first row starts above the top.
+                                                        .top(px(slice_shift as f32))
                                                         .children(items)
                                                 )
                                         })
@@ -5235,10 +5257,10 @@ impl Render for AppView {
                                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                                                         cx.stop_propagation();
                                                         let click_y: f32 = event.position.y.into();
-                                                        let click_rel_y = (click_y - track_top_y).max(0.0);
-                                                        let target_fraction = (click_rel_y / viewport_h).clamp(0.0, 1.0);
+                                                        let click_rel_y = f64::from((click_y - track_top_y).max(0.0));
+                                                        let target_fraction = (click_rel_y / f64::from(viewport_h)).clamp(0.0, 1.0);
                                                         let target_scroll_y = target_fraction * max_scroll_content;
-                                                        this.set_editor_scroll_top(target_scroll_y);
+                                                        this.set_editor_scroll_top_f64(target_scroll_y);
                                                         cx.notify();
                                                     }))
                                                     .child(
@@ -5415,6 +5437,16 @@ impl Render for AppView {
                 d.child(self.render_plugin_catalog_modal(window, cx))
             })
     }
+}
+
+/// Fraction of the remaining wheel distance covered by a frame of length `dt`.
+///
+/// `1 - exp(-dt / tau)` rather than a fixed per-frame factor: a frame that took
+/// twice as long covers twice the (remaining) distance, so the motion is the
+/// same at 60 and at 144 Hz. It also converges without overshoot, which a fixed
+/// fraction applied to a variable frame time does not guarantee.
+fn scroll_ease_fraction(dt: f32) -> f32 {
+    1.0 - (-dt / SCROLL_SMOOTH_TAU).exp()
 }
 
 /// Weight inline code is painted at.
@@ -6895,21 +6927,19 @@ mod tests {
         assert!(inline_code_weight(gpui::FontWeight::LIGHT).0 >= INLINE_CODE_WEIGHT.0);
     }
 
-    /// A saved restore survives an unmeasured handle max: the true max comes
-    /// from the fresh content height instead of eating the target.
+    /// A saved restore is clamped against the document, never against gpui's
+    /// `max_offset`: the list paints a slice, so the handle no longer describes
+    /// the content and its max is meaningless.
     #[test]
-    fn restore_target_survives_an_unmeasured_handle_max() {
-        // Handle not laid out yet (max 0): total 6000, viewport 740.
-        assert_eq!(AppView::clamp_restore_target(5000.0, 0.0, 6000.0, 740.0), 5000.0);
-        // Exact restore is untouched once measured.
-        assert_eq!(AppView::clamp_restore_target(5000.0, 5260.0, 6000.0, 740.0), 5000.0);
-        // Stale target (window shrank since exit, max not measured yet).
-        assert_eq!(AppView::clamp_restore_target(5000.0, 0.0, 5400.0, 740.0), 4660.0);
-        // …and with a stale-small handle max the true max still wins.
-        assert_eq!(AppView::clamp_restore_target(5000.0, 100.0, 5400.0, 740.0), 4660.0);
+    fn restore_target_is_clamped_to_the_document() {
+        // A stale target (window shrank since exit) is pulled in to the true end.
+        assert_eq!(AppView::clamp_restore_target(5000.0, 6000.0, 740.0), 5000.0);
+        assert_eq!(AppView::clamp_restore_target(5000.0, 5400.0, 740.0), 4660.0);
         // Negative targets and short docs pin to zero.
-        assert_eq!(AppView::clamp_restore_target(-40.0, 5260.0, 6000.0, 740.0), 0.0);
-        assert_eq!(AppView::clamp_restore_target(5000.0, 0.0, 300.0, 740.0), 0.0);
+        assert_eq!(AppView::clamp_restore_target(-40.0, 6000.0, 740.0), 0.0);
+        assert_eq!(AppView::clamp_restore_target(5000.0, 300.0, 740.0), 0.0);
+        // Exactness at the tail of a huge document: f32 would move this by 16 px.
+        assert_eq!(AppView::clamp_restore_target(1.0e8, 1.0e8 + 1000.0, 740.0), 1.0e8);
     }
 
     /// The chip has to be visibly shorter than its row at every font size, and never
@@ -6927,5 +6957,105 @@ mod tests {
         // A tiny row still gets a one-pixel gap rather than a negative chip.
         assert_eq!(code_chip_inset(4.0), 1.0);
         assert!(4.0 - 2.0 * code_chip_inset(4.0) > 0.0);
+    }
+
+    /// The wheel ease must not depend on the frame rate: a frame twice as long
+    /// covers exactly the distance two half-frames would.
+    #[test]
+    fn scroll_ease_is_frame_rate_independent() {
+        let one_frame = scroll_ease_fraction(1.0 / 60.0);
+        let two_half_frames = 1.0 - (1.0 - scroll_ease_fraction(1.0 / 120.0)).powi(2);
+        assert!(
+            (one_frame - two_half_frames).abs() < 1e-6,
+            "60 Hz step {one_frame} != two 120 Hz steps {two_half_frames}"
+        );
+
+        // Same again for a janky frame against three ordinary ones.
+        let janky = scroll_ease_fraction(0.05);
+        let three_smooth = 1.0 - (1.0 - scroll_ease_fraction(0.05 / 3.0)).powi(3);
+        assert!((janky - three_smooth).abs() < 1e-5, "janky {janky} != {three_smooth}");
+
+        // Never overshoots, and always makes progress.
+        for dt in [0.001f32, 1.0 / 144.0, 1.0 / 60.0, 0.016, 0.05] {
+            let f = scroll_ease_fraction(dt);
+            assert!(f > 0.0 && f < 1.0, "dt {dt}: fraction {f} out of range");
+        }
+    }
+
+    /// The rows are painted as a slice shifted by `top_of(start) - scroll`, so
+    /// two things have to hold at every scroll position, including the very end
+    /// of a document far past the f32 grid:
+    ///
+    /// * the shift stays within one row of the overscan — that is what keeps
+    ///   every layout coordinate small, i.e. what the whole rebase is for;
+    /// * the slice still covers the whole viewport, or a blank band appears at
+    ///   the bottom (which is exactly what a rebase without an exact index does,
+    ///   because the index would then under-count the rows it has to render).
+    #[test]
+    fn slice_shift_stays_small_and_covers_the_viewport() {
+        // 1000 px rows cross 2^27 in 134k rows instead of 5.6M, which keeps this
+        // cheap while exercising the same arithmetic as a 600 MB note.
+        let rows = 200_000usize;
+        let row_h = 1000.0f32;
+        let index = crate::markdown::VisualRowHeightIndex::new(vec![row_h; rows]);
+        let viewport = 800.0f64;
+        let overscan = f64::from(EDITOR_OVERSCAN_PX);
+        let max_scroll = index.total() - viewport;
+
+        // Fractional steps, so the slice boundary lands mid-row too.
+        let mut y = max_scroll;
+        while y > max_scroll - 10_000.0 {
+            let vr = index.visible_range(y, viewport, overscan);
+            let shift = index.top_of(vr.start) - y;
+            assert!(
+                shift >= -(overscan + f64::from(row_h)) && shift <= 0.0,
+                "shift {shift} out of range at y={y}"
+            );
+            assert!(
+                index.top_of(vr.end) - y >= viewport,
+                "viewport not covered at y={y}"
+            );
+            y -= 7.3;
+        }
+
+        // The last screen still reaches the last row rather than stopping short.
+        assert_eq!(index.visible_range(max_scroll, viewport, overscan).end, rows);
+    }
+
+    /// Painting and hit testing have to agree, or a click selects a different row
+    /// than the one under the cursor. The rows are painted at
+    /// `slice_shift + Σ heights` (small numbers, exact), while the mouse handler
+    /// maps the click through the index in absolute coordinates (`v_idx_at_y`).
+    /// Both must name the same row for every pixel of the viewport.
+    #[test]
+    fn painted_rows_and_hit_test_agree() {
+        let rows = 200_000usize;
+        let row_h = 1000.0f32;
+        let index = crate::markdown::VisualRowHeightIndex::new(vec![row_h; rows]);
+        let viewport = 800.0f64;
+        let overscan = f64::from(EDITOR_OVERSCAN_PX);
+        let max_scroll = index.total() - viewport;
+
+        // Includes fractional scroll positions, so the slice boundary lands
+        // mid-row and the shift is not a whole number either.
+        for scroll_y in [0.0, 1.0, 999.5, max_scroll / 2.0, max_scroll - 3.3, max_scroll] {
+            let vr = index.visible_range(scroll_y, viewport, overscan);
+            let shift = index.top_of(vr.start) - scroll_y;
+            for px in [0.5, 1.0, 17.7, 400.25, viewport - 0.5] {
+                // The row painted at this pixel of the viewport…
+                let painted = (vr.start..vr.end).find(|&k| {
+                    let top = shift + (index.top_of(k) - index.top_of(vr.start));
+                    let bottom = top + f64::from(index.height_of(k));
+                    px >= top && px < bottom
+                });
+                let painted = painted.unwrap_or_else(|| panic!("no row painted at {px}"));
+                // …and the row the mouse handler resolves the same pixel to.
+                assert_eq!(
+                    index.v_idx_at_y(scroll_y + px),
+                    painted,
+                    "px {px} at scroll {scroll_y}"
+                );
+            }
+        }
     }
 }

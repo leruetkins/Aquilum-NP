@@ -875,23 +875,49 @@ pub fn find_visual_row_for_cursor(
     visual_rows.first().map(|_| (0, 0))
 }
 
+/// Rows per entry in [`VisualRowHeightIndex::bases`].
+///
+/// The base of a block is the cumulative height of every row before it, so a
+/// lookup only has to add up the rows of a single block.
+const HEIGHT_BLOCK: usize = 256;
+
+/// Row geometry of a virtualized list, addressed in `f64`.
+///
+/// A plain `f32` prefix sum cannot describe a huge document: rows are 24 px
+/// tall, and past 2^27 logical px (≈5.6M rows, i.e. a ~450 MB note) the f32 grid
+/// itself is 16 px wide, so `y + 24` rounds to `y + 32` and two rows end up
+/// either 16 or 32 px apart — never the 24 px the rows are actually painted at.
+/// That mismatch is what leaves gaps and overlaps between selection rectangles
+/// near the end of a very large note. `f64` has the range to hold the same
+/// numbers exactly (its grid is 16 *nanometres* at 2^27), and storing a base per
+/// block keeps the memory *below* the old per-row prefix: one `f64` per 256 rows
+/// against one `f32` per row.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct VisualRowHeightIndex {
     heights: Vec<f32>,
-    /// prefix[i] = cumulative sum of heights for rows 0..i, length = heights.len() + 1
-    prefix: Vec<f32>,
+    /// bases[b] = exact cumulative height of rows `0..b * HEIGHT_BLOCK`.
+    bases: Vec<f64>,
+    /// Exact cumulative height of every row.
+    total: f64,
 }
 
 impl VisualRowHeightIndex {
     pub fn new(heights: Vec<f32>) -> Self {
-        let mut prefix = Vec::with_capacity(heights.len() + 1);
-        prefix.push(0.0);
-        let mut running = 0.0;
-        for &h in &heights {
-            running += h;
-            prefix.push(running);
+        let mut bases = Vec::with_capacity(heights.len() / HEIGHT_BLOCK + 1);
+        let mut running = 0.0f64;
+        for (i, &h) in heights.iter().enumerate() {
+            if i % HEIGHT_BLOCK == 0 {
+                bases.push(running);
+            }
+            // `f32` heights are exact in `f64`, and the running sum stays far
+            // below 2^53, so the bases carry no rounding error at all.
+            running += h as f64;
         }
-        Self { heights, prefix }
+        Self {
+            heights,
+            bases,
+            total: running,
+        }
     }
 
     pub fn from_rows(
@@ -942,31 +968,54 @@ impl VisualRowHeightIndex {
         self.heights.is_empty()
     }
 
-    pub fn total(&self) -> f32 {
-        *self.prefix.last().unwrap_or(&0.0)
+    pub fn total(&self) -> f64 {
+        self.total
     }
 
-    pub fn top_of(&self, v_idx: usize) -> f32 {
-        if v_idx < self.prefix.len() {
-            self.prefix[v_idx]
-        } else {
-            self.total()
+    /// Top edge of row `v_idx`, or the total height when past the last row.
+    ///
+    /// Exact for any document size: the block base is exact and the local sum is
+    /// at most `HEIGHT_BLOCK` heights, i.e. a few thousand pixels.
+    pub fn top_of(&self, v_idx: usize) -> f64 {
+        if v_idx >= self.heights.len() {
+            return self.total;
         }
+        let start = (v_idx / HEIGHT_BLOCK) * HEIGHT_BLOCK;
+        let mut y = self.bases[v_idx / HEIGHT_BLOCK];
+        for &h in &self.heights[start..v_idx] {
+            y += h as f64;
+        }
+        y
     }
 
     pub fn height_of(&self, v_idx: usize) -> f32 {
         self.heights.get(v_idx).copied().unwrap_or(0.0)
     }
 
-    pub fn v_idx_at_y(&self, y: f32) -> usize {
+    pub fn v_idx_at_y(&self, y: f64) -> usize {
         if self.heights.is_empty() || y <= 0.0 {
             return 0;
         }
-        let i = self.prefix.partition_point(|&p| p <= y);
-        i.saturating_sub(1).min(self.heights.len().saturating_sub(1))
+        // The last block whose base is at or above `y`; the row containing `y`
+        // cannot be past it, because the next base is the end of that block.
+        let block = self
+            .bases
+            .partition_point(|&base| base <= y)
+            .saturating_sub(1)
+            .min(self.bases.len() - 1);
+        let start = block * HEIGHT_BLOCK;
+        let end = (start + HEIGHT_BLOCK).min(self.heights.len());
+        let mut bottom = self.bases[block];
+        for k in start..end {
+            bottom += self.heights[k] as f64;
+            if bottom > y {
+                return k;
+            }
+        }
+        end - 1
     }
 
-    pub fn visible_range(&self, scroll_top: f32, viewport_h: f32, overscan_px: f32) -> std::ops::Range<usize> {
+    pub fn visible_range(&self, scroll_top: f64, viewport_h: f64, overscan_px: f64) -> std::ops::Range<usize> {
         if self.heights.is_empty() {
             return 0..0;
         }
@@ -1605,6 +1654,37 @@ mod tests {
         // with overscan of 48.0 (2 rows above and below)
         let range_overscan = index.visible_range(240.0, 240.0, 48.0);
         assert_eq!(range_overscan, 8..23);
+    }
+
+    /// Past 2^27 logical px the f32 grid is 16 px wide — coarser than a 24 px
+    /// row — so a prefix sum in f32 starts spacing rows 32 px apart there while
+    /// the rows are painted 24 px tall. That mismatch is exactly the gaps and
+    /// overlaps seen in a 600 MB note, so the index has to stay exact at any
+    /// size. 1000 px rows cross the threshold in 134k rows instead of 5.6M,
+    /// which keeps the test cheap while exercising the same arithmetic.
+    #[test]
+    fn test_height_index_stays_exact_past_f32_grid() {
+        let rows = 200_000usize;
+        let row_h = 1000.0f32;
+        let index = VisualRowHeightIndex::new(vec![row_h; rows]);
+
+        assert!(index.total() > 134_217_728.0, "the test must cross 2^27");
+        assert_eq!(index.total(), row_h as f64 * rows as f64, "total");
+
+        for k in [rows - 4, rows - 3, rows - 2, rows - 1] {
+            assert_eq!(index.top_of(k), row_h as f64 * k as f64, "top of row {k}");
+            assert_eq!(
+                index.top_of(k + 1) - index.top_of(k),
+                row_h as f64,
+                "pitch of row {k}"
+            );
+            assert_eq!(index.v_idx_at_y(index.top_of(k)), k, "lookup of row {k}");
+        }
+
+        // The last viewport must still resolve to real rows, not to the tail.
+        let last = index.visible_range(index.total(), 800.0, 300.0);
+        assert_eq!(last.end, rows);
+        assert!(last.start < rows);
     }
 
     #[test]
