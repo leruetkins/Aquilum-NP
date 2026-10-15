@@ -4089,6 +4089,8 @@ impl Render for AppView {
                                     .unwrap_or_else(|| "Untitled".to_string());
 
                                 let lines_arc = Arc::clone(&note.cached_lines);
+                                let line_number_digits = lines_arc.len().max(1).to_string().len().max(3);
+                                let line_number_width = 40.0 + line_number_digits.saturating_sub(3) as f32 * line_char_width;
                                 let visual_rows_arc = Arc::clone(&note.cached_visual_rows);
                                 let line_starts_arc = Arc::clone(&note.cached_line_starts);
                                 let code_states_arc = Arc::clone(&note.cached_code_states);
@@ -4866,15 +4868,31 @@ impl Render for AppView {
                                                         }))
                                                         .child(
                                                             div()
-                                                                .id(gpui::ElementId::from(("line-num", v_idx)))
-                                                                .w(px(40.0))
-                                                                .h(px(row_h))
-                                                                .flex()
-                                                                .items_center()
-                                                                .text_xs()
-                                                                .text_color(if is_current { theme.accent } else { theme.text_muted })
-                                                                .font_family(editor_font.clone())
-                                                                .child(line_number_text),
+                                                            .id(gpui::ElementId::from(("line-num", v_idx)))
+                                                            .relative()
+                                                            // Эта ширина остаётся прежней, чтобы текст не сдвигался.
+                                                            .w(px(40.0))
+                                                            .flex_shrink_0()
+                                                            .h(px(row_h))
+                                                            .child(
+                                                                div()
+                                                                    // Расширяем область номера влево от прежней правой границы.
+                                                                    .absolute()
+                                                                    .right_0()
+                                                                    .w(px(line_number_width))
+                                                                    .h(px(row_h))
+                                                                    .flex()
+                                                                    .items_center()
+                                                                    .justify_end()
+                                                                    .text_xs()
+                                                                    .text_color(if is_current {
+                                                                        theme.accent
+                                                                    } else {
+                                                                        theme.text_muted
+                                                                    })
+                                                                    .font_family(editor_font.clone())
+                                                                    .child(line_number_text),
+                                                            )
                                                         )
                                                         .child(
                                                             div()
