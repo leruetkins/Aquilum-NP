@@ -155,7 +155,7 @@ impl AppView {
                 self.toggle_ribbon_rail_visibility(cx);
             }
             "app:open-settings" => {
-                self.toggle_settings(cx);
+                self.open_settings(None, cx);
             }
             "editor:toggle-word-wrap" => {
                 self.toggle_word_wrap(cx);

@@ -3247,8 +3247,7 @@ impl Render for AppView {
                 && !is_custom_hex_focused
                 && !self.folder_modal_focus_handle.is_focused(window)
                 && !self.folder_context_menu.is_open
-                && self.folder_modal == crate::views::sidebar::FolderModal::None
-                && !self.is_settings_open);
+                && self.folder_modal == crate::views::sidebar::FolderModal::None);
 
         if !self.editor_is_focused && is_editor_focused_now {
             self.editor_is_focused = true;
@@ -3407,9 +3406,6 @@ impl Render for AppView {
             .bg(theme.bg_app)
             .text_color(theme.text_primary)
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                if this.is_settings_open {
-                    return;
-                }
                 if this.is_resizing_sidebar {
                     let x: f32 = event.position.x.into();
                     if x < 100.0 {
@@ -3503,9 +3499,6 @@ impl Render for AppView {
                 }
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                if this.is_settings_open {
-                    return;
-                }
                 this.quick_filter.handle_mouse_up(cx);
                 this.handle_goto_mouse_up(cx);
                 this.goto_scrollbar_drag.end();
@@ -3538,9 +3531,6 @@ impl Render for AppView {
                 cx.notify();
             }))
             .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                if this.is_settings_open {
-                    return;
-                }
                 this.quick_filter.handle_mouse_up(cx);
                 this.handle_goto_mouse_up(cx);
                 this.goto_scrollbar_drag.end();
@@ -4891,7 +4881,7 @@ impl Render for AppView {
                                         .min_w_0()
                                         .min_h_0()
                                         .overflow_hidden()
-                                        .when(self.is_settings_open || !show_scrollbar, |d| {
+                                        .when(!show_scrollbar, |d| {
                                             d.on_scroll_wheel(|_, _, cx| {
                                                 cx.stop_propagation();
                                             })

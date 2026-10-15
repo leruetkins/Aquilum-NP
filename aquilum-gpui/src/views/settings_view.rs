@@ -152,10 +152,20 @@ impl AppView {
     }
 
     /// Toggles visibility of the Settings separate window.
+    /// Validates the stored handle: if the OS window was closed via the
+    /// native close button, the handle is stale — drop it and open fresh
+    /// instead of requiring a second click.
     pub fn toggle_settings(&mut self, cx: &mut Context<Self>) {
-        if self.settings_window_manager.is_open() {
+        let actually_open = self
+            .settings_window_manager
+            .window
+            .as_ref()
+            .map(|h| h.update(cx, |_, _, _| {}).is_ok())
+            .unwrap_or(false);
+        if actually_open {
             self.close_settings(cx);
         } else {
+            self.settings_window_manager.window = None;
             self.open_settings(None, cx);
         }
     }
@@ -230,6 +240,7 @@ impl AppView {
             let model_clone = model.clone();
             let target_id_init = setting_id.clone();
             let weak_app = weak_self.clone();
+            let weak_app_for_close = weak_app.clone();
 
             let handle_res = cx.open_window(options, |window, cx| {
                 let view = cx.new(|cx| {
@@ -243,7 +254,7 @@ impl AppView {
                     v
                 });
 
-                window.on_window_should_close(cx, move |window, _cx| {
+                window.on_window_should_close(cx, move |window, cx| {
                     let is_maximized = window.is_maximized();
                     let bounds = window.bounds();
                     let mut state = crate::state::WindowState::load_file(&save_path);
@@ -255,6 +266,16 @@ impl AppView {
                         state.y = Some(f32::from(bounds.origin.y));
                     }
                     state.save_file(&save_path);
+                    // The window is closed via the native close button: drop the
+                    // stored handle and the active flag so the next click opens
+                    // the window immediately instead of requiring two clicks.
+                    if let Some(app) = weak_app_for_close.upgrade() {
+                        let _ = app.update(cx, |this, cx| {
+                            this.is_settings_open = false;
+                            this.settings_window_manager.window = None;
+                            cx.notify();
+                        });
+                    }
                     true
                 });
 
@@ -397,6 +418,7 @@ impl SettingsWindowManager {
         let target_tab_init = target_tab.unwrap_or(SettingsTab::Ui);
         let model_clone = model.clone();
         let target_id_init = target_setting_id.clone();
+        let weak_app_for_close = weak_app.clone();
 
         let handle_res = cx.open_window(options, |window, cx| {
             let view = cx.new(|cx| {
@@ -410,7 +432,7 @@ impl SettingsWindowManager {
                 v
             });
 
-            window.on_window_should_close(cx, move |window, _cx| {
+            window.on_window_should_close(cx, move |window, cx| {
                 let is_maximized = window.is_maximized();
                 let bounds = window.bounds();
                 let mut state = crate::state::WindowState::load_file(&save_path);
@@ -422,6 +444,15 @@ impl SettingsWindowManager {
                     state.y = Some(f32::from(bounds.origin.y));
                 }
                 state.save_file(&save_path);
+                // Native close must clear the stored handle and the active
+                // flag, otherwise the next toggle/open sees a stale handle.
+                if let Some(app) = weak_app_for_close.upgrade() {
+                    let _ = app.update(cx, |this, cx| {
+                        this.is_settings_open = false;
+                        this.settings_window_manager.window = None;
+                        cx.notify();
+                    });
+                }
                 true
             });
 
@@ -454,9 +485,17 @@ impl SettingsWindowManager {
         app_data_dir: &Path,
         cx: &mut App,
     ) {
-        if self.is_open() {
+        // Validate the handle: a window closed via the native close button
+        // leaves a stale handle behind until the close callback clears it.
+        let actually_open = self
+            .window
+            .as_ref()
+            .map(|h| h.update(cx, |_, _, _| {}).is_ok())
+            .unwrap_or(false);
+        if actually_open {
             self.close_if_open(cx);
         } else {
+            self.window = None;
             self.open_or_focus(model, weak_app, target_tab, None, app_data_dir, cx);
         }
     }
@@ -716,7 +755,22 @@ impl SettingsView {
     }
 
     /// Closes the Settings window.
-    pub fn close(&mut self, window: &mut Window) {
+    pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_window(window, cx);
+    }
+
+    /// Closes the Settings OS window and resets the AppView flags, so the
+    /// next click on the settings button opens the window immediately.
+    /// Must be used for every programmatic close inside SettingsView:
+    /// `remove_window()` alone does not trigger `on_window_should_close`.
+    pub fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(app) = self.weak_app.upgrade() {
+            let _ = app.update(cx, |this, cx| {
+                this.is_settings_open = false;
+                this.settings_window_manager.window = None;
+                cx.notify();
+            });
+        }
         window.remove_window();
     }
 
@@ -1689,8 +1743,8 @@ impl SettingsView {
                             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                 cx.stop_propagation();
                             })
-                            .on_click(cx.listener(|_, _, window, _| {
-                                window.remove_window();
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.close_window(window, cx);
                             }))
                     )
             )
@@ -1707,13 +1761,13 @@ impl SettingsView {
             } else if !self.search_query.is_empty() {
                 self.search_filter.clear(&mut self.search_query, cx);
             } else {
-                window.remove_window();
+                self.close_window(window, cx);
             }
             return;
         }
 
         if event.keystroke.modifiers.control && (event.keystroke.key == "," || event.keystroke.key == "<" || event.keystroke.key == "б" || event.keystroke.key == "Б") {
-            window.remove_window();
+            self.close_window(window, cx);
             return;
         }
 
@@ -1740,7 +1794,7 @@ impl SettingsView {
             if !self.search_query.is_empty() {
                 self.search_filter.clear(&mut self.search_query, cx);
             } else {
-                window.remove_window();
+                self.close_window(window, cx);
             }
             cx.notify();
             return;

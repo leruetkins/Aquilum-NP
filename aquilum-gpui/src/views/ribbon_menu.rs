@@ -152,9 +152,7 @@ impl AppView {
                 cx.notify();
             }
             "ribbon-trash" => {
-                self.is_settings_open = true;
-                self.settings_tab = SettingsTab::Trash;
-                cx.notify();
+                self.open_settings(Some(SettingsTab::Trash), cx);
             }
             plugin_id => {
                 if let Some(action) = self.state.ribbon.get(plugin_id) {
@@ -352,10 +350,10 @@ impl AppView {
                     .child(icons::icon(
                         icons::ICON_SETTINGS,
                         17.0,
-                        if self.is_settings_open { theme.accent } else { theme.text_muted },
+                        theme.text_muted,
                     ))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.toggle_settings(cx);
+                        this.open_settings(None, cx);
                     })),
             )
     }
