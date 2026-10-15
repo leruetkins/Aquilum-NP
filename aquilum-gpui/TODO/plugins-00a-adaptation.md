@@ -1697,3 +1697,573 @@ pub struct ContextMenuState {
 4. **Шаг 4:** Добавить диспетчеризацию события `editor-menu` в `Workspace` с передачей `Editor` API (`getSelection`, `replaceSelection`).
 5. **Шаг 5:** Написать модульные тесты в `plugins::runtime::tests` и `views::editor::tests` для проверки сборки меню, каскада подменю и вызова клика с заменой текста.
 
+---
+
+## 17. Окно настроек в отдельном окне GPUI (v2): архитектура общей модели SettingsModel, Global темы, UiCtx/UiSink и SettingsWindowManager
+
+### 17.1 Обоснование и UX-ценность
+Перевод окна настроек в отдельное окно GPUI (как у каталога сторонних плагинов `PluginCatalogView`) решает ключевую задачу пользовательского опыта:
+- **Мгновенный живой предпросмотр:** пользователь меняет тему оформления, гарнитуру шрифта, размер шрифта, перенос строк (word wrap) или нумерацию строк в настройках и сразу видит результат в открытой заметке в редакторе рядом (особенно ценно на конфигурациях с двумя мониторами).
+- **Изоляция рендера:** вынесение настроек в отдельный `Entity` исключает перерисовку тяжелого дерева редактора при наборе текста в строке поиска или скролле карточек.
+- **Двухрежимность (Fallback):** поддержка настройки `settings.mode = "window" | "inline"` гарантирует идеальную совместимость для платформ с проблемной мультиоконностью (например Linux/Wayland), сохраняя возможность открывать настройки как модальную панель.
+
+### 17.2 Архитектурный контраст: v1 vs v2
+
+| Тема | v1 (Наивный подход) | v2 (Целевая архитектура) |
+|---|---|---|
+| **Источник правды** | Копии `config` и `theme` в `SettingsView` и `AppView` | Единственная `Entity<SettingsModel>`, тема в `Global` |
+| **Связь окон** | `WeakEntity<AppView>` и прямые вызовы методов (риск паники `already borrowed`) | События `SettingsEvent` и шина подписок через `cx.subscribe` / `cx.observe` |
+| **Рендер плагинов** | `render_ui_node` привязан к `Context<AppView>` | `UiCtx` + `UiSink`, абсолютная независимость от конкретного view |
+| **Ввод и выпадающие списки** | Локальное состояние в `SettingsView` | Общие `TextInput` и `SelectState` со своими `FocusHandle`, IME и каретным таймером |
+| **Геометрия окна** | `window.bounds()` + `on_window_should_close` | `window_bounds()` + debounce 500 мс + финальная запись при `on_release` |
+| **Заголовок окна** | `appears_transparent: true` (проблемы с кнопками и вспышками) | Нативный titlebar ОС на первом этапе |
+| **Порядок внедрения** | Сразу отдельное окно (высокий риск регрессий) | Сначала `SettingsView` как `Entity` в модалке (`inline`), окно — финальным шагом |
+
+### 17.3 Архитектура единого источника правды: `SettingsModel`
+
+Окна не общаются напрямую друг с другом. Модель создаётся при инициализации приложения и регистрируется в `Global`:
+
+```rust
+// ─── src/settings/model.rs ───
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigScope {
+    Editor,
+    Ui,
+    Language,
+    Hotkeys,
+    Plugins,
+}
+
+#[derive(Clone, Debug)]
+pub enum SettingsEvent {
+    ConfigChanged(ConfigScope),
+    ThemeChanged,
+    PluginToggled { id: PluginId, enabled: bool },
+    OpenCatalogRequested,
+    PluginUi(crate::plugins::ui::PluginUiEvent),
+}
+
+pub struct SettingsModel {
+    config: Config,
+    path: PathBuf,
+    save_task: Option<Task<()>>, // debounce записи 400 мс
+}
+
+impl EventEmitter<SettingsEvent> for SettingsModel {}
+
+/// Глобальный доступ: cx.global::<SettingsHandle>().0.clone()
+pub struct SettingsHandle(pub Entity<SettingsModel>);
+impl Global for SettingsHandle {}
+
+/// Тема отдельным Global: все окна подписываются через cx.observe_global::<ActiveTheme>
+pub struct ActiveTheme(pub Arc<Theme>);
+impl Global for ActiveTheme {}
+
+impl SettingsModel {
+    pub fn new(config: Config, path: PathBuf, cx: &mut App) -> Self {
+        Self {
+            config,
+            path,
+            save_task: None,
+        }
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    pub fn update_config(
+        &mut self,
+        scope: ConfigScope,
+        f: impl FnOnce(&mut Config),
+        cx: &mut Context<Self>,
+    ) {
+        let before = self.config.clone();
+        f(&mut self.config);
+        if self.config == before {
+            return; // Защита от бесконечных циклов синхронизации
+        }
+        cx.emit(SettingsEvent::ConfigChanged(scope));
+        cx.notify();
+        self.schedule_save(cx);
+    }
+
+    pub fn set_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
+        cx.set_global(ActiveTheme(Arc::new(theme)));
+        cx.emit(SettingsEvent::ThemeChanged);
+    }
+
+    fn schedule_save(&mut self, cx: &mut Context<Self>) {
+        let cfg = self.config.clone();
+        let path = self.path.clone();
+        // Перезапись задачи отменяет предыдущий таймер -> чистый debounce
+        self.save_task = Some(cx.spawn(async move |_this, cx| {
+            cx.background_executor().timer(Duration::from_millis(400)).await;
+            cx.background_executor()
+                .spawn(async move {
+                    let _ = write_atomic(&path, &cfg);
+                })
+                .await;
+        }));
+    }
+}
+```
+
+Атомарная запись конфига без гонок:
+```rust
+fn write_atomic<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        serde_json::to_writer_pretty(&mut f, value)?;
+        f.sync_all()?;
+    }
+    for attempt in 0..3 {
+        match std::fs::rename(&tmp, path) {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt < 2 => {
+                std::thread::sleep(Duration::from_millis(50));
+                let _ = e;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+```
+
+### 17.4 Подписка в `AppView` и каркас `SettingsView`
+
+В `AppView`:
+```rust
+// В AppView::new(window, cx):
+let model = cx.global::<SettingsHandle>().0.clone();
+self._subs.push(cx.subscribe_in(&model, window, |this, _m, ev, window, cx| match ev {
+    SettingsEvent::ConfigChanged(scope) => this.apply_config(*scope, cx),
+    SettingsEvent::PluginToggled { id, enabled } => this.toggle_plugin(id, *enabled, cx),
+    SettingsEvent::OpenCatalogRequested => this.open_plugin_catalog(window, cx),
+    SettingsEvent::PluginUi(ev) => this.handle_plugin_ui_event(ev, cx),
+    SettingsEvent::ThemeChanged => cx.notify(),
+}));
+self._subs.push(cx.observe_global::<ActiveTheme>(|_, cx| cx.notify()));
+```
+
+В `SettingsView`:
+```rust
+pub struct SettingsView {
+    model: Entity<SettingsModel>,
+    active_tab: SettingsTab,
+    focus_handle: FocusHandle,
+    nav_scroll: ScrollHandle,
+    content_scroll: HashMap<SettingsTab, ScrollHandle>, // сохранение позиции для каждой вкладки
+    search: Entity<TextInput>,
+    open_select: Option<Entity<SelectState>>,
+    color_picker: Option<ActiveColorPicker>,
+    _subs: Vec<Subscription>,
+}
+```
+`SettingsView` **не хранит** `WeakEntity<AppView>` и не вызывает его методы. Все изменения пишутся строго в `self.model.update(cx, |m, cx| { m.update_config(...); })`.
+
+### 17.5 Универсальный `render_ui_node` и общие компоненты
+
+Отвязка рендерера от конкретного окна:
+```rust
+pub struct UiCtx<'a> {
+    pub scale: f32, // window.scale_factor() ИМЕННО этого окна (вычисляется в paint)
+    pub theme: &'a Theme,
+}
+
+pub type UiSink = std::rc::Rc<dyn Fn(PluginUiEvent, &mut Window, &mut App)>;
+
+pub fn render_ui_node(
+    node: &UiNode,
+    ui: &UiCtx,
+    sink: &UiSink,
+    depth: usize,
+) -> AnyElement {
+    const MAX_UI_DEPTH: usize = 32;
+    if depth > MAX_UI_DEPTH {
+        return div().text_color(rgb(0xed8796)).child("Ошибка: превышена максимальная глубина UI (32)").into_any_element();
+    }
+    // Рендеринг компонентов через переиспользуемые TextInput и SelectState...
+}
+```
+
+Компоненты ввода (Component Reuse First):
+1. **`TextInput` (`Entity`)**: свой `FocusHandle`, каретка 530 мс, пауза при наборе, субпиксельный `snap_x` по `ui.scale`, поддержка IME через `EntityInputHandler` (полноценная поддержка русской раскладки и CJK).
+2. **`SelectState` (`Entity`)**: опции, поиск с фильтрацией, подсветка стрелками, type-ahead, позиционирование через `deferred(anchored().snap_to_window())`, закрытие по `on_mouse_down_out`.
+3. **Защита от сбоя плагина:** при панике обработчика плагин получает статус `Crashed`, а вкладка настроек плагина отображает карточку ошибки с кнопкой перезапуска вместо паники интерфейса.
+
+### 17.6 Геометрия окна `settings-window.json` и менеджер
+
+Схема файла геометрии:
+```json
+{
+  "version": 1,
+  "mode": "windowed",
+  "x": -1720.0,
+  "y": 96.0,
+  "width": 1000.0,
+  "height": 720.0,
+  "display_uuid": "6f1c2a5e-0000-0000-0000-000000000000",
+  "scale": 1.5
+}
+```
+
+Валидация по экранам:
+- Проверка видимости полосы заголовка (минимум $\ge 100 \times 32$ px) на одном из дисплеев `cx.displays()`.
+- Поддержка отрицательных координат для мониторов, расположенных слева или сверху от основного.
+- Если монитор отключён — окно автоматически центрируется на мониторе главного окна приложения.
+- Сохранение геометрии через `window.window_bounds()` с дебаунсом 500 мс при перемещении и финальной записью в `cx.on_release`.
+
+Менеджер:
+```rust
+#[derive(Default)]
+pub struct SettingsWindowManager {
+    window: Option<WindowHandle<SettingsView>>,
+}
+impl Global for SettingsWindowManager {}
+
+impl SettingsWindowManager {
+    pub fn open_or_focus(target: SettingsTarget, cx: &mut App) {
+        if let Some(h) = cx.global::<Self>().window {
+            let alive = h.update(cx, |view, window, cx| {
+                view.navigate(target.clone(), cx);
+                window.activate_window();
+            }).is_ok();
+            if alive { return; }
+            cx.global_mut::<Self>().window = None;
+        }
+
+        let geometry = WindowGeometry::load(&settings_window_path(cx));
+        let bounds = geometry.resolve(cx, size(px(1000.0), px(720.0)));
+
+        let options = WindowOptions {
+            window_bounds: Some(bounds),
+            titlebar: Some(TitlebarOptions {
+                title: Some("Настройки — Aquilum".into()),
+                ..Default::default()
+            }),
+            window_min_size: Some(size(px(720.0), px(500.0))),
+            ..Default::default()
+        };
+
+        match cx.open_window(options, |window, cx| {
+            cx.new(|cx| SettingsView::new(target, window, cx))
+        }) {
+            Ok(h) => cx.global_mut::<Self>().window = Some(h),
+            Err(e) => eprintln!("[SettingsWindowManager] Failed to open settings window: {:?}", e),
+        }
+    }
+}
+```
+
+### 17.7 Хоткеи, key contexts и приоритет Escape
+- Глобальный хоткей: `Ctrl+,` (Cmd+, на macOS) регистрируется с контекстом `None` через `cx.bind_keys`. Открывает или активирует окно настроек из любого окна. При нажатии внутри окна настроек — закрывает его (поведение тумблера).
+- Иерархия key contexts:
+  1. Корень окна: `.key_context("Settings")`. По `Escape` вызывает `window.remove_window()`.
+  2. Выпадающий список: `.key_context("Settings Select")`. По `Escape` закрывает список и не распространяет событие дальше.
+  3. Пипетка цвета: `.key_context("Settings ColorPicker")`. По `Escape` закрывает пипетку.
+- `Ctrl+F` активирует поиск по настройкам; `Ctrl+PageDown` / `Ctrl+PageUp` — переключение вкладок.
+
+### 17.8 Жизненный цикл окон
+1. **Закрытие главного окна:** `on_release` главного окна закрывает окно настроек и окно каталога плагинов через их менеджеры.
+2. **Закрытие последнего окна:** `cx.on_window_closed` при пустом списке окон вызывает `cx.quit()`.
+3. **Выход из приложения:** `cx.on_app_quit` дожидается завершения незаписанных отложенных задач (`schedule_save` и геометрии).
+4. **Смена Vault:** окно настроек не закрывается, обновляет секцию «Хранилище» по событию `VaultChanged`.
+
+---
+
+### 17.9 Матрица рисков и их устранение
+
+| Риск | Последствие | Способ предотвращения |
+|---|---|---|
+| Прямые вызовы между окнами (`app.update` внутри `settings.update`) | Паника повторной аренды `already borrowed` | Только `SettingsModel` и события `SettingsEvent` |
+| Петля синхронизации | Зависание UI и флуд событий | Проверка равенства значения до и после в `update_config` |
+| Отключение внешнего монитора | Окно открывается за пределами экрана | Проверка видимости полосы заголовка по `cx.displays()` с центрированием |
+| Потеря изменений при быстром закрытии | Откат настройки после перезапуска | Сброс и ожидание фоновой задачи сохранения в `on_app_quit` |
+| Проблемы с мультиоконностью на Linux/Wayland | Сбои оконного менеджера | Поддержка режима `settings.mode = "window" \| "inline"` |
+| Белая вспышка на Windows в тёмной теме | Визуальный дефект при открытии окна | Использование нативного titlebar и заливка фона окна до первого кадра |
+| Сломанный IME на русской раскладке | Невозможность ввода кириллицы | Реализация `EntityInputHandler` в универсальном `TextInput` |
+
+---
+
+### 17.10 Реестр параметров `SETTINGS`, быстрый поиск и ссылки на параметры (`aquilum://settings/...`)
+
+Каждый параметр описывается один раз в центральном реестре `SETTINGS`. Его строковый идентификатор `id` одновременно служит:
+1. Путем в JSON Pointer в `config.json` (`/editor/word_wrap`).
+2. Частью глубокой ссылки `aquilum://settings/editor.word_wrap`.
+3. Якорем плавной прокрутки и подсветки в окне настроек.
+
+#### 1. Декларативный реестр параметров и JSON Pointer
+
+```rust
+// ─── src/settings/registry.rs ───
+
+use crate::views::settings_view::SettingsTab;
+use crate::config::Config;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Control {
+    Toggle,
+    Select(&'static [&'static str]),
+    Number { min: f64, max: f64, step: f64 },
+    Text,
+    Color,
+}
+
+pub struct SettingDef {
+    pub id: &'static str,                 // "editor.word_wrap": путь в config.json и часть ссылки
+    pub tab: SettingsTab,
+    pub title: &'static str,              // ключ строки локализации
+    pub description: &'static str,
+    pub keywords: &'static [&'static str],
+    pub aliases: &'static [&'static str], // старые ключи для сохранения совместимости разосланных ссылок
+    pub control: Control,
+    pub restart: bool,                    // требуется ли перезапуск приложения
+}
+
+pub static SETTINGS: &[SettingDef] = &[
+    SettingDef {
+        id: "editor.word_wrap",
+        tab: SettingsTab::Editor,
+        title: "settings.editor.word_wrap",
+        description: "settings.editor.word_wrap.desc",
+        keywords: &["wrap", "перенос", "строки"],
+        aliases: &["editor.wrap"],
+        control: Control::Toggle,
+        restart: false,
+    },
+    SettingDef {
+        id: "editor.font_size",
+        tab: SettingsTab::Editor,
+        title: "settings.editor.font_size",
+        description: "settings.editor.font_size.desc",
+        keywords: &["font", "size", "шрифт", "размер"],
+        aliases: &[],
+        control: Control::Number { min: 8.0, max: 48.0, step: 1.0 },
+        restart: false,
+    },
+    SettingDef {
+        id: "ui.theme",
+        tab: SettingsTab::Ui,
+        title: "settings.ui.theme",
+        description: "settings.ui.theme.desc",
+        keywords: &["theme", "color", "тема", "цвета"],
+        aliases: &[],
+        control: Control::Select(&["dark", "light", "catppuccin"]),
+        restart: false,
+    },
+];
+
+// Чтение, запись и вычисление «изменено относительно дефолта» без ручного бойлерплейта
+fn ptr(id: &str) -> String {
+    format!("/{}", id.replace('.', "/"))
+}
+
+pub fn get_value(cfg: &Config, id: &str) -> Option<serde_json::Value> {
+    serde_json::to_value(cfg).ok()?.pointer(&ptr(id)).cloned()
+}
+
+pub fn set_value(cfg: &mut Config, id: &str, v: serde_json::Value) -> Result<(), String> {
+    let mut root = serde_json::to_value(&*cfg).map_err(|e| e.to_string())?;
+    *root.pointer_mut(&ptr(id)).ok_or_else(|| format!("Не найден ключ конфига: {}", id))? = v;
+    *cfg = serde_json::from_value(root).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn is_modified(cfg: &Config, id: &str) -> bool {
+    get_value(cfg, id) != get_value(&Config::default(), id)
+}
+```
+
+#### 2. Ссылки и кнопка «Copy Link»
+
+```rust
+pub const LINK_PREFIX: &str = "aquilum://settings/";
+
+pub fn setting_url(id: &str) -> String {
+    format!("{LINK_PREFIX}{id}")
+}
+
+pub fn resolve_link(input: &str) -> Option<&'static SettingDef> {
+    let s = input.trim();
+    let id = s.strip_prefix(LINK_PREFIX).unwrap_or(s);
+    SETTINGS.iter().find(|d| d.id == id || d.aliases.contains(&id))
+}
+
+impl SettingsView {
+    fn render_setting_row(&self, def: &'static SettingDef, cx: &mut Context<Self>) -> impl IntoElement {
+        let group = gpui::SharedString::from(format!("row:{}", def.id));
+        let copied = self.copied_anchor == Some(def.id);
+        let is_highlighted = self.highlight_anchor == Some(def.id);
+
+        div()
+            .id(def.id)
+            .group(group.clone())
+            .flex()
+            .items_start()
+            .gap_3()
+            .px_4()
+            .py_3()
+            .when(is_highlighted, |d| d.bg(self.theme.accent_tint))
+            // Колонка 24 px под кнопку Copy Link
+            .child(
+                div()
+                    .w(px(24.0))
+                    .flex_none()
+                    .pt(px(2.0))
+                    .child(
+                        div()
+                            .id(("copy", def.id))
+                            .size(px(20.0))
+                            .rounded_md()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .opacity(if copied { 1.0 } else { 0.0 })
+                            .group_hover(group.clone(), |s| s.opacity(1.0))
+                            .hover(|s| s.bg(self.theme.bg_hover))
+                            .child(if copied {
+                                icon(Icon::Check).text_color(rgb(0xa6da95))
+                            } else {
+                                icon(Icon::Link).text_color(self.theme.text_muted)
+                            })
+                            // Тултип позиционируется строго ВЫШЕ иконки через deferred,
+                            // чтобы не перекрывать текст описания настройки!
+                            .tooltip(move |window, cx| {
+                                Tooltip::text_above(
+                                    if copied { "Скопировано!" } else { "Скопировать ссылку" },
+                                    window,
+                                    cx,
+                                )
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.copy_link(def, cx);
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child(self.tr(def.title)))
+                    .child(div().text_sm().text_color(self.theme.text_secondary).child(self.tr(def.description)))
+            )
+            .child(div().flex_none().w(px(220.0)) /* Интерактивный контрол */)
+    }
+
+    fn copy_link(&mut self, def: &'static SettingDef, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(setting_url(def.id)));
+        self.copied_anchor = Some(def.id);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(1500)).await;
+            let _ = this.update(cx, |t, cx| {
+                if t.copied_anchor == Some(def.id) {
+                    t.copied_anchor = None;
+                    cx.notify();
+                }
+            });
+        }).detach();
+    }
+}
+```
+
+#### 3. Быстрый нечёткий поиск (`nucleo-matcher`)
+
+```rust
+use nucleo_matcher::{
+    pattern::{CaseMatching, Normalization, Pattern},
+    Config as MC, Matcher, Utf32Str,
+};
+
+pub struct SearchHit {
+    pub def: &'static SettingDef,
+    pub score: u32,
+    pub title_hl: Vec<u32>,
+}
+
+fn score(p: &Pattern, m: &mut Matcher, buf: &mut Vec<char>, text: &str, weight: u32) -> u32 {
+    p.score(Utf32Str::new(text, buf), m).map(|s| s * weight).unwrap_or(0)
+}
+
+pub fn search_settings(query: &str, tr: &dyn Fn(&str) -> String) -> Vec<SearchHit> {
+    let q = query.trim();
+    if q.is_empty() {
+        return vec![];
+    }
+    // Если вставлена полная ссылка или точный ключ - моментальный прямой хит
+    if let Some(def) = resolve_link(q) {
+        return vec![SearchHit {
+            def,
+            score: u32::MAX,
+            title_hl: vec![],
+        }];
+    }
+
+    let pat = Pattern::parse(q, CaseMatching::Smart, Normalization::Smart);
+    let mut matcher = Matcher::new(MC::DEFAULT);
+    let mut buf = Vec::new();
+    let mut hits = Vec::new();
+
+    for def in SETTINGS {
+        let title = tr(def.title);
+        let s = score(&pat, &mut matcher, &mut buf, &title, 4)
+            .max(score(&pat, &mut matcher, &mut buf, def.id, 3))
+            .max(def.keywords.iter().map(|k| score(&pat, &mut matcher, &mut buf, k, 3)).max().unwrap_or(0))
+            .max(score(&pat, &mut matcher, &mut buf, &tr(def.description), 1));
+
+        if s == 0 {
+            continue;
+        }
+
+        let mut hl = Vec::new();
+        pat.indices(Utf32Str::new(&title, &mut buf), &mut matcher, &mut hl);
+        hits.push(SearchHit {
+            def,
+            score: s,
+            title_hl: hl,
+        });
+    }
+
+    hits.sort_by(|a, b| b.score.cmp(&a.score));
+    hits
+}
+```
+
+#### 4. Плавная навигация и переход по ссылке (`navigate` & `flash`)
+
+```rust
+impl SettingsView {
+    pub fn navigate(&mut self, target: SettingsTarget, cx: &mut Context<Self>) {
+        self.clear_search(cx);
+        self.active_tab = target.tab;
+        self.pending_anchor = target.anchor;
+        cx.notify();
+    }
+
+    pub fn flash_anchor(&mut self, anchor: &'static str, cx: &mut Context<Self>) {
+        self.highlight_anchor = Some(anchor);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(1200)).await;
+            let _ = this.update(cx, |t, cx| {
+                if t.highlight_anchor == Some(anchor) {
+                    t.highlight_anchor = None;
+                    cx.notify();
+                }
+            });
+        }).detach();
+    }
+}
+```
+
+#### 5. Межпроцессное взаимодействие на Windows (Single Instance URL forwarding)
+При клике по ссылке `aquilum://settings/editor.word_wrap` операционная система запускает `aquilum.exe "%1"`.
+- В точке входа `main.rs` проверяется наличие уже запущенного процесса через named mutex/pipe.
+- Если процесс уже работает: аргумент URL пересылается через именованный канал `\\.\pipe\aquilum-ipc` в главный процесс, а вторичный процесс мгновенно завершается.
+- Главный процесс перехватывает URL, вызывает `resolve_link(url)` и активирует окно через `SettingsWindowManager::open_or_focus(SettingsTarget { tab: def.tab, anchor: Some(def.id) }, cx)`.
+
+

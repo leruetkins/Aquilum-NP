@@ -57,6 +57,9 @@ pub struct WindowsWindowState {
     pub display: WindowsDisplay,
     fullscreen: Option<StyleAndBounds>,
     initial_placement: Option<WindowOpenStatus>,
+    /// LOCAL PATCH: the window was created with `show: true` and is waiting for its
+    /// first frame to be drawn before it may appear. See `show_if_hidden`.
+    show_on_first_frame: bool,
     hwnd: HWND,
 }
 
@@ -118,6 +121,7 @@ impl WindowsWindowState {
         let nc_button_pressed = None;
         let fullscreen = None;
         let initial_placement = None;
+        let show_on_first_frame = false;
 
         Ok(Self {
             origin,
@@ -142,6 +146,7 @@ impl WindowsWindowState {
             display,
             fullscreen,
             initial_placement,
+            show_on_first_frame,
             hwnd,
         })
     }
@@ -152,7 +157,23 @@ impl WindowsWindowState {
     }
 
     pub(crate) fn is_maximized(&self) -> bool {
-        !self.is_fullscreen() && unsafe { IsZoomed(self.hwnd) }.as_bool()
+        if self.is_fullscreen() {
+            return false;
+        }
+        if unsafe { IsZoomed(self.hwnd) }.as_bool() {
+            return true;
+        }
+        // LOCAL PATCH: before the window is first shown, `IsZoomed` cannot know about
+        // the requested state, yet the window's first frame is drawn while it is still
+        // hidden and the titlebar asks for it then. Report the pending state so that
+        // frame already draws the "restore" glyph instead of "maximize".
+        matches!(
+            self.initial_placement.as_ref(),
+            Some(WindowOpenStatus {
+                state: WindowOpenState::Maximized,
+                ..
+            })
+        )
     }
 
     fn bounds(&self) -> Bounds<Pixels> {
@@ -303,21 +324,32 @@ impl WindowsWindowInner {
         let Some(open_status) = self.state.borrow_mut().initial_placement.take() else {
             return Ok(());
         };
+        // LOCAL PATCH: the placement is parked at `SW_HIDE` (see `WindowsWindow::new`),
+        // so every branch has to name the show command it wants. `SetWindowPlacement`
+        // is itself what makes a window created without `WS_VISIBLE` appear, and the
+        // state it shows in is the one named here — that is what lets a maximized
+        // window appear already maximized instead of expanding a moment later.
         match open_status.state {
             WindowOpenState::Maximized => unsafe {
-                SetWindowPlacement(self.hwnd, &open_status.placement)
+                let mut placement = open_status.placement;
+                placement.showCmd = SW_SHOWMAXIMIZED.0 as u32;
+                SetWindowPlacement(self.hwnd, &placement)
                     .context("failed to set window placement")?;
                 ShowWindowAsync(self.hwnd, SW_MAXIMIZE).ok()?;
             },
             WindowOpenState::Fullscreen => {
                 unsafe {
-                    SetWindowPlacement(self.hwnd, &open_status.placement)
+                    let mut placement = open_status.placement;
+                    placement.showCmd = SW_SHOWNORMAL.0 as u32;
+                    SetWindowPlacement(self.hwnd, &placement)
                         .context("failed to set window placement")?
                 };
                 self.toggle_fullscreen();
             }
             WindowOpenState::Windowed => unsafe {
-                SetWindowPlacement(self.hwnd, &open_status.placement)
+                let mut placement = open_status.placement;
+                placement.showCmd = SW_SHOWNORMAL.0 as u32;
+                SetWindowPlacement(self.hwnd, &placement)
                     .context("failed to set window placement")?;
             },
         }
@@ -461,21 +493,47 @@ impl WindowsWindow {
         register_drag_drop(&this)?;
         configure_dwm_dark_mode(hwnd, appearance);
         this.state.borrow_mut().border_offset.update(hwnd)?;
-        let placement = retrieve_window_placement(
+        let mut placement = retrieve_window_placement(
             hwnd,
             display,
             params.bounds,
             this.state.borrow().scale_factor,
             this.state.borrow().border_offset,
         )?;
-        if params.show {
-            unsafe { SetWindowPlacement(hwnd, &placement)? };
-        } else {
-            this.state.borrow_mut().initial_placement = Some(WindowOpenStatus {
-                placement,
-                state: WindowOpenState::Windowed,
-            });
-        }
+        // LOCAL PATCH: do not show the window here, even when `params.show` is set.
+        //
+        // `SetWindowPlacement` is what makes a window created without `WS_VISIBLE`
+        // appear (`GetWindowPlacement` reports `SW_SHOWNORMAL` for a window that was
+        // never shown), and it is the only call that does so in this startup path.
+        // Showing here means showing *before the root view exists*: `Window::new` has
+        // not built it yet, the first frame has not been drawn, and with
+        // `WS_EX_NOREDIRECTIONBITMAP` the client area is not composited — so the user
+        // sees an empty system frame for as long as the view takes to build (vault
+        // scan, plugin loading) and only then the real window.
+        //
+        // The placement is kept instead and applied once the first frame is ready
+        // (`PlatformWindow::show_if_hidden`, called by `App::open_window` right after
+        // it draws that frame). Keeping it also lets `zoom()` — which `Window::new`
+        // calls for `WindowBounds::Maximized` right after this — record the requested
+        // state before the window is shown, so the show happens maximized in one step
+        // instead of appearing windowed first.
+        //
+        // The geometry, however, is applied right now, parked at `SW_HIDE`: `WM_SIZE`
+        // is delivered to a hidden window, so gpui's cached size is already correct
+        // when `App::open_window` lays out that first frame. Otherwise the frame would
+        // be built for the size Windows picked for a `CW_USEDEFAULT` window and the
+        // window would appear with a wrongly laid out frame for a moment.
+        placement.showCmd = SW_HIDE.0 as u32;
+        unsafe { SetWindowPlacement(hwnd, &placement) }
+            .context("parking the window geometry before the first frame")?;
+
+        let mut state = this.state.borrow_mut();
+        state.show_on_first_frame = params.show;
+        state.initial_placement = Some(WindowOpenStatus {
+            placement,
+            state: WindowOpenState::Windowed,
+        });
+        drop(state);
 
         Ok(Self(this))
     }
@@ -848,6 +906,21 @@ impl PlatformWindow for WindowsWindow {
 
     fn draw(&self, scene: &Scene) {
         self.0.state.borrow_mut().renderer.draw(scene).log_err();
+    }
+
+    /// LOCAL PATCH: show a window that was created with `show: true` and kept hidden
+    /// until now (see `WindowsWindow::new`). Called by `App::open_window` right after
+    /// the first frame is drawn, so the scene is already on the composition target:
+    /// the window becomes visible with its content, never empty.
+    ///
+    /// `set_window_placement` takes the stored placement, so this shows the window at
+    /// most once and later calls are no-ops.
+    fn show_if_hidden(&self) {
+        if !self.0.state.borrow().show_on_first_frame {
+            return;
+        }
+        self.0.state.borrow_mut().show_on_first_frame = false;
+        self.0.set_window_placement().log_err();
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {

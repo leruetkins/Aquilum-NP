@@ -963,6 +963,12 @@ impl App {
                     let clear = window.draw(cx);
                     clear.clear();
 
+                    // LOCAL PATCH: on Windows the window is created hidden and kept
+                    // hidden until here, so that it can never be visible before its
+                    // first frame (which is what made it flash an empty system frame
+                    // while the root view was still being built). No-op elsewhere.
+                    window.platform_window.show_if_hidden();
+
                     cx.window_handles.insert(id, window.handle);
                     cx.windows.get_mut(id).unwrap().replace(Box::new(window));
                     Ok(handle)

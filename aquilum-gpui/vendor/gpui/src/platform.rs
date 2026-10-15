@@ -498,6 +498,10 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn on_close(&self, callback: Box<dyn FnOnce()>);
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>);
     fn draw(&self, scene: &Scene);
+    /// LOCAL PATCH (Windows): a window created with `show: true` stays hidden until
+    /// its first frame is ready, so that it never appears empty. `App::open_window`
+    /// calls this right after drawing that first frame. No-op on other platforms.
+    fn show_if_hidden(&self) {}
     fn completed_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
 
