@@ -263,48 +263,87 @@ pub struct CodeBlockState {
     pub block_id: usize,
 }
 
-pub fn analyze_code_blocks(lines: &[&str]) -> Vec<Option<CodeBlockState>> {
-    let mut in_code_block = false;
-    let mut current_block_id = 0;
-    let mut result = Vec::with_capacity(lines.len());
+/// Fence state *before* a line: everything the scanner needs to resume.
+///
+/// The scanner is a two-variable machine, so this is the whole of its memory.
+/// That is what makes a mid-document restart possible: a window can be told the
+/// state at its first line instead of being scanned from the top of the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CodeScanState {
+    /// Whether the scanner is inside a fenced block.
+    pub in_code_block: bool,
+    /// Id the next fence pair will carry.
+    pub block_id: usize,
+}
 
-    for line in lines {
+/// Resumable fence scanner — the machine behind [`analyze_code_blocks`].
+///
+/// Identical logic to the old one-shot loop, but the state lives in a struct
+/// that can be saved (see [`crate::code_scan::CodeCheckpoints`]) and restored,
+/// so the document can be scanned in pieces instead of all at once.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CodeScanner {
+    state: CodeScanState,
+}
+
+impl CodeScanner {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Resume from a saved state.
+    pub fn from_state(state: CodeScanState) -> Self {
+        Self { state }
+    }
+
+    /// The state that applies to the next line.
+    pub fn state(&self) -> CodeScanState {
+        self.state
+    }
+
+    /// Consume one line, returning the state that applies to it.
+    pub fn step(&mut self, line: &str) -> Option<CodeBlockState> {
         let trimmed = line.trim();
         if trimmed.starts_with("```") {
-            if in_code_block {
-                result.push(Some(CodeBlockState {
+            if self.state.in_code_block {
+                let block_id = self.state.block_id;
+                self.state.in_code_block = false;
+                self.state.block_id += 1;
+                Some(CodeBlockState {
                     kind: CodeBlockKind::ClosingFence,
                     lang: None,
-                    block_id: current_block_id,
-                }));
-                in_code_block = false;
-                current_block_id += 1;
+                    block_id,
+                })
             } else {
+                let block_id = self.state.block_id;
                 let lang = trimmed.trim_start_matches('`').trim();
                 let lang_opt = if lang.is_empty() {
                     None
                 } else {
                     Some(lang.to_string())
                 };
-                result.push(Some(CodeBlockState {
+                self.state.in_code_block = true;
+                Some(CodeBlockState {
                     kind: CodeBlockKind::OpeningFence,
                     lang: lang_opt,
-                    block_id: current_block_id,
-                }));
-                in_code_block = true;
+                    block_id,
+                })
             }
-        } else if in_code_block {
-            result.push(Some(CodeBlockState {
+        } else if self.state.in_code_block {
+            Some(CodeBlockState {
                 kind: CodeBlockKind::InsideCode,
                 lang: None,
-                block_id: current_block_id,
-            }));
+                block_id: self.state.block_id,
+            })
         } else {
-            result.push(None);
+            None
         }
     }
+}
 
-    result
+pub fn analyze_code_blocks(lines: &[&str]) -> Vec<Option<CodeBlockState>> {
+    let mut scanner = CodeScanner::new();
+    lines.iter().map(|line| scanner.step(line)).collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1024,6 +1063,13 @@ impl VisualRowHeightIndex {
         let first = self.v_idx_at_y(top);
         let last = (self.v_idx_at_y(bottom) + 1).min(self.heights.len());
         first..last.max(first)
+    }
+
+    /// Bytes held by the index. Used by the open-path budget benchmark in `perf.rs`
+    /// to show that row geometry costs 4 bytes per row plus a base per block.
+    pub fn bytes(&self) -> usize {
+        self.heights.capacity() * std::mem::size_of::<f32>()
+            + self.bases.capacity() * std::mem::size_of::<f64>()
     }
 }
 

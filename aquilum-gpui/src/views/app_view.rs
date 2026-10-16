@@ -167,6 +167,13 @@ pub struct AppView {
     /// event only primes it so the content never jumps on entry.
     pub editor_middle_last_y: Cell<Option<f32>>,
     pub last_editor_h: Cell<f32>,
+    /// Document line at the top of the viewport, refreshed once per frame.
+    ///
+    /// The editor window has to cover what is on screen, so this is the anchor
+    /// its placement uses. It is stored rather than computed on demand because
+    /// the callers that need it — mouse handlers, autoscroll — already hold a
+    /// mutable borrow of the note and could not call back into `self`.
+    pub editor_anchor_line: Cell<usize>,
     pub config: crate::settings::AppConfig,
     pub last_saved_geometry: Option<(f32, f32, Option<f32>, Option<f32>, bool)>,
     pub initial_scroll_done: bool,
@@ -365,6 +372,7 @@ impl AppView {
             editor_middle_active: false,
             editor_middle_last_y: Cell::new(None),
             last_editor_h: Cell::new(600.0),
+            editor_anchor_line: Cell::new(0),
             config,
             last_saved_geometry,
             initial_scroll_done: false,
@@ -764,17 +772,52 @@ impl AppView {
         let epoch = self.auto_save_epoch;
         let entity = cx.weak_entity();
         let mut async_cx = cx.to_async();
-        let timer_executor = cx.background_executor().clone();
+        let background = cx.background_executor().clone();
         cx.foreground_executor().spawn(async move {
-            timer_executor.timer(std::time::Duration::from_millis(500)).await;
-            let _ = entity.update(&mut async_cx, |this, cx| {
+            background.timer(std::time::Duration::from_millis(500)).await;
+            let to_save = entity.update(&mut async_cx, |this, _cx| {
                 if this.auto_save_epoch == epoch {
-                    if this.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
-                        this.state.save_active_note();
-                        cx.notify();
+                    if let Some(ref note) = this.state.active_note {
+                        if note.is_dirty {
+                            return Some((note.path.clone(), note.content.clone(), note.title.clone(), note.version));
+                        }
                     }
                 }
-            });
+                None
+            }).ok().flatten();
+
+            if let Some((path, content, title, version)) = to_save {
+                let write_path = path.clone();
+                let write_res = background.spawn(async move {
+                    std::fs::write(&write_path, content)
+                }).await;
+
+                let _ = entity.update(&mut async_cx, |this, cx| {
+                    if let Some(ref mut note) = this.state.active_note {
+                        if note.path == path {
+                            match write_res {
+                                Ok(()) => {
+                                    if note.version == version {
+                                        note.is_dirty = false;
+                                    }
+                                    this.state.status_text = format!("Saved: {}", title);
+                                    let rel_path = this.state.vault.as_ref()
+                                        .and_then(|v| note.path.strip_prefix(&v.root).ok())
+                                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                                        .unwrap_or_else(|| note.path.to_string_lossy().into_owned());
+                                    this.state.events.emit_vault(&crate::events::VaultEvent::Modify { path: rel_path });
+                                    this.state.publish_snapshot();
+                                }
+                                Err(err) => {
+                                    this.state.status_text = format!("Save error: {}", err);
+                                }
+                            }
+                            cx.notify();
+                        }
+                    }
+                    this.state.save_session_state();
+                });
+            }
         }).detach();
     }
 
@@ -876,8 +919,8 @@ impl AppView {
         let Some(ref mut note) = self.state.active_note else {
             return;
         };
-        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings));
-        let visual_rows = Arc::clone(&note.cached_visual_rows);
+        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
+        let visual_rows = Arc::clone(&note.window.visual_rows);
         if visual_rows.is_empty() {
             return;
         }
@@ -892,7 +935,6 @@ impl AppView {
 
         if curr_v_idx == 0 {
             note.cursor_offset = 0;
-            note.sync_cursor();
             if !shift {
                 note.selection_anchor = None;
             }
@@ -910,7 +952,6 @@ impl AppView {
         let target_char = target_v.char_start + target_col;
         let offset = note.offset_for_line_col(target_v.line_idx, target_char);
         note.cursor_offset = offset;
-        note.sync_cursor();
         if !shift {
             note.selection_anchor = None;
         }
@@ -920,8 +961,8 @@ impl AppView {
         let Some(ref mut note) = self.state.active_note else {
             return;
         };
-        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings));
-        let visual_rows = Arc::clone(&note.cached_visual_rows);
+        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
+        let visual_rows = Arc::clone(&note.window.visual_rows);
         if visual_rows.is_empty() {
             return;
         }
@@ -936,7 +977,6 @@ impl AppView {
 
         if curr_v_idx + 1 >= visual_rows.len() {
             note.cursor_offset = note.content.len();
-            note.sync_cursor();
             if !shift {
                 note.selection_anchor = None;
             }
@@ -954,7 +994,6 @@ impl AppView {
         let target_char = target_v.char_start + target_col;
         let offset = note.offset_for_line_col(target_v.line_idx, target_char);
         note.cursor_offset = offset;
-        note.sync_cursor();
         if !shift {
             note.selection_anchor = None;
         }
@@ -964,8 +1003,8 @@ impl AppView {
         let Some(ref mut note) = self.state.active_note else {
             return;
         };
-        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings));
-        let visual_rows = Arc::clone(&note.cached_visual_rows);
+        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
+        let visual_rows = Arc::clone(&note.window.visual_rows);
         if visual_rows.is_empty() {
             return;
         }
@@ -984,7 +1023,6 @@ impl AppView {
             v.char_start
         };
         note.cursor_offset = note.offset_for_line_col(v.line_idx, target_char);
-        note.sync_cursor();
         if !shift {
             note.selection_anchor = None;
         }
@@ -994,8 +1032,8 @@ impl AppView {
         let Some(ref mut note) = self.state.active_note else {
             return;
         };
-        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings));
-        let visual_rows = Arc::clone(&note.cached_visual_rows);
+        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
+        let visual_rows = Arc::clone(&note.window.visual_rows);
         if visual_rows.is_empty() {
             return;
         }
@@ -1008,7 +1046,7 @@ impl AppView {
             note.selection_anchor = Some(note.cursor_offset);
         }
 
-        let line_len = note.cached_lines.get(v.line_idx).map(|l| l.chars().count()).unwrap_or(0);
+        let line_len = note.window.lines.get(v.line_idx).map(|l| l.chars().count()).unwrap_or(0);
         let sub_end = if v.is_last_sub {
             v.char_end
         } else {
@@ -1020,7 +1058,6 @@ impl AppView {
             sub_end
         };
         note.cursor_offset = note.offset_for_line_col(v.line_idx, target_char);
-        note.sync_cursor();
         if !shift {
             note.selection_anchor = None;
         }
@@ -1099,7 +1136,13 @@ impl AppView {
     }
 
     
-pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
+/// Scrolls the viewport the least amount that brings the caret into view.
+///
+/// The caret can be anywhere — `Ctrl+End`, a search hit, a note restored
+/// mid-file — while the window follows the viewport. Revealing it needs its row,
+/// so the window is placed on the caret first; after the reveal the viewport
+/// shows the caret, so that anchor is the right one for the next frame too.
+pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrategy) {
     // handle_key обновляет визуальный кеш после изменения текста
     // и перемещения курсора.
     let measured_h = f32::from(self.editor_scroll_handle.bounds().size.height);
@@ -1110,26 +1153,48 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         self.last_editor_h.get().max(100.0)
     };
 
-    let Some(note) = self.state.active_note.as_ref() else {
-        return;
+    // Row geometry of the caret, in document coordinates. Scoped so the note
+    // borrow ends before the scroll position is read and written through `self`.
+    let geometry = {
+        let word_wrap = self.word_wrap;
+        let wrap_cols = self.last_wrap_cols;
+        let note = match self.state.active_note.as_mut() {
+            Some(n) => n,
+            None => return,
+        };
+        let (cursor_line, cursor_col) = note.line_col();
+        let anchor = if note.window.covers_line(cursor_line) {
+            self.editor_anchor_line.get()
+        } else {
+            self.editor_anchor_line.set(cursor_line);
+            cursor_line
+        };
+        note.ensure_visual_cache_with_headings(
+            word_wrap,
+            wrap_cols,
+            Some(&self.config.editor.headings),
+            anchor,
+        );
+        crate::markdown::find_visual_row_for_cursor(
+            &note.window.visual_rows,
+            cursor_line,
+            cursor_col,
+        )
+        .map(|(v_idx, _)| {
+            let top = note.doc_y_of_local_v_idx(v_idx);
+            (
+                top,
+                top + f64::from(note.window.height_index.height_of(v_idx)),
+                note.total_height(),
+            )
+        })
     };
 
-    let (cursor_line, cursor_col) = note.line_col();
-
-    let Some((v_idx, _)) = crate::markdown::find_visual_row_for_cursor(
-        &note.cached_visual_rows,
-        cursor_line,
-        cursor_col,
-    ) else {
+    let Some((row_top, row_bottom, total_content_h)) = geometry else {
         return;
     };
-
-    let row_top = note.cached_height_index.top_of(v_idx);
-    let row_bottom =
-        row_top + f64::from(note.cached_height_index.height_of(v_idx));
 
     // Высота содержимого без дополнительного нижнего отступа.
-    let total_content_h = note.cached_height_index.total();
     let max_scroll = (total_content_h - f64::from(viewport_h)).max(0.0);
 
     let raw_scroll = self.current_scroll_top_f64();
@@ -1157,7 +1222,7 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
 
 
 
-    fn scroll_cursor_into_view(&self) {
+    fn scroll_cursor_into_view(&mut self) {
         self.scroll_cursor_into_view_with_strategy(ScrollStrategy::Top);
     }
 
@@ -1439,8 +1504,8 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         let Some(ref mut note) = self.state.active_note else {
             return None;
         };
-        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings));
-        let total = note.cached_height_index.total();
+        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
+        let total = note.total_height();
         let max_scroll = (total - f64::from(viewport_h)).max(0.0);
         if max_scroll <= 1.0 {
             return None;
@@ -1481,34 +1546,42 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
     /// zero.
     pub(crate) fn editor_doc_y_for_offset(
         offset: usize,
-        lines: &[String],
-        line_starts: &[usize],
+        content: &str,
+        line_index: &crate::line_index::LineIndex,
+        above_h: f64,
+        lines: &crate::editor_window::WindowLines,
         visual_rows: &[crate::markdown::VisualRow],
         height_index: &crate::markdown::VisualRowHeightIndex,
     ) -> f64 {
-        if lines.is_empty() || visual_rows.is_empty() || line_starts.is_empty() {
+        if lines.is_empty() || visual_rows.is_empty() || line_index.is_empty() {
             return 0.0;
         }
-        let doc_end = line_starts
-            .last()
-            .copied()
-            .unwrap_or(0)
-            .saturating_add(lines.last().map(|l| l.len()).unwrap_or(0));
-        let offset = offset.min(doc_end);
-        let line_idx = match line_starts.binary_search(&offset) {
-            Ok(idx) => idx,
-            Err(idx) => idx.saturating_sub(1),
-        }
-        .min(lines.len().saturating_sub(1));
-        let line = &lines[line_idx];
-        let mut byte_in_line = offset.saturating_sub(line_starts[line_idx]).min(line.len());
+        let offset = offset.min(content.len());
+        let line_idx = line_index.line_of(content, offset);
+        let line = match lines.get(line_idx) {
+            Some(line) => line,
+            // Outside the window — a selection endpoint can be anywhere. The
+            // ruler mark only has to land in the right region, so clamp it to
+            // the window's edge rather than guessing a row.
+            None => {
+                return if line_idx < lines.start() {
+                    above_h
+                } else {
+                    above_h + height_index.total()
+                }
+            }
+        };
+        let mut byte_in_line = offset
+            .saturating_sub(line_index.start(content, line_idx))
+            .min(line.len());
         while byte_in_line > 0 && !line.is_char_boundary(byte_in_line) {
             byte_in_line -= 1;
         }
         let col = line[..byte_in_line].chars().count();
         let (v_idx, _) =
             crate::markdown::find_visual_row_for_cursor(visual_rows, line_idx, col).unwrap_or((0, 0));
-        height_index.top_of(v_idx)
+        // The row index is window-local, the caller wants a document Y.
+        above_h + height_index.top_of(v_idx)
     }
 
     /// Returns `(slice_h, viewport_h, max_scroll_content, track_top_y)`.
@@ -1552,8 +1625,8 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         let Some(ref mut note) = self.state.active_note else {
             return;
         };
-        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings));
-        let total_content_h = note.cached_height_index.total();
+        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
+        let total_content_h = note.total_height();
         let window_h = f32::from(window.bounds().size.height);
         let (_, viewport_h, max_scroll_content, _) = self.editor_scroll_metrics(total_content_h, window_h);
         let thumb_h = Self::editor_thumb_h(viewport_h, total_content_h, self.config.editor.wide_scrollbar);
@@ -1790,8 +1863,8 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
             return;
         };
 
-        note.ensure_visual_cache_with_headings(word_wrap, wrap_cols, Some(&self.config.editor.headings));
-        let visual_rows = Arc::clone(&note.cached_visual_rows);
+        note.ensure_visual_cache_with_headings(word_wrap, wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
+        let visual_rows = Arc::clone(&note.window.visual_rows);
         if visual_rows.is_empty() {
             return;
         }
@@ -1799,7 +1872,7 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         let target_v_idx = if rel_y <= 0.0 {
             0
         } else {
-            note.cached_height_index.v_idx_at_y(rel_y)
+            note.local_v_idx_at_doc_y(rel_y)
         };
 
         let v = &visual_rows[target_v_idx];
@@ -1807,8 +1880,8 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
 
         let (cursor_line, _) = note.line_col();
         let selection_range = note.selection_range();
-        let line = &note.cached_lines[v.line_idx];
-        let line_start = note.cached_line_starts.get(v.line_idx).copied().unwrap_or(0);
+        let line = &note.window.lines[v.line_idx];
+        let line_start = note.line_start_byte(v.line_idx);
         let line_end = line_start + line.len();
         let is_line_in_selection = selection_range.as_ref().map_or(false, |sel| {
             if sel.start == sel.end {
@@ -1819,25 +1892,19 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
                 sel.end > line_start && sel.start < line_end
             }
         });
-        let is_in_active_block = note.cached_code_states.get(v.line_idx).and_then(|s| s.as_ref()).map_or(false, |s| {
-            let cursor_in_block = note.cached_code_states.get(cursor_line).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id);
+        let is_in_active_block = note.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map_or(false, |s| {
+            let cursor_in_block = note.window.code_states.get(cursor_line).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id);
             let sel_in_block = selection_range.as_ref().map_or(false, |sel| {
-                let sel_start_l = match note.cached_line_starts.binary_search(&sel.start) {
-                    Ok(idx) => idx,
-                    Err(idx) => idx.saturating_sub(1),
-                };
-                let sel_end_l = match note.cached_line_starts.binary_search(&sel.end) {
-                    Ok(idx) => idx,
-                    Err(idx) => idx.saturating_sub(1),
-                };
-                (sel_start_l..=sel_end_l.min(note.cached_code_states.len().saturating_sub(1))).any(|l_idx| {
-                    note.cached_code_states.get(l_idx).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id)
+                let sel_start_l = note.line_of_byte(sel.start);
+                let sel_end_l = note.line_of_byte(sel.end);
+                (sel_start_l..=sel_end_l.min(note.line_index.lines().saturating_sub(1))).any(|l_idx| {
+                    note.window.code_states.get(l_idx).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id)
                 })
             });
             cursor_in_block || sel_in_block
         });
         let is_active_line = Self::is_active_editor_line(self.edit_mode, v.line_idx, cursor_line, is_line_in_selection, is_in_active_block);
-        let code_state = note.cached_code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
+        let code_state = note.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
         let classified = crate::markdown::classify_line(line, code_state);
         let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &self.config.editor.headings, line_char_width);
         let (_, row_char_w, _, _, _) = Self::heading_typography_metrics_with_widths(&classified, &self.config.editor.headings, 24.0, line_char_width, Some(&heading_widths));
@@ -1882,7 +1949,6 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
             note.cursor_offset = offset;
             note.selection_anchor = Some(offset);
         }
-        note.sync_cursor();
         self.reset_editor_cursor_blink(cx);
         cx.notify();
     }
@@ -1928,8 +1994,8 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
             return;
         };
 
-        note.ensure_visual_cache_with_headings(word_wrap, wrap_cols, Some(&self.config.editor.headings));
-        let visual_rows = Arc::clone(&note.cached_visual_rows);
+        note.ensure_visual_cache_with_headings(word_wrap, wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
+        let visual_rows = Arc::clone(&note.window.visual_rows);
         if visual_rows.is_empty() {
             return;
         }
@@ -1937,7 +2003,7 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         let target_v_idx = if rel_y <= 0.0 {
             0
         } else {
-            note.cached_height_index.v_idx_at_y(rel_y)
+            note.local_v_idx_at_doc_y(rel_y)
         };
 
         let v = &visual_rows[target_v_idx];
@@ -1945,8 +2011,8 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
 
         let (cursor_line, _) = note.line_col();
         let selection_range = note.selection_range();
-        let line = &note.cached_lines[v.line_idx];
-        let line_start = note.cached_line_starts.get(v.line_idx).copied().unwrap_or(0);
+        let line = &note.window.lines[v.line_idx];
+        let line_start = note.line_start_byte(v.line_idx);
         let line_end = line_start + line.len();
         let is_line_in_selection = selection_range.as_ref().map_or(false, |sel| {
             if sel.start == sel.end {
@@ -1957,25 +2023,19 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
                 sel.end > line_start && sel.start < line_end
             }
         });
-        let is_in_active_block = note.cached_code_states.get(v.line_idx).and_then(|s| s.as_ref()).map_or(false, |s| {
-            let cursor_in_block = note.cached_code_states.get(cursor_line).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id);
+        let is_in_active_block = note.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map_or(false, |s| {
+            let cursor_in_block = note.window.code_states.get(cursor_line).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id);
             let sel_in_block = selection_range.as_ref().map_or(false, |sel| {
-                let sel_start_l = match note.cached_line_starts.binary_search(&sel.start) {
-                    Ok(idx) => idx,
-                    Err(idx) => idx.saturating_sub(1),
-                };
-                let sel_end_l = match note.cached_line_starts.binary_search(&sel.end) {
-                    Ok(idx) => idx,
-                    Err(idx) => idx.saturating_sub(1),
-                };
-                (sel_start_l..=sel_end_l.min(note.cached_code_states.len().saturating_sub(1))).any(|l_idx| {
-                    note.cached_code_states.get(l_idx).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id)
+                let sel_start_l = note.line_of_byte(sel.start);
+                let sel_end_l = note.line_of_byte(sel.end);
+                (sel_start_l..=sel_end_l.min(note.line_index.lines().saturating_sub(1))).any(|l_idx| {
+                    note.window.code_states.get(l_idx).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id)
                 })
             });
             cursor_in_block || sel_in_block
         });
         let is_active_line = Self::is_active_editor_line(self.edit_mode, v.line_idx, cursor_line, is_line_in_selection, is_in_active_block);
-        let code_state = note.cached_code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
+        let code_state = note.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
         let classified = crate::markdown::classify_line(line, code_state);
         let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &self.config.editor.headings, line_char_width);
         let (_, row_char_w, _, _, _) = Self::heading_typography_metrics_with_widths(&classified, &self.config.editor.headings, 24.0, line_char_width, Some(&heading_widths));
@@ -2001,7 +2061,6 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         let offset = note.offset_for_line_col(v.line_idx, target_char);
         if note.cursor_offset != offset {
             note.cursor_offset = offset;
-            note.sync_cursor();
             cx.notify();
         }
     }
@@ -3525,9 +3584,16 @@ pub fn scroll_cursor_into_view_with_strategy(&self, _strategy: ScrollStrategy) {
         // otherwise a row created at the very bottom (Enter) stays hidden
         // under the status bar until the next frame's rebuild.
         if let Some(ref mut note) = self.state.active_note {
+            let (cursor_line, _) = note.line_col();
+            let anchor = if note.window.covers_line(cursor_line) {
+                self.editor_anchor_line.get()
+            } else {
+                self.editor_anchor_line.set(cursor_line);
+                cursor_line
+            };
             let word_wrap = self.word_wrap;
             let wrap_cols = self.last_wrap_cols;
-            note.ensure_visual_cache_with_headings(word_wrap, wrap_cols, Some(&self.config.editor.headings));
+            note.ensure_visual_cache_with_headings(word_wrap, wrap_cols, Some(&self.config.editor.headings), anchor);
         }
         self.scroll_cursor_into_view();
         cx.notify();
@@ -3822,6 +3888,30 @@ impl Render for AppView {
             self.need_reveal_cursor = true;
         }
 
+        // The line at the top of the viewport is what the editor window has to
+        // cover, so it is the anchor the window is placed around. Resolved here,
+        // once per frame, from the same position the slice below uses — while a
+        // restore is pending that is the restore target, not the (not yet
+        // written) scroll handle.
+        let anchor_doc_y = self
+            .pending_editor_restore
+            .unwrap_or_else(|| self.current_scroll_top_f64());
+        let anchor_line = self
+            .state
+            .active_note
+            .as_ref()
+            .map(|n| n.line_at_doc_y(anchor_doc_y))
+            .unwrap_or(0);
+        self.editor_anchor_line.set(anchor_line);
+
+        // Walk the code-fence checkpoints a little further ahead, once per
+        // frame. Nothing here is needed for the current frame — it is what
+        // makes a later jump to the end of a huge note cheap, without a
+        // background thread and without copying the text.
+        if let Some(note) = self.state.active_note.as_mut() {
+            note.scan_code_ahead(crate::code_scan::SCAN_SLICE_LINES);
+        }
+
         let is_maximized = window.is_maximized();
         let bounds = window.bounds();
         // Live window height for virtualized-list floors (see editor_scroll_metrics,
@@ -3927,11 +4017,9 @@ impl Render for AppView {
             self.title_is_mouse_selecting = false;
         }
 
-        self.theme = Theme::from_config(&self.config.ui.theme, Some(window.appearance()));
-        let cx = &*cx;
-        let theme = &self.theme;
-        let active_path = self.state.active_note.as_ref().map(|n| n.path.clone());
-        let is_editing = self.edit_mode;
+        // Row geometry, the restore and the caret reveal run before `theme`
+        // borrows `self`: the reveal may re-place the editor window on the caret,
+        // and that needs the note mutably.
         let editor_font = self.editor_font_family();
         let font_id = cx.text_system().resolve_font(&gpui::font(editor_font));
         let line_char_width = cx
@@ -3944,7 +4032,7 @@ impl Render for AppView {
         let wrap_cols = self.compute_wrap_cols(viewport_w, line_char_width);
         self.last_wrap_cols = wrap_cols;
         if let Some(ref mut note) = self.state.active_note {
-            note.ensure_visual_cache_with_headings(self.word_wrap, wrap_cols, Some(&self.config.editor.headings));
+            note.ensure_visual_cache_with_headings(self.word_wrap, wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
         }
         // Retry a pending restore until the viewport is measured: the slice below
         // already follows the target, so the rows are right from frame one.
@@ -3956,7 +4044,7 @@ impl Render for AppView {
                         .state
                         .active_note
                         .as_ref()
-                        .map(|n| n.cached_height_index.total())
+                        .map(|n| n.total_height())
                         .unwrap_or(0.0);
                     let clamped =
                         Self::clamp_restore_target(target, total, f64::from(viewport_h));
@@ -3973,6 +4061,12 @@ impl Render for AppView {
             self.need_reveal_cursor = false;
             self.scroll_cursor_into_view();
         }
+
+        self.theme = Theme::from_config(&self.config.ui.theme, Some(window.appearance()));
+        let cx = &*cx;
+        let theme = &self.theme;
+        let active_path = self.state.active_note.as_ref().map(|n| n.path.clone());
+        let is_editing = self.edit_mode;
 
         // Draw the frames the scrollbar needs to settle.
         //
@@ -3991,7 +4085,7 @@ impl Render for AppView {
         // is not enough: a resize or a rewrap moves the inputs without going
         // through the arm sites.
         if let Some(note) = self.state.active_note.as_ref() {
-            let total = note.cached_height_index.total();
+            let total = note.total_height();
             let (_, viewport_h, max_scroll, _) = self.editor_scroll_metrics(total, window_h);
             let inputs = (viewport_h.round(), max_scroll.round());
             let settling = self.layout_settle_frames.get();
@@ -5233,13 +5327,15 @@ impl Render for AppView {
                                     .map(|s| s.to_string_lossy().into_owned())
                                     .unwrap_or_else(|| "Untitled".to_string());
 
-                                let lines_arc = Arc::clone(&note.cached_lines);
-                                let line_number_digits = lines_arc.len().max(1).to_string().len().max(3);
+                                let lines_arc = Arc::clone(&note.window.lines);
+                                // Digits of the document's line count, not the window's:
+                                // the gutter is sized once for the whole note.
+                                let line_number_digits =
+                                    note.line_index.lines().max(1).to_string().len().max(3);
                                 let line_number_width = 40.0 + line_number_digits.saturating_sub(3) as f32 * line_char_width;
-                                let visual_rows_arc = Arc::clone(&note.cached_visual_rows);
-                                let line_starts_arc = Arc::clone(&note.cached_line_starts);
-                                let code_states_arc = Arc::clone(&note.cached_code_states);
-                                let height_index_arc = Arc::clone(&note.cached_height_index);
+                                let visual_rows_arc = Arc::clone(&note.window.visual_rows);
+                                let code_states_arc = Arc::clone(&note.window.code_states);
+                                let height_index_arc = Arc::clone(&note.window.height_index);
 
                                 let (cursor_line, cursor_col) = note.line_col();
                                 let (active_v_idx, active_col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows_arc, cursor_line, cursor_col)
@@ -5252,16 +5348,17 @@ impl Render for AppView {
                                         active_block_ids.insert(s.block_id);
                                     }
                                     if let Some(ref sel) = selection_range {
-                                        let sel_start_line = match line_starts_arc.binary_search(&sel.start) {
-                                            Ok(idx) => idx,
-                                            Err(idx) => idx.saturating_sub(1),
-                                        };
-                                        let sel_end_line = match line_starts_arc.binary_search(&sel.end) {
-                                            Ok(idx) => idx,
-                                            Err(idx) => idx.saturating_sub(1),
-                                        };
-                                        for l_idx in sel_start_line..=sel_end_line.min(code_states_arc.len().saturating_sub(1)) {
-                                            let l_start = line_starts_arc[l_idx];
+                                        let sel_start_line = note.line_of_byte(sel.start);
+                                        let sel_end_line = note.line_of_byte(sel.end);
+                                        // Walk line starts forward instead of
+                                        // indexing a per-line offset array: the
+                                        // index only stores checkpoints, and a
+                                        // lookup per selected line would rescan
+                                        // a block each time. `l_end + 1` is the
+                                        // next start because a cached line is
+                                        // exactly the text between newlines.
+                                        let mut l_start = note.line_start_byte(sel_start_line);
+                                        for l_idx in sel_start_line..=sel_end_line.min(note.line_index.lines().saturating_sub(1)) {
                                             let l_end = l_start + lines_arc[l_idx].len();
                                             let is_in_sel = if sel.start == sel.end {
                                                 false
@@ -5275,6 +5372,7 @@ impl Render for AppView {
                                                     active_block_ids.insert(s.block_id);
                                                 }
                                             }
+                                            l_start = l_end + 1;
                                         }
                                     }
                                 }
@@ -5284,7 +5382,9 @@ impl Render for AppView {
                                 let theme_copy = theme.clone();
                                 let theme_scrollbar = theme.clone();
 
-                                let total_content_h = height_index_arc.total();
+                                // Document height, not the window's: the scrollbar and
+                                // the ruler both work in document coordinates.
+                                let total_content_h = note.total_height();
                                 let (slice_h, viewport_h, max_scroll_content, track_top_y) =
                                     self.editor_scroll_metrics(total_content_h, window_h);
                                 self.last_editor_h.set(viewport_h);
@@ -5354,19 +5454,23 @@ impl Render for AppView {
                                                 .clamp(0.0, f64::from(viewport_h) - 2.0)
                                                 as f32
                                         };
-                                        let cursor_y = to_track(height_index_arc.top_of(active_v_idx));
+                                        let cursor_y = to_track(note.doc_y_of_local_v_idx(active_v_idx));
                                         let sel_span = note.selection_range().map(|sel| {
                                             let a = Self::editor_doc_y_for_offset(
                                                 sel.start,
+                                                &note.content,
+                                                &note.line_index,
+                                                note.above_h,
                                                 &lines_arc,
-                                                &line_starts_arc,
                                                 &visual_rows_arc,
                                                 &height_index_arc,
                                             );
                                             let b = Self::editor_doc_y_for_offset(
                                                 sel.end,
+                                                &note.content,
+                                                &note.line_index,
+                                                note.above_h,
                                                 &lines_arc,
-                                                &line_starts_arc,
                                                 &visual_rows_arc,
                                                 &height_index_arc,
                                             );
@@ -5754,16 +5858,52 @@ impl Render for AppView {
                                                 if (raw_scroll_y - scroll_y).abs() > 0.5 {
                                                     self.set_editor_scroll_top_f64(scroll_y);
                                                 }
+                                                // The window's rows are addressed from its own
+                                                // first row, so the slice is computed in window
+                                                // coordinates: `local_scroll` is where the
+                                                // viewport sits inside the window. Both it and
+                                                // the shift stay small, which is what keeps the
+                                                // f32 geometry exact — the whole point of slicing
+                                                // instead of positioning rows absolutely.
+                                                let local_scroll = scroll_y - note.above_h;
                                                 let vr = height_index_arc.visible_range(
-                                                    scroll_y,
+                                                    local_scroll,
                                                     f64::from(slice_h),
                                                     f64::from(EDITOR_OVERSCAN_PX),
                                                 );
-                                                let shift = height_index_arc.top_of(vr.start) - scroll_y;
+                                                let shift = height_index_arc.top_of(vr.start) - local_scroll;
                                                 (vr, shift)
                                             };
 
                                             crate::perf::PERF.shape_calls.fetch_add(visible_range.len() as u64, std::sync::atomic::Ordering::Relaxed);
+
+                                            // Byte offset of every line the slice touches.
+                                            // The document-wide offset array is gone: the
+                                            // index stores only a checkpoint every
+                                            // `LINE_BLOCK` lines, so looking a row up one at
+                                            // a time would rescan a block each time. The
+                                            // rows of a slice are ordered by line, so one
+                                            // forward walk covers the slice in O(rows). One
+                                            // row past each end is included because the
+                                            // rounded-corner pass asks about the neighbours.
+                                            let (slice_first_line, slice_line_starts) = {
+                                                let lo = visible_range.start.saturating_sub(1);
+                                                let hi = (visible_range.end + 1).min(visual_rows_arc.len());
+                                                if lo >= hi {
+                                                    (0, Vec::new())
+                                                } else {
+                                                    let first = visual_rows_arc[lo].line_idx;
+                                                    let last = visual_rows_arc[hi - 1].line_idx;
+                                                    let mut starts = Vec::with_capacity(last - first + 1);
+                                                    let mut at = note.line_start_byte(first);
+                                                    for l_idx in first..=last {
+                                                        starts.push(at);
+                                                        at += lines_arc[l_idx].len() + 1;
+                                                    }
+                                                    (first, starts)
+                                                }
+                                            };
+
                                             let mut items = Vec::with_capacity(visible_range.len());
 
                                             let calc_v_row_sel_range = |target_v_idx: usize| -> Option<(usize, usize)> {
@@ -5773,7 +5913,7 @@ impl Render for AppView {
                                                 }
                                                 let v = visual_rows_arc.get(target_v_idx)?;
                                                 let line = &lines_arc[v.line_idx];
-                                                let line_start = line_starts_arc[v.line_idx];
+                                                let line_start = slice_line_starts[v.line_idx - slice_first_line];
                                                 let line_end = line_start + line.len();
 
                                                 if line.is_empty() {
@@ -5845,7 +5985,7 @@ impl Render for AppView {
                                             for v_idx in visible_range {
                                                 let v = &visual_rows_arc[v_idx];
                                                 let line = &lines_arc[v.line_idx];
-                                                let line_start = line_starts_arc[v.line_idx];
+                                                let line_start = slice_line_starts[v.line_idx - slice_first_line];
                                                 let line_end = line_start + line.len();
                                                 let is_line_in_selection = selection_range.as_ref().map_or(false, |sel| {
                                                     if sel.start == sel.end {
@@ -6069,7 +6209,6 @@ impl Render for AppView {
                                                                     n.cursor_offset = offset;
                                                                     n.selection_anchor = Some(offset);
                                                                 }
-                                                                n.sync_cursor();
                                                             }
                                                             window.focus(&this.focus_handle);
                                                             this.reset_editor_cursor_blink(cx);
@@ -6093,7 +6232,6 @@ impl Render for AppView {
                                                                     }
                                                                     if n.cursor_offset != new_offset {
                                                                         n.cursor_offset = new_offset;
-                                                                        n.sync_cursor();
                                                                         cx.notify();
                                                                     }
                                                                 }
@@ -6226,7 +6364,7 @@ impl Render for AppView {
                                                                                 // into the block.
                                                                                 cx.stop_propagation();
                                                                                 let body = match this.state.active_note.as_ref() {
-                                                                                    Some(n) => code_block_body(&n.cached_lines, &n.cached_code_states, fence_line, block_id),
+                                                                                    Some(n) => code_block_body(&n.window, fence_line, block_id),
                                                                                     None => return,
                                                                                 };
                                                                                 cx.write_to_clipboard(ClipboardItem::new_string(body));
@@ -6689,19 +6827,28 @@ fn inline_code_weight(base: gpui::FontWeight) -> gpui::FontWeight {
 
 /// Body of a code block: the `InsideCode` lines that follow the opening fence.
 /// Called only when the copy button is clicked, never while building a frame.
+/// Text of the code block opened at `fence_line`, without the fences.
+///
+/// Read from the editor window rather than from the document: the click that
+/// gets here happened on a row that was on screen, so the fence is inside the
+/// window by construction. A block longer than one window — `MARGIN_LINES` on
+/// each side of the viewport, so several thousand lines — is copied up to the
+/// window's end; a note that small is never windowed in the first place.
 fn code_block_body(
-    lines: &[String],
-    states: &[Option<crate::markdown::CodeBlockState>],
+    window: &crate::editor_window::EditorWindow,
     fence_line: usize,
     block_id: usize,
 ) -> String {
     let mut body = String::new();
+    if !window.covers_line(fence_line) {
+        return body;
+    }
     let mut i = fence_line + 1;
-    while let Some(next) = states.get(i).and_then(|s| s.as_ref()) {
+    while let Some(next) = window.code_states.get(i).and_then(|s| s.as_ref()) {
         if next.block_id != block_id || next.kind != crate::markdown::CodeBlockKind::InsideCode {
             break;
         }
-        if let Some(l) = lines.get(i) {
+        if let Some(l) = window.lines.get(i) {
             body.push_str(l);
             body.push('\n');
         }
@@ -8255,6 +8402,85 @@ mod tests {
         }
     }
 
+    /// The same agreement, but through the window and in document coordinates.
+    ///
+    /// With the windowed cache the painted slice is addressed from the window's
+    /// first row, while a click arrives as a document Y. The two now disagree
+    /// unless `above_h` is applied on both sides, and the window has to be
+    /// placed so that the viewport is inside it. Both are checked here for a
+    /// note far larger than one window.
+    #[test]
+    fn windowed_paint_and_hit_test_agree_in_document_coordinates() {
+        let mut text = String::new();
+        for i in 0..40_000 {
+            text.push_str(&format!("line {i}\n"));
+        }
+        let mut note = crate::state::OpenedNote::new(
+            std::path::PathBuf::from("big.md"),
+            "big".to_string(),
+            text,
+            1,
+        );
+        let viewport = 800.0f64;
+        let overscan = f64::from(EDITOR_OVERSCAN_PX);
+        note.ensure_visual_cache(true, 0, 20_000);
+
+        // The note really is windowed and the window really is a window: a test
+        // that silently fell back to a whole-document cache would prove nothing.
+        assert!(
+            note.above_lines > 0 && note.below_lines > 0,
+            "the note must be windowed"
+        );
+        assert_eq!(
+            note.window.line_count(),
+            2 * crate::editor_window::MARGIN_LINES + 1
+        );
+
+        let window_h = note.window.total_height();
+        let max_scroll = note.total_height() - viewport;
+        for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let scroll_y = (max_scroll * fraction).clamp(0.0, max_scroll);
+            // What `render` does each frame: anchor on the line at the top of the
+            // viewport, then place the window around it.
+            let anchor = note.line_at_doc_y(scroll_y);
+            note.ensure_visual_cache(true, 0, anchor);
+            assert!(
+                note.window.covers_line(note.line_at_doc_y(scroll_y)),
+                "the window must hold the anchor at scroll {scroll_y}"
+            );
+
+            let local_scroll = scroll_y - note.above_h;
+            assert!(
+                local_scroll >= 0.0 && local_scroll + viewport <= window_h,
+                "the window must cover the viewport: local {local_scroll}, window {window_h}"
+            );
+
+            let vr = note.window.height_index.visible_range(local_scroll, viewport, overscan);
+            let shift = note.window.height_index.top_of(vr.start) - local_scroll;
+            assert!(
+                shift.abs() <= overscan + 24.0,
+                "slice shift {shift} is not small at scroll {scroll_y}"
+            );
+            for px in [0.5, 1.0, 17.7, 400.25, viewport - 0.5] {
+                // The row painted at this pixel of the viewport…
+                let painted = (vr.start..vr.end).find(|&k| {
+                    let top = shift
+                        + (note.window.height_index.top_of(k)
+                            - note.window.height_index.top_of(vr.start));
+                    let bottom = top + f64::from(note.window.height_index.height_of(k));
+                    px >= top && px < bottom
+                });
+                let painted = painted.unwrap_or_else(|| panic!("no row painted at {px}"));
+                // …and the row the mouse handler resolves the same pixel to.
+                assert_eq!(
+                    note.local_v_idx_at_doc_y(scroll_y + px),
+                    painted,
+                    "px {px} at scroll {scroll_y}"
+                );
+            }
+        }
+    }
+
     /// Middle-button smart scroll maps the cursor to the document the same way
     /// the sidebar does: top of the usable band is 0, bottom is max, and the
     /// result never leaves the range even when the cursor does.
@@ -8306,15 +8532,21 @@ mod tests {
     fn ruler_offset_maps_to_visual_row_top() {
         use crate::markdown::{VisualRow, VisualRowHeightIndex};
         // Two lines: "hello" (one row) + "world!" wrapped 3/3 (two sub-rows).
-        let lines = vec!["hello".to_string(), "world!".to_string()];
-        let starts = vec![0usize, 6usize];
+        let content = "hello\nworld!";
+        let lines = crate::editor_window::WindowLines::new(
+            0,
+            vec!["hello".to_string(), "world!".to_string()],
+        );
+        let line_index = crate::line_index::LineIndex::new(content);
         let rows = vec![
             VisualRow { line_idx: 0, sub_idx: 0, is_last_sub: true, char_start: 0, char_end: 5 },
             VisualRow { line_idx: 1, sub_idx: 0, is_last_sub: false, char_start: 0, char_end: 3 },
             VisualRow { line_idx: 1, sub_idx: 1, is_last_sub: true, char_start: 3, char_end: 6 },
         ];
         let index = VisualRowHeightIndex::new(vec![24.0, 24.0, 24.0]);
-        let at = |off: usize| AppView::editor_doc_y_for_offset(off, &lines, &starts, &rows, &index);
+        let at = |off: usize| {
+            AppView::editor_doc_y_for_offset(off, content, &line_index, 0.0, &lines, &rows, &index)
+        };
         // First line and the gap (newline byte 5 belongs to line 0 end).
         assert_eq!(at(0), 0.0);
         assert_eq!(at(5), 0.0);
@@ -8327,7 +8559,18 @@ mod tests {
         // Past the end clamps to the last row.
         assert_eq!(at(1000), 48.0);
         // Empty caches sit at zero instead of panicking.
-        assert_eq!(AppView::editor_doc_y_for_offset(0, &[], &[], &[], &index), 0.0);
+        assert_eq!(
+            AppView::editor_doc_y_for_offset(
+                0,
+                "",
+                &crate::line_index::LineIndex::default(),
+                0.0,
+                &crate::editor_window::WindowLines::default(),
+                &[],
+                &index
+            ),
+            0.0
+        );
     }
 
     /// The narrow thumb mirrors the viewport share (floored so it stays

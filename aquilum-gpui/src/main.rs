@@ -3,13 +3,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 pub mod blink_manager;
+pub mod code_scan;
 pub mod commands;
 pub mod commands_builtin;
 pub mod events;
+pub mod editor_window;
 pub mod fonts;
 pub mod i18n;
 pub mod icons;
 pub mod ipc;
+pub mod line_index;
 pub mod markdown;
 pub mod markdown_doc;
 pub mod perf;

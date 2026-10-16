@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use crate::markdown_doc::{MarkdownDocument, CursorState};
 
 pub fn app_data_dir() -> PathBuf {
     dirs::data_dir()
@@ -325,6 +324,24 @@ pub enum TextStats {
     Large { bytes: usize },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextChange {
+    /// Byte offset where the change occurred.
+    pub at: usize,
+    /// Text removed by this change (empty for pure insertion).
+    pub removed: String,
+    /// Text inserted by this change (empty for pure deletion).
+    pub inserted: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct UndoStep {
+    pub changes: Vec<TextChange>,
+    pub cursor_before: usize,
+    pub cursor_after: usize,
+    pub time: std::time::Instant,
+}
+
 pub struct OpenedNote {
     pub path: PathBuf,
     pub title: String,
@@ -334,21 +351,42 @@ pub struct OpenedNote {
     pub cursor_offset: usize,
     pub selection_anchor: Option<usize>,
     pub is_dirty: bool,
-    pub undo_stack: Vec<(String, usize)>,
-    pub redo_stack: Vec<(String, usize)>,
+    pub undo_stack: Vec<UndoStep>,
+    pub redo_stack: Vec<UndoStep>,
 
-    // Markdown Document model
-    pub doc: MarkdownDocument,
-    pub cursor: CursorState,
+    /// Line addressing for `content`, in O(1) memory per `LINE_BLOCK` lines.
+    /// Kept in sync with `content` on every mutation; see `refresh_line_index`.
+    pub line_index: crate::line_index::LineIndex,
 
-    // Cached visual layout structures
-    pub cached_lines: Arc<Vec<String>>,
-    pub cached_line_starts: Arc<Vec<usize>>,
-    pub cached_visual_rows: Arc<Vec<crate::markdown::VisualRow>>,
-    pub cached_code_states: Arc<Vec<Option<crate::markdown::CodeBlockState>>>,
-    pub cached_height_index: Arc<crate::markdown::VisualRowHeightIndex>,
-    pub cached_wrap_cols: usize,
-    pub cached_word_wrap: bool,
+    /// Fence state every [`crate::code_scan::CHECKPOINT_LINES`] lines.
+    ///
+    /// The window can open anywhere, so it needs the code-fence state at its
+    /// first line rather than at line 0. These checkpoints make that a bounded
+    /// lookup instead of a scan from the top of the file; see
+    /// [`crate::code_scan`].
+    pub code_checkpoints: crate::code_scan::CodeCheckpoints,
+
+    /// The materialised slice of the document: lines, wrapped rows, code-fence
+    /// states and row geometry, for a bounded range around the viewport. The
+    /// renderer only ever draws a viewport, so this is all it needs — see
+    /// [`crate::editor_window`].
+    pub window: crate::editor_window::EditorWindow,
+    /// Document lines before [`OpenedNote::window`], addressed by estimate only.
+    pub above_lines: usize,
+    /// Document lines after [`OpenedNote::window`], addressed by estimate only.
+    pub below_lines: usize,
+    /// Estimated height above the window, in logical pixels.
+    pub above_h: f64,
+    /// Estimated height below the window, in logical pixels.
+    pub below_h: f64,
+    /// Rows per line and row height the estimate above and below uses.
+    ///
+    /// Frozen when the window is built for a given wrap setting, so that
+    /// `total_height` — and with it the scrollbar and `max_scroll` — does not
+    /// drift as the window moves. Recomputing them from every new window would
+    /// make the whole document jump whenever the density of the text changed.
+    est_rows_per_line: f64,
+    est_row_h: f64,
     pub visual_cache_dirty: bool,
 
     /// (version, content.len(), stats). Recomputed only when the text changes.
@@ -357,10 +395,7 @@ pub struct OpenedNote {
 
 impl OpenedNote {
     pub fn new(path: PathBuf, title: String, content: String, version: u64) -> Self {
-        let doc = MarkdownDocument::new(content.clone());
-        let mut cursor = CursorState::default();
-        doc.update_cursor(&mut cursor, 0);
-
+        let line_index = crate::line_index::LineIndex::new(&content);
         Self {
             path,
             title,
@@ -371,15 +406,15 @@ impl OpenedNote {
             is_dirty: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
-            doc,
-            cursor,
-            cached_lines: Arc::new(Vec::new()),
-            cached_line_starts: Arc::new(Vec::new()),
-            cached_visual_rows: Arc::new(Vec::new()),
-            cached_code_states: Arc::new(Vec::new()),
-            cached_height_index: Arc::new(crate::markdown::VisualRowHeightIndex::default()),
-            cached_wrap_cols: 0,
-            cached_word_wrap: true,
+            line_index,
+            code_checkpoints: crate::code_scan::CodeCheckpoints::new(),
+            window: crate::editor_window::EditorWindow::default(),
+            above_lines: 0,
+            below_lines: 0,
+            above_h: 0.0,
+            below_h: 0.0,
+            est_rows_per_line: 1.0,
+            est_row_h: 24.0,
             visual_cache_dirty: true,
             stats_cache: Cell::new(None),
         }
@@ -407,96 +442,253 @@ impl OpenedNote {
         stats
     }
 
-    pub fn sync_cursor(&mut self) {
-        self.doc.update_cursor(&mut self.cursor, self.cursor_offset);
-    }
-
     pub fn rebuild_visual_cache(&mut self, word_wrap: bool, wrap_cols: usize) {
-        self.rebuild_visual_cache_with_headings(word_wrap, wrap_cols, None);
+        self.rebuild_visual_cache_with_headings(word_wrap, wrap_cols, None, 0);
     }
 
+    /// Materialise the window that holds `anchor_line`.
+    ///
+    /// This is the entire cost of opening a note: the `LineIndex` pass over the
+    /// text (in [`OpenedNote::new`]) plus a split, a wrap, a code-fence scan and
+    /// a measure of `MARGIN_LINES` lines on each side of the anchor — never of
+    /// the document. A note small enough to fit in two margins is built whole,
+    /// exactly as before.
     pub fn rebuild_visual_cache_with_headings(
         &mut self,
         word_wrap: bool,
         wrap_cols: usize,
         headings: Option<&crate::settings::HeadingsSettings>,
+        anchor_line: usize,
     ) {
         crate::perf::PERF.parse_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let lines: Vec<String> = self.content.split('\n').map(String::from).collect();
-        crate::perf::PERF.span_rebuilds.fetch_add(lines.len() as u64, std::sync::atomic::Ordering::Relaxed);
-        let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
-        let visual_rows = crate::markdown::build_visual_rows(&line_refs, word_wrap, wrap_cols);
-        let mut line_starts: Vec<usize> = Vec::with_capacity(lines.len());
-        let mut running_offset = 0;
-        for line in &lines {
-            line_starts.push(running_offset);
-            running_offset += line.len() + 1;
-        }
-        let code_states = crate::markdown::analyze_code_blocks(&line_refs);
-        let height_index = crate::markdown::VisualRowHeightIndex::from_rows(&lines, &visual_rows, headings);
+        // The estimate is only valid for the wrap setting it was measured with.
+        let basis_stale = self.window.is_empty()
+            || self.window.word_wrap != word_wrap
+            || self.window.wrap_cols != wrap_cols;
 
-        self.cached_lines = Arc::new(lines);
-        self.cached_line_starts = Arc::new(line_starts);
-        self.cached_visual_rows = Arc::new(visual_rows);
-        self.cached_code_states = Arc::new(code_states);
-        self.cached_height_index = Arc::new(height_index);
-        self.cached_word_wrap = word_wrap;
-        self.cached_wrap_cols = wrap_cols;
+        let (start, end) =
+            crate::editor_window::EditorWindow::bounds_for(anchor_line, self.line_index.lines());
+        // The window can open anywhere, so it needs the fence state at its first
+        // line. Extending the checkpoints is bounded by `start`, not by the
+        // document: a note opened at the top scans a few thousand lines, and a
+        // jump into the middle pays for the distance once and caches it.
+        self.code_checkpoints
+            .ensure(&self.content, &self.line_index, start + 1);
+        let initial = self
+            .code_checkpoints
+            .state_at(&self.content, &self.line_index, start)
+            .unwrap_or_default();
+        let window = crate::editor_window::EditorWindow::build(
+            &self.content,
+            &self.line_index,
+            start,
+            end,
+            word_wrap,
+            wrap_cols,
+            headings,
+            initial,
+        );
+        crate::perf::PERF
+            .span_rebuilds
+            .fetch_add(window.line_count() as u64, std::sync::atomic::Ordering::Relaxed);
+
+        self.above_lines = window.start_line;
+        self.below_lines = self
+            .line_index
+            .lines()
+            .saturating_sub(window.end_line);
+        self.window = window;
+        if basis_stale {
+            self.refresh_estimate_basis();
+        }
+        self.recompute_estimate();
         self.visual_cache_dirty = false;
     }
 
-    pub fn ensure_visual_cache(&mut self, word_wrap: bool, wrap_cols: usize) {
-        self.ensure_visual_cache_with_headings(word_wrap, wrap_cols, None);
+    /// Rows-per-line and row-height of the current window.
+    fn refresh_estimate_basis(&mut self) {
+        let rows = self.window.visual_rows.len();
+        let lines = self.window.line_count();
+        if rows == 0 || lines == 0 {
+            return;
+        }
+        self.est_rows_per_line = rows as f64 / lines as f64;
+        self.est_row_h = self.window.total_height() / rows as f64;
     }
 
+    /// Height of the estimated region on each side of the window.
+    ///
+    /// `above_lines + window + below_lines` is always the whole document, so
+    /// `total_height` does not depend on where the window sits and the
+    /// scrollbar stays put while the user scrolls.
+    fn recompute_estimate(&mut self) {
+        let rows_per_line = self.est_rows_per_line.max(f64::MIN_POSITIVE);
+        let row_h = self.est_row_h;
+        self.above_h = (self.above_lines as f64 * rows_per_line).round() * row_h;
+        self.below_h = (self.below_lines as f64 * rows_per_line).round() * row_h;
+    }
+
+    pub fn ensure_visual_cache(&mut self, word_wrap: bool, wrap_cols: usize, anchor_line: usize) {
+        self.ensure_visual_cache_with_headings(word_wrap, wrap_cols, None, anchor_line);
+    }
+
+    /// Make sure the window covers `anchor_line`, re-placing it if it does not.
+    ///
+    /// `anchor_line` is the document line at the top of the viewport: the window
+    /// has to hold what is on screen, not what the caret is on.
     pub fn ensure_visual_cache_with_headings(
         &mut self,
         word_wrap: bool,
         wrap_cols: usize,
         headings: Option<&crate::settings::HeadingsSettings>,
+        anchor_line: usize,
     ) {
         if self.visual_cache_dirty
-            || self.cached_lines.is_empty()
-            || self.cached_word_wrap != word_wrap
-            || self.cached_wrap_cols != wrap_cols
+            || self.window.should_move_to(
+                anchor_line,
+                self.line_index.lines(),
+                word_wrap,
+                wrap_cols,
+            )
         {
-            self.rebuild_visual_cache_with_headings(word_wrap, wrap_cols, headings);
+            self.rebuild_visual_cache_with_headings(word_wrap, wrap_cols, headings, anchor_line);
         }
+    }
+
+    /// Total height of the document: the exact window plus the estimate on
+    /// either side.
+    pub fn total_height(&self) -> f64 {
+        self.above_h + self.window.total_height() + self.below_h
+    }
+
+    /// Document Y of a window-local visual row index.
+    pub fn doc_y_of_local_v_idx(&self, local_v_idx: usize) -> f64 {
+        self.above_h + self.window.height_index.top_of(local_v_idx)
+    }
+
+    /// Window-local visual row index at a document Y.
+    ///
+    /// The window is placed to cover the viewport, so this is exact for every
+    /// point the user can actually see; outside it clamps to the window edge.
+    pub fn local_v_idx_at_doc_y(&self, doc_y: f64) -> usize {
+        if self.window.visual_rows.is_empty() {
+            return 0;
+        }
+        self.window.height_index.v_idx_at_y(doc_y - self.above_h)
+    }
+
+    /// Document line at a document Y: exact inside the window, proportional
+    /// outside it.
+    pub fn line_at_doc_y(&self, doc_y: f64) -> usize {
+        let last_line = self.line_index.lines().saturating_sub(1);
+        if self.window.visual_rows.is_empty() {
+            // No window yet: one row per line is the only honest guess.
+            let row_h = self.est_row_h.max(1.0);
+            return ((doc_y.max(0.0) / row_h) as usize).min(last_line);
+        }
+        let rows_per_line = self.est_rows_per_line.max(f64::MIN_POSITIVE);
+        let row_h = self.est_row_h.max(1.0);
+        let local = doc_y - self.above_h;
+        if local < 0.0 {
+            let rows_above = (-local / row_h).ceil();
+            let lines_above = (rows_above / rows_per_line).round() as usize;
+            return self.window.start_line.saturating_sub(lines_above);
+        }
+        let window_h = self.window.total_height();
+        if local >= window_h {
+            let rows_below = (local - window_h) / row_h;
+            let lines_below = (rows_below / rows_per_line).round() as usize;
+            return self.window.end_line.saturating_add(lines_below).min(last_line);
+        }
+        let local_v = self.window.height_index.v_idx_at_y(local);
+        self.window
+            .visual_rows
+            .get(local_v)
+            .map(|v| v.line_idx)
+            .unwrap_or(self.window.start_line)
+    }
+
+    pub fn record_change(&mut self, at: usize, removed: String, inserted: String, cursor_before: usize, cursor_after: usize) {
+        if removed.is_empty() && inserted.is_empty() {
+            return;
+        }
+        self.redo_stack.clear();
+        let now = std::time::Instant::now();
+        let change = TextChange { at, removed, inserted };
+
+        if let Some(last_step) = self.undo_stack.last_mut() {
+            if now.duration_since(last_step.time) < std::time::Duration::from_millis(1000)
+                && last_step.changes.len() == 1
+            {
+                let last = &mut last_step.changes[0];
+                // 1. Sequential typing without newlines
+                if last.removed.is_empty()
+                    && change.removed.is_empty()
+                    && !change.inserted.contains('\n')
+                    && last.at + last.inserted.len() == change.at
+                {
+                    last.inserted.push_str(&change.inserted);
+                    last_step.cursor_after = cursor_after;
+                    last_step.time = now;
+                    return;
+                }
+                // 2. Sequential backspace without newlines
+                if last.inserted.is_empty()
+                    && change.inserted.is_empty()
+                    && !change.removed.contains('\n')
+                    && change.at + change.removed.len() == last.at
+                {
+                    last.removed.insert_str(0, &change.removed);
+                    last.at = change.at;
+                    last_step.cursor_after = cursor_after;
+                    last_step.time = now;
+                    return;
+                }
+            }
+        }
+
+        if self.undo_stack.len() >= 1000 {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push(UndoStep {
+            changes: vec![change],
+            cursor_before,
+            cursor_after,
+            time: now,
+        });
     }
 
     pub fn snapshot_undo(&mut self) {
-        if self.undo_stack.len() > 100 {
-            self.undo_stack.remove(0);
-        }
-        self.undo_stack.push((self.content.clone(), self.cursor_offset));
-        self.redo_stack.clear();
+        // No-op: changes are now recorded incrementally as deltas in undo_stack
     }
 
     pub fn undo(&mut self) {
-        if let Some((prev_content, prev_cursor)) = self.undo_stack.pop() {
-            self.redo_stack.push((self.content.clone(), self.cursor_offset));
-            self.content = prev_content;
+        if let Some(step) = self.undo_stack.pop() {
+            for change in step.changes.iter().rev() {
+                self.content.replace_range(change.at..change.at + change.inserted.len(), &change.removed);
+                self.refresh_line_index_incremental(change.at, &change.inserted, &change.removed);
+            }
             self.version += 1;
-            self.doc = MarkdownDocument::new(self.content.clone());
-            self.cursor_offset = prev_cursor.min(self.content.len());
+            self.cursor_offset = step.cursor_before.min(self.content.len());
             self.selection_anchor = None;
             self.is_dirty = true;
             self.visual_cache_dirty = true;
-            self.sync_cursor();
+            self.redo_stack.push(step);
         }
     }
 
     pub fn redo(&mut self) {
-        if let Some((next_content, next_cursor)) = self.redo_stack.pop() {
-            self.undo_stack.push((self.content.clone(), self.cursor_offset));
-            self.content = next_content;
+        if let Some(step) = self.redo_stack.pop() {
+            for change in step.changes.iter() {
+                self.content.replace_range(change.at..change.at + change.removed.len(), &change.inserted);
+                self.refresh_line_index_incremental(change.at, &change.removed, &change.inserted);
+            }
             self.version += 1;
-            self.doc = MarkdownDocument::new(self.content.clone());
-            self.cursor_offset = next_cursor.min(self.content.len());
+            self.cursor_offset = step.cursor_after.min(self.content.len());
             self.selection_anchor = None;
             self.is_dirty = true;
             self.visual_cache_dirty = true;
-            self.sync_cursor();
+            self.undo_stack.push(step);
         }
     }
 
@@ -530,15 +722,17 @@ impl OpenedNote {
 
     pub fn delete_selection(&mut self) -> bool {
         if let Some(range) = self.selection_range() {
-            self.snapshot_undo();
-            self.doc.apply_edit(range.clone(), "");
-            self.content = self.doc.source.clone();
+            let cursor_before = self.cursor_offset;
+            let removed = self.content[range.clone()].to_string();
+            let at = range.start;
+            self.content.replace_range(range.clone(), "");
             self.version += 1;
-            self.cursor_offset = range.start;
+            self.refresh_line_index_incremental(at, &removed, "");
+            self.cursor_offset = at;
             self.selection_anchor = None;
             self.is_dirty = true;
             self.visual_cache_dirty = true;
-            self.sync_cursor();
+            self.record_change(at, removed, String::new(), cursor_before, at);
             true
         } else {
             false
@@ -547,27 +741,35 @@ impl OpenedNote {
 
     pub fn replace_selection(&mut self, text: &str) -> bool {
         if let Some(range) = self.selection_range() {
-            self.snapshot_undo();
-            self.doc.apply_edit(range.clone(), text);
-            self.content = self.doc.source.clone();
+            let cursor_before = self.cursor_offset;
+            let removed = self.content[range.clone()].to_string();
+            let at = range.start;
+            let new_cursor = at + text.len();
+            self.content.replace_range(range.clone(), text);
             self.version += 1;
-            self.cursor_offset = range.start + text.len();
+            self.refresh_line_index_incremental(at, &removed, text);
+            self.cursor_offset = new_cursor;
             self.selection_anchor = None;
             self.is_dirty = true;
             self.visual_cache_dirty = true;
-            self.sync_cursor();
+            self.record_change(at, removed, text.to_string(), cursor_before, new_cursor);
             true
         } else {
-            let offset = self.cursor_offset.min(self.content.len());
-            self.snapshot_undo();
-            self.doc.apply_edit(offset..offset, text);
-            self.content = self.doc.source.clone();
+            let mut offset = self.cursor_offset.min(self.content.len());
+            while offset > 0 && !self.content.is_char_boundary(offset) {
+                offset -= 1;
+            }
+            let cursor_before = self.cursor_offset;
+            let at = offset;
+            let new_cursor = at + text.len();
+            self.content.replace_range(offset..offset, text);
             self.version += 1;
-            self.cursor_offset = offset + text.len();
+            self.refresh_line_index_incremental(at, "", text);
+            self.cursor_offset = new_cursor;
             self.selection_anchor = None;
             self.is_dirty = true;
             self.visual_cache_dirty = true;
-            self.sync_cursor();
+            self.record_change(at, String::new(), text.to_string(), cursor_before, new_cursor);
             true
         }
     }
@@ -575,7 +777,6 @@ impl OpenedNote {
     pub fn select_all(&mut self) {
         self.selection_anchor = Some(0);
         self.cursor_offset = self.content.len();
-        self.sync_cursor();
     }
 
     pub fn word_range_at(&self, offset: usize) -> (usize, usize) {
@@ -623,80 +824,109 @@ impl OpenedNote {
         (start, end)
     }
 
+    /// Rebuild [`OpenedNote::line_index`] from `content`, and drop the code
+    /// checkpoints the edit invalidated.
+    ///
+    /// Called from every path that mutates the text. One `memchr` pass, no
+    /// allocation per line — this is what replaced the old `Vec<String>` plus
+    /// `Vec<usize>` pair on the caret path. Making it incremental (splice the
+    /// checkpoints after the edit instead of rescanning) is stage 6 of
+    /// `TODO/perf-plan-large-file-open.md`.
+    ///
+    /// `edited_at` is the byte offset the text changed at, or `None` when the
+    /// whole text was replaced wholesale (undo/redo) and no prefix can be
+    /// trusted. An edit at line `E` cannot change the fence state of any line
+    /// above `E`, so the checkpoints above it survive and the rest are
+    /// rescanned on demand — which keeps a keystroke in the middle of a 400 MB
+    /// note from throwing away the whole scan.
+    fn refresh_line_index(&mut self, edited_at: Option<usize>) {
+        self.line_index = crate::line_index::LineIndex::new(&self.content);
+        match edited_at {
+            Some(byte) => {
+                let line = self.line_index.line_of(&self.content, byte);
+                self.code_checkpoints.truncate_to(line);
+            }
+            None => self.code_checkpoints.reset(),
+        }
+    }
+
+    fn refresh_line_index_incremental(&mut self, edit_byte: usize, removed: &str, inserted: &str) {
+        self.line_index.splice(&self.content, edit_byte, removed, inserted);
+        let line = self.line_index.line_of(&self.content, edit_byte);
+        self.code_checkpoints.truncate_to(line);
+    }
+
+    /// Walk a little further ahead through the document's code fences.
+    ///
+    /// Called once per frame from the render path. The window only ever needs
+    /// the state at its first line, and that is extended on demand — this is
+    /// what makes a later jump to the end of a huge note free instead of a
+    /// one-off scan of the whole distance. Bounded by `max_lines`, so it costs
+    /// a fraction of a millisecond and never blocks a frame.
+    pub fn scan_code_ahead(&mut self, max_lines: usize) -> usize {
+        if self.code_checkpoints.is_complete(self.line_index.lines()) {
+            return 0;
+        }
+        self.code_checkpoints
+            .extend_slice(&self.content, &self.line_index, max_lines)
+    }
+
     /// Возвращает (line_index, col_index) 0-indexed
     pub fn line_col(&self) -> (usize, usize) {
         let mut offset = self.cursor_offset.min(self.content.len());
         while offset > 0 && !self.content.is_char_boundary(offset) {
             offset -= 1;
         }
-        if !self.visual_cache_dirty && !self.cached_line_starts.is_empty() && !self.cached_lines.is_empty() {
-            let line_idx = match self.cached_line_starts.binary_search(&offset) {
-                Ok(idx) => idx,
-                Err(idx) => idx.saturating_sub(1),
-            };
-            if line_idx < self.cached_lines.len() {
-                let line_start = self.cached_line_starts[line_idx];
-                let line = &self.cached_lines[line_idx];
-                let mut byte_in_line = offset.saturating_sub(line_start).min(line.len());
-                while byte_in_line > 0 && !line.is_char_boundary(byte_in_line) {
-                    byte_in_line -= 1;
-                }
-                let col_idx = line[..byte_in_line].chars().count();
-                return (line_idx, col_idx);
-            }
-        }
-        let prefix = &self.content[..offset];
-        let line_idx = prefix.matches('\n').count();
-        let last_newline = prefix.rfind('\n').map(|idx| idx + 1).unwrap_or(0);
-        let col_idx = prefix[last_newline..].chars().count();
+        let line_idx = self.line_index.line_of(&self.content, offset);
+        // `min(offset)` guards against a stale index after an unindexed edit:
+        // slicing must stay in bounds even if the two ever disagree.
+        let line_start = self.line_index.start(&self.content, line_idx).min(offset);
+        let col_idx = self.content[line_start..offset].chars().count();
         (line_idx, col_idx)
     }
 
     pub fn offset_for_line_col(&self, target_line: usize, target_col: usize) -> usize {
-        if !self.visual_cache_dirty && !self.cached_line_starts.is_empty() && !self.cached_lines.is_empty() {
-            if target_line < self.cached_lines.len() {
-                let line_start = self.cached_line_starts[target_line];
-                let line = &self.cached_lines[target_line];
-                let actual_col = target_col.min(line.chars().count());
-                let byte_col: usize = line.chars().take(actual_col).map(|c| c.len_utf8()).sum();
-                return line_start + byte_col;
-            }
+        if target_line >= self.line_index.lines() {
             return self.content.len();
         }
-        let lines: Vec<&str> = self.content.split('\n').collect();
-        let mut offset = 0;
-        for (i, line) in lines.iter().enumerate() {
-            if i == target_line {
-                let char_count = line.chars().count();
-                let actual_col = target_col.min(char_count);
-                let byte_col: usize = line.chars().take(actual_col).map(|c| c.len_utf8()).sum();
-                return offset + byte_col;
-            }
-            offset += line.len() + 1;
-        }
-        self.content.len()
+        let line_start = self.line_index.start(&self.content, target_line);
+        let line_end = self
+            .line_index
+            .end(&self.content, target_line)
+            .max(line_start)
+            .min(self.content.len());
+        let line = &self.content[line_start.min(self.content.len())..line_end];
+        let actual_col = target_col.min(line.chars().count());
+        let byte_col: usize = line.chars().take(actual_col).map(|c| c.len_utf8()).sum();
+        line_start + byte_col
+    }
+
+    /// Byte offset where `line` starts.
+    ///
+    /// Replaces the old `cached_line_starts` lookup: that array held one offset
+    /// per line (8 bytes × lines), this jumps to the nearest checkpoint and
+    /// scans at most `LINE_BLOCK` lines with `memchr`.
+    pub fn line_start_byte(&self, line: usize) -> usize {
+        self.line_index.start(&self.content, line)
+    }
+
+    /// Index of the line containing `byte`.
+    ///
+    /// Same contract as `cached_line_starts.binary_search(&byte)` with
+    /// `Err(idx) => idx - 1`: the byte belongs to the last line starting at or
+    /// before it.
+    pub fn line_of_byte(&self, byte: usize) -> usize {
+        self.line_index.line_of(&self.content, byte)
     }
 
     pub fn insert_text(&mut self, text: &str) {
-        self.snapshot_undo();
-        let _ = self.delete_selection();
-        let mut offset = self.cursor_offset.min(self.content.len());
-        while offset > 0 && !self.content.is_char_boundary(offset) {
-            offset -= 1;
-        }
-        self.doc.apply_edit(offset..offset, text);
-        self.content = self.doc.source.clone();
-        self.version += 1;
-        self.cursor_offset = offset + text.len();
-        self.selection_anchor = None;
-        self.is_dirty = true;
-        self.visual_cache_dirty = true;
-        self.sync_cursor();
+        self.replace_selection(text);
     }
 
     pub fn insert_newline_auto_indent(&mut self) {
-        self.snapshot_undo();
-        let _ = self.delete_selection();
+        if self.selection_range().is_some() {
+            self.delete_selection();
+        }
 
         let mut offset = self.cursor_offset.min(self.content.len());
         while offset > 0 && !self.content.is_char_boundary(offset) {
@@ -708,14 +938,18 @@ impl OpenedNote {
         let indent: String = last_line.chars().take(indent_len).collect();
 
         let insert_str = format!("\n{}", indent);
-        self.doc.apply_edit(offset..offset, &insert_str);
-        self.content = self.doc.source.clone();
+        let cursor_before = self.cursor_offset;
+        let at = offset;
+        let new_cursor = at + insert_str.len();
+
+        self.content.replace_range(offset..offset, &insert_str);
         self.version += 1;
-        self.cursor_offset = offset + insert_str.len();
+        self.refresh_line_index_incremental(at, "", &insert_str);
+        self.cursor_offset = new_cursor;
         self.selection_anchor = None;
         self.is_dirty = true;
         self.visual_cache_dirty = true;
-        self.sync_cursor();
+        self.record_change(at, String::new(), insert_str, cursor_before, new_cursor);
     }
 
     pub fn delete_backwards(&mut self) {
@@ -725,7 +959,6 @@ impl OpenedNote {
         if self.cursor_offset == 0 || self.content.is_empty() {
             return;
         }
-        self.snapshot_undo();
         let mut offset = self.cursor_offset.min(self.content.len());
         while offset > 0 && !self.content.is_char_boundary(offset) {
             offset -= 1;
@@ -737,14 +970,16 @@ impl OpenedNote {
         while prev > 0 && !self.content.is_char_boundary(prev) {
             prev -= 1;
         }
-        self.doc.apply_edit(prev..offset, "");
-        self.content = self.doc.source.clone();
+        let cursor_before = self.cursor_offset;
+        let removed = self.content[prev..offset].to_string();
+        self.content.replace_range(prev..offset, "");
         self.version += 1;
+        self.refresh_line_index_incremental(prev, &removed, "");
         self.cursor_offset = prev;
         self.selection_anchor = None;
         self.is_dirty = true;
         self.visual_cache_dirty = true;
-        self.sync_cursor();
+        self.record_change(prev, removed, String::new(), cursor_before, prev);
     }
 
     pub fn delete_forwards(&mut self) {
@@ -758,18 +993,20 @@ impl OpenedNote {
         if offset >= self.content.len() {
             return;
         }
-        self.snapshot_undo();
         let mut next = offset + 1;
         while next <= self.content.len() && !self.content.is_char_boundary(next) {
             next += 1;
         }
-        self.doc.apply_edit(offset..next, "");
-        self.content = self.doc.source.clone();
+        let cursor_before = self.cursor_offset;
+        let removed = self.content[offset..next].to_string();
+        self.content.replace_range(offset..next, "");
         self.version += 1;
+        self.refresh_line_index_incremental(offset, &removed, "");
+        self.cursor_offset = offset;
         self.selection_anchor = None;
         self.is_dirty = true;
         self.visual_cache_dirty = true;
-        self.sync_cursor();
+        self.record_change(offset, removed, String::new(), cursor_before, offset);
     }
 
     pub fn move_cursor_left(&mut self, shift: bool) {
@@ -777,7 +1014,6 @@ impl OpenedNote {
             if let Some(range) = self.selection_range() {
                 self.cursor_offset = range.start;
                 self.selection_anchor = None;
-                self.sync_cursor();
                 return;
             }
         }
@@ -795,7 +1031,6 @@ impl OpenedNote {
         if !shift {
             self.selection_anchor = None;
         }
-        self.sync_cursor();
     }
 
     pub fn move_cursor_right(&mut self, shift: bool) {
@@ -803,7 +1038,6 @@ impl OpenedNote {
             if let Some(range) = self.selection_range() {
                 self.cursor_offset = range.end;
                 self.selection_anchor = None;
-                self.sync_cursor();
                 return;
             }
         }
@@ -823,7 +1057,6 @@ impl OpenedNote {
         if !shift {
             self.selection_anchor = None;
         }
-        self.sync_cursor();
     }
 
     pub fn move_cursor_up(&mut self, shift: bool) {
@@ -836,7 +1069,6 @@ impl OpenedNote {
             if !shift {
                 self.selection_anchor = None;
             }
-            self.sync_cursor();
             return;
         }
 
@@ -852,12 +1084,10 @@ impl OpenedNote {
                 if !shift {
                     self.selection_anchor = None;
                 }
-                self.sync_cursor();
                 return;
             }
             offset += line.len() + 1;
         }
-        self.sync_cursor();
     }
 
     pub fn move_cursor_down(&mut self, shift: bool) {
@@ -871,7 +1101,6 @@ impl OpenedNote {
             if !shift {
                 self.selection_anchor = None;
             }
-            self.sync_cursor();
             return;
         }
 
@@ -886,12 +1115,10 @@ impl OpenedNote {
                 if !shift {
                     self.selection_anchor = None;
                 }
-                self.sync_cursor();
                 return;
             }
             offset += line.len() + 1;
         }
-        self.sync_cursor();
     }
 
     pub fn set_cursor_to_line_start(&mut self, target_line: usize) {
@@ -901,12 +1128,10 @@ impl OpenedNote {
             if i == target_line {
                 self.cursor_offset = offset;
                 self.selection_anchor = None;
-                self.sync_cursor();
                 return;
             }
             offset += line.len() + 1;
         }
-        self.sync_cursor();
     }
 
     pub fn set_cursor_to_line_end(&mut self, target_line: usize) {
@@ -916,19 +1141,16 @@ impl OpenedNote {
             if i == target_line {
                 self.cursor_offset = offset + line.len();
                 self.selection_anchor = None;
-                self.sync_cursor();
                 return;
             }
             offset += line.len() + 1;
         }
-        self.sync_cursor();
     }
 
     #[allow(dead_code)]
     pub fn set_cursor_to_line_col(&mut self, target_line: usize, target_col: usize) {
         self.cursor_offset = self.offset_for_line_col(target_line, target_col);
         self.selection_anchor = None;
-        self.sync_cursor();
     }
 
     pub fn home(&mut self, shift: bool) {
@@ -940,7 +1162,6 @@ impl OpenedNote {
         if !shift {
             self.selection_anchor = None;
         }
-        self.sync_cursor();
     }
 
     pub fn end(&mut self, shift: bool) {
@@ -952,7 +1173,6 @@ impl OpenedNote {
         if !shift {
             self.selection_anchor = None;
         }
-        self.sync_cursor();
     }
 }
 
@@ -1275,7 +1495,6 @@ impl AppState {
         self.open_note(candidate.clone());
         if let Some(ref mut note) = self.active_note {
             note.cursor_offset = note.content.len();
-            note.sync_cursor();
         }
         Some(candidate)
     }
@@ -1311,7 +1530,6 @@ impl AppState {
         self.open_note(candidate.clone());
         if let Some(ref mut note) = self.active_note {
             note.cursor_offset = note.content.len();
-            note.sync_cursor();
         }
         Some(candidate)
     }
@@ -1546,7 +1764,6 @@ impl AppState {
                     offset -= 1;
                 }
                 note.cursor_offset = offset;
-                note.sync_cursor();
 
                 note.selection_anchor = settings.selection_anchor.map(|anchor| {
                     let mut a = anchor.min(note.content.len());
@@ -1793,20 +2010,20 @@ mod tests {
         );
 
         // Initial cache build
-        note.ensure_visual_cache(true, 80);
-        assert_eq!(note.cached_lines.len(), 5001); // 5000 lines + trailing empty
-        assert_eq!(note.cached_line_starts.len(), 5001);
-        let initial_lines = Arc::clone(&note.cached_lines);
+        note.ensure_visual_cache(true, 80, 0);
+        assert_eq!(note.window.lines.len(), 5001); // 5000 lines + trailing empty
+        assert_eq!(note.line_index.lines(), 5001);
+        let initial_lines = Arc::clone(&note.window.lines);
 
         let t0 = std::time::Instant::now();
         const MOVES: usize = 1000;
         for _ in 0..MOVES {
             note.move_cursor_right(false);
-            note.ensure_visual_cache(true, 80);
+            note.ensure_visual_cache(true, 80, 0);
         }
         for _ in 0..MOVES {
             note.move_cursor_left(false);
-            note.ensure_visual_cache(true, 80);
+            note.ensure_visual_cache(true, 80, 0);
         }
         let elapsed = t0.elapsed();
         let per_move_us = elapsed.as_micros() as f64 / (MOVES * 2) as f64;
@@ -1818,7 +2035,7 @@ mod tests {
 
         // CRITICAL REQUIREMENTS:
         // 1. Cached lines Arc must NOT have been reallocated or rebuilt during cursor movements:
-        assert!(Arc::ptr_eq(&note.cached_lines, &initial_lines), "Cache must not be rebuilt during cursor moves");
+        assert!(Arc::ptr_eq(&note.window.lines, &initial_lines), "Cache must not be rebuilt during cursor moves");
         assert!(!note.visual_cache_dirty, "Cache must remain clean");
         // 2. Must be << 200 µs (0.2 ms)
         assert!(per_move_us < 200.0, "Per move latency should be under 200 µs, got {:.2} µs", per_move_us);
@@ -1834,38 +2051,86 @@ mod tests {
             1,
         );
 
-        note.ensure_visual_cache(true, 80);
+        note.ensure_visual_cache(true, 80, 0);
         assert!(!note.visual_cache_dirty);
 
         // Move cursor to inside paragraph: line 2 ("Some paragraph text here.")
         // "# Title\n\n" is 9 bytes. "Some " is 5 bytes. Offset 14 is right after "Some ".
         note.cursor_offset = 14;
-        note.sync_cursor();
 
         // Insert text incrementally
         note.insert_text("awesome ");
         assert_eq!(note.content, "# Title\n\nSome awesome paragraph text here.\n");
-        assert_eq!(note.doc.source, note.content);
         assert!(note.visual_cache_dirty, "Cache must be marked dirty after text insertion");
 
         // Rebuilding cache should reflect the new content
-        note.ensure_visual_cache(true, 80);
+        note.ensure_visual_cache(true, 80, 0);
         assert!(!note.visual_cache_dirty);
-        assert_eq!(note.cached_lines[2], "Some awesome paragraph text here.");
+        assert_eq!(note.window.lines[2], "Some awesome paragraph text here.");
 
         // Undo
         note.undo();
         assert_eq!(note.content, "# Title\n\nSome paragraph text here.\n");
-        assert_eq!(note.doc.source, note.content);
         assert!(note.visual_cache_dirty);
 
-        note.ensure_visual_cache(true, 80);
-        assert_eq!(note.cached_lines[2], "Some paragraph text here.");
+        note.ensure_visual_cache(true, 80, 0);
+        assert_eq!(note.window.lines[2], "Some paragraph text here.");
 
         // Redo
         note.redo();
         assert_eq!(note.content, "# Title\n\nSome awesome paragraph text here.\n");
-        assert_eq!(note.doc.source, note.content);
+    }
+
+    #[test]
+    fn test_delta_undo_stack_memory_and_sequential_edits() {
+        let mut note = OpenedNote::new(
+            PathBuf::from("test.md"),
+            "test".to_string(),
+            "Initial line.\n".to_string(),
+            0,
+        );
+
+        // 1. Sequential typing: "Hello " letter by letter
+        for ch in ["H", "e", "l", "l", "o", " "] {
+            note.insert_text(ch);
+        }
+        assert_eq!(note.content, "Hello Initial line.\n");
+        // Merging sequential keystrokes: undo_stack should only have 1 step!
+        assert_eq!(note.undo_stack.len(), 1);
+        assert_eq!(note.undo_stack[0].changes[0].inserted, "Hello ");
+
+        // 2. Undo the whole typed word
+        note.undo();
+        assert_eq!(note.content, "Initial line.\n");
+        assert_eq!(note.cursor_offset, 0);
+
+        // 3. Redo
+        note.redo();
+        assert_eq!(note.content, "Hello Initial line.\n");
+        assert_eq!(note.cursor_offset, 6);
+
+        // 4. Backspace 3 times
+        note.delete_backwards();
+        note.delete_backwards();
+        note.delete_backwards();
+        assert_eq!(note.content, "HelInitial line.\n");
+        assert_eq!(note.cursor_offset, 3);
+        // Sequential backspaces should be merged into 1 step
+        assert_eq!(note.undo_stack.len(), 2);
+
+        // 5. Undo backspaces
+        note.undo();
+        assert_eq!(note.content, "Hello Initial line.\n");
+        assert_eq!(note.cursor_offset, 6);
+
+        // 6. Selection replace
+        note.cursor_offset = 6;
+        note.selection_anchor = Some(0);
+        note.replace_selection("Welcome to ");
+        assert_eq!(note.content, "Welcome to Initial line.\n");
+
+        note.undo();
+        assert_eq!(note.content, "Hello Initial line.\n");
     }
 
     #[test]
@@ -1893,8 +2158,8 @@ mod tests {
             1,
         );
 
-        note.ensure_visual_cache(true, 40); // wrap at 40 cols
-        let visual_rows = Arc::clone(&note.cached_visual_rows);
+        note.ensure_visual_cache(true, 40, 0); // wrap at 40 cols
+        let visual_rows = Arc::clone(&note.window.visual_rows);
 
         // Test every single possible cursor offset in the document!
         for offset in 1..=note.content.len() {
@@ -1960,8 +2225,8 @@ mod tests {
             1,
         );
 
-        note.ensure_visual_cache(true, 40); // wrap at 40 cols
-        let visual_rows = Arc::clone(&note.cached_visual_rows);
+        note.ensure_visual_cache(true, 40, 0); // wrap at 40 cols
+        let visual_rows = Arc::clone(&note.window.visual_rows);
 
         for offset in 0..note.content.len() {
             note.cursor_offset = offset;
@@ -2000,6 +2265,189 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A note far larger than one window must not make the scrollbar jump as
+    /// the window travels.
+    ///
+    /// `total_height` mixes an exact window with an O(1) estimate on either
+    /// side. The estimate basis (rows per line, row height) is frozen for a
+    /// given wrap setting, so the total depends on the *number* of lines
+    /// outside the window, not on which of them the window happens to hold.
+    /// Checked here on a document whose lines genuinely differ in height.
+    #[test]
+    fn total_height_is_stable_while_the_window_travels() {
+        let mut text = String::new();
+        for i in 0..60_000usize {
+            match (i / 500) % 3 {
+                0 => text.push_str(&format!("short line {i}\n")),
+                1 => text.push_str(&format!(
+                    "a rather long paragraph line number {i} that certainly wraps \
+                     once the editor is only eighty columns wide\n"
+                )),
+                _ => text.push_str(&format!("```\nfence body {i}\n```\n")),
+            }
+        }
+        let mut note = OpenedNote::new(PathBuf::from("stable.md"), "stable".to_string(), text, 1);
+
+        // The first build freezes the estimate basis; it sits at the top.
+        note.ensure_visual_cache(true, 80, 0);
+        assert_eq!(note.above_lines, 0, "the first window sits at the top");
+        assert!(note.below_lines > 0, "the note must be windowed");
+        let first = note.total_height();
+        assert!(first > 0.0);
+
+        let mut worst = 0.0f64;
+        for anchor in (0..note.line_index.lines()).step_by(997) {
+            note.ensure_visual_cache(true, 80, anchor);
+            assert!(
+                note.window.covers_line(anchor),
+                "the window must hold its anchor {anchor}"
+            );
+            let total = note.total_height();
+            worst = worst.max((total - first).abs() / first);
+        }
+        assert!(
+            worst < 0.01,
+            "document height drifted by {:.3}% across window moves",
+            worst * 100.0
+        );
+    }
+
+    /// The caret has to resolve on any line the window holds.
+    ///
+    /// `find_visual_row_for_cursor` binary-searches the window's rows, so every
+    /// line inside the window must be present and must name itself. A line
+    /// outside it clamps to the nearest edge instead of panicking, and the
+    /// anchor built from that line re-places the window on it.
+    #[test]
+    fn cursor_resolves_on_every_line_of_the_window() {
+        let mut text = String::new();
+        for i in 0..20_000usize {
+            if i % 7 == 0 {
+                text.push_str(&format!(
+                    "long wrapped line {i} with enough words to spill past the \
+                     eighty column boundary several times over\n"
+                ));
+            } else {
+                text.push_str(&format!("line {i}\n"));
+            }
+        }
+        let mut note = OpenedNote::new(PathBuf::from("caret.md"), "caret".to_string(), text, 1);
+        note.ensure_visual_cache(true, 80, 12_000);
+
+        let rows = Arc::clone(&note.window.visual_rows);
+        let start = note.window.start_line;
+        let end = note.window.end_line;
+        assert!(start > 0 && end < note.line_index.lines(), "must be windowed");
+
+        for line in (start..end).step_by(13) {
+            let (v_idx, _) = crate::markdown::find_visual_row_for_cursor(&rows, line, 0)
+                .unwrap_or_else(|| panic!("line {line} has no row"));
+            assert_eq!(rows[v_idx].line_idx, line, "row {v_idx} names the wrong line");
+        }
+
+        // A line above the window clamps to its first row rather than failing.
+        let outside = 500usize;
+        assert!(outside < start);
+        let (v_idx, _) =
+            crate::markdown::find_visual_row_for_cursor(&rows, outside, 0).expect("clamped row");
+        assert_eq!(v_idx, 0, "a line above the window clamps to its first row");
+
+        note.ensure_visual_cache(true, 80, outside);
+        assert!(note.window.covers_line(outside));
+        let rows = Arc::clone(&note.window.visual_rows);
+        let (v_idx, _) = crate::markdown::find_visual_row_for_cursor(&rows, outside, 0)
+            .expect("row after re-placing the window");
+        assert_eq!(rows[v_idx].line_idx, outside);
+    }
+
+    /// Stage-5 readiness check: a code block that opened far above the window
+    /// must still be recognised inside it.
+    ///
+    /// Before the checkpoints, the window's fence scan started from `false`,
+    /// so the body of a block that began before the window was painted as plain
+    /// text. Here the block opens at line 1 and the window sits 100k lines
+    /// below it.
+    #[test]
+    fn a_window_in_the_middle_of_a_code_block_knows_it_is_inside_one() {
+        use crate::markdown::CodeBlockKind;
+
+        let mut text = String::from("intro\n```rust\n");
+        for i in 0..120_000usize {
+            text.push_str(&format!("let v{i} = {i};\n"));
+        }
+        text.push_str("```\ndone\n");
+        let mut note = OpenedNote::new(PathBuf::from("code.md"), "code".to_string(), text, 1);
+
+        note.ensure_visual_cache(true, 0, 100_000);
+        assert!(note.above_lines > 0, "the note must be windowed");
+
+        let start = note.window.start_line;
+        assert!(start > 2, "the window must start below the opening fence");
+        assert!(
+            note.code_checkpoints.scanned_lines() > start,
+            "the checkpoints must reach the window's first line"
+        );
+
+        // The state the window reports for its own first line is the checkpoint
+        // state, not the default of a fresh scan.
+        let state = note
+            .window
+            .code_state(start)
+            .expect("the window's first line must be inside the code block");
+        assert_eq!(state.kind, CodeBlockKind::InsideCode);
+        assert_eq!(state.block_id, 0);
+
+        // And so is the line of the first row actually painted.
+        let first_line = note.window.visual_rows.first().unwrap().line_idx;
+        assert_eq!(
+            note.window.code_state(first_line).map(|s| s.kind),
+            Some(CodeBlockKind::InsideCode)
+        );
+    }
+
+    /// A keystroke must not throw away the whole checkpoint table: the prefix
+    /// above the edit is still valid, and only the tail is rescanned.
+    #[test]
+    fn an_edit_keeps_the_code_checkpoints_above_it() {
+        use crate::markdown::CodeBlockKind;
+
+        let mut text = String::from("```\n");
+        for i in 0..20_000usize {
+            text.push_str(&format!("body {i}\n"));
+        }
+        text.push_str("```\n");
+        let mut note = OpenedNote::new(PathBuf::from("cp.md"), "cp".to_string(), text, 1);
+        note.ensure_visual_cache(true, 0, 15_000);
+        let start = note.window.start_line;
+        let scanned = note.code_checkpoints.scanned_lines();
+        assert!(
+            scanned >= start + 1,
+            "the scan must reach the window's first line"
+        );
+
+        // Type a character deep inside the block.
+        let edit_line = 10_000usize;
+        note.cursor_offset = note.line_start_byte(edit_line) + 3;
+        note.insert_text("X");
+
+        let kept =
+            (edit_line / crate::code_scan::CHECKPOINT_LINES) * crate::code_scan::CHECKPOINT_LINES;
+        assert_eq!(
+            note.code_checkpoints.scanned_lines(),
+            kept,
+            "the checkpoints must be truncated exactly at the edit's checkpoint"
+        );
+        assert!(kept > 0 && kept < scanned, "the prefix must survive");
+
+        // And the window still resolves its code state after the edit.
+        note.ensure_visual_cache(true, 0, 15_000);
+        let start = note.window.start_line;
+        assert_eq!(
+            note.window.code_state(start).map(|s| s.kind),
+            Some(CodeBlockKind::InsideCode)
+        );
     }
 
     #[test]
@@ -2052,7 +2500,7 @@ mod tests {
             "# Заметка\n".to_string(),
             1,
         );
-        note.ensure_visual_cache(true, 80);
+        note.ensure_visual_cache(true, 80, 0);
 
         // Move cursor to the end of the first line
         note.cursor_offset = note.content.len();
@@ -2106,7 +2554,7 @@ mod tests {
             "# Без названия\n\n".to_string(),
             1,
         );
-        new_note.ensure_visual_cache(true, 80);
+        new_note.ensure_visual_cache(true, 80, 0);
         new_note.cursor_offset = new_note.content.len();
 
         // Type text containing 'ё' and other Cyrillic characters
@@ -2258,6 +2706,7 @@ mod tests {
         );
         note.content = "hello  world\nтест".to_string();
         note.version += 1;
+        note.refresh_line_index(None);
         assert_eq!(note.text_stats(), TextStats::Exact { words: 3, chars: 17 });
 
         // The cache must return the same value without recomputing.
@@ -2268,6 +2717,7 @@ mod tests {
         // Editing the text invalidates the cache.
         note.content.push_str(" ещё");
         note.version += 1;
+        note.refresh_line_index(None);
         assert_eq!(note.text_stats(), TextStats::Exact { words: 4, chars: 21 });
     }
 
@@ -2281,6 +2731,7 @@ mod tests {
         );
         note.content = "a ".repeat(TEXT_STATS_EXACT_LIMIT); // 4 MB > limit
         note.version += 1;
+        note.refresh_line_index(None);
         assert!(matches!(note.text_stats(), TextStats::Large { .. }));
     }
 }

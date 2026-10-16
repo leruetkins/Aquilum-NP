@@ -384,4 +384,87 @@ mod tests {
         }
         println!("===================================================================\n");
     }
+
+    fn mb_str(bytes: usize) -> String {
+        format!("{:.1}", bytes as f64 / (1024.0 * 1024.0))
+    }
+
+    /// Budget of the open path: time and bytes spent just to open a note.
+    ///
+    /// The point of this benchmark is the *auxiliary* memory column — everything
+    /// the editor builds besides the text itself. It is what makes opening a
+    /// huge note expensive, and it must not scale with the document.
+    ///
+    /// Sizes come from `VIBECODIUM_BENCH_LINES` (comma-separated, default
+    /// `20000,100000`), e.g. a real measurement:
+    /// `VIBECODIUM_BENCH_LINES=4000000 cargo test --bin vibecodium
+    /// benchmark_open_large_note -- --nocapture --test-threads=1`
+    #[test]
+    fn benchmark_open_large_note() {
+        let sizes: Vec<usize> = std::env::var("VIBECODIUM_BENCH_LINES")
+            .ok()
+            .and_then(|v| {
+                v.split(',')
+                    .map(|part| part.trim().parse::<usize>().ok())
+                    .collect::<Option<Vec<usize>>>()
+            })
+            .unwrap_or_else(|| vec![20_000, 100_000]);
+
+        println!("\n=== ОТКРЫТИЕ ЗАМЕТКИ: ВРЕМЯ И ПАМЯТЬ НА ПУТИ ОТКРЫТИЯ ===");
+        println!(
+            "{:>10} | {:>7} | {:>10} | {:>10} | {:>9} | {:>9} | {:>9} | {:>9} | {:>9} | {:>9}",
+            "строк", "МБ", "open", "cache", "lines", "vrows", "codes", "starts", "heights", "итого"
+        );
+        println!(
+            "{:-<10}-+-{:-<7}-+-{:-<10}-+-{:-<10}-+-{:-<9}-+-{:-<9}-+-{:-<9}-+-{:-<9}-+-{:-<9}-+-{:-<9}",
+            "", "", "", "", "", "", "", "", "", ""
+        );
+
+        for &lines in &sizes {
+            let text = generate_test_doc(lines);
+            let doc_mb = text.len() as f64 / (1024.0 * 1024.0);
+
+            let t_open = Instant::now();
+            let mut note = crate::state::OpenedNote::new(
+                std::path::PathBuf::from("bench.md"),
+                "bench".to_string(),
+                text,
+                1,
+            );
+            let open = t_open.elapsed();
+
+            let t_cache = Instant::now();
+            note.ensure_visual_cache(true, 80, 0);
+            let cache = t_cache.elapsed();
+
+            // Auxiliary memory: everything except the text itself. Every column
+            // but `starts` measures the *window*, so none of them grows with the
+            // document — that is the whole point of the open-path budget, and it
+            // is what the `строк` column is there to show.
+            let lines_bytes = note.window.lines.bytes();
+            let vrows = note.window.visual_rows.capacity()
+                * std::mem::size_of::<crate::markdown::VisualRow>();
+            let codes = note.window.code_states.bytes();
+            // Line addressing used to be a `Vec<usize>` with one entry per line;
+            // it is now a checkpoint index, so this column is kilobytes.
+            let starts = note.line_index.bytes();
+            let heights = note.window.height_index.bytes();
+            let total = lines_bytes + vrows + codes + starts + heights;
+
+            println!(
+                "{:>10} | {:>7.1} | {:>10?} | {:>10?} | {:>9} | {:>9} | {:>9} | {:>9} | {:>9} | {:>9}",
+                lines,
+                doc_mb,
+                open,
+                cache,
+                mb_str(lines_bytes),
+                mb_str(vrows),
+                mb_str(codes),
+                mb_str(starts),
+                mb_str(heights),
+                mb_str(total)
+            );
+        }
+        println!("===================================================================\n");
+    }
 }

@@ -6053,6 +6053,7 @@ dependencies = [
  "dirs 6.0.0",
  "futures",
  "gpui",
+ "memchr",
  "pulldown-cmark",
  "rfd",
  "rquickjs",
