@@ -651,7 +651,7 @@ pub fn render_ui_node<V: UiSink>(
                 col = col
                     .cursor_pointer()
                     .hover(|h| h.bg(theme.bg_hover))
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.send_plugin_ui_event(&p_id, view_id, n_id.clone(), "click", None, cx);
                     }));
@@ -930,7 +930,7 @@ pub fn render_ui_node<V: UiSink>(
                         .cursor_pointer()
                         .hover(|h| h.bg(theme.bg_hover));
                 }
-                row = row.on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                row = row.on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
                     this.send_plugin_ui_event(&p_id, view_id, n_id.clone(), "click", None, cx);
                 }));

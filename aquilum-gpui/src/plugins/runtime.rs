@@ -343,6 +343,66 @@ fn setup_plugin_environment<'js>(
         globalThis.__workspace_leaves = new Map();
         let __next_timer_id = 1;
 
+        globalThis.Event = class Event {
+            constructor(type, options = {}) {
+                this.type = String(type);
+                this.defaultPrevented = false;
+                this.cancelBubble = false;
+                this.bubbles = options.bubbles !== undefined ? !!options.bubbles : true;
+                this.cancelable = options.cancelable !== undefined ? !!options.cancelable : true;
+                this.propagationStopped = false;
+                this.target = options.target || null;
+                this.currentTarget = options.currentTarget || null;
+                Object.assign(this, options);
+            }
+            stopPropagation() {
+                this.propagationStopped = true;
+                this.cancelBubble = true;
+            }
+            stopImmediatePropagation() {
+                this.propagationStopped = true;
+                this.cancelBubble = true;
+            }
+            preventDefault() {
+                this.defaultPrevented = true;
+            }
+        };
+        globalThis.UIEvent = class UIEvent extends globalThis.Event {};
+        globalThis.MouseEvent = class MouseEvent extends globalThis.UIEvent {
+            constructor(type, options = {}) {
+                super(type, options);
+                this.button = options.button || 0;
+                this.buttons = options.buttons || 1;
+                this.clientX = options.clientX || 0;
+                this.clientY = options.clientY || 0;
+                this.pageX = options.pageX || 0;
+                this.pageY = options.pageY || 0;
+                this.screenX = options.screenX || 0;
+                this.screenY = options.screenY || 0;
+                this.altKey = !!options.altKey;
+                this.ctrlKey = !!options.ctrlKey;
+                this.metaKey = !!options.metaKey;
+                this.shiftKey = !!options.shiftKey;
+            }
+        };
+        globalThis.KeyboardEvent = class KeyboardEvent extends globalThis.UIEvent {
+            constructor(type, options = {}) {
+                super(type, options);
+                this.key = options.key || "";
+                this.code = options.code || "";
+                this.altKey = !!options.altKey;
+                this.ctrlKey = !!options.ctrlKey;
+                this.metaKey = !!options.metaKey;
+                this.shiftKey = !!options.shiftKey;
+            }
+        };
+        globalThis.CustomEvent = class CustomEvent extends globalThis.Event {
+            constructor(type, options = {}) {
+                super(type, options);
+                this.detail = options?.detail;
+            }
+        };
+
         function __dispatch_ui_interaction(nodeId, action, value) {
             if (globalThis.__action_callbacks && globalThis.__action_callbacks.has(nodeId)) {
                 try {
@@ -388,10 +448,11 @@ fn setup_plugin_environment<'js>(
                         el.value = value != null ? String(value) : "";
                         parsedVal = el.value;
                     }
-                    el.dispatchEvent({ type: "change", target: el, value: parsedVal });
-                    el.dispatchEvent({ type: "input", target: el, value: parsedVal });
+                    el.dispatchEvent(new globalThis.Event("change", { target: el, currentTarget: el, value: parsedVal }));
+                    el.dispatchEvent(new globalThis.Event("input", { target: el, currentTarget: el, value: parsedVal }));
                 } else {
-                    el.dispatchEvent({ type: action, target: el });
+                    const ev = new globalThis.MouseEvent(action, { target: el, currentTarget: el, button: 0 });
+                    el.dispatchEvent(ev);
                 }
             }
 
@@ -1383,7 +1444,23 @@ fn setup_plugin_environment<'js>(
             }
 
             dispatchEvent(event) {
-                const type = event?.type || "click";
+                if (!event || typeof event !== "object") {
+                    event = new (globalThis.MouseEvent || globalThis.Event || Object)(String(event || "click"), { target: this, currentTarget: this });
+                } else {
+                    if (!event.target) event.target = this;
+                    event.currentTarget = this;
+                }
+                if (typeof event.stopPropagation !== "function") {
+                    event.stopPropagation = function() { this.cancelBubble = true; this.propagationStopped = true; };
+                }
+                if (typeof event.stopImmediatePropagation !== "function") {
+                    event.stopImmediatePropagation = function() { this.cancelBubble = true; this.propagationStopped = true; };
+                }
+                if (typeof event.preventDefault !== "function") {
+                    event.preventDefault = function() { this.defaultPrevented = true; };
+                }
+
+                const type = event.type || "click";
                 const list = this.eventListeners.get(type);
                 if (list) {
                     for (const fn of list) {
@@ -1399,6 +1476,13 @@ fn setup_plugin_environment<'js>(
                                             const tree = __velement_to_uinode(globalThis.__active_setting_tab.containerEl);
                                             __invoke_host("set_view_tree", { view_id: 0, tree });
                                         } catch (e) {}
+                                    }
+                                    if (globalThis.__workspace_leaves) {
+                                        for (const leaf of globalThis.__workspace_leaves.values()) {
+                                            if (leaf && leaf.view && typeof leaf.syncTree === "function") {
+                                                try { leaf.syncTree(); } catch (e) {}
+                                            }
+                                        }
                                     }
                                 }).catch(e => console.error("Async event listener error:", e));
                             }
@@ -1965,18 +2049,7 @@ fn setup_plugin_environment<'js>(
                 };
             }
 
-            if (el.tag === "p" || el.tag === "span" || (el.tag === "div" && el.children.length === 0 && el.text)) {
-                if (el.children.length === 0) {
-                    return {
-                        type: "text",
-                        class: classStr,
-                        style: el.classes.has("muted") ? "muted" : "normal",
-                        value: el.text || ""
-                    };
-                }
-            }
-
-            if (el.classes.has("clickable-icon") || el.classes.has("recent-files-file-delete")) {
+            if (el.classes.has("clickable-icon") || el.classes.has("menu-item-icon") || el.classes.has("recent-files-file-delete") || (el.attributes["icon"] && el.eventListeners?.has("click"))) {
                 const icon = el.attributes["icon"] || (el.text ? undefined : "cross");
                 return {
                     type: "button",
@@ -1986,6 +2059,17 @@ fn setup_plugin_environment<'js>(
                     variant: "secondary",
                     disabled: false
                 };
+            }
+
+            if (el.tag === "p" || el.tag === "span" || (el.tag === "div" && el.children.length === 0 && el.text)) {
+                if (el.children.length === 0) {
+                    return {
+                        type: "text",
+                        class: classStr,
+                        style: el.classes.has("muted") ? "muted" : "normal",
+                        value: el.text || ""
+                    };
+                }
             }
 
             if (el.classes && Array.from(el.classes).some(c => c.includes("donation") || c.includes("donate") || c.includes("sponsor"))) {
@@ -3096,18 +3180,6 @@ fn setup_plugin_environment<'js>(
             },
             setItem: () => {},
             removeItem: () => {}
-        };
-        globalThis.Event = class Event {
-            constructor(type, options = {}) {
-                this.type = String(type);
-                Object.assign(this, options);
-            }
-        };
-        globalThis.CustomEvent = class CustomEvent extends globalThis.Event {
-            constructor(type, options = {}) {
-                super(type, options);
-                this.detail = options?.detail;
-            }
         };
         globalThis.confirm = function(msg) {
             return true;
@@ -4795,6 +4867,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(150));
 
         let mut got_leaf_view = false;
+        let mut delete_btn_id = None;
         while let Ok(call) = api_rx.try_recv() {
             match call.request {
                 ApiRequest::SetLeafView { ref tree, .. } => {
@@ -4805,12 +4878,110 @@ mod tests {
                     if s.contains("weekly") && s.contains("daily") {
                         got_leaf_view = true;
                     }
+                    fn find_first_delete(n: &crate::plugins::ui::UiNode) -> Option<String> {
+                        match n {
+                            crate::plugins::ui::UiNode::Button { id, label, .. } if label == "×" => Some(id.clone()),
+                            crate::plugins::ui::UiNode::Column { children, .. } | crate::plugins::ui::UiNode::Row { children, .. } => {
+                                for c in children {
+                                    if let Some(found) = find_first_delete(c) {
+                                        return Some(found);
+                                    }
+                                }
+                                None
+                            }
+                            _ => None,
+                        }
+                    }
+                    if delete_btn_id.is_none() {
+                        delete_btn_id = find_first_delete(tree);
+                    }
                 }
                 _ => {}
             }
         }
         assert!(got_leaf_view, "Should have received SetLeafView containing distinct entries for weekly and daily");
+        assert!(delete_btn_id.is_some(), "Should have found delete button in tree");
 
+        // Simulate clicking the delete button (which calls c.stopPropagation() and removeFile)
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::UiEvent {
+            view_id: 0,
+            node_id: delete_btn_id.unwrap(),
+            event: "click".to_string(),
+            value: None,
+        });
+        let mut got_delete_saved = false;
+        let mut got_updated_leaf_after_delete = false;
+        let start_del = std::time::Instant::now();
+        while start_del.elapsed() < Duration::from_millis(1000) && (!got_delete_saved || !got_updated_leaf_after_delete) {
+            while let Ok(call) = api_rx.try_recv() {
+                match call.request {
+                    ApiRequest::SaveData { ref data } => {
+                        let s = data.to_string();
+                        if !s.contains("weekly.md") && s.contains("daily.md") {
+                            got_delete_saved = true;
+                        }
+                        let _ = handle.host_events_tx.unbounded_send(HostEvent::response_ok(
+                            call.request_id,
+                            serde_json::Value::Null,
+                        ));
+                    }
+                    ApiRequest::SetLeafView { ref tree, .. } => {
+                        let s = serde_json::to_string(tree).unwrap();
+                        if !s.contains("weekly") && s.contains("daily") {
+                            got_updated_leaf_after_delete = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(got_delete_saved, "Clicking delete button must remove the file from recent files saved data");
+        assert!(got_updated_leaf_after_delete, "Clicking delete button must trigger redraw and sync updated leaf view without deleted file");
+
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
+    }
+
+    #[test]
+    fn test_event_stop_propagation_and_sanitization() {
+        let manifest = PluginManifest {
+            id: "test-events".into(),
+            name: "Test Events".into(),
+            version: "1.0.0".into(),
+            min_app_version: None,
+            description: "".into(),
+            author: "".into(),
+            permissions: PluginPermissions::default(),
+        };
+
+        let (api_tx, _api_rx) = unbounded();
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
+
+        let script = r#"
+            let stopped = false;
+            let prevented = false;
+            const el = new VElement("div");
+            el.addEventListener("click", (evt) => {
+                evt.stopPropagation();
+                evt.preventDefault();
+                stopped = evt.propagationStopped;
+                prevented = evt.defaultPrevented;
+            });
+            // Dispatch with raw object (like older call sites)
+            el.dispatchEvent({ type: "click" });
+            if (!stopped || !prevented) throw new Error("Event methods failed");
+
+            // Dispatch with new Event
+            stopped = false;
+            prevented = false;
+            const ev2 = new Event("click");
+            el.dispatchEvent(ev2);
+            if (!stopped || !prevented) throw new Error("Event class methods failed");
+        "#;
+
+        let handle = spawn_plugin_runtime(manifest, script.into(), api_tx, snapshot)
+            .expect("failed to spawn runtime");
+        std::thread::sleep(Duration::from_millis(50));
         let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
     }
 
