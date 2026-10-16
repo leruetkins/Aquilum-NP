@@ -872,6 +872,7 @@ impl OpenedNote {
     /// above `E`, so the checkpoints above it survive and the rest are
     /// rescanned on demand — which keeps a keystroke in the middle of a 400 MB
     /// note from throwing away the whole scan.
+    #[cfg(test)]
     fn refresh_line_index(&mut self, edited_at: Option<usize>) {
         self.line_index = crate::line_index::LineIndex::new(&self.content);
         match edited_at {

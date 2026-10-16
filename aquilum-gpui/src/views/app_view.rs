@@ -1544,6 +1544,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
     /// overview-ruler marks on the editor scrollbar (cursor line, selection
     /// span). Out-of-range offsets clamp to the document, empty caches sit at
     /// zero.
+    #[cfg(test)]
     pub(crate) fn editor_doc_y_for_offset(
         offset: usize,
         content: &str,
