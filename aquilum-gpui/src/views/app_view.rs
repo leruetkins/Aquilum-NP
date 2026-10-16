@@ -95,6 +95,10 @@ pub struct AppView {
     pub tabs_popup: Option<Entity<crate::views::tab_list::TabListPopup>>,
     /// Keeps the popup's event subscription alive; dropping it unsubscribes.
     pub tabs_popup_subscription: Option<Subscription>,
+    /// Index of the tab strip tab under the cursor, if any. Drives the
+    /// Chrome-like behavior: the hovered tab's neighbours hide their
+    /// dividers so the boundary always reads clean.
+    pub hovered_tab_idx: Option<usize>,
     /// Locale picker popup (same smart list, anchored to the language button).
     pub locale_popup: Option<Entity<crate::views::tab_list::TabListPopup>>,
     /// Keeps the locale picker's event subscription alive.
@@ -340,6 +344,7 @@ impl AppView {
             is_hovering_right_resizer: false,
             tabs_popup: None,
             tabs_popup_subscription: None,
+            hovered_tab_idx: None,
             locale_popup: None,
             locale_popup_subscription: None,
             font_popup: None,
@@ -1776,6 +1781,18 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             self.need_scroll_sidebar_to_active.set(true);
             window.focus(&self.focus_handle);
             self.reset_editor_cursor_blink(cx);
+            cx.notify();
+        }
+    }
+
+    /// Activates the tab strip tab for `path` (shared by the tab body and the
+    /// invisible gap extenders around it, so every pixel opens a tab).
+    pub(crate) fn select_tab_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.active_note.as_ref().map(|n| &n.path != &path).unwrap_or(true) {
+            self.select_note(path, true, window, cx);
+        } else {
+            self.need_scroll_sidebar_to_active.set(true);
+            self.state.reveal_path_in_tree(&path);
             cx.notify();
         }
     }
@@ -4740,6 +4757,11 @@ impl Render for AppView {
                                 let active_path = self.state.active_note.as_ref().map(|n| n.path.clone())
                                     .or_else(|| self.state.active_empty_tab.clone());
                                 let is_active_dirty = self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false);
+                                // Hovered tab (clamped): neighbours hide their dividers
+                                // Chrome-style so the boundary always reads clean.
+                                let hovered_tab = self
+                                    .hovered_tab_idx
+                                    .filter(|&i| i < self.state.open_tabs.len());
 
                                 let is_overflowing = is_tabs_overflowing;
 
@@ -4751,7 +4773,17 @@ impl Render for AppView {
                                     .gap(px(effective_tab_gap))
                                     .h_full()
                                     .pl(px(8.0))
-                                    .flex_shrink_0();
+                                    .flex_shrink_0()
+                                    // Leaving the whole strip clears the hovered tab.
+                                    // Tab/enter events only ever set it (never clear),
+                                    // so bubble order across neighbours cannot corrupt it:
+                                    // the last writer always wins with the tab under cursor.
+                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                        if !hovered && this.hovered_tab_idx.is_some() {
+                                            this.hovered_tab_idx = None;
+                                            cx.notify();
+                                        }
+                                    }));
 
                                 // New-note button at the very start of the tab strip
                                 // (mirror of the "+" at the end, but creates a real note).
@@ -4764,7 +4796,9 @@ impl Render for AppView {
                                     .map(|p| active_path.as_ref() == Some(p))
                                     .unwrap_or(false);
                                 let show_leading_divider =
-                                    !self.state.open_tabs.is_empty() && !first_tab_active;
+                                    !self.state.open_tabs.is_empty()
+                                        && !first_tab_active
+                                        && hovered_tab != Some(0);
                                 let leading_sep_right = -(effective_tab_gap / 2.0).floor();
                                 let leading_divider_color = if theme.is_dark {
                                     rgba(0xcdd6f440)
@@ -4781,6 +4815,14 @@ impl Render for AppView {
                                         .h(px(34.0))
                                         .w(px(32.0))
                                         .flex_shrink_0()
+                                        // The button is not a tab: hovering it clears the
+                                        // hovered tab (the strip leave does not fire here).
+                                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                            if *hovered && this.hovered_tab_idx.is_some() {
+                                                this.hovered_tab_idx = None;
+                                                cx.notify();
+                                            }
+                                        }))
                                         .when(show_leading_divider, |d| {
                                             d.child(
                                                 div()
@@ -4815,7 +4857,13 @@ impl Render for AppView {
                                 for (idx, tab_path) in self.state.open_tabs.iter().enumerate() {
                                     let is_active = active_path.as_ref() == Some(tab_path);
                                     let is_next_active = active_path.as_ref() == self.state.open_tabs.get(idx + 1);
-                                    let show_divider = !is_active && (idx + 1 < self.state.open_tabs.len()) && !is_next_active;
+                                    // Chrome-like: dividers adjacent to the hovered tab hide,
+                                    // so there is always a clean boundary and a tab opens.
+                                    let show_divider = !is_active
+                                        && (idx + 1 < self.state.open_tabs.len())
+                                        && !is_next_active
+                                        && hovered_tab != Some(idx)
+                                        && hovered_tab != Some(idx + 1);
 
                                     let title = crate::views::new_tab::tab_display_title(
                                         tab_path,
@@ -4823,6 +4871,8 @@ impl Render for AppView {
                                         &self.t("common.untitled"),
                                     );
                                     let tab_path_for_select = tab_path.clone();
+                                    let tab_path_for_ext_l = tab_path.clone();
+                                    let tab_path_for_ext_r = tab_path.clone();
                                     let tab_path_for_close = tab_path.clone();
                                     let tab_path_for_middle = tab_path.clone();
                                     let tab_path_for_middle_select = tab_path.clone();
@@ -4830,11 +4880,6 @@ impl Render for AppView {
 
                                     let tab_w = tab_widths.get(idx).copied().unwrap_or(160.0);
 
-                                    // Hover group for the inactive tab: the hitbox stays full
-                                    // titlebar height, but the hover wash paints only the old
-                                    // 34px tab body at the bottom.
-                                    let tab_group: SharedString =
-                                        format!("tab-hover-{idx}").into();
                                     let mut tab_item = div()
                                         .id(gpui::ElementId::from(("tab-item", idx)))
                                         .relative()
@@ -4848,6 +4893,16 @@ impl Render for AppView {
                                         .h_full()
                                         .w(px(tab_w))
                                         .flex_shrink_0()
+                                        // Enter-only: leaves are ignored (the strip-level
+                                        // leave clears). Bubble order runs right-to-left,
+                                        // so a neighbour's leave must never overwrite a
+                                        // fresher enter with None.
+                                        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                                            if *hovered && this.hovered_tab_idx != Some(idx) {
+                                                this.hovered_tab_idx = Some(idx);
+                                                cx.notify();
+                                            }
+                                        }))
                                         .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, _, cx| {
                                             cx.stop_propagation();
                                             this.close_tab(&tab_path_for_middle, cx);
@@ -4859,12 +4914,15 @@ impl Render for AppView {
                                             this.open_tab_context_menu(tab_path_for_context.clone(), x, y, cx);
                                         }))
                                         .when(!is_active, |tab| {
-                                            tab.group(tab_group.clone())
+                                            // Hover wash paints only the old 34px tab body at
+                                            // the bottom; the hitbox stays full height.
+                                            let tab = tab
                                                 .bg(theme.bg_sidebar)
                                                 .rounded_t_md()
                                                 .border_b_1()
-                                                .border_color(theme.border)
-                                                .child(
+                                                .border_color(theme.border);
+                                            if hovered_tab == Some(idx) {
+                                                tab.child(
                                                     div()
                                                         .absolute()
                                                         .bottom_0()
@@ -4872,10 +4930,11 @@ impl Render for AppView {
                                                         .right_0()
                                                         .h(px(34.0))
                                                         .rounded_t_md()
-                                                        .group_hover(tab_group.clone(), |h| {
-                                                            h.bg(theme.bg_hover)
-                                                        }),
+                                                        .bg(theme.bg_hover),
                                                 )
+                                            } else {
+                                                tab
+                                            }
                                         });
 
                                     if show_divider {
@@ -4897,6 +4956,53 @@ impl Render for AppView {
                                                 .bg(divider_color),
                                         );
                                     }
+
+                                    // Invisible hit extenders tiling the inter-tab gaps: each
+                                    // half-gap belongs to the adjacent tab, so every pixel
+                                    // between tabs opens a tab (no dead zones on dividers).
+                                    // They tile exactly (no overlap): right covers [0, hr],
+                                    // left covers [hr, gap].
+                                    let ext_r = (effective_tab_gap / 2.0).ceil();
+                                    let ext_l = (effective_tab_gap - ext_r).max(0.0);
+                                    tab_item = tab_item
+                                        .child(
+                                            div()
+                                                .id(gpui::ElementId::from(("tab-hit-l", idx)))
+                                                .absolute()
+                                                .top_0()
+                                                .bottom_0()
+                                                .left(px(-ext_l))
+                                                .w(px(ext_l))
+                                                .cursor_pointer()
+                                                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                                                    if *hovered && this.hovered_tab_idx != Some(idx) {
+                                                        this.hovered_tab_idx = Some(idx);
+                                                        cx.notify();
+                                                    }
+                                                }))
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    this.select_tab_path(tab_path_for_ext_l.clone(), window, cx);
+                                                })),
+                                        )
+                                        .child(
+                                            div()
+                                                .id(gpui::ElementId::from(("tab-hit-r", idx)))
+                                                .absolute()
+                                                .top_0()
+                                                .bottom_0()
+                                                .right(px(-ext_r))
+                                                .w(px(ext_r))
+                                                .cursor_pointer()
+                                                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                                                    if *hovered && this.hovered_tab_idx != Some(idx) {
+                                                        this.hovered_tab_idx = Some(idx);
+                                                        cx.notify();
+                                                    }
+                                                }))
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    this.select_tab_path(tab_path_for_ext_r.clone(), window, cx);
+                                                })),
+                                        );
 
                                     if is_active {
                                         // 1. Solid center body fill
@@ -5027,13 +5133,7 @@ impl Render for AppView {
                                                         )
                                                     })
                                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                                        if this.state.active_note.as_ref().map(|n| &n.path != &tab_path_for_select).unwrap_or(true) {
-                                                            this.select_note(tab_path_for_select.clone(), true, window, cx);
-                                                        } else {
-                                                            this.need_scroll_sidebar_to_active.set(true);
-                                                            this.state.reveal_path_in_tree(&tab_path_for_select);
-                                                            cx.notify();
-                                                        }
+                                                        this.select_tab_path(tab_path_for_select.clone(), window, cx);
                                                     }))
                                                     .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, _, cx| {
                                                         cx.stop_propagation();
@@ -5072,6 +5172,13 @@ impl Render for AppView {
                                     .h(px(34.0))
                                     .w(px(32.0))
                                     .flex_shrink_0()
+                                    // Not a tab: hovering it clears the hovered tab.
+                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                        if *hovered && this.hovered_tab_idx.is_some() {
+                                            this.hovered_tab_idx = None;
+                                            cx.notify();
+                                        }
+                                    }))
                                     .child(
                                         div()
                                             .id("btn-new-tab-inline-inner")
