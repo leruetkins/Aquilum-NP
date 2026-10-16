@@ -1,5 +1,5 @@
 use gpui::{
-    div, prelude::*, px, Context, IntoElement, Styled,
+    div, prelude::*, px, rgb, Context, IntoElement, MouseButton, Styled,
 };
 use crate::icons;
 use crate::theme::Theme;
@@ -77,6 +77,103 @@ impl AppView {
             .on_click(cx.listener(|this, _, _, cx| {
                 this.toggle_right_sidebar(cx);
             }))
+    }
+
+    /// Renders the native Windows titlebar control buttons (Minimize,
+    /// Maximize/Restore, Close). Shared between the editor header (right
+    /// sidebar closed) and the right sidebar header column (right sidebar
+    /// open), so the buttons always stay glued to the right window edge.
+    pub fn render_window_control_buttons(
+        &self,
+        theme: &Theme,
+        is_maximized: bool,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        // Each button claims its own mouse-down. Marking it as a platform
+        // control area makes the OS repeat the action on mouse-up
+        // (`nc_button_pressed` is recorded only when the non-client
+        // mouse-down is NOT handled), so without this the action would run
+        // twice: minimize survives it, maximize toggles back, close is
+        // delivered twice. Same guard as in the settings window.
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .h_full()
+            .flex_shrink_0()
+            .child(
+                div()
+                    .id("win-ctrl-min")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(46.0))
+                    .h_full()
+                    .cursor_pointer()
+                    .window_control_area(gpui::WindowControlArea::Min)
+                    .hover(|h| h.bg(theme.bg_hover))
+                    .child(icons::icon(icons::ICON_MINIMIZE, 12.0, theme.text_secondary))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .on_click(cx.listener(|_, _, window, _| {
+                        window.minimize_window();
+                    })),
+            )
+            .child(
+                div()
+                    .id("win-ctrl-max")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(46.0))
+                    .h_full()
+                    .cursor_pointer()
+                    .window_control_area(gpui::WindowControlArea::Max)
+                    .hover(|h| h.bg(theme.bg_hover))
+                    .child(icons::icon(
+                        if is_maximized { icons::ICON_RESTORE } else { icons::ICON_MAXIMIZE },
+                        12.0,
+                        theme.text_secondary,
+                    ))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .on_click(cx.listener(|_, _, window, _| {
+                        window.zoom_window();
+                    })),
+            )
+            .child({
+                let is_hovering_close = self.is_hovering_close;
+                div()
+                    .id("win-ctrl-close")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(46.0))
+                    .h_full()
+                    .cursor_pointer()
+                    .window_control_area(gpui::WindowControlArea::Close)
+                    .hover(|h| h.bg(rgb(0xe81123)))
+                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                        if this.is_hovering_close != *hovered {
+                            this.is_hovering_close = *hovered;
+                            cx.notify();
+                        }
+                    }))
+                    .child(icons::icon(
+                        icons::ICON_WINDOW_CLOSE,
+                        12.0,
+                        if is_hovering_close { rgb(0xffffff) } else { theme.text_secondary },
+                    ))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.save_on_exit(window);
+                        cx.quit();
+                    }))
+            })
     }
 }
 

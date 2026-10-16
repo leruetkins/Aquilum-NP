@@ -4156,9 +4156,21 @@ impl Render for AppView {
         let resizer_color = if is_resizer_active { theme.accent } else { theme.border };
 
         let sidebar_area_w = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
-        let right_controls_w = 214.0;
+        // Mirror of the left sidebar: when the right sidebar is open it owns
+        // a header column + 1px divider in the titlebar, so the tab strip
+        // must end at its left edge instead of sliding under it.
+        let right_sidebar_area_w = if self.right_sidebar_collapsed {
+            0.0
+        } else {
+            self.right_sidebar_width + 1.0
+        };
+        // Editor-header controls: tabs dropdown + right-sidebar toggle
+        // (32 + 4 gap + 32 + 8 padding). The native min/max/close group (138)
+        // lives here only while the right sidebar is closed; otherwise it
+        // moves into the right header column at the window edge.
+        let right_controls_w = if self.right_sidebar_collapsed { 214.0 } else { 76.0 };
         let drag_min_w = 24.0;
-        let available_tab_strip_w = (viewport_w - sidebar_area_w - right_controls_w - drag_min_w).max(60.0);
+        let available_tab_strip_w = (viewport_w - sidebar_area_w - right_sidebar_area_w - right_controls_w - drag_min_w).max(60.0);
         let active_tab_idx = self.state.active_note.as_ref().and_then(|note| {
             self.state.open_tabs.iter().position(|p| p == &note.path)
         });
@@ -5016,97 +5028,97 @@ impl Render for AppView {
                                             .child(self.render_tabs_dropdown_button(theme, cx))
                                             .child(self.render_right_sidebar_toggle_button(theme, cx)),
                                     )
-                                    // 2. Native Windows Titlebar Control Buttons (Minimize, Maximize/Restore, Close)
-                                    //
-                                    // Each button claims its own mouse-down. Marking it as a platform
-                                    // control area makes the OS repeat the action on mouse-up
-                                    // (`nc_button_pressed` is recorded only when the non-client
-                                    // mouse-down is NOT handled), so without this the action would run
-                                    // twice: minimize survives it, maximize toggles back, close is
-                                    // delivered twice. Same guard as in the settings window.
-                                    .child(
+                                    // 2. Native Windows Titlebar Control Buttons (Minimize, Maximize/Restore, Close).
+                                    // While the right sidebar is closed they sit here; once it opens
+                                    // they move into the right header column so the tab strip ends
+                                    // exactly at the sidebar boundary (mirror of the left sidebar).
+                                    .when(self.right_sidebar_collapsed, |d| {
+                                        d.child(self.render_window_control_buttons(theme, is_maximized, cx))
+                                    }),
+                            )
+                    )
+                    // Right vertical divider (mirror of `titlebar-resizer-divider`): caps the tab
+                    // strip at the right sidebar's left edge and resizes it on drag.
+                    .when(!self.right_sidebar_collapsed, |s| {
+                        let is_right_resizer_active =
+                            self.is_resizing_right_sidebar || self.is_hovering_right_resizer;
+                        let right_resizer_color = if is_right_resizer_active {
+                            theme.accent
+                        } else {
+                            theme.border
+                        };
+                        s.child(
+                            div()
+                                .id("titlebar-right-resizer-divider")
+                                .relative()
+                                .w(px(1.0))
+                                .h_full()
+                                .flex_shrink_0()
+                                .bg(right_resizer_color)
+                                .border_b_1()
+                                .border_color(theme.border)
+                                .when(is_right_resizer_active, |this| {
+                                    this.child(
                                         div()
-                                            .flex()
-                                            .flex_row()
-                                            .items_center()
-                                            .h_full()
-                                            .flex_shrink_0()
-                                            .child(
-                                                div()
-                                                    .id("win-ctrl-min")
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .w(px(46.0))
-                                                    .h_full()
-                                                    .cursor_pointer()
-                                                    .window_control_area(WindowControlArea::Min)
-                                                    .hover(|h| h.bg(theme.bg_hover))
-                                                    .child(icons::icon(icons::ICON_MINIMIZE, 12.0, theme.text_secondary))
-                                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                                        cx.stop_propagation();
-                                                    })
-                                                    .on_click(cx.listener(|_, _, window, _| {
-                                                        window.minimize_window();
-                                                    })),
-                                            )
-                                            .child(
-                                                div()
-                                                    .id("win-ctrl-max")
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .w(px(46.0))
-                                                    .h_full()
-                                                    .cursor_pointer()
-                                                    .window_control_area(WindowControlArea::Max)
-                                                    .hover(|h| h.bg(theme.bg_hover))
-                                                    .child(icons::icon(
-                                                        if is_maximized { icons::ICON_RESTORE } else { icons::ICON_MAXIMIZE },
-                                                        12.0,
-                                                        theme.text_secondary,
-                                                    ))
-                                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                                        cx.stop_propagation();
-                                                    })
-                                                    .on_click(cx.listener(|_, _, window, _| {
-                                                        window.zoom_window();
-                                                    })),
-                                            )
-                                            .child({
-                                                let is_hovering_close = self.is_hovering_close;
-                                                div()
-                                                    .id("win-ctrl-close")
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .w(px(46.0))
-                                                    .h_full()
-                                                    .cursor_pointer()
-                                                    .window_control_area(WindowControlArea::Close)
-                                                    .hover(|h| h.bg(rgb(0xe81123)))
-                                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                                        if this.is_hovering_close != *hovered {
-                                                            this.is_hovering_close = *hovered;
-                                                            cx.notify();
-                                                        }
-                                                    }))
-                                                    .child(icons::icon(
-                                                        icons::ICON_WINDOW_CLOSE,
-                                                        12.0,
-                                                        if is_hovering_close { rgb(0xffffff) } else { theme.text_secondary },
-                                                    ))
-                                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                                        cx.stop_propagation();
-                                                    })
-                                                    .on_click(cx.listener(|this, _, window, cx| {
-                                                        this.save_on_exit(window);
-                                                        cx.quit();
-                                                    }))
-                                            }),
-                                    ),
-                            ),
-                    ),
+                                            .absolute()
+                                            .top_0()
+                                            .bottom_0()
+                                            .right(px(-1.0))
+                                            .w(px(3.0))
+                                            .bg(theme.accent),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .id("titlebar-right-resizer-hitbox")
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .right(px(-3.0))
+                                        .w(px(7.0))
+                                        .cursor(gpui::CursorStyle::ResizeColumn)
+                                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                            this.is_hovering_right_resizer = *hovered;
+                                            cx.notify();
+                                        }))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                            if event.click_count == 2 {
+                                                this.toggle_right_sidebar(cx);
+                                            } else {
+                                                this.is_resizing_right_sidebar = true;
+                                                cx.notify();
+                                            }
+                                        })),
+                                ),
+                        )
+                    })
+                    // Right area: Right sidebar header column in titlebar (width matches sidebar,
+                    // mirror of the left sidebar header column). Keeps the window controls glued
+                    // to the right window edge while the tab strip ends at the divider.
+                    .when(!self.right_sidebar_collapsed, |s| {
+                        s.child(
+                            div()
+                                .id("titlebar-right-header")
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .w(px(self.right_sidebar_width))
+                                .flex_shrink_0()
+                                .h_full()
+                                .bg(theme.bg_sidebar)
+                                .border_b_1()
+                                .border_color(theme.border)
+                                .child(
+                                    div()
+                                        .id("titlebar-right-header-drag-region")
+                                        .flex_1()
+                                        .min_w_0()
+                                        .h_full()
+                                        .window_control_area(WindowControlArea::Drag),
+                                )
+                                .child(self.render_window_control_buttons(theme, is_maximized, cx)),
+                        )
+                    }),
             )
             // ================= MAIN BODY =================
             .child(
