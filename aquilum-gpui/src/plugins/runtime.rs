@@ -963,7 +963,7 @@ fn setup_plugin_environment<'js>(
                     options.cls.filter(Boolean).forEach(c => clsSet.add(c));
                 }
                 this.classes = clsSet;
-                this.text = options.text != null ? String(options.text) : "";
+                this._text = options.text != null ? String(options.text) : "";
                 this.attributes = Object.assign({}, options.attr || {});
                 if (options.type) this.attributes["type"] = options.type;
                 this.children = [];
@@ -1010,6 +1010,21 @@ fn setup_plugin_environment<'js>(
                 if (this._id) globalThis.__velement_registry.delete(this._id);
                 this._id = String(val);
                 globalThis.__velement_registry.set(this._id, this);
+            }
+
+            get text() {
+                return this._text || "";
+            }
+            set text(val) {
+                this._text = String(val != null ? val : "");
+                this._notifyModified();
+            }
+
+            get href() {
+                return this.attributes["href"] || "";
+            }
+            set href(val) {
+                this.setAttr("href", String(val != null ? val : ""));
             }
 
             get className() {
@@ -1138,7 +1153,7 @@ fn setup_plugin_environment<'js>(
             cloneNode(deep = false) {
                 const clone = new VElement(this.tag);
                 this.classes.forEach(c => clone.classes.add(c));
-                clone.text = this.text;
+                clone._text = this._text;
                 clone.value = this.value;
                 clone.placeholder = this.placeholder;
                 clone.disabled = this.disabled;
@@ -1169,6 +1184,14 @@ fn setup_plugin_environment<'js>(
 
             appendChild(child) {
                 if (child instanceof VElement) {
+                    if (child.tag === "#fragment" || child.classes?.has("document-fragment")) {
+                        while (child.children.length > 0) {
+                            const c = child.children[0];
+                            c.remove();
+                            this.appendChild(c);
+                        }
+                        return child;
+                    }
                     if (child.parent) {
                         child.remove();
                     }
@@ -1191,7 +1214,7 @@ fn setup_plugin_environment<'js>(
             }
 
             appendText(val) {
-                this.text += String(val != null ? val : "");
+                this._text += String(val != null ? val : "");
                 this._notifyModified();
                 return this;
             }
@@ -1199,8 +1222,10 @@ fn setup_plugin_environment<'js>(
             append(...nodes) {
                 for (const n of nodes) {
                     if (typeof n === "string") {
-                        this.appendText(n);
-                    } else if (n) {
+                        const t = new VElement("#text");
+                        t.text = n;
+                        this.appendChild(t);
+                    } else if (n instanceof VElement) {
                         this.appendChild(n);
                     }
                 }
@@ -1211,7 +1236,7 @@ fn setup_plugin_environment<'js>(
                     c.remove();
                 }
                 this.children = [];
-                this.text = "";
+                this._text = "";
                 this._notifyModified();
                 return this;
             }
@@ -1266,7 +1291,7 @@ fn setup_plugin_environment<'js>(
             }
 
             setText(text) {
-                this.text = String(text != null ? text : "");
+                this._text = String(text != null ? text : "");
                 this._notifyModified();
                 return this;
             }
@@ -1277,11 +1302,11 @@ fn setup_plugin_environment<'js>(
 
             get textContent() {
                 if (this.children.length === 0) {
-                    return this.text || "";
+                    return this._text || "";
                 }
-                let res = this.text || "";
+                let res = this._text || "";
                 for (const c of this.children) {
-                    res += c.textContent || "";
+                    res += (c.textContent != null ? c.textContent : (c.text || ""));
                 }
                 return res;
             }
@@ -1568,7 +1593,7 @@ fn setup_plugin_environment<'js>(
 
         class TextAreaComponent extends TextComponent {
             constructor(containerEl) {
-                super(containerEl);
+                super(null);
                 this.inputEl = containerEl ? containerEl.createEl("textarea") : new VElement("textarea");
             }
         }
@@ -1647,11 +1672,21 @@ fn setup_plugin_environment<'js>(
                 this.controls = [];
             }
             setName(name) {
-                this.nameEl.setText(name);
+                this.nameEl.empty();
+                if (name instanceof VElement) {
+                    this.nameEl.appendChild(name);
+                } else if (name != null) {
+                    this.nameEl.setText(String(name));
+                }
                 return this;
             }
             setDesc(desc) {
-                this.descEl.setText(desc);
+                this.descEl.empty();
+                if (desc instanceof VElement) {
+                    this.descEl.appendChild(desc);
+                } else if (desc != null) {
+                    this.descEl.setText(String(desc));
+                }
                 return this;
             }
             setClass(cls) {
@@ -1742,13 +1777,23 @@ fn setup_plugin_environment<'js>(
             }
 
             if (el.classes && el.classes.has("setting-item")) {
-                const name = el.children.find(c => c.classes?.has("setting-item-info"))?.children?.find(c => c.classes?.has("setting-item-name"))?.text || el.text || "";
-                const desc = el.children.find(c => c.classes?.has("setting-item-info"))?.children?.find(c => c.classes?.has("setting-item-description"))?.text || undefined;
+                const infoEl = el.children.find(c => c.classes?.has("setting-item-info"));
+                const nameEl = infoEl?.children?.find(c => c.classes?.has("setting-item-name"));
+                const descEl = infoEl?.children?.find(c => c.classes?.has("setting-item-description"));
+                const name = (nameEl ? (nameEl.textContent || nameEl.text) : (el.text || "")).trim();
+                const desc = descEl ? (descEl.textContent || descEl.text || "").trim() : undefined;
                 const controlDiv = el.children.find(c => c.classes?.has("setting-item-control"));
 
                 let controlNode = { type: "text", value: "", class: undefined };
                 if (controlDiv && controlDiv.children.length > 0) {
-                    controlNode = __velement_to_uinode(controlDiv.children[0]);
+                    const primaryControl = controlDiv.children.find(c =>
+                        c.tag === "textarea" ||
+                        c.tag === "select" ||
+                        (c.tag === "input" && c.attributes?.type !== "hidden") ||
+                        c.classes?.has("checkbox-container") ||
+                        c.classes?.has("mod-toggle")
+                    ) || controlDiv.children[0];
+                    controlNode = __velement_to_uinode(primaryControl);
                 }
 
                 return {
@@ -1868,7 +1913,16 @@ fn setup_plugin_environment<'js>(
                 }
             }
 
-            if (el.tag === "i" || el.tag === "em" || el.tag === "a") {
+            if (el.tag === "#text") {
+                return {
+                    type: "text",
+                    class: classStr,
+                    style: "normal",
+                    value: el.text || ""
+                };
+            }
+
+            if (el.tag === "i" || el.tag === "em") {
                 if (el.children.length === 0) {
                     return {
                         type: "text",
@@ -1877,6 +1931,38 @@ fn setup_plugin_environment<'js>(
                         value: el.text || ""
                     };
                 }
+            }
+
+            if (el.tag === "a") {
+                const href = el.attributes["href"] || el.href || "";
+                let label = (el.textContent || el.text || "").trim();
+                if (!label && href) {
+                    if (href.includes("paypal")) label = "PayPal";
+                    else if (href.includes("buymeacoffee")) label = "Buy Me a Coffee";
+                    else if (href.includes("github")) label = "GitHub";
+                    else if (href.includes("kofi") || href.includes("ko-fi")) label = "Ko-fi";
+                    else if (href.includes("patreon")) label = "Patreon";
+                    else label = href;
+                }
+                if (href && !el._has_open_url_listener) {
+                    el._has_open_url_listener = true;
+                    el.addEventListener("click", () => {
+                        try {
+                            if (globalThis.open) globalThis.open(href);
+                            else __invoke_host("open_url", { url: href });
+                        } catch (e) {
+                            __invoke_host("open_url", { url: href });
+                        }
+                    });
+                }
+                return {
+                    type: "button",
+                    id: el.id,
+                    class: classStr,
+                    label: label || "Link",
+                    variant: "secondary",
+                    disabled: false
+                };
             }
 
             if (el.tag === "p" || el.tag === "span" || (el.tag === "div" && el.children.length === 0 && el.text)) {
@@ -1899,6 +1985,35 @@ fn setup_plugin_environment<'js>(
                     label: el.text || (icon ? "×" : ""),
                     variant: "secondary",
                     disabled: false
+                };
+            }
+
+            if (el.classes && Array.from(el.classes).some(c => c.includes("donation") || c.includes("donate") || c.includes("sponsor"))) {
+                const textNodes = [];
+                const buttonNodes = [];
+                for (const child of el.children) {
+                    if (child.tag === "a" || child.classes?.has("button") || child.tag === "button") {
+                        const btnNode = __velement_to_uinode(child);
+                        if (btnNode) buttonNodes.push(btnNode);
+                    } else {
+                        const otherNode = __velement_to_uinode(child);
+                        if (otherNode) textNodes.push(otherNode);
+                    }
+                }
+                const resultChildren = [...textNodes];
+                if (buttonNodes.length > 0) {
+                    resultChildren.push({
+                        type: "row",
+                        class: "donation-buttons",
+                        gap: "small",
+                        children: buttonNodes
+                    });
+                }
+                return {
+                    type: "column",
+                    class: classStr,
+                    gap: "small",
+                    children: resultChildren
                 };
             }
 
@@ -2877,6 +2992,17 @@ fn setup_plugin_environment<'js>(
         globalThis.window = globalThis;
         moment.locale = () => getLanguage();
         globalThis.window.moment = moment;
+        globalThis.open = function(url) {
+            if (url) {
+                __invoke_host("open_url", { url: String(url) });
+            }
+        };
+        globalThis.window.open = globalThis.open;
+        globalThis.createFragment = function(callback) {
+            const frag = new VElement("#fragment");
+            if (typeof callback === "function") callback(frag);
+            return frag;
+        };
         globalThis.navigator = {
             language: "ru-RU",
             languages: ["ru-RU", "ru", "en"],
@@ -2887,7 +3013,7 @@ fn setup_plugin_environment<'js>(
         globalThis.document = {
             documentElement: { lang: "ru" },
             createElement: (t, options) => new VElement(t, options),
-            createDocumentFragment: () => new VElement("div"),
+            createDocumentFragment: () => new VElement("#fragment"),
             body: __doc_body,
             head: __doc_head,
             getElementById: (id) => {
@@ -3161,6 +3287,14 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
                 .unwrap_or_default()
                 .to_string();
             ApiRequest::OpenFile { path }
+        }
+        "open_url" => {
+            let url = payload
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::OpenUrl { url }
         }
         "load_data" => ApiRequest::LoadData,
         "save_data" => {
@@ -4402,13 +4536,86 @@ mod tests {
             if let ApiRequest::SetViewTree { view_id, tree } = call.request {
                 if view_id == 0 {
                     let json = serde_json::to_string(&tree).unwrap();
-                    if json.contains("\"type\":\"input\"") && json.contains("Multiline Notes") {
+                    if json.contains("\"type\":\"textarea\"") && json.contains("Multiline Notes") {
                         found_textarea = true;
                     }
                 }
             }
         }
         assert!(found_textarea, "Expected SetViewTree containing setting with textarea input");
+
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
+    }
+
+    #[test]
+    fn test_obsidian_setting_document_fragment_and_links() {
+        let manifest = PluginManifest {
+            id: "test-fragment-plugin".into(),
+            name: "Test Fragment Plugin".into(),
+            version: "1.0.0".into(),
+            min_app_version: None,
+            description: "".into(),
+            author: "".into(),
+            permissions: PluginPermissions::default(),
+        };
+
+        let (api_tx, mut api_rx) = unbounded();
+        let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
+
+        let script = r#"
+            const { Plugin, PluginSettingTab, Setting } = require('obsidian');
+
+            class TestFragmentPlugin extends Plugin {
+                async onload() {
+                    this.addSettingTab(new FragmentTab(this.app, this));
+                }
+            }
+
+            class FragmentTab extends PluginSettingTab {
+                display() {
+                    const { containerEl } = this;
+                    containerEl.empty();
+
+                    const frag = activeDocument.createDocumentFragment();
+                    const a = activeDocument.createElement("a");
+                    a.href = "https://example.com/regex-guide";
+                    a.text = "MDN Regex Guide";
+                    frag.append("Prefix text. See ");
+                    frag.append(a);
+                    frag.append(" for details.");
+
+                    new Setting(containerEl)
+                        .setName("Fragment Setting")
+                        .setDesc(frag)
+                        .addText(t => t.setValue("val"));
+                }
+            }
+
+            module.exports = TestFragmentPlugin;
+        "#;
+
+        let handle = spawn_plugin_runtime(
+            manifest,
+            script.to_string(),
+            api_tx,
+            snapshot,
+        ).expect("failed to spawn runtime");
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let mut found_valid_desc = false;
+        while let Ok(call) = api_rx.try_recv() {
+            if let ApiRequest::SetViewTree { view_id, tree } = call.request {
+                if view_id == 0 {
+                    let json = serde_json::to_string(&tree).unwrap();
+                    assert!(!json.contains("[object Object]"), "Found [object Object] in UI tree: {}", json);
+                    if json.contains("Prefix text. See MDN Regex Guide for details.") {
+                        found_valid_desc = true;
+                    }
+                }
+            }
+        }
+        assert!(found_valid_desc, "Expected SetViewTree with concatenated text from DocumentFragment");
 
         let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
     }
@@ -4580,6 +4787,29 @@ mod tests {
             }
         }
         assert!(got_saved_data, "recent-files should capture opened note and save updated data");
+
+        // Simulate opening a second file in the app:
+        let _ = handle.host_events_tx.unbounded_send(HostEvent::FileOpen {
+            path: Some("notes/weekly.md".to_string()),
+        });
+        std::thread::sleep(Duration::from_millis(150));
+
+        let mut got_leaf_view = false;
+        while let Ok(call) = api_rx.try_recv() {
+            match call.request {
+                ApiRequest::SetLeafView { ref tree, .. } => {
+                    let s = serde_json::to_string(tree).unwrap();
+                    // Verify that the tree does NOT have concatenated text like "weekly×daily" or "daily×"
+                    assert!(!s.contains("weekly×"), "Tree should not contain concatenated text with delete icon: {}", s);
+                    assert!(!s.contains("daily×"), "Tree should not contain concatenated text with delete icon: {}", s);
+                    if s.contains("weekly") && s.contains("daily") {
+                        got_leaf_view = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(got_leaf_view, "Should have received SetLeafView containing distinct entries for weekly and daily");
 
         let _ = handle.host_events_tx.unbounded_send(HostEvent::Unload);
     }

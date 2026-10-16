@@ -474,17 +474,8 @@ impl AppView {
                     } else {
                         if let Some(vault) = &this.state.vault {
                             let _ = vault.disable_community_plugin(plugin_id);
-                            if let Some(pos) = this.plugin_runtimes.iter().position(|r| &r.manifest.id == plugin_id) {
-                                let handle = this.plugin_runtimes.remove(pos);
-                                let _ = handle.host_events_tx.unbounded_send(crate::plugins::api::HostEvent::Unload);
-                                this.state.plugin_host.unregister_plugin(plugin_id);
-                                this.state.commands.unregister_all_of(plugin_id);
-                                this.state.ribbon.unregister_all_of(plugin_id);
-                                this.state.status_bar.unregister_all_of(plugin_id);
-                                this.state.code_block_processors.unregister_all_of(plugin_id);
-                                this.code_block_views.retain(|_, (pid, _)| pid != plugin_id);
-                            }
                         }
+                        this.unload_plugin(plugin_id, cx);
                     }
                     cx.notify();
                 }
@@ -537,8 +528,106 @@ impl AppView {
         self.active_right_leaf = None;
         self.active_left_leaf = None;
         self.active_center_leaf = None;
+        if matches!(self.sidebar_mode, crate::views::sidebar::SidebarMode::Plugin(_)) {
+            self.sidebar_mode = crate::views::sidebar::SidebarMode::Files;
+        }
         self.active_plugin_input = None;
         self.active_plugin_select = None;
+    }
+
+    /// Completely unloads a single plugin and cleans up all its UI components, panels, tabs, buttons, and resources.
+    pub fn unload_plugin(&mut self, plugin_id: &str, cx: &mut Context<Self>) {
+        println!("[app_view] Unloading plugin '{}'...", plugin_id);
+
+        // 1. Send Unload event to the plugin worker thread and drop the runtime handle
+        if let Some(pos) = self.plugin_runtimes.iter().position(|r| r.manifest.id == plugin_id) {
+            let handle = self.plugin_runtimes.remove(pos);
+            let _ = handle.host_events_tx.unbounded_send(crate::plugins::api::HostEvent::Unload);
+        }
+
+        // 2. Unregister from plugin host dispatcher
+        self.state.plugin_host.unregister_plugin(plugin_id);
+
+        // 3. Remove all commands registered by this plugin
+        self.state.commands.unregister_all_of(plugin_id);
+
+        // 4. Remove all ribbon icons/actions registered by this plugin
+        self.state.ribbon.unregister_all_of(plugin_id);
+
+        // 5. Remove all status bar items registered by this plugin
+        self.state.status_bar.unregister_all_of(plugin_id);
+
+        // 6. Remove all code block processors and views registered by this plugin
+        self.state.code_block_processors.unregister_all_of(plugin_id);
+        self.code_block_views.retain(|_, (pid, _)| pid != plugin_id);
+
+        // 7. Remove all workspace leaves (sidebar panels / center tabs) registered by this plugin
+        let removed_leaf_ids: Vec<String> = self
+            .plugin_leaf_views
+            .iter()
+            .filter(|(_, leaf)| leaf.plugin_id == plugin_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for leaf_id in &removed_leaf_ids {
+            println!("[app_view] Removing plugin leaf '{}' for plugin '{}'", leaf_id, plugin_id);
+            self.plugin_leaf_views.remove(leaf_id);
+        }
+
+        // 8. Update active sidebar leaves and modes if the active leaf belonged to this plugin
+        if let Some(ref right_id) = self.active_right_leaf {
+            if removed_leaf_ids.contains(right_id) {
+                self.active_right_leaf = self
+                    .plugin_leaf_views
+                    .values()
+                    .find(|l| l.location == "right")
+                    .map(|l| l.leaf_id.clone());
+            }
+        }
+
+        if let Some(ref left_id) = self.active_left_leaf {
+            if removed_leaf_ids.contains(left_id) {
+                self.active_left_leaf = self
+                    .plugin_leaf_views
+                    .values()
+                    .find(|l| l.location == "left")
+                    .map(|l| l.leaf_id.clone());
+            }
+        }
+
+        // If sidebar is currently displaying a plugin leaf that was removed, switch back to Files
+        if let crate::views::sidebar::SidebarMode::Plugin(ref current_leaf_id) = self.sidebar_mode {
+            if removed_leaf_ids.contains(current_leaf_id) {
+                if let Some(ref next_left) = self.active_left_leaf {
+                    self.sidebar_mode = crate::views::sidebar::SidebarMode::Plugin(next_left.clone());
+                } else {
+                    self.sidebar_mode = crate::views::sidebar::SidebarMode::Files;
+                }
+            }
+        }
+
+        if let Some(ref center_id) = self.active_center_leaf {
+            if removed_leaf_ids.contains(center_id) {
+                self.active_center_leaf = None;
+            }
+        }
+
+        // 9. Remove any custom view registrations and modals belonging to this plugin
+        self.plugin_views.retain(|(pid, _), _| pid != plugin_id);
+        if let Some(ref active_input) = self.active_plugin_input {
+            if active_input.plugin_id == plugin_id {
+                self.active_plugin_input = None;
+            }
+        }
+        if let Some((ref pid, _, _)) = self.active_plugin_select {
+            if pid == plugin_id {
+                self.active_plugin_select = None;
+                self.plugin_select_popup = None;
+            }
+        }
+
+        println!("[app_view] Plugin '{}' completely unloaded and UI cleaned up.", plugin_id);
+        cx.notify();
     }
 
     pub fn editor_font_family(&self) -> gpui::SharedString {

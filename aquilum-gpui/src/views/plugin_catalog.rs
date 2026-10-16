@@ -1161,17 +1161,7 @@ impl PluginCatalogView {
             cx.foreground_executor().spawn(async move {
                 let _ = app.update(&mut async_cx, move |view, cx| {
                     if was_enabled {
-                        // Unload runtime
-                        if let Some(pos) = view.plugin_runtimes.iter().position(|r| r.manifest.id == p_id) {
-                            let handle = view.plugin_runtimes.remove(pos);
-                            let _ = handle.host_events_tx.unbounded_send(crate::plugins::api::HostEvent::Unload);
-                            view.state.plugin_host.unregister_plugin(&p_id);
-                            view.state.commands.unregister_all_of(&p_id);
-                            view.state.ribbon.unregister_all_of(&p_id);
-                            view.state.status_bar.unregister_all_of(&p_id);
-                            view.state.code_block_processors.unregister_all_of(&p_id);
-                            view.code_block_views.retain(|_, (pid, _)| pid != &p_id);
-                        }
+                        view.unload_plugin(&p_id, cx);
                     } else if !view.config.community_plugins.safe_mode {
                         view.load_installed_plugins_for_vault();
                     }
@@ -1203,16 +1193,7 @@ impl PluginCatalogView {
             let mut async_cx = cx.to_async();
             cx.foreground_executor().spawn(async move {
                 let _ = app.update(&mut async_cx, move |view, cx| {
-                    if let Some(pos) = view.plugin_runtimes.iter().position(|r| r.manifest.id == p_id) {
-                        let handle = view.plugin_runtimes.remove(pos);
-                        let _ = handle.host_events_tx.unbounded_send(crate::plugins::api::HostEvent::Unload);
-                        view.state.plugin_host.unregister_plugin(&p_id);
-                        view.state.commands.unregister_all_of(&p_id);
-                        view.state.ribbon.unregister_all_of(&p_id);
-                        view.state.status_bar.unregister_all_of(&p_id);
-                        view.state.code_block_processors.unregister_all_of(&p_id);
-                        view.code_block_views.retain(|_, (pid, _)| pid != &p_id);
-                    }
+                    view.unload_plugin(&p_id, cx);
                     cx.notify();
                 });
             }).detach();
@@ -3607,25 +3588,18 @@ impl AppView {
 
     /// Uninstalls an installed plugin by removing its directory and disabling it.
     pub fn uninstall_plugin_from_catalog(&mut self, plugin_id: &str, cx: &mut Context<Self>) {
-        let Some(vault) = &self.state.vault else {
+        let Some(vault_root) = self.state.vault.as_ref().map(|v| v.root.clone()) else {
             return;
         };
 
-        let _ = vault.disable_community_plugin(plugin_id);
-
-        // Unload runtime if active
-        if let Some(pos) = self.plugin_runtimes.iter().position(|r| r.manifest.id == plugin_id) {
-            let handle = self.plugin_runtimes.remove(pos);
-            let _ = handle.host_events_tx.unbounded_send(crate::plugins::api::HostEvent::Unload);
-            self.state.plugin_host.unregister_plugin(plugin_id);
-            self.state.commands.unregister_all_of(plugin_id);
-            self.state.ribbon.unregister_all_of(plugin_id);
-            self.state.status_bar.unregister_all_of(plugin_id);
-            self.state.code_block_processors.unregister_all_of(plugin_id);
-            self.code_block_views.retain(|_, (pid, _)| pid != plugin_id);
+        if let Some(vault) = &self.state.vault {
+            let _ = vault.disable_community_plugin(plugin_id);
         }
 
-        let plugin_dir = vault.root.join(".vault").join("plugins").join(plugin_id);
+        // Unload runtime and UI
+        self.unload_plugin(plugin_id, cx);
+
+        let plugin_dir = vault_root.join(".vault").join("plugins").join(plugin_id);
         let _ = std::fs::remove_dir_all(&plugin_dir);
 
         self.state.status_text = format!("Uninstalled plugin '{}'", plugin_id);
@@ -4608,25 +4582,7 @@ impl AppView {
                                 if is_ru { "Включить" } else { "Enable" }
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(vault) = &this.state.vault {
-                                    if is_enabled {
-                                        let _ = vault.disable_community_plugin(&plugin_id_toggle);
-                                        if let Some(pos) = this.plugin_runtimes.iter().position(|r| r.manifest.id == plugin_id_toggle) {
-                                            let handle = this.plugin_runtimes.remove(pos);
-                                            let _ = handle.host_events_tx.unbounded_send(crate::plugins::api::HostEvent::Unload);
-                                            this.state.plugin_host.unregister_plugin(&plugin_id_toggle);
-                                            this.state.commands.unregister_all_of(&plugin_id_toggle);
-                                            this.state.ribbon.unregister_all_of(&plugin_id_toggle);
-                                            this.state.status_bar.unregister_all_of(&plugin_id_toggle);
-                                            this.state.code_block_processors.unregister_all_of(&plugin_id_toggle);
-                                            this.code_block_views.retain(|_, (pid, _)| pid != &plugin_id_toggle);
-                                        }
-                                    } else {
-                                        let _ = vault.enable_community_plugin(&plugin_id_toggle);
-                                        this.load_installed_plugins_for_vault();
-                                    }
-                                    cx.notify();
-                                }
+                                this.toggle_community_plugin(&plugin_id_toggle, cx);
                             })),
                     )
                     .child(

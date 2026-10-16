@@ -326,16 +326,7 @@ impl AppView {
             let is_enabled = vault.is_community_plugin_enabled(plugin_id);
             if is_enabled {
                 let _ = vault.disable_community_plugin(plugin_id);
-                if let Some(pos) = self.plugin_runtimes.iter().position(|r| r.manifest.id == plugin_id) {
-                    let handle = self.plugin_runtimes.remove(pos);
-                    let _ = handle.host_events_tx.unbounded_send(crate::plugins::api::HostEvent::Unload);
-                    self.state.plugin_host.unregister_plugin(plugin_id);
-                    self.state.commands.unregister_all_of(plugin_id);
-                    self.state.ribbon.unregister_all_of(plugin_id);
-                    self.state.status_bar.unregister_all_of(plugin_id);
-                    self.state.code_block_processors.unregister_all_of(plugin_id);
-                    self.code_block_views.retain(|_, (pid, _)| pid != plugin_id);
-                }
+                self.unload_plugin(plugin_id, cx);
             } else {
                 let _ = vault.enable_community_plugin(plugin_id);
                 self.load_installed_plugins_for_vault();
@@ -884,6 +875,9 @@ impl SettingsView {
                 cx.notify();
             });
         }
+        if matches!(&self.settings_tab, SettingsTab::PluginSettings(id) if id == plugin_id) {
+            self.settings_tab = SettingsTab::CommunityPlugins;
+        }
     }
 
     pub fn handle_escape(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1381,11 +1375,18 @@ impl SettingsView {
     }
 
     pub fn toggle_community_plugin(&mut self, plugin_id: &str, cx: &mut Context<Self>) {
+        let mut now_disabled = false;
         if let Some(app) = self.weak_app.upgrade() {
             let pid = plugin_id.to_string();
             app.update(cx, |app, cx| {
                 app.toggle_community_plugin(&pid, cx);
+                if let Some(vault) = &app.state.vault {
+                    now_disabled = !vault.is_community_plugin_enabled(&pid);
+                }
             });
+        }
+        if now_disabled && matches!(&self.settings_tab, SettingsTab::PluginSettings(id) if id == plugin_id) {
+            self.settings_tab = SettingsTab::CommunityPlugins;
         }
         cx.notify();
     }
@@ -1398,6 +1399,9 @@ impl SettingsView {
                 app.load_installed_plugins_for_vault();
                 cx.notify();
             });
+        }
+        if matches!(&self.settings_tab, SettingsTab::PluginSettings(id) if id == plugin_id) {
+            self.settings_tab = SettingsTab::CommunityPlugins;
         }
         cx.notify();
     }

@@ -597,7 +597,7 @@ pub fn render_ui_node<V: UiSink>(
             }
             let gap_px = gap.to_px();
             let cls = class.as_deref().unwrap_or("");
-            let is_modal_container = cls.contains("modal-container") || cls.contains("modal") || cls.contains("modal-content") || cls.contains("vertical-tab-content");
+            let is_modal_container = cls.contains("modal-container") || cls.contains("modal") || cls.contains("modal-content");
             let is_header = cls.contains("header");
             let is_item_info = cls.contains("item-info") || cls.contains("-info") || cls.contains("info");
             let is_list = cls.contains("list") || cls.contains("scroll");
@@ -1756,11 +1756,13 @@ pub fn render_ui_node<V: UiSink>(
             }))
             .into_any_element(),
         UiNode::SettingItem { name, desc, control } => {
+            let is_textarea = matches!(control.as_ref(), UiNode::Textarea { .. });
             let has_header = !name.trim().is_empty() || desc.is_some();
             let mut container = div()
                 .flex()
                 .flex_row()
-                .items_center()
+                .when(is_textarea, |this| this.items_start())
+                .when(!is_textarea, |this| this.items_center())
                 .w_full()
                 .py(px(8.0))
                 .border_b_1()
@@ -1800,12 +1802,13 @@ pub fn render_ui_node<V: UiSink>(
                 .child(
                     div()
                         .flex()
-                        .items_center()
+                        .when(is_textarea, |this| this.items_start())
+                        .when(!is_textarea, |this| this.items_center())
                         .justify_end()
                         .flex_shrink_0()
                         .when(has_header, |this| match control.as_ref() {
                             UiNode::Input { .. } => this.min_w(px(220.0)).max_w(px(320.0)),
-                            UiNode::Textarea { .. } => this.min_w(px(260.0)).max_w(px(400.0)),
+                            UiNode::Textarea { .. } => this.min_w(px(280.0)).max_w(px(460.0)),
                             _ => this.min_w(px(140.0)),
                         })
                         .child(render_ui_node(

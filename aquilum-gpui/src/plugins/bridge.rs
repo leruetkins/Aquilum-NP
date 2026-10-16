@@ -113,7 +113,8 @@ impl PluginHostState {
             ApiRequest::Http { url, .. } => {
                 validate_network_url(url, &plugin.manifest.permissions.network)?;
             }
-            ApiRequest::Notice { .. }
+            ApiRequest::OpenUrl { .. }
+            | ApiRequest::Notice { .. }
             | ApiRequest::SetViewTree { .. }
             | ApiRequest::SetLeafView { .. }
             | ApiRequest::RevealLeaf { .. }
@@ -252,6 +253,13 @@ impl AppView {
                     HostEvent::response_ok(request_id, serde_json::Value::Null),
                 );
                 cx.notify();
+            }
+            ApiRequest::OpenUrl { url } => {
+                cx.open_url(&url);
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Null),
+                );
             }
             ApiRequest::OpenFile { path } => {
                 let Some(vault) = &self.state.vault else {

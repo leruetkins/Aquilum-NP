@@ -20,6 +20,8 @@ pub enum ApiRequest {
     Notice { text: String, timeout_ms: u32 },
     /// Open note in the active editor workspace
     OpenFile { path: String },
+    /// Open external URL in system browser
+    OpenUrl { url: String },
     /// Outgoing HTTP request: requestUrl({url, method, ...})
     Http {
         url: String,
