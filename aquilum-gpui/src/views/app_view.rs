@@ -4210,8 +4210,15 @@ impl Render for AppView {
         let right_controls_w = if self.right_sidebar_collapsed { 214.0 } else { 76.0 };
         let drag_min_w = 24.0;
         let available_tab_strip_w = (viewport_w - sidebar_area_w - right_sidebar_area_w - right_controls_w - drag_min_w).max(60.0);
+        // Active tab index: an empty tab has no active_note, so fall back to
+        // the empty sentinel — otherwise the minimum-active-width rule in
+        // calculate_tab_widths never triggers and a new tab opens tiny.
         let active_tab_idx = self.state.active_note.as_ref().and_then(|note| {
             self.state.open_tabs.iter().position(|p| p == &note.path)
+        }).or_else(|| {
+            self.state.active_empty_tab.as_ref().and_then(|empty| {
+                self.state.open_tabs.iter().position(|p| p == empty)
+            })
         });
         let tab_layout = crate::views::tabs_menu::calculate_tab_widths(
             self.state.open_tabs.len(),
@@ -4812,9 +4819,15 @@ impl Render for AppView {
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .h(px(34.0))
+                                        // Full titlebar height hitbox (same as tabs);
+                                        // the painted button stays 28px.
+                                        .h_full()
                                         .w(px(32.0))
                                         .flex_shrink_0()
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.create_new_note_at_front(window, cx);
+                                        }))
                                         // The button is not a tab: hovering it clears the
                                         // hovered tab (the strip leave does not fire here).
                                         .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
@@ -4828,7 +4841,7 @@ impl Render for AppView {
                                                 div()
                                                     .id("new-note-separator")
                                                     .absolute()
-                                                    .top(px(9.0))
+                                                    .top(px(13.0))
                                                     .h(px(16.0))
                                                     .w(px(1.0))
                                                     .right(px(leading_sep_right))
@@ -4847,10 +4860,7 @@ impl Render for AppView {
                                                 .rounded_md()
                                                 .cursor_pointer()
                                                 .hover(|h| h.bg(theme.bg_hover))
-                                                .child(icons::icon(icons::ICON_NOTE_CREATE, 15.0, theme.text_muted))
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.create_new_note_at_front(window, cx);
-                                                })),
+                                                .child(icons::icon(icons::ICON_NOTE_CREATE, 15.0, theme.text_muted)),
                                         ),
                                 );
 
@@ -5169,9 +5179,15 @@ impl Render for AppView {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .h(px(34.0))
+                                    // Full titlebar height hitbox (same as tabs);
+                                    // the painted button stays 28px.
+                                    .h_full()
                                     .w(px(32.0))
                                     .flex_shrink_0()
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_empty_tab(window, cx);
+                                    }))
                                     // Not a tab: hovering it clears the hovered tab.
                                     .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                         if *hovered && this.hovered_tab_idx.is_some() {
@@ -5190,10 +5206,7 @@ impl Render for AppView {
                                             .rounded_md()
                                             .cursor_pointer()
                                             .hover(|h| h.bg(theme.bg_hover))
-                                            .child(icons::icon(icons::ICON_PLUS, 15.0, theme.text_muted))
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.open_empty_tab(window, cx);
-                                            })),
+                                            .child(icons::icon(icons::ICON_PLUS, 15.0, theme.text_muted)),
                                     );
 
                                 div()
