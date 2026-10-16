@@ -622,4 +622,30 @@ mod tests {
             assert!(!w2.should_move_to(anchor, total, false, 0), "middle anchor {anchor} should not move window");
         }
     }
+
+    #[test]
+    fn test_code_states_and_lines_bounds_with_distant_selection() {
+        let text = doc(50_000);
+        let index = LineIndex::new(&text);
+        let total = index.lines();
+
+        let (s, e) = EditorWindow::bounds_for(10_000, total);
+        let w = EditorWindow::build(&text, &index, s, e, false, 0, None, crate::markdown::CodeScanState::default());
+
+        // A selection far outside the window (e.g. lines 40_000..45_000)
+        let sel_start_line = 40_000;
+        let sel_end_line = 45_000;
+
+        let win_start = w.code_states.start();
+        let win_end = w.code_states.end();
+        let scan_start = sel_start_line.max(win_start);
+        let scan_end = sel_end_line.min(win_end.saturating_sub(1));
+
+        // Clamped range must be empty when selection is entirely outside
+        assert!(scan_start > scan_end);
+
+        // Safe query via get() returns None without panic
+        assert_eq!(w.lines.get(sel_start_line), None);
+        assert_eq!(w.code_states.get(sel_start_line), None);
+    }
 }

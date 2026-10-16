@@ -1895,11 +1895,15 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let is_in_active_block = note.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map_or(false, |s| {
             let cursor_in_block = note.window.code_states.get(cursor_line).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id);
             let sel_in_block = selection_range.as_ref().map_or(false, |sel| {
-                let sel_start_l = note.line_of_byte(sel.start);
-                let sel_end_l = note.line_of_byte(sel.end);
-                (sel_start_l..=sel_end_l.min(note.line_index.lines().saturating_sub(1))).any(|l_idx| {
-                    note.window.code_states.get(l_idx).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id)
-                })
+                let sel_start_l = note.line_of_byte(sel.start).max(note.window.code_states.start());
+                let sel_end_l = note.line_of_byte(sel.end).min(note.window.code_states.end().saturating_sub(1));
+                if sel_start_l <= sel_end_l {
+                    (sel_start_l..=sel_end_l).any(|l_idx| {
+                        note.window.code_states.get(l_idx).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id)
+                    })
+                } else {
+                    false
+                }
             });
             cursor_in_block || sel_in_block
         });
@@ -2026,11 +2030,15 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let is_in_active_block = note.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map_or(false, |s| {
             let cursor_in_block = note.window.code_states.get(cursor_line).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id);
             let sel_in_block = selection_range.as_ref().map_or(false, |sel| {
-                let sel_start_l = note.line_of_byte(sel.start);
-                let sel_end_l = note.line_of_byte(sel.end);
-                (sel_start_l..=sel_end_l.min(note.line_index.lines().saturating_sub(1))).any(|l_idx| {
-                    note.window.code_states.get(l_idx).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id)
-                })
+                let sel_start_l = note.line_of_byte(sel.start).max(note.window.code_states.start());
+                let sel_end_l = note.line_of_byte(sel.end).min(note.window.code_states.end().saturating_sub(1));
+                if sel_start_l <= sel_end_l {
+                    (sel_start_l..=sel_end_l).any(|l_idx| {
+                        note.window.code_states.get(l_idx).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id)
+                    })
+                } else {
+                    false
+                }
             });
             cursor_in_block || sel_in_block
         });
@@ -5348,31 +5356,20 @@ impl Render for AppView {
                                         active_block_ids.insert(s.block_id);
                                     }
                                     if let Some(ref sel) = selection_range {
-                                        let sel_start_line = note.line_of_byte(sel.start);
-                                        let sel_end_line = note.line_of_byte(sel.end);
-                                        // Walk line starts forward instead of
-                                        // indexing a per-line offset array: the
-                                        // index only stores checkpoints, and a
-                                        // lookup per selected line would rescan
-                                        // a block each time. `l_end + 1` is the
-                                        // next start because a cached line is
-                                        // exactly the text between newlines.
-                                        let mut l_start = note.line_start_byte(sel_start_line);
-                                        for l_idx in sel_start_line..=sel_end_line.min(note.line_index.lines().saturating_sub(1)) {
-                                            let l_end = l_start + lines_arc[l_idx].len();
-                                            let is_in_sel = if sel.start == sel.end {
-                                                false
-                                            } else if l_start == l_end {
-                                                sel.start <= l_start && sel.end >= l_end
-                                            } else {
-                                                sel.end > l_start && sel.start < l_end
-                                            };
-                                            if is_in_sel {
-                                                if let Some(s) = code_states_arc.get(l_idx).and_then(|s| s.as_ref()) {
-                                                    active_block_ids.insert(s.block_id);
+                                        if sel.start < sel.end {
+                                            let sel_start_line = note.line_of_byte(sel.start);
+                                            let sel_end_line = note.line_of_byte(sel.end);
+                                            let win_start = code_states_arc.start();
+                                            let win_end = code_states_arc.end();
+                                            let scan_start = sel_start_line.max(win_start);
+                                            let scan_end = sel_end_line.min(win_end.saturating_sub(1));
+                                            if scan_start <= scan_end {
+                                                for l_idx in scan_start..=scan_end {
+                                                    if let Some(Some(s)) = code_states_arc.get(l_idx) {
+                                                        active_block_ids.insert(s.block_id);
+                                                    }
                                                 }
                                             }
-                                            l_start = l_end + 1;
                                         }
                                     }
                                 }
@@ -5454,26 +5451,17 @@ impl Render for AppView {
                                                 .clamp(0.0, f64::from(viewport_h) - 2.0)
                                                 as f32
                                         };
-                                        let cursor_y = to_track(note.doc_y_of_local_v_idx(active_v_idx));
+                                        let cursor_doc_y = if note.window.covers_line(cursor_line) {
+                                            note.doc_y_of_local_v_idx(active_v_idx)
+                                        } else {
+                                            note.doc_y_of_line(cursor_line)
+                                        };
+                                        let cursor_y = to_track(cursor_doc_y);
                                         let sel_span = note.selection_range().map(|sel| {
-                                            let a = Self::editor_doc_y_for_offset(
-                                                sel.start,
-                                                &note.content,
-                                                &note.line_index,
-                                                note.above_h,
-                                                &lines_arc,
-                                                &visual_rows_arc,
-                                                &height_index_arc,
-                                            );
-                                            let b = Self::editor_doc_y_for_offset(
-                                                sel.end,
-                                                &note.content,
-                                                &note.line_index,
-                                                note.above_h,
-                                                &lines_arc,
-                                                &visual_rows_arc,
-                                                &height_index_arc,
-                                            );
+                                            let start_line = note.line_of_byte(sel.start);
+                                            let end_line = note.line_of_byte(sel.end);
+                                            let a = note.doc_y_of_line(start_line);
+                                            let b = note.doc_y_of_line(end_line);
                                             let top = to_track(a.min(b));
                                             let bottom = to_track(a.max(b)) + 2.0;
                                             (top, (bottom - top).max(3.0))

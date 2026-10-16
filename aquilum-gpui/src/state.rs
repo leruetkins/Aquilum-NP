@@ -566,6 +566,39 @@ impl OpenedNote {
         self.above_h + self.window.height_index.top_of(local_v_idx)
     }
 
+    /// Document Y of a document line: exact inside the window, estimated outside it.
+    pub fn doc_y_of_line(&self, line: usize) -> f64 {
+        let lines_total = self.line_index.lines();
+        if lines_total == 0 {
+            return 0.0;
+        }
+        let line = line.min(lines_total.saturating_sub(1));
+
+        // 1. Inside the window: exact row height from height_index
+        if self.window.covers_line(line) {
+            if let Some(v_idx) = self.window.first_row_of_line(line) {
+                return self.above_h + self.window.height_index.top_of(v_idx);
+            }
+        }
+
+        // 2. Above the window: estimated proportional height
+        if line < self.window.start_line {
+            if self.window.start_line == 0 || self.above_lines == 0 {
+                return 0.0;
+            }
+            return (line as f64 / self.above_lines as f64) * self.above_h;
+        }
+
+        // 3. Below the window: estimated proportional height
+        let window_bottom_y = self.above_h + self.window.total_height();
+        if self.below_lines == 0 {
+            return window_bottom_y;
+        }
+        let lines_below = line.saturating_sub(self.window.end_line);
+        let fraction = (lines_below as f64 / self.below_lines as f64).clamp(0.0, 1.0);
+        window_bottom_y + fraction * self.below_h
+    }
+
     /// Window-local visual row index at a document Y.
     ///
     /// The window is placed to cover the viewport, so this is exact for every
@@ -2733,6 +2766,41 @@ mod tests {
         note.version += 1;
         note.refresh_line_index(None);
         assert!(matches!(note.text_stats(), TextStats::Large { .. }));
+    }
+
+    #[test]
+    fn test_doc_y_of_line_monotonic_and_covers_entire_document() {
+        let mut text = String::new();
+        for i in 0..40_000 {
+            text.push_str(&format!("line {i}\n"));
+        }
+        let mut note = OpenedNote::new(
+            PathBuf::from("big.md"),
+            "big".to_string(),
+            text,
+            1,
+        );
+        note.ensure_visual_cache(false, 0, 20_000);
+
+        let total_lines = note.line_index.lines();
+        assert_eq!(total_lines, 40_001);
+
+        let y_start = note.doc_y_of_line(0);
+        let y_before = note.doc_y_of_line(100);
+        let y_window_start = note.doc_y_of_line(note.window.start_line);
+        let y_middle = note.doc_y_of_line(20_000);
+        let y_window_end = note.doc_y_of_line(note.window.end_line);
+        let y_after = note.doc_y_of_line(35_000);
+        let y_end = note.doc_y_of_line(40_000);
+
+        assert_eq!(y_start, 0.0);
+        assert!(y_before > y_start);
+        assert!(y_window_start >= y_before);
+        assert!(y_middle > y_window_start);
+        assert!(y_window_end > y_middle);
+        assert!(y_after > y_window_end);
+        assert!(y_end > y_after);
+        assert!(y_end <= note.total_height());
     }
 }
 
