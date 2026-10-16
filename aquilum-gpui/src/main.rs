@@ -18,6 +18,7 @@ pub mod markdown_doc;
 pub mod perf;
 pub mod plugins;
 pub mod ribbon;
+pub mod save_manager;
 pub mod settings;
 pub mod snap;
 pub mod state;
@@ -75,6 +76,7 @@ fn main() {
                         // Focus editor by default and activate caret blinking immediately
                         window.focus(&app.focus_handle);
                         app.editor_blink.enable(crate::blink_manager::BlinkTarget::Editor, cx);
+                        app.init_window_observers(window, cx);
                         app
                     });
                     let weak = view.downgrade();

@@ -351,6 +351,7 @@ pub struct OpenedNote {
     pub cursor_offset: usize,
     pub selection_anchor: Option<usize>,
     pub is_dirty: bool,
+    pub first_dirty_time: Option<std::time::Instant>,
     pub undo_stack: Vec<UndoStep>,
     pub redo_stack: Vec<UndoStep>,
 
@@ -404,6 +405,7 @@ impl OpenedNote {
             cursor_offset: 0,
             selection_anchor: None,
             is_dirty: false,
+            first_dirty_time: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             line_index,
@@ -418,6 +420,21 @@ impl OpenedNote {
             visual_cache_dirty: true,
             stats_cache: Cell::new(None),
         }
+    }
+
+    /// Marks the note dirty, recording `first_dirty_time` if this is the start
+    /// of an unwritten edit sequence.
+    pub fn mark_dirty(&mut self) {
+        self.is_dirty = true;
+        if self.first_dirty_time.is_none() {
+            self.first_dirty_time = Some(std::time::Instant::now());
+        }
+    }
+
+    /// Clears the dirty state and resets `first_dirty_time`.
+    pub fn clear_dirty(&mut self) {
+        self.is_dirty = false;
+        self.first_dirty_time = None;
     }
 
     /// Word/char statistics for the navigation bar. Cheap for large documents:
@@ -718,7 +735,7 @@ impl OpenedNote {
             self.version += 1;
             self.cursor_offset = step.cursor_before.min(self.content.len());
             self.selection_anchor = None;
-            self.is_dirty = true;
+            self.mark_dirty();
             self.visual_cache_dirty = true;
             self.redo_stack.push(step);
         }
@@ -733,7 +750,7 @@ impl OpenedNote {
             self.version += 1;
             self.cursor_offset = step.cursor_after.min(self.content.len());
             self.selection_anchor = None;
-            self.is_dirty = true;
+            self.mark_dirty();
             self.visual_cache_dirty = true;
             self.undo_stack.push(step);
         }
@@ -777,7 +794,7 @@ impl OpenedNote {
             self.refresh_line_index_incremental(at, &removed, "");
             self.cursor_offset = at;
             self.selection_anchor = None;
-            self.is_dirty = true;
+            self.mark_dirty();
             self.visual_cache_dirty = true;
             self.record_change(at, removed, String::new(), cursor_before, at);
             true
@@ -797,7 +814,7 @@ impl OpenedNote {
             self.refresh_line_index_incremental(at, &removed, text);
             self.cursor_offset = new_cursor;
             self.selection_anchor = None;
-            self.is_dirty = true;
+            self.mark_dirty();
             self.visual_cache_dirty = true;
             self.record_change(at, removed, text.to_string(), cursor_before, new_cursor);
             true
@@ -814,7 +831,7 @@ impl OpenedNote {
             self.refresh_line_index_incremental(at, "", text);
             self.cursor_offset = new_cursor;
             self.selection_anchor = None;
-            self.is_dirty = true;
+            self.mark_dirty();
             self.visual_cache_dirty = true;
             self.record_change(at, String::new(), text.to_string(), cursor_before, new_cursor);
             true
@@ -995,7 +1012,7 @@ impl OpenedNote {
         self.refresh_line_index_incremental(at, "", &insert_str);
         self.cursor_offset = new_cursor;
         self.selection_anchor = None;
-        self.is_dirty = true;
+        self.mark_dirty();
         self.visual_cache_dirty = true;
         self.record_change(at, String::new(), insert_str, cursor_before, new_cursor);
     }
@@ -1025,7 +1042,7 @@ impl OpenedNote {
         self.refresh_line_index_incremental(prev, &removed, "");
         self.cursor_offset = prev;
         self.selection_anchor = None;
-        self.is_dirty = true;
+        self.mark_dirty();
         self.visual_cache_dirty = true;
         self.record_change(prev, removed, String::new(), cursor_before, prev);
     }
@@ -1052,7 +1069,7 @@ impl OpenedNote {
         self.refresh_line_index_incremental(offset, &removed, "");
         self.cursor_offset = offset;
         self.selection_anchor = None;
-        self.is_dirty = true;
+        self.mark_dirty();
         self.visual_cache_dirty = true;
         self.record_change(offset, removed, String::new(), cursor_before, offset);
     }
@@ -1851,10 +1868,10 @@ impl AppState {
 
     pub fn save_active_note(&mut self) {
         if let Some(ref mut note) = self.active_note {
-            if let Err(err) = std::fs::write(&note.path, &note.content) {
+            if let Err(err) = crate::save_manager::safe_write(&note.path, &note.content) {
                 self.status_text = format!("Save error: {}", err);
             } else {
-                note.is_dirty = false;
+                note.clear_dirty();
                 self.status_text = format!("Saved: {}", note.title);
 
                 let rel_path = self.vault.as_ref()

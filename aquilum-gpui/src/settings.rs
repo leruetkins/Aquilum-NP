@@ -178,6 +178,12 @@ pub struct EditorSettings {
     /// Wide Zed-style editor scrollbar: a 16 px lane with a visible track and
     /// a full-width square thumb instead of the floating pill. Off by default.
     pub wide_scrollbar: bool,
+    /// Whether to use adaptive debouncing and deadline based on document size.
+    /// On by default.
+    pub adaptive_save: bool,
+    /// Automatically save dirty notes when the application window loses focus.
+    /// On by default.
+    pub save_on_blur: bool,
     #[serde(flatten)]
     pub font: FontSettings,
 }
@@ -200,6 +206,8 @@ impl Default for EditorSettings {
             wheel_smooth_scroll: false,
             scrollbar_ruler: true,
             wide_scrollbar: false,
+            adaptive_save: true,
+            save_on_blur: true,
             font: FontSettings {
                 font_family: "iA Writer Mono".to_string(),
                 font_weight: 400,

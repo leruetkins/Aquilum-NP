@@ -107,6 +107,8 @@ pub struct AppView {
     pub plugin_select_popup: Option<Entity<crate::views::tab_list::TabListPopup>>,
     /// Keeps the plugin select picker's event subscription alive.
     pub plugin_select_subscription: Option<Subscription>,
+    /// Keeps the window activation subscription alive; triggers save on blur / minimize.
+    pub window_activation_subscription: Option<Subscription>,
     /// Command Palette modal dialog (Ctrl+P, Obsidian-style).
     pub command_palette: crate::views::command_palette::CommandPaletteState,
     pub command_palette_focus_handle: FocusHandle,
@@ -344,6 +346,7 @@ impl AppView {
             font_popup_subscription: None,
             plugin_select_popup: None,
             plugin_select_subscription: None,
+            window_activation_subscription: None,
             command_palette: crate::views::command_palette::CommandPaletteState::default(),
             command_palette_focus_handle: cx.focus_handle(),
             command_palette_blink: BlinkManager::new(),
@@ -767,57 +770,96 @@ impl AppView {
         }
     }
 
+    /// Immediately dispatches writing of any dirty note to disk in the background,
+    /// without blocking the UI thread. Used on blur/minimize, auto-save timers, and manual save.
+    pub fn flush_active_note_now(&mut self, cx: &mut Context<Self>) {
+        let to_save = match self.state.active_note.as_ref() {
+            Some(note) if note.is_dirty => {
+                Some((note.path.clone(), note.content.clone(), note.title.clone(), note.version))
+            }
+            _ => None,
+        };
+
+        let Some((path, content, title, version)) = to_save else {
+            return;
+        };
+
+        self.auto_save_epoch = self.auto_save_epoch.wrapping_add(1);
+        let entity = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let background = cx.background_executor().clone();
+
+        cx.foreground_executor().spawn(async move {
+            let write_path = path.clone();
+            let write_res = background.spawn(async move {
+                crate::save_manager::safe_write(&write_path, &content)
+            }).await;
+
+            let _ = entity.update(&mut async_cx, |this, cx| {
+                if let Some(ref mut note) = this.state.active_note {
+                    if note.path == path {
+                        match write_res {
+                            Ok(()) => {
+                                if note.version == version {
+                                    note.clear_dirty();
+                                }
+                                this.state.status_text = format!("Saved: {}", title);
+                                let rel_path = this.state.vault.as_ref()
+                                    .and_then(|v| note.path.strip_prefix(&v.root).ok())
+                                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                                    .unwrap_or_else(|| note.path.to_string_lossy().into_owned());
+                                this.state.events.emit_vault(&crate::events::VaultEvent::Modify { path: rel_path });
+                                this.state.publish_snapshot();
+                            }
+                            Err(err) => {
+                                this.state.status_text = format!("Save error: {}", err);
+                            }
+                        }
+                        cx.notify();
+                    }
+                }
+                this.state.save_session_state();
+            });
+        }).detach();
+    }
+
     pub fn schedule_auto_save(&mut self, cx: &mut Context<Self>) {
+        let (content_len, first_dirty) = match self.state.active_note.as_ref() {
+            Some(note) if note.is_dirty => (
+                note.content.len(),
+                note.first_dirty_time.unwrap_or_else(std::time::Instant::now),
+            ),
+            _ => return,
+        };
+
+        let (debounce, max_delay) = if self.config.editor.adaptive_save {
+            crate::save_manager::adaptive_delays(content_len)
+        } else {
+            let d = std::time::Duration::from_millis(self.config.editor.save_debounce_ms as u64);
+            (d, d * 5)
+        };
+
+        let now = std::time::Instant::now();
+        let deadline = first_dirty + max_delay;
+        let debounce_target = now + debounce;
+        let target_time = debounce_target.min(deadline);
+        let wait_dur = target_time.saturating_duration_since(now);
+
         self.auto_save_epoch = self.auto_save_epoch.wrapping_add(1);
         let epoch = self.auto_save_epoch;
         let entity = cx.weak_entity();
         let mut async_cx = cx.to_async();
         let background = cx.background_executor().clone();
         cx.foreground_executor().spawn(async move {
-            background.timer(std::time::Duration::from_millis(500)).await;
-            let to_save = entity.update(&mut async_cx, |this, _cx| {
-                if this.auto_save_epoch == epoch {
-                    if let Some(ref note) = this.state.active_note {
-                        if note.is_dirty {
-                            return Some((note.path.clone(), note.content.clone(), note.title.clone(), note.version));
-                        }
+            background.timer(wait_dur).await;
+            let _ = entity.update(&mut async_cx, |this, cx| {
+                if let Some(ref note) = this.state.active_note {
+                    let deadline_reached = std::time::Instant::now() >= deadline;
+                    if (this.auto_save_epoch == epoch || deadline_reached) && note.is_dirty {
+                        this.flush_active_note_now(cx);
                     }
                 }
-                None
-            }).ok().flatten();
-
-            if let Some((path, content, title, version)) = to_save {
-                let write_path = path.clone();
-                let write_res = background.spawn(async move {
-                    std::fs::write(&write_path, content)
-                }).await;
-
-                let _ = entity.update(&mut async_cx, |this, cx| {
-                    if let Some(ref mut note) = this.state.active_note {
-                        if note.path == path {
-                            match write_res {
-                                Ok(()) => {
-                                    if note.version == version {
-                                        note.is_dirty = false;
-                                    }
-                                    this.state.status_text = format!("Saved: {}", title);
-                                    let rel_path = this.state.vault.as_ref()
-                                        .and_then(|v| note.path.strip_prefix(&v.root).ok())
-                                        .map(|p| p.to_string_lossy().replace('\\', "/"))
-                                        .unwrap_or_else(|| note.path.to_string_lossy().into_owned());
-                                    this.state.events.emit_vault(&crate::events::VaultEvent::Modify { path: rel_path });
-                                    this.state.publish_snapshot();
-                                }
-                                Err(err) => {
-                                    this.state.status_text = format!("Save error: {}", err);
-                                }
-                            }
-                            cx.notify();
-                        }
-                    }
-                    this.state.save_session_state();
-                });
-            }
+            });
         }).detach();
     }
 
@@ -891,6 +933,25 @@ impl AppView {
         self.state.session.sidebar_width = self.sidebar_width;
         self.state.session.sidebar_mode = self.sidebar_mode.clone();
         self.state.save_session_state();
+    }
+
+    /// Registers OS window observers (e.g. activation / focus change) to handle
+    /// background cursor blink pausing and reliable save-on-blur / save-on-minimize.
+    pub fn init_window_observers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let sub = cx.observe_window_activation(window, |this, window, cx| {
+            let is_active = window.is_window_active();
+            let changed = this.window_was_active != is_active;
+            this.window_was_active = is_active;
+            if !is_active {
+                this.suspend_cursor_blinks(cx);
+                if this.config.editor.save_on_blur {
+                    this.flush_active_note_now(cx);
+                }
+            } else if changed {
+                this.resume_cursor_blinks(cx);
+            }
+        });
+        self.window_activation_subscription = Some(sub);
     }
 
     /// Toggles the left sidebar visibility.
@@ -1833,7 +1894,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
     }
 
     pub(crate) fn save_note(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.state.save_active_note();
+        self.flush_active_note_now(cx);
         cx.notify();
     }
 
@@ -3986,24 +4047,10 @@ impl Render for AppView {
             self.disable_editor_cursor_blink(cx);
         }
 
-        // Everything above reacts to *in-window* focus, and gpui never clears `window.focus`
-        // when the OS window is deactivated — so all of those flags stay true while the app
-        // sits in the background. Left alone, the blink timers keep ticking there and every
-        // tick calls `notify()`, i.e. a full re-render of this view twice a second, forever,
-        // for a caret nobody can interact with (~0.5-1% of a core).
-        //
-        // Polling is sufficient: gpui's `on_active_status_change` calls `window.refresh()`,
-        // which marks the window dirty and bypasses the root view's element cache, so this
-        // block is guaranteed to run on both deactivation and re-activation.
-        let window_active = window.is_window_active();
-        if self.window_was_active != window_active {
-            self.window_was_active = window_active;
-            if window_active {
-                self.resume_cursor_blinks(cx);
-            } else {
-                self.suspend_cursor_blinks(cx);
-            }
-        }
+        // In-window focus reacts to UI elements within the window. Background cursor
+        // blink pausing and save-on-blur / save-on-minimize are handled reactively by
+        // `observe_window_activation` (see `init_window_observers`), which fires on OS
+        // activation changes even when minimized (bypassing render frame requirements).
 
         if self.was_title_focused && !is_title_focused {
             self.commit_title_rename_internal();
