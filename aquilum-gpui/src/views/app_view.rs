@@ -970,9 +970,16 @@ impl AppView {
 
     fn compute_wrap_cols(&self, window_width: f32, char_width: f32) -> usize {
         let editor_left_w = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
+        // The right sidebar shrinks the editor column (flex layout), so the
+        // text must rewrap to the narrower width instead of running under it.
+        let editor_right_w = if self.right_sidebar_collapsed {
+            0.0
+        } else {
+            self.right_sidebar_width + 1.0
+        };
         let char_w = if char_width > 1.0 { char_width } else { 7.7 };
-        // Доступная ширина текста: ширина окна минус левые колонки и отступы (контейнер 32px + строка 8px + номера строк 40px + правые 40px)
-        let available_text_w = (window_width - editor_left_w - 120.0).max(100.0);
+        // Доступная ширина текста: ширина окна минус левая и правая колонки и отступы (контейнер 32px + строка 8px + номера строк 40px + правые 40px)
+        let available_text_w = (window_width - editor_left_w - editor_right_w - 120.0).max(100.0);
         ((available_text_w / char_w).floor() as usize).max(20)
     }
 
@@ -6788,6 +6795,17 @@ impl Render for AppView {
             )
             // ================= TABS POPUP (Obsidian-style switcher) =================
             .when_some(self.tabs_popup.clone(), |d, popup| {
+                // The panel's right edge must line up with the chevron that opens
+                // it. While the right sidebar is closed the buttons sit at the
+                // window edge (see POPUP_RIGHT_OFFSET); once it opens they shift
+                // left by the header column + divider, so the offset follows the
+                // sidebar width live — including mid-drag, since resize notifies
+                // every frame.
+                let popup_right = if self.right_sidebar_collapsed {
+                    crate::views::tab_list::POPUP_RIGHT_OFFSET
+                } else {
+                    self.right_sidebar_width + 1.0 + 4.0 + 32.0 + 4.0
+                };
                 d.child(
                     gpui::deferred(
                         div()
@@ -6801,7 +6819,7 @@ impl Render for AppView {
                                 crate::views::tab_list::WINDOW_ANCHOR_TOP
                                     + crate::views::tab_list::POPUP_GAP,
                             ))
-                            .right(px(crate::views::tab_list::POPUP_RIGHT_OFFSET))
+                            .right(px(popup_right))
                             .child(popup),
                     )
                     .with_priority(999),

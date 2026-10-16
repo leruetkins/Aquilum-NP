@@ -89,7 +89,9 @@ pub const POPUP_GAP: f32 = 4.0;
 /// Right offset (px) of the panel's right edge, measured from the window edge. It
 /// sums the three native window controls plus the action group's padding, the
 /// sidebar toggle and its gap, so the edge lines up with the chevron that opens the
-/// popup. See `titlebar-right-controls-group` in `app_view.rs`.
+/// popup. Applies while the right sidebar is closed; when it is open the parent
+/// computes the offset from the sidebar width instead (the buttons shift left).
+/// See `titlebar-right-controls-group` in `app_view.rs`.
 pub const POPUP_RIGHT_OFFSET: f32 = 46.0 * 3.0 + 4.0 + 32.0 + 4.0;
 /// File and check mark icon size (px).
 const ICON_SIZE: f32 = 14.0;
