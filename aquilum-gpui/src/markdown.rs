@@ -940,6 +940,15 @@ pub struct VisualRowHeightIndex {
     total: f64,
 }
 
+/// Calculates row height for a heading with font size `h_size` and given `base_line_h`.
+/// Headings are aligned to multiples of 4 logical pixels, ensuring that at any standard
+/// display scale (100%, 125%, 150%, 175%, 200%, 225%, 250%) their height is an exact
+/// integer number of physical device pixels, eliminating subpixel gaps and overlaps.
+pub fn heading_row_height(h_size: f32, base_line_h: f32) -> f32 {
+    let unrounded = (h_size * 1.35).max(base_line_h);
+    ((unrounded / 4.0).ceil() * 4.0).max(base_line_h)
+}
+
 impl VisualRowHeightIndex {
     pub fn new(heights: Vec<f32>) -> Self {
         let mut bases = Vec::with_capacity(heights.len() / HEIGHT_BLOCK + 1);
@@ -989,7 +998,7 @@ impl VisualRowHeightIndex {
                     | LineKind::Heading5(_)
                     | LineKind::Heading6(_)
             ) {
-                (h_size * 1.35).round().max(24.0)
+                heading_row_height(h_size, 24.0)
             } else {
                 24.0
             };
@@ -2127,6 +2136,32 @@ mod tests {
                 row.line_chars.windows(2).all(|w| w[0] <= w[1]),
                 "line_chars is not monotone for {line:?} (active={active})"
             );
+        }
+    }
+
+    #[test]
+    fn test_heading_row_height_multiples_of_four_and_integer_pixels() {
+        let scales = [1.0f32, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0];
+        // Standard heading sizes from default settings: h1=22, h2=19, h3=17, h4=15, h5=14, h6=13
+        for h_size in [22.0f32, 19.0, 17.0, 15.0, 14.0, 13.0] {
+            let row_h = heading_row_height(h_size, 24.0);
+            assert_eq!(
+                row_h % 4.0,
+                0.0,
+                "heading row_h {row_h} for h_size {h_size} must be a multiple of 4"
+            );
+            assert!(
+                row_h >= 24.0,
+                "heading row_h {row_h} must be at least base_line_h"
+            );
+            for scale in scales {
+                let physical = row_h * scale;
+                assert_eq!(
+                    physical,
+                    physical.round(),
+                    "physical pixels {physical} must be an exact integer at scale {scale}"
+                );
+            }
         }
     }
 }

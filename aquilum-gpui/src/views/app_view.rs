@@ -1089,7 +1089,7 @@ impl AppView {
             _ => (14.0, false, 0),
         };
         if is_heading {
-            let row_h = (h_size * 1.35).round().max(base_line_h);
+            let row_h = crate::markdown::heading_row_height(h_size, base_line_h);
             let char_w = heading_char_widths
                 .and_then(|w| w.get(h_idx).copied())
                 .unwrap_or_else(|| base_char_w * (h_size / 14.0));
@@ -5860,6 +5860,7 @@ impl Render for AppView {
                                                     f64::from(EDITOR_OVERSCAN_PX),
                                                 );
                                                 let shift = height_index_arc.top_of(vr.start) - local_scroll;
+                                                let shift = crate::snap::snap_x(shift as f32, pixel_scale) as f64;
                                                 (vr, shift)
                                             };
 
@@ -5894,23 +5895,19 @@ impl Render for AppView {
 
                                             let mut items = Vec::with_capacity(visible_range.len());
 
-                                            let calc_v_row_sel_range = |target_v_idx: usize| -> Option<(usize, usize)> {
+                                            let calc_v_row_sel_rect = |target_v_idx: usize| -> Option<(f32, f32)> {
                                                 let sel = selection_range.as_ref()?;
                                                 if sel.start >= sel.end {
                                                     return None;
                                                 }
                                                 let v = visual_rows_arc.get(target_v_idx)?;
-                                                let line = &lines_arc[v.line_idx];
-                                                let line_start = slice_line_starts[v.line_idx - slice_first_line];
-                                                let line_end = line_start + line.len();
-
-                                                if line.is_empty() {
-                                                    if sel.start <= line_start && sel.end > line_start {
-                                                        return Some((0, 1));
-                                                    } else {
-                                                        return None;
-                                                    }
+                                                let line_idx = v.line_idx;
+                                                if line_idx < slice_first_line || line_idx - slice_first_line >= slice_line_starts.len() {
+                                                    return None;
                                                 }
+                                                let line = &lines_arc[line_idx];
+                                                let line_start = slice_line_starts[line_idx - slice_first_line];
+                                                let line_end = line_start + line.len();
 
                                                 let is_line_in_sel = if sel.start == sel.end {
                                                     false
@@ -5919,18 +5916,26 @@ impl Render for AppView {
                                                 } else {
                                                     sel.end > line_start && sel.start < line_end
                                                 };
-                                                let is_in_act_block = code_states_arc[v.line_idx]
-                                                    .as_ref()
+                                                let is_in_act_block = code_states_arc.get(line_idx)
+                                                    .and_then(|s| s.as_ref())
                                                     .map(|s| active_block_ids.contains(&s.block_id))
                                                     .unwrap_or(false);
-                                                let is_act_line = is_editing && (v.line_idx == cursor_line || is_line_in_sel || is_in_act_block);
-                                                let code_state = code_states_arc[v.line_idx].as_ref().map(|s| (s.kind, s.lang.as_deref()));
+                                                let is_act_line = is_editing && (line_idx == cursor_line || is_line_in_sel || is_in_act_block);
+                                                let code_state = code_states_arc.get(line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
                                                 let classified = crate::markdown::classify_line(line, code_state);
                                                 let (_, row_char_w, _, _, _) =
                                                     Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths));
                                                 // Selection columns come from the shaped row, i.e. the
                                                 // same model the mouse handlers hit-test with.
                                                 let row_layout = shape_row(&text_system, line, &classified, v, is_act_line, headings, &editor_font, row_char_w);
+
+                                                if line.is_empty() {
+                                                    if sel.start <= line_start && sel.end > line_start {
+                                                        return Some(row_layout.selection_rect(0, 1, pixel_scale));
+                                                    } else {
+                                                        return None;
+                                                    }
+                                                }
 
                                                 let mut byte_s = sel.start.saturating_sub(line_start).min(line.len());
                                                 let mut byte_e = sel.end.saturating_sub(line_start).min(line.len());
@@ -5955,7 +5960,7 @@ impl Render for AppView {
                                                             vis_e += 1;
                                                         }
                                                         if vis_s < vis_e {
-                                                            Some((vis_s, vis_e))
+                                                            Some(row_layout.selection_rect(vis_s, vis_e, pixel_scale))
                                                         } else {
                                                             None
                                                         }
@@ -5964,7 +5969,7 @@ impl Render for AppView {
                                                     }
                                                 } else if includes_newline && char_s == v.char_end {
                                                     let vis_s = row_layout.column_for_line_char(v.char_end);
-                                                    Some((vis_s, vis_s + 1))
+                                                    Some(row_layout.selection_rect(vis_s, vis_s + 1, pixel_scale))
                                                 } else {
                                                     None
                                                 }
@@ -6012,7 +6017,56 @@ impl Render for AppView {
                                                     "    ".to_string()
                                                 };
 
-                                                let row_sel_chars = calc_v_row_sel_range(v_idx);
+                                                let row_sel_rect = if line.is_empty() {
+                                                    if selection_range.as_ref().map_or(false, |s| s.start <= line_start && s.end > line_start) {
+                                                        Some(row_layout.selection_rect(0, 1, pixel_scale))
+                                                    } else {
+                                                        None
+                                                    }
+                                                } else if let Some(sel) = selection_range.as_ref() {
+                                                    if sel.start < sel.end {
+                                                        let mut byte_s = sel.start.saturating_sub(line_start).min(line.len());
+                                                        let mut byte_e = sel.end.saturating_sub(line_start).min(line.len());
+                                                        while byte_s > 0 && !line.is_char_boundary(byte_s) {
+                                                            byte_s -= 1;
+                                                        }
+                                                        while byte_e > 0 && !line.is_char_boundary(byte_e) {
+                                                            byte_e -= 1;
+                                                        }
+                                                        let char_s = line[..byte_s].chars().count();
+                                                        let char_e = char_s + line[byte_s..byte_e].chars().count();
+
+                                                        let includes_newline = v.is_last_sub && sel.end > line_end && sel.start <= line_end;
+
+                                                        if byte_s < byte_e {
+                                                            let intersect_s = char_s.max(v.char_start);
+                                                            let intersect_e = char_e.min(v.char_end);
+                                                            if intersect_s <= intersect_e {
+                                                                let vis_s = row_layout.column_for_line_char(intersect_s);
+                                                                let mut vis_e = row_layout.column_for_line_char(intersect_e);
+                                                                if includes_newline {
+                                                                    vis_e += 1;
+                                                                }
+                                                                if vis_s < vis_e {
+                                                                    Some(row_layout.selection_rect(vis_s, vis_e, pixel_scale))
+                                                                } else {
+                                                                    None
+                                                                }
+                                                            } else {
+                                                                None
+                                                            }
+                                                        } else if includes_newline && char_s == v.char_end {
+                                                            let vis_s = row_layout.column_for_line_char(v.char_end);
+                                                            Some(row_layout.selection_rect(vis_s, vis_s + 1, pixel_scale))
+                                                        } else {
+                                                            None
+                                                        }
+                                                    } else {
+                                                        None
+                                                    }
+                                                } else {
+                                                    None
+                                                };
 
                                                 // Rectangles the row paints behind its text. Both the chip and
                                                 // the selection are painted here, before the text, so the glyphs
@@ -6054,16 +6108,16 @@ impl Render for AppView {
                                                             .rounded_sm(),
                                                     );
                                                 }
-                                                if let Some((sel_s, sel_e)) = row_sel_chars {
-                                                    let sel_above = if v_idx > 0 { calc_v_row_sel_range(v_idx - 1) } else { None };
-                                                    let sel_below = if v_idx + 1 < visual_rows_arc.len() { calc_v_row_sel_range(v_idx + 1) } else { None };
+                                                if let Some((sel_x, sel_w)) = row_sel_rect {
+                                                    let sel_right = sel_x + sel_w;
+                                                    let sel_above = if v_idx > 0 { calc_v_row_sel_rect(v_idx - 1) } else { None };
+                                                    let sel_below = if v_idx + 1 < visual_rows_arc.len() { calc_v_row_sel_rect(v_idx + 1) } else { None };
 
-                                                    let round_tl = sel_above.map_or(true, |(as_s, as_e)| sel_s < as_s || sel_s >= as_e);
-                                                    let round_tr = sel_above.map_or(true, |(as_s, as_e)| sel_e > as_e || sel_e <= as_s);
-                                                    let round_bl = sel_below.map_or(true, |(bs_s, bs_e)| sel_s < bs_s || sel_s >= bs_e);
-                                                    let round_br = sel_below.map_or(true, |(bs_s, bs_e)| sel_e > bs_e || sel_e <= bs_s);
+                                                    let round_tl = sel_above.map_or(true, |(ax, aw)| sel_x < ax - 0.5 || sel_x >= ax + aw - 0.5);
+                                                    let round_tr = sel_above.map_or(true, |(ax, aw)| sel_right > ax + aw + 0.5 || sel_right <= ax + 0.5);
+                                                    let round_bl = sel_below.map_or(true, |(bx, bw)| sel_x < bx - 0.5 || sel_x >= bx + bw - 0.5);
+                                                    let round_br = sel_below.map_or(true, |(bx, bw)| sel_right > bx + bw + 0.5 || sel_right <= bx + 0.5);
 
-                                                    let (sel_x, sel_w) = row_layout.selection_rect(sel_s, sel_e, pixel_scale);
                                                     let mut sel_rect = div()
                                                         .absolute()
                                                         .left(px(sel_x))
