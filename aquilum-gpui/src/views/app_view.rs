@@ -1163,7 +1163,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             None => return,
         };
         let (cursor_line, cursor_col) = note.line_col();
-        let anchor = if note.window.covers_line(cursor_line) {
+        let anchor = if note.window.covers_line(cursor_line) && note.window.covers_line(self.editor_anchor_line.get()) {
             self.editor_anchor_line.get()
         } else {
             self.editor_anchor_line.set(cursor_line);
@@ -3594,7 +3594,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         // under the status bar until the next frame's rebuild.
         if let Some(ref mut note) = self.state.active_note {
             let (cursor_line, _) = note.line_col();
-            let anchor = if note.window.covers_line(cursor_line) {
+            let anchor = if note.window.covers_line(cursor_line) && note.window.covers_line(self.editor_anchor_line.get()) {
                 self.editor_anchor_line.get()
             } else {
                 self.editor_anchor_line.set(cursor_line);

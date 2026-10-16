@@ -466,8 +466,22 @@ impl OpenedNote {
             || self.window.word_wrap != word_wrap
             || self.window.wrap_cols != wrap_cols;
 
-        let (start, end) =
-            crate::editor_window::EditorWindow::bounds_for(anchor_line, self.line_index.lines());
+        let lines_total = self.line_index.lines();
+        let (start, end) = if lines_total <= 2 * crate::editor_window::MARGIN_LINES + 1 {
+            (0, lines_total)
+        } else if !self.window.is_empty()
+            && !self.window.should_move_to(anchor_line, lines_total, word_wrap, wrap_cols)
+        {
+            let target_len = self
+                .window
+                .line_count()
+                .max(2 * crate::editor_window::MARGIN_LINES + 1);
+            let start = self.window.start_line.min(lines_total.saturating_sub(1));
+            let end = (start + target_len).min(lines_total);
+            (start, end)
+        } else {
+            crate::editor_window::EditorWindow::bounds_for(anchor_line, lines_total)
+        };
         // The window can open anywhere, so it needs the fence state at its first
         // line. Extending the checkpoints is bounded by `start`, not by the
         // document: a note opened at the top scans a few thousand lines, and a
@@ -2802,6 +2816,50 @@ mod tests {
         assert!(y_after > y_window_end);
         assert!(y_end > y_after);
         assert!(y_end <= note.total_height());
+    }
+
+    #[test]
+    fn test_typing_in_large_file_does_not_shift_window_or_above_h() {
+        let mut text = String::new();
+        for i in 0..50_000 {
+            text.push_str(&format!("line {i}\n"));
+        }
+        let mut note = OpenedNote::new(
+            PathBuf::from("big.md"),
+            "big".to_string(),
+            text,
+            1,
+        );
+        let initial_anchor = 25_000;
+        note.ensure_visual_cache(false, 0, initial_anchor);
+
+        let initial_start = note.window.start_line;
+        let initial_above_lines = note.above_lines;
+        let initial_above_h = note.above_h;
+
+        // Position cursor at line 25,100
+        let offset = note.offset_for_line_col(25_100, 4);
+        note.cursor_offset = offset;
+
+        // Type characters repeatedly with slight anchor perturbations within slack
+        for i in 0..20 {
+            note.insert_text("a");
+            let perturbed_anchor = initial_anchor + (i % 5);
+            note.ensure_visual_cache(false, 0, perturbed_anchor);
+
+            assert_eq!(
+                note.window.start_line, initial_start,
+                "window start_line must remain rock-solid during typing"
+            );
+            assert_eq!(
+                note.above_lines, initial_above_lines,
+                "above_lines must remain rock-solid during typing"
+            );
+            assert_eq!(
+                note.above_h, initial_above_h,
+                "above_h must remain rock-solid during typing"
+            );
+        }
     }
 }
 
