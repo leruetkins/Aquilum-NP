@@ -246,6 +246,10 @@ pub struct TabWidthsResult {
 /// 1. When overflowing, the last tab's right boundary is locked at a fixed position right before the + button.
 /// 2. Active tab maintains a minimum readable size (`min_active_tab_w`), while inactive tabs shrink proportionally.
 /// 3. Tab widths and gaps are computed with integer precision so the right boundary never jitters.
+///
+/// `leading_w` / `leading_gap` reserve room for a button at the very start of the
+/// strip (e.g. the new-note button): the tabs region starts after it. Pass 0/0
+/// when there is no leading button.
 pub fn calculate_tab_widths(
     num_tabs: usize,
     active_tab_idx: Option<usize>,
@@ -256,6 +260,8 @@ pub fn calculate_tab_widths(
     btn_w: f32,
     btn_gap: f32,
     left_pad: f32,
+    leading_w: f32,
+    leading_gap: f32,
 ) -> TabWidthsResult {
     if num_tabs == 0 {
         return TabWidthsResult {
@@ -265,8 +271,9 @@ pub fn calculate_tab_widths(
         };
     }
 
+    let tabs_start_x = left_pad + leading_w + leading_gap;
     let gaps_total = (num_tabs.saturating_sub(1)) as f32 * nominal_tab_gap;
-    let total_at_max = left_pad + num_tabs as f32 * max_tab_w + gaps_total + btn_gap + btn_w;
+    let total_at_max = tabs_start_x + num_tabs as f32 * max_tab_w + gaps_total + btn_gap + btn_w;
 
     if total_at_max <= available_width {
         // Case 1: All tabs fit comfortably at max width
@@ -280,7 +287,7 @@ pub fn calculate_tab_widths(
     // Case 2: Overflowing. Last tab boundary is fixed right before the + button.
     let btn_x = available_width - btn_w;
     let tabs_end_x = btn_x - btn_gap;
-    let w_tabs = (tabs_end_x - left_pad).max(0.0);
+    let w_tabs = (tabs_end_x - tabs_start_x).max(0.0);
 
     if num_tabs == 1 {
         let single_w = w_tabs.min(max_tab_w);
@@ -459,6 +466,8 @@ mod tests {
                     btn_w,
                     btn_gap,
                     left_pad,
+                    0.0,
+                    0.0,
                 );
                 assert!(res.is_overflowing, "Should be overflowing for {} tabs", num_tabs);
                 assert_eq!(res.widths.len(), num_tabs);
@@ -472,10 +481,11 @@ mod tests {
                     num_tabs, active_idx
                 );
 
-                // Verify active tab minimum readable size constraint
+                                // Verify active tab minimum readable size constraint
                 if let Some(act) = active_idx {
                     let w_tabs = expected_tabs_end_x - left_pad;
                     let target_active = min_active_tab_w.min(w_tabs);
+
                     assert!(
                         res.widths[act] >= target_active,
                         "Active tab {} width {} was less than minimum readable size {} for {} tabs",
@@ -494,6 +504,45 @@ mod tests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn test_calculate_tab_widths_leading_button() {
+        // With a leading button (new-note, 32px + 6px gap) the tabs region starts
+        // after it, while the right boundary stays locked before the + button.
+        let avail_w = 600.0;
+        let (btn_w, btn_gap, left_pad) = (28.0, 6.0, 8.0);
+        let (leading_w, leading_gap) = (32.0, 6.0);
+        let tabs_start_x = left_pad + leading_w + leading_gap; // 46.0
+        let expected_end_x = avail_w - btn_w - btn_gap; // 566.0
+
+        for num_tabs in [1, 2, 4, 10, 40] {
+            let res = calculate_tab_widths(
+                num_tabs,
+                Some(0),
+                avail_w,
+                160.0,
+                120.0,
+                6.0,
+                btn_w,
+                btn_gap,
+                left_pad,
+                leading_w,
+                leading_gap,
+            );
+            assert_eq!(res.widths.len(), num_tabs);
+            let gaps_total = (num_tabs.saturating_sub(1)) as f32 * res.tab_gap;
+            let sum_widths: f32 = res.widths.iter().sum();
+            if res.is_overflowing {
+                // Tabs exactly fill [tabs_start_x, expected_end_x].
+                let actual_end_x = tabs_start_x + sum_widths + gaps_total;
+                assert_eq!(actual_end_x, expected_end_x, "num_tabs={}", num_tabs);
+            } else {
+                // Everything at max width incl. the leading button must fit.
+                let total = tabs_start_x + sum_widths + gaps_total + btn_gap + btn_w;
+                assert!(total <= avail_w, "num_tabs={}", num_tabs);
             }
         }
     }

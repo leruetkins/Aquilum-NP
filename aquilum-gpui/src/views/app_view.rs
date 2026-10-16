@@ -4191,6 +4191,9 @@ impl Render for AppView {
             28.0,
             6.0,
             8.0,
+            // Leading new-note button at the strip start (32px + flex gap).
+            32.0,
+            6.0,
         );
         let tab_widths = tab_layout.widths;
         let is_tabs_overflowing = tab_layout.is_overflowing;
@@ -4734,6 +4737,35 @@ impl Render for AppView {
                                     .h_full()
                                     .pl(px(8.0))
                                     .flex_shrink_0();
+
+                                // New-note button at the very start of the tab strip
+                                // (mirror of the "+" at the end, but creates a real note).
+                                tabs_strip = tabs_strip.child(
+                                    div()
+                                        .id("btn-new-note-inline")
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .h(px(34.0))
+                                        .w(px(32.0))
+                                        .flex_shrink_0()
+                                        .child(
+                                            div()
+                                                .id("btn-new-note-inline-inner")
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .w(px(28.0))
+                                                .h(px(28.0))
+                                                .rounded_md()
+                                                .cursor_pointer()
+                                                .hover(|h| h.bg(theme.bg_hover))
+                                                .child(icons::icon(icons::ICON_NOTE_CREATE, 15.0, theme.text_muted))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.create_new_note(window, cx);
+                                                })),
+                                        ),
+                                );
 
                                 for (idx, tab_path) in self.state.open_tabs.iter().enumerate() {
                                     let is_active = active_path.as_ref() == Some(tab_path);
