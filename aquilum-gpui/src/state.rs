@@ -1544,6 +1544,16 @@ impl AppState {
     }
 
     pub fn create_new_note(&mut self) -> Option<PathBuf> {
+        self.create_new_note_placed(false)
+    }
+
+    /// Same as [`create_new_note`], but the new tab is inserted first in the
+    /// tab strip (used by the leading new-note button).
+    pub fn create_new_note_at_front(&mut self) -> Option<PathBuf> {
+        self.create_new_note_placed(true)
+    }
+
+    fn create_new_note_placed(&mut self, at_front: bool) -> Option<PathBuf> {
         let ws = self.workspace_path.clone()?;
         // Default file name comes from the UI locale ("Без названия" for
         // Russian, "Untitled" for English, ...), never hardcoded.
@@ -1557,7 +1567,11 @@ impl AppState {
         let default_text = String::new();
         let _ = std::fs::write(&candidate, &default_text);
         self.reload_file_tree();
-        self.open_note(candidate.clone());
+        if at_front {
+            self.open_note_at_front(candidate.clone());
+        } else {
+            self.open_note(candidate.clone());
+        }
         if let Some(ref mut note) = self.active_note {
             note.cursor_offset = note.content.len();
         }
@@ -1773,7 +1787,18 @@ impl AppState {
         self.open_note_internal(path);
     }
 
+    /// Same as [`open_note`], but a new tab is inserted at the front of the
+    /// tab strip instead of appended at the end.
+    pub fn open_note_at_front(&mut self, path: PathBuf) {
+        self.push_nav_history(path.clone());
+        self.open_note_internal_at(path, true);
+    }
+
     pub fn open_note_internal(&mut self, path: PathBuf) {
+        self.open_note_internal_at(path, false);
+    }
+
+    pub fn open_note_internal_at(&mut self, path: PathBuf, at_front: bool) {
         // Empty-tab sentinels carry no file: just activate the New Tab page.
         if is_empty_tab_path(&path) {
             self.activate_empty_tab(path);
@@ -1791,7 +1816,11 @@ impl AppState {
         }
 
         if !self.open_tabs.iter().any(|p| p == &path) {
-            self.open_tabs.push(path.clone());
+            if at_front {
+                self.open_tabs.insert(0, path.clone());
+            } else {
+                self.open_tabs.push(path.clone());
+            }
         }
         let fallback = self.untitled_base();
         let title = path

@@ -1741,13 +1741,28 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
     }
 
     pub(crate) fn create_new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.create_new_note_placed(window, cx, false);
+    }
+
+    /// Same as [`create_new_note`], but the new tab opens first in the tab
+    /// strip (used by the leading new-note button).
+    pub(crate) fn create_new_note_at_front(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.create_new_note_placed(window, cx, true);
+    }
+
+    fn create_new_note_placed(&mut self, window: &mut Window, cx: &mut Context<Self>, at_front: bool) {
         self.commit_title_rename_internal();
         if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
         }
         let current_scroll = self.current_scroll_top();
         self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
-        if let Some(_) = self.state.create_new_note() {
+        let created = if at_front {
+            self.state.create_new_note_at_front()
+        } else {
+            self.state.create_new_note()
+        };
+        if let Some(_) = created {
             if let Some(ref note) = self.state.active_note {
                 self.title_editing_path = Some(note.path.clone());
                 self.title_edit_text = note.title.clone();
@@ -4740,15 +4755,45 @@ impl Render for AppView {
 
                                 // New-note button at the very start of the tab strip
                                 // (mirror of the "+" at the end, but creates a real note).
+                                // Divider after it follows the same rule as between tabs:
+                                // shown only when the neighbour tab is inactive.
+                                let first_tab_active = self
+                                    .state
+                                    .open_tabs
+                                    .first()
+                                    .map(|p| active_path.as_ref() == Some(p))
+                                    .unwrap_or(false);
+                                let show_leading_divider =
+                                    !self.state.open_tabs.is_empty() && !first_tab_active;
+                                let leading_sep_right = -(effective_tab_gap / 2.0).floor();
+                                let leading_divider_color = if theme.is_dark {
+                                    rgba(0xcdd6f440)
+                                } else {
+                                    rgba(0x1e203030)
+                                };
                                 tabs_strip = tabs_strip.child(
                                     div()
                                         .id("btn-new-note-inline")
+                                        .relative()
                                         .flex()
                                         .items_center()
                                         .justify_center()
                                         .h(px(34.0))
                                         .w(px(32.0))
                                         .flex_shrink_0()
+                                        .when(show_leading_divider, |d| {
+                                            d.child(
+                                                div()
+                                                    .id("new-note-separator")
+                                                    .absolute()
+                                                    .top(px(9.0))
+                                                    .h(px(16.0))
+                                                    .w(px(1.0))
+                                                    .right(px(leading_sep_right))
+                                                    .rounded_full()
+                                                    .bg(leading_divider_color),
+                                            )
+                                        })
                                         .child(
                                             div()
                                                 .id("btn-new-note-inline-inner")
@@ -4762,7 +4807,7 @@ impl Render for AppView {
                                                 .hover(|h| h.bg(theme.bg_hover))
                                                 .child(icons::icon(icons::ICON_NOTE_CREATE, 15.0, theme.text_muted))
                                                 .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.create_new_note(window, cx);
+                                                    this.create_new_note_at_front(window, cx);
                                                 })),
                                         ),
                                 );
