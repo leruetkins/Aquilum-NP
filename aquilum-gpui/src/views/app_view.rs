@@ -4830,13 +4830,22 @@ impl Render for AppView {
 
                                     let tab_w = tab_widths.get(idx).copied().unwrap_or(160.0);
 
+                                    // Hover group for the inactive tab: the hitbox stays full
+                                    // titlebar height, but the hover wash paints only the old
+                                    // 34px tab body at the bottom.
+                                    let tab_group: SharedString =
+                                        format!("tab-hover-{idx}").into();
                                     let mut tab_item = div()
                                         .id(gpui::ElementId::from(("tab-item", idx)))
                                         .relative()
                                         .flex()
                                         .flex_row()
                                         .items_center()
-                                        .h(px(34.0))
+                                        // Full titlebar height: the tab switches even when the
+                                        // cursor slams into the very top edge of the screen.
+                                        // The painted tab itself stays bottom-anchored (see the
+                                        // +4px offsets on the absolute visuals below).
+                                        .h_full()
                                         .w(px(tab_w))
                                         .flex_shrink_0()
                                         .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, _, cx| {
@@ -4850,11 +4859,23 @@ impl Render for AppView {
                                             this.open_tab_context_menu(tab_path_for_context.clone(), x, y, cx);
                                         }))
                                         .when(!is_active, |tab| {
-                                            tab.bg(theme.bg_sidebar)
+                                            tab.group(tab_group.clone())
+                                                .bg(theme.bg_sidebar)
                                                 .rounded_t_md()
                                                 .border_b_1()
                                                 .border_color(theme.border)
-                                                .hover(|h| h.bg(theme.bg_hover))
+                                                .child(
+                                                    div()
+                                                        .absolute()
+                                                        .bottom_0()
+                                                        .left_0()
+                                                        .right_0()
+                                                        .h(px(34.0))
+                                                        .rounded_t_md()
+                                                        .group_hover(tab_group.clone(), |h| {
+                                                            h.bg(theme.bg_hover)
+                                                        }),
+                                                )
                                         });
 
                                     if show_divider {
@@ -4868,7 +4889,7 @@ impl Render for AppView {
                                             div()
                                                 .id(gpui::ElementId::from(("tab-separator", idx)))
                                                 .absolute()
-                                                .top(px(9.0))
+                                                .top(px(13.0))
                                                 .h(px(16.0))
                                                 .w(px(1.0))
                                                 .right(px(sep_right))
@@ -4883,7 +4904,7 @@ impl Render for AppView {
                                             div()
                                                 .id("tab-body-fill")
                                                 .absolute()
-                                                .top(px(1.0))
+                                                .top(px(5.0))
                                                 .bottom_0()
                                                 .left(px(6.0))
                                                 .right(px(6.0))
@@ -4905,7 +4926,7 @@ impl Render for AppView {
                                             div()
                                                 .id("tab-border-top")
                                                 .absolute()
-                                                .top_0()
+                                                .top(px(4.0))
                                                 .left(px(7.0))
                                                 .right(px(7.0))
                                                 .h(px(1.0))
@@ -4916,7 +4937,7 @@ impl Render for AppView {
                                             div()
                                                 .id("tab-cap-left")
                                                 .absolute()
-                                                .top_0()
+                                                .top(px(4.0))
                                                 .left(px(-8.0))
                                                 .w(px(16.0))
                                                 .h(px(36.0))
@@ -4938,7 +4959,7 @@ impl Render for AppView {
                                             div()
                                                 .id("tab-cap-right")
                                                 .absolute()
-                                                .top_0()
+                                                .top(px(4.0))
                                                 .right(px(-8.0))
                                                 .w(px(16.0))
                                                 .h(px(36.0))
