@@ -4654,8 +4654,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let is_tabs_overflowing = tab_layout.is_overflowing;
         let effective_tab_gap = tab_layout.tab_gap;
 
-        let cap_top = if in_titlebar { 4.0 } else { 0.0 };
-        let sep_top = if in_titlebar { 13.0 } else { 9.0 };
+        let cap_top = 4.0;
+        let sep_top = 13.0;
         let tab_body_h = 34.0;
 
         let is_leaf_focused = self.state.workspace.active_leaf == leaf_id;
@@ -4805,6 +4805,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     }));
                 }
 
+                let ext_r = (effective_tab_gap / 2.0).ceil();
+                let ext_l = (effective_tab_gap - ext_r).max(0.0);
+
                 tab_item = tab_item.when(!is_active, |tab| {
                     let tab = tab
                         .bg(theme.bg_sidebar)
@@ -4847,8 +4850,6 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     );
                 }
 
-                let ext_r = (effective_tab_gap / 2.0).ceil();
-                let ext_l = (effective_tab_gap - ext_r).max(0.0);
                 tab_item = tab_item
                     .child(
                         div()
@@ -4889,7 +4890,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             })),
                     );
 
-                if is_focused_tab {
+                if is_active {
                     // 1. Solid center body fill connecting to active editor
                     tab_item = tab_item.child(
                         div()
@@ -4967,25 +4968,6 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                     .left_0(),
                             ),
                     );
-                } else if is_active {
-                    // Active tab of an unfocused window: subtle inactive-active indicator, bottom border stays intact
-                    tab_item = tab_item
-                        .bg(theme.bg_sidebar)
-                        .rounded_t_md()
-                        .border_b_1()
-                        .border_color(theme.border)
-                        .child(
-                            div()
-                                .id("tab-unfocused-active-fill")
-                                .absolute()
-                                .top(px(cap_top))
-                                .bottom_0()
-                                .left(px(2.0))
-                                .right(px(2.0))
-                                .rounded_t_md()
-                                .bg(theme.bg_hover)
-                                .opacity(0.4),
-                        );
                 }
 
                 tabs_strip = tabs_strip.child(
@@ -4995,7 +4977,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             div()
                                 .id(gpui::ElementId::Name(
                                     format!("leaf-tab-select-{}-{}", leaf_id.0, tab_idx).into(),
-                                ))
+                                 ))
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -5145,12 +5127,20 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 .flex()
                 .flex_row()
                 .items_center()
-                .h(px(34.0))
+                .h(px(38.0))
                 .w_full()
                 .min_w_0()
                 .bg(theme.bg_sidebar)
-                .border_b_1()
-                .border_color(theme.border)
+                .child(
+                    div()
+                        .id(gpui::ElementId::Name(format!("leaf-panel-bottom-border-{}", leaf_id.0).into()))
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .right_0()
+                        .h(px(1.0))
+                        .bg(theme.border),
+                )
                 .child(
                     div()
                         .id(gpui::ElementId::Name(format!("leaf-tab-strip-panel-inner-{}", leaf_id.0).into()))
@@ -5679,6 +5669,16 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             let above_h = view.as_ref().map(|v| v.above_h).unwrap_or(above_lines as f64 * line_h);
                             let below_h = view.as_ref().map(|v| v.below_h).unwrap_or(below_lines as f64 * line_h);
 
+                            let stats = if let Some(ref active) = self.state.active_note {
+                                if active.path == doc.path {
+                                    Some(active.text_stats())
+                                } else {
+                                    Some(doc.text_stats())
+                                }
+                            } else {
+                                Some(doc.text_stats())
+                            };
+
                             let temp_note = crate::state::OpenedNote::new_view_shell(
                                 doc.path.clone(),
                                 doc.title.clone(),
@@ -5695,6 +5695,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                 below_h,
                                 est_rows_per_line,
                                 est_row_h,
+                                stats,
                             );
 
                             leaf_container.child(

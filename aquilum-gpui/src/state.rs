@@ -345,6 +345,18 @@ pub enum TextStats {
     Large { bytes: usize },
 }
 
+pub fn compute_text_stats(text: &str) -> TextStats {
+    let len = text.len();
+    if len > TEXT_STATS_EXACT_LIMIT {
+        TextStats::Large { bytes: len }
+    } else {
+        TextStats::Exact {
+            words: text.split_whitespace().count(),
+            chars: text.chars().count(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextChange {
     /// Byte offset where the change occurred.
@@ -470,6 +482,7 @@ impl OpenedNote {
         below_h: f64,
         est_rows_per_line: f64,
         est_row_h: f64,
+        stats: Option<TextStats>,
     ) -> Self {
         Self {
             path,
@@ -493,7 +506,7 @@ impl OpenedNote {
             est_rows_per_line,
             est_row_h,
             visual_cache_dirty: false,
-            stats_cache: Cell::new(None),
+            stats_cache: Cell::new(stats.map(|s| (version, 0, s))),
         }
     }
 
@@ -518,18 +531,11 @@ impl OpenedNote {
     pub fn text_stats(&self) -> TextStats {
         let len = self.content.len();
         if let Some((v, l, s)) = self.stats_cache.get() {
-            if v == self.version && l == len {
+            if v == self.version && (l == len || self.content.is_empty()) {
                 return s;
             }
         }
-        let stats = if len > TEXT_STATS_EXACT_LIMIT {
-            TextStats::Large { bytes: len }
-        } else {
-            TextStats::Exact {
-                words: self.content.split_whitespace().count(),
-                chars: self.content.chars().count(),
-            }
-        };
+        let stats = compute_text_stats(&self.content);
         self.stats_cache.set(Some((self.version, len, stats)));
         stats
     }
@@ -4711,6 +4717,53 @@ mod tests {
         assert!(pending.is_empty());
 
         let _ = std::fs::remove_dir_all(&ws_path);
+    }
+
+    #[test]
+    fn test_view_shell_preserves_text_stats() {
+        let stats = TextStats::Large { bytes: 354 * 1024 * 1024 };
+        let shell = OpenedNote::new_view_shell(
+            PathBuf::from("/test/file.md"),
+            "file".to_string(),
+            1,
+            0,
+            None,
+            false,
+            None,
+            crate::line_index::LineIndex::empty(),
+            crate::editor_window::EditorWindow::default(),
+            0,
+            0,
+            0.0,
+            0.0,
+            1.0,
+            24.0,
+            Some(stats),
+        );
+
+        assert_eq!(shell.text_stats(), stats);
+
+        let small_stats = TextStats::Exact { words: 123, chars: 456 };
+        let small_shell = OpenedNote::new_view_shell(
+            PathBuf::from("/test/small.md"),
+            "small".to_string(),
+            1,
+            0,
+            None,
+            false,
+            None,
+            crate::line_index::LineIndex::empty(),
+            crate::editor_window::EditorWindow::default(),
+            0,
+            0,
+            0.0,
+            0.0,
+            1.0,
+            24.0,
+            Some(small_stats),
+        );
+
+        assert_eq!(small_shell.text_stats(), small_stats);
     }
 }
 

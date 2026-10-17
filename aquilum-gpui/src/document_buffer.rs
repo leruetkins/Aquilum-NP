@@ -120,6 +120,7 @@ pub struct DocumentBuffer {
     pub code_checkpoints: CodeCheckpoints,
     pub undo_stack: Vec<UndoStep>,
     pub redo_stack: Vec<UndoStep>,
+    pub stats_cache: std::cell::Cell<Option<(u64, crate::state::TextStats)>>,
 }
 
 impl DocumentBuffer {
@@ -137,6 +138,7 @@ impl DocumentBuffer {
             code_checkpoints: CodeCheckpoints::new(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            stats_cache: std::cell::Cell::new(None),
         }
     }
 
@@ -167,6 +169,18 @@ impl DocumentBuffer {
         self.redo_stack = redo_stack;
         self.is_dirty = is_dirty;
         self.first_dirty_time = first_dirty_time;
+        self.stats_cache.set(None);
+    }
+
+    pub fn text_stats(&self) -> crate::state::TextStats {
+        if let Some((v, s)) = self.stats_cache.get() {
+            if v == self.version {
+                return s;
+            }
+        }
+        let s = crate::state::compute_text_stats(&self.content);
+        self.stats_cache.set(Some((self.version, s)));
+        s
     }
 
     pub fn take_for_active_note(
