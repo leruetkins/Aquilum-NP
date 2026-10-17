@@ -351,6 +351,47 @@ impl WorkspaceNode {
     pub fn horizontal_ratio_of_leaf(&self, target: LeafId, start: f32, end: f32) -> Option<f32> {
         self.horizontal_span_of_leaf(target, start, end).map(|(s, _)| s)
     }
+
+    pub fn vertical_span_of_leaf(&self, target: LeafId, start: f32, end: f32) -> Option<(f32, f32)> {
+        match self {
+            WorkspaceNode::Leaf { id } => {
+                if *id == target {
+                    Some((start, (end - start).max(0.01)))
+                } else {
+                    None
+                }
+            }
+            WorkspaceNode::Split { direction, children, ratios } => {
+                match direction {
+                    SplitDirection::Row => {
+                        for child in children {
+                            if let Some(res) = child.vertical_span_of_leaf(target, start, end) {
+                                return Some(res);
+                            }
+                        }
+                        None
+                    }
+                    SplitDirection::Column => {
+                        let span = end - start;
+                        let mut curr_start = start;
+                        for (idx, child) in children.iter().enumerate() {
+                            let r = ratios.get(idx).copied().unwrap_or(1.0 / children.len().max(1) as f32);
+                            let child_end = curr_start + span * r;
+                            if let Some(res) = child.vertical_span_of_leaf(target, curr_start, child_end) {
+                                return Some(res);
+                            }
+                            curr_start = child_end;
+                        }
+                        None
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn vertical_ratio_of_leaf(&self, target: LeafId, start: f32, end: f32) -> Option<f32> {
+        self.vertical_span_of_leaf(target, start, end).map(|(s, _)| s)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -426,6 +467,18 @@ impl WorkspaceTree {
 
     pub fn horizontal_width_ratio_of_leaf(&self, leaf_id: LeafId) -> f32 {
         self.horizontal_span_of_leaf(leaf_id).1
+    }
+
+    pub fn vertical_span_of_leaf(&self, leaf_id: LeafId) -> (f32, f32) {
+        self.root.vertical_span_of_leaf(leaf_id, 0.0, 1.0).unwrap_or((0.0, 1.0))
+    }
+
+    pub fn vertical_ratio_of_leaf(&self, leaf_id: LeafId) -> f32 {
+        self.vertical_span_of_leaf(leaf_id).0
+    }
+
+    pub fn vertical_height_ratio_of_leaf(&self, leaf_id: LeafId) -> f32 {
+        self.vertical_span_of_leaf(leaf_id).1
     }
 
     pub fn contains_leaf(&self, leaf_id: LeafId) -> bool {
@@ -871,6 +924,41 @@ mod tests {
         assert!((w1 - 0.5).abs() < 0.001);
         assert!((s3 - 0.0).abs() < 0.001);
         assert!((w3 - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_vertical_span_and_height_ratios() {
+        let l1 = LeafId::new();
+        let mut tree = WorkspaceTree::new_single_leaf(l1);
+
+        // Single leaf: span (0.0, 1.0)
+        let (start, height) = tree.vertical_span_of_leaf(l1);
+        assert!((start - 0.0).abs() < 0.001);
+        assert!((height - 1.0).abs() < 0.001);
+        assert!((tree.vertical_ratio_of_leaf(l1) - 0.0).abs() < 0.001);
+        assert!((tree.vertical_height_ratio_of_leaf(l1) - 1.0).abs() < 0.001);
+
+        // Column split: l1 (top 50%) and l2 (bottom 50%)
+        let l2 = LeafId::new();
+        tree.split_leaf(l1, SplitDirection::Column, l2);
+        let (s1, h1) = tree.vertical_span_of_leaf(l1);
+        let (s2, h2) = tree.vertical_span_of_leaf(l2);
+        assert!((s1 - 0.0).abs() < 0.001);
+        assert!((h1 - 0.5).abs() < 0.001);
+        assert!((s2 - 0.5).abs() < 0.001);
+        assert!((h2 - 0.5).abs() < 0.001);
+        assert!((tree.vertical_height_ratio_of_leaf(l1) - 0.5).abs() < 0.001);
+        assert!((tree.vertical_height_ratio_of_leaf(l2) - 0.5).abs() < 0.001);
+
+        // Row split on l1 (l1 left, l3 right): both keep 50% height and 0.0 start
+        let l3 = LeafId::new();
+        tree.split_leaf(l1, SplitDirection::Row, l3);
+        let (s1, h1) = tree.vertical_span_of_leaf(l1);
+        let (s3, h3) = tree.vertical_span_of_leaf(l3);
+        assert!((s1 - 0.0).abs() < 0.001);
+        assert!((h1 - 0.5).abs() < 0.001);
+        assert!((s3 - 0.0).abs() < 0.001);
+        assert!((h3 - 0.5).abs() < 0.001);
     }
 
     #[test]

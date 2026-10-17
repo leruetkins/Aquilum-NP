@@ -201,9 +201,26 @@ impl AppView {
             let mut view_state = crate::workspace::EditorViewState::new(tab_id, doc_id);
             if let Some(ref note) = self.state.active_note {
                 if note.path == path {
+                    let anchor_line = self.editor_anchor_line.get();
+                    let scroll_top = self.current_scroll_top_f64();
+                    let line_top = note.doc_y_of_line(anchor_line);
                     view_state.cursor_offset = note.cursor_offset;
-                    view_state.scroll_top = self.current_scroll_top_f64();
-                    view_state.viewport.offset = self.editor_anchor_line.get();
+                    view_state.selection_anchor = note.selection_anchor;
+                    view_state.scroll_top = scroll_top;
+                    view_state.viewport.offset = anchor_line;
+                    view_state.viewport.px_in_line = ((scroll_top - line_top) as f32).max(0.0);
+                    view_state.window = note.window.clone();
+                    view_state.above_lines = note.above_lines;
+                    view_state.below_lines = note.below_lines;
+                    view_state.above_h = note.above_h;
+                    view_state.below_h = note.below_h;
+                    view_state.est_rows_per_line = note.est_rows_per_line;
+                    view_state.est_row_h = note.est_row_h;
+                    let measured_h = f32::from(self.editor_scroll_handle.bounds().size.height);
+                    if measured_h > 50.0 {
+                        view_state.measured_viewport_h = Some(measured_h);
+                    }
+                    view_state.visual_cache_dirty = false;
                 }
             }
             self.state.views.insert(tab_id, view_state);

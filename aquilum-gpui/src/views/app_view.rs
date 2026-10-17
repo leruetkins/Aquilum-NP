@@ -1823,23 +1823,74 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
     /// `max_scroll_content` is `f64`: it is an absolute offset into the
     /// document, and at 2×10^8 px an f32 cannot express it more finely than
     /// every 16 px.
-    pub fn editor_scroll_metrics(&self, total_content_h: f64, window_h: f32) -> (f32, f32, f64, f32) {
-        let bounds = self.editor_scroll_handle.bounds();
-        let bounds_h = f32::from(bounds.size.height);
-        let live = (window_h - 100.0).max(100.0);
-        let viewport_h = if bounds_h > 50.0 {
-            bounds_h
+    pub fn editor_scroll_metrics_for_leaf(
+        &self,
+        leaf_id: Option<crate::workspace::LeafId>,
+        is_leaf_active: bool,
+        total_content_h: f64,
+        window_h: f32,
+    ) -> (f32, f32, f64, f32) {
+        let (leaf_v_ratio, in_titlebar) = if let Some(lid) = leaf_id {
+            (
+                self.state.workspace.vertical_height_ratio_of_leaf(lid),
+                self.state.workspace.is_leaf_in_titlebar(lid),
+            )
         } else {
-            self.last_editor_h.get().max(100.0)
+            (1.0, true)
         };
-        let slice_h = viewport_h.max(live);
-        let max_scroll_content = (total_content_h - viewport_h as f64).max(0.0);
-        let track_top_y = if bounds.origin.y > px(0.0) {
-            f32::from(bounds.origin.y)
+        let workspace_h = (window_h - 66.0).max(100.0);
+        let leaf_total_h = workspace_h * leaf_v_ratio;
+        let header_h = if in_titlebar { 90.0 } else { 126.0 };
+        let estimated_viewport_h = (leaf_total_h - header_h).max(50.0);
+
+        let leaf_measured_h = leaf_id
+            .and_then(|lid| self.state.leaves.get(&lid))
+            .and_then(|leaf| leaf.active_tab())
+            .and_then(|tab| self.state.views.get(&tab.id))
+            .and_then(|view| view.measured_viewport_h)
+            .filter(|&mh| (mh - estimated_viewport_h).abs() < (estimated_viewport_h * 0.35).max(40.0));
+
+        let viewport_h = if is_leaf_active {
+            let bounds = self.editor_scroll_handle.bounds();
+            let bounds_h = f32::from(bounds.size.height);
+            if bounds_h > 50.0
+                && self.split_drag_state.is_none()
+                && (bounds_h - estimated_viewport_h).abs() < (estimated_viewport_h * 0.35).max(40.0)
+            {
+                bounds_h
+            } else if let Some(mh) = leaf_measured_h {
+                mh
+            } else {
+                estimated_viewport_h
+            }
+        } else if let Some(mh) = leaf_measured_h {
+            mh
         } else {
-            132.0
+            estimated_viewport_h
+        };
+
+        let slice_h = viewport_h;
+        let max_scroll_content = (total_content_h - viewport_h as f64).max(0.0);
+        let track_top_y = if is_leaf_active && self.split_drag_state.is_none() {
+            let bounds = self.editor_scroll_handle.bounds();
+            let estimated_top_y = 38.0 + (workspace_h * leaf_id.map(|lid| self.state.workspace.vertical_ratio_of_leaf(lid)).unwrap_or(0.0)) + (if in_titlebar { 0.0 } else { 36.0 }) + 90.0;
+            if bounds.origin.y > px(0.0) && (f32::from(bounds.origin.y) - estimated_top_y).abs() < 50.0 {
+                f32::from(bounds.origin.y)
+            } else {
+                estimated_top_y
+            }
+        } else {
+            let v_ratio_top = leaf_id
+                .map(|lid| self.state.workspace.vertical_ratio_of_leaf(lid))
+                .unwrap_or(0.0);
+            38.0 + (workspace_h * v_ratio_top) + (if in_titlebar { 0.0 } else { 36.0 }) + 90.0
         };
         (slice_h, viewport_h, max_scroll_content, track_top_y)
+    }
+
+    pub fn editor_scroll_metrics(&self, total_content_h: f64, window_h: f32) -> (f32, f32, f64, f32) {
+        let active_leaf = Some(self.state.workspace.active_leaf);
+        self.editor_scroll_metrics_for_leaf(active_leaf, true, total_content_h, window_h)
     }
 
     fn handle_scrollbar_drag(&mut self, current_y: f32, window: &Window, cx: &mut Context<Self>) {
@@ -4246,9 +4297,19 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 );
                 view.above_lines = new_window.start_line;
                 view.below_lines = lines_total.saturating_sub(new_window.end_line);
-                let line_h = view.est_rows_per_line * view.est_row_h;
-                view.above_h = view.above_lines as f64 * line_h;
-                view.below_h = view.below_lines as f64 * line_h;
+                let rows = new_window.visual_rows.len();
+                let lines = new_window.line_count();
+                if rows > 0 && lines > 0 {
+                    view.est_rows_per_line = rows as f64 / lines as f64;
+                    view.est_row_h = new_window.total_height() / rows as f64;
+                }
+                let rows_per_line = view.est_rows_per_line.max(f64::MIN_POSITIVE);
+                let row_h = view.est_row_h;
+                view.above_h = (view.above_lines as f64 * rows_per_line).round() * row_h;
+                view.below_h = (view.below_lines as f64 * rows_per_line).round() * row_h;
+                let first_v_idx = new_window.first_row_of_line(view.viewport.offset).unwrap_or(0);
+                let line_local_y = new_window.height_index.top_of(first_v_idx);
+                view.scroll_top = view.above_h + line_local_y + view.viewport.px_in_line as f64;
                 view.window = new_window;
                 view.visual_cache_dirty = false;
             }
@@ -4306,22 +4367,38 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
             if let Some(leaf) = self.state.leaves.get(&current_leaf_id) {
                 if let Some(tab) = leaf.active_tab() {
-                    if let Some(view) = self.state.views.get_mut(&tab.id) {
-                        view.cursor_offset = note_cursor;
-                        view.selection_anchor = note_anchor;
-                        view.scroll_top = scroll_top;
-                        view.viewport.offset = anchor_line;
-                        view.window = note.window.clone();
-                        view.above_lines = note.above_lines;
-                        view.below_lines = note.below_lines;
-                        view.above_h = note.above_h;
-                        view.below_h = note.below_h;
-                        view.est_rows_per_line = note.est_rows_per_line;
-                        view.est_row_h = note.est_row_h;
-                        view.title_edit_text = self.title_edit_text.clone();
-                        view.title_cursor_pos = self.title_cursor_pos;
-                        view.title_selection_anchor = self.title_selection_anchor;
-                        view.title_is_focused = self.title_is_focused;
+                    let doc_id = match tab.content {
+                        crate::workspace::TabContent::Document { id } => id,
+                        _ => self.state.find_document_by_path(&note_path).unwrap_or(crate::document_buffer::DocumentId(uuid::Uuid::nil())),
+                    };
+                    let view = self.state.views.entry(tab.id).or_insert_with(|| crate::workspace::EditorViewState::new(tab.id, doc_id));
+                    view.cursor_offset = note_cursor;
+                    view.selection_anchor = note_anchor;
+                    view.scroll_top = scroll_top;
+                    view.viewport.offset = anchor_line;
+                    let line_top = note.doc_y_of_line(anchor_line);
+                    view.viewport.px_in_line = ((scroll_top - line_top) as f32).max(0.0);
+                    view.window = note.window.clone();
+                    view.above_lines = note.above_lines;
+                    view.below_lines = note.below_lines;
+                    view.above_h = note.above_h;
+                    view.below_h = note.below_h;
+                    view.est_rows_per_line = note.est_rows_per_line;
+                    view.est_row_h = note.est_row_h;
+                    view.title_edit_text = self.title_edit_text.clone();
+                    view.title_cursor_pos = self.title_cursor_pos;
+                    view.title_selection_anchor = self.title_selection_anchor;
+                    view.title_is_focused = self.title_is_focused;
+                    view.visual_cache_dirty = false;
+                    let measured_h = f32::from(self.editor_scroll_handle.bounds().size.height);
+                    let (leaf_v_ratio, in_tb) = (
+                        self.state.workspace.vertical_height_ratio_of_leaf(current_leaf_id),
+                        self.state.workspace.is_leaf_in_titlebar(current_leaf_id),
+                    );
+                    let win_h: f32 = window.viewport_size().height.into();
+                    let est_vh = ((win_h - 66.0).max(100.0) * leaf_v_ratio - (if in_tb { 90.0 } else { 126.0 })).max(50.0);
+                    if measured_h > 50.0 && (measured_h - est_vh).abs() < (est_vh * 0.35).max(40.0) {
+                        view.measured_viewport_h = Some(measured_h);
                     }
                 }
             }
@@ -4481,7 +4558,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             if let Some(ref v) = view_state {
                                 opened.cursor_offset = v.cursor_offset.min(opened.content.len());
                                 opened.selection_anchor = v.selection_anchor.map(|a| a.min(opened.content.len()));
-                                if !v.window.is_empty() {
+                                if !v.window.is_empty() && v.window.covers_line(v.viewport.offset) {
                                     opened.window = v.window.clone();
                                     opened.above_lines = v.above_lines;
                                     opened.below_lines = v.below_lines;
@@ -4490,10 +4567,19 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                     opened.est_rows_per_line = v.est_rows_per_line;
                                     opened.est_row_h = v.est_row_h;
                                     opened.visual_cache_dirty = false;
+                                } else {
+                                    opened.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), v.viewport.offset);
                                 }
-                                self.set_editor_scroll_top_f64(v.scroll_top);
+                                let line_top = opened.doc_y_of_line(v.viewport.offset);
+                                let calculated = line_top + v.viewport.px_in_line as f64;
+                                let restore_y = if (calculated - v.scroll_top).abs() < 1.0 {
+                                    v.scroll_top
+                                } else {
+                                    calculated
+                                };
+                                self.set_editor_scroll_top_f64(restore_y);
                                 self.editor_anchor_line.set(v.viewport.offset);
-                                self.pending_editor_restore = Some(v.scroll_top);
+                                self.pending_editor_restore = Some(restore_y);
                                 self.need_reveal_cursor = false;
                                 self.layout_settle_frames.set(SCROLL_SETTLE_FRAMES);
                             }
@@ -5507,7 +5593,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                             this.is_dragging_scrollbar = false;
                                             this.is_hovering_editor_scrollbar = false;
                                             this.is_hovering_editor_thumb = false;
-                                            let span: f32 = window.bounds().size.height.into();
+                                            let win_h: f32 = window.bounds().size.height.into();
+                                            let span = (win_h - 66.0).max(100.0);
                                             this.split_drag_state = Some(crate::workspace::SplitDragState {
                                                 path: div_path.clone(),
                                                 direction: dir,
@@ -5661,13 +5748,18 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                 );
                             }
 
-                            let above_lines = view.as_ref().map(|v| v.above_lines).unwrap_or(editor_window.start_line);
-                            let below_lines = view.as_ref().map(|v| v.below_lines).unwrap_or_else(|| line_index_ref.lines().saturating_sub(editor_window.end_line));
-                            let est_rows_per_line = view.as_ref().map(|v| v.est_rows_per_line).unwrap_or(1.0);
-                            let est_row_h = view.as_ref().map(|v| v.est_row_h).unwrap_or(24.0);
-                            let line_h = est_rows_per_line * est_row_h;
-                            let above_h = view.as_ref().map(|v| v.above_h).unwrap_or(above_lines as f64 * line_h);
-                            let below_h = view.as_ref().map(|v| v.below_h).unwrap_or(below_lines as f64 * line_h);
+                            let above_lines = editor_window.start_line;
+                            let below_lines = line_index_ref.lines().saturating_sub(editor_window.end_line);
+                            let rows = editor_window.visual_rows.len();
+                            let lines = editor_window.line_count();
+                            let (est_rows_per_line, est_row_h) = if rows > 0 && lines > 0 {
+                                (rows as f64 / lines as f64, editor_window.total_height() / rows as f64)
+                            } else {
+                                (1.0, 24.0)
+                            };
+                            let rows_per_line = est_rows_per_line.max(f64::MIN_POSITIVE);
+                            let above_h = (above_lines as f64 * rows_per_line).round() * est_row_h;
+                            let below_h = (below_lines as f64 * rows_per_line).round() * est_row_h;
 
                             let stats = if let Some(ref active) = self.state.active_note {
                                 if active.path == doc.path {
@@ -5872,7 +5964,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
             let total_content_h = note.total_height();
             let (slice_h, viewport_h, max_scroll_content, track_top_y) =
-                self.editor_scroll_metrics(total_content_h, window_h);
+                self.editor_scroll_metrics_for_leaf(leaf_id, is_leaf_active, total_content_h, window_h);
             if is_leaf_active {
                 self.last_editor_h.set(viewport_h);
             }
@@ -5887,7 +5979,19 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     self.state.leaves.get(&lid)
                         .and_then(|l| l.active_tab())
                         .and_then(|t| self.state.views.get(&t.id))
-                        .map(|v| v.scroll_top)
+                        .map(|v| {
+                            if note.window.covers_line(v.viewport.offset) {
+                                let first_v_idx = note.window.first_row_of_line(v.viewport.offset).unwrap_or(0);
+                                let calculated = note.above_h + note.window.height_index.top_of(first_v_idx) + v.viewport.px_in_line as f64;
+                                if (calculated - v.scroll_top).abs() < 1.0 {
+                                    v.scroll_top
+                                } else {
+                                    calculated
+                                }
+                            } else {
+                                v.scroll_top
+                            }
+                        })
                 }).unwrap_or(0.0)
             };
 
@@ -6401,8 +6505,12 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 let true_max = max_scroll_content
                     .max(total_content_h - f64::from(viewport_h))
                     .max(0.0);
-                let scroll_y = raw_scroll_y.clamp(0.0, true_max);
-                if is_leaf_active && (raw_scroll_y - scroll_y).abs() > 0.5 {
+                let scroll_y = if self.is_resizing_any() {
+                    raw_scroll_y.max(0.0)
+                } else {
+                    raw_scroll_y.clamp(0.0, true_max)
+                };
+                if is_leaf_active && !self.is_resizing_any() && (raw_scroll_y - scroll_y).abs() > 0.5 {
                     self.set_editor_scroll_top_f64(scroll_y);
                 }
                 let local_scroll = scroll_y - note.above_h;
@@ -6530,7 +6638,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                         sel.end > line_start && sel.start < line_end
                     }
                 });
-                let is_current = is_editing && (v_idx == active_v_idx);
+                let is_current = (self.edit_mode || !is_leaf_active) && (v_idx == active_v_idx);
                 let show_current_line_highlight = is_current && !(hide_current_line_on_selection && has_selection);
                 let is_in_active_block = code_states_arc[v.line_idx]
                     .as_ref()
@@ -6731,8 +6839,21 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     .h(px(row_h))
                     .py_0()
                     .px_2()
-                    .rounded_sm()
-                    .when(show_current_line_highlight, |s| s.bg(theme.bg_hover));
+                    .rounded_sm();
+
+                if show_current_line_highlight {
+                    if is_leaf_active {
+                        row_div = row_div.bg(theme.bg_hover);
+                    } else {
+                        let mut faint_bg = theme.bg_hover;
+                        faint_bg.a *= 0.45;
+                        row_div = row_div
+                            .bg(faint_bg)
+                            .border_1()
+                            .border_dashed()
+                            .border_color(theme.border);
+                    }
+                }
 
                 if is_leaf_active {
                     row_div = row_div
@@ -6822,7 +6943,11 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                     .justify_end()
                                     .text_xs()
                                     .text_color(if is_current {
-                                        theme.accent
+                                        if is_leaf_active {
+                                            theme.accent
+                                        } else {
+                                            theme.text_secondary
+                                        }
                                     } else {
                                         theme.text_muted
                                     })
@@ -7045,6 +7170,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     .right_0()
                     .w(px(track_w))
                     .h_full()
+                    .overflow_hidden()
                     .cursor_pointer()
                     .when(!wide_scrollbar && !is_resizing, |d| {
                         d.hover(|h| h.bg(rgba(0x00000015)))
@@ -7327,7 +7453,7 @@ impl Render for AppView {
         let anchor_doc_y = self
             .pending_editor_restore
             .unwrap_or_else(|| self.current_scroll_top_f64());
-        let anchor_line = if self.pending_editor_restore.is_some() {
+        let anchor_line = if self.pending_editor_restore.is_some() || self.is_resizing_any() {
             self.editor_anchor_line.get()
         } else {
             self.state
@@ -7454,18 +7580,41 @@ impl Render for AppView {
         if let Some(ref mut note) = self.state.active_note {
             note.ensure_visual_cache_with_headings(self.word_wrap, wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
         }
+        let active_leaf_id = self.state.workspace.active_leaf;
+        let window_h: f32 = window.viewport_size().height.into();
+        let (leaf_v_ratio, in_titlebar) = (
+            self.state.workspace.vertical_height_ratio_of_leaf(active_leaf_id),
+            self.state.workspace.is_leaf_in_titlebar(active_leaf_id),
+        );
+        let workspace_h = (window_h - 66.0).max(100.0);
+        let leaf_total_h = workspace_h * leaf_v_ratio;
+        let header_h = if in_titlebar { 90.0 } else { 126.0 };
+        let estimated_active_vh = (leaf_total_h - header_h).max(50.0);
+
+        let bounds_h = f32::from(self.editor_scroll_handle.bounds().size.height);
+        if bounds_h > 50.0 && (bounds_h - estimated_active_vh).abs() < (estimated_active_vh * 0.35).max(40.0) {
+            if let Some(leaf) = self.state.leaves.get(&active_leaf_id) {
+                if let Some(tab) = leaf.active_tab() {
+                    if let Some(view) = self.state.views.get_mut(&tab.id) {
+                        view.measured_viewport_h = Some(bounds_h);
+                    }
+                }
+            }
+        }
+
         // Retry a pending restore until the viewport is measured: the slice below
         // already follows the target, so the rows are right from frame one.
         if self.pending_editor_restore.is_some() {
-            let viewport_h = f32::from(self.editor_scroll_handle.bounds().size.height);
+            let total = self
+                .state
+                .active_note
+                .as_ref()
+                .map(|n| n.total_height())
+                .unwrap_or(0.0);
+            let (_, viewport_h, _, _) =
+                self.editor_scroll_metrics_for_leaf(Some(active_leaf_id), true, total, window_h);
             if viewport_h > 50.0 {
                 if let Some(target) = self.pending_editor_restore.take() {
-                    let total = self
-                        .state
-                        .active_note
-                        .as_ref()
-                        .map(|n| n.total_height())
-                        .unwrap_or(0.0);
                     let clamped =
                         Self::clamp_restore_target(target, total, f64::from(viewport_h));
                     if (clamped - self.current_scroll_top_f64()).abs() > 0.5 {

@@ -38,6 +38,7 @@ pub struct EditorViewState {
     pub title_cursor_pos: usize,
     pub title_selection_anchor: Option<usize>,
     pub title_is_focused: bool,
+    pub measured_viewport_h: Option<f32>,
 }
 
 impl EditorViewState {
@@ -65,6 +66,7 @@ impl EditorViewState {
             title_cursor_pos: 0,
             title_selection_anchor: None,
             title_is_focused: false,
+            measured_viewport_h: None,
         }
     }
 
