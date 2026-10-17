@@ -4504,6 +4504,10 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         est_row_h: 24.0,
                                         visual_cache_dirty: true,
                                         stats_cache: std::cell::Cell::new(None),
+                                        view_shell_cursor_line_col: None,
+                                        view_shell_selection_range: None,
+                                        view_shell_window_start_byte: None,
+                                        view_shell_sel_lines: None,
                                     }
                                 }
                             } else {
@@ -4550,6 +4554,10 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                     est_row_h: 24.0,
                                     visual_cache_dirty: true,
                                     stats_cache: std::cell::Cell::new(None),
+                                    view_shell_cursor_line_col: None,
+                                    view_shell_selection_range: None,
+                                    view_shell_window_start_byte: None,
+                                    view_shell_sel_lines: None,
                                 }
                             };
 
@@ -5446,6 +5454,10 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                     this.is_dragging_scrollbar = false;
                                     this.is_hovering_editor_scrollbar = false;
                                     this.is_hovering_editor_thumb = false;
+                                    if let Some(ref note) = this.state.active_note {
+                                        let top_y = this.current_scroll_top_f64();
+                                        this.editor_anchor_line.set(note.line_at_doc_y(top_y));
+                                    }
                                     let editor_left_w = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
                                     let editor_right_w = if this.right_sidebar_collapsed { 0.0 } else { this.right_sidebar_width + 1.0 };
                                     let win_w: f32 = window.bounds().size.width.into();
@@ -5548,6 +5560,10 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                             this.is_dragging_scrollbar = false;
                                             this.is_hovering_editor_scrollbar = false;
                                             this.is_hovering_editor_thumb = false;
+                                            if let Some(ref note) = this.state.active_note {
+                                                let top_y = this.current_scroll_top_f64();
+                                                this.editor_anchor_line.set(note.line_at_doc_y(top_y));
+                                            }
                                             let editor_left_w = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
                                             let editor_right_w = if this.right_sidebar_collapsed { 0.0 } else { this.right_sidebar_width + 1.0 };
                                             let win_w: f32 = window.bounds().size.width.into();
@@ -5593,6 +5609,10 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                             this.is_dragging_scrollbar = false;
                                             this.is_hovering_editor_scrollbar = false;
                                             this.is_hovering_editor_thumb = false;
+                                            if let Some(ref note) = this.state.active_note {
+                                                let top_y = this.current_scroll_top_f64();
+                                                this.editor_anchor_line.set(note.line_at_doc_y(top_y));
+                                            }
                                             let win_h: f32 = window.bounds().size.height.into();
                                             let span = (win_h - 66.0).max(100.0);
                                             this.split_drag_state = Some(crate::workspace::SplitDragState {
@@ -5771,6 +5791,33 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                 Some(doc.text_stats())
                             };
 
+                            let cursor_line = line_index_ref.line_of(doc_content_ref, cursor_offset);
+                            let line_start = line_index_ref.start(doc_content_ref, cursor_line).min(cursor_offset);
+                            let cursor_col = if cursor_offset >= line_start && cursor_offset <= doc_content_ref.len() {
+                                doc_content_ref[line_start..cursor_offset].chars().count()
+                            } else {
+                                0
+                            };
+                            let sel_range = if let Some(anchor) = selection_anchor {
+                                if anchor != cursor_offset {
+                                    let s = anchor.min(cursor_offset).min(doc_content_ref.len());
+                                    let e = anchor.max(cursor_offset).min(doc_content_ref.len());
+                                    if s != e { Some(s..e) } else { None }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+                            let sel_lines = sel_range.as_ref().map(|r| {
+                                (
+                                    line_index_ref.line_of(doc_content_ref, r.start),
+                                    line_index_ref.line_of(doc_content_ref, r.end),
+                                )
+                            });
+                            let window_start_line = editor_window.start_line;
+                            let window_start_byte = line_index_ref.start(doc_content_ref, window_start_line);
+
                             let temp_note = crate::state::OpenedNote::new_view_shell(
                                 doc.path.clone(),
                                 doc.title.clone(),
@@ -5788,6 +5835,11 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                 est_rows_per_line,
                                 est_row_h,
                                 stats,
+                            ).with_view_shell_layout(
+                                (cursor_line, cursor_col),
+                                sel_range,
+                                (window_start_line, window_start_byte),
+                                sel_lines,
                             );
 
                             leaf_container.child(
@@ -5973,7 +6025,20 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             let show_scrollbar = max_scroll_content > 1.0;
 
             let leaf_scroll_top = if is_leaf_active {
-                self.pending_editor_restore.unwrap_or_else(|| self.current_scroll_top_f64())
+                if let Some(target) = self.pending_editor_restore {
+                    target
+                } else if self.is_resizing_any() && note.window.covers_line(self.editor_anchor_line.get()) {
+                    let first_v_idx = note.window.first_row_of_line(self.editor_anchor_line.get()).unwrap_or(0);
+                    let line_y = note.above_h + note.window.height_index.top_of(first_v_idx);
+                    let curr = self.current_scroll_top_f64();
+                    if (curr - line_y).abs() > (note.window.total_height() * 0.4).max(500.0) {
+                        line_y
+                    } else {
+                        curr
+                    }
+                } else {
+                    self.current_scroll_top_f64()
+                }
             } else {
                 leaf_id.and_then(|lid| {
                     self.state.leaves.get(&lid)
@@ -6847,11 +6912,13 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     } else {
                         let mut faint_bg = theme.bg_hover;
                         faint_bg.a *= 0.45;
+                        let mut border_c = theme.text_muted;
+                        border_c.a = 0.5;
                         row_div = row_div
                             .bg(faint_bg)
                             .border_1()
                             .border_dashed()
-                            .border_color(theme.border);
+                            .border_color(border_c);
                     }
                 }
 
@@ -7477,7 +7544,7 @@ impl Render for AppView {
         // Live window height for virtualized-list floors (see editor_scroll_metrics,
         // render_sidebar_tree): measured scroll bounds lag one frame behind on
         // creation/maximize, the window size itself is current from frame one.
-        let window_h = f32::from(bounds.size.height);
+        let _window_h = f32::from(bounds.size.height);
         let geom = (
             f32::from(bounds.size.width),
             f32::from(bounds.size.height),
@@ -7577,8 +7644,26 @@ impl Render for AppView {
         let viewport_w: f32 = window.viewport_size().width.into();
         let wrap_cols = self.compute_wrap_cols(viewport_w, line_char_width);
         self.last_wrap_cols = wrap_cols;
+        let curr_scroll = self.current_scroll_top_f64();
+        let mut new_active_scroll = None;
         if let Some(ref mut note) = self.state.active_note {
-            note.ensure_visual_cache_with_headings(self.word_wrap, wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
+            let anchor_line = self.editor_anchor_line.get();
+            let old_line_top = note.doc_y_of_line(anchor_line);
+            let px_in_line = (curr_scroll - old_line_top).max(0.0);
+            let old_above_h = note.above_h;
+            let old_wrap_cols = note.window.wrap_cols;
+
+            note.ensure_visual_cache_with_headings(self.word_wrap, wrap_cols, Some(&self.config.editor.headings), anchor_line);
+
+            if note.window.wrap_cols != old_wrap_cols || (note.above_h - old_above_h).abs() > 0.5 {
+                let first_v_idx = note.window.first_row_of_line(anchor_line).unwrap_or(0);
+                let line_local_y = note.window.height_index.top_of(first_v_idx);
+                let new_scroll_y = note.above_h + line_local_y + px_in_line;
+                new_active_scroll = Some(new_scroll_y);
+            }
+        }
+        if let Some(new_scroll) = new_active_scroll {
+            self.set_editor_scroll_top_f64(new_scroll);
         }
         let active_leaf_id = self.state.workspace.active_leaf;
         let window_h: f32 = window.viewport_size().height.into();

@@ -435,6 +435,10 @@ pub struct OpenedNote {
 
     /// (version, content.len(), stats). Recomputed only when the text changes.
     pub stats_cache: Cell<Option<(u64, usize, TextStats)>>,
+    pub view_shell_cursor_line_col: Option<(usize, usize)>,
+    pub view_shell_selection_range: Option<Range<usize>>,
+    pub view_shell_window_start_byte: Option<(usize, usize)>,
+    pub view_shell_sel_lines: Option<(usize, usize)>,
 }
 
 impl OpenedNote {
@@ -463,6 +467,10 @@ impl OpenedNote {
             est_row_h: 24.0,
             visual_cache_dirty: true,
             stats_cache: Cell::new(None),
+            view_shell_cursor_line_col: None,
+            view_shell_selection_range: None,
+            view_shell_window_start_byte: None,
+            view_shell_sel_lines: None,
         }
     }
 
@@ -507,7 +515,25 @@ impl OpenedNote {
             est_row_h,
             visual_cache_dirty: false,
             stats_cache: Cell::new(stats.map(|s| (version, 0, s))),
+            view_shell_cursor_line_col: None,
+            view_shell_selection_range: None,
+            view_shell_window_start_byte: None,
+            view_shell_sel_lines: None,
         }
+    }
+
+    pub fn with_view_shell_layout(
+        mut self,
+        cursor_line_col: (usize, usize),
+        selection_range: Option<Range<usize>>,
+        window_start_byte: (usize, usize),
+        sel_lines: Option<(usize, usize)>,
+    ) -> Self {
+        self.view_shell_cursor_line_col = Some(cursor_line_col);
+        self.view_shell_selection_range = selection_range;
+        self.view_shell_window_start_byte = Some(window_start_byte);
+        self.view_shell_sel_lines = sel_lines;
+        self
     }
 
     /// Marks the note dirty, recording `first_dirty_time` if this is the start
@@ -866,6 +892,9 @@ impl OpenedNote {
     }
 
     pub fn selection_range(&self) -> Option<Range<usize>> {
+        if let Some(ref r) = self.view_shell_selection_range {
+            return Some(r.clone());
+        }
         if let Some(anchor) = self.selection_anchor {
             if anchor != self.cursor_offset {
                 let mut start = anchor.min(self.cursor_offset).min(self.content.len());
@@ -1047,6 +1076,9 @@ impl OpenedNote {
 
     /// Возвращает (line_index, col_index) 0-indexed
     pub fn line_col(&self) -> (usize, usize) {
+        if let Some(lc) = self.view_shell_cursor_line_col {
+            return lc;
+        }
         let mut offset = self.cursor_offset.min(self.content.len());
         while offset > 0 && !self.content.is_char_boundary(offset) {
             offset -= 1;
@@ -1081,6 +1113,15 @@ impl OpenedNote {
     /// per line (8 bytes × lines), this jumps to the nearest checkpoint and
     /// scans at most `LINE_BLOCK` lines with `memchr`.
     pub fn line_start_byte(&self, line: usize) -> usize {
+        if let Some((w_start_line, w_start_byte)) = self.view_shell_window_start_byte {
+            if line >= w_start_line && line < w_start_line + self.window.lines.len() {
+                let offset_in_window: usize = self.window.lines.as_slice()[..line - w_start_line]
+                    .iter()
+                    .map(|l| l.len() + 1)
+                    .sum();
+                return w_start_byte + offset_in_window;
+            }
+        }
         self.line_index.start(&self.content, line)
     }
 
@@ -1090,6 +1131,26 @@ impl OpenedNote {
     /// `Err(idx) => idx - 1`: the byte belongs to the last line starting at or
     /// before it.
     pub fn line_of_byte(&self, byte: usize) -> usize {
+        if let Some(sel) = self.view_shell_selection_range.as_ref() {
+            if let Some((s_line, e_line)) = self.view_shell_sel_lines {
+                if byte == sel.start {
+                    return s_line;
+                }
+                if byte == sel.end {
+                    return e_line;
+                }
+            }
+        }
+        if let Some((w_start_line, w_start_byte)) = self.view_shell_window_start_byte {
+            let mut at = w_start_byte;
+            for (i, l) in self.window.lines.as_slice().iter().enumerate() {
+                let next = at + l.len() + 1;
+                if byte < next {
+                    return w_start_line + i;
+                }
+                at = next;
+            }
+        }
         self.line_index.line_of(&self.content, byte)
     }
 
@@ -1536,6 +1597,10 @@ impl AppState {
                                     est_row_h: 24.0,
                                     visual_cache_dirty: true,
                                     stats_cache: std::cell::Cell::new(None),
+                                    view_shell_cursor_line_col: None,
+                                    view_shell_selection_range: None,
+                                    view_shell_window_start_byte: None,
+                                    view_shell_sel_lines: None,
                                 };
                                 if let Some(v) = state.views.get(&tab.id) {
                                     opened.cursor_offset = v.cursor_offset.min(opened.content.len());

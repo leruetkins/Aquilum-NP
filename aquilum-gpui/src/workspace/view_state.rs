@@ -371,4 +371,97 @@ mod tests {
         assert!(!view.window.is_empty());
         assert!(!view.visual_cache_dirty);
     }
+
+    #[test]
+    fn test_view_state_resize_and_wrap_cols_anchoring() {
+        let tab_id = TabId::new();
+        let doc_id = DocumentId::new();
+        let mut view = EditorViewState::new(tab_id, doc_id);
+
+        let anchor_line = 500;
+        view.viewport.offset = anchor_line;
+        view.viewport.px_in_line = 5.0;
+
+        let lines_vec: Vec<String> = (0..1000).map(|i| format!("line {i} with some content that can wrap when resized")).collect();
+        let mut heights = Vec::new();
+        let mut visual_rows = Vec::new();
+        for i in 0..1000 {
+            heights.push(24.0);
+            visual_rows.push(crate::markdown::VisualRow {
+                line_idx: i,
+                sub_idx: 0,
+                is_last_sub: true,
+                char_start: 0,
+                char_end: lines_vec[i].len(),
+            });
+        }
+        let height_index = crate::markdown::VisualRowHeightIndex::new(heights);
+
+        view.window = crate::editor_window::EditorWindow {
+            start_line: 0,
+            end_line: 1000,
+            start_byte: 0,
+            end_byte: 50_000,
+            lines: std::sync::Arc::new(crate::editor_window::WindowLines::new(0, lines_vec.clone())),
+            visual_rows: std::sync::Arc::new(visual_rows),
+            code_states: std::sync::Arc::new(crate::editor_window::WindowCodeStates::default()),
+            height_index: std::sync::Arc::new(height_index),
+            word_wrap: true,
+            wrap_cols: 80,
+        };
+        view.above_lines = 0;
+        view.above_h = 0.0;
+        let first_v = view.window.first_row_of_line(anchor_line).unwrap();
+        view.scroll_top = view.above_h + view.window.height_index.top_of(first_v) + view.viewport.px_in_line as f64;
+
+        // When resizing (dragging split border), wrap_cols changes:
+        // Say wrap_cols changes to 40, increasing rows for wrapped lines
+        let new_wrap_cols = 40;
+        assert!(view.window.should_move_to(view.viewport.offset, 1000, true, new_wrap_cols));
+
+        // Rebuilt window with new_wrap_cols
+        let mut new_heights = Vec::new();
+        let mut new_visual_rows = Vec::new();
+        for i in 0..1000 {
+            // Some lines wrap into 2 rows at wrap_cols 40
+            let rows_count = if i % 2 == 0 { 2 } else { 1 };
+            for sub in 0..rows_count {
+                new_heights.push(24.0);
+                new_visual_rows.push(crate::markdown::VisualRow {
+                    line_idx: i,
+                    sub_idx: sub,
+                    is_last_sub: sub + 1 == rows_count,
+                    char_start: 0,
+                    char_end: lines_vec[i].len(),
+                });
+            }
+        }
+        let new_height_index = crate::markdown::VisualRowHeightIndex::new(new_heights);
+        let new_window = crate::editor_window::EditorWindow {
+            start_line: 0,
+            end_line: 1000,
+            start_byte: 0,
+            end_byte: 50_000,
+            lines: std::sync::Arc::new(crate::editor_window::WindowLines::new(0, lines_vec)),
+            visual_rows: std::sync::Arc::new(new_visual_rows),
+            code_states: std::sync::Arc::new(crate::editor_window::WindowCodeStates::default()),
+            height_index: std::sync::Arc::new(new_height_index),
+            word_wrap: true,
+            wrap_cols: new_wrap_cols,
+        };
+
+        // Anchor recalculation
+        let new_first_v = new_window.first_row_of_line(view.viewport.offset).unwrap();
+        let new_line_local_y = new_window.height_index.top_of(new_first_v);
+        let new_scroll_top = view.above_h + new_line_local_y + view.viewport.px_in_line as f64;
+        view.scroll_top = new_scroll_top;
+        view.window = new_window;
+
+        // Invariant: local_scroll = scroll_top - above_h lands exactly on anchor line + px_in_line
+        let local_scroll = view.scroll_top - view.above_h;
+        assert_eq!(local_scroll, new_line_local_y + 5.0);
+        let vr = view.window.height_index.visible_range(local_scroll, 600.0, 300.0);
+        assert!(vr.start <= new_first_v);
+        assert!(vr.end > new_first_v);
+    }
 }
