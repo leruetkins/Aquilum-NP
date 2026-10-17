@@ -147,7 +147,11 @@
     "files": {
       "title": "ファイルとメディア",
       "attachments_folder": "添付ファイルフォルダー",
-      "attachments_folder_desc": "貼り付けた画像、ビデオ、ドキュメントの保存場所"
+      "attachments_folder_desc": "貼り付けた画像、ビデオ、ドキュメントの保存場所",
+      "close_deleted_tabs": "Close tabs of deleted files",
+      "close_deleted_tabs_desc": "Automatically close all related tabs and release resources when a file is deleted on disk or by a plugin",
+      "keep_modified_on_delete": "Keep tab open on delete if modified",
+      "keep_modified_on_delete_desc": "Keep the tab open when a file is deleted if the document has unsaved edits"
     },
     "analysis": {
       "title": "リンク解析手法",
@@ -305,7 +309,9 @@
     "move_to_new_window": "新しいウィンドウに移動",
     "pinned_status": "タブ「{}」が固定されました",
     "link_tab_status": "タブリンクは近日公開予定です",
-    "new_window_status": "新しいウィンドウに移動する予定です"
+    "new_window_status": "新しいウィンドウに移動する予定です",
+    "split_right": "右に分割",
+    "split_down": "下に分割"
   },
   "editor": {
     "create_note": "メモを作成する",

@@ -103,6 +103,11 @@ impl WindowLines {
         self.lines.capacity() * std::mem::size_of::<String>()
             + self.lines.iter().map(|s| s.capacity()).sum::<usize>()
     }
+
+    /// Shifts the starting line index of the window lines.
+    pub fn shift_start(&mut self, line_diff: isize) {
+        self.start = (self.start as isize + line_diff).max(0) as usize;
+    }
 }
 
 impl std::ops::Index<usize> for WindowLines {
@@ -161,6 +166,11 @@ impl WindowCodeStates {
     /// Bytes held.
     pub fn bytes(&self) -> usize {
         self.states.capacity() * std::mem::size_of::<Option<CodeBlockState>>()
+    }
+
+    /// Shifts the starting line index of the window code states.
+    pub fn shift_start(&mut self, line_diff: isize) {
+        self.start = (self.start as isize + line_diff).max(0) as usize;
     }
 }
 
@@ -253,6 +263,49 @@ impl EditorWindow {
     /// Total height of the window's rows, in logical pixels.
     pub fn total_height(&self) -> f64 {
         self.height_index.total()
+    }
+
+    /// Shifts document line and byte indices of the window when an edit occurs strictly above it.
+    /// Invariant R5: the text inside the window, code fences, and row height index remain untouched;
+    /// only document line numbers and byte offsets shift.
+    pub fn shift_lines_and_bytes(&mut self, line_diff: isize, byte_diff: isize) {
+        if self.is_empty() {
+            return;
+        }
+        self.start_line = (self.start_line as isize + line_diff).max(0) as usize;
+        self.end_line = (self.end_line as isize + line_diff).max(0) as usize;
+        self.start_byte = (self.start_byte as isize + byte_diff).max(0) as usize;
+        self.end_byte = (self.end_byte as isize + byte_diff).max(0) as usize;
+
+        if line_diff != 0 {
+            if let Some(lines) = Arc::get_mut(&mut self.lines) {
+                lines.shift_start(line_diff);
+            } else {
+                let mut lines = (*self.lines).clone();
+                lines.shift_start(line_diff);
+                self.lines = Arc::new(lines);
+            }
+
+            if let Some(states) = Arc::get_mut(&mut self.code_states) {
+                states.shift_start(line_diff);
+            } else {
+                let mut states = (*self.code_states).clone();
+                states.shift_start(line_diff);
+                self.code_states = Arc::new(states);
+            }
+
+            if let Some(rows) = Arc::get_mut(&mut self.visual_rows) {
+                for row in rows.iter_mut() {
+                    row.line_idx = (row.line_idx as isize + line_diff).max(0) as usize;
+                }
+            } else {
+                let mut rows = (*self.visual_rows).clone();
+                for row in rows.iter_mut() {
+                    row.line_idx = (row.line_idx as isize + line_diff).max(0) as usize;
+                }
+                self.visual_rows = Arc::new(rows);
+            }
+        }
     }
 
     /// Window bounds that hold `anchor_line` with a margin on each side.

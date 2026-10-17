@@ -147,7 +147,11 @@
     "files": {
       "title": "Soubory a média",
       "attachments_folder": "Složka příloh",
-      "attachments_folder_desc": "Kde jsou uloženy vložené obrázky, videa a dokumenty"
+      "attachments_folder_desc": "Kde jsou uloženy vložené obrázky, videa a dokumenty",
+      "close_deleted_tabs": "Close tabs of deleted files",
+      "close_deleted_tabs_desc": "Automatically close all related tabs and release resources when a file is deleted on disk or by a plugin",
+      "keep_modified_on_delete": "Keep tab open on delete if modified",
+      "keep_modified_on_delete_desc": "Keep the tab open when a file is deleted if the document has unsaved edits"
     },
     "analysis": {
       "title": "Metody analýzy odkazů",
@@ -305,7 +309,9 @@
     "move_to_new_window": "Přesunout do nového okna",
     "pinned_status": "Karta „{}“ byla připnuta",
     "link_tab_status": "Propojení karet již brzy",
-    "new_window_status": "Přesun do nového okna již brzy"
+    "new_window_status": "Přesun do nového okna již brzy",
+    "split_right": "Rozdělit doprava",
+    "split_down": "Rozdělit dolů"
   },
   "editor": {
     "create_note": "Vytvořte poznámku",

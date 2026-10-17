@@ -147,7 +147,11 @@
     "files": {
       "title": "Dateien und Medien",
       "attachments_folder": "Ordner „Anhänge“.",
-      "attachments_folder_desc": "Wo eingefügte Bilder, Videos und Dokumente gespeichert werden"
+      "attachments_folder_desc": "Wo eingefügte Bilder, Videos und Dokumente gespeichert werden",
+      "close_deleted_tabs": "Close tabs of deleted files",
+      "close_deleted_tabs_desc": "Automatically close all related tabs and release resources when a file is deleted on disk or by a plugin",
+      "keep_modified_on_delete": "Keep tab open on delete if modified",
+      "keep_modified_on_delete_desc": "Keep the tab open when a file is deleted if the document has unsaved edits"
     },
     "analysis": {
       "title": "Link-Analyse-Methoden",
@@ -305,7 +309,9 @@
     "move_to_new_window": "In neues Fenster verschieben",
     "pinned_status": "Tab „{}“ angeheftet",
     "link_tab_status": "Die Tab-Verknüpfung ist bald verfügbar",
-    "new_window_status": "Der Umzug in ein neues Fenster folgt bald"
+    "new_window_status": "Der Umzug in ein neues Fenster folgt bald",
+    "split_right": "Nach rechts teilen",
+    "split_down": "Nach unten teilen"
   },
   "editor": {
     "create_note": "Erstellen Sie eine Notiz",

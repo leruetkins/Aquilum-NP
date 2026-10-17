@@ -794,49 +794,75 @@ impl Render for TabListPopup {
 
 /// Title shown for a tab: the file stem, the localized "New tab" label for
 /// empty-tab sentinels, or the "untitled" placeholder as a last resort.
+#[allow(dead_code)]
 fn tab_title(path: &std::path::Path, new_tab: &str, untitled: &str) -> SharedString {
     SharedString::from(crate::views::new_tab::tab_display_title(path, new_tab, untitled))
 }
 
 impl AppView {
-    /// Opens the tabs popup for the currently open tabs.
-    ///
-    /// The popup is positioned by the parent (see `render` in `app_view.rs`); this
-    /// only builds the entity, subscribes to its events and gives it the focus.
+    /// Opens the tabs popup for the currently open tabs in the active leaf.
     pub fn open_tabs_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.state.open_tabs.is_empty() {
+        let active_leaf = self.state.workspace.active_leaf;
+        self.open_leaf_tabs_popup(active_leaf, 0.0, 0.0, window, cx);
+        self.tabs_popup_pos = None;
+    }
+
+    /// Opens the tabs popup for a specific leaf/window at the specified anchor coordinates.
+    pub fn open_leaf_tabs_popup(
+        &mut self,
+        leaf_id: crate::workspace::LeafId,
+        click_x: f32,
+        click_y: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let leaf = match self.state.leaves.get(&leaf_id) {
+            Some(l) => l,
+            None => return,
+        };
+        if leaf.tabs.is_empty() {
             return;
         }
+        self.state.workspace.active_leaf = leaf_id;
 
         let untitled = self.t("common.untitled");
         let new_tab = self.t("tabs.newTab");
-        let tabs: Vec<TabEntry> = self
-            .state
-            .open_tabs
+        let tabs: Vec<TabEntry> = leaf
+            .tabs
             .iter()
             .enumerate()
-            .map(|(id, path)| TabEntry {
-                id,
-                title: tab_title(path, &new_tab, &untitled),
-                subtitle: None,
-                icon: icons::ICON_FILE_TEXT,
-                font_family: None,
+            .map(|(id, tab)| {
+                let (title, icon) = match &tab.content {
+                    crate::workspace::TabContent::Document { id } => {
+                        let t = self
+                            .state
+                            .documents
+                            .get(id)
+                            .map(|d| d.title.clone())
+                            .unwrap_or_else(|| untitled.clone());
+                        (t, icons::ICON_FILE_TEXT)
+                    }
+                    crate::workspace::TabContent::Empty => (new_tab.clone(), icons::ICON_FILE_TEXT),
+                    crate::workspace::TabContent::Plugin { view_id } => {
+                        (view_id.clone(), icons::ICON_PLUG)
+                    }
+                };
+                TabEntry {
+                    id,
+                    title: SharedString::from(title),
+                    subtitle: None,
+                    icon,
+                    font_family: None,
+                }
             })
             .collect();
-        let active_ix = self
-            .state
-            .open_tabs
-            .iter()
-            .position(|path| {
-                self.state.active_note.as_ref().map(|note| &note.path) == Some(path)
-                    || self.state.active_empty_tab.as_ref() == Some(path)
-            })
-            .unwrap_or(0);
+
+        let active_ix = leaf.active_tab_index.min(leaf.tabs.len().saturating_sub(1));
         let theme = self.theme.clone();
         let header = TabListHeader {
             fold: SharedString::from(self.t("tabs.fold_tabs")),
             bookmark: SharedString::from(format_bookmark_label(
-                self.state.open_tabs.len(),
+                leaf.tabs.len(),
                 &self.config.ui.language,
             )),
             close_all: SharedString::from(self.t("tabs.close_all")),
@@ -847,12 +873,10 @@ impl AppView {
         });
         // `subscribe_in` is used instead of `subscribe`: activating a tab needs a window.
         let subscription =
-            cx.subscribe_in(&popup, window, |this, _popup, event: &TabListEvent, window, cx| {
+            cx.subscribe_in(&popup, window, move |this, _popup, event: &TabListEvent, window, cx| {
                 match event {
                     TabListEvent::Activate(id) => {
-                        if let Some(path) = this.state.open_tabs.get(*id).cloned() {
-                            this.select_note(path, true, window, cx);
-                        }
+                        this.select_leaf_tab(leaf_id, *id, window, cx);
                         this.close_tabs_popup(cx);
                     }
                     TabListEvent::FoldTabs => {
@@ -864,7 +888,7 @@ impl AppView {
                         this.close_tabs_popup(cx);
                     }
                     TabListEvent::CloseAllTabs => {
-                        this.close_all_tabs(cx);
+                        this.close_leaf_all_tabs(leaf_id, window, cx);
                         this.close_tabs_popup(cx);
                     }
                     TabListEvent::Dismiss => this.close_tabs_popup(cx),
@@ -873,6 +897,8 @@ impl AppView {
 
         window.focus(&popup.read(cx).focus_handle());
         self.tabs_popup = Some(popup);
+        self.tabs_popup_leaf = Some(leaf_id);
+        self.tabs_popup_pos = Some((click_x, click_y));
         self.tabs_popup_subscription = Some(subscription);
         cx.notify();
     }
@@ -880,8 +906,12 @@ impl AppView {
     /// Closes the tabs popup, dropping its subscription with it.
     pub fn close_tabs_popup(&mut self, cx: &mut Context<Self>) {
         if self.tabs_popup.take().is_none() {
+            self.tabs_popup_leaf = None;
+            self.tabs_popup_pos = None;
             return;
         }
+        self.tabs_popup_leaf = None;
+        self.tabs_popup_pos = None;
         self.tabs_popup_subscription = None;
         cx.notify();
     }

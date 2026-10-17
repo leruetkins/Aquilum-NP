@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Length of the settle burst that repaints the editor until its scroll handle
 /// has been measured (see `layout_settle_frames`). Three frames is enough: one
@@ -91,14 +92,20 @@ pub struct AppView {
     pub right_sidebar_collapsed: bool,
     pub is_resizing_right_sidebar: bool,
     pub is_hovering_right_resizer: bool,
+    pub split_drag_state: Option<crate::workspace::SplitDragState>,
+    pub hovered_split_divider: Option<(crate::workspace::SplitDirection, Vec<usize>, usize)>,
     /// Obsidian-style tabs popup; `Some` while it is shown.
     pub tabs_popup: Option<Entity<crate::views::tab_list::TabListPopup>>,
+    /// Leaf that opened the current tabs popup, if any.
+    pub tabs_popup_leaf: Option<crate::workspace::LeafId>,
+    /// Anchor position (click_x, click_y) for the tabs popup.
+    pub tabs_popup_pos: Option<(f32, f32)>,
     /// Keeps the popup's event subscription alive; dropping it unsubscribes.
     pub tabs_popup_subscription: Option<Subscription>,
-    /// Index of the tab strip tab under the cursor, if any. Drives the
+    /// Tab strip tab under the cursor, scoped to its specific leaf. Drives the
     /// Chrome-like behavior: the hovered tab's neighbours hide their
     /// dividers so the boundary always reads clean.
-    pub hovered_tab_idx: Option<usize>,
+    pub hovered_tab: Option<(crate::workspace::LeafId, usize)>,
     /// Locale picker popup (same smart list, anchored to the language button).
     pub locale_popup: Option<Entity<crate::views::tab_list::TabListPopup>>,
     /// Keeps the locale picker's event subscription alive.
@@ -272,6 +279,8 @@ pub struct AppView {
     pub plugin_input_blink: BlinkManager,
     /// Active interactive dropdown select popup in plugin UI (plugin_id, view_id, node_id).
     pub active_plugin_select: Option<(String, u64, String)>,
+    /// Pending file deletions for atomic save debounce confirmation.
+    pub pending_file_deletions: HashMap<PathBuf, Instant>,
 }
 
 impl AppView {
@@ -287,10 +296,21 @@ impl AppView {
         let mut word_wrap = true;
         let mut initial_scroll_top = 0.0;
         if let Some(ref note) = state.active_note {
-            if let Some(settings) = state.note_states.get(&note.path) {
-                edit_mode = settings.edit_mode;
-                word_wrap = settings.word_wrap;
-                initial_scroll_top = settings.scroll_top;
+            if let Some(leaf) = state.leaves.get(&state.workspace.active_leaf) {
+                if let Some(tab) = leaf.active_tab() {
+                    if let Some(v) = state.views.get(&tab.id) {
+                        if v.scroll_top > 0.0 {
+                            initial_scroll_top = v.scroll_top as f32;
+                        }
+                    }
+                }
+            }
+            if initial_scroll_top == 0.0 {
+                if let Some(settings) = state.note_states.get(&note.path) {
+                    edit_mode = settings.edit_mode;
+                    word_wrap = settings.word_wrap;
+                    initial_scroll_top = settings.scroll_top;
+                }
             }
         }
 
@@ -342,9 +362,13 @@ impl AppView {
             right_sidebar_collapsed: true,
             is_resizing_right_sidebar: false,
             is_hovering_right_resizer: false,
+            split_drag_state: None,
+            hovered_split_divider: None,
             tabs_popup: None,
+            tabs_popup_leaf: None,
+            tabs_popup_pos: None,
             tabs_popup_subscription: None,
-            hovered_tab_idx: None,
+            hovered_tab: None,
             locale_popup: None,
             locale_popup_subscription: None,
             font_popup: None,
@@ -454,6 +478,7 @@ impl AppView {
             plugin_runtimes: Vec::new(),
             code_block_views: HashMap::new(),
             plugin_api_tx: None,
+            pending_file_deletions: HashMap::new(),
         };
         this.editor_blink.enable(BlinkTarget::Editor, cx);
         crate::commands_builtin::register_builtin_commands(&this.state.commands);
@@ -499,6 +524,11 @@ impl AppView {
         }).detach();
 
         this
+    }
+
+    /// Returns true if any UI separator/divider drag gesture is currently active.
+    pub fn is_resizing_any(&self) -> bool {
+        self.is_resizing_sidebar || self.is_resizing_right_sidebar || self.split_drag_state.is_some()
     }
 
     /// Discovers and spawns all installed plugins located in `<vault>/.vault/plugins/`.
@@ -931,6 +961,35 @@ impl AppView {
             self.state.save_active_note();
         }
 
+        // Sync active note state into views and documents before persisting
+        let current_leaf_id = self.state.workspace.active_leaf;
+        let current_scroll_f64 = self.current_scroll_top_f64();
+        let anchor_line = self.editor_anchor_line.get();
+        if let Some(ref note) = self.state.active_note {
+            let note_path = note.path.clone();
+            let note_cursor = note.cursor_offset;
+            let note_anchor = note.selection_anchor;
+            if let Some(leaf) = self.state.leaves.get(&current_leaf_id) {
+                if let Some(tab) = leaf.active_tab() {
+                    if let Some(view) = self.state.views.get_mut(&tab.id) {
+                        view.cursor_offset = note_cursor;
+                        view.selection_anchor = note_anchor;
+                        view.scroll_top = current_scroll_f64;
+                        view.viewport.offset = anchor_line;
+                    }
+                }
+            }
+            if let Some(doc_id) = self.state.find_document_by_path(&note_path) {
+                if let Some(doc) = self.state.documents.get_mut(&doc_id) {
+                    doc.is_dirty = note.is_dirty;
+                }
+            }
+        }
+
+        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
+            self.state.save_active_note();
+        }
+
         let current_scroll = self.current_scroll_top();
         self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         let sidebar_offset_y: f32 = self.sidebar_scroll_handle.offset().y.into();
@@ -938,6 +997,71 @@ impl AppView {
         self.state.session.sidebar_width = self.sidebar_width;
         self.state.session.sidebar_mode = self.sidebar_mode.clone();
         self.state.save_session_state();
+    }
+
+    /// Completely flushes data, closes child windows, unloads plugins, cancels subscriptions,
+    /// and frees document buffers on application shutdown.
+    pub fn prepare_shutdown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
+            self.state.save_active_note();
+        }
+        self.catalog_window_manager.close_if_open(cx);
+        self.settings_window_manager.close_if_open(cx);
+        self.unload_all_plugins();
+        self.plugin_leaf_views.clear();
+        self.save_on_exit(window);
+        self.close_tabs_popup(cx);
+        self.close_tab_context_menu(cx);
+        self.window_activation_subscription = None;
+        self.suspend_cursor_blinks(cx);
+        self.state.active_note = None;
+        self.state.active_empty_tab = None;
+        self.state.documents.clear();
+        self.state.by_path.clear();
+        self.state.views.clear();
+        self.pending_file_deletions.clear();
+    }
+
+    /// Polls for external filesystem changes across all open documents.
+    ///
+    /// Respects the debounce window so temporary unlinks (atomic saves) do not prematurely close tabs.
+    pub fn poll_fs_changes(&mut self, cx: &mut Context<Self>) {
+        let debounce = Duration::from_millis(350);
+        let changes = self.state.check_fs_changes(&mut self.pending_file_deletions, debounce);
+
+        if !changes.is_empty() {
+            let config = self.state.settings.get_config();
+            let mut any_handled = false;
+
+            for change in changes {
+                match change {
+                    crate::state::FsChangeEvent::Deleted(path) => {
+                        if config.files.close_deleted_tabs {
+                            let keep_dirty = config.files.keep_modified_on_delete;
+                            if self.state.handle_file_deleted(&path, keep_dirty) {
+                                any_handled = true;
+                            }
+                        }
+                    }
+                    crate::state::FsChangeEvent::Renamed { old_path, new_path } => {
+                        if self.state.handle_file_renamed(&old_path, &new_path) {
+                            any_handled = true;
+                        }
+                    }
+                    crate::state::FsChangeEvent::Modified(path) => {
+                        if self.state.handle_file_modified(&path) {
+                            any_handled = true;
+                        }
+                    }
+                }
+            }
+
+            if any_handled {
+                self.state.reload_file_tree();
+                self.state.publish_snapshot();
+                cx.notify();
+            }
+        }
     }
 
     /// Registers OS window observers (e.g. activation / focus change) to handle
@@ -973,7 +1097,7 @@ impl AppView {
         cx.notify();
     }
 
-    fn compute_wrap_cols(&self, window_width: f32, char_width: f32) -> usize {
+    fn compute_wrap_cols_for_leaf(&self, leaf_id: Option<crate::workspace::LeafId>, window_width: f32, char_width: f32) -> usize {
         let editor_left_w = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
         // The right sidebar shrinks the editor column (flex layout), so the
         // text must rewrap to the narrower width instead of running under it.
@@ -983,9 +1107,34 @@ impl AppView {
             self.right_sidebar_width + 1.0
         };
         let char_w = if char_width > 1.0 { char_width } else { 7.7 };
-        // Доступная ширина текста: ширина окна минус левая и правая колонки и отступы (контейнер 32px + строка 8px + номера строк 40px + правые 40px)
-        let available_text_w = (window_width - editor_left_w - editor_right_w - 120.0).max(100.0);
-        ((available_text_w / char_w).floor() as usize).max(20)
+        let workspace_w = (window_width - editor_left_w - editor_right_w).max(100.0);
+        let width_ratio = leaf_id
+            .map(|lid| self.state.workspace.horizontal_width_ratio_of_leaf(lid))
+            .unwrap_or(1.0);
+        let pane_w = (workspace_w * width_ratio).max(100.0);
+
+        // R14 (§4.4): content_w = pane_w - divider_w - horizontal_padding - gutter_w - scrollbar_w
+        let divider_w = if width_ratio < 0.999 { 4.0 } else { 0.0 };
+        let horizontal_padding = 64.0; // px_8 on editor_list = 32px left + 32px right
+        let gutter_w = 48.0; // line numbers (40px) + gap (8px)
+        let scrollbar_w = if self.config.editor.wide_scrollbar { 16.0 } else { 14.0 };
+
+        let content_w = (pane_w - divider_w - horizontal_padding - gutter_w - scrollbar_w).max(40.0);
+        ((content_w / char_w).floor() as usize).max(20)
+    }
+
+    fn compute_wrap_cols(&self, window_width: f32, char_width: f32) -> usize {
+        self.compute_wrap_cols_for_leaf(Some(self.state.workspace.active_leaf), window_width, char_width)
+    }
+
+    pub(crate) fn pane_text_start_x(&self, leaf_id: Option<crate::workspace::LeafId>, window: &Window) -> f32 {
+        let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
+        let editor_right_x = if self.right_sidebar_collapsed { 0.0 } else { self.right_sidebar_width + 1.0 };
+        let window_w: f32 = window.bounds().size.width.into();
+        let workspace_w = (window_w - editor_left_x - editor_right_x).max(0.0);
+        let target_lid = leaf_id.unwrap_or(self.state.workspace.active_leaf);
+        let (start_ratio, _) = self.state.workspace.horizontal_span_of_leaf(target_lid);
+        editor_left_x + start_ratio * workspace_w + 32.0 + 8.0 + 40.0
     }
 
     fn move_cursor_up_visual(&mut self, shift: bool) {
@@ -1577,7 +1726,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let Some(ref mut note) = self.state.active_note else {
             return None;
         };
-        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
+        let wrap_cols = if self.last_wrap_cols > 0 { self.last_wrap_cols } else { 80 };
+        note.ensure_visual_cache_with_headings(self.word_wrap, wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
         let total = note.total_height();
         let max_scroll = (total - f64::from(viewport_h)).max(0.0);
         if max_scroll <= 1.0 {
@@ -1751,6 +1901,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
     /// Same as [`create_new_note`], but the new tab opens first in the tab
     /// strip (used by the leading new-note button).
+    #[allow(dead_code)]
     pub(crate) fn create_new_note_at_front(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.create_new_note_placed(window, cx, true);
     }
@@ -1787,6 +1938,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
     /// Activates the tab strip tab for `path` (shared by the tab body and the
     /// invisible gap extenders around it, so every pixel opens a tab).
+    #[allow(dead_code)]
     pub(crate) fn select_tab_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if self.state.active_note.as_ref().map(|n| &n.path != &path).unwrap_or(true) {
             self.select_note(path, true, window, cx);
@@ -1955,8 +2107,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             .advance(font_id, px(14.0), 'x')
             .map(|s| f32::from(s.width))
             .unwrap_or(7.7);
-        let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
-        let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
+        let text_start_x = self.pane_text_start_x(None, window);
         let word_wrap = self.word_wrap;
         let wrap_cols = self.last_wrap_cols;
 
@@ -2090,8 +2241,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             .advance(font_id, px(14.0), 'x')
             .map(|s| f32::from(s.width))
             .unwrap_or(7.7);
-        let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
-        let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
+        let text_start_x = self.pane_text_start_x(None, window);
         let word_wrap = self.word_wrap;
         let wrap_cols = self.last_wrap_cols;
 
@@ -3587,6 +3737,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         if ctrl && !shift && (keystroke.key.eq_ignore_ascii_case("z") || keystroke.key == "я" || keystroke.key == "Я") {
             if let Some(ref mut note) = self.state.active_note {
                 note.undo();
+                self.sync_views_for_active_note();
                 cx.notify();
             }
             self.schedule_auto_save(cx);
@@ -3599,6 +3750,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         {
             if let Some(ref mut note) = self.state.active_note {
                 note.redo();
+                self.sync_views_for_active_note();
                 cx.notify();
             }
             self.schedule_auto_save(cx);
@@ -3630,6 +3782,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 if let Some(text) = note.selected_text() {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                     note.delete_selection();
+                    self.sync_views_for_active_note();
                     cx.notify();
                 }
             }
@@ -3649,6 +3802,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 if let Some(text) = item.text() {
                     if let Some(ref mut note) = self.state.active_note {
                         note.insert_text(&text);
+                        self.sync_views_for_active_note();
                         cx.notify();
                     }
                 }
@@ -3704,15 +3858,67 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             let wrap_cols = self.last_wrap_cols;
             note.ensure_visual_cache_with_headings(word_wrap, wrap_cols, Some(&self.config.editor.headings), anchor);
         }
+        self.sync_views_for_active_note();
         self.scroll_cursor_into_view();
         cx.notify();
     }
 
-    fn render_navigation_bar(&self, theme: &Theme, cx: &Context<Self>) -> gpui::Stateful<Div> {
+    fn render_navigation_bar(
+        &self,
+        note_override: Option<&crate::state::OpenedNote>,
+        leaf_id: Option<crate::workspace::LeafId>,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let is_empty_tab = leaf_id
+            .and_then(|lid| self.state.leaves.get(&lid))
+            .and_then(|l| l.active_tab())
+            .map(|t| matches!(t.content, crate::workspace::TabContent::Empty))
+            .unwrap_or(note_override.is_none() && self.state.active_note.is_none() && self.state.active_empty_tab.is_some());
+
         let can_go_back = self.state.can_navigate_back();
         let can_go_forward = self.state.can_navigate_forward();
-        let breadcrumbs = self.state.note_breadcrumbs();
-        let is_dirty = self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false);
+        let breadcrumbs = if let Some(n) = note_override {
+            if let Some(ref ws) = self.state.workspace_path {
+                if let Ok(rel) = n.path.strip_prefix(ws) {
+                    let mut parts = Vec::new();
+                    for comp in rel.components() {
+                        let comp_str = comp.as_os_str().to_string_lossy().to_string();
+                        if !comp_str.is_empty() {
+                            parts.push(comp_str);
+                        }
+                    }
+                    if let Some(last) = parts.last_mut() {
+                        if let Some(stripped) = last.strip_suffix(".md") {
+                            *last = stripped.to_string();
+                        } else if let Some(stripped) = last.strip_suffix(".markdown") {
+                            *last = stripped.to_string();
+                        }
+                    }
+                    if !parts.is_empty() {
+                        parts
+                    } else {
+                        vec![n.title.clone()]
+                    }
+                } else {
+                    vec![n.title.clone()]
+                }
+            } else {
+                vec![n.title.clone()]
+            }
+        } else if is_empty_tab {
+            vec![self.t("tabs.newTab")]
+        } else {
+            let crumbs = self.state.note_breadcrumbs();
+            if crumbs.is_empty() {
+                vec![self.t("tabs.newTab")]
+            } else {
+                crumbs
+            }
+        };
+        let is_dirty = note_override.map(|n| n.is_dirty).unwrap_or_else(|| {
+            self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false)
+        });
         let is_editing = self.edit_mode;
 
         div()
@@ -3852,7 +4058,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     .items_center()
                     .gap_1p5()
                     .flex_shrink_0()
-                    .when_some(self.state.active_note.as_ref(), |r, note| {
+                    .when_some(note_override.or(self.state.active_note.as_ref()), |r, note| {
                         use crate::state::TextStats;
                         let label = match note.text_stats() {
                             TextStats::Exact { words, chars } => format!("{}w • {}c", words, chars),
@@ -3935,6 +4141,3119 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     ),
             )
     }
+
+    pub fn sync_views_for_active_note(&mut self) {
+        let (note_path, edits) = match self.state.active_note.as_mut() {
+            Some(n) if !n.pending_edits.is_empty() => (n.path.clone(), std::mem::take(&mut n.pending_edits)),
+            _ => return,
+        };
+
+        let active_leaf_id = self.state.workspace.active_leaf;
+        let active_tab_id = self.state.leaves.get(&active_leaf_id).and_then(|l| l.active_tab()).map(|t| t.id);
+
+        let matching_doc_ids: Vec<crate::document_buffer::DocumentId> = self.state.documents
+            .iter()
+            .filter(|(_, doc)| doc.path == note_path)
+            .map(|(id, _)| *id)
+            .collect();
+
+        for (tab_id, view) in self.state.views.iter_mut() {
+            if Some(*tab_id) == active_tab_id {
+                continue;
+            }
+            if matching_doc_ids.contains(&view.doc_id) {
+                for edit in &edits {
+                    view.apply_external_edit_detailed(edit);
+                }
+            }
+        }
+    }
+
+    pub fn ensure_inactive_views_built(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let active_leaf_id = self.state.workspace.active_leaf;
+        let viewport_w: f32 = window.viewport_size().width.into();
+        let editor_font = self.editor_font_family();
+        let font_id = cx.text_system().resolve_font(&gpui::font(editor_font));
+        let line_char_width = cx
+            .text_system()
+            .advance(font_id, px(14.0), 'x')
+            .map(|s| f32::from(s.width))
+            .unwrap_or(7.7);
+
+        let leaf_info: Vec<(crate::workspace::LeafId, crate::workspace::TabId, crate::document_buffer::DocumentId, usize)> = self
+            .state
+            .leaves
+            .iter()
+            .filter(|(id, _)| **id != active_leaf_id)
+            .filter_map(|(id, leaf)| {
+                let tab = leaf.active_tab()?;
+                match tab.content {
+                    crate::workspace::TabContent::Document { id: doc_id } => {
+                        let wrap_cols = self.compute_wrap_cols_for_leaf(Some(*id), viewport_w, line_char_width);
+                        Some((*id, tab.id, doc_id, wrap_cols))
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+
+        let headings = &self.config.editor.headings;
+        let word_wrap = self.word_wrap;
+
+        let crate::state::AppState {
+            ref documents,
+            ref mut views,
+            ref active_note,
+            ..
+        } = self.state;
+
+        for (_leaf_id, tab_id, doc_id, wrap_cols) in leaf_info {
+            let doc = match documents.get(&doc_id) {
+                Some(d) => d,
+                None => continue,
+            };
+
+            let (doc_content, line_index, mut checkpoints) = if let Some(ref active) = active_note {
+                if active.path == doc.path {
+                    (active.content.as_str(), &active.line_index, active.code_checkpoints.clone())
+                } else {
+                    (doc.content(), &doc.line_index, doc.code_checkpoints.clone())
+                }
+            } else {
+                (doc.content(), &doc.line_index, doc.code_checkpoints.clone())
+            };
+
+            let lines_total = line_index.lines();
+            let view = views.entry(tab_id).or_insert_with(|| crate::workspace::EditorViewState::new(tab_id, doc_id));
+
+            if view.window.is_empty()
+                || view.visual_cache_dirty
+                || view.window.should_move_to(view.viewport.offset, lines_total, word_wrap, wrap_cols)
+            {
+                let anchor_line = view.viewport.offset;
+                let (start, end) = crate::editor_window::EditorWindow::bounds_for(anchor_line, lines_total);
+                checkpoints.ensure(doc_content, line_index, start + 1);
+                let initial = checkpoints.state_at(doc_content, line_index, start).unwrap_or_default();
+                let new_window = crate::editor_window::EditorWindow::build(
+                    doc_content,
+                    line_index,
+                    start,
+                    end,
+                    word_wrap,
+                    wrap_cols,
+                    Some(headings),
+                    initial,
+                );
+                view.above_lines = new_window.start_line;
+                view.below_lines = lines_total.saturating_sub(new_window.end_line);
+                let line_h = view.est_rows_per_line * view.est_row_h;
+                view.above_h = view.above_lines as f64 * line_h;
+                view.below_h = view.below_lines as f64 * line_h;
+                view.window = new_window;
+                view.visual_cache_dirty = false;
+            }
+        }
+    }
+
+    pub fn switch_to_leaf(
+        &mut self,
+        leaf_id: crate::workspace::LeafId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let active_idx = self.state.leaves.get(&leaf_id).map(|l| l.active_tab_index).unwrap_or(0);
+        self.select_leaf_tab(leaf_id, active_idx, window, cx);
+    }
+
+    pub fn select_leaf_tab(
+        &mut self,
+        leaf_id: crate::workspace::LeafId,
+        tab_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_views_for_active_note();
+        let current_leaf_id = self.state.workspace.active_leaf;
+        let is_same_leaf = current_leaf_id == leaf_id;
+        let same_tab = is_same_leaf && self.state.leaves.get(&leaf_id).map(|l| l.active_tab_index) == Some(tab_index);
+        let current_doc_matches = match (
+            self.state.active_note.as_ref(),
+            self.state.leaves.get(&leaf_id).and_then(|l| l.tabs.get(tab_index)),
+        ) {
+            (Some(note), Some(tab)) => match &tab.content {
+                crate::workspace::TabContent::Document { id } => {
+                    self.state.documents.get(id).map(|d| d.path == note.path).unwrap_or(false)
+                }
+                _ => false,
+            },
+            (None, Some(tab)) => matches!(tab.content, crate::workspace::TabContent::Empty) && self.state.active_empty_tab.is_some(),
+            _ => false,
+        };
+        if same_tab && current_doc_matches {
+            return;
+        }
+
+        self.commit_title_rename_internal();
+
+        // 1. Snapshot outgoing note state into DocumentBuffer and EditorViewState
+        if let Some(mut note) = self.state.active_note.take() {
+            let note_path = note.path.clone();
+            let note_cursor = note.cursor_offset;
+            let note_anchor = note.selection_anchor;
+            let note_dirty = note.is_dirty;
+            let scroll_top = self.current_scroll_top_f64();
+            let anchor_line = self.editor_anchor_line.get();
+
+            if let Some(leaf) = self.state.leaves.get(&current_leaf_id) {
+                if let Some(tab) = leaf.active_tab() {
+                    if let Some(view) = self.state.views.get_mut(&tab.id) {
+                        view.cursor_offset = note_cursor;
+                        view.selection_anchor = note_anchor;
+                        view.scroll_top = scroll_top;
+                        view.viewport.offset = anchor_line;
+                        view.window = note.window.clone();
+                        view.above_lines = note.above_lines;
+                        view.below_lines = note.below_lines;
+                        view.above_h = note.above_h;
+                        view.below_h = note.below_h;
+                        view.est_rows_per_line = note.est_rows_per_line;
+                        view.est_row_h = note.est_row_h;
+                        view.title_edit_text = self.title_edit_text.clone();
+                        view.title_cursor_pos = self.title_cursor_pos;
+                        view.title_selection_anchor = self.title_selection_anchor;
+                        view.title_is_focused = self.title_is_focused;
+                    }
+                }
+            }
+
+            let target_doc_path = self.state.leaves.get(&leaf_id)
+                .and_then(|l| l.tabs.get(tab_index))
+                .and_then(|t| match &t.content {
+                    crate::workspace::TabContent::Document { id } => self.state.documents.get(id).map(|d| d.path.clone()),
+                    _ => None,
+                });
+
+            let is_same_doc = target_doc_path.as_ref() == Some(&note_path);
+
+            if let Some(doc_id) = self.state.find_document_by_path(&note_path) {
+                if let Some(doc) = self.state.documents.get_mut(&doc_id) {
+                    if is_same_doc {
+                        doc.is_dirty = note_dirty;
+                    } else {
+                        doc.stash_from_note(
+                            std::mem::take(&mut note.content),
+                            std::mem::take(&mut note.line_index),
+                            std::mem::take(&mut note.code_checkpoints),
+                            std::mem::take(&mut note.undo_stack),
+                            std::mem::take(&mut note.redo_stack),
+                            note_dirty,
+                            note.first_dirty_time,
+                        );
+                    }
+                }
+            }
+
+            if is_same_doc {
+                self.state.active_note = Some(note);
+            }
+        }
+
+        // 2. Set new active tab index in target leaf and set active leaf
+        if let Some(leaf) = self.state.leaves.get_mut(&leaf_id) {
+            if tab_index < leaf.tabs.len() {
+                leaf.active_tab_index = tab_index;
+            }
+        }
+        self.state.workspace.active_leaf = leaf_id;
+
+        // 3. Load incoming leaf's active tab
+        if let Some(leaf) = self.state.leaves.get(&leaf_id) {
+            if let Some(tab) = leaf.active_tab() {
+                match &tab.content {
+                    crate::workspace::TabContent::Document { id } => {
+                        let doc_id = *id;
+                        if let Some(doc) = self.state.documents.get(&doc_id) {
+                            let doc_path = doc.path.clone();
+                            let doc_title = doc.title.clone();
+                            let doc_dirty = doc.is_dirty;
+                            let doc_version = doc.version;
+
+                            let view_state = self.state.views.get(&tab.id).cloned();
+
+                            let mut opened = if let Some(existing) = self.state.active_note.take() {
+                                if existing.path == doc_path {
+                                    existing
+                                } else {
+                                    let (content, line_index, code_checkpoints, undo_stack, redo_stack, first_dirty_time) =
+                                        if let Some(doc_mut) = self.state.documents.get_mut(&doc_id) {
+                                            let (c, li, cp, us, rs, fdt) = doc_mut.take_for_active_note();
+                                            let li = if li.lines() > 0 && li.len() == c.len() {
+                                                li
+                                            } else {
+                                                crate::line_index::LineIndex::new(&c)
+                                            };
+                                            (c, li, cp, us, rs, fdt)
+                                        } else {
+                                            (String::new(), crate::line_index::LineIndex::empty(), crate::code_scan::CodeCheckpoints::new(), Vec::new(), Vec::new(), None)
+                                        };
+                                    let mut content = content;
+                                    let mut line_index = line_index;
+                                    if content.is_empty() {
+                                        if let Ok(disk_content) = std::fs::read_to_string(&doc_path) {
+                                            line_index = crate::line_index::LineIndex::new(&disk_content);
+                                            content = disk_content;
+                                        }
+                                    }
+                                    crate::state::OpenedNote {
+                                        path: doc_path.clone(),
+                                        title: doc_title.clone(),
+                                        content,
+                                        version: doc_version,
+                                        cursor_offset: 0,
+                                        selection_anchor: None,
+                                        is_dirty: doc_dirty,
+                                        first_dirty_time,
+                                        undo_stack,
+                                        redo_stack,
+                                        pending_edits: Vec::new(),
+                                        line_index,
+                                        code_checkpoints,
+                                        window: crate::editor_window::EditorWindow::default(),
+                                        above_lines: 0,
+                                        below_lines: 0,
+                                        above_h: 0.0,
+                                        below_h: 0.0,
+                                        est_rows_per_line: 1.0,
+                                        est_row_h: 24.0,
+                                        visual_cache_dirty: true,
+                                        stats_cache: std::cell::Cell::new(None),
+                                    }
+                                }
+                            } else {
+                                let (content, line_index, code_checkpoints, undo_stack, redo_stack, first_dirty_time) =
+                                    if let Some(doc_mut) = self.state.documents.get_mut(&doc_id) {
+                                        let (c, li, cp, us, rs, fdt) = doc_mut.take_for_active_note();
+                                        let li = if li.lines() > 0 && li.len() == c.len() {
+                                            li
+                                        } else {
+                                            crate::line_index::LineIndex::new(&c)
+                                        };
+                                        (c, li, cp, us, rs, fdt)
+                                    } else {
+                                        (String::new(), crate::line_index::LineIndex::empty(), crate::code_scan::CodeCheckpoints::new(), Vec::new(), Vec::new(), None)
+                                    };
+                                let mut content = content;
+                                let mut line_index = line_index;
+                                if content.is_empty() {
+                                    if let Ok(disk_content) = std::fs::read_to_string(&doc_path) {
+                                        line_index = crate::line_index::LineIndex::new(&disk_content);
+                                        content = disk_content;
+                                    }
+                                }
+                                crate::state::OpenedNote {
+                                    path: doc_path.clone(),
+                                    title: doc_title.clone(),
+                                    content,
+                                    version: doc_version,
+                                    cursor_offset: 0,
+                                    selection_anchor: None,
+                                    is_dirty: doc_dirty,
+                                    first_dirty_time,
+                                    undo_stack,
+                                    redo_stack,
+                                    pending_edits: Vec::new(),
+                                    line_index,
+                                    code_checkpoints,
+                                    window: crate::editor_window::EditorWindow::default(),
+                                    above_lines: 0,
+                                    below_lines: 0,
+                                    above_h: 0.0,
+                                    below_h: 0.0,
+                                    est_rows_per_line: 1.0,
+                                    est_row_h: 24.0,
+                                    visual_cache_dirty: true,
+                                    stats_cache: std::cell::Cell::new(None),
+                                }
+                            };
+
+                            opened.is_dirty = doc_dirty;
+
+                            if let Some(ref v) = view_state {
+                                opened.cursor_offset = v.cursor_offset.min(opened.content.len());
+                                opened.selection_anchor = v.selection_anchor.map(|a| a.min(opened.content.len()));
+                                if !v.window.is_empty() {
+                                    opened.window = v.window.clone();
+                                    opened.above_lines = v.above_lines;
+                                    opened.below_lines = v.below_lines;
+                                    opened.above_h = v.above_h;
+                                    opened.below_h = v.below_h;
+                                    opened.est_rows_per_line = v.est_rows_per_line;
+                                    opened.est_row_h = v.est_row_h;
+                                    opened.visual_cache_dirty = false;
+                                }
+                                self.set_editor_scroll_top_f64(v.scroll_top);
+                                self.editor_anchor_line.set(v.viewport.offset);
+                                self.pending_editor_restore = Some(v.scroll_top);
+                                self.need_reveal_cursor = false;
+                                self.layout_settle_frames.set(SCROLL_SETTLE_FRAMES);
+                            }
+
+                            self.state.active_note = Some(opened);
+                            self.state.active_empty_tab = None;
+                            if let Some(ref v) = view_state {
+                                if !v.title_edit_text.is_empty() {
+                                    self.title_edit_text = v.title_edit_text.clone();
+                                    self.title_cursor_pos = v.title_cursor_pos;
+                                    self.title_selection_anchor = v.title_selection_anchor;
+                                    self.title_is_focused = v.title_is_focused;
+                                } else {
+                                    self.title_edit_text = doc_title;
+                                    self.title_cursor_pos = self.title_edit_text.chars().count();
+                                    self.title_selection_anchor = None;
+                                    self.title_is_focused = false;
+                                }
+                            } else {
+                                self.title_edit_text = doc_title;
+                                self.title_cursor_pos = self.title_edit_text.chars().count();
+                                self.title_selection_anchor = None;
+                                self.title_is_focused = false;
+                            }
+                            self.title_editing_path = Some(doc_path.clone());
+                            self.title_is_mouse_selecting = false;
+                        }
+                    }
+                    crate::workspace::TabContent::Empty => {
+                        self.state.active_note = None;
+                        self.state.active_empty_tab = Some(std::path::PathBuf::from("newtab"));
+                        self.active_center_leaf = None;
+                        self.title_editing_path = None;
+                        self.title_edit_text.clear();
+                        self.title_cursor_pos = 0;
+                    }
+                    crate::workspace::TabContent::Plugin { view_id } => {
+                        self.state.active_note = None;
+                        self.state.active_empty_tab = None;
+                        self.active_center_leaf = Some(view_id.clone());
+                    }
+                }
+            } else {
+                self.state.active_note = None;
+                self.state.active_empty_tab = None;
+                self.active_center_leaf = None;
+            }
+
+            self.state.open_tabs = leaf.tabs.iter().filter_map(|t| match &t.content {
+                crate::workspace::TabContent::Document { id } => {
+                    self.state.documents.get(id).map(|d| d.path.clone())
+                }
+                crate::workspace::TabContent::Empty => Some(std::path::PathBuf::from("newtab")),
+                _ => None,
+            }).collect();
+        }
+
+        window.focus(&self.focus_handle);
+        cx.notify();
+    }
+
+    pub fn close_leaf_tab(
+        &mut self,
+        leaf_id: crate::workspace::LeafId,
+        tab_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(leaf) = self.state.leaves.get(&leaf_id) {
+            if let Some(tab) = leaf.tabs.get(tab_index) {
+                if let crate::workspace::TabContent::Document { id } = &tab.content {
+                    if let Some(ref note) = self.state.active_note {
+                        if self.state.documents.get(id).map(|d| d.path == note.path).unwrap_or(false) && note.is_dirty {
+                            self.state.save_active_note();
+                        }
+                    }
+                }
+            }
+        }
+
+        let closed_path = self.state.close_leaf_tab(leaf_id, tab_index);
+        if let Some(ref path) = closed_path {
+            if self.state.active_note.as_ref().map(|n| &n.path == path).unwrap_or(false) {
+                self.state.active_note = None;
+            }
+        }
+
+        let active = self.state.workspace.active_leaf;
+        let active_idx = self.state.leaves.get(&active).map(|l| l.active_tab_index).unwrap_or(0);
+        self.select_leaf_tab(active, active_idx, window, cx);
+        cx.notify();
+    }
+
+    pub fn close_active_leaf_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let active = self.state.workspace.active_leaf;
+        let active_idx = self.state.leaves.get(&active).map(|l| l.active_tab_index).unwrap_or(0);
+        self.close_leaf_tab(active, active_idx, window, cx);
+    }
+
+    /// Closes all tabs in the specified leaf without affecting other leaves/windows.
+    pub fn close_leaf_all_tabs(
+        &mut self,
+        leaf_id: crate::workspace::LeafId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(ref note) = self.state.active_note {
+            if note.is_dirty {
+                self.state.save_active_note();
+            }
+        }
+
+        if let Some(leaf) = self.state.leaves.get_mut(&leaf_id) {
+            leaf.tabs.clear();
+            leaf.tabs.push(crate::workspace::Tab::new_empty());
+            leaf.active_tab_index = 0;
+        }
+
+        self.state.cleanup_orphaned_documents_and_views();
+
+        if self.state.workspace.active_leaf == leaf_id {
+            self.commit_title_rename_internal();
+            self.state.active_note = None;
+            self.state.active_empty_tab = None;
+        }
+
+        self.select_leaf_tab(leaf_id, 0, window, cx);
+        cx.notify();
+    }
+
+    fn render_leaf_tab_bar_strip(
+        &self,
+        leaf_id: crate::workspace::LeafId,
+        in_titlebar: bool,
+        available_strip_w: f32,
+        theme: &Theme,
+        _window: &mut Window,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let leaf = self.state.leaves.get(&leaf_id);
+        let active_tab_index = leaf.map(|l| l.active_tab_index).unwrap_or(0);
+        let num_tabs = leaf.map(|l| l.tabs.len()).unwrap_or(0);
+
+        let tab_layout = crate::views::tabs_menu::calculate_tab_widths(
+            num_tabs,
+            Some(active_tab_index),
+            available_strip_w,
+            160.0,
+            120.0,
+            6.0,
+            32.0,
+            6.0,
+            8.0,
+            32.0,
+            6.0,
+        );
+        let tab_widths = tab_layout.widths;
+        let is_tabs_overflowing = tab_layout.is_overflowing;
+        let effective_tab_gap = tab_layout.tab_gap;
+
+        let cap_top = if in_titlebar { 4.0 } else { 0.0 };
+        let sep_top = if in_titlebar { 13.0 } else { 9.0 };
+        let tab_body_h = 34.0;
+
+        let is_leaf_focused = self.state.workspace.active_leaf == leaf_id;
+        let hovered_tab = self
+            .hovered_tab
+            .and_then(|(l, i)| if l == leaf_id && i < num_tabs { Some(i) } else { None });
+
+        let mut tabs_strip = div()
+            .id(gpui::ElementId::Name(format!("tabs-strip-inner-{}", leaf_id.0).into()))
+            .flex()
+            .flex_row()
+            .items_end()
+            .gap(px(effective_tab_gap))
+            .h_full()
+            .pl(px(8.0))
+            .min_w_0()
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if !hovered {
+                    if let Some((l, _)) = this.hovered_tab {
+                        if l == leaf_id {
+                            this.hovered_tab = None;
+                            cx.notify();
+                        }
+                    }
+                }
+            }));
+
+        let first_tab_active = active_tab_index == 0;
+        let show_leading_divider = num_tabs > 0 && !first_tab_active && hovered_tab != Some(0);
+        let leading_sep_right = -(effective_tab_gap / 2.0).floor();
+        let leading_divider_color = if theme.is_dark {
+            gpui::rgba(0xcdd6f440)
+        } else {
+            gpui::rgba(0x1e203030)
+        };
+
+        tabs_strip = tabs_strip.child(
+            div()
+                .id(gpui::ElementId::Name(format!("leaf-btn-new-note-{}", leaf_id.0).into()))
+                .relative()
+                .flex()
+                .items_center()
+                .justify_center()
+                .h_full()
+                .w(px(32.0))
+                .flex_shrink_0()
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.state.workspace.active_leaf = leaf_id;
+                    this.create_new_note_at_front(window, cx);
+                }))
+                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                    if *hovered {
+                        if let Some((l, _)) = this.hovered_tab {
+                            if l == leaf_id {
+                                this.hovered_tab = None;
+                                cx.notify();
+                            }
+                        }
+                    }
+                }))
+                .when(show_leading_divider, |d| {
+                    d.child(
+                        div()
+                            .id("new-note-separator")
+                            .absolute()
+                            .top(px(sep_top))
+                            .h(px(16.0))
+                            .w(px(1.0))
+                            .right(px(leading_sep_right))
+                            .rounded_full()
+                            .bg(leading_divider_color),
+                    )
+                })
+                .child(
+                    div()
+                        .id("btn-new-note-inline-inner")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(28.0))
+                        .h(px(28.0))
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|h| h.bg(theme.bg_hover))
+                        .child(icons::icon(icons::ICON_NOTE_CREATE, 15.0, theme.text_muted)),
+                ),
+        );
+
+        if let Some(leaf) = leaf {
+            for (tab_idx, tab) in leaf.tabs.iter().enumerate() {
+                let is_active = tab_idx == active_tab_index;
+                let is_next_active = active_tab_index == tab_idx + 1;
+                let show_divider = !is_active
+                    && (tab_idx + 1 < num_tabs)
+                    && !is_next_active
+                    && hovered_tab != Some(tab_idx)
+                    && hovered_tab != Some(tab_idx + 1);
+
+                let (title, is_dirty, tab_path) = match &tab.content {
+                    crate::workspace::TabContent::Document { id } => {
+                        if let Some(doc) = self.state.documents.get(id) {
+                            (doc.title.clone(), doc.is_dirty, Some(doc.path.clone()))
+                        } else {
+                            (self.t("common.untitled"), false, None)
+                        }
+                    }
+                    crate::workspace::TabContent::Empty => {
+                        (self.t("tabs.newTab"), false, Some(std::path::PathBuf::from("newtab")))
+                    }
+                    crate::workspace::TabContent::Plugin { view_id } => {
+                        (view_id.clone(), false, Some(std::path::PathBuf::from(format!("plugin:{}", view_id))))
+                    }
+                };
+
+                let tab_w = tab_widths.get(tab_idx).copied().unwrap_or(160.0);
+                let tab_path_context = tab_path.clone();
+
+                let is_focused_tab = is_active && is_leaf_focused;
+
+                let mut tab_item = div()
+                    .id(gpui::ElementId::Name(format!("leaf-tab-item-{}-{}", leaf_id.0, tab_idx).into()))
+                    .relative()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .w(px(tab_w))
+                    .flex_shrink_0()
+                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                        if *hovered && this.hovered_tab != Some((leaf_id, tab_idx)) {
+                            this.hovered_tab = Some((leaf_id, tab_idx));
+                            cx.notify();
+                        }
+                    }))
+                    .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.close_leaf_tab(leaf_id, tab_idx, window, cx);
+                    }));
+
+                if let Some(p) = tab_path_context {
+                    tab_item = tab_item.on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        let x: f32 = event.position.x.into();
+                        let y: f32 = event.position.y.into();
+                        this.open_tab_context_menu(p.clone(), Some(leaf_id), Some(tab_idx), x, y, cx);
+                    }));
+                }
+
+                tab_item = tab_item.when(!is_active, |tab| {
+                    let tab = tab
+                        .bg(theme.bg_sidebar)
+                        .rounded_t_md()
+                        .border_b_1()
+                        .border_color(theme.border);
+                    if hovered_tab == Some(tab_idx) {
+                        tab.child(
+                            div()
+                                .absolute()
+                                .bottom_0()
+                                .left_0()
+                                .right_0()
+                                .h(px(tab_body_h))
+                                .rounded_t_md()
+                                .bg(theme.bg_hover),
+                        )
+                    } else {
+                        tab
+                    }
+                });
+
+                if show_divider {
+                    let sep_right = -(effective_tab_gap / 2.0).floor();
+                    let divider_color = if theme.is_dark {
+                        gpui::rgba(0xcdd6f440)
+                    } else {
+                        gpui::rgba(0x1e203030)
+                    };
+                    tab_item = tab_item.child(
+                        div()
+                            .id(gpui::ElementId::Name(format!("leaf-tab-separator-{}-{}", leaf_id.0, tab_idx).into()))
+                            .absolute()
+                            .top(px(sep_top))
+                            .h(px(16.0))
+                            .w(px(1.0))
+                            .right(px(sep_right))
+                            .rounded_full()
+                            .bg(divider_color),
+                    );
+                }
+
+                let ext_r = (effective_tab_gap / 2.0).ceil();
+                let ext_l = (effective_tab_gap - ext_r).max(0.0);
+                tab_item = tab_item
+                    .child(
+                        div()
+                            .id(gpui::ElementId::Name(format!("leaf-tab-hit-l-{}-{}", leaf_id.0, tab_idx).into()))
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(px(-ext_l))
+                            .w(px(ext_l))
+                            .cursor_pointer()
+                            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                                if *hovered && this.hovered_tab != Some((leaf_id, tab_idx)) {
+                                    this.hovered_tab = Some((leaf_id, tab_idx));
+                                    cx.notify();
+                                }
+                            }))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select_leaf_tab(leaf_id, tab_idx, window, cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(gpui::ElementId::Name(format!("leaf-tab-hit-r-{}-{}", leaf_id.0, tab_idx).into()))
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .right(px(-ext_r))
+                            .w(px(ext_r))
+                            .cursor_pointer()
+                            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                                if *hovered && this.hovered_tab != Some((leaf_id, tab_idx)) {
+                                    this.hovered_tab = Some((leaf_id, tab_idx));
+                                    cx.notify();
+                                }
+                            }))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select_leaf_tab(leaf_id, tab_idx, window, cx);
+                            })),
+                    );
+
+                if is_focused_tab {
+                    // 1. Solid center body fill connecting to active editor
+                    tab_item = tab_item.child(
+                        div()
+                            .id("tab-body-fill")
+                            .absolute()
+                            .top(px(cap_top))
+                            .bottom_0()
+                            .left(px(6.0))
+                            .right(px(6.0))
+                            .bg(theme.bg_editor),
+                    );
+                    // 2. Solid fill mask at the baseline connecting active tab into the editor
+                    tab_item = tab_item.child(
+                        div()
+                            .id("tab-baseline-mask")
+                            .absolute()
+                            .bottom(px(-1.0))
+                            .left(px(-8.0))
+                            .right(px(-8.0))
+                            .h(px(2.0))
+                            .bg(theme.bg_editor),
+                    );
+                    // 3. Top border stroke
+                    tab_item = tab_item.child(
+                        div()
+                            .id("tab-top-stroke")
+                            .absolute()
+                            .top(px(cap_top))
+                            .left(px(7.0))
+                            .right(px(7.0))
+                            .h(px(1.0))
+                            .bg(theme.border),
+                    );
+                    // 4. Left cap
+                    tab_item = tab_item.child(
+                        div()
+                            .id("tab-cap-left")
+                            .absolute()
+                            .top(px(cap_top))
+                            .left(px(-8.0))
+                            .w(px(16.0))
+                            .h(px(36.0))
+                            .child(
+                                icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_FILL, 16.0, 36.0, theme.bg_editor)
+                                    .absolute()
+                                    .top_0()
+                                    .left_0(),
+                            )
+                            .child(
+                                icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_STROKE, 16.0, 36.0, theme.border)
+                                    .absolute()
+                                    .top_0()
+                                    .left_0(),
+                            ),
+                    );
+                    // 5. Right cap
+                    tab_item = tab_item.child(
+                        div()
+                            .id("tab-cap-right")
+                            .absolute()
+                            .top(px(cap_top))
+                            .right(px(-8.0))
+                            .w(px(16.0))
+                            .h(px(36.0))
+                            .child(
+                                icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_FILL, 16.0, 36.0, theme.bg_editor)
+                                    .absolute()
+                                    .top_0()
+                                    .left_0(),
+                            )
+                            .child(
+                                icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_STROKE, 16.0, 36.0, theme.border)
+                                    .absolute()
+                                    .top_0()
+                                    .left_0(),
+                            ),
+                    );
+                } else if is_active {
+                    // Active tab of an unfocused window: subtle inactive-active indicator, bottom border stays intact
+                    tab_item = tab_item
+                        .bg(theme.bg_sidebar)
+                        .rounded_t_md()
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .child(
+                            div()
+                                .id("tab-unfocused-active-fill")
+                                .absolute()
+                                .top(px(cap_top))
+                                .bottom_0()
+                                .left(px(2.0))
+                                .right(px(2.0))
+                                .rounded_t_md()
+                                .bg(theme.bg_hover)
+                                .opacity(0.4),
+                        );
+                }
+
+                tabs_strip = tabs_strip.child(
+                    tab_item
+                        // Tab selection area (icon + title + dirty dot)
+                        .child(
+                            div()
+                                .id(gpui::ElementId::Name(
+                                    format!("leaf-tab-select-{}-{}", leaf_id.0, tab_idx).into(),
+                                ))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(if tab_w < 48.0 { px(2.0) } else { px(6.0) })
+                                .h_full()
+                                .pl(if tab_w < 40.0 { px(2.0) } else { px(10.0) })
+                                .pr(if tab_w < 40.0 { px(2.0) } else { px(4.0) })
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .cursor_pointer()
+                                .child(icons::icon(
+                                    icons::ICON_FILE_TEXT,
+                                    12.0,
+                                    if is_focused_tab {
+                                        theme.accent
+                                    } else if is_active {
+                                        theme.text_secondary
+                                    } else {
+                                        theme.text_muted
+                                    },
+                                ))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(if is_focused_tab {
+                                            gpui::FontWeight::SEMIBOLD
+                                        } else if is_active {
+                                            gpui::FontWeight::MEDIUM
+                                        } else {
+                                            gpui::FontWeight::NORMAL
+                                        })
+                                        .text_color(if is_focused_tab {
+                                            theme.text_primary
+                                        } else if is_active {
+                                            theme.text_secondary
+                                        } else {
+                                            theme.text_muted
+                                        })
+                                        .truncate()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(title),
+                                )
+                                .when(is_active && is_dirty, |tab| {
+                                    tab.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(theme.accent)
+                                            .child("●"),
+                                    )
+                                })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.select_leaf_tab(leaf_id, tab_idx, window, cx);
+                                }))
+                                .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_leaf_tab(leaf_id, tab_idx, window, cx);
+                                })),
+                        )
+                        // Tab close button (isolated sibling)
+                        .when(is_active || tab_w >= 56.0, |tab| {
+                            tab.child(
+                                div()
+                                    .id(gpui::ElementId::Name(
+                                        format!("leaf-tab-close-{}-{}", leaf_id.0, tab_idx).into(),
+                                    ))
+                                    .p_0p5()
+                                    .mr_1p5()
+                                    .flex_shrink_0()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .hover(|h| h.bg(theme.bg_hover))
+                                    .child(icons::icon(icons::ICON_CLOSE, 10.0, theme.text_muted))
+                                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation();
+                                    })
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.close_leaf_tab(leaf_id, tab_idx, window, cx);
+                                    })),
+                            )
+                        }),
+                );
+            }
+        }
+
+        let btn_new_tab = div()
+            .id(gpui::ElementId::Name(format!("leaf-btn-new-tab-{}", leaf_id.0).into()))
+            .flex()
+            .items_center()
+            .justify_center()
+            .h_full()
+            .w(px(32.0))
+            .flex_shrink_0()
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if let Some(leaf) = this.state.leaves.get_mut(&leaf_id) {
+                    leaf.tabs.push(crate::workspace::Tab::new_empty());
+                    let new_idx = leaf.tabs.len() - 1;
+                    this.select_leaf_tab(leaf_id, new_idx, window, cx);
+                }
+            }))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    if let Some((l, _)) = this.hovered_tab {
+                        if l == leaf_id {
+                            this.hovered_tab = None;
+                            cx.notify();
+                        }
+                    }
+                }
+            }))
+            .child(
+                div()
+                    .id("btn-new-tab-inline-inner")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(28.0))
+                    .h(px(28.0))
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(|h| h.bg(theme.bg_hover))
+                    .child(icons::icon(icons::ICON_PLUS, 15.0, theme.text_muted)),
+            );
+
+        if in_titlebar {
+            div()
+                .id(gpui::ElementId::Name(format!("leaf-tab-strip-titlebar-{}", leaf_id.0).into()))
+                .relative()
+                .flex()
+                .flex_row()
+                .items_end()
+                .gap(px(6.0))
+                .min_w_0()
+                .max_w(px(available_strip_w))
+                .overflow_hidden()
+                .when(is_tabs_overflowing, |d| d.w(px(available_strip_w)))
+                .h_full()
+                .child(tabs_strip)
+                .child(btn_new_tab)
+        } else {
+            div()
+                .id(gpui::ElementId::Name(format!("leaf-tab-strip-panel-{}", leaf_id.0).into()))
+                .relative()
+                .flex()
+                .flex_row()
+                .items_center()
+                .h(px(34.0))
+                .w_full()
+                .min_w_0()
+                .bg(theme.bg_sidebar)
+                .border_b_1()
+                .border_color(theme.border)
+                .child(
+                    div()
+                        .id(gpui::ElementId::Name(format!("leaf-tab-strip-panel-inner-{}", leaf_id.0).into()))
+                        .relative()
+                        .flex()
+                        .flex_row()
+                        .items_end()
+                        .gap(px(6.0))
+                        .min_w_0()
+                        .max_w(px(available_strip_w))
+                        .overflow_hidden()
+                        .when(is_tabs_overflowing, |d| d.w(px(available_strip_w)))
+                        .h_full()
+                        .child(tabs_strip)
+                        .child(btn_new_tab),
+                )
+                .child(
+                    div()
+                        .id(gpui::ElementId::Name(format!("leaf-panel-spacer-{}", leaf_id.0).into()))
+                        .flex_1()
+                        .min_w_0()
+                        .h_full(),
+                )
+                .child(
+                    div()
+                        .id(gpui::ElementId::Name(format!("leaf-panel-tabs-btn-wrap-{}", leaf_id.0).into()))
+                        .flex()
+                        .items_center()
+                        .h_full()
+                        .flex_shrink_0()
+                        .px_1()
+                        .child(self.render_leaf_tabs_dropdown_button(leaf_id, theme, cx)),
+                )
+        }
+    }
+
+    fn render_titlebar_editor_header(
+        &self,
+        is_maximized: bool,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let mut header = div()
+            .id("titlebar-editor-header-col")
+            .relative()
+            .flex()
+            .flex_row()
+            .items_center()
+            .flex_1()
+            .h_full()
+            .min_w_0()
+            .overflow_hidden()
+            .bg(theme.bg_sidebar)
+            // Continuous bottom border line running across the editor header column
+            .child(
+                div()
+                    .id("titlebar-editor-bottom-border")
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(1.0))
+                    .bg(theme.border),
+            );
+
+        let top_cols = self.state.workspace.top_columns();
+        let num_cols = top_cols.len();
+
+        let viewport_w: f32 = window.viewport_size().width.into();
+        let sidebar_area_w = if self.sidebar_collapsed {
+            44.0
+        } else {
+            self.sidebar_width + 1.0
+        };
+        let right_sidebar_area_w = if self.right_sidebar_collapsed {
+            0.0
+        } else {
+            self.right_sidebar_width + 1.0
+        };
+        let header_w = (viewport_w - sidebar_area_w - right_sidebar_area_w).max(100.0);
+        let right_controls_w = if self.right_sidebar_collapsed { 178.0 } else { 40.0 };
+
+        for (col_idx, col) in top_cols.into_iter().enumerate() {
+            let is_last = col_idx + 1 == num_cols;
+            let col_w = (header_w * col.ratio).max(60.0);
+            let available_strip_w = if is_last {
+                (col_w - right_controls_w - 40.0).max(40.0)
+            } else {
+                (col_w - 40.0).max(40.0)
+            };
+
+            let mut col_div = div()
+                .id(gpui::ElementId::from(("titlebar-top-col", col_idx)))
+                .relative()
+                .flex()
+                .flex_row()
+                .items_center()
+                .h_full()
+                .min_w_0()
+                .overflow_hidden();
+
+            if is_last {
+                col_div = col_div.flex_1().min_w_0();
+            } else {
+                col_div = col_div.w(gpui::relative(col.ratio)).flex_shrink_0();
+            }
+
+            // Tab bar strip for this top column leaf
+            col_div = col_div.child(
+                self.render_leaf_tab_bar_strip(col.leaf_id, true, available_strip_w, theme, window, cx)
+            );
+
+            // Drag area filling empty space in this top column
+            col_div = col_div.child(
+                div()
+                    .id(gpui::ElementId::from(("titlebar-col-drag", col_idx)))
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .window_control_area(WindowControlArea::Drag),
+            );
+
+            // Open tabs dropdown button for this leaf on the right side of the window, closer to divider
+            col_div = col_div.child(
+                div()
+                    .id(gpui::ElementId::from(("titlebar-col-tabs-btn-wrap", col_idx)))
+                    .flex()
+                    .items_center()
+                    .h_full()
+                    .flex_shrink_0()
+                    .px_1()
+                    .child(self.render_leaf_tabs_dropdown_button(col.leaf_id, theme, cx)),
+            );
+
+            // On the rightmost column: anchor the window controls
+            if is_last {
+                col_div = col_div.child(
+                    div()
+                        .id("titlebar-right-controls-group")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .h_full()
+                        .flex_shrink_0()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .h_full()
+                                .flex_shrink_0()
+                                .gap_1()
+                                .px_1()
+                                .child(self.render_right_sidebar_toggle_button(theme, cx)),
+                        )
+                        .when(self.right_sidebar_collapsed, |d| {
+                            d.child(self.render_window_control_buttons(theme, is_maximized, cx))
+                        }),
+                );
+            }
+
+            header = header.child(col_div);
+
+            // Draggable split divider after this column if present
+            if let Some(ref div_info) = col.divider_after {
+                let div_path = div_info.path.clone();
+                let div_idx = div_info.divider_index;
+                let init_ratio = div_info.initial_ratio;
+
+                let is_active = self.split_drag_state.as_ref().map(|d| {
+                    d.direction == crate::workspace::SplitDirection::Row
+                        && d.path == div_path
+                        && d.divider_index == div_idx
+                }).unwrap_or(false);
+
+                let is_hovered = self.hovered_split_divider.as_ref().map(|(dir, path, idx)| {
+                    *dir == crate::workspace::SplitDirection::Row
+                        && *path == div_path
+                        && *idx == div_idx
+                }).unwrap_or(false);
+
+                let is_resizing_or_hovered = is_active || is_hovered;
+                let divider_color = if is_resizing_or_hovered { theme.accent } else { theme.border };
+
+                header = header.child(
+                    div()
+                        .id(gpui::ElementId::from(("titlebar-split-divider", col_idx)))
+                        .relative()
+                        .w(px(1.0))
+                        .h_full()
+                        .flex_shrink_0()
+                        .bg(divider_color)
+                        .child(
+                            div()
+                                .id(gpui::ElementId::from(("titlebar-split-divider-hitbox", col_idx)))
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .left(px(-4.0))
+                                .w(px(9.0))
+                                .cursor(gpui::CursorStyle::ResizeColumn)
+                                .on_hover(cx.listener({
+                                    let div_path = div_path.clone();
+                                    move |this, hovered: &bool, _, cx| {
+                                        this.hovered_split_divider = if *hovered && !this.is_dragging_scrollbar {
+                                            Some((crate::workspace::SplitDirection::Row, div_path.clone(), div_idx))
+                                        } else {
+                                            None
+                                        };
+                                        cx.notify();
+                                    }
+                                }))
+                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    this.is_mouse_selecting = false;
+                                    this.is_dragging_scrollbar = false;
+                                    this.is_hovering_editor_scrollbar = false;
+                                    this.is_hovering_editor_thumb = false;
+                                    let editor_left_w = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
+                                    let editor_right_w = if this.right_sidebar_collapsed { 0.0 } else { this.right_sidebar_width + 1.0 };
+                                    let win_w: f32 = window.bounds().size.width.into();
+                                    let span = (win_w - editor_left_w - editor_right_w).max(100.0);
+                                    this.split_drag_state = Some(crate::workspace::SplitDragState {
+                                        path: div_path.clone(),
+                                        direction: crate::workspace::SplitDirection::Row,
+                                        divider_index: div_idx,
+                                        start_pos: event.position.x.into(),
+                                        span,
+                                        initial_ratio: init_ratio,
+                                    });
+                                    cx.notify();
+                                })),
+                        ),
+                );
+            }
+        }
+
+        header
+    }
+
+    fn render_workspace_node(
+        &self,
+        node: &crate::workspace::WorkspaceNode,
+        tree_path: &[usize],
+        theme: &Theme,
+        window: &mut Window,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        match node {
+            crate::workspace::WorkspaceNode::Split { direction, children, ratios } => {
+                let is_row = *direction == crate::workspace::SplitDirection::Row;
+                let mut container = div()
+                    .id(gpui::ElementId::from(("split-container", tree_path.first().copied().unwrap_or(0))))
+                    .flex()
+                    .flex_1()
+                    .size_full()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_hidden();
+
+                if is_row {
+                    container = container.flex_row();
+                } else {
+                    container = container.flex_col();
+                }
+
+                for (idx, child) in children.iter().enumerate() {
+                    if idx > 0 {
+                        let div_idx = idx - 1;
+                        let div_path = tree_path.to_vec();
+                        let dir = *direction;
+                        let init_ratio = ratios.get(div_idx).copied().unwrap_or(0.5);
+
+                        let is_active = self.split_drag_state.as_ref().map(|d| {
+                            d.direction == dir && d.path == div_path && d.divider_index == div_idx
+                        }).unwrap_or(false);
+
+                        let is_hovered = self.hovered_split_divider.as_ref().map(|(d, path, idx)| {
+                            *d == dir && *path == div_path && *idx == div_idx
+                        }).unwrap_or(false);
+
+                        let is_resizing_or_hovered = is_active || is_hovered;
+                        let divider_color = if is_resizing_or_hovered { theme.accent } else { theme.border };
+
+                        let mut divider_el = div()
+                            .id(gpui::ElementId::from(("split-divider", div_idx)))
+                            .relative()
+                            .flex_shrink_0()
+                            .bg(divider_color);
+
+                        if is_row {
+                            divider_el = divider_el
+                                .w(px(1.0))
+                                .h_full()
+                                .child(
+                                    div()
+                                        .id(gpui::ElementId::from(("split-divider-hitbox-r", div_idx)))
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .left(px(-4.0))
+                                        .w(px(9.0))
+                                        .cursor(gpui::CursorStyle::ResizeColumn)
+                                        .on_hover(cx.listener({
+                                            let div_path = div_path.clone();
+                                            move |this, hovered: &bool, _, cx| {
+                                                this.hovered_split_divider = if *hovered && !this.is_dragging_scrollbar {
+                                                    Some((dir, div_path.clone(), div_idx))
+                                                } else {
+                                                    None
+                                                };
+                                                cx.notify();
+                                            }
+                                        }))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                            cx.stop_propagation();
+                                            this.is_mouse_selecting = false;
+                                            this.is_dragging_scrollbar = false;
+                                            this.is_hovering_editor_scrollbar = false;
+                                            this.is_hovering_editor_thumb = false;
+                                            let editor_left_w = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
+                                            let editor_right_w = if this.right_sidebar_collapsed { 0.0 } else { this.right_sidebar_width + 1.0 };
+                                            let win_w: f32 = window.bounds().size.width.into();
+                                            let span = (win_w - editor_left_w - editor_right_w).max(100.0);
+                                            this.split_drag_state = Some(crate::workspace::SplitDragState {
+                                                path: div_path.clone(),
+                                                direction: dir,
+                                                divider_index: div_idx,
+                                                start_pos: event.position.x.into(),
+                                                span,
+                                                initial_ratio: init_ratio,
+                                            });
+                                            cx.notify();
+                                        }))
+                                );
+                        } else {
+                            divider_el = divider_el
+                                .h(px(1.0))
+                                .w_full()
+                                .child(
+                                    div()
+                                        .id(gpui::ElementId::from(("split-divider-hitbox-c", div_idx)))
+                                        .absolute()
+                                        .left_0()
+                                        .right_0()
+                                        .top(px(-4.0))
+                                        .h(px(9.0))
+                                        .cursor(gpui::CursorStyle::ResizeRow)
+                                        .on_hover(cx.listener({
+                                            let div_path = div_path.clone();
+                                            move |this, hovered: &bool, _, cx| {
+                                                this.hovered_split_divider = if *hovered && !this.is_dragging_scrollbar {
+                                                    Some((dir, div_path.clone(), div_idx))
+                                                } else {
+                                                    None
+                                                };
+                                                cx.notify();
+                                            }
+                                        }))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                            cx.stop_propagation();
+                                            this.is_mouse_selecting = false;
+                                            this.is_dragging_scrollbar = false;
+                                            this.is_hovering_editor_scrollbar = false;
+                                            this.is_hovering_editor_thumb = false;
+                                            let span: f32 = window.bounds().size.height.into();
+                                            this.split_drag_state = Some(crate::workspace::SplitDragState {
+                                                path: div_path.clone(),
+                                                direction: dir,
+                                                divider_index: div_idx,
+                                                start_pos: event.position.y.into(),
+                                                span,
+                                                initial_ratio: init_ratio,
+                                            });
+                                            cx.notify();
+                                        }))
+                                );
+                        }
+                        container = container.child(divider_el);
+                    }
+
+                    let ratio = ratios.get(idx).copied().unwrap_or(1.0 / children.len().max(1) as f32);
+                    let mut child_path = tree_path.to_vec();
+                    child_path.push(idx);
+
+                    let child_rendered = self.render_workspace_node(child, &child_path, theme, window, cx);
+                    let mut pane_wrapper = div()
+                        .flex()
+                        .min_w_0()
+                        .min_h_0()
+                        .overflow_hidden();
+
+                    let is_last = idx + 1 == children.len();
+                    if is_row {
+                        if is_last {
+                            pane_wrapper = pane_wrapper.flex_1().min_w_0().h_full();
+                        } else {
+                            pane_wrapper = pane_wrapper.w(gpui::relative(ratio)).flex_shrink_0().h_full();
+                        }
+                    } else {
+                        if is_last {
+                            pane_wrapper = pane_wrapper.flex_1().min_h_0().w_full();
+                        } else {
+                            pane_wrapper = pane_wrapper.h(gpui::relative(ratio)).flex_shrink_0().w_full();
+                        }
+                    }
+
+                    container = container.child(pane_wrapper.child(child_rendered));
+                }
+
+                container
+            }
+            crate::workspace::WorkspaceNode::Leaf { id } => {
+                self.render_workspace_leaf(*id, theme, window, cx)
+            }
+        }
+    }
+
+    fn render_workspace_leaf(
+        &self,
+        leaf_id: crate::workspace::LeafId,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let is_active = self.state.workspace.active_leaf == leaf_id;
+        let in_titlebar = self.state.workspace.is_leaf_in_titlebar(leaf_id);
+
+        let mut leaf_container = div()
+            .id(gpui::ElementId::Name(format!("workspace-leaf-{}", leaf_id.0).into()))
+            .flex()
+            .flex_col()
+            .flex_1()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
+            .bg(theme.bg_editor);
+
+        if !in_titlebar {
+            let viewport_w: f32 = window.viewport_size().width.into();
+            let sidebar_area_w = if self.sidebar_collapsed {
+                44.0
+            } else {
+                self.sidebar_width + 1.0
+            };
+            let right_sidebar_area_w = if self.right_sidebar_collapsed {
+                0.0
+            } else {
+                self.right_sidebar_width + 1.0
+            };
+            let workspace_w = (viewport_w - sidebar_area_w - right_sidebar_area_w).max(100.0);
+            let panel_w = (workspace_w * self.state.workspace.horizontal_width_ratio_of_leaf(leaf_id)).max(60.0);
+            let available_strip_w = (panel_w - 40.0).max(40.0);
+            leaf_container = leaf_container.child(self.render_leaf_tab_bar_strip(leaf_id, false, available_strip_w, theme, window, cx));
+        }
+
+        if is_active {
+            leaf_container.child(
+                self.render_central_editor(None, true, Some(leaf_id), theme, window, cx)
+            )
+        } else {
+            let active_tab = self.state.leaves.get(&leaf_id).and_then(|l| l.active_tab());
+            if let Some(tab) = active_tab {
+                match &tab.content {
+                    crate::workspace::TabContent::Document { id } => {
+                        if let Some(doc) = self.state.documents.get(id) {
+                            let (doc_content_ref, line_index_ref) = if let Some(ref active) = self.state.active_note {
+                                if active.path == doc.path {
+                                    (active.content.as_str(), &active.line_index)
+                                } else {
+                                    (doc.content(), &doc.line_index)
+                                }
+                            } else {
+                                (doc.content(), &doc.line_index)
+                            };
+
+                            let view = self.state.views.get(&tab.id).cloned();
+                            let cursor_offset = view.as_ref().map(|v| v.cursor_offset).unwrap_or(0);
+                            let selection_anchor = view.as_ref().and_then(|v| v.selection_anchor);
+                            let anchor_line = view.as_ref().map(|v| v.viewport.offset).unwrap_or(0);
+
+                            let editor_font = self.editor_font_family();
+                            let font_id = cx.text_system().resolve_font(&gpui::font(editor_font));
+                            let line_char_width = cx
+                                .text_system()
+                                .advance(font_id, px(14.0), 'x')
+                                .map(|s| f32::from(s.width))
+                                .unwrap_or(7.7);
+                            let viewport_w: f32 = window.viewport_size().width.into();
+                            let leaf_wrap_cols = self.compute_wrap_cols_for_leaf(Some(leaf_id), viewport_w, line_char_width);
+
+                            let mut editor_window = view.as_ref().map(|v| v.window.clone()).unwrap_or_default();
+                            let lines_total = line_index_ref.lines();
+                            if editor_window.is_empty() || editor_window.should_move_to(anchor_line, lines_total, self.word_wrap, leaf_wrap_cols) {
+                                let (start, end) = crate::editor_window::EditorWindow::bounds_for(anchor_line, lines_total);
+                                let mut checkpoints = if let Some(ref active) = self.state.active_note {
+                                    if active.path == doc.path {
+                                        active.code_checkpoints.clone()
+                                    } else {
+                                        doc.code_checkpoints.clone()
+                                    }
+                                } else {
+                                    doc.code_checkpoints.clone()
+                                };
+                                checkpoints.ensure(doc_content_ref, line_index_ref, start + 1);
+                                let initial = checkpoints.state_at(doc_content_ref, line_index_ref, start).unwrap_or_default();
+                                editor_window = crate::editor_window::EditorWindow::build(
+                                    doc_content_ref,
+                                    line_index_ref,
+                                    start,
+                                    end,
+                                    self.word_wrap,
+                                    leaf_wrap_cols,
+                                    Some(&self.config.editor.headings),
+                                    initial,
+                                );
+                            }
+
+                            let above_lines = view.as_ref().map(|v| v.above_lines).unwrap_or(editor_window.start_line);
+                            let below_lines = view.as_ref().map(|v| v.below_lines).unwrap_or_else(|| line_index_ref.lines().saturating_sub(editor_window.end_line));
+                            let est_rows_per_line = view.as_ref().map(|v| v.est_rows_per_line).unwrap_or(1.0);
+                            let est_row_h = view.as_ref().map(|v| v.est_row_h).unwrap_or(24.0);
+                            let line_h = est_rows_per_line * est_row_h;
+                            let above_h = view.as_ref().map(|v| v.above_h).unwrap_or(above_lines as f64 * line_h);
+                            let below_h = view.as_ref().map(|v| v.below_h).unwrap_or(below_lines as f64 * line_h);
+
+                            let temp_note = crate::state::OpenedNote::new_view_shell(
+                                doc.path.clone(),
+                                doc.title.clone(),
+                                doc.version,
+                                cursor_offset,
+                                selection_anchor,
+                                doc.is_dirty,
+                                doc.first_dirty_time,
+                                line_index_ref.clone(),
+                                editor_window,
+                                above_lines,
+                                below_lines,
+                                above_h,
+                                below_h,
+                                est_rows_per_line,
+                                est_row_h,
+                            );
+
+                            leaf_container.child(
+                                self.render_central_editor(Some(&temp_note), false, Some(leaf_id), theme, window, cx)
+                            )
+                        } else {
+                            leaf_container.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .size_full()
+                                    .text_color(theme.text_muted)
+                                    .child("Document not found")
+                            )
+                        }
+                    }
+                    crate::workspace::TabContent::Empty => {
+                        leaf_container.child(
+                            self.render_central_editor(None, false, Some(leaf_id), theme, window, cx)
+                        )
+                    }
+                    crate::workspace::TabContent::Plugin { view_id } => {
+                        if let Some(leaf) = self.plugin_leaf_views.get(view_id) {
+                            leaf_container.child(
+                                div()
+                                    .id(gpui::ElementId::Name(format!("leaf-plugin-view-{}", leaf_id.0).into()))
+                                    .flex()
+                                    .flex_col()
+                                    .size_full()
+                                    .p(px(16.0))
+                                    .overflow_scroll()
+                                    .child(crate::plugins::ui::render_ui_node(
+                                        &leaf.tree,
+                                        &leaf.plugin_id,
+                                        0,
+                                        theme,
+                                        self.active_plugin_input.as_ref(),
+                                        &self.plugin_input_focus_handle,
+                                        self.active_plugin_select.as_ref(),
+                                        self.plugin_select_popup.as_ref(),
+                                        self.plugin_input_blink.visible(),
+                                        window,
+                                        cx,
+                                        None,
+                                    ))
+                            )
+                        } else {
+                            leaf_container
+                        }
+                    }
+                }
+            } else {
+                leaf_container.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size_full()
+                        .text_color(theme.text_muted)
+                        .child("No open tabs")
+                )
+            }
+        }
+    }
+
+    pub(crate) fn render_central_editor(
+        &self,
+        override_note: Option<&crate::state::OpenedNote>,
+        is_leaf_active: bool,
+        leaf_id: Option<crate::workspace::LeafId>,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let editor_font = self.editor_font_family();
+        let font_id = cx.text_system().resolve_font(&gpui::font(editor_font.clone()));
+        let line_char_width = cx
+            .text_system()
+            .advance(font_id, px(14.0), 'x')
+            .map(|s| f32::from(s.width))
+            .unwrap_or(7.7);
+
+        let pixel_scale = window.scale_factor();
+        let window_h = f32::from(window.bounds().size.height);
+
+        let root_id = if let Some(lid) = leaf_id {
+            format!("central-editor-root-{}", lid.0)
+        } else {
+            "central-editor-root".to_string()
+        };
+
+        let mut editor_root = div()
+            .id(gpui::ElementId::Name(root_id.into()))
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
+            .bg(theme.bg_editor);
+
+        if !is_leaf_active {
+            if let Some(lid) = leaf_id {
+                editor_root = editor_root
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                        this.switch_to_leaf(lid, window, cx);
+                    }))
+                    .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, window, cx| {
+                        this.switch_to_leaf(lid, window, cx);
+                        this.start_editor_middle_scroll(cx);
+                    }));
+            }
+        }
+
+        editor_root = editor_root.child(self.render_navigation_bar(override_note, leaf_id, theme, cx));
+
+        let current_note = if let Some(n) = override_note {
+            Some(n)
+        } else if is_leaf_active && self.active_center_leaf.is_none() {
+            self.state.active_note.as_ref()
+        } else {
+            None
+        };
+
+        if let Some(note) = current_note {
+            let note_title = note
+                .path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Untitled".to_string());
+
+            let lines_arc = Arc::clone(&note.window.lines);
+            let line_number_digits = note.line_index.lines().max(1).to_string().len().max(3);
+            let line_number_width = 40.0 + line_number_digits.saturating_sub(3) as f32 * line_char_width;
+            let visual_rows_arc = Arc::clone(&note.window.visual_rows);
+            let code_states_arc = Arc::clone(&note.window.code_states);
+            let height_index_arc = Arc::clone(&note.window.height_index);
+
+            let (cursor_line, cursor_col) = note.line_col();
+            let (active_v_idx, active_col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows_arc, cursor_line, cursor_col)
+                .unwrap_or((0, 0));
+
+            let selection_range = note.selection_range();
+            let is_editing = is_leaf_active && self.edit_mode;
+            let mut active_block_ids: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            if is_editing {
+                if let Some(s) = code_states_arc.get(cursor_line).and_then(|s| s.as_ref()) {
+                    active_block_ids.insert(s.block_id);
+                }
+                if let Some(ref sel) = selection_range {
+                    if sel.start < sel.end {
+                        let sel_start_line = note.line_of_byte(sel.start);
+                        let sel_end_line = note.line_of_byte(sel.end);
+                        let win_start = code_states_arc.start();
+                        let win_end = code_states_arc.end();
+                        let scan_start = sel_start_line.max(win_start);
+                        let scan_end = sel_end_line.min(win_end.saturating_sub(1));
+                        if scan_start <= scan_end {
+                            for l_idx in scan_start..=scan_end {
+                                if let Some(Some(s)) = code_states_arc.get(l_idx) {
+                                    active_block_ids.insert(s.block_id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let text_start_x = self.pane_text_start_x(leaf_id, window);
+
+            let theme_scrollbar = theme.clone();
+
+            let total_content_h = note.total_height();
+            let (slice_h, viewport_h, max_scroll_content, track_top_y) =
+                self.editor_scroll_metrics(total_content_h, window_h);
+            if is_leaf_active {
+                self.last_editor_h.set(viewport_h);
+            }
+
+            let wide_scrollbar = self.config.editor.wide_scrollbar;
+            let show_scrollbar = max_scroll_content > 1.0;
+
+            let leaf_scroll_top = if is_leaf_active {
+                self.pending_editor_restore.unwrap_or_else(|| self.current_scroll_top_f64())
+            } else {
+                leaf_id.and_then(|lid| {
+                    self.state.leaves.get(&lid)
+                        .and_then(|l| l.active_tab())
+                        .and_then(|t| self.state.views.get(&t.id))
+                        .map(|v| v.scroll_top)
+                }).unwrap_or(0.0)
+            };
+
+            let (thumb_top, thumb_h) = if show_scrollbar {
+                let th = Self::editor_thumb_h(viewport_h, total_content_h, wide_scrollbar);
+                let scroll_y = leaf_scroll_top.clamp(0.0, max_scroll_content);
+                let scroll_fraction = (scroll_y / max_scroll_content).clamp(0.0, 1.0);
+                let tt = scroll_fraction * (f64::from(viewport_h) - th);
+                (tt as f32, th as f32)
+            } else {
+                (0.0, 28.0)
+            };
+
+            let is_resizing = self.is_resizing_any();
+            let is_scrollbar_dragging = is_leaf_active && self.is_dragging_scrollbar && !is_resizing;
+            let scroll_y_current = leaf_scroll_top.clamp(0.0, max_scroll_content);
+            let ruler_expanded = is_leaf_active && self.is_hovering_editor_scrollbar && !is_resizing;
+            let track_w = if wide_scrollbar { 16.0 } else { 14.0 };
+            let thumb_right = if wide_scrollbar { 0.0 } else { 3.0 };
+            let thumb_w_idle = if wide_scrollbar { track_w } else { 6.0 };
+            let thumb_w_active = if wide_scrollbar { track_w } else { 8.0 };
+            let thumb_w = if is_scrollbar_dragging { thumb_w_active } else { thumb_w_idle };
+            let thumb_left = track_w - thumb_right - thumb_w;
+            let ruler_pill_w = if is_scrollbar_dragging { thumb_w } else { 6.0 };
+            let ruler_pill_left = thumb_left + (thumb_w - ruler_pill_w) / 2.0;
+            let ruler_full = ruler_expanded || wide_scrollbar;
+            let thumb_bg = if wide_scrollbar {
+                theme_scrollbar.border
+            } else if is_scrollbar_dragging {
+                theme_scrollbar.accent
+            } else {
+                theme_scrollbar.border
+            };
+
+            let show_ruler = self.config.editor.scrollbar_ruler;
+            let (ruler_cursor_y, ruler_sel_span): (f32, Option<(f32, f32)>) =
+                if show_ruler && show_scrollbar && total_content_h > 1.0 {
+                    let to_track = |doc_y: f64| {
+                        ((doc_y / total_content_h) * f64::from(viewport_h))
+                            .clamp(0.0, f64::from(viewport_h) - 2.0)
+                            as f32
+                    };
+                    let cursor_doc_y = if note.window.covers_line(cursor_line) {
+                        note.doc_y_of_local_v_idx(active_v_idx)
+                    } else {
+                        note.doc_y_of_line(cursor_line)
+                    };
+                    let cursor_y = to_track(cursor_doc_y);
+                    let sel_span = note.selection_range().map(|sel| {
+                        let start_line = note.line_of_byte(sel.start);
+                        let end_line = note.line_of_byte(sel.end);
+                        let a = note.doc_y_of_line(start_line);
+                        let b = note.doc_y_of_line(end_line);
+                        let top = to_track(a.min(b));
+                        let bottom = to_track(a.max(b)) + 2.0;
+                        (top, (bottom - top).max(3.0))
+                    });
+                    (cursor_y, sel_span)
+                } else {
+                    (0.0, None)
+                };
+
+            let ruler_cursor_under_thumb = show_scrollbar
+                && !wide_scrollbar
+                && (is_scrollbar_dragging || (is_leaf_active && self.is_hovering_editor_thumb))
+                && ruler_cursor_y < thumb_top + thumb_h
+                && ruler_cursor_y + 2.0 > thumb_top;
+
+            let is_title_focused = is_leaf_active && self.title_focus_handle.is_focused(window);
+            let inactive_leaf_title = if !is_leaf_active {
+                leaf_id.and_then(|lid| {
+                    self.state.leaves.get(&lid)
+                        .and_then(|l| l.active_tab())
+                        .and_then(|t| self.state.views.get(&t.id))
+                        .and_then(|v| if !v.title_edit_text.is_empty() { Some(v.title_edit_text.clone()) } else { None })
+                })
+            } else {
+                None
+            };
+            let title_text = if is_leaf_active {
+                &self.title_edit_text
+            } else if let Some(ref t) = inactive_leaf_title {
+                t
+            } else {
+                &note_title
+            };
+            let title_chars: Vec<char> = title_text.chars().collect();
+            let cursor_pos = if is_leaf_active { self.title_cursor_pos.min(title_chars.len()) } else { 0 };
+            let title_selection_range = if is_leaf_active { self.title_selection_range() } else { None };
+
+            let run = gpui::TextRun {
+                len: title_text.len(),
+                font: gpui::font("Segoe UI").bold(),
+                color: Default::default(),
+                underline: Default::default(),
+                strikethrough: None,
+                background_color: None,
+            };
+            let shaped = window.text_system().shape_line(
+                SharedString::from(title_text.clone()),
+                px(28.0),
+                &[run],
+                None,
+            );
+
+            let cursor_x = if title_text.is_empty() {
+                0.0
+            } else {
+                let byte_index: usize = title_chars[..cursor_pos].iter().map(|c| c.len_utf8()).sum();
+                crate::snap::snap_x(
+                    f32::from(shaped.x_for_index(byte_index)),
+                    pixel_scale,
+                )
+            };
+
+            let (sel_x1, sel_w) = if let Some((s_start, s_end)) = title_selection_range {
+                if !title_text.is_empty() {
+                    let b1: usize = title_chars[..s_start.min(title_chars.len())].iter().map(|c| c.len_utf8()).sum();
+                    let b2: usize = title_chars[..s_end.min(title_chars.len())].iter().map(|c| c.len_utf8()).sum();
+                    // Same device-pixel snapping as the caret above: an
+                    // unsnapped antialiased edge shifts its blend ratio with
+                    // every sub-pixel move and reads as a stuttering edge.
+                    crate::snap::snapped_span(
+                        f32::from(shaped.x_for_index(b1)),
+                        f32::from(shaped.x_for_index(b2)),
+                        pixel_scale,
+                    )
+                } else {
+                    (0.0, 0.0)
+                }
+            } else {
+                (0.0, 0.0)
+            };
+
+            let display_title = if title_text.is_empty() {
+                if is_title_focused {
+                    String::new()
+                } else {
+                    note_title.clone()
+                }
+            } else {
+                title_text.clone()
+            };
+
+            let lid_tag: u64 = leaf_id.map(|l| (l.0.as_u128() & 0xFFFF_FFFF_FFFF_FFFF) as u64).unwrap_or(0);
+
+            let mut title_box = div()
+                .id(gpui::ElementId::from(("note-title-panel", lid_tag)))
+                .w_full()
+                .flex()
+                .flex_row()
+                .items_start()
+                .pl(px(48.0))
+                .pr_4()
+                .pt(px(2.0))
+                .pb(px(16.0))
+                .cursor(gpui::CursorStyle::IBeam)
+                .bg(theme.bg_editor);
+
+            if is_leaf_active {
+                title_box = title_box
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                        window.focus(&this.title_focus_handle);
+                        this.title_is_focused = true;
+                        this.reset_title_cursor_blink(cx);
+                        this.title_cursor_pos = this.title_edit_text.chars().count();
+                        this.title_selection_anchor = None;
+                        cx.notify();
+                    }));
+            } else if let Some(lid) = leaf_id {
+                title_box = title_box
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                        this.switch_to_leaf(lid, window, cx);
+                        window.focus(&this.title_focus_handle);
+                        this.title_is_focused = true;
+                        this.reset_title_cursor_blink(cx);
+                        this.title_cursor_pos = this.title_edit_text.chars().count();
+                        this.title_selection_anchor = None;
+                        cx.notify();
+                    }));
+            }
+
+            let mut title_input = div()
+                .id(gpui::ElementId::from(("note-title-input", lid_tag)))
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .h(px(36.0))
+                .cursor(gpui::CursorStyle::IBeam)
+                .flex()
+                .flex_row()
+                .items_center();
+
+            if is_leaf_active {
+                title_input = title_input
+                    .track_focus(&self.title_focus_handle)
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        window.focus(&this.title_focus_handle);
+                        this.title_is_focused = true;
+                        this.reset_title_cursor_blink(cx);
+
+                        let click_x: f32 = event.position.x.into();
+                        let editor_left_x = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
+                        let leaf_ratio = leaf_id.map(|lid| this.state.workspace.horizontal_ratio_of_leaf(lid)).unwrap_or(0.0);
+                        let window_w: f32 = window.bounds().size.width.into();
+                        let editor_total_w = (window_w - editor_left_x).max(0.0);
+                        let title_left_x = editor_left_x + leaf_ratio * editor_total_w + 48.0;
+                        let rel_x = (click_x - title_left_x).max(0.0);
+
+                        let clicked_pos = if this.title_edit_text.is_empty() {
+                            0
+                        } else {
+                            let run = gpui::TextRun {
+                                len: this.title_edit_text.len(),
+                                font: gpui::font("Segoe UI").bold(),
+                                color: Default::default(),
+                                underline: Default::default(),
+                                strikethrough: None,
+                                background_color: None,
+                            };
+                            let shaped = window.text_system().shape_line(
+                                SharedString::from(this.title_edit_text.clone()),
+                                px(28.0),
+                                &[run],
+                                None,
+                            );
+                            let byte_idx = shaped.closest_index_for_x(px(rel_x));
+                            this.title_edit_text[..byte_idx.min(this.title_edit_text.len())].chars().count()
+                        };
+
+                        if event.click_count == 2 {
+                            this.title_selection_anchor = Some(0);
+                            this.title_cursor_pos = this.title_edit_text.chars().count();
+                            this.title_is_mouse_selecting = false;
+                        } else if event.modifiers.shift {
+                            if this.title_selection_anchor.is_none() {
+                                this.title_selection_anchor = Some(this.title_cursor_pos);
+                            }
+                            this.title_cursor_pos = clicked_pos;
+                            this.title_is_mouse_selecting = true;
+                        } else {
+                            this.title_cursor_pos = clicked_pos;
+                            this.title_selection_anchor = Some(clicked_pos);
+                            this.title_is_mouse_selecting = true;
+                        }
+                        cx.notify();
+                    }))
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.handle_title_key(event, window, cx);
+                    }));
+            } else if let Some(lid) = leaf_id {
+                title_input = title_input
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.switch_to_leaf(lid, window, cx);
+                        window.focus(&this.title_focus_handle);
+                        this.title_is_focused = true;
+                        this.reset_title_cursor_blink(cx);
+
+                        let click_x: f32 = event.position.x.into();
+                        let editor_left_x = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
+                        let leaf_ratio = this.state.workspace.horizontal_ratio_of_leaf(lid);
+                        let window_w: f32 = window.bounds().size.width.into();
+                        let editor_total_w = (window_w - editor_left_x).max(0.0);
+                        let title_left_x = editor_left_x + leaf_ratio * editor_total_w + 48.0;
+                        let rel_x = (click_x - title_left_x).max(0.0);
+
+                        let clicked_pos = if this.title_edit_text.is_empty() {
+                            0
+                        } else {
+                            let run = gpui::TextRun {
+                                len: this.title_edit_text.len(),
+                                font: gpui::font("Segoe UI").bold(),
+                                color: Default::default(),
+                                underline: Default::default(),
+                                strikethrough: None,
+                                background_color: None,
+                            };
+                            let shaped = window.text_system().shape_line(
+                                SharedString::from(this.title_edit_text.clone()),
+                                px(28.0),
+                                &[run],
+                                None,
+                            );
+                            let byte_idx = shaped.closest_index_for_x(px(rel_x));
+                            this.title_edit_text[..byte_idx.min(this.title_edit_text.len())].chars().count()
+                        };
+
+                        if event.click_count == 2 {
+                            this.title_selection_anchor = Some(0);
+                            this.title_cursor_pos = this.title_edit_text.chars().count();
+                            this.title_is_mouse_selecting = false;
+                        } else {
+                            this.title_cursor_pos = clicked_pos;
+                            this.title_selection_anchor = Some(clicked_pos);
+                            this.title_is_mouse_selecting = true;
+                        }
+                        cx.notify();
+                    }));
+            }
+
+            title_input = title_input
+                .when(title_selection_range.is_some() && sel_w > 0.0, |s| {
+                    s.child(
+                        div()
+                            .absolute()
+                            .left(px(sel_x1))
+                            .top(px(4.0))
+                            .w(px(sel_w))
+                            .h(px(28.0))
+                            .bg(theme.selection_bg)
+                            .rounded_xs(),
+                    )
+                })
+                .child(
+                    div()
+                        .font_family("Segoe UI")
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_size(px(28.0))
+                        .line_height(px(36.0))
+                        .text_color(rgb(0xf44336))
+                        .child(display_title),
+                )
+                .when(title_text.is_empty() && is_title_focused, |s| {
+                    s.child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .h(px(36.0))
+                            .font_family("Segoe UI")
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_size(px(28.0))
+                            .line_height(px(36.0))
+                            .text_color(rgba(0xf4433666))
+                            .child("Untitled"),
+                    )
+                })
+                .when(is_title_focused && self.title_blink.visible(), |s| {
+                    s.child(
+                        div()
+                            .absolute()
+                            .left(px(cursor_x))
+                            .top(px(5.0))
+                            .w(px(2.0))
+                            .h(px(26.0))
+                            .bg(rgb(0xf44336))
+                            .rounded_xs(),
+                    )
+                });
+
+            title_box = title_box.child(title_input);
+
+            let mut editor_container = div()
+                .id(gpui::ElementId::from(("note-editor-container", lid_tag)))
+                .relative()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .w_full()
+                .min_w_0()
+                .min_h_0()
+                .overflow_hidden();
+
+            if is_leaf_active {
+                editor_container = editor_container
+                    .track_focus(&self.focus_handle)
+                    .cursor(gpui::CursorStyle::IBeam)
+                    .when(!show_scrollbar, |d| {
+                        d.on_scroll_wheel(|_, _, cx| {
+                            cx.stop_propagation();
+                        })
+                    })
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                        if this.is_resizing_any() {
+                            return;
+                        }
+                        this.close_editor_context_menu(cx);
+                        this.commit_title_rename(window, cx);
+                        window.focus(&this.focus_handle);
+                        this.is_mouse_selecting = true;
+                        let click_x: f32 = event.position.x.into();
+                        let click_y: f32 = event.position.y.into();
+                        this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, window, cx);
+                    }))
+                    .on_mouse_down(MouseButton::Right, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                        if this.is_resizing_any() {
+                            return;
+                        }
+                        this.commit_title_rename(window, cx);
+                        window.focus(&this.focus_handle);
+                        let click_x: f32 = event.position.x.into();
+                        let click_y: f32 = event.position.y.into();
+                        let has_selection = this.state.active_note.as_ref()
+                            .and_then(|n| n.selection_range())
+                            .map(|r| r.start < r.end)
+                            .unwrap_or(false);
+                        if !has_selection {
+                            this.handle_editor_mouse_down(click_x, click_y, false, 1, window, cx);
+                            if let Some(ref mut note) = this.state.active_note {
+                                note.selection_anchor = None;
+                            }
+                        }
+                        this.open_editor_context_menu(click_x, click_y, cx);
+                    }))
+                    .on_mouse_down(MouseButton::Middle, cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                        if this.is_resizing_any() {
+                            return;
+                        }
+                        cx.stop_propagation();
+                        window.focus(&this.focus_handle);
+                        this.close_editor_context_menu(cx);
+                        this.is_mouse_selecting = false;
+                        this.start_editor_middle_scroll(cx);
+                    }))
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                        if this.is_resizing_sidebar {
+                            let x: f32 = event.position.x.into();
+                            if x < 100.0 {
+                                this.sidebar_collapsed = true;
+                            } else {
+                                this.sidebar_collapsed = false;
+                                this.sidebar_width = x.clamp(160.0, 600.0);
+                            }
+                            cx.notify();
+                        } else if this.is_resizing_right_sidebar {
+                            let win_w: f32 = window.viewport_size().width.into();
+                            let x: f32 = event.position.x.into();
+                            let right_w = win_w - x;
+                            if right_w < 100.0 {
+                                this.right_sidebar_collapsed = true;
+                            } else {
+                                this.right_sidebar_collapsed = false;
+                                this.right_sidebar_width = right_w.clamp(160.0, 600.0);
+                            }
+                            cx.notify();
+                        } else if this.split_drag_state.is_some() {
+                            return;
+                        } else if this.editor_middle_active {
+                            let y: f32 = event.position.y.into();
+                            if let Some((top, h, max)) = this.editor_middle_metrics() {
+                                this.on_editor_middle_mouse_move(y, top, h, max, cx);
+                            } else {
+                                cx.notify();
+                            }
+                        } else if this.is_dragging_scrollbar {
+                            let y: f32 = event.position.y.into();
+                            this.handle_scrollbar_drag(y, window, cx);
+                        } else if this.is_mouse_selecting {
+                            let x: f32 = event.position.x.into();
+                            let y: f32 = event.position.y.into();
+                            let viewport_h: f32 = window.viewport_size().height.into();
+                            this.update_mouse_selection(x, y, viewport_h, window, cx);
+                        }
+                    }))
+                    .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                        this.is_resizing_sidebar = false;
+                        this.is_resizing_right_sidebar = false;
+                        this.split_drag_state = None;
+                        this.hovered_split_divider = None;
+                        this.is_dragging_scrollbar = false;
+                        this.sidebar_scrollbar_drag.end();
+                        this.plugin_modal_scrollbar_drag.end();
+                        this.is_mouse_selecting = false;
+                        if let Some(ref mut n) = this.state.active_note {
+                            if n.selection_anchor == Some(n.cursor_offset) {
+                                n.selection_anchor = None;
+                            }
+                        }
+                        cx.notify();
+                    }))
+                    .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                        this.is_resizing_sidebar = false;
+                        this.is_resizing_right_sidebar = false;
+                        this.split_drag_state = None;
+                        this.hovered_split_divider = None;
+                        this.is_dragging_scrollbar = false;
+                        this.sidebar_scrollbar_drag.end();
+                        this.plugin_modal_scrollbar_drag.end();
+                        this.is_mouse_selecting = false;
+                        cx.notify();
+                    }))
+                    .on_mouse_up(MouseButton::Middle, cx.listener(|this, _, _, cx| {
+                        this.stop_editor_middle_scroll(cx);
+                        this.stop_plugin_modal_middle_scroll(cx);
+                    }))
+                    .on_mouse_up_out(MouseButton::Middle, cx.listener(|this, _, _, cx| {
+                        this.stop_editor_middle_scroll(cx);
+                        this.stop_plugin_modal_middle_scroll(cx);
+                    }))
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        this.handle_key(event, window, cx);
+                    }));
+            }
+
+            let headings = &self.config.editor.headings;
+            let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, headings, line_char_width);
+            let text_system = window.text_system().clone();
+            let hide_current_line_on_selection = self.config.editor.hide_current_line_on_selection;
+            let has_selection = selection_range.as_ref().map_or(false, |sel| sel.start < sel.end);
+
+            let (visible_range, slice_shift) = if !show_scrollbar {
+                if is_leaf_active && self.current_scroll_top_f64() > 0.0 {
+                    self.set_editor_scroll_top_f64(0.0);
+                }
+                (0..visual_rows_arc.len(), 0.0)
+            } else {
+                let raw_scroll_y = leaf_scroll_top;
+                let true_max = max_scroll_content
+                    .max(total_content_h - f64::from(viewport_h))
+                    .max(0.0);
+                let scroll_y = raw_scroll_y.clamp(0.0, true_max);
+                if is_leaf_active && (raw_scroll_y - scroll_y).abs() > 0.5 {
+                    self.set_editor_scroll_top_f64(scroll_y);
+                }
+                let local_scroll = scroll_y - note.above_h;
+                let vr = height_index_arc.visible_range(
+                    local_scroll,
+                    f64::from(slice_h),
+                    f64::from(EDITOR_OVERSCAN_PX),
+                );
+                let shift = height_index_arc.top_of(vr.start) - local_scroll;
+                let shift = crate::snap::snap_x(shift as f32, pixel_scale) as f64;
+                (vr, shift)
+            };
+
+            crate::perf::PERF.shape_calls.fetch_add(visible_range.len() as u64, std::sync::atomic::Ordering::Relaxed);
+
+            let (slice_first_line, slice_line_starts) = {
+                let lo = visible_range.start.saturating_sub(1);
+                let hi = (visible_range.end + 1).min(visual_rows_arc.len());
+                if lo >= hi {
+                    (0, Vec::new())
+                } else {
+                    let first = visual_rows_arc[lo].line_idx;
+                    let last = visual_rows_arc[hi - 1].line_idx;
+                    let mut starts = Vec::with_capacity(last - first + 1);
+                    let mut at = note.line_start_byte(first);
+                    for l_idx in first..=last {
+                        starts.push(at);
+                        at += lines_arc[l_idx].len() + 1;
+                    }
+                    (first, starts)
+                }
+            };
+
+            let mut items = Vec::with_capacity(visible_range.len());
+
+            let calc_v_row_sel_rect = |target_v_idx: usize| -> Option<(f32, f32)> {
+                let sel = selection_range.as_ref()?;
+                if sel.start >= sel.end {
+                    return None;
+                }
+                let v = visual_rows_arc.get(target_v_idx)?;
+                let line_idx = v.line_idx;
+                if line_idx < slice_first_line || line_idx - slice_first_line >= slice_line_starts.len() {
+                    return None;
+                }
+                let line = &lines_arc[line_idx];
+                let line_start = slice_line_starts[line_idx - slice_first_line];
+                let line_end = line_start + line.len();
+
+                let is_line_in_sel = if sel.start == sel.end {
+                    false
+                } else if line_start == line_end {
+                    sel.start <= line_start && sel.end > line_start
+                } else {
+                    sel.end > line_start && sel.start < line_end
+                };
+                let is_in_act_block = code_states_arc.get(line_idx)
+                    .and_then(|s| s.as_ref())
+                    .map(|s| active_block_ids.contains(&s.block_id))
+                    .unwrap_or(false);
+                let is_act_line = is_editing && (line_idx == cursor_line || is_line_in_sel || is_in_act_block);
+                let code_state = code_states_arc.get(line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
+                let classified = crate::markdown::classify_line(line, code_state);
+                let (_, row_char_w, _, _, _) =
+                    Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths));
+                let row_layout = shape_row(&text_system, line, &classified, v, is_act_line, headings, &editor_font, row_char_w);
+
+                if line.is_empty() {
+                    if sel.start <= line_start && sel.end > line_start {
+                        return Some(row_layout.selection_rect(0, 1, pixel_scale));
+                    } else {
+                        return None;
+                    }
+                }
+
+                let mut byte_s = sel.start.saturating_sub(line_start).min(line.len());
+                let mut byte_e = sel.end.saturating_sub(line_start).min(line.len());
+                while byte_s > 0 && !line.is_char_boundary(byte_s) {
+                    byte_s -= 1;
+                }
+                while byte_e > 0 && !line.is_char_boundary(byte_e) {
+                    byte_e -= 1;
+                }
+                let char_s = line[..byte_s].chars().count();
+                let char_e = char_s + line[byte_s..byte_e].chars().count();
+
+                let includes_newline = v.is_last_sub && sel.end > line_end && sel.start <= line_end;
+
+                if byte_s < byte_e {
+                    let intersect_s = char_s.max(v.char_start);
+                    let intersect_e = char_e.min(v.char_end);
+                    if intersect_s <= intersect_e {
+                        let vis_s = row_layout.column_for_line_char(intersect_s);
+                        let mut vis_e = row_layout.column_for_line_char(intersect_e);
+                        if includes_newline {
+                            vis_e += 1;
+                        }
+                        if vis_s < vis_e {
+                            Some(row_layout.selection_rect(vis_s, vis_e, pixel_scale))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else if includes_newline && char_s == v.char_end {
+                    let vis_s = row_layout.column_for_line_char(v.char_end);
+                    Some(row_layout.selection_rect(vis_s, vis_s + 1, pixel_scale))
+                } else {
+                    None
+                }
+            };
+
+            for v_idx in visible_range {
+                let v = &visual_rows_arc[v_idx];
+                let line = &lines_arc[v.line_idx];
+                let line_start = slice_line_starts[v.line_idx - slice_first_line];
+                let line_end = line_start + line.len();
+                let is_line_in_selection = selection_range.as_ref().map_or(false, |sel| {
+                    if sel.start == sel.end {
+                        false
+                    } else if line_start == line_end {
+                        sel.start <= line_start && sel.end > line_start
+                    } else {
+                        sel.end > line_start && sel.start < line_end
+                    }
+                });
+                let is_current = is_editing && (v_idx == active_v_idx);
+                let show_current_line_highlight = is_current && !(hide_current_line_on_selection && has_selection);
+                let is_in_active_block = code_states_arc[v.line_idx]
+                    .as_ref()
+                    .map(|s| active_block_ids.contains(&s.block_id))
+                    .unwrap_or(false);
+                let is_active_line = is_editing && (v.line_idx == cursor_line || is_line_in_selection || is_in_active_block);
+                let code_state = code_states_arc[v.line_idx].as_ref().map(|s| (s.kind, s.lang.as_deref()));
+                let classified = crate::markdown::classify_line(line, code_state);
+                let is_opening_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: true, .. });
+                let is_closing_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: false, .. });
+                let is_code_line = matches!(classified, crate::markdown::LineKind::CodeLine(_));
+                let row_len = v.char_end.saturating_sub(v.char_start);
+
+                let (row_h, row_char_w, _row_font_size, _cursor_h, _cursor_top) =
+                    Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths));
+                let row_layout = shape_row(&text_system, line, &classified, v, is_active_line, headings, &editor_font, row_char_w);
+                let row_layout_down = row_layout.clone();
+                let row_layout_move = row_layout.clone();
+
+                let line_number_text = if v.sub_idx == 0 {
+                    format!("{:>3} ", v.line_idx + 1)
+                } else {
+                    "    ".to_string()
+                };
+
+                let row_sel_rect = if line.is_empty() {
+                    if selection_range.as_ref().map_or(false, |s| s.start <= line_start && s.end > line_start) {
+                        Some(row_layout.selection_rect(0, 1, pixel_scale))
+                    } else {
+                        None
+                    }
+                } else if let Some(sel) = selection_range.as_ref() {
+                    if sel.start < sel.end {
+                        let mut byte_s = sel.start.saturating_sub(line_start).min(line.len());
+                        let mut byte_e = sel.end.saturating_sub(line_start).min(line.len());
+                        while byte_s > 0 && !line.is_char_boundary(byte_s) {
+                            byte_s -= 1;
+                        }
+                        while byte_e > 0 && !line.is_char_boundary(byte_e) {
+                            byte_e -= 1;
+                        }
+                        let char_s = line[..byte_s].chars().count();
+                        let char_e = char_s + line[byte_s..byte_e].chars().count();
+
+                        let includes_newline = v.is_last_sub && sel.end > line_end && sel.start <= line_end;
+
+                        if byte_s < byte_e {
+                            let intersect_s = char_s.max(v.char_start);
+                            let intersect_e = char_e.min(v.char_end);
+                            if intersect_s <= intersect_e {
+                                let vis_s = row_layout.column_for_line_char(intersect_s);
+                                let mut vis_e = row_layout.column_for_line_char(intersect_e);
+                                if includes_newline {
+                                    vis_e += 1;
+                                }
+                                if vis_s < vis_e {
+                                    Some(row_layout.selection_rect(vis_s, vis_e, pixel_scale))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else if includes_newline && char_s == v.char_end {
+                            let vis_s = row_layout.column_for_line_char(v.char_end);
+                            Some(row_layout.selection_rect(vis_s, vis_s + 1, pixel_scale))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let chip_inset = code_chip_inset(row_h);
+                let mut backdrop_rects = Vec::new();
+                if show_current_line_highlight {
+                    backdrop_rects.push(
+                        div()
+                            .absolute()
+                            .left(px(0.0))
+                            .top_0()
+                            .h(px(row_h))
+                            .w_full()
+                            .bg(theme.bg_hover),
+                    );
+                }
+                for &(code_start, code_end) in row_layout.code_ranges() {
+                    let (chip_x, chip_w) = row_layout.selection_rect(code_start, code_end, pixel_scale);
+                    backdrop_rects.push(
+                        div()
+                            .absolute()
+                            .left(px(chip_x))
+                            .top(px(chip_inset))
+                            .h(px((row_h - 2.0 * chip_inset).max(1.0)))
+                            .w(px(chip_w))
+                            .bg(theme.code_bg)
+                            .rounded_sm(),
+                    );
+                }
+                if let Some((sel_x, sel_w)) = row_sel_rect {
+                    let sel_right = sel_x + sel_w;
+                    let sel_above = if v_idx > 0 { calc_v_row_sel_rect(v_idx - 1) } else { None };
+                    let sel_below = if v_idx + 1 < visual_rows_arc.len() { calc_v_row_sel_rect(v_idx + 1) } else { None };
+
+                    let round_tl = sel_above.map_or(true, |(ax, aw)| sel_x < ax - 0.5 || sel_x >= ax + aw - 0.5);
+                    let round_tr = sel_above.map_or(true, |(ax, aw)| sel_right > ax + aw + 0.5 || sel_right <= ax + 0.5);
+                    let round_bl = sel_below.map_or(true, |(bx, bw)| sel_x < bx - 0.5 || sel_x >= bx + bw - 0.5);
+                    let round_br = sel_below.map_or(true, |(bx, bw)| sel_right > bx + bw + 0.5 || sel_right <= bx + 0.5);
+
+                    let mut sel_rect = div()
+                        .absolute()
+                        .left(px(sel_x))
+                        .top_0()
+                        .h(px(row_h))
+                        .w(px(sel_w))
+                        .bg(theme.selection_bg);
+
+                    if round_tl {
+                        sel_rect = sel_rect.rounded_tl_xs();
+                    }
+                    if round_tr {
+                        sel_rect = sel_rect.rounded_tr_xs();
+                    }
+                    if round_bl {
+                        sel_rect = sel_rect.rounded_bl_xs();
+                    }
+                    if round_br {
+                        sel_rect = sel_rect.rounded_br_xs();
+                    }
+
+                    backdrop_rects.push(sel_rect);
+                }
+
+                let v_char_start = v.char_start;
+                let v_char_end = v.char_end;
+                let v_line_idx = v.line_idx;
+                let v_sub_idx = v.sub_idx;
+
+                let copy_payload: Option<(usize, usize)> =
+                    if is_opening_fence && !is_in_active_block {
+                        code_states_arc[v.line_idx]
+                            .as_ref()
+                            .map(|st| (st.block_id, v.line_idx))
+                    } else {
+                        None
+                    };
+
+                if is_opening_fence {
+                    if let Some(st) = code_states_arc[v.line_idx].as_ref() {
+                        if let Some(lang) = &st.lang {
+                            if let Some(owner_plugin) = self.state.code_block_processors.get_plugin_for_lang(lang) {
+                                if !self.code_block_views.contains_key(&st.block_id) {
+                                    let mut body = String::new();
+                                    let mut i = v.line_idx + 1;
+                                    while let Some(next) = code_states_arc.get(i).and_then(|s| s.as_ref()) {
+                                        if next.block_id != st.block_id || next.kind != crate::markdown::CodeBlockKind::InsideCode {
+                                            break;
+                                        }
+                                        body.push_str(&lines_arc[i]);
+                                        body.push('\n');
+                                        i += 1;
+                                    }
+                                    let _ = self.state.plugin_host.send_event(
+                                        &owner_plugin,
+                                        crate::plugins::api::HostEvent::ProcessCodeBlock {
+                                            language: lang.clone(),
+                                            source: body,
+                                            block_id: st.block_id,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let (custom_ui_node, custom_plugin_id, is_first_code_line) = match code_states_arc[v.line_idx].as_ref() {
+                    Some(st) => {
+                        let view_opt = self.code_block_views.get(&st.block_id);
+                        let is_first = st.kind == crate::markdown::CodeBlockKind::InsideCode
+                            && v.line_idx > 0
+                            && code_states_arc.get(v.line_idx - 1).and_then(|s| s.as_ref()).map(|s| s.block_id) != Some(st.block_id);
+                        (view_opt.map(|(_, node)| node), view_opt.map(|(id, _)| id.as_str()), is_first)
+                    }
+                    None => (None, None, false),
+                };
+
+                let mut row_div = div()
+                    .id(gpui::ElementId::Name(format!("v-row-{}-{}", lid_tag, v_idx).into()))
+                    .w_full()
+                    .flex_shrink_0()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h(px(row_h))
+                    .py_0()
+                    .px_2()
+                    .rounded_sm()
+                    .when(show_current_line_highlight, |s| s.bg(theme.bg_hover));
+
+                if is_leaf_active {
+                    row_div = row_div
+                        .cursor(gpui::CursorStyle::IBeam)
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            if this.is_resizing_any() {
+                                return;
+                            }
+                            this.is_mouse_selecting = true;
+                            let click_x: f32 = event.position.x.into();
+
+                            let col_in_row = if click_x > text_start_x {
+                                let column = row_layout_down.column_for_x(click_x - text_start_x);
+                                row_layout_down.line_char_for_column(column).saturating_sub(v_char_start).min(row_len)
+                            } else {
+                                0
+                            };
+                            let target_char = v_char_start + col_in_row;
+                            if let Some(ref mut n) = this.state.active_note {
+                                let offset = n.offset_for_line_col(v_line_idx, target_char);
+                                if event.click_count == 2 {
+                                    let (w_start, w_end) = n.word_range_at(offset);
+                                    n.selection_anchor = Some(w_start);
+                                    n.cursor_offset = w_end;
+                                } else if event.click_count >= 3 {
+                                    let (l_start, l_end) = n.line_range_at(offset);
+                                    n.selection_anchor = Some(l_start);
+                                    n.cursor_offset = l_end;
+                                } else if event.modifiers.shift {
+                                    if n.selection_anchor.is_none() {
+                                        n.selection_anchor = Some(n.cursor_offset);
+                                    }
+                                    n.cursor_offset = offset;
+                                } else {
+                                    n.cursor_offset = offset;
+                                    n.selection_anchor = Some(offset);
+                                }
+                            }
+                            window.focus(&this.focus_handle);
+                            this.reset_editor_cursor_blink(cx);
+                            cx.notify();
+                        }))
+                        .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                            if this.is_mouse_selecting {
+                                cx.stop_propagation();
+                                let click_x: f32 = event.position.x.into();
+                                let col_in_row = if click_x > text_start_x {
+                                    let column = row_layout_move.column_for_x(click_x - text_start_x);
+                                    row_layout_move.line_char_for_column(column).saturating_sub(v_char_start).min(row_len)
+                                } else {
+                                    0
+                                };
+                                let target_char = v_char_start + col_in_row;
+                                if let Some(ref mut n) = this.state.active_note {
+                                    let new_offset = n.offset_for_line_col(v_line_idx, target_char);
+                                    if n.selection_anchor.is_none() {
+                                        n.selection_anchor = Some(n.cursor_offset);
+                                    }
+                                    if n.cursor_offset != new_offset {
+                                        n.cursor_offset = new_offset;
+                                        cx.notify();
+                                    }
+                                }
+                            }
+                        }));
+                }
+
+                let is_editor_focused = is_leaf_active && self.editor_is_focused;
+
+                row_div = row_div
+                    .child(
+                        div()
+                            .id(gpui::ElementId::Name(format!("line-num-{}-{}", lid_tag, v_idx).into()))
+                            .relative()
+                            .w(px(40.0))
+                            .flex_shrink_0()
+                            .h(px(row_h))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .right_0()
+                                    .w(px(line_number_width))
+                                    .h(px(row_h))
+                                    .flex()
+                                    .items_center()
+                                    .justify_end()
+                                    .text_xs()
+                                    .text_color(if is_current {
+                                        theme.accent
+                                    } else {
+                                        theme.text_muted
+                                    })
+                                    .font_family(editor_font.clone())
+                                    .child(line_number_text),
+                            )
+                    )
+                    .child(
+                        div()
+                            .id(gpui::ElementId::Name(format!("line-content-{}-{}", lid_tag, v_idx).into()))
+                            .relative()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .flex_1()
+                            .min_w_0()
+                            .whitespace_nowrap()
+                            .h(px(row_h))
+                            .py_0()
+                            .font_family(editor_font.clone())
+                            .text_sm()
+                            .line_height(px(row_h))
+                            .cursor(gpui::CursorStyle::IBeam)
+                            .when(is_opening_fence, |s| s.bg(theme.code_bg).rounded_t_md())
+                            .when(is_closing_fence, |s| s.bg(theme.code_bg).rounded_b_md())
+                            .when(is_code_line, |s| s.bg(theme.code_bg))
+                            .children(backdrop_rects)
+                            .child(
+                                div()
+                                    .h_full()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .whitespace_nowrap()
+                                    .child(render_live_styled_row(
+                                        line,
+                                        &classified,
+                                        v_char_start,
+                                        v_char_end,
+                                        v_sub_idx,
+                                        is_active_line,
+                                        is_in_active_block,
+                                        headings,
+                                        theme,
+                                        &editor_font,
+                                        custom_ui_node,
+                                        custom_plugin_id,
+                                        is_first_code_line,
+                                        self.active_plugin_input.as_ref(),
+                                        &self.plugin_input_focus_handle,
+                                        self.active_plugin_select.as_ref(),
+                                        self.plugin_select_popup.as_ref(),
+                                        self.plugin_input_blink.visible(),
+                                        window,
+                                        cx,
+                                    )),
+                            )
+                            .when(is_current && is_editor_focused && self.editor_blink.visible(), |s| {
+                                let cursor_col = row_layout.column_for_line_char(v_char_start + active_col_in_row);
+                                let cursor_x = crate::snap::snap_x(
+                                    row_layout.x_for_column(cursor_col),
+                                    pixel_scale,
+                                );
+                                s.child(
+                                    div()
+                                        .absolute()
+                                        .left(px(cursor_x))
+                                        .top_0()
+                                        .h_full()
+                                        .w(px(2.0))
+                                        .bg(theme.accent)
+                                        .rounded_xs(),
+                                )
+                            })
+                            .when(copy_payload.is_some(), |s| {
+                                let (block_id, fence_line) = copy_payload.unwrap();
+                                let just_copied = self.copied_code_block == Some(block_id);
+                                s.child(
+                                    div()
+                                        .id(gpui::ElementId::Name(format!("code-copy-{}-{}", lid_tag, v_idx).into()))
+                                        .absolute()
+                                        .right(px(6.0))
+                                        .top_0()
+                                        .h(px(row_h))
+                                        .flex()
+                                        .items_center()
+                                        .px(px(4.0))
+                                        .rounded_sm()
+                                        .cursor(gpui::CursorStyle::PointingHand)
+                                        .hover(|h| h.bg(theme.bg_hover))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
+                                            cx.stop_propagation();
+                                            let body = match this.state.active_note.as_ref() {
+                                                Some(n) => code_block_body(&n.window, fence_line, block_id),
+                                                None => return,
+                                            };
+                                            cx.write_to_clipboard(ClipboardItem::new_string(body));
+                                            this.copied_code_block = Some(block_id);
+                                            cx.notify();
+
+                                            let entity = cx.weak_entity();
+                                            let async_cx = cx.to_async();
+                                            let timer_executor = cx.background_executor().clone();
+                                            cx.foreground_executor()
+                                                .spawn(async move {
+                                                    timer_executor
+                                                        .timer(std::time::Duration::from_millis(1500))
+                                                        .await;
+                                                    let _ = async_cx.update(|cx| {
+                                                        if let Some(view) = entity.upgrade() {
+                                                            view.update(cx, |this, cx| {
+                                                                if this.copied_code_block == Some(block_id) {
+                                                                    this.copied_code_block = None;
+                                                                    cx.notify();
+                                                                }
+                                                            });
+                                                        }
+                                                    });
+                                                })
+                                                .detach();
+                                        }))
+                                        .child(icons::icon(
+                                            if just_copied { icons::ICON_CHECK } else { icons::ICON_COPY },
+                                            14.0,
+                                            if just_copied { theme.accent } else { theme.text_muted },
+                                        )),
+                                )
+                            }),
+                    );
+
+                items.push(row_div);
+            }
+
+            let mut editor_list = div()
+                .id(gpui::ElementId::from(("note-editor-list", lid_tag)))
+                .flex()
+                .flex_col()
+                .when(show_scrollbar, |d| d.overflow_hidden())
+                .size_full()
+                .px_8()
+                .pt_0();
+
+            if is_leaf_active {
+                editor_list = editor_list
+                    .track_scroll(&self.editor_scroll_handle)
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                        if this.is_resizing_any() {
+                            return;
+                        }
+                        cx.stop_propagation();
+                        this.commit_title_rename(window, cx);
+                        window.focus(&this.focus_handle);
+                        this.is_mouse_selecting = true;
+                        let click_x: f32 = event.position.x.into();
+                        let click_y: f32 = event.position.y.into();
+                        this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, window, cx);
+                    }))
+                    .on_scroll_wheel(cx.listener(move |this, event: &gpui::ScrollWheelEvent, _, cx| {
+                        if this.is_resizing_any() {
+                            return;
+                        }
+                        this.handle_editor_wheel(event, max_scroll_content, cx);
+                    }));
+            } else {
+                editor_list = editor_list
+                    .on_scroll_wheel(cx.listener(move |this, event: &gpui::ScrollWheelEvent, _, cx| {
+                        if this.is_resizing_any() {
+                            return;
+                        }
+                        if let Some(lid) = leaf_id {
+                            if let Some(leaf) = this.state.leaves.get(&lid) {
+                                if let Some(tab) = leaf.active_tab() {
+                                    if let Some(view) = this.state.views.get_mut(&tab.id) {
+                                        let delta = match event.delta {
+                                            gpui::ScrollDelta::Lines(lines) => lines.y as f64 * 60.0,
+                                            gpui::ScrollDelta::Pixels(pixels) => f32::from(pixels.y) as f64,
+                                        };
+                                        view.scroll_top = (view.scroll_top - delta).clamp(0.0, max_scroll_content);
+                                        if let crate::workspace::TabContent::Document { id } = tab.content {
+                                            if let Some(doc) = this.state.documents.get(&id) {
+                                                let lines_total = if let Some(ref active) = this.state.active_note {
+                                                    if active.path == doc.path {
+                                                        active.line_index.lines()
+                                                    } else {
+                                                        doc.line_index.lines()
+                                                    }
+                                                } else {
+                                                    doc.line_index.lines()
+                                                };
+                                                view.viewport.offset = view.line_at_doc_y(lines_total, view.scroll_top);
+                                            }
+                                        }
+                                        cx.notify();
+                                    }
+                                }
+                            }
+                        }
+                    }));
+            }
+
+            editor_list = editor_list.child(
+                div()
+                    .id(gpui::ElementId::from(("note-editor-scroll-content", lid_tag)))
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .top(px(slice_shift as f32))
+                    .children(items),
+            );
+
+            editor_container = editor_container.child(editor_list);
+
+            if show_scrollbar {
+                let is_resizing = self.is_resizing_any();
+                let mut scrollbar_track = div()
+                    .id(gpui::ElementId::from(("editor-scrollbar-track", lid_tag)))
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right_0()
+                    .w(px(track_w))
+                    .h_full()
+                    .cursor_pointer()
+                    .when(!wide_scrollbar && !is_resizing, |d| {
+                        d.hover(|h| h.bg(rgba(0x00000015)))
+                    })
+                    .when(wide_scrollbar, |d| {
+                        d.bg(theme_scrollbar.bg_sidebar)
+                    });
+
+                if is_leaf_active {
+                    scrollbar_track = scrollbar_track
+                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                            if this.is_resizing_any() {
+                                if this.is_hovering_editor_scrollbar {
+                                    this.is_hovering_editor_scrollbar = false;
+                                    cx.notify();
+                                }
+                                return;
+                            }
+                            if this.is_hovering_editor_scrollbar != *hovered {
+                                this.is_hovering_editor_scrollbar = *hovered;
+                                cx.notify();
+                            }
+                        }))
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            if this.is_resizing_any() {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            let click_y: f32 = event.position.y.into();
+                            let click_rel_y = f64::from((click_y - track_top_y).max(0.0));
+                            let target_fraction = (click_rel_y / f64::from(viewport_h)).clamp(0.0, 1.0);
+                            let target_scroll_y = target_fraction * max_scroll_content;
+                            this.set_editor_scroll_top_f64(target_scroll_y);
+                            cx.notify();
+                        }));
+                } else if let Some(lid) = leaf_id {
+                    scrollbar_track = scrollbar_track
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                            if this.is_resizing_any() {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            this.switch_to_leaf(lid, window, cx);
+                        }))
+                        .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, window, cx| {
+                            if this.is_resizing_any() {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            this.switch_to_leaf(lid, window, cx);
+                            this.start_editor_middle_scroll(cx);
+                        }));
+                }
+
+                let mut scrollbar_thumb = div()
+                    .id(gpui::ElementId::from(("editor-scrollbar-thumb", lid_tag)))
+                    .absolute()
+                    .top(px(thumb_top))
+                    .right(px(thumb_right))
+                    .w(px(thumb_w))
+                    .h(px(thumb_h))
+                    .when(wide_scrollbar, |d| d.rounded_none())
+                    .when(!wide_scrollbar, |d| d.rounded_full())
+                    .bg(thumb_bg)
+                    .when(!wide_scrollbar && !is_resizing, |d| {
+                        d.hover(|h| h.bg(theme_scrollbar.text_secondary).w(px(8.0)))
+                    })
+                    .cursor_pointer();
+
+                if is_leaf_active {
+                    scrollbar_thumb = scrollbar_thumb
+                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                            if this.is_resizing_any() {
+                                if this.is_hovering_editor_thumb {
+                                    this.is_hovering_editor_thumb = false;
+                                    cx.notify();
+                                }
+                                return;
+                            }
+                            if this.is_hovering_editor_thumb != *hovered {
+                                this.is_hovering_editor_thumb = *hovered;
+                                cx.notify();
+                            }
+                        }))
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            if this.is_resizing_any() {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            this.is_dragging_scrollbar = true;
+                            this.scrollbar_drag_start_y = event.position.y.into();
+                            this.scrollbar_drag_start_scroll_y = scroll_y_current;
+                            cx.notify();
+                        }));
+                }
+
+                scrollbar_track = scrollbar_track.child(scrollbar_thumb);
+
+                if let Some((top, h)) = ruler_sel_span {
+                    scrollbar_track = scrollbar_track.child(
+                        div()
+                            .absolute()
+                            .top(px(top))
+                            .h(px(h))
+                            .when(ruler_full, |d| {
+                                d.left(px(0.0)).w_full().rounded_xs()
+                            })
+                            .when(!ruler_full, |d| {
+                                d.left(px(ruler_pill_left))
+                                    .w(px(ruler_pill_w))
+                                    .rounded_full()
+                            })
+                            .bg(theme_scrollbar.selection_bg),
+                    );
+                }
+
+                if show_ruler {
+                    scrollbar_track = scrollbar_track.child(
+                        div()
+                            .id(gpui::ElementId::from(("editor-ruler-cursor", lid_tag)))
+                            .absolute()
+                            .top(px(ruler_cursor_y))
+                            .h(px(2.0))
+                            .when(ruler_full, |d| {
+                                d.left(px(0.0)).w_full().rounded_xs()
+                            })
+                            .when(!ruler_full, |d| {
+                                d.left(px(ruler_pill_left))
+                                        .w(px(ruler_pill_w))
+                                    .rounded_full()
+                            })
+                            .bg(if ruler_cursor_under_thumb {
+                                theme_scrollbar.border
+                            } else {
+                                theme_scrollbar.accent
+                            }),
+                    );
+                }
+
+                editor_container = editor_container.child(scrollbar_track);
+            }
+
+            editor_root = editor_root.child(title_box).child(editor_container);
+        } else if leaf_id
+            .and_then(|lid| self.state.leaves.get(&lid))
+            .and_then(|l| l.active_tab())
+            .map(|t| matches!(t.content, crate::workspace::TabContent::Empty))
+            .unwrap_or(is_leaf_active && self.state.active_empty_tab.is_some())
+        {
+            editor_root = editor_root.child(self.render_new_tab_page(theme, cx));
+        } else if is_leaf_active && self.active_center_leaf.is_some() {
+            if let Some(leaf_id) = &self.active_center_leaf {
+                if let Some(leaf) = self.plugin_leaf_views.get(leaf_id) {
+                    editor_root = editor_root.child(
+                        div()
+                            .id("central-leaf-view")
+                            .flex()
+                            .flex_col()
+                            .size_full()
+                            .p(px(16.0))
+                            .overflow_scroll()
+                            .child(crate::plugins::ui::render_ui_node(
+                                &leaf.tree,
+                                &leaf.plugin_id,
+                                0,
+                                theme,
+                                self.active_plugin_input.as_ref(),
+                                &self.plugin_input_focus_handle,
+                                self.active_plugin_select.as_ref(),
+                                self.plugin_select_popup.as_ref(),
+                                self.plugin_input_blink.visible(),
+                                window,
+                                cx,
+                                None,
+                            )),
+                    );
+                }
+            }
+        } else {
+            editor_root = editor_root.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .size_full()
+                    .justify_center()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_3xl()
+                            .child("🦅"),
+                    )
+                    .child(
+                        div()
+                            .text_xl()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.text_primary)
+                            .child("Welcome to Vibecodium"),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme.text_muted)
+                            .child("Select a note from the sidebar or click 'Open Folder' to choose a workspace."),
+                    ),
+            );
+        }
+
+        editor_root
+    }
 }
 
 /// FPS-монитор — только для debug-сборки.
@@ -3971,6 +7290,8 @@ fn log_fps_tick() {}
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         log_fps_tick();
+        self.sync_views_for_active_note();
+        self.ensure_inactive_views_built(window, cx);
 
         // Advance the optional wheel ease before anything else touches the
         // offset. One-shot writes below (restore/reveal) go through
@@ -3985,7 +7306,7 @@ impl Render for AppView {
         // Device-pixel grid for thin carets: GPUI paints quads at raw float
         // coordinates, so an unsnapped 1.5-2px caret visibly changes thickness
         // while typing. Captured once per frame, reused at every caret site.
-        let pixel_scale = window.scale_factor();
+        let _pixel_scale = window.scale_factor();
 
         if !self.initial_scroll_done {
             self.initial_scroll_done = true;
@@ -4005,12 +7326,15 @@ impl Render for AppView {
         let anchor_doc_y = self
             .pending_editor_restore
             .unwrap_or_else(|| self.current_scroll_top_f64());
-        let anchor_line = self
-            .state
-            .active_note
-            .as_ref()
-            .map(|n| n.line_at_doc_y(anchor_doc_y))
-            .unwrap_or(0);
+        let anchor_line = if self.pending_editor_restore.is_some() {
+            self.editor_anchor_line.get()
+        } else {
+            self.state
+                .active_note
+                .as_ref()
+                .map(|n| n.line_at_doc_y(anchor_doc_y))
+                .unwrap_or(0)
+        };
         self.editor_anchor_line.set(anchor_line);
 
         // Walk the code-fence checkpoints a little further ahead, once per
@@ -4146,7 +7470,6 @@ impl Render for AppView {
                     if (clamped - self.current_scroll_top_f64()).abs() > 0.5 {
                         self.set_editor_scroll_top_f64(clamped);
                     }
-                    self.need_reveal_cursor = true;
                 }
             }
         }
@@ -4161,7 +7484,7 @@ impl Render for AppView {
         let cx = &*cx;
         let theme = &self.theme;
         let active_path = self.state.active_note.as_ref().map(|n| n.path.clone());
-        let is_editing = self.edit_mode;
+        let _is_editing = self.edit_mode;
 
         // Draw the frames the scrollbar needs to settle.
         //
@@ -4193,51 +7516,6 @@ impl Render for AppView {
 
         let is_resizer_active = self.is_resizing_sidebar || self.is_hovering_resizer;
         let resizer_color = if is_resizer_active { theme.accent } else { theme.border };
-
-        let sidebar_area_w = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
-        // Mirror of the left sidebar: when the right sidebar is open it owns
-        // a header column + 1px divider in the titlebar, so the tab strip
-        // must end at its left edge instead of sliding under it.
-        let right_sidebar_area_w = if self.right_sidebar_collapsed {
-            0.0
-        } else {
-            self.right_sidebar_width + 1.0
-        };
-        // Editor-header controls: tabs dropdown + right-sidebar toggle
-        // (32 + 4 gap + 32 + 8 padding). The native min/max/close group (138)
-        // lives here only while the right sidebar is closed; otherwise it
-        // moves into the right header column at the window edge.
-        let right_controls_w = if self.right_sidebar_collapsed { 214.0 } else { 76.0 };
-        let drag_min_w = 24.0;
-        let available_tab_strip_w = (viewport_w - sidebar_area_w - right_sidebar_area_w - right_controls_w - drag_min_w).max(60.0);
-        // Active tab index: an empty tab has no active_note, so fall back to
-        // the empty sentinel — otherwise the minimum-active-width rule in
-        // calculate_tab_widths never triggers and a new tab opens tiny.
-        let active_tab_idx = self.state.active_note.as_ref().and_then(|note| {
-            self.state.open_tabs.iter().position(|p| p == &note.path)
-        }).or_else(|| {
-            self.state.active_empty_tab.as_ref().and_then(|empty| {
-                self.state.open_tabs.iter().position(|p| p == empty)
-            })
-        });
-        let tab_layout = crate::views::tabs_menu::calculate_tab_widths(
-            self.state.open_tabs.len(),
-            active_tab_idx,
-            available_tab_strip_w,
-            160.0,
-            120.0,
-            6.0,
-            28.0,
-            6.0,
-            8.0,
-            // Leading new-note button at the strip start (32px + flex gap).
-            32.0,
-            6.0,
-        );
-        let tab_widths = tab_layout.widths;
-        let is_tabs_overflowing = tab_layout.is_overflowing;
-        let effective_tab_gap = tab_layout.tab_gap;
-
         div()
             .flex()
             .flex_col()
@@ -4266,6 +7544,16 @@ impl Render for AppView {
                         this.right_sidebar_collapsed = false;
                         this.right_sidebar_width = right_w.clamp(160.0, 600.0);
                     }
+                    cx.notify();
+                } else if let Some(ref drag) = this.split_drag_state.clone() {
+                    let current_pos = match drag.direction {
+                        crate::workspace::SplitDirection::Row => f32::from(event.position.x),
+                        crate::workspace::SplitDirection::Column => f32::from(event.position.y),
+                    };
+                    let delta = current_pos - drag.start_pos;
+                    let ratio_delta = if drag.span > 1.0 { delta / drag.span } else { 0.0 };
+                    let new_ratio = drag.initial_ratio + ratio_delta;
+                    this.state.workspace.set_split_ratio_at(&drag.path, drag.divider_index, new_ratio);
                     cx.notify();
                 } else if this.sidebar_middle_active {
                     // Middle-button smart scroll keeps working even when the
@@ -4296,7 +7584,10 @@ impl Render for AppView {
                 } else if this.title_is_mouse_selecting {
                     let x: f32 = event.position.x.into();
                     let editor_left_x = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
-                    let title_left_x = editor_left_x + 48.0;
+                    let leaf_ratio = this.state.workspace.horizontal_ratio_of_leaf(this.state.workspace.active_leaf);
+                    let window_w: f32 = window.bounds().size.width.into();
+                    let editor_total_w = (window_w - editor_left_x).max(0.0);
+                    let title_left_x = editor_left_x + leaf_ratio * editor_total_w + 48.0;
                     let rel_x = (x - title_left_x).max(0.0);
                     let new_pos = if this.title_edit_text.is_empty() {
                         0
@@ -4367,6 +7658,8 @@ impl Render for AppView {
                 }
                 this.is_resizing_sidebar = false;
                 this.is_resizing_right_sidebar = false;
+                this.split_drag_state = None;
+                this.hovered_split_divider = None;
                 this.is_mouse_selecting = false;
                 this.is_dragging_scrollbar = false;
                 this.sidebar_scrollbar_drag.end();
@@ -4393,6 +7686,8 @@ impl Render for AppView {
                 }
                 this.is_resizing_sidebar = false;
                 this.is_resizing_right_sidebar = false;
+                this.split_drag_state = None;
+                this.hovered_split_divider = None;
                 this.is_hovering_resizer = false;
                 this.is_hovering_right_resizer = false;
                 this.is_mouse_selecting = false;
@@ -4463,6 +7758,35 @@ impl Render for AppView {
                         || keystroke.key == "А")
                 {
                     this.open_sidebar_search(window, cx);
+                }
+                // Ctrl+\ splits active leaf to the right
+                if keystroke.modifiers.control
+                    && !keystroke.modifiers.shift
+                    && (keystroke.key == "\\" || keystroke.key == "|")
+                {
+                    if let Some(ref note) = this.state.active_note {
+                        let path = note.path.clone();
+                        this.split_tab_right(&path, window, cx);
+                    }
+                }
+                // Ctrl+Shift+\ splits active leaf down
+                if keystroke.modifiers.control
+                    && keystroke.modifiers.shift
+                    && (keystroke.key == "\\" || keystroke.key == "|")
+                {
+                    if let Some(ref note) = this.state.active_note {
+                        let path = note.path.clone();
+                        this.split_tab_down(&path, window, cx);
+                    }
+                }
+                // Ctrl+W closes active tab
+                if keystroke.modifiers.control
+                    && !keystroke.modifiers.shift
+                    && (keystroke.key.eq_ignore_ascii_case("w")
+                        || keystroke.key == "ц"
+                        || keystroke.key == "Ц")
+                {
+                    this.close_active_leaf_tab(window, cx);
                 }
             }))
             // ================= WINDOW TITLEBAR & TAB BAR (CUSTOM CSD FRAME) =================
@@ -4701,17 +8025,6 @@ impl Render for AppView {
                                 .bg(resizer_color)
                                 .border_b_1()
                                 .border_color(theme.border)
-                                .when(is_resizer_active, |this| {
-                                    this.child(
-                                        div()
-                                            .absolute()
-                                            .top_0()
-                                            .bottom_0()
-                                            .left(px(-1.0))
-                                            .w(px(3.0))
-                                            .bg(theme.accent),
-                                    )
-                                })
                                 .child(
                                     div()
                                         .id("titlebar-resizer-hitbox")
@@ -4737,531 +8050,7 @@ impl Render for AppView {
                         )
                     })
                     // Right area: Editor header column containing Tab Bar, Drag Area, and Window Controls
-                    .child(
-                        div()
-                            .relative()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .flex_1()
-                            .h_full()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .bg(theme.bg_sidebar)
-                            // Continuous bottom border line running across the editor header column
-                            .child(
-                                div()
-                                    .id("titlebar-editor-bottom-border")
-                                    .absolute()
-                                    .bottom_0()
-                                    .left_0()
-                                    .right_0()
-                                    .h(px(1.0))
-                                    .bg(theme.border),
-                            )
-                            // Browser-style Tabs Area starting directly at the boundary
-                            .child({
-                                let active_path = self.state.active_note.as_ref().map(|n| n.path.clone())
-                                    .or_else(|| self.state.active_empty_tab.clone());
-                                let is_active_dirty = self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false);
-                                // Hovered tab (clamped): neighbours hide their dividers
-                                // Chrome-style so the boundary always reads clean.
-                                let hovered_tab = self
-                                    .hovered_tab_idx
-                                    .filter(|&i| i < self.state.open_tabs.len());
-
-                                let is_overflowing = is_tabs_overflowing;
-
-                                let mut tabs_strip = div()
-                                    .id("tabs-strip-inner")
-                                    .flex()
-                                    .flex_row()
-                                    .items_end()
-                                    .gap(px(effective_tab_gap))
-                                    .h_full()
-                                    .pl(px(8.0))
-                                    .flex_shrink_0()
-                                    // Leaving the whole strip clears the hovered tab.
-                                    // Tab/enter events only ever set it (never clear),
-                                    // so bubble order across neighbours cannot corrupt it:
-                                    // the last writer always wins with the tab under cursor.
-                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                        if !hovered && this.hovered_tab_idx.is_some() {
-                                            this.hovered_tab_idx = None;
-                                            cx.notify();
-                                        }
-                                    }));
-
-                                // New-note button at the very start of the tab strip
-                                // (mirror of the "+" at the end, but creates a real note).
-                                // Divider after it follows the same rule as between tabs:
-                                // shown only when the neighbour tab is inactive.
-                                let first_tab_active = self
-                                    .state
-                                    .open_tabs
-                                    .first()
-                                    .map(|p| active_path.as_ref() == Some(p))
-                                    .unwrap_or(false);
-                                let show_leading_divider =
-                                    !self.state.open_tabs.is_empty()
-                                        && !first_tab_active
-                                        && hovered_tab != Some(0);
-                                let leading_sep_right = -(effective_tab_gap / 2.0).floor();
-                                let leading_divider_color = if theme.is_dark {
-                                    rgba(0xcdd6f440)
-                                } else {
-                                    rgba(0x1e203030)
-                                };
-                                tabs_strip = tabs_strip.child(
-                                    div()
-                                        .id("btn-new-note-inline")
-                                        .relative()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        // Full titlebar height hitbox (same as tabs);
-                                        // the painted button stays 28px.
-                                        .h_full()
-                                        .w(px(32.0))
-                                        .flex_shrink_0()
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.create_new_note_at_front(window, cx);
-                                        }))
-                                        // The button is not a tab: hovering it clears the
-                                        // hovered tab (the strip leave does not fire here).
-                                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                            if *hovered && this.hovered_tab_idx.is_some() {
-                                                this.hovered_tab_idx = None;
-                                                cx.notify();
-                                            }
-                                        }))
-                                        .when(show_leading_divider, |d| {
-                                            d.child(
-                                                div()
-                                                    .id("new-note-separator")
-                                                    .absolute()
-                                                    .top(px(13.0))
-                                                    .h(px(16.0))
-                                                    .w(px(1.0))
-                                                    .right(px(leading_sep_right))
-                                                    .rounded_full()
-                                                    .bg(leading_divider_color),
-                                            )
-                                        })
-                                        .child(
-                                            div()
-                                                .id("btn-new-note-inline-inner")
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .w(px(28.0))
-                                                .h(px(28.0))
-                                                .rounded_md()
-                                                .cursor_pointer()
-                                                .hover(|h| h.bg(theme.bg_hover))
-                                                .child(icons::icon(icons::ICON_NOTE_CREATE, 15.0, theme.text_muted)),
-                                        ),
-                                );
-
-                                for (idx, tab_path) in self.state.open_tabs.iter().enumerate() {
-                                    let is_active = active_path.as_ref() == Some(tab_path);
-                                    let is_next_active = active_path.as_ref() == self.state.open_tabs.get(idx + 1);
-                                    // Chrome-like: dividers adjacent to the hovered tab hide,
-                                    // so there is always a clean boundary and a tab opens.
-                                    let show_divider = !is_active
-                                        && (idx + 1 < self.state.open_tabs.len())
-                                        && !is_next_active
-                                        && hovered_tab != Some(idx)
-                                        && hovered_tab != Some(idx + 1);
-
-                                    let title = crate::views::new_tab::tab_display_title(
-                                        tab_path,
-                                        &self.t("tabs.newTab"),
-                                        &self.t("common.untitled"),
-                                    );
-                                    let tab_path_for_select = tab_path.clone();
-                                    let tab_path_for_ext_l = tab_path.clone();
-                                    let tab_path_for_ext_r = tab_path.clone();
-                                    let tab_path_for_close = tab_path.clone();
-                                    let tab_path_for_middle = tab_path.clone();
-                                    let tab_path_for_middle_select = tab_path.clone();
-                                    let tab_path_for_context = tab_path.clone();
-
-                                    let tab_w = tab_widths.get(idx).copied().unwrap_or(160.0);
-
-                                    let mut tab_item = div()
-                                        .id(gpui::ElementId::from(("tab-item", idx)))
-                                        .relative()
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        // Full titlebar height: the tab switches even when the
-                                        // cursor slams into the very top edge of the screen.
-                                        // The painted tab itself stays bottom-anchored (see the
-                                        // +4px offsets on the absolute visuals below).
-                                        .h_full()
-                                        .w(px(tab_w))
-                                        .flex_shrink_0()
-                                        // Enter-only: leaves are ignored (the strip-level
-                                        // leave clears). Bubble order runs right-to-left,
-                                        // so a neighbour's leave must never overwrite a
-                                        // fresher enter with None.
-                                        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                                            if *hovered && this.hovered_tab_idx != Some(idx) {
-                                                this.hovered_tab_idx = Some(idx);
-                                                cx.notify();
-                                            }
-                                        }))
-                                        .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, _, cx| {
-                                            cx.stop_propagation();
-                                            this.close_tab(&tab_path_for_middle, cx);
-                                        }))
-                                        .on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                            cx.stop_propagation();
-                                            let x: f32 = event.position.x.into();
-                                            let y: f32 = event.position.y.into();
-                                            this.open_tab_context_menu(tab_path_for_context.clone(), x, y, cx);
-                                        }))
-                                        .when(!is_active, |tab| {
-                                            // Hover wash paints only the old 34px tab body at
-                                            // the bottom; the hitbox stays full height.
-                                            let tab = tab
-                                                .bg(theme.bg_sidebar)
-                                                .rounded_t_md()
-                                                .border_b_1()
-                                                .border_color(theme.border);
-                                            if hovered_tab == Some(idx) {
-                                                tab.child(
-                                                    div()
-                                                        .absolute()
-                                                        .bottom_0()
-                                                        .left_0()
-                                                        .right_0()
-                                                        .h(px(34.0))
-                                                        .rounded_t_md()
-                                                        .bg(theme.bg_hover),
-                                                )
-                                            } else {
-                                                tab
-                                            }
-                                        });
-
-                                    if show_divider {
-                                        let sep_right = -(effective_tab_gap / 2.0).floor();
-                                        let divider_color = if theme.is_dark {
-                                            rgba(0xcdd6f440)
-                                        } else {
-                                            rgba(0x1e203030)
-                                        };
-                                        tab_item = tab_item.child(
-                                            div()
-                                                .id(gpui::ElementId::from(("tab-separator", idx)))
-                                                .absolute()
-                                                .top(px(13.0))
-                                                .h(px(16.0))
-                                                .w(px(1.0))
-                                                .right(px(sep_right))
-                                                .rounded_full()
-                                                .bg(divider_color),
-                                        );
-                                    }
-
-                                    // Invisible hit extenders tiling the inter-tab gaps: each
-                                    // half-gap belongs to the adjacent tab, so every pixel
-                                    // between tabs opens a tab (no dead zones on dividers).
-                                    // They tile exactly (no overlap): right covers [0, hr],
-                                    // left covers [hr, gap].
-                                    let ext_r = (effective_tab_gap / 2.0).ceil();
-                                    let ext_l = (effective_tab_gap - ext_r).max(0.0);
-                                    tab_item = tab_item
-                                        .child(
-                                            div()
-                                                .id(gpui::ElementId::from(("tab-hit-l", idx)))
-                                                .absolute()
-                                                .top_0()
-                                                .bottom_0()
-                                                .left(px(-ext_l))
-                                                .w(px(ext_l))
-                                                .cursor_pointer()
-                                                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                                                    if *hovered && this.hovered_tab_idx != Some(idx) {
-                                                        this.hovered_tab_idx = Some(idx);
-                                                        cx.notify();
-                                                    }
-                                                }))
-                                                .on_click(cx.listener(move |this, _, window, cx| {
-                                                    this.select_tab_path(tab_path_for_ext_l.clone(), window, cx);
-                                                })),
-                                        )
-                                        .child(
-                                            div()
-                                                .id(gpui::ElementId::from(("tab-hit-r", idx)))
-                                                .absolute()
-                                                .top_0()
-                                                .bottom_0()
-                                                .right(px(-ext_r))
-                                                .w(px(ext_r))
-                                                .cursor_pointer()
-                                                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                                                    if *hovered && this.hovered_tab_idx != Some(idx) {
-                                                        this.hovered_tab_idx = Some(idx);
-                                                        cx.notify();
-                                                    }
-                                                }))
-                                                .on_click(cx.listener(move |this, _, window, cx| {
-                                                    this.select_tab_path(tab_path_for_ext_r.clone(), window, cx);
-                                                })),
-                                        );
-
-                                    if is_active {
-                                        // 1. Solid center body fill
-                                        tab_item = tab_item.child(
-                                            div()
-                                                .id("tab-body-fill")
-                                                .absolute()
-                                                .top(px(5.0))
-                                                .bottom_0()
-                                                .left(px(6.0))
-                                                .right(px(6.0))
-                                                .bg(theme.bg_editor),
-                                        );
-                                        // 2. Solid fill mask at the baseline connecting active tab into the editor
-                                        tab_item = tab_item.child(
-                                            div()
-                                                .id("tab-bottom-cover")
-                                                .absolute()
-                                                .bottom(px(-2.0))
-                                                .left(px(6.0))
-                                                .right(px(6.0))
-                                                .h(px(3.0))
-                                                .bg(theme.bg_editor),
-                                        );
-                                        // 3. Continuous top border - stops safely within the flat SVG lead-in
-                                        tab_item = tab_item.child(
-                                            div()
-                                                .id("tab-border-top")
-                                                .absolute()
-                                                .top(px(4.0))
-                                                .left(px(7.0))
-                                                .right(px(7.0))
-                                                .h(px(1.0))
-                                                .bg(theme.border),
-                                        );
-                                        // 4. Left cap
-                                        tab_item = tab_item.child(
-                                            div()
-                                                .id("tab-cap-left")
-                                                .absolute()
-                                                .top(px(4.0))
-                                                .left(px(-8.0))
-                                                .w(px(16.0))
-                                                .h(px(36.0))
-                                                .child(
-                                                    icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_FILL, 16.0, 36.0, theme.bg_editor)
-                                                        .absolute()
-                                                        .top_0()
-                                                        .left_0(),
-                                                )
-                                                .child(
-                                                    icons::svg_sized(icons::ICON_TAB_ACTIVE_LEFT_STROKE, 16.0, 36.0, theme.border)
-                                                        .absolute()
-                                                        .top_0()
-                                                        .left_0(),
-                                                ),
-                                        );
-                                        // 5. Right cap
-                                        tab_item = tab_item.child(
-                                            div()
-                                                .id("tab-cap-right")
-                                                .absolute()
-                                                .top(px(4.0))
-                                                .right(px(-8.0))
-                                                .w(px(16.0))
-                                                .h(px(36.0))
-                                                .child(
-                                                    icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_FILL, 16.0, 36.0, theme.bg_editor)
-                                                        .absolute()
-                                                        .top_0()
-                                                        .left_0(),
-                                                )
-                                                .child(
-                                                    icons::svg_sized(icons::ICON_TAB_ACTIVE_RIGHT_STROKE, 16.0, 36.0, theme.border)
-                                                        .absolute()
-                                                        .top_0()
-                                                        .left_0(),
-                                                ),
-                                        );
-                                    }
-
-                                    tabs_strip = tabs_strip.child(
-                                        tab_item
-                                            // Tab selection area (icon + title + dirty dot)
-                                            .child(
-                                                div()
-                                                    .id(gpui::ElementId::from(("tab-select", idx)))
-                                                    .flex()
-                                                    .flex_row()
-                                                    .items_center()
-                                                    .gap(if tab_w < 48.0 { px(2.0) } else { px(6.0) })
-                                                    .h_full()
-                                                    .pl(if tab_w < 40.0 { px(2.0) } else { px(10.0) })
-                                                    .pr(if tab_w < 40.0 { px(2.0) } else { px(4.0) })
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .overflow_hidden()
-                                                    .cursor_pointer()
-                                                    .child(icons::icon(
-                                                        icons::ICON_FILE_TEXT,
-                                                        12.0,
-                                                        if is_active { theme.accent } else { theme.text_muted },
-                                                    ))
-                                                    .child(
-                                                        div()
-                                                            .text_xs()
-                                                            .font_weight(if is_active {
-                                                                gpui::FontWeight::SEMIBOLD
-                                                            } else {
-                                                                gpui::FontWeight::NORMAL
-                                                            })
-                                                            .text_color(if is_active {
-                                                                theme.text_primary
-                                                            } else {
-                                                                theme.text_secondary
-                                                            })
-                                                            .truncate()
-                                                            .flex_1()
-                                                            .min_w_0()
-                                                            .child(title),
-                                                    )
-                                                    .when(is_active && is_active_dirty, |tab| {
-                                                        tab.child(
-                                                            div()
-                                                                .text_xs()
-                                                                .text_color(theme.accent)
-                                                                .child("●"),
-                                                        )
-                                                    })
-                                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                                        this.select_tab_path(tab_path_for_select.clone(), window, cx);
-                                                    }))
-                                                    .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, _, cx| {
-                                                        cx.stop_propagation();
-                                                        this.close_tab(&tab_path_for_middle_select, cx);
-                                                    })),
-                                            )
-                                            // Tab close button (isolated sibling)
-                                            .when(is_active || tab_w >= 56.0, |tab| {
-                                                tab.child(
-                                                    div()
-                                                        .id(gpui::ElementId::from(("btn-close-tab", idx)))
-                                                        .p_0p5()
-                                                        .mr_1p5()
-                                                        .flex_shrink_0()
-                                                        .rounded_sm()
-                                                        .cursor_pointer()
-                                                        .hover(|h| h.bg(theme.bg_hover))
-                                                        .child(icons::icon(icons::ICON_CLOSE, 10.0, theme.text_muted))
-                                                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-                                                            cx.stop_propagation();
-                                                        })
-                                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                                            cx.stop_propagation();
-                                                            this.close_tab(&tab_path_for_close, cx);
-                                                        })),
-                                                )
-                                            }),
-                                    );
-                                }
-
-                                let btn_new_tab = div()
-                                    .id("btn-new-tab-inline")
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    // Full titlebar height hitbox (same as tabs);
-                                    // the painted button stays 28px.
-                                    .h_full()
-                                    .w(px(32.0))
-                                    .flex_shrink_0()
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_empty_tab(window, cx);
-                                    }))
-                                    // Not a tab: hovering it clears the hovered tab.
-                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                        if *hovered && this.hovered_tab_idx.is_some() {
-                                            this.hovered_tab_idx = None;
-                                            cx.notify();
-                                        }
-                                    }))
-                                    .child(
-                                        div()
-                                            .id("btn-new-tab-inline-inner")
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .w(px(28.0))
-                                            .h(px(28.0))
-                                            .rounded_md()
-                                            .cursor_pointer()
-                                            .hover(|h| h.bg(theme.bg_hover))
-                                            .child(icons::icon(icons::ICON_PLUS, 15.0, theme.text_muted)),
-                                    );
-
-                                div()
-                                    .id("tabs-scroll-viewport")
-                                    .relative()
-                                    .flex()
-                                    .flex_row()
-                                    .items_end()
-                                    .h_full()
-                                    .gap(px(6.0))
-                                    .when(!is_overflowing, |d| d.flex_shrink_0())
-                                    .when(is_overflowing, |d| d.w(px(available_tab_strip_w)).flex_shrink_0())
-                                    .child(tabs_strip)
-                                    .child(btn_new_tab)
-                            })
-                            // Drag Area (fills remaining space between tabs and window controls)
-                            .child(
-                                div()
-                                    .id("titlebar-drag-region")
-                                    .flex_1()
-                                    .min_w(px(24.0))
-                                    .h_full()
-                                    .window_control_area(WindowControlArea::Drag),
-                            )
-                            // Unified right controls group permanently anchored to the right window edge
-                            .child(
-                                div()
-                                    .id("titlebar-right-controls-group")
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .h_full()
-                                    .flex_shrink_0()
-                                    // 1. Right action buttons ([v], [|])
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_row()
-                                            .items_center()
-                                            .h_full()
-                                            .flex_shrink_0()
-                                            .gap_1()
-                                            .px_1()
-                                            .child(self.render_tabs_dropdown_button(theme, cx))
-                                            .child(self.render_right_sidebar_toggle_button(theme, cx)),
-                                    )
-                                    // 2. Native Windows Titlebar Control Buttons (Minimize, Maximize/Restore, Close).
-                                    // While the right sidebar is closed they sit here; once it opens
-                                    // they move into the right header column so the tab strip ends
-                                    // exactly at the sidebar boundary (mirror of the left sidebar).
-                                    .when(self.right_sidebar_collapsed, |d| {
-                                        d.child(self.render_window_control_buttons(theme, is_maximized, cx))
-                                    }),
-                            )
-                    )
+                    .child(self.render_titlebar_editor_header(is_maximized, theme, window, cx))
                     // Right vertical divider (mirror of `titlebar-resizer-divider`): caps the tab
                     // strip at the right sidebar's left edge and resizes it on drag.
                     .when(!self.right_sidebar_collapsed, |s| {
@@ -5282,17 +8071,6 @@ impl Render for AppView {
                                 .bg(right_resizer_color)
                                 .border_b_1()
                                 .border_color(theme.border)
-                                .when(is_right_resizer_active, |this| {
-                                    this.child(
-                                        div()
-                                            .absolute()
-                                            .top_0()
-                                            .bottom_0()
-                                            .right(px(-1.0))
-                                            .w(px(3.0))
-                                            .bg(theme.accent),
-                                    )
-                                })
                                 .child(
                                     div()
                                         .id("titlebar-right-resizer-hitbox")
@@ -5552,17 +8330,6 @@ impl Render for AppView {
                                 .w(px(1.0))
                                 .h_full()
                                 .bg(resizer_color)
-                                .when(is_resizer_active, |this| {
-                                    this.child(
-                                        div()
-                                            .absolute()
-                                            .top_0()
-                                            .bottom_0()
-                                            .left(px(-1.0))
-                                            .w(px(3.0))
-                                            .bg(theme.accent),
-                                    )
-                                })
                                 .child(
                                     div()
                                         .id("sidebar-resizer-hitbox")
@@ -5597,1371 +8364,7 @@ impl Render for AppView {
                     })
                     // ----- Центральная область редактора -----
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .min_h_0()
-                            .overflow_hidden()
-                            .bg(theme.bg_editor)
-                            // Панель навигации (Obsidian-style) сразу под вкладками
-                            .child(self.render_navigation_bar(theme, cx))
-                            .when_some(
-                                if self.active_center_leaf.is_none() {
-                                    self.state.active_note.as_ref()
-                                } else {
-                                    None
-                                },
-                                |this, note| {
-                                let note_title = note
-                                    .path
-                                    .file_stem()
-                                    .map(|s| s.to_string_lossy().into_owned())
-                                    .unwrap_or_else(|| "Untitled".to_string());
-
-                                let lines_arc = Arc::clone(&note.window.lines);
-                                // Digits of the document's line count, not the window's:
-                                // the gutter is sized once for the whole note.
-                                let line_number_digits =
-                                    note.line_index.lines().max(1).to_string().len().max(3);
-                                let line_number_width = 40.0 + line_number_digits.saturating_sub(3) as f32 * line_char_width;
-                                let visual_rows_arc = Arc::clone(&note.window.visual_rows);
-                                let code_states_arc = Arc::clone(&note.window.code_states);
-                                let height_index_arc = Arc::clone(&note.window.height_index);
-
-                                let (cursor_line, cursor_col) = note.line_col();
-                                let (active_v_idx, active_col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows_arc, cursor_line, cursor_col)
-                                    .unwrap_or((0, 0));
-
-                                let selection_range = note.selection_range();
-                                let mut active_block_ids: std::collections::HashSet<usize> = std::collections::HashSet::new();
-                                if is_editing {
-                                    if let Some(s) = code_states_arc.get(cursor_line).and_then(|s| s.as_ref()) {
-                                        active_block_ids.insert(s.block_id);
-                                    }
-                                    if let Some(ref sel) = selection_range {
-                                        if sel.start < sel.end {
-                                            let sel_start_line = note.line_of_byte(sel.start);
-                                            let sel_end_line = note.line_of_byte(sel.end);
-                                            let win_start = code_states_arc.start();
-                                            let win_end = code_states_arc.end();
-                                            let scan_start = sel_start_line.max(win_start);
-                                            let scan_end = sel_end_line.min(win_end.saturating_sub(1));
-                                            if scan_start <= scan_end {
-                                                for l_idx in scan_start..=scan_end {
-                                                    if let Some(Some(s)) = code_states_arc.get(l_idx) {
-                                                        active_block_ids.insert(s.block_id);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
-                                let text_start_x = editor_left_x + 32.0 + 8.0 + 40.0;
-
-                                let theme_copy = theme.clone();
-                                let theme_scrollbar = theme.clone();
-
-                                // Document height, not the window's: the scrollbar and
-                                // the ruler both work in document coordinates.
-                                let total_content_h = note.total_height();
-                                let (slice_h, viewport_h, max_scroll_content, track_top_y) =
-                                    self.editor_scroll_metrics(total_content_h, window_h);
-                                self.last_editor_h.set(viewport_h);
-                                // `editor.wideScrollbar` switches to the Zed-style
-                                // lane: a 16 px track with a visible background
-                                // and a full-bleed slim square thumb in a single
-                                // uniform gray — constant size, no side gaps,
-                                // no state colors.
-                                let wide_scrollbar = self.config.editor.wide_scrollbar;
-                                let show_scrollbar = max_scroll_content > 1.0;
-                                let (thumb_top, thumb_h) = if show_scrollbar {
-                                    // Thumb travel follows the true viewport (the
-                                    // track's own height), never the slicing
-                                    // estimate: otherwise the thumb slides past
-                                    // the track end, under the status bar.
-                                    let th = Self::editor_thumb_h(viewport_h, total_content_h, wide_scrollbar);
-                                    let scroll_y = self.current_scroll_top_f64().clamp(0.0, max_scroll_content);
-                                    let scroll_fraction = (scroll_y / max_scroll_content).clamp(0.0, 1.0);
-                                    let tt = scroll_fraction * (f64::from(viewport_h) - th);
-                                    (tt as f32, th as f32)
-                                } else {
-                                    (0.0, 28.0)
-                                };
-                                let is_scrollbar_dragging = self.is_dragging_scrollbar;
-                                let scroll_y_current = self.current_scroll_top_f64().clamp(0.0, max_scroll_content);
-                                // While the pointer is over the track the ruler marks
-                                // stretch full width; otherwise they collapse into a
-                                // thin pill centered like the thumb.
-                                let ruler_expanded = self.is_hovering_editor_scrollbar;
-                                // Idle pill geometry follows the thumb exactly, so the
-                                // two always share one center line.
-                                let track_w = if wide_scrollbar { 16.0 } else { 14.0 };
-                                let thumb_right = if wide_scrollbar { 0.0 } else { 3.0 };
-                                let thumb_w_idle = if wide_scrollbar { track_w } else { 6.0 };
-                                let thumb_w_active = if wide_scrollbar { track_w } else { 8.0 };
-                                let thumb_w = if is_scrollbar_dragging { thumb_w_active } else { thumb_w_idle };
-                                let thumb_left = track_w - thumb_right - thumb_w;
-                                let ruler_pill_w = if is_scrollbar_dragging { thumb_w } else { 6.0 };
-                                let ruler_pill_left = thumb_left + (thumb_w - ruler_pill_w) / 2.0;
-                                // In the wide lane the marks never collapse: like
-                                // Zed's overview ruler they span the track at all
-                                // times. The narrow lane keeps the hover behavior.
-                                let ruler_full = ruler_expanded || wide_scrollbar;
-                                // Thumb wash: the narrow pill states itself
-                                // (accent while dragged, lighter on hover); the
-                                // wide thumb is one gray in every state.
-                                let thumb_bg = if wide_scrollbar {
-                                    theme_scrollbar.border
-                                } else if is_scrollbar_dragging {
-                                    theme_scrollbar.accent
-                                } else {
-                                    theme_scrollbar.border
-                                };
-
-                                // Overview-ruler marks on the scrollbar track: a thin
-                                // cursor line plus the selection span underneath it.
-                                // Content Y maps onto the full track height, the same
-                                // proportion the thumb uses for the scroll position.
-                                // Only when the document actually scrolls and the
-                                // `editor.scrollbarRuler` flag is on — without a
-                                // scrollbar there is no track to mark.
-                                let show_ruler = self.config.editor.scrollbar_ruler;
-                                let (ruler_cursor_y, ruler_sel_span): (f32, Option<(f32, f32)>) =
-                                    if show_ruler && show_scrollbar && total_content_h > 1.0 {
-                                        let to_track = |doc_y: f64| {
-                                            ((doc_y / total_content_h) * f64::from(viewport_h))
-                                                .clamp(0.0, f64::from(viewport_h) - 2.0)
-                                                as f32
-                                        };
-                                        let cursor_doc_y = if note.window.covers_line(cursor_line) {
-                                            note.doc_y_of_local_v_idx(active_v_idx)
-                                        } else {
-                                            note.doc_y_of_line(cursor_line)
-                                        };
-                                        let cursor_y = to_track(cursor_doc_y);
-                                        let sel_span = note.selection_range().map(|sel| {
-                                            let start_line = note.line_of_byte(sel.start);
-                                            let end_line = note.line_of_byte(sel.end);
-                                            let a = note.doc_y_of_line(start_line);
-                                            let b = note.doc_y_of_line(end_line);
-                                            let top = to_track(a.min(b));
-                                            let bottom = to_track(a.max(b)) + 2.0;
-                                            (top, (bottom - top).max(3.0))
-                                        });
-                                        (cursor_y, sel_span)
-                                    } else {
-                                        (0.0, None)
-                                    };
-                                // Gray the cursor line only in the narrow lane, while
-                                // the thumb is dragged or hovered and the line is
-                                // actually under it. The wide lane keeps the accent
-                                // line everywhere: its thumb is one flat gray, so
-                                // the accent never blends into it.
-                                let ruler_cursor_under_thumb = show_scrollbar
-                                    && !wide_scrollbar
-                                    && (is_scrollbar_dragging || self.is_hovering_editor_thumb)
-                                    && ruler_cursor_y < thumb_top + thumb_h
-                                    && ruler_cursor_y + 2.0 > thumb_top;
-
-                                let is_title_focused = self.title_focus_handle.is_focused(window);
-                                let title_text = &self.title_edit_text;
-                                let title_chars: Vec<char> = title_text.chars().collect();
-                                let cursor_pos = self.title_cursor_pos.min(title_chars.len());
-                                let selection_range = self.title_selection_range();
-
-                                let run = gpui::TextRun {
-                                    len: title_text.len(),
-                                    font: gpui::font("Segoe UI").bold(),
-                                    color: Default::default(),
-                                    underline: Default::default(),
-                                    strikethrough: None,
-                                    background_color: None,
-                                };
-                                let shaped = window.text_system().shape_line(
-                                    SharedString::from(title_text.clone()),
-                                    px(28.0),
-                                    &[run],
-                                    None,
-                                );
-
-                                let cursor_x = if title_text.is_empty() {
-                                    0.0
-                                } else {
-                                    let byte_index: usize = title_chars[..cursor_pos].iter().map(|c| c.len_utf8()).sum();
-                                    crate::snap::snap_x(
-                                        f32::from(shaped.x_for_index(byte_index)),
-                                        pixel_scale,
-                                    )
-                                };
-
-                                let (sel_x1, sel_w) = if let Some((s_start, s_end)) = selection_range {
-                                    if !title_text.is_empty() {
-                                        let b1: usize = title_chars[..s_start.min(title_chars.len())].iter().map(|c| c.len_utf8()).sum();
-                                        let b2: usize = title_chars[..s_end.min(title_chars.len())].iter().map(|c| c.len_utf8()).sum();
-                                        // Same device-pixel snapping as the caret above: an
-                                        // unsnapped antialiased edge shifts its blend ratio with
-                                        // every sub-pixel move and reads as a stuttering edge.
-                                        crate::snap::snapped_span(
-                                            f32::from(shaped.x_for_index(b1)),
-                                            f32::from(shaped.x_for_index(b2)),
-                                            pixel_scale,
-                                        )
-                                    } else {
-                                        (0.0, 0.0)
-                                    }
-                                } else {
-                                    (0.0, 0.0)
-                                };
-
-                                let display_title = if title_text.is_empty() {
-                                    if is_title_focused {
-                                        String::new()
-                                    } else {
-                                        note_title.clone()
-                                    }
-                                } else {
-                                    title_text.clone()
-                                };
-
-                                this.child(
-                                    div()
-                                        .id("note-title-panel")
-                                        .w_full()
-                                        .flex()
-                                        .flex_row()
-                                        .items_start()
-                                        .pl(px(48.0))
-                                        .pr_4()
-                                        .pt(px(2.0))
-                                        .pb(px(16.0))
-                                        .cursor(gpui::CursorStyle::IBeam)
-                                        .bg(theme.bg_editor)
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
-                                            window.focus(&this.title_focus_handle);
-                                            this.title_is_focused = true;
-                                            this.reset_title_cursor_blink(cx);
-                                            this.title_cursor_pos = this.title_edit_text.chars().count();
-                                            this.title_selection_anchor = None;
-                                            cx.notify();
-                                        }))
-                                        .child(
-                                            div()
-                                                .id("note-title-input")
-                                                .relative()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .h(px(36.0))
-                                                .track_focus(&self.title_focus_handle)
-                                                .cursor(gpui::CursorStyle::IBeam)
-                                                .flex()
-                                                .flex_row()
-                                                .items_center()
-                                                .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                                                    cx.stop_propagation();
-                                                    window.focus(&this.title_focus_handle);
-                                                    this.title_is_focused = true;
-                                                    this.reset_title_cursor_blink(cx);
-
-                                                    let click_x: f32 = event.position.x.into();
-                                                    let editor_left_x = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
-                                                    let title_left_x = editor_left_x + 48.0;
-                                                    let rel_x = (click_x - title_left_x).max(0.0);
-
-                                                    let clicked_pos = if this.title_edit_text.is_empty() {
-                                                        0
-                                                    } else {
-                                                        let run = gpui::TextRun {
-                                                            len: this.title_edit_text.len(),
-                                                            font: gpui::font("Segoe UI").bold(),
-                                                            color: Default::default(),
-                                                            underline: Default::default(),
-                                                            strikethrough: None,
-                                                            background_color: None,
-                                                        };
-                                                        let shaped = window.text_system().shape_line(
-                                                            SharedString::from(this.title_edit_text.clone()),
-                                                            px(28.0),
-                                                            &[run],
-                                                            None,
-                                                        );
-                                                        let byte_idx = shaped.closest_index_for_x(px(rel_x));
-                                                        this.title_edit_text[..byte_idx.min(this.title_edit_text.len())].chars().count()
-                                                    };
-
-                                                    if event.click_count == 2 {
-                                                        this.title_selection_anchor = Some(0);
-                                                        this.title_cursor_pos = this.title_edit_text.chars().count();
-                                                        this.title_is_mouse_selecting = false;
-                                                    } else if event.modifiers.shift {
-                                                        if this.title_selection_anchor.is_none() {
-                                                            this.title_selection_anchor = Some(this.title_cursor_pos);
-                                                        }
-                                                        this.title_cursor_pos = clicked_pos;
-                                                        this.title_is_mouse_selecting = true;
-                                                    } else {
-                                                        this.title_cursor_pos = clicked_pos;
-                                                        this.title_selection_anchor = Some(clicked_pos);
-                                                        this.title_is_mouse_selecting = true;
-                                                    }
-                                                    cx.notify();
-                                                }))
-                                                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                                                    cx.stop_propagation();
-                                                    this.handle_title_key(event, window, cx);
-                                                }))
-                                                .when(selection_range.is_some() && sel_w > 0.0, |s| {
-                                                    s.child(
-                                                        div()
-                                                            .absolute()
-                                                            .left(px(sel_x1))
-                                                            .top(px(4.0))
-                                                            .w(px(sel_w))
-                                                            .h(px(28.0))
-                                                            .bg(theme.selection_bg)
-                                                            .rounded_xs(),
-                                                    )
-                                                })
-                                                .child(
-                                                    div()
-                                                        .font_family("Segoe UI")
-                                                        .font_weight(gpui::FontWeight::BOLD)
-                                                        .text_size(px(28.0))
-                                                        .line_height(px(36.0))
-                                                        .text_color(rgb(0xf44336))
-                                                        .child(display_title),
-                                                )
-                                                .when(title_text.is_empty() && is_title_focused, |s| {
-                                                    s.child(
-                                                        div()
-                                                            .absolute()
-                                                            .left_0()
-                                                            .top_0()
-                                                            .h(px(36.0))
-                                                            .font_family("Segoe UI")
-                                                            .font_weight(gpui::FontWeight::BOLD)
-                                                            .text_size(px(28.0))
-                                                            .line_height(px(36.0))
-                                                            .text_color(rgba(0xf4433666))
-                                                            .child("Untitled"),
-                                                    )
-                                                })
-                                                .when(is_title_focused && self.title_blink.visible(), |s| {
-                                                    s.child(
-                                                        div()
-                                                            .absolute()
-                                                            .left(px(cursor_x))
-                                                            .top(px(5.0))
-                                                            .w(px(2.0))
-                                                            .h(px(26.0))
-                                                            .bg(rgb(0xf44336))
-                                                            .rounded_xs(),
-                                                    )
-                                                }),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .id("note-editor-container")
-                                        .relative()
-                                        .track_focus(&self.focus_handle)
-                                        .cursor(gpui::CursorStyle::IBeam)
-                                        .flex()
-                                        .flex_col()
-                                        .flex_1()
-                                        .w_full()
-                                        .min_w_0()
-                                        .min_h_0()
-                                        .overflow_hidden()
-                                        .when(!show_scrollbar, |d| {
-                                            d.on_scroll_wheel(|_, _, cx| {
-                                                cx.stop_propagation();
-                                            })
-                                        })
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                                            if this.is_resizing_sidebar {
-                                                return;
-                                            }
-                                            this.close_editor_context_menu(cx);
-                                            this.commit_title_rename(window, cx);
-                                            window.focus(&this.focus_handle);
-                                            this.is_mouse_selecting = true;
-                                            let click_x: f32 = event.position.x.into();
-                                            let click_y: f32 = event.position.y.into();
-                                            this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, window, cx);
-                                        }))
-                                        .on_mouse_down(MouseButton::Right, cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                                            if this.is_resizing_sidebar {
-                                                return;
-                                            }
-                                            this.commit_title_rename(window, cx);
-                                            window.focus(&this.focus_handle);
-                                            let click_x: f32 = event.position.x.into();
-                                            let click_y: f32 = event.position.y.into();
-                                            let has_selection = this.state.active_note.as_ref()
-                                                .and_then(|n| n.selection_range())
-                                                .map(|r| r.start < r.end)
-                                                .unwrap_or(false);
-                                            if !has_selection {
-                                                this.handle_editor_mouse_down(click_x, click_y, false, 1, window, cx);
-                                                if let Some(ref mut note) = this.state.active_note {
-                                                    note.selection_anchor = None;
-                                                }
-                                            }
-                                            this.open_editor_context_menu(click_x, click_y, cx);
-                                        }))
-                                        .on_mouse_down(MouseButton::Middle, cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                                            if this.is_resizing_sidebar {
-                                                return;
-                                            }
-                                            // Middle-button smart scroll: no caret move, no
-                                            // selection — the cursor position drives
-                                            // the offset until the button is released.
-                                            cx.stop_propagation();
-                                            window.focus(&this.focus_handle);
-                                            this.close_editor_context_menu(cx);
-                                            this.is_mouse_selecting = false;
-                                            this.start_editor_middle_scroll(cx);
-                                        }))
-                                        .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                                            if this.is_resizing_sidebar {
-                                                let x: f32 = event.position.x.into();
-                                                if x < 100.0 {
-                                                    this.sidebar_collapsed = true;
-                                                } else {
-                                                    this.sidebar_collapsed = false;
-                                                    this.sidebar_width = x.clamp(160.0, 600.0);
-                                                }
-                                                cx.notify();
-                                            } else if this.editor_middle_active {
-                                                let y: f32 = event.position.y.into();
-                    if let Some((top, h, max)) = this.editor_middle_metrics() {
-                                                    this.on_editor_middle_mouse_move(y, top, h, max, cx);
-                                                } else {
-                                                    cx.notify();
-                                                }
-                                            } else if this.is_dragging_scrollbar {
-                                                let y: f32 = event.position.y.into();
-                                                this.handle_scrollbar_drag(y, window, cx);
-                                            } else if this.is_mouse_selecting {
-                                                let x: f32 = event.position.x.into();
-                                                let y: f32 = event.position.y.into();
-                                                let viewport_h: f32 = window.viewport_size().height.into();
-                                                this.update_mouse_selection(x, y, viewport_h, window, cx);
-                                            }
-                                        }))
-                                        .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                            this.is_resizing_sidebar = false;
-                                            this.is_dragging_scrollbar = false;
-                                            this.sidebar_scrollbar_drag.end();
-                                            this.plugin_modal_scrollbar_drag.end();
-                                            this.is_mouse_selecting = false;
-                                            if let Some(ref mut n) = this.state.active_note {
-                                                if n.selection_anchor == Some(n.cursor_offset) {
-                                                    n.selection_anchor = None;
-                                                }
-                                            }
-                                            cx.notify();
-                                        }))
-                                        .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                            this.is_resizing_sidebar = false;
-                                            this.is_dragging_scrollbar = false;
-                                            this.sidebar_scrollbar_drag.end();
-                                            this.plugin_modal_scrollbar_drag.end();
-                                            this.is_mouse_selecting = false;
-                                            cx.notify();
-                                        }))
-                                        .on_mouse_up(MouseButton::Middle, cx.listener(|this, _, _, cx| {
-                                            this.stop_editor_middle_scroll(cx);
-                                            this.stop_plugin_modal_middle_scroll(cx);
-                                        }))
-                                        .on_mouse_up_out(MouseButton::Middle, cx.listener(|this, _, _, cx| {
-                                            this.stop_editor_middle_scroll(cx);
-                                            this.stop_plugin_modal_middle_scroll(cx);
-                                        }))
-                                        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                                            this.handle_key(event, window, cx);
-                                        }))
-                                        .child({
-                                            let theme = &theme_copy;
-                                            let is_editing = self.edit_mode;
-                                            let is_editor_focused = self.editor_is_focused;
-                                            let selection_range = self.state.active_note.as_ref().and_then(|n| n.selection_range());
-                                            let (cursor_line, _) = self.state.active_note.as_ref().map(|n| n.line_col()).unwrap_or((0, 0));
-                                            let headings = &self.config.editor.headings;
-                                            let editor_font = self.editor_font_family();
-                                            let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, headings, line_char_width);
-                                            // Row geometry is derived from shaped text; keep an owned
-                                            // handle so the row closures below can shape without
-                                            // borrowing the window again.
-                                            let text_system = window.text_system().clone();
-                                            let hide_current_line_on_selection = self.config.editor.hide_current_line_on_selection;
-                                            let has_selection = selection_range.as_ref().map_or(false, |sel| sel.start < sel.end);
-
-                                            // The rows are painted as a slice that starts at
-                                            // `visible_range.start`, positioned so that the
-                                            // row lands exactly where the scroll position says
-                                            // it is. `slice_shift` is that leftover, and it is
-                                            // always small (a row plus the overscan), which is
-                                            // the whole point: absolute row coordinates in a
-                                            // 600 MB note reach 2×10^8 px, where f32 cannot
-                                            // even tell a 24 px row from a 32 px one, so the
-                                            // selection rectangles used to be spaced 32 px
-                                            // apart while being 24 px tall — gaps and
-                                            // overlaps. Every coordinate the layout sees is
-                                            // now near zero.
-                                            let (visible_range, slice_shift) = if !show_scrollbar {
-                                                if self.current_scroll_top_f64() > 0.0 {
-                                                    self.set_editor_scroll_top_f64(0.0);
-                                                }
-                                                (0..visual_rows_arc.len(), 0.0)
-                                            } else {
-                                                // While a restore is pending, slice from its
-                                                // target: the position is not written yet, but
-                                                // the rows must be right already.
-                                                let raw_scroll_y = self
-                                                    .pending_editor_restore
-                                                    .unwrap_or_else(|| self.current_scroll_top_f64());
-                                                let true_max = max_scroll_content
-                                                    .max(total_content_h - f64::from(viewport_h))
-                                                    .max(0.0);
-                                                let scroll_y = raw_scroll_y.clamp(0.0, true_max);
-                                                if (raw_scroll_y - scroll_y).abs() > 0.5 {
-                                                    self.set_editor_scroll_top_f64(scroll_y);
-                                                }
-                                                // The window's rows are addressed from its own
-                                                // first row, so the slice is computed in window
-                                                // coordinates: `local_scroll` is where the
-                                                // viewport sits inside the window. Both it and
-                                                // the shift stay small, which is what keeps the
-                                                // f32 geometry exact — the whole point of slicing
-                                                // instead of positioning rows absolutely.
-                                                let local_scroll = scroll_y - note.above_h;
-                                                let vr = height_index_arc.visible_range(
-                                                    local_scroll,
-                                                    f64::from(slice_h),
-                                                    f64::from(EDITOR_OVERSCAN_PX),
-                                                );
-                                                let shift = height_index_arc.top_of(vr.start) - local_scroll;
-                                                let shift = crate::snap::snap_x(shift as f32, pixel_scale) as f64;
-                                                (vr, shift)
-                                            };
-
-                                            crate::perf::PERF.shape_calls.fetch_add(visible_range.len() as u64, std::sync::atomic::Ordering::Relaxed);
-
-                                            // Byte offset of every line the slice touches.
-                                            // The document-wide offset array is gone: the
-                                            // index stores only a checkpoint every
-                                            // `LINE_BLOCK` lines, so looking a row up one at
-                                            // a time would rescan a block each time. The
-                                            // rows of a slice are ordered by line, so one
-                                            // forward walk covers the slice in O(rows). One
-                                            // row past each end is included because the
-                                            // rounded-corner pass asks about the neighbours.
-                                            let (slice_first_line, slice_line_starts) = {
-                                                let lo = visible_range.start.saturating_sub(1);
-                                                let hi = (visible_range.end + 1).min(visual_rows_arc.len());
-                                                if lo >= hi {
-                                                    (0, Vec::new())
-                                                } else {
-                                                    let first = visual_rows_arc[lo].line_idx;
-                                                    let last = visual_rows_arc[hi - 1].line_idx;
-                                                    let mut starts = Vec::with_capacity(last - first + 1);
-                                                    let mut at = note.line_start_byte(first);
-                                                    for l_idx in first..=last {
-                                                        starts.push(at);
-                                                        at += lines_arc[l_idx].len() + 1;
-                                                    }
-                                                    (first, starts)
-                                                }
-                                            };
-
-                                            let mut items = Vec::with_capacity(visible_range.len());
-
-                                            let calc_v_row_sel_rect = |target_v_idx: usize| -> Option<(f32, f32)> {
-                                                let sel = selection_range.as_ref()?;
-                                                if sel.start >= sel.end {
-                                                    return None;
-                                                }
-                                                let v = visual_rows_arc.get(target_v_idx)?;
-                                                let line_idx = v.line_idx;
-                                                if line_idx < slice_first_line || line_idx - slice_first_line >= slice_line_starts.len() {
-                                                    return None;
-                                                }
-                                                let line = &lines_arc[line_idx];
-                                                let line_start = slice_line_starts[line_idx - slice_first_line];
-                                                let line_end = line_start + line.len();
-
-                                                let is_line_in_sel = if sel.start == sel.end {
-                                                    false
-                                                } else if line_start == line_end {
-                                                    sel.start <= line_start && sel.end > line_start
-                                                } else {
-                                                    sel.end > line_start && sel.start < line_end
-                                                };
-                                                let is_in_act_block = code_states_arc.get(line_idx)
-                                                    .and_then(|s| s.as_ref())
-                                                    .map(|s| active_block_ids.contains(&s.block_id))
-                                                    .unwrap_or(false);
-                                                let is_act_line = is_editing && (line_idx == cursor_line || is_line_in_sel || is_in_act_block);
-                                                let code_state = code_states_arc.get(line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
-                                                let classified = crate::markdown::classify_line(line, code_state);
-                                                let (_, row_char_w, _, _, _) =
-                                                    Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths));
-                                                // Selection columns come from the shaped row, i.e. the
-                                                // same model the mouse handlers hit-test with.
-                                                let row_layout = shape_row(&text_system, line, &classified, v, is_act_line, headings, &editor_font, row_char_w);
-
-                                                if line.is_empty() {
-                                                    if sel.start <= line_start && sel.end > line_start {
-                                                        return Some(row_layout.selection_rect(0, 1, pixel_scale));
-                                                    } else {
-                                                        return None;
-                                                    }
-                                                }
-
-                                                let mut byte_s = sel.start.saturating_sub(line_start).min(line.len());
-                                                let mut byte_e = sel.end.saturating_sub(line_start).min(line.len());
-                                                while byte_s > 0 && !line.is_char_boundary(byte_s) {
-                                                    byte_s -= 1;
-                                                }
-                                                while byte_e > 0 && !line.is_char_boundary(byte_e) {
-                                                    byte_e -= 1;
-                                                }
-                                                let char_s = line[..byte_s].chars().count();
-                                                let char_e = char_s + line[byte_s..byte_e].chars().count();
-
-                                                let includes_newline = v.is_last_sub && sel.end > line_end && sel.start <= line_end;
-
-                                                if byte_s < byte_e {
-                                                    let intersect_s = char_s.max(v.char_start);
-                                                    let intersect_e = char_e.min(v.char_end);
-                                                    if intersect_s <= intersect_e {
-                                                        let vis_s = row_layout.column_for_line_char(intersect_s);
-                                                        let mut vis_e = row_layout.column_for_line_char(intersect_e);
-                                                        if includes_newline {
-                                                            vis_e += 1;
-                                                        }
-                                                        if vis_s < vis_e {
-                                                            Some(row_layout.selection_rect(vis_s, vis_e, pixel_scale))
-                                                        } else {
-                                                            None
-                                                        }
-                                                    } else {
-                                                        None
-                                                    }
-                                                } else if includes_newline && char_s == v.char_end {
-                                                    let vis_s = row_layout.column_for_line_char(v.char_end);
-                                                    Some(row_layout.selection_rect(vis_s, vis_s + 1, pixel_scale))
-                                                } else {
-                                                    None
-                                                }
-                                            };
-
-                                            for v_idx in visible_range {
-                                                let v = &visual_rows_arc[v_idx];
-                                                let line = &lines_arc[v.line_idx];
-                                                let line_start = slice_line_starts[v.line_idx - slice_first_line];
-                                                let line_end = line_start + line.len();
-                                                let is_line_in_selection = selection_range.as_ref().map_or(false, |sel| {
-                                                    if sel.start == sel.end {
-                                                        false
-                                                    } else if line_start == line_end {
-                                                        sel.start <= line_start && sel.end > line_start
-                                                    } else {
-                                                        sel.end > line_start && sel.start < line_end
-                                                    }
-                                                });
-                                                let is_current = is_editing && (v_idx == active_v_idx);
-                                                let show_current_line_highlight = is_current && !(hide_current_line_on_selection && has_selection);
-                                                let is_in_active_block = code_states_arc[v.line_idx]
-                                                    .as_ref()
-                                                    .map(|s| active_block_ids.contains(&s.block_id))
-                                                    .unwrap_or(false);
-                                                let is_active_line = is_editing && (v.line_idx == cursor_line || is_line_in_selection || is_in_active_block);
-                                                let code_state = code_states_arc[v.line_idx].as_ref().map(|s| (s.kind, s.lang.as_deref()));
-                                                let classified = crate::markdown::classify_line(line, code_state);
-                                                let is_opening_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: true, .. });
-                                                let is_closing_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: false, .. });
-                                                let is_code_line = matches!(classified, crate::markdown::LineKind::CodeLine(_));
-                                                let row_len = v.char_end.saturating_sub(v.char_start);
-
-                                                let (row_h, row_char_w, _row_font_size, _cursor_h, _cursor_top) =
-                                                    Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths));
-                                                // One shaped layout per row drives the selection
-                                                // rectangle, the caret and the row's own mouse handlers.
-                                                let row_layout = shape_row(&text_system, line, &classified, v, is_active_line, headings, &editor_font, row_char_w);
-                                                let row_layout_down = row_layout.clone();
-                                                let row_layout_move = row_layout.clone();
-
-                                                let line_number_text = if v.sub_idx == 0 {
-                                                    format!("{:>3} ", v.line_idx + 1)
-                                                } else {
-                                                    "    ".to_string()
-                                                };
-
-                                                let row_sel_rect = if line.is_empty() {
-                                                    if selection_range.as_ref().map_or(false, |s| s.start <= line_start && s.end > line_start) {
-                                                        Some(row_layout.selection_rect(0, 1, pixel_scale))
-                                                    } else {
-                                                        None
-                                                    }
-                                                } else if let Some(sel) = selection_range.as_ref() {
-                                                    if sel.start < sel.end {
-                                                        let mut byte_s = sel.start.saturating_sub(line_start).min(line.len());
-                                                        let mut byte_e = sel.end.saturating_sub(line_start).min(line.len());
-                                                        while byte_s > 0 && !line.is_char_boundary(byte_s) {
-                                                            byte_s -= 1;
-                                                        }
-                                                        while byte_e > 0 && !line.is_char_boundary(byte_e) {
-                                                            byte_e -= 1;
-                                                        }
-                                                        let char_s = line[..byte_s].chars().count();
-                                                        let char_e = char_s + line[byte_s..byte_e].chars().count();
-
-                                                        let includes_newline = v.is_last_sub && sel.end > line_end && sel.start <= line_end;
-
-                                                        if byte_s < byte_e {
-                                                            let intersect_s = char_s.max(v.char_start);
-                                                            let intersect_e = char_e.min(v.char_end);
-                                                            if intersect_s <= intersect_e {
-                                                                let vis_s = row_layout.column_for_line_char(intersect_s);
-                                                                let mut vis_e = row_layout.column_for_line_char(intersect_e);
-                                                                if includes_newline {
-                                                                    vis_e += 1;
-                                                                }
-                                                                if vis_s < vis_e {
-                                                                    Some(row_layout.selection_rect(vis_s, vis_e, pixel_scale))
-                                                                } else {
-                                                                    None
-                                                                }
-                                                            } else {
-                                                                None
-                                                            }
-                                                        } else if includes_newline && char_s == v.char_end {
-                                                            let vis_s = row_layout.column_for_line_char(v.char_end);
-                                                            Some(row_layout.selection_rect(vis_s, vis_s + 1, pixel_scale))
-                                                        } else {
-                                                            None
-                                                        }
-                                                    } else {
-                                                        None
-                                                    }
-                                                } else {
-                                                    None
-                                                };
-
-                                                // Rectangles the row paints behind its text. Both the chip and
-                                                // the selection are painted here, before the text, so the glyphs
-                                                // stay on top of them: gpui paints a text-run background from
-                                                // inside the text element, i.e. above everything the row draws
-                                                // itself, and a chip drawn that way would cover the selection and
-                                                // hide the very thing the user is selecting. The chip comes first,
-                                                // so the selection is drawn over it.
-                                                let chip_inset = code_chip_inset(row_h);
-                                                let mut backdrop_rects = Vec::new();
-                                                // The row's own current-line highlight is painted by the row
-                                                // element, i.e. *under* the code block's background, so inside a
-                                                // block it would only show in the line-number gutter. Repaint it
-                                                // here, first, so it covers the block and still sits under the
-                                                // chips and the selection.
-                                                if show_current_line_highlight {
-                                                    backdrop_rects.push(
-                                                        div()
-                                                            .absolute()
-                                                            .left(px(0.0))
-                                                            .top_0()
-                                                            .h(px(row_h))
-                                                            .w_full()
-                                                            .bg(theme.bg_hover),
-                                                    );
-                                                }
-                                                for &(code_start, code_end) in row_layout.code_ranges() {
-                                                    // The chip is a hair shorter than its row and rounded, so that
-                                                    // it reads as a chip rather than as a band across the line.
-                                                    let (chip_x, chip_w) = row_layout.selection_rect(code_start, code_end, pixel_scale);
-                                                    backdrop_rects.push(
-                                                        div()
-                                                            .absolute()
-                                                            .left(px(chip_x))
-                                                            .top(px(chip_inset))
-                                                            .h(px((row_h - 2.0 * chip_inset).max(1.0)))
-                                                            .w(px(chip_w))
-                                                            .bg(theme.code_bg)
-                                                            .rounded_sm(),
-                                                    );
-                                                }
-                                                if let Some((sel_x, sel_w)) = row_sel_rect {
-                                                    let sel_right = sel_x + sel_w;
-                                                    let sel_above = if v_idx > 0 { calc_v_row_sel_rect(v_idx - 1) } else { None };
-                                                    let sel_below = if v_idx + 1 < visual_rows_arc.len() { calc_v_row_sel_rect(v_idx + 1) } else { None };
-
-                                                    let round_tl = sel_above.map_or(true, |(ax, aw)| sel_x < ax - 0.5 || sel_x >= ax + aw - 0.5);
-                                                    let round_tr = sel_above.map_or(true, |(ax, aw)| sel_right > ax + aw + 0.5 || sel_right <= ax + 0.5);
-                                                    let round_bl = sel_below.map_or(true, |(bx, bw)| sel_x < bx - 0.5 || sel_x >= bx + bw - 0.5);
-                                                    let round_br = sel_below.map_or(true, |(bx, bw)| sel_right > bx + bw + 0.5 || sel_right <= bx + 0.5);
-
-                                                    let mut sel_rect = div()
-                                                        .absolute()
-                                                        .left(px(sel_x))
-                                                        .top_0()
-                                                        .h(px(row_h))
-                                                        .w(px(sel_w))
-                                                        .bg(theme.selection_bg);
-
-                                                    if round_tl {
-                                                        sel_rect = sel_rect.rounded_tl_xs();
-                                                    }
-                                                    if round_tr {
-                                                        sel_rect = sel_rect.rounded_tr_xs();
-                                                    }
-                                                    if round_bl {
-                                                        sel_rect = sel_rect.rounded_bl_xs();
-                                                    }
-                                                    if round_br {
-                                                        sel_rect = sel_rect.rounded_br_xs();
-                                                    }
-
-                                                    backdrop_rects.push(sel_rect);
-                                                }
-
-                                                let v_char_start = v.char_start;
-                                                let v_char_end = v.char_end;
-                                                let v_line_idx = v.line_idx;
-                                                let v_sub_idx = v.sub_idx;
-
-                                                // A collapsed code block paints its language label in place of
-                                                // the opening fence, so the copy button belongs to that row. The
-                                                // payload is only the block's identity here: the body is built
-                                                // on click, in `code_block_body`, so that a frame never walks a
-                                                // block's lines to assemble a `String` nobody may use.
-                                                let copy_payload: Option<(usize, usize)> =
-                                                    if is_opening_fence && !is_in_active_block {
-                                                        code_states_arc[v.line_idx]
-                                                            .as_ref()
-                                                            .map(|st| (st.block_id, v.line_idx))
-                                                    } else {
-                                                        None
-                                                    };
-
-                                                // Trigger custom code block processor if registered by a plugin and not yet cached
-                                                if is_opening_fence {
-                                                    if let Some(st) = code_states_arc[v.line_idx].as_ref() {
-                                                        if let Some(lang) = &st.lang {
-                                                            if let Some(owner_plugin) = self.state.code_block_processors.get_plugin_for_lang(lang) {
-                                                                if !self.code_block_views.contains_key(&st.block_id) {
-                                                                    let mut body = String::new();
-                                                                    let mut i = v.line_idx + 1;
-                                                                    while let Some(next) = code_states_arc.get(i).and_then(|s| s.as_ref()) {
-                                                                        if next.block_id != st.block_id || next.kind != crate::markdown::CodeBlockKind::InsideCode {
-                                                                            break;
-                                                                        }
-                                                                        body.push_str(&lines_arc[i]);
-                                                                        body.push('\n');
-                                                                        i += 1;
-                                                                    }
-                                                                    let _ = self.state.plugin_host.send_event(
-                                                                        &owner_plugin,
-                                                                        crate::plugins::api::HostEvent::ProcessCodeBlock {
-                                                                            language: lang.clone(),
-                                                                            source: body,
-                                                                            block_id: st.block_id,
-                                                                        },
-                                                                    );
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
-                                                let (custom_plugin_id, custom_ui_node, is_first_code_line) = match &code_states_arc[v.line_idx] {
-                                                    Some(st) => {
-                                                        let view = self.code_block_views.get(&st.block_id);
-                                                        let pid = view.as_ref().map(|(p, _)| p.as_str());
-                                                        let tree = view.as_ref().map(|(_, t)| t);
-                                                        let first_line = v.line_idx > 0 && code_states_arc[v.line_idx - 1].as_ref().map(|s| s.kind) == Some(crate::markdown::CodeBlockKind::OpeningFence);
-                                                        (pid, tree, first_line)
-                                                    }
-                                                    None => (None, None, false),
-                                                };
-
-                                                items.push(
-                                                    div()
-                                                        .id(gpui::ElementId::from(("v-row", v_idx)))
-                                                        .w_full()
-                                                        .flex_shrink_0()
-                                                        .flex()
-                                                        .flex_row()
-                                                        .items_center()
-                                                        .h(px(row_h))
-                                                        .py_0()
-                                                        .px_2()
-                                                        .rounded_sm()
-                                                        .cursor(gpui::CursorStyle::IBeam)
-                                                        .when(show_current_line_highlight, |s| s.bg(theme.bg_hover))
-                                                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                                            cx.stop_propagation();
-                                                            if this.is_resizing_sidebar {
-                                                                return;
-                                                            }
-                                                            this.is_mouse_selecting = true;
-                                                            let click_x: f32 = event.position.x.into();
-
-                                                            let col_in_row = if click_x > text_start_x {
-                                                                let column = row_layout_down.column_for_x(click_x - text_start_x);
-                                                                row_layout_down.line_char_for_column(column).saturating_sub(v_char_start).min(row_len)
-                                                            } else {
-                                                                0
-                                                            };
-                                                            let target_char = v_char_start + col_in_row;
-                                                            if let Some(ref mut n) = this.state.active_note {
-                                                                let offset = n.offset_for_line_col(v_line_idx, target_char);
-                                                                if event.click_count == 2 {
-                                                                    let (w_start, w_end) = n.word_range_at(offset);
-                                                                    n.selection_anchor = Some(w_start);
-                                                                    n.cursor_offset = w_end;
-                                                                } else if event.click_count >= 3 {
-                                                                    let (l_start, l_end) = n.line_range_at(offset);
-                                                                    n.selection_anchor = Some(l_start);
-                                                                    n.cursor_offset = l_end;
-                                                                } else if event.modifiers.shift {
-                                                                    if n.selection_anchor.is_none() {
-                                                                        n.selection_anchor = Some(n.cursor_offset);
-                                                                    }
-                                                                    n.cursor_offset = offset;
-                                                                } else {
-                                                                    // Single click anywhere on row places cursor and CLEARS existing selection
-                                                                    n.cursor_offset = offset;
-                                                                    n.selection_anchor = Some(offset);
-                                                                }
-                                                            }
-                                                            window.focus(&this.focus_handle);
-                                                            this.reset_editor_cursor_blink(cx);
-                                                            cx.notify();
-                                                        }))
-                                                        .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                                                            if this.is_mouse_selecting {
-                                                                cx.stop_propagation();
-                                                                let click_x: f32 = event.position.x.into();
-                                                                let col_in_row = if click_x > text_start_x {
-                                                                    let column = row_layout_move.column_for_x(click_x - text_start_x);
-                                                                    row_layout_move.line_char_for_column(column).saturating_sub(v_char_start).min(row_len)
-                                                                } else {
-                                                                    0
-                                                                };
-                                                                let target_char = v_char_start + col_in_row;
-                                                                if let Some(ref mut n) = this.state.active_note {
-                                                                    let new_offset = n.offset_for_line_col(v_line_idx, target_char);
-                                                                    if n.selection_anchor.is_none() {
-                                                                        n.selection_anchor = Some(n.cursor_offset);
-                                                                    }
-                                                                    if n.cursor_offset != new_offset {
-                                                                        n.cursor_offset = new_offset;
-                                                                        cx.notify();
-                                                                    }
-                                                                }
-                                                            }
-                                                        }))
-                                                        .child(
-                                                            div()
-                                                            .id(gpui::ElementId::from(("line-num", v_idx)))
-                                                            .relative()
-                                                            // Эта ширина остаётся прежней, чтобы текст не сдвигался.
-                                                            .w(px(40.0))
-                                                            .flex_shrink_0()
-                                                            .h(px(row_h))
-                                                            .child(
-                                                                div()
-                                                                    // Расширяем область номера влево от прежней правой границы.
-                                                                    .absolute()
-                                                                    .right_0()
-                                                                    .w(px(line_number_width))
-                                                                    .h(px(row_h))
-                                                                    .flex()
-                                                                    .items_center()
-                                                                    .justify_end()
-                                                                    .text_xs()
-                                                                    .text_color(if is_current {
-                                                                        theme.accent
-                                                                    } else {
-                                                                        theme.text_muted
-                                                                    })
-                                                                    .font_family(editor_font.clone())
-                                                                    .child(line_number_text),
-                                                            )
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .id(gpui::ElementId::from(("line-content", v_idx)))
-                                                                .relative()
-                                                                .flex()
-                                                                .flex_row()
-                                                                .items_center()
-                                                                .flex_1()
-                                                                .min_w_0()
-                                                                .whitespace_nowrap()
-                                                                .h(px(row_h))
-                                                                .py_0()
-                                                                .font_family(editor_font.clone())
-                                                                .text_sm()
-                                                                // gpui paints a `TextRun` background at the text
-                                                                // element's line height, and the default (1.618 x
-                                                                // font size) is taller than a heading row
-                                                                // (1.35 x font size), so an inline-code chip would
-                                                                // spill into the rows above and below. Pin the line
-                                                                // height to the row so the chip fits the line; the
-                                                                // glyph baseline does not move, because the text
-                                                                // element stays centred in the row either way.
-                                                                .line_height(px(row_h))
-                                                                .cursor(gpui::CursorStyle::IBeam)
-                                                                .when(is_opening_fence, |s| s.bg(theme.code_bg).rounded_t_md())
-                                                                .when(is_closing_fence, |s| s.bg(theme.code_bg).rounded_b_md())
-                                                                .when(is_code_line, |s| s.bg(theme.code_bg))
-                                                                .children(backdrop_rects)
-                                                                .child(
-                                                                    div()
-                                                                        .h_full()
-                                                                        .flex()
-                                                                        .flex_row()
-                                                                        .items_center()
-                                                                        .whitespace_nowrap()
-                                                                        .child(render_live_styled_row(
-                                                                            line,
-                                                                            &classified,
-                                                                            v_char_start,
-                                                                            v_char_end,
-                                                                            v_sub_idx,
-                                                                            is_active_line,
-                                                                            is_in_active_block,
-                                                                            headings,
-                                                                            theme,
-                                                                            &editor_font,
-                                                                            custom_ui_node,
-                                                                            custom_plugin_id,
-                                                                            is_first_code_line,
-                                                                            self.active_plugin_input.as_ref(),
-                                                                            &self.plugin_input_focus_handle,
-                                                                            self.active_plugin_select.as_ref(),
-                                                                            self.plugin_select_popup.as_ref(),
-                                                                            self.plugin_input_blink.visible(),
-                                                                            window,
-                                                                            cx,
-                                                                        )),
-                                                                )
-                                                                .when(is_current && is_editor_focused && self.editor_blink.visible(), |s| {
-                                                                    let cursor_col = row_layout.column_for_line_char(v_char_start + active_col_in_row);
-                                                                    let cursor_x = crate::snap::snap_x(
-                                                                        row_layout.x_for_column(cursor_col),
-                                                                        pixel_scale,
-                                                                    );
-                                                                    s.child(
-                                                                        div()
-                                                                            .absolute()
-                                                                            .left(px(cursor_x))
-                                                                            .top_0()
-                                                                            .h_full()
-                                                                            .w(px(2.0))
-                                                                            .bg(theme.accent)
-                                                                            .rounded_xs(),
-                                                                    )
-                                                                })
-                                                                // Obsidian-style copy affordance: it sits at the right end
-                                                                // of the block header and copies the block body to the
-                                                                // clipboard, flashing a check mark for a moment.
-                                                                .when(copy_payload.is_some(), |s| {
-                                                                    let (block_id, fence_line) = copy_payload.unwrap();
-                                                                    let just_copied = self.copied_code_block == Some(block_id);
-                                                                    s.child(
-                                                                        div()
-                                                                            .id(gpui::ElementId::from(("code-copy", v_idx)))
-                                                                            .absolute()
-                                                                            .right(px(6.0))
-                                                                            .top_0()
-                                                                            .h(px(row_h))
-                                                                            .flex()
-                                                                            .items_center()
-                                                                            .px(px(4.0))
-                                                                            .rounded_sm()
-                                                                            .cursor(gpui::CursorStyle::PointingHand)
-                                                                            .hover(|h| h.bg(theme.bg_hover))
-                                                                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
-                                                                                // Without this the row would also move the caret
-                                                                                // into the block.
-                                                                                cx.stop_propagation();
-                                                                                let body = match this.state.active_note.as_ref() {
-                                                                                    Some(n) => code_block_body(&n.window, fence_line, block_id),
-                                                                                    None => return,
-                                                                                };
-                                                                                cx.write_to_clipboard(ClipboardItem::new_string(body));
-                                                                                this.copied_code_block = Some(block_id);
-                                                                                cx.notify();
-
-                                                                                let entity = cx.weak_entity();
-                                                                                let mut async_cx = cx.to_async();
-                                                                                let timer_executor = cx.background_executor().clone();
-                                                                                cx.foreground_executor()
-                                                                                    .spawn(async move {
-                                                                                        timer_executor
-                                                                                            .timer(std::time::Duration::from_millis(2000))
-                                                                                            .await;
-                                                                                        entity
-                                                                                            .update(&mut async_cx, |this, cx| {
-                                                                                                if this.copied_code_block == Some(block_id) {
-                                                                                                    this.copied_code_block = None;
-                                                                                                    cx.notify();
-                                                                                                }
-                                                                                            })
-                                                                                            .ok();
-                                                                                    })
-                                                                                    .detach();
-                                                                            }))
-                                                                            .child(icons::icon(
-                                                                                if just_copied { icons::ICON_CHECK } else { icons::ICON_COPY },
-                                                                                14.0,
-                                                                                if just_copied { theme.accent } else { theme.text_muted },
-                                                                            )),
-                                                                    )
-                                                                }),
-                                                        ),
-                                                );
-                                            }
-
-                                            div()
-                                                .id("note-editor-list")
-                                                .track_scroll(&self.editor_scroll_handle)
-                                                .flex()
-                                                .flex_col()
-                                                // Hidden, not `overflow_y_scroll`: the list scrolls
-                                                // itself (see `handle_editor_wheel`), and gpui's
-                                                // built-in wheel listener ignores an element that
-                                                // is not `Overflow::Scroll`. The mask still clips
-                                                // the slice, whose shift is allowed to be
-                                                // negative. `track_scroll` stays because prepaint
-                                                // fills the handle's `bounds` from it, which is
-                                                // how the viewport height is measured.
-                                                .when(show_scrollbar, |d| d.overflow_hidden())
-                                                .size_full()
-                                                .px_8()
-                                                .pt_0()
-                                                .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                                                    cx.stop_propagation();
-                                                    this.commit_title_rename(window, cx);
-                                                    window.focus(&this.focus_handle);
-                                                    this.is_mouse_selecting = true;
-                                                    let click_x: f32 = event.position.x.into();
-                                                    let click_y: f32 = event.position.y.into();
-                                                    this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, window, cx);
-                                                }))
-                                                .on_scroll_wheel(cx.listener(move |this, event: &gpui::ScrollWheelEvent, _, cx| {
-                                                    this.handle_editor_wheel(event, max_scroll_content, cx);
-                                                }))
-                                                .child(
-                                                    div()
-                                                        .id("note-editor-scroll-content")
-                                                        .w_full()
-                                                        .flex()
-                                                        .flex_col()
-                                                        // Relative inset: shifts the slice without
-                                                        // touching its layout, and may be negative
-                                                        // when the first row starts above the top.
-                                                        .top(px(slice_shift as f32))
-                                                        .children(items)
-                                                )
-                                        })
-                                        .when(show_scrollbar, |c| {
-                                            c.child(
-                                                div()
-                                                    .id("editor-scrollbar-track")
-                                                    .absolute()
-                                                     .top_0()
-                                                     .bottom_0()
-                                                     .right_0()
-                                                     .w(px(track_w))
-                                                     .h_full()
-                                                     .cursor_pointer()
-                                                     // The narrow lane only washes on hover; the wide
-                                                     // lane carries its own background at all times.
-                                                     .when(!wide_scrollbar, |d| {
-                                                         d.hover(|h| h.bg(rgba(0x00000015)))
-                                                     })
-                                                     // Zed-style lane: the track is always visible
-                                                     // through its lane wash alone, no border.
-                                                     .when(wide_scrollbar, |d| {
-                                                         d.bg(theme_scrollbar.bg_sidebar)
-                                                     })
-                                                     .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                                         if this.is_hovering_editor_scrollbar != *hovered {
-                                                             this.is_hovering_editor_scrollbar = *hovered;
-                                                             cx.notify();
-                                                         }
-                                                     }))
-                                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                                         cx.stop_propagation();
-                                                         let click_y: f32 = event.position.y.into();
-                                                         let click_rel_y = f64::from((click_y - track_top_y).max(0.0));
-                                                         let target_fraction = (click_rel_y / f64::from(viewport_h)).clamp(0.0, 1.0);
-                                                         let target_scroll_y = target_fraction * max_scroll_content;
-                                                         this.set_editor_scroll_top_f64(target_scroll_y);
-                                                         cx.notify();
-                                                     }))
-                                                     // Overview ruler: the selection span and the cursor
-                                                     // line stretch across the full track width and paint
-                                                     // above the thumb, so the thumb never hides them.
-                                                     // Neither owns the pointer — a click still falls
-                                                     // through to the track jump above.
-                                                     .child(
-                                                         div()
-                                                             .id("editor-scrollbar-thumb")
-                                                             .absolute()
-                                                             .top(px(thumb_top))
-                                                             .right(px(thumb_right))
-                                                             .w(px(thumb_w))
-                                                             .h(px(thumb_h))
-                                                             .when(wide_scrollbar, |d| d.rounded_none())
-                                                             .when(!wide_scrollbar, |d| d.rounded_full())
-                                                             .bg(thumb_bg)
-                                                             // The narrow pill fattens and lights up on
-                                                             // hover; the wide thumb never changes shape
-                                                             // or color.
-                                                             .when(!wide_scrollbar, |d| {
-                                                                 d.hover(|h| h.bg(theme_scrollbar.text_secondary).w(px(8.0)))
-                                                             })
-                                                             .cursor_pointer()
-                                                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                                                 if this.is_hovering_editor_thumb != *hovered {
-                                                                     this.is_hovering_editor_thumb = *hovered;
-                                                                     cx.notify();
-                                                                 }
-                                                             }))
-                                                             .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                                                 cx.stop_propagation();
-                                                                 this.is_dragging_scrollbar = true;
-                                                                 this.scrollbar_drag_start_y = event.position.y.into();
-                                                                 this.scrollbar_drag_start_scroll_y = scroll_y_current;
-                                                                 cx.notify();
-                                                             }))
-                                                     )
-                                                     .when_some(ruler_sel_span, |d, (top, h)| {
-                                                         d.child(
-                                                             div()
-                                                                 .absolute()
-                                                                 .top(px(top))
-                                                                 .h(px(h))
-                                                                 // Full track width when hovered (or always in
-                                                                 // the wide lane). Idle narrow lane: a thin
-                                                                 // pill aligned with the thumb.
-                                                                 .when(ruler_full, |d| {
-                                                                     d.left(px(0.0)).w_full().rounded_xs()
-                                                                 })
-                                                                 .when(!ruler_full, |d| {
-                                                                     d.left(px(ruler_pill_left))
-                                                                         .w(px(ruler_pill_w))
-                                                                         .rounded_full()
-                                                                 })
-                                                                 .bg(theme_scrollbar.selection_bg),
-                                                         )
-                                                     })
-                                                     .when(show_ruler, |d| {
-                                                         d.child(
-                                                             div()
-                                                                 .id("editor-ruler-cursor")
-                                                             .absolute()
-                                                             .top(px(ruler_cursor_y))
-                                                             .h(px(2.0))
-                                                             .when(ruler_full, |d| {
-                                                                 d.left(px(0.0)).w_full().rounded_xs()
-                                                             })
-                                                             .when(!ruler_full, |d| {
-                                                                 d.left(px(ruler_pill_left))
-                                                                     .w(px(ruler_pill_w))
-                                                                     .rounded_full()
-                                                             })
-                                                             // While the thumb is dragged or hovered it
-                                                             // turns dark itself, so the line goes gray
-                                                             // wherever it runs under the thumb —
-                                                             // anywhere else it stays accent.
-                                                             .bg(if ruler_cursor_under_thumb {
-                                                                 theme_scrollbar.border
-                                                             } else {
-                                                                 theme_scrollbar.accent
-                                                             }),
-                                                         )
-                                                     })
-                                            )
-                                        })
-                                )
-                            })
-                            .when(self.state.active_empty_tab.is_some(), |this| {
-                                this.child(self.render_new_tab_page(theme, cx))
-                            })
-                            .when(self.active_center_leaf.is_some(), |this| {
-                                if let Some(leaf_id) = &self.active_center_leaf {
-                                    if let Some(leaf) = self.plugin_leaf_views.get(leaf_id) {
-                                        this.child(
-                                            div()
-                                                .id("central-leaf-view")
-                                                .flex()
-                                                .flex_col()
-                                                .size_full()
-                                                .p(px(16.0))
-                                                .overflow_scroll()
-                                                .child(crate::plugins::ui::render_ui_node(
-                                                    &leaf.tree,
-                                                    &leaf.plugin_id,
-                                                    0,
-                                                    theme,
-                                                    self.active_plugin_input.as_ref(),
-                                                    &self.plugin_input_focus_handle,
-                                                    self.active_plugin_select.as_ref(),
-                                                    self.plugin_select_popup.as_ref(),
-                                                    self.plugin_input_blink.visible(),
-                                                    window,
-                                                    cx,
-                                                    None,
-                                                )),
-                                        )
-                                    } else {
-                                        this
-                                    }
-                                } else {
-                                    this
-                                }
-                            })
-                            .when(
-                                self.state.active_note.is_none()
-                                    && self.state.active_empty_tab.is_none()
-                                    && self.active_center_leaf.is_none(),
-                                |this| {
-                                this.child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .size_full()
-                                        .justify_center()
-                                        .items_center()
-                                        .gap_3()
-                                        .child(
-                                            div()
-                                                .text_3xl()
-                                                .child("🦅"),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_xl()
-                                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                .text_color(theme.text_primary)
-                                                .child("Welcome to Vibecodium"),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_sm()
-                                                .text_color(theme.text_muted)
-                                                .child("Select a note from the sidebar or click 'Open Folder' to choose a workspace."),
-                                        ),
-                                )
-                            }),
+                        self.render_workspace_node(&self.state.workspace.root, &[], theme, window, cx)
                     )
                     // ----- Right Sidebar Resizer & Right Sidebar -----
                     .when(!self.right_sidebar_collapsed, |s| {
@@ -7013,31 +8416,39 @@ impl Render for AppView {
             )
             // ================= TABS POPUP (Obsidian-style switcher) =================
             .when_some(self.tabs_popup.clone(), |d, popup| {
-                // The panel's right edge must line up with the chevron that opens
-                // it. While the right sidebar is closed the buttons sit at the
-                // window edge (see POPUP_RIGHT_OFFSET); once it opens they shift
-                // left by the header column + divider, so the offset follows the
-                // sidebar width live — including mid-drag, since resize notifies
-                // every frame.
-                let popup_right = if self.right_sidebar_collapsed {
-                    crate::views::tab_list::POPUP_RIGHT_OFFSET
+                let window_size = window.bounds().size;
+                let window_w: f32 = window_size.width.into();
+                let window_h: f32 = window_size.height.into();
+
+                let (left, top) = if let Some((x, y)) = self.tabs_popup_pos {
+                    let popup_w = 280.0;
+                    let mut l = x - popup_w + 32.0;
+                    if l + popup_w > window_w - 8.0 {
+                        l = window_w - popup_w - 8.0;
+                    }
+                    if l < 8.0 {
+                        l = 8.0;
+                    }
+                    let t = (y + 12.0).min(window_h - 100.0).max(8.0);
+                    (l, t)
                 } else {
-                    self.right_sidebar_width + 1.0 + 4.0 + 32.0 + 4.0
+                    let popup_right = if self.right_sidebar_collapsed {
+                        crate::views::tab_list::POPUP_RIGHT_OFFSET
+                    } else {
+                        self.right_sidebar_width + 1.0 + 4.0 + 32.0 + 4.0
+                    };
+                    let l = (window_w - popup_right - 280.0).max(8.0);
+                    let t = crate::views::tab_list::WINDOW_ANCHOR_TOP + crate::views::tab_list::POPUP_GAP;
+                    (l, t)
                 };
+
                 d.child(
                     gpui::deferred(
                         div()
                             .id("tabs-popup-anchor")
                             .absolute()
-                            // Below the tab strip, with a small gap: the "+" and the
-                            // chevron that opens this popup sit at the right end of that
-                            // row, so the panel hangs from under them instead of
-                            // covering them. Same corner the old tabs dropdown used.
-                            .top(px(
-                                crate::views::tab_list::WINDOW_ANCHOR_TOP
-                                    + crate::views::tab_list::POPUP_GAP,
-                            ))
-                            .right(px(popup_right))
+                            .top(px(top))
+                            .left(px(left))
                             .child(popup),
                     )
                     .with_priority(999),

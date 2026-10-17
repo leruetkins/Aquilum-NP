@@ -4,6 +4,10 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use crate::document_buffer::{DocumentBuffer, DocumentId};
+use crate::workspace::{EditorViewState, LeafId, LeafState, TabId, WorkspaceTree};
 
 pub fn app_data_dir() -> PathBuf {
     dirs::data_dir()
@@ -18,6 +22,23 @@ pub fn app_data_dir() -> PathBuf {
             vibe
         })
         .unwrap_or_else(|| PathBuf::from("./data"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FsChangeEvent {
+    Deleted(PathBuf),
+    Renamed { old_path: PathBuf, new_path: PathBuf },
+    Modified(PathBuf),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemorySnapshot {
+    pub document_count: usize,
+    pub document_bytes: usize,
+    pub by_path_count: usize,
+    pub view_count: usize,
+    pub active_note_bytes: usize,
+    pub open_tabs_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -342,6 +363,15 @@ pub struct UndoStep {
     pub time: std::time::Instant,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteEditEvent {
+    pub edit_line: usize,
+    pub at: usize,
+    pub old_len: usize,
+    pub new_len: usize,
+    pub line_diff: isize,
+}
+
 pub struct OpenedNote {
     pub path: PathBuf,
     pub title: String,
@@ -354,6 +384,7 @@ pub struct OpenedNote {
     pub first_dirty_time: Option<std::time::Instant>,
     pub undo_stack: Vec<UndoStep>,
     pub redo_stack: Vec<UndoStep>,
+    pub pending_edits: Vec<NoteEditEvent>,
 
     /// Line addressing for `content`, in O(1) memory per `LINE_BLOCK` lines.
     /// Kept in sync with `content` on every mutation; see `refresh_line_index`.
@@ -386,8 +417,8 @@ pub struct OpenedNote {
     /// `total_height` — and with it the scrollbar and `max_scroll` — does not
     /// drift as the window moves. Recomputing them from every new window would
     /// make the whole document jump whenever the density of the text changed.
-    est_rows_per_line: f64,
-    est_row_h: f64,
+    pub est_rows_per_line: f64,
+    pub est_row_h: f64,
     pub visual_cache_dirty: bool,
 
     /// (version, content.len(), stats). Recomputed only when the text changes.
@@ -408,6 +439,7 @@ impl OpenedNote {
             first_dirty_time: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            pending_edits: Vec::new(),
             line_index,
             code_checkpoints: crate::code_scan::CodeCheckpoints::new(),
             window: crate::editor_window::EditorWindow::default(),
@@ -418,6 +450,49 @@ impl OpenedNote {
             est_rows_per_line: 1.0,
             est_row_h: 24.0,
             visual_cache_dirty: true,
+            stats_cache: Cell::new(None),
+        }
+    }
+
+    pub fn new_view_shell(
+        path: PathBuf,
+        title: String,
+        version: u64,
+        cursor_offset: usize,
+        selection_anchor: Option<usize>,
+        is_dirty: bool,
+        first_dirty_time: Option<std::time::Instant>,
+        line_index: crate::line_index::LineIndex,
+        window: crate::editor_window::EditorWindow,
+        above_lines: usize,
+        below_lines: usize,
+        above_h: f64,
+        below_h: f64,
+        est_rows_per_line: f64,
+        est_row_h: f64,
+    ) -> Self {
+        Self {
+            path,
+            title,
+            content: String::new(),
+            version,
+            cursor_offset,
+            selection_anchor,
+            is_dirty,
+            first_dirty_time,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            pending_edits: Vec::new(),
+            line_index,
+            code_checkpoints: crate::code_scan::CodeCheckpoints::new(),
+            window,
+            above_lines,
+            below_lines,
+            above_h,
+            below_h,
+            est_rows_per_line,
+            est_row_h,
+            visual_cache_dirty: false,
             stats_cache: Cell::new(None),
         }
     }
@@ -676,6 +751,16 @@ impl OpenedNote {
         if removed.is_empty() && inserted.is_empty() {
             return;
         }
+        let edit_line = self.line_index.line_of(&self.content, at);
+        let line_diff = (inserted.matches('\n').count() as isize) - (removed.matches('\n').count() as isize);
+        self.pending_edits.push(NoteEditEvent {
+            edit_line,
+            at,
+            old_len: removed.len(),
+            new_len: inserted.len(),
+            line_diff,
+        });
+
         self.redo_stack.clear();
         let now = std::time::Instant::now();
         let change = TextChange { at, removed, inserted };
@@ -731,6 +816,15 @@ impl OpenedNote {
             for change in step.changes.iter().rev() {
                 self.content.replace_range(change.at..change.at + change.inserted.len(), &change.removed);
                 self.refresh_line_index_incremental(change.at, &change.inserted, &change.removed);
+                let edit_line = self.line_index.line_of(&self.content, change.at);
+                let line_diff = (change.removed.matches('\n').count() as isize) - (change.inserted.matches('\n').count() as isize);
+                self.pending_edits.push(NoteEditEvent {
+                    edit_line,
+                    at: change.at,
+                    old_len: change.inserted.len(),
+                    new_len: change.removed.len(),
+                    line_diff,
+                });
             }
             self.version += 1;
             self.cursor_offset = step.cursor_before.min(self.content.len());
@@ -746,6 +840,15 @@ impl OpenedNote {
             for change in step.changes.iter() {
                 self.content.replace_range(change.at..change.at + change.removed.len(), &change.inserted);
                 self.refresh_line_index_incremental(change.at, &change.removed, &change.inserted);
+                let edit_line = self.line_index.line_of(&self.content, change.at);
+                let line_diff = (change.inserted.matches('\n').count() as isize) - (change.removed.matches('\n').count() as isize);
+                self.pending_edits.push(NoteEditEvent {
+                    edit_line,
+                    at: change.at,
+                    old_len: change.removed.len(),
+                    new_len: change.inserted.len(),
+                    line_diff,
+                });
             }
             self.version += 1;
             self.cursor_offset = step.cursor_after.min(self.content.len());
@@ -1277,6 +1380,16 @@ pub struct AppState {
     pub note_states: HashMap<PathBuf, NoteSettings>,
     /// Known vaults for the switcher dialog, most recent first.
     pub known_vaults: Vec<PathBuf>,
+    /// Multi-document workspace: document buffers keyed by DocumentId
+    pub documents: HashMap<DocumentId, DocumentBuffer>,
+    /// Map of normalized paths to DocumentId
+    pub by_path: HashMap<PathBuf, DocumentId>,
+    /// Multi-document workspace tree
+    pub workspace: WorkspaceTree,
+    /// Leaves state keyed by LeafId
+    pub leaves: HashMap<LeafId, LeafState>,
+    /// Editor view states keyed by TabId
+    pub views: HashMap<TabId, EditorViewState>,
 }
 
 const DEFAULT_WELCOME_NOTE: &str = "# Welcome to Vibecodium (GPUI Live Preview)\n\nYour fast, distraction-free markdown knowledge base with **true Obsidian Live Preview**!\n\n## Inline Live Preview Demo\n- Click any line or block to edit raw markdown inline\n- Move cursor away (or click another line) to see rendered styling\n- Regular text and code blocks are fully selectable across the entire page with `Ctrl+A`\n\n### Interactive Features\n- [x] Zero Electron / Chromium overhead (~40 MB RAM, 120 FPS)\n- [x] Full document continuous text selection\n- [x] Dedicated Obsidian-style code blocks with syntax styling\n- [ ] Auto-saving and instant search\n\n```rust\nfn main() {\n    println!(\"Hello from Vibecodium GPUI Live Preview!\");\n}\n```\n\n> Regular text and code blocks are cleanly organized with seamless Live Preview transitions.\n";
@@ -1333,7 +1446,21 @@ impl AppState {
                 .cloned()
                 .collect(),
             session,
+            documents: HashMap::new(),
+            by_path: HashMap::new(),
+            workspace: {
+                let default_leaf_id = LeafId::new();
+                WorkspaceTree::new_single_leaf(default_leaf_id)
+            },
+            leaves: HashMap::new(),
+            views: HashMap::new(),
         };
+
+        // Initialize active leaf in leaves map
+        state.leaves.insert(
+            state.workspace.active_leaf,
+            LeafState::new(state.workspace.active_leaf),
+        );
 
         // Determine workspace to open
         let mut ws_to_open = None;
@@ -1344,51 +1471,695 @@ impl AppState {
         }
 
         if let Some(ws) = ws_to_open {
-            state.open_workspace(ws);
+            state.open_workspace_without_saving(ws);
         }
 
-        // Restore active note (or active empty tab)
-        let mut note_to_open = None;
-        let mut empty_to_open = None;
-        if let Some(ref active) = state.session.active_note {
-            if is_empty_tab_path(active) {
-                if state.open_tabs.contains(active) {
-                    empty_to_open = Some(active.clone());
-                }
-            } else if active.exists() || active.to_string_lossy() == "Welcome.md" {
-                note_to_open = Some(active.clone());
+        // Restore workspace v2 session if present
+        let ws_v2_path = app_data_dir.join("workspace-v2.json");
+        let mut restored_v2 = false;
+        if let Ok(content) = std::fs::read_to_string(&ws_v2_path) {
+            if let Ok(ws_v2) = crate::workspace::WorkspaceSessionV2::from_json(&content) {
+                state.restore_workspace_session_v2(ws_v2);
+                restored_v2 = true;
             }
         }
-        if note_to_open.is_none() && !state.open_tabs.is_empty() {
-            note_to_open = Some(state.open_tabs.last().unwrap().clone());
-        }
-        if note_to_open.is_none() {
-            note_to_open = Self::first_file_in_tree(&state.file_tree);
-        }
 
-        if let Some(path) = empty_to_open {
-            state.active_empty_tab = Some(path);
-        } else if let Some(path) = note_to_open {
-            state.reveal_path_in_tree(&path);
-            state.open_note(path);
+        if restored_v2 {
+            if let Some(leaf) = state.leaves.get(&state.workspace.active_leaf) {
+                state.open_tabs = leaf.tabs.iter().filter_map(|t| match &t.content {
+                    crate::workspace::TabContent::Document { id } => {
+                        state.documents.get(id).map(|d| d.path.clone())
+                    }
+                    crate::workspace::TabContent::Empty => Some(empty_tab_path()),
+                    _ => None,
+                }).collect();
+
+                if let Some(tab) = leaf.active_tab() {
+                    match &tab.content {
+                        crate::workspace::TabContent::Document { id } => {
+                            if let Some(doc) = state.documents.get_mut(id) {
+                                let doc_path = doc.path.clone();
+                                let doc_title = doc.title.clone();
+                                let doc_dirty = doc.is_dirty;
+                                let (c, li, cp, us, rs, fdt) = doc.take_for_active_note();
+                                let line_index = if li.lines() > 0 && li.len() == c.len() {
+                                    li
+                                } else {
+                                    crate::line_index::LineIndex::new(&c)
+                                };
+                                let mut opened = OpenedNote {
+                                    path: doc_path,
+                                    title: doc_title,
+                                    content: c,
+                                    version: 0,
+                                    cursor_offset: 0,
+                                    selection_anchor: None,
+                                    is_dirty: doc_dirty,
+                                    first_dirty_time: fdt,
+                                    undo_stack: us,
+                                    redo_stack: rs,
+                                    pending_edits: Vec::new(),
+                                    line_index,
+                                    code_checkpoints: cp,
+                                    window: crate::editor_window::EditorWindow::default(),
+                                    above_lines: 0,
+                                    below_lines: 0,
+                                    above_h: 0.0,
+                                    below_h: 0.0,
+                                    est_rows_per_line: 1.0,
+                                    est_row_h: 24.0,
+                                    visual_cache_dirty: true,
+                                    stats_cache: std::cell::Cell::new(None),
+                                };
+                                if let Some(v) = state.views.get(&tab.id) {
+                                    opened.cursor_offset = v.cursor_offset.min(opened.content.len());
+                                    opened.selection_anchor = v.selection_anchor.map(|a| a.min(opened.content.len()));
+                                }
+                                state.reveal_path_in_tree(&opened.path.clone());
+                                state.active_note = Some(opened);
+                                state.active_empty_tab = None;
+                            }
+                        }
+                        crate::workspace::TabContent::Empty => {
+                            state.active_note = None;
+                            state.active_empty_tab = Some(empty_tab_path());
+                        }
+                        crate::workspace::TabContent::Plugin { .. } => {
+                            state.active_note = None;
+                            state.active_empty_tab = None;
+                        }
+                    }
+                }
+            }
         } else {
-            let welcome_path = PathBuf::from("Welcome.md");
-            state.open_tabs.push(welcome_path.clone());
-            state.nav_history.push(welcome_path.clone());
-            state.nav_history_index = 0;
-            state.active_note = Some(OpenedNote::new(
-                welcome_path,
-                "Welcome to Vibecodium".to_owned(),
-                DEFAULT_WELCOME_NOTE.to_owned(),
-                0,
-            ));
+            // Restore active note (or active empty tab)
+            let mut note_to_open = None;
+            let mut empty_to_open = None;
+            if let Some(ref active) = state.session.active_note {
+                if is_empty_tab_path(active) {
+                    if state.open_tabs.contains(active) {
+                        empty_to_open = Some(active.clone());
+                    }
+                } else if active.exists() || active.to_string_lossy() == "Welcome.md" {
+                    note_to_open = Some(active.clone());
+                }
+            }
+            if note_to_open.is_none() && !state.open_tabs.is_empty() {
+                note_to_open = Some(state.open_tabs.last().unwrap().clone());
+            }
+            if note_to_open.is_none() {
+                note_to_open = Self::first_file_in_tree(&state.file_tree);
+            }
+
+            if let Some(path) = empty_to_open {
+                state.active_empty_tab = Some(path);
+            } else if let Some(path) = note_to_open {
+                state.reveal_path_in_tree(&path);
+                state.open_note(path);
+            } else {
+                let welcome_path = PathBuf::from("Welcome.md");
+                state.open_tabs.push(welcome_path.clone());
+                state.nav_history.push(welcome_path.clone());
+                state.nav_history_index = 0;
+                state.active_note = Some(OpenedNote::new(
+                    welcome_path,
+                    "Welcome to Vibecodium".to_owned(),
+                    DEFAULT_WELCOME_NOTE.to_owned(),
+                    0,
+                ));
+            }
         }
 
         state.publish_snapshot();
         state
     }
 
+    /// Creates a pristine, isolated AppState without any preloaded documents or tabs,
+    /// suitable for unit tests and clean workspace resets.
+    pub fn new_empty() -> Self {
+        let mut state = Self::new();
+        state.leaves.clear();
+        state.documents.clear();
+        state.by_path.clear();
+        state.views.clear();
+        state.open_tabs.clear();
+        state.active_note = None;
+        state.active_empty_tab = None;
+        let default_leaf_id = LeafId::new();
+        state.workspace = WorkspaceTree::new_single_leaf(default_leaf_id);
+        state.leaves.insert(default_leaf_id, LeafState::new(default_leaf_id));
+        state
+    }
+
+    pub fn normalize_path(path: &Path) -> PathBuf {
+        if let Ok(canon) = std::fs::canonicalize(path) {
+            let s = canon.to_string_lossy();
+            if let Some(stripped) = s.strip_prefix(r"\\?\") {
+                return PathBuf::from(stripped);
+            }
+            return canon;
+        }
+        let mut normalized = PathBuf::new();
+        for comp in path.components() {
+            normalized.push(comp.as_os_str());
+        }
+        normalized
+    }
+
+    pub fn find_document_by_path(&self, path: &Path) -> Option<DocumentId> {
+        let norm = Self::normalize_path(path);
+        self.by_path.get(&norm).copied().or_else(|| {
+            self.documents.iter().find_map(|(id, doc)| {
+                if doc.path == path {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+        })
+    }
+
+    pub fn get_or_open_document(&mut self, path: &Path, title: String, content: String) -> DocumentId {
+        let norm = Self::normalize_path(path);
+        if let Some(&doc_id) = self.by_path.get(&norm) {
+            return doc_id;
+        }
+
+        let doc_id = DocumentId::new();
+        let buf = DocumentBuffer::new(doc_id, path.to_path_buf(), title, content, 1);
+        self.documents.insert(doc_id, buf);
+        self.by_path.insert(norm, doc_id);
+        doc_id
+    }
+
+    /// Cleans up orphaned document buffers, path mappings, views, and active note
+    /// after tabs have been closed, truncated, or removed.
+    pub fn cleanup_orphaned_documents_and_views(&mut self) {
+        // 1. Gather all active TabIds and DocumentIds across all leaves
+        let mut active_tab_ids = HashSet::new();
+        let mut active_doc_ids = HashSet::new();
+        for leaf in self.leaves.values() {
+            for tab in &leaf.tabs {
+                active_tab_ids.insert(tab.id);
+                if let crate::workspace::TabContent::Document { id } = &tab.content {
+                    active_doc_ids.insert(*id);
+                }
+            }
+        }
+
+        // 2. Remove views for closed tabs
+        self.views.retain(|tab_id, _| active_tab_ids.contains(tab_id));
+
+        // 3. Remove documents no longer open in any leaf
+        let mut removed_paths = Vec::new();
+        self.documents.retain(|doc_id, doc| {
+            if active_doc_ids.contains(doc_id) {
+                true
+            } else {
+                removed_paths.push(doc.path.clone());
+                false
+            }
+        });
+
+        // 4. Clean up by_path, open_tabs, and active_note
+        for p in &removed_paths {
+            let norm = Self::normalize_path(p);
+            self.by_path.remove(&norm);
+            self.open_tabs.retain(|x| x != p);
+            if self.active_note.as_ref().map(|n| &n.path == p).unwrap_or(false) {
+                self.active_note = None;
+            }
+        }
+    }
+
+    /// Closes an entire leaf (split window) and unloads any orphaned documents and views.
+    pub fn close_leaf(&mut self, leaf_id: LeafId) -> Option<LeafId> {
+        if self.workspace.leaves().len() <= 1 {
+            return None;
+        }
+        self.leaves.remove(&leaf_id);
+        self.cleanup_orphaned_documents_and_views();
+        let next = self.workspace.close_leaf(leaf_id);
+        if let Some(na) = next {
+            self.workspace.active_leaf = na;
+        }
+        next
+    }
+
+    /// Captures a point-in-time snapshot of document memory allocations and open counts.
+    pub fn memory_snapshot(&self) -> MemorySnapshot {
+        let doc_bytes: usize = self.documents.values().map(|d| d.content().len()).sum();
+        let active_bytes: usize = self.active_note.as_ref().map(|n| n.content.len()).unwrap_or(0);
+        MemorySnapshot {
+            document_count: self.documents.len(),
+            document_bytes: doc_bytes,
+            by_path_count: self.by_path.len(),
+            view_count: self.views.len(),
+            active_note_bytes: active_bytes,
+            open_tabs_count: self.open_tabs.len(),
+        }
+    }
+
+    /// Centralized handling when a file or directory has been deleted on disk or by a plugin.
+    ///
+    /// Closes all matching tabs across all windows/leaves, clears document buffers,
+    /// removes from `open_tabs`, `session.open_tabs`, `nav_history`, and unloads resources.
+    /// If `keep_if_dirty` is true and the document has unsaved edits, it is kept open so the
+    /// user has an opportunity to save or recover it.
+    ///
+    /// Returns `true` if any tabs/documents were closed.
+    pub fn handle_file_deleted(&mut self, path: &Path, keep_if_dirty: bool) -> bool {
+        let norm_target = Self::normalize_path(path);
+
+        // Find all documents matching this path or starting with this folder
+        let matching_doc_ids: Vec<DocumentId> = self
+            .documents
+            .iter()
+            .filter_map(|(id, doc)| {
+                let norm_doc = Self::normalize_path(&doc.path);
+                if doc.path == path
+                    || norm_doc == norm_target
+                    || doc.path.starts_with(path)
+                    || norm_doc.starts_with(&norm_target)
+                {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let mut any_closed = false;
+        let mut any_kept_dirty = false;
+
+        for doc_id in matching_doc_ids {
+            let doc_path = if let Some(doc) = self.documents.get(&doc_id) {
+                doc.path.clone()
+            } else {
+                continue;
+            };
+
+            let is_doc_dirty = self.documents.get(&doc_id).map(|d| d.is_dirty).unwrap_or(false)
+                || self.active_note.as_ref().map(|n| {
+                    (n.path == doc_path || Self::normalize_path(&n.path) == Self::normalize_path(&doc_path))
+                        && n.is_dirty
+                }).unwrap_or(false);
+
+            if keep_if_dirty && is_doc_dirty {
+                self.status_text = format!(
+                    "Файл удалён на диске, но сохранён в редакторе (несохранённые правки): {}",
+                    doc_path.file_name().unwrap_or_default().to_string_lossy()
+                );
+                any_kept_dirty = true;
+                continue;
+            }
+
+            // Close all tabs referencing this document in every leaf/window
+            let mut empty_leaves = Vec::new();
+            for (leaf_id, leaf) in self.leaves.iter_mut() {
+                let mut i = 0;
+                while i < leaf.tabs.len() {
+                    let matches = match &leaf.tabs[i].content {
+                        crate::workspace::TabContent::Document { id } => *id == doc_id,
+                        _ => false,
+                    };
+                    if matches {
+                        let tab = leaf.tabs.remove(i);
+                        self.views.remove(&tab.id);
+                        if leaf.active_tab_index >= leaf.tabs.len() && !leaf.tabs.is_empty() {
+                            leaf.active_tab_index = leaf.tabs.len() - 1;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+                if leaf.tabs.is_empty() {
+                    empty_leaves.push(*leaf_id);
+                }
+            }
+
+            for leaf_id in empty_leaves {
+                if self.workspace.leaves().len() > 1 {
+                    self.workspace.close_leaf(leaf_id);
+                    self.leaves.remove(&leaf_id);
+                    if self.workspace.active_leaf == leaf_id {
+                        if let Some(&first) = self.workspace.leaves().first() {
+                            self.workspace.active_leaf = first;
+                        }
+                    }
+                } else if let Some(leaf) = self.leaves.get_mut(&leaf_id) {
+                    leaf.tabs.push(crate::workspace::Tab::new_empty());
+                    leaf.active_tab_index = 0;
+                }
+            }
+
+            // Remove from document buffers and by_path mapping
+            if let Some(doc) = self.documents.remove(&doc_id) {
+                let norm = Self::normalize_path(&doc.path);
+                self.by_path.remove(&norm);
+                self.by_path.remove(&Self::normalize_path(path));
+                self.open_tabs.retain(|p| p != &doc.path && p != path && p != &norm);
+                self.session.open_tabs.retain(|p| p != &doc.path && p != path && p != &norm);
+                self.nav_history.retain(|p| p != &doc.path && p != path && p != &norm);
+                self.note_states.remove(&doc.path);
+                self.note_states.remove(path);
+
+                if self.session.active_note.as_ref().map(|p| p == &doc.path || p == path).unwrap_or(false) {
+                    self.session.active_note = None;
+                }
+                if self.active_note.as_ref().map(|n| n.path == doc.path || n.path == path).unwrap_or(false) {
+                    self.active_note = None;
+                }
+                any_closed = true;
+            }
+        }
+
+        if !any_kept_dirty {
+            // Also clean up any loose references in open_tabs/session if doc was not in documents map
+            let norm_p = Self::normalize_path(path);
+            self.open_tabs.retain(|p| p != path && Self::normalize_path(p) != norm_p && !p.starts_with(path));
+            self.session.open_tabs.retain(|p| p != path && Self::normalize_path(p) != norm_p && !p.starts_with(path));
+            self.nav_history.retain(|p| p != path && Self::normalize_path(p) != norm_p && !p.starts_with(path));
+
+            if self.active_note.as_ref().map(|n| n.path == path || Self::normalize_path(&n.path) == norm_p).unwrap_or(false) {
+                self.active_note = None;
+                self.session.active_note = None;
+                any_closed = true;
+            }
+        }
+
+        self.cleanup_orphaned_documents_and_views();
+
+        // If active_note is None, try activating whatever tab is in active_leaf
+        if self.active_note.is_none() {
+            let active_leaf_id = self.workspace.active_leaf;
+            if let Some(leaf) = self.leaves.get(&active_leaf_id) {
+                if let Some(tab) = leaf.active_tab() {
+                    match &tab.content {
+                        crate::workspace::TabContent::Document { id } => {
+                            if let Some(doc) = self.documents.get(id) {
+                                let opened = OpenedNote::new(
+                                    doc.path.clone(),
+                                    doc.title.clone(),
+                                    doc.content().to_string(),
+                                    doc.version,
+                                );
+                                self.active_note = Some(opened);
+                                self.session.active_note = Some(doc.path.clone());
+                            }
+                        }
+                        crate::workspace::TabContent::Empty => {
+                            self.active_empty_tab = Some(empty_tab_path());
+                            self.session.active_note = Some(empty_tab_path());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        self.save_session_state();
+        any_closed
+    }
+
+    /// Centralized handling when a file or directory has been renamed or moved on disk or by a plugin.
+    ///
+    /// Synchronously updates all matching documents, tabs across all leaves/windows,
+    /// paths, titles, `open_tabs`, `session.open_tabs`, and `active_note`.
+    pub fn handle_file_renamed(&mut self, old_path: &Path, new_path: &Path) -> bool {
+        let norm_old = Self::normalize_path(old_path);
+        let norm_new = Self::normalize_path(new_path);
+
+        let matching_docs: Vec<(DocumentId, PathBuf)> = self
+            .documents
+            .iter()
+            .filter_map(|(id, doc)| {
+                let norm_doc = Self::normalize_path(&doc.path);
+                if doc.path == old_path || norm_doc == norm_old {
+                    Some((*id, new_path.to_path_buf()))
+                } else if let Ok(suffix) = doc.path.strip_prefix(old_path) {
+                    Some((*id, new_path.join(suffix)))
+                } else if let Ok(suffix) = norm_doc.strip_prefix(&norm_old) {
+                    Some((*id, norm_new.join(suffix)))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let mut any_renamed = false;
+
+        for (doc_id, target_new_path) in matching_docs {
+            let new_title = target_new_path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "untitled".to_string());
+
+            let old_doc_path = if let Some(doc) = self.documents.get_mut(&doc_id) {
+                let prev = std::mem::replace(&mut doc.path, target_new_path.clone());
+                doc.title = new_title.clone();
+                prev
+            } else {
+                continue;
+            };
+
+            // Update by_path index
+            let norm_old_doc = Self::normalize_path(&old_doc_path);
+            let norm_new_doc = Self::normalize_path(&target_new_path);
+            self.by_path.remove(&norm_old_doc);
+            self.by_path.insert(norm_new_doc, doc_id);
+
+
+            // Update path lists
+            for p in self.open_tabs.iter_mut() {
+                if *p == old_doc_path || Self::normalize_path(p) == norm_old_doc {
+                    *p = target_new_path.clone();
+                }
+            }
+            for p in self.session.open_tabs.iter_mut() {
+                if *p == old_doc_path || Self::normalize_path(p) == norm_old_doc {
+                    *p = target_new_path.clone();
+                }
+            }
+            for p in self.nav_history.iter_mut() {
+                if *p == old_doc_path || Self::normalize_path(p) == norm_old_doc {
+                    *p = target_new_path.clone();
+                }
+            }
+
+            // Migrate note settings if present
+            if let Some(settings) = self.note_states.remove(&old_doc_path) {
+                self.note_states.insert(target_new_path.clone(), settings);
+            }
+
+            // Update active note if it pointed to the old path
+            if let Some(ref mut note) = self.active_note {
+                if note.path == old_doc_path || Self::normalize_path(&note.path) == norm_old_doc {
+                    note.path = target_new_path.clone();
+                    note.title = new_title.clone();
+                }
+            }
+            if self.session.active_note.as_ref().map(|p| p == &old_doc_path || Self::normalize_path(p) == norm_old_doc).unwrap_or(false) {
+                self.session.active_note = Some(target_new_path);
+            }
+
+            any_renamed = true;
+        }
+
+        // Also check if active_note or open_tabs match old_path directly even if not in documents
+        if !any_renamed {
+            for p in self.open_tabs.iter_mut() {
+                if *p == old_path || Self::normalize_path(p) == norm_old {
+                    *p = new_path.to_path_buf();
+                    any_renamed = true;
+                }
+            }
+            for p in self.session.open_tabs.iter_mut() {
+                if *p == old_path || Self::normalize_path(p) == norm_old {
+                    *p = new_path.to_path_buf();
+                    any_renamed = true;
+                }
+            }
+            for p in self.nav_history.iter_mut() {
+                if *p == old_path || Self::normalize_path(p) == norm_old {
+                    *p = new_path.to_path_buf();
+                    any_renamed = true;
+                }
+            }
+            if let Some(ref mut note) = self.active_note {
+                if note.path == old_path || Self::normalize_path(&note.path) == norm_old {
+                    note.path = new_path.to_path_buf();
+                    note.title = new_path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "untitled".to_string());
+                    any_renamed = true;
+                }
+            }
+        }
+
+        self.save_session_state();
+        any_renamed
+    }
+
+    /// Centralized handling when a file has been modified externally on disk.
+    ///
+    /// If the file is open and clean (not dirty), reloads content from disk.
+    /// If the file has unsaved edits, keeps the user's edits and warns in status.
+    pub fn handle_file_modified(&mut self, path: &Path) -> bool {
+        let norm = Self::normalize_path(path);
+        let opt_doc_id = self.find_document_by_path(path);
+
+        if let Some(doc_id) = opt_doc_id {
+            let is_dirty = self.documents.get(&doc_id).map(|d| d.is_dirty).unwrap_or(false)
+                || self.active_note.as_ref().map(|n| {
+                    (n.path == path || Self::normalize_path(&n.path) == norm) && n.is_dirty
+                }).unwrap_or(false);
+
+            if is_dirty {
+                self.status_text = format!(
+                    "Файл изменён внешним приложением (в редакторе есть несохранённые правки): {}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                );
+                return false;
+            }
+
+            if let Ok(new_content) = std::fs::read_to_string(path) {
+                if let Some(doc) = self.documents.get_mut(&doc_id) {
+                    doc.reload(new_content.clone());
+                }
+                if let Some(ref mut note) = self.active_note {
+                    if note.path == path || Self::normalize_path(&note.path) == norm {
+                        note.content = new_content;
+                        note.version += 1;
+                        note.line_index = crate::line_index::LineIndex::new(&note.content);
+                        note.rebuild_visual_cache(true, 80);
+                    }
+                }
+                self.status_text = format!(
+                    "Файл обновлён: {}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                );
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Checks for external filesystem changes on currently open documents.
+    ///
+    /// Handles atomic save debounce: if an open file is missing from disk, it is added
+    /// to `pending_deletions`. Only if it remains missing after `debounce_duration` is it
+    /// confirmed as deleted and returned in `FsChangeEvent::Deleted`. If it reappears
+    /// within the debounce window, the pending deletion is cancelled.
+    pub fn check_fs_changes(
+        &mut self,
+        pending_deletions: &mut HashMap<PathBuf, Instant>,
+        debounce_duration: Duration,
+    ) -> Vec<FsChangeEvent> {
+        let mut events = Vec::new();
+        let open_paths: Vec<PathBuf> = self.documents.values().map(|d| d.path.clone()).collect();
+
+        for path in open_paths {
+            if path.exists() {
+                if pending_deletions.remove(&path).is_some() {
+                    // Reappeared within debounce window: atomic save / rapid recreation!
+                }
+            } else {
+                if let Some(first_seen) = pending_deletions.get(&path) {
+                    if first_seen.elapsed() >= debounce_duration {
+                        pending_deletions.remove(&path);
+                        events.push(FsChangeEvent::Deleted(path));
+                    }
+                } else {
+                    pending_deletions.insert(path, Instant::now());
+                }
+            }
+        }
+
+        // Clean up pending deletions for paths that are no longer open
+        pending_deletions.retain(|p, _| self.find_document_by_path(p).is_some());
+
+        events
+    }
+
+    pub fn close_leaf_tab(&mut self, leaf_id: LeafId, tab_index: usize) -> Option<PathBuf> {
+        let (removed_tab, leaf_is_empty) = if let Some(leaf) = self.leaves.get_mut(&leaf_id) {
+            if tab_index < leaf.tabs.len() {
+                let tab = leaf.tabs.remove(tab_index);
+                self.views.remove(&tab.id);
+                let empty = leaf.tabs.is_empty();
+                if !empty && leaf.active_tab_index >= leaf.tabs.len() {
+                    leaf.active_tab_index = leaf.tabs.len() - 1;
+                }
+                (Some(tab), empty)
+            } else {
+                (None, false)
+            }
+        } else {
+            (None, false)
+        };
+
+        let Some(tab) = removed_tab else {
+            return None;
+        };
+
+        let closed_doc_path = match &tab.content {
+            crate::workspace::TabContent::Document { id } => {
+                let doc_id = *id;
+                let still_open = self.leaves.values().any(|leaf| {
+                    leaf.tabs.iter().any(|t| match &t.content {
+                        crate::workspace::TabContent::Document { id: other_id } => other_id == &doc_id,
+                        _ => false,
+                    })
+                });
+
+                if !still_open {
+                    if let Some(doc) = self.documents.remove(&doc_id) {
+                        let norm = Self::normalize_path(&doc.path);
+                        self.by_path.remove(&norm);
+                        self.open_tabs.retain(|p| p != &doc.path);
+                        Some(doc.path)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            crate::workspace::TabContent::Empty => None,
+            crate::workspace::TabContent::Plugin { .. } => None,
+        };
+
+        if leaf_is_empty {
+            if self.workspace.leaves().len() > 1 {
+                self.workspace.close_leaf(leaf_id);
+                self.leaves.remove(&leaf_id);
+                if self.workspace.active_leaf == leaf_id {
+                    if let Some(&first) = self.workspace.leaves().first() {
+                        self.workspace.active_leaf = first;
+                    }
+                }
+            } else if let Some(leaf) = self.leaves.get_mut(&leaf_id) {
+                leaf.tabs.push(crate::workspace::Tab::new_empty());
+                leaf.active_tab_index = 0;
+            }
+        }
+
+        self.cleanup_orphaned_documents_and_views();
+
+        closed_doc_path
+    }
+
     pub fn open_workspace(&mut self, path: PathBuf) {
+        self.open_workspace_internal(path, true);
+    }
+
+    pub fn open_workspace_without_saving(&mut self, path: PathBuf) {
+        self.open_workspace_internal(path, false);
+    }
+
+    fn open_workspace_internal(&mut self, path: PathBuf, save: bool) {
         let vault = crate::vault::VaultCore::open(path.clone());
         let name = vault.name.clone();
 
@@ -1416,7 +2187,9 @@ impl AppState {
         self.events.emit_workspace(&crate::events::WorkspaceEvent::VaultOpen {
             path: path.to_string_lossy().to_string(),
         });
-        self.save_session_state();
+        if save {
+            self.save_session_state();
+        }
         self.publish_snapshot();
     }
 
@@ -1657,6 +2430,35 @@ impl AppState {
     }
 
     pub fn close_tab(&mut self, path: &Path) {
+        let opt_doc_id = self.find_document_by_path(path);
+        let is_empty = is_empty_tab_path(path) || path.to_string_lossy() == "newtab";
+        let mut target = None;
+        for (leaf_id, leaf) in &self.leaves {
+            for (idx, tab) in leaf.tabs.iter().enumerate() {
+                match &tab.content {
+                    crate::workspace::TabContent::Document { id } => {
+                        if Some(*id) == opt_doc_id {
+                            target = Some((*leaf_id, idx));
+                            break;
+                        }
+                    }
+                    crate::workspace::TabContent::Empty => {
+                        if is_empty {
+                            target = Some((*leaf_id, idx));
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if target.is_some() {
+                break;
+            }
+        }
+        if let Some((leaf_id, tab_idx)) = target {
+            self.close_leaf_tab(leaf_id, tab_idx);
+        }
+
         if let Some(pos) = self.open_tabs.iter().position(|p| p == path) {
             self.open_tabs.remove(pos);
             if self.active_note.as_ref().map(|n| &n.path == path).unwrap_or(false) {
@@ -1672,6 +2474,22 @@ impl AppState {
             self.active_empty_tab = None;
             self.session.active_note = None;
         }
+
+        if let Some(doc_id) = opt_doc_id {
+            let still_open = self.leaves.values().any(|leaf| {
+                leaf.tabs.iter().any(|t| match &t.content {
+                    crate::workspace::TabContent::Document { id } => id == &doc_id,
+                    _ => false,
+                })
+            });
+            if !still_open {
+                if let Some(doc) = self.documents.remove(&doc_id) {
+                    let norm = Self::normalize_path(&doc.path);
+                    self.by_path.remove(&norm);
+                }
+            }
+        }
+
         self.save_session_state();
     }
 
@@ -1806,13 +2624,27 @@ impl AppState {
         }
         self.reveal_path_in_tree(&path);
 
-        // Save current note's cursor and selection before switching
-        if let Some(ref current) = self.active_note {
+        // Save current note's cursor, selection, and stash its state into DocumentBuffer before switching
+        if let Some(mut current) = self.active_note.take() {
             let entry = self.note_states.entry(current.path.clone()).or_default();
             entry.cursor_offset = current.cursor_offset;
             entry.selection_anchor = current.selection_anchor;
             self.session.cursor_positions.insert(current.path.clone(), current.cursor_offset);
             self.session.note_states.insert(current.path.clone(), entry.clone());
+
+            if let Some(doc_id) = self.find_document_by_path(&current.path) {
+                if let Some(doc) = self.documents.get_mut(&doc_id) {
+                    doc.stash_from_note(
+                        std::mem::take(&mut current.content),
+                        std::mem::take(&mut current.line_index),
+                        std::mem::take(&mut current.code_checkpoints),
+                        std::mem::take(&mut current.undo_stack),
+                        std::mem::take(&mut current.redo_stack),
+                        current.is_dirty,
+                        current.first_dirty_time,
+                    );
+                }
+            }
         }
 
         if !self.open_tabs.iter().any(|p| p == &path) {
@@ -1836,6 +2668,36 @@ impl AppState {
                 DEFAULT_WELCOME_NOTE.to_owned(),
                 0,
             ));
+        } else if let Some(doc_id) = self.find_document_by_path(&path) {
+            // Already open in memory (e.g. in another leaf/window or previously loaded):
+            // Take the buffer directly into OpenedNote to avoid duplicate memory and preserve unsaved edits.
+            if let Some(doc) = self.documents.get_mut(&doc_id) {
+                let (content, line_index, code_checkpoints, undo_stack, redo_stack, first_dirty_time) = doc.take_for_active_note();
+                let mut content = content;
+                let mut line_index = line_index;
+                if content.is_empty() {
+                    if let Ok(disk_content) = std::fs::read_to_string(&path) {
+                        line_index = crate::line_index::LineIndex::new(&disk_content);
+                        content = disk_content;
+                    }
+                } else if line_index.lines() == 0 || line_index.len() != content.len() {
+                    line_index = crate::line_index::LineIndex::new(&content);
+                }
+                let mut note = OpenedNote::new(
+                    path.clone(),
+                    doc.title.clone(),
+                    content,
+                    doc.version,
+                );
+                note.line_index = line_index;
+                note.code_checkpoints = code_checkpoints;
+                note.undo_stack = undo_stack;
+                note.redo_stack = redo_stack;
+                note.is_dirty = doc.is_dirty;
+                note.first_dirty_time = first_dirty_time;
+                opened_note = Some(note);
+                self.status_text = format!("Switched: {}", path.file_name().unwrap_or_default().to_string_lossy());
+            }
         } else {
             if let Ok(content) = std::fs::read_to_string(&path) {
                 opened_note = Some(OpenedNote::new(
@@ -1851,6 +2713,26 @@ impl AppState {
         }
 
         if let Some(mut note) = opened_note {
+            let doc_id = self.get_or_open_document(&note.path, note.title.clone(), String::new());
+            if let Some(doc) = self.documents.get_mut(&doc_id) {
+                doc.line_index = note.line_index.clone();
+            }
+            self.workspace.open_file(&mut self.leaves, doc_id, self.workspace.active_leaf, crate::workspace::OpenMode::Reuse);
+            if at_front {
+                if let Some(leaf) = self.leaves.get_mut(&self.workspace.active_leaf) {
+                    if leaf.tabs.len() > 1 && leaf.active_tab_index != 0 {
+                        let tab = leaf.tabs.remove(leaf.active_tab_index);
+                        leaf.tabs.insert(0, tab);
+                        leaf.active_tab_index = 0;
+                    }
+                }
+            }
+            if let Some(leaf) = self.leaves.get(&self.workspace.active_leaf) {
+                if let Some(tab) = leaf.active_tab() {
+                    self.views.entry(tab.id).or_insert_with(|| crate::workspace::EditorViewState::new(tab.id, doc_id));
+                }
+            }
+
             // Restore saved settings (cursor and selection) for this note
             if let Some(settings) = self.note_states.get(&path) {
                 let mut offset = settings.cursor_offset.min(note.content.len());
@@ -1895,13 +2777,58 @@ impl AppState {
         }
     }
 
+    pub fn save_document(&mut self, doc_id: DocumentId) -> bool {
+        if let Some(doc) = self.documents.get_mut(&doc_id) {
+            if !doc.is_dirty {
+                return true;
+            }
+            if let Err(err) = crate::save_manager::safe_write(&doc.path, doc.content()) {
+                self.status_text = format!("Save error: {}", err);
+                return false;
+            } else {
+                doc.mark_clean();
+                self.status_text = format!("Saved: {}", doc.title);
+                let rel_path = self.vault.as_ref()
+                    .and_then(|v| doc.path.strip_prefix(&v.root).ok())
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|| doc.path.to_string_lossy().into_owned());
+                self.events.emit_vault(&crate::events::VaultEvent::Modify { path: rel_path });
+                self.publish_snapshot();
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn save_dirty_documents(&mut self) {
+        let dirty_ids: Vec<DocumentId> = self
+            .documents
+            .iter()
+            .filter(|(_, doc)| doc.is_dirty)
+            .map(|(id, _)| *id)
+            .collect();
+
+        for id in dirty_ids {
+            self.save_document(id);
+        }
+
+        self.save_session_state();
+    }
+
     pub fn save_active_note(&mut self) {
+        let opt_doc_id = self.active_note.as_ref().and_then(|n| self.find_document_by_path(&n.path));
         if let Some(ref mut note) = self.active_note {
             if let Err(err) = crate::save_manager::safe_write(&note.path, &note.content) {
                 self.status_text = format!("Save error: {}", err);
             } else {
                 note.clear_dirty();
                 self.status_text = format!("Saved: {}", note.title);
+
+                if let Some(doc_id) = opt_doc_id {
+                    if let Some(doc) = self.documents.get_mut(&doc_id) {
+                        doc.mark_clean();
+                    }
+                }
 
                 let rel_path = self.vault.as_ref()
                     .and_then(|v| note.path.strip_prefix(&v.root).ok())
@@ -1912,6 +2839,157 @@ impl AppState {
             }
         }
         self.save_session_state();
+    }
+
+    pub fn export_workspace_session_v2(&self) -> crate::workspace::WorkspaceSessionV2 {
+        fn node_to_persisted(
+            node: &crate::workspace::WorkspaceNode,
+            leaves: &HashMap<LeafId, LeafState>,
+            documents: &HashMap<DocumentId, crate::document_buffer::DocumentBuffer>,
+            views: &HashMap<crate::workspace::TabId, crate::workspace::EditorViewState>,
+        ) -> crate::workspace::PersistedNode {
+            match node {
+                crate::workspace::WorkspaceNode::Split { direction, children, ratios } => {
+                    crate::workspace::PersistedNode::Split {
+                        direction: *direction,
+                        children: children.iter().map(|c| node_to_persisted(c, leaves, documents, views)).collect(),
+                        ratios: ratios.clone(),
+                    }
+                }
+                crate::workspace::WorkspaceNode::Leaf { id } => {
+                    let (active_tab_index, tabs) = if let Some(leaf) = leaves.get(id) {
+                        let persisted_tabs = leaf.tabs.iter().map(|t| {
+                            let (kind, path) = match &t.content {
+                                crate::workspace::TabContent::Document { id } => {
+                                    let p = documents.get(id).map(|d| d.path.to_string_lossy().to_string());
+                                    ("document".to_string(), p)
+                                }
+                                crate::workspace::TabContent::Empty => ("empty".to_string(), None),
+                                crate::workspace::TabContent::Plugin { view_id } => ("plugin".to_string(), Some(view_id.clone())),
+                            };
+                            let view = views.get(&t.id).map(|v| crate::workspace::PersistedView {
+                                anchor_line: v.viewport.offset,
+                                px_in_line: v.viewport.px_in_line,
+                                cursor_line: 0,
+                                cursor_col: 0,
+                                scroll_top: v.scroll_top,
+                                cursor_offset: v.cursor_offset,
+                            });
+                            crate::workspace::PersistedTab {
+                                id: t.id,
+                                kind,
+                                path,
+                                pinned: t.pinned,
+                                external: None,
+                                view,
+                            }
+                        }).collect();
+                        (leaf.active_tab_index, persisted_tabs)
+                    } else {
+                        (0, Vec::new())
+                    };
+
+                    crate::workspace::PersistedNode::Leaf {
+                        id: *id,
+                        active_tab_index,
+                        tabs,
+                    }
+                }
+            }
+        }
+
+        let layout = node_to_persisted(&self.workspace.root, &self.leaves, &self.documents, &self.views);
+        let mut session = crate::workspace::WorkspaceSessionV2 {
+            version: crate::workspace::WORKSPACE_SCHEMA_VERSION,
+            active_leaf: self.workspace.active_leaf,
+            layout,
+        };
+        session.validate();
+        session
+    }
+
+    pub fn restore_workspace_session_v2(&mut self, session: crate::workspace::WorkspaceSessionV2) {
+        fn persisted_to_node(
+            persisted: crate::workspace::PersistedNode,
+            leaves: &mut HashMap<LeafId, LeafState>,
+            views: &mut HashMap<crate::workspace::TabId, crate::workspace::EditorViewState>,
+            state: &mut AppState,
+        ) -> crate::workspace::WorkspaceNode {
+            match persisted {
+                crate::workspace::PersistedNode::Split { direction, children, ratios } => {
+                    crate::workspace::WorkspaceNode::Split {
+                        direction,
+                        children: children.into_iter().map(|c| persisted_to_node(c, leaves, views, state)).collect(),
+                        ratios,
+                    }
+                }
+                crate::workspace::PersistedNode::Leaf { id, active_tab_index, tabs } => {
+                    let mut leaf_state = LeafState::new(id);
+                    leaf_state.active_tab_index = active_tab_index;
+                    for p_tab in tabs {
+                        let content = match p_tab.kind.as_str() {
+                            "document" => {
+                                if let Some(path_str) = p_tab.path {
+                                    let path = PathBuf::from(path_str);
+                                    let title = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Untitled".to_string());
+                                    let norm = AppState::normalize_path(&path);
+                                    let doc_id = if let Some(&id) = state.by_path.get(&norm) {
+                                        id
+                                    } else {
+                                        let text = std::fs::read_to_string(&path).unwrap_or_default();
+                                        state.get_or_open_document(&path, title, text)
+                                    };
+                                    if let Some(pv) = p_tab.view {
+                                        let mut ev = crate::workspace::EditorViewState::new(p_tab.id, doc_id);
+                                        ev.viewport.offset = pv.anchor_line;
+                                        ev.viewport.px_in_line = pv.px_in_line;
+                                        ev.cursor_offset = pv.cursor_offset;
+                                        ev.scroll_top = pv.scroll_top;
+                                        views.insert(p_tab.id, ev);
+                                    } else {
+                                        views.insert(p_tab.id, crate::workspace::EditorViewState::new(p_tab.id, doc_id));
+                                    }
+                                    crate::workspace::TabContent::Document { id: doc_id }
+                                } else {
+                                    crate::workspace::TabContent::Empty
+                                }
+                            }
+                            "plugin" => {
+                                crate::workspace::TabContent::Plugin { view_id: p_tab.path.unwrap_or_default() }
+                            }
+                            _ => crate::workspace::TabContent::Empty,
+                        };
+
+                        leaf_state.tabs.push(crate::workspace::Tab {
+                            id: p_tab.id,
+                            content,
+                            pinned: p_tab.pinned,
+                        });
+                    }
+
+                    if leaf_state.tabs.is_empty() {
+                        leaf_state.tabs.push(crate::workspace::Tab::new_empty());
+                    }
+                    if leaf_state.active_tab_index >= leaf_state.tabs.len() {
+                        leaf_state.active_tab_index = leaf_state.tabs.len() - 1;
+                    }
+
+                    leaves.insert(id, leaf_state);
+                    crate::workspace::WorkspaceNode::Leaf { id }
+                }
+            }
+        }
+
+        let mut new_leaves = HashMap::new();
+        let mut new_views = HashMap::new();
+        let root = persisted_to_node(session.layout, &mut new_leaves, &mut new_views, self);
+
+        self.leaves = new_leaves;
+        self.views = new_views;
+        self.workspace.root = root;
+        self.workspace.root.flatten_same_direction_splits();
+        self.workspace.root.normalize_ratios();
+        self.workspace.active_leaf = session.active_leaf;
     }
 
     pub fn save_session_state(&mut self) {
@@ -1932,6 +3010,10 @@ impl AppState {
         self.session.known_vaults = self.known_vaults.clone();
         let dir = app_data_dir();
         self.session.save(&dir);
+
+        let ws_v2 = self.export_workspace_session_v2();
+        let ws_v2_path = dir.join("workspace-v2.json");
+        let _ = ws_v2.save_atomic(&ws_v2_path);
     }
 
     pub fn rename_note(&mut self, old_path: &Path, new_title: &str) -> Result<PathBuf, String> {
@@ -2011,6 +3093,15 @@ impl AppState {
         // Update note states map
         if let Some(settings) = self.note_states.remove(old_path) {
             self.note_states.insert(new_path.clone(), settings);
+        }
+
+        // Update multi-document workspace state
+        if let Some(doc_id) = self.by_path.remove(old_path) {
+            self.by_path.insert(new_path.clone(), doc_id);
+            if let Some(doc) = self.documents.get_mut(&doc_id) {
+                doc.path = new_path.clone();
+                doc.title = trimmed.to_string();
+            }
         }
 
         // Update session
@@ -2776,6 +3867,14 @@ mod tests {
             session: SessionState::default(),
             note_states: HashMap::new(),
             known_vaults: Vec::new(),
+            documents: HashMap::new(),
+            by_path: HashMap::new(),
+            workspace: {
+                let default_leaf_id = LeafId::new();
+                WorkspaceTree::new_single_leaf(default_leaf_id)
+            },
+            leaves: HashMap::new(),
+            views: HashMap::new(),
         };
 
         state.publish_snapshot();
@@ -2906,6 +4005,712 @@ mod tests {
                 "above_h must remain rock-solid during typing"
             );
         }
+    }
+
+    #[test]
+    fn test_workspace_session_v2_export_and_restore_roundtrip() {
+        let mut state = AppState::new();
+        state.documents.clear();
+        state.by_path.clear();
+        state.leaves.clear();
+        state.views.clear();
+        let default_leaf_id = LeafId::new();
+        state.workspace = crate::workspace::WorkspaceTree::new_single_leaf(default_leaf_id);
+        state.leaves.insert(default_leaf_id, LeafState::new(default_leaf_id));
+        let leaf1 = state.workspace.active_leaf;
+        let doc1 = state.get_or_open_document(Path::new("test1.md"), "test1".to_string(), "hello world".to_string());
+        let doc2 = state.get_or_open_document(Path::new("test2.md"), "test2".to_string(), "second doc".to_string());
+
+        state.workspace.open_file(&mut state.leaves, doc1, leaf1, crate::workspace::OpenMode::Reuse);
+        let leaf2 = LeafId::new();
+        state.leaves.insert(leaf2, LeafState::new(leaf2));
+        assert!(state.workspace.split_leaf(leaf1, crate::workspace::SplitDirection::Row, leaf2));
+        state.workspace.active_leaf = leaf2;
+        state.workspace.open_file(&mut state.leaves, doc2, leaf2, crate::workspace::OpenMode::Reuse);
+
+        // Add view state with anchor and scroll/cursor
+        let tab1_id = state.leaves.get(&leaf1).unwrap().tabs[0].id;
+        let mut v1 = crate::workspace::EditorViewState::new(tab1_id, doc1);
+        v1.viewport.offset = 42;
+        v1.viewport.px_in_line = 7.5;
+        v1.scroll_top = 120.0;
+        v1.cursor_offset = 5;
+        state.views.insert(tab1_id, v1);
+
+        // Add empty tab to leaf2
+        state.leaves.get_mut(&leaf2).unwrap().tabs.push(crate::workspace::Tab::new_empty());
+
+        let exported = state.export_workspace_session_v2();
+        assert_eq!(exported.active_leaf, leaf2);
+
+        let mut restored_state = AppState::new();
+        restored_state.restore_workspace_session_v2(exported);
+
+        assert_eq!(restored_state.workspace.active_leaf, leaf2);
+        assert_eq!(restored_state.workspace.leaves().len(), 2);
+        assert!(restored_state.leaves.contains_key(&leaf1));
+        assert!(restored_state.leaves.contains_key(&leaf2));
+
+        let restored_v1 = restored_state.views.get(&tab1_id).unwrap();
+        assert_eq!(restored_v1.viewport.offset, 42);
+        assert_eq!(restored_v1.viewport.px_in_line, 7.5);
+        assert_eq!(restored_v1.scroll_top, 120.0);
+        assert_eq!(restored_v1.cursor_offset, 5);
+
+        let restored_leaf2 = restored_state.leaves.get(&leaf2).unwrap();
+        assert_eq!(restored_leaf2.tabs.len(), 2);
+        assert!(matches!(restored_leaf2.tabs[1].content, crate::workspace::TabContent::Empty));
+    }
+
+    #[test]
+    fn test_open_note_at_front_places_tab_at_index_0() {
+        let ws_path = std::env::temp_dir().join(format!("aquilum_test_front_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&ws_path);
+        let note1 = ws_path.join("Note1.md");
+        let note2 = ws_path.join("Note2.md");
+        std::fs::write(&note1, "content 1").unwrap();
+        std::fs::write(&note2, "content 2").unwrap();
+
+        let mut state = AppState::new();
+        state.workspace_path = Some(ws_path.clone());
+        state.open_note(note1.clone());
+
+        let active_leaf = state.workspace.active_leaf;
+        let len_after_note1 = state.leaves.get(&active_leaf).unwrap().tabs.len();
+
+        // Open note2 at front
+        state.open_note_at_front(note2.clone());
+
+        let leaf = state.leaves.get(&active_leaf).unwrap();
+        assert_eq!(leaf.tabs.len(), len_after_note1 + 1);
+        assert_eq!(leaf.active_tab_index, 0);
+
+        let doc_id = match leaf.tabs[0].content {
+            crate::workspace::TabContent::Document { id } => id,
+            _ => panic!("Expected Document"),
+        };
+        let doc = state.documents.get(&doc_id).unwrap();
+        assert_eq!(doc.path, note2);
+        assert_eq!(state.open_tabs[0], note2);
+
+        let _ = std::fs::remove_dir_all(&ws_path);
+    }
+
+    #[test]
+    fn test_open_and_close_tab_unloads_memory_and_avoids_duplication() {
+        let ws_path = std::env::temp_dir().join(format!("aquilum_test_mem_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&ws_path);
+        let note_path = ws_path.join("TestNote.md");
+        std::fs::write(&note_path, "sample text content").unwrap();
+
+        let mut state = AppState::new();
+        state.workspace_path = Some(ws_path.clone());
+        state.open_note(note_path.clone());
+
+        // 1. Text is owned by active_note, not duplicated in DocumentBuffer.content
+        assert!(state.active_note.is_some());
+        assert_eq!(state.active_note.as_ref().unwrap().content, "sample text content");
+        let doc_id = state.find_document_by_path(&note_path).unwrap();
+        let doc = state.documents.get(&doc_id).unwrap();
+        assert!(doc.content().is_empty());
+        assert_eq!(doc.line_index.lines(), 1);
+
+        // 2. Closing the tab unloads DocumentBuffer from documents and by_path
+        let leaf_id = state.workspace.active_leaf;
+        let active_tab_idx = state.leaves.get(&leaf_id).unwrap().active_tab_index;
+        let closed_path = state.close_leaf_tab(leaf_id, active_tab_idx);
+        assert_eq!(closed_path, Some(note_path.clone()));
+
+        // DocumentBuffer is completely removed from memory
+        assert!(!state.documents.contains_key(&doc_id));
+        assert!(state.find_document_by_path(&note_path).is_none());
+        assert!(!state.open_tabs.contains(&note_path));
+
+        let _ = std::fs::remove_dir_all(&ws_path);
+    }
+
+    #[test]
+    fn test_tab_switch_preserves_checkpoints_and_zero_duplicate_memory() {
+        let ws_path = std::env::temp_dir().join(format!("aquilum_test_switch_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&ws_path);
+        let note1_path = ws_path.join("Note1.md");
+        let note2_path = ws_path.join("Note2.md");
+
+        let content1 = "line 1\n```rust\nfn main() {}\n```\nline 5\n".to_string();
+        let content2 = "hello world\n".to_string();
+
+        std::fs::write(&note1_path, &content1).unwrap();
+        std::fs::write(&note2_path, &content2).unwrap();
+
+        let mut state = AppState::new();
+        state.workspace_path = Some(ws_path.clone());
+
+        // 1. Open Note 1
+        state.open_note(note1_path.clone());
+        let doc1_id = state.find_document_by_path(&note1_path).unwrap();
+
+        // Populate checkpoints in Note 1
+        if let Some(ref mut note) = state.active_note {
+            note.scan_code_ahead(100);
+            assert!(note.code_checkpoints.scanned_lines() > 0);
+        }
+        let note1_scanned = state.active_note.as_ref().unwrap().code_checkpoints.scanned_lines();
+
+        // 2. Open Note 2
+        state.open_note(note2_path.clone());
+        let doc2_id = state.find_document_by_path(&note2_path).unwrap();
+
+        // Active note is now Note 2
+        assert_eq!(state.active_note.as_ref().unwrap().path, note2_path);
+        // Note 1 in state.documents must hold the stashed text, but Note 1 is NOT duplicated
+        // (state.active_note holds Note 2)
+        let doc1 = state.documents.get(&doc1_id).unwrap();
+        assert_eq!(doc1.content(), content1);
+        assert_eq!(doc1.line_index.lines(), 6);
+        assert_eq!(doc1.code_checkpoints.scanned_lines(), note1_scanned);
+        // Note 2 in state.documents has empty content because active_note holds it directly
+        let doc2 = state.documents.get(&doc2_id).unwrap();
+        assert!(doc2.content().is_empty());
+
+        let _ = std::fs::remove_dir_all(&ws_path);
+    }
+
+    #[test]
+    fn test_open_same_file_in_multiple_panes_reuses_single_buffer_and_zero_duplicate_memory() {
+        let temp_dir = std::env::temp_dir();
+        let ws_path = temp_dir.join(format!("test_multi_pane_sharing_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let _ = std::fs::create_dir_all(&ws_path);
+        let note_path = ws_path.join("SharedNote.md");
+        let content = "Shared markdown content across multiple windows\nLine 2\n".to_string();
+        std::fs::write(&note_path, &content).unwrap();
+
+        let mut state = AppState::new();
+        state.documents.clear();
+        state.by_path.clear();
+        state.leaves.clear();
+        state.views.clear();
+        let default_leaf_id = crate::workspace::LeafId::new();
+        state.workspace = crate::workspace::WorkspaceTree::new_single_leaf(default_leaf_id);
+        state.leaves.insert(default_leaf_id, crate::workspace::LeafState::new(default_leaf_id));
+        state.workspace_path = Some(ws_path.clone());
+
+        // Pane 1 is initial active_leaf
+        let leaf1 = state.workspace.active_leaf;
+
+        // 1. Open note in Pane 1
+        state.open_note(note_path.clone());
+        let doc_id = state.find_document_by_path(&note_path).unwrap();
+
+        // Exactly one document buffer exists in state.documents
+        assert_eq!(state.documents.len(), 1);
+        // While active, doc.content() in documents is empty because active_note holds it
+        assert!(state.documents.get(&doc_id).unwrap().content().is_empty());
+        assert_eq!(state.active_note.as_ref().unwrap().content, content);
+
+        // 2. Create Pane 2 (split leaf1 to the right)
+        let leaf2 = crate::workspace::LeafId::new();
+        assert!(state.workspace.split_leaf(leaf1, crate::workspace::SplitDirection::Row, leaf2));
+        state.workspace.active_leaf = leaf2;
+
+        // 3. Open the SAME note in Pane 2 via open_note (simulating clicking in sidebar or search)
+        state.open_note(note_path.clone());
+
+        // Still exactly one document in state.documents (no new DocumentId, no duplicate buffer)
+        assert_eq!(state.documents.len(), 1);
+        let doc_id_after = state.find_document_by_path(&note_path).unwrap();
+        assert_eq!(doc_id, doc_id_after);
+
+        // Active note in leaf2 holds the content, buffer in state.documents is empty
+        assert_eq!(state.active_note.as_ref().unwrap().content, content);
+        assert!(state.documents.get(&doc_id).unwrap().content().is_empty());
+
+        // Both leaves point to the SAME doc_id
+        let l1_tab = state.leaves.get(&leaf1).unwrap().active_tab().unwrap();
+        let l2_tab = state.leaves.get(&leaf2).unwrap().active_tab().unwrap();
+        assert_eq!(l1_tab.content, crate::workspace::TabContent::Document { id: doc_id });
+        assert_eq!(l2_tab.content, crate::workspace::TabContent::Document { id: doc_id });
+
+        // 4. Close tab in Pane 2: note is still open in Pane 1, so document buffer is NOT dropped
+        let closed_p = state.close_leaf_tab(leaf2, 0);
+        assert_eq!(closed_p, None); // still open, returns None
+        assert!(state.documents.contains_key(&doc_id));
+
+        // 5. Close tab in Pane 1: now note is no longer open anywhere, document buffer is unloaded!
+        let closed_p2 = state.close_leaf_tab(leaf1, 0);
+        assert_eq!(closed_p2, Some(note_path));
+        assert_eq!(state.documents.len(), 0);
+        assert!(state.find_document_by_path(Path::new("SharedNote.md")).is_none());
+
+        let _ = std::fs::remove_dir_all(&ws_path);
+    }
+
+    #[test]
+    fn test_leaf_tab_isolation_and_close_all_tabs() {
+        let ws_path = std::env::temp_dir().join(format!("aquilum_test_isolation_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&ws_path);
+        let note1_path = ws_path.join("Note1.md");
+        let note2_path = ws_path.join("Note2.md");
+        let note3_path = ws_path.join("Note3.md");
+
+        std::fs::write(&note1_path, "Content 1").unwrap();
+        std::fs::write(&note2_path, "Content 2").unwrap();
+        std::fs::write(&note3_path, "Content 3").unwrap();
+
+        let mut state = AppState::new();
+        state.workspace_path = Some(ws_path.clone());
+
+        // Leaf 1: Note 1 and Note 2
+        let leaf1 = state.workspace.active_leaf;
+        state.leaves.get_mut(&leaf1).unwrap().tabs.clear();
+        state.open_note(note1_path.clone());
+        let doc1_id = state.find_document_by_path(&note1_path).unwrap();
+        state.open_note(note2_path.clone());
+        let doc2_id = state.find_document_by_path(&note2_path).unwrap();
+
+        // Create Leaf 2 (split right): Note 2 and Note 3
+        let leaf2 = crate::workspace::LeafId::new();
+        state.workspace.split_leaf(leaf1, crate::workspace::SplitDirection::Row, leaf2);
+        state.leaves.insert(leaf2, crate::workspace::LeafState::new(leaf2));
+        state.workspace.active_leaf = leaf2;
+        state.open_note(note2_path.clone());
+        state.open_note(note3_path.clone());
+        let doc3_id = state.find_document_by_path(&note3_path).unwrap();
+
+        // Verify Leaf 1 has 2 tabs, Leaf 2 has 2 tabs
+        assert_eq!(state.leaves.get(&leaf1).unwrap().tabs.len(), 2);
+        assert_eq!(state.leaves.get(&leaf2).unwrap().tabs.len(), 2);
+
+        // Verify all 3 documents are in documents map
+        assert!(state.documents.contains_key(&doc1_id));
+        assert!(state.documents.contains_key(&doc2_id));
+        assert!(state.documents.contains_key(&doc3_id));
+
+        // Now simulate closing all tabs in Leaf 1:
+        // doc1 is only in Leaf 1 -> should be removed.
+        // doc2 is also in Leaf 2 -> should remain!
+        if let Some(leaf) = state.leaves.get_mut(&leaf1) {
+            let doc_ids: Vec<crate::document_buffer::DocumentId> = leaf
+                .tabs
+                .iter()
+                .filter_map(|t| match &t.content {
+                    crate::workspace::TabContent::Document { id } => Some(*id),
+                    _ => None,
+                })
+                .collect();
+            let tab_ids: Vec<crate::workspace::TabId> = leaf.tabs.iter().map(|t| t.id).collect();
+            for tid in tab_ids {
+                state.views.remove(&tid);
+            }
+            leaf.tabs.clear();
+            leaf.tabs.push(crate::workspace::Tab::new_empty());
+            leaf.active_tab_index = 0;
+
+            for doc_id in doc_ids {
+                let still_open = state.leaves.values().any(|l| {
+                    l.tabs.iter().any(|t| match &t.content {
+                        crate::workspace::TabContent::Document { id } => id == &doc_id,
+                        _ => false,
+                    })
+                });
+                if !still_open {
+                    if let Some(doc) = state.documents.remove(&doc_id) {
+                        let norm = AppState::normalize_path(&doc.path);
+                        state.by_path.remove(&norm);
+                        state.open_tabs.retain(|p| p != &doc.path);
+                    }
+                }
+            }
+        }
+
+        // Leaf 1 now has 1 empty tab
+        let l1 = state.leaves.get(&leaf1).unwrap();
+        assert_eq!(l1.tabs.len(), 1);
+        assert!(matches!(l1.tabs[0].content, crate::workspace::TabContent::Empty));
+
+        // Leaf 2 tabs are 100% UNCHANGED and intact!
+        let l2 = state.leaves.get(&leaf2).unwrap();
+        assert_eq!(l2.tabs.len(), 2);
+
+        // doc1 removed from state
+        assert!(!state.documents.contains_key(&doc1_id));
+        assert!(state.find_document_by_path(&note1_path).is_none());
+
+        // doc2 and doc3 are still in state and still open in Leaf 2
+        assert!(state.documents.contains_key(&doc2_id));
+        assert!(state.documents.contains_key(&doc3_id));
+        assert!(state.find_document_by_path(&note2_path).is_some());
+        assert!(state.find_document_by_path(&note3_path).is_some());
+
+        let _ = std::fs::remove_dir_all(&ws_path);
+    }
+
+    #[test]
+    fn test_memory_snapshots_multi_window_sharing_and_complete_unloading() {
+        let ws_path = std::env::temp_dir().join(format!("aquilum_test_mem_snap_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&ws_path);
+        let note_a_path = ws_path.join("NoteA.md");
+        let note_b_path = ws_path.join("NoteB.md");
+
+        // 10,000 bytes text for Note A, 25,000 bytes text for Note B
+        let text_a = "A".repeat(10_000);
+        let text_b = "B".repeat(25_000);
+        std::fs::write(&note_a_path, &text_a).unwrap();
+        std::fs::write(&note_b_path, &text_b).unwrap();
+
+        let mut state = AppState::new_empty();
+        state.workspace_path = Some(ws_path.clone());
+
+        // Snapshot 0: Baseline (no documents loaded)
+        let snap0 = state.memory_snapshot();
+        assert_eq!(snap0.document_count, 0);
+        assert_eq!(snap0.document_bytes, 0);
+        assert_eq!(snap0.by_path_count, 0);
+        assert_eq!(snap0.view_count, 0);
+        assert_eq!(snap0.active_note_bytes, 0);
+
+        // 1. Open Note A in Window 1 (Pane 1)
+        let leaf1 = state.workspace.active_leaf;
+        state.open_note(note_a_path.clone());
+        let snap1 = state.memory_snapshot();
+        assert_eq!(snap1.document_count, 1);
+        assert_eq!(snap1.by_path_count, 1);
+        assert_eq!(snap1.document_bytes + snap1.active_note_bytes, 10_000);
+
+        // 2. Split Window 1 into Window 2 and open the SAME Note A in Window 2
+        let leaf2 = crate::workspace::LeafId::new();
+        assert!(state.workspace.split_leaf(leaf1, crate::workspace::SplitDirection::Row, leaf2));
+        state.workspace.active_leaf = leaf2;
+        state.open_note(note_a_path.clone());
+
+        let snap2 = state.memory_snapshot();
+        // Memory MUST NOT double: document_count remains 1, single shared buffer
+        assert_eq!(snap2.document_count, 1, "Must reuse single document buffer for Note A");
+        assert_eq!(snap2.by_path_count, 1);
+        assert_eq!(snap2.document_bytes + snap2.active_note_bytes, 10_000, "Zero duplicate buffer memory!");
+
+        // 3. Split Window 2 into Window 3 and open Note B in Window 3
+        let leaf3 = crate::workspace::LeafId::new();
+        assert!(state.workspace.split_leaf(leaf2, crate::workspace::SplitDirection::Column, leaf3));
+        state.workspace.active_leaf = leaf3;
+        state.open_note(note_b_path.clone());
+
+        let snap3 = state.memory_snapshot();
+        assert_eq!(snap3.document_count, 2);
+        assert_eq!(snap3.by_path_count, 2);
+        assert_eq!(snap3.document_bytes + snap3.active_note_bytes, 35_000);
+
+        // 4. Close Window 3 (which holds Note B):
+        // Note B is not open anywhere else -> completely unloaded from memory!
+        let next_leaf = state.close_leaf(leaf3);
+        assert!(next_leaf.is_some());
+
+        let snap4 = state.memory_snapshot();
+        assert_eq!(snap4.document_count, 1, "Note B must be completely unloaded");
+        assert_eq!(snap4.by_path_count, 1);
+        assert_eq!(snap4.document_bytes + snap4.active_note_bytes, 10_000, "Only Note A remains");
+        assert!(state.find_document_by_path(&note_b_path).is_none());
+
+        // 5. Close Window 2:
+        // Window 2 holds Note A, but Note A is still open in Window 1 -> buffer preserved
+        let next_leaf2 = state.close_leaf(leaf2);
+        assert!(next_leaf2.is_some());
+
+        let snap5 = state.memory_snapshot();
+        assert_eq!(snap5.document_count, 1, "Note A is still open in Window 1");
+        assert_eq!(snap5.by_path_count, 1);
+        assert!(state.find_document_by_path(&note_a_path).is_some());
+
+        // 6. Close the last tab in Window 1 (holding Note A):
+        // Now Note A is completely closed everywhere -> fully unloaded from memory!
+        state.close_leaf_tab(leaf1, 0);
+
+        let snap6 = state.memory_snapshot();
+        assert_eq!(snap6.document_count, 0, "All document buffers must be unloaded");
+        assert_eq!(snap6.document_bytes, 0);
+        assert_eq!(snap6.by_path_count, 0);
+        assert_eq!(snap6.view_count, 0);
+        assert_eq!(snap6.active_note_bytes, 0);
+        assert_eq!(snap6, snap0, "Memory footprint must strictly return to initial baseline!");
+
+        let _ = std::fs::remove_dir_all(&ws_path);
+    }
+
+    #[test]
+    fn test_memory_snapshots_close_other_tabs_and_close_to_right() {
+        let ws_path = std::env::temp_dir().join(format!("aquilum_test_close_multi_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&ws_path);
+        let paths: Vec<PathBuf> = (0..5).map(|i| {
+            let p = ws_path.join(format!("Note{}.md", i));
+            std::fs::write(&p, format!("Content for note {}", i)).unwrap();
+            p
+        }).collect();
+
+        let mut state = AppState::new_empty();
+        state.workspace_path = Some(ws_path.clone());
+        let leaf = state.workspace.active_leaf;
+
+        // Open all 5 notes
+        for p in &paths {
+            state.open_note(p.clone());
+        }
+
+        let snap_opened = state.memory_snapshot();
+        assert_eq!(snap_opened.document_count, 5);
+        assert_eq!(snap_opened.by_path_count, 5);
+
+        // 1. Simulate close_tabs_to_right keeping tabs 0, 1, 2 (closing 3 and 4)
+        if let Some(l) = state.leaves.get_mut(&leaf) {
+            l.tabs.truncate(3);
+        }
+        state.cleanup_orphaned_documents_and_views();
+
+        let snap_truncated = state.memory_snapshot();
+        assert_eq!(snap_truncated.document_count, 3);
+        assert_eq!(snap_truncated.by_path_count, 3);
+        assert_eq!(snap_truncated.view_count, 3);
+        assert!(state.find_document_by_path(&paths[3]).is_none());
+        assert!(state.find_document_by_path(&paths[4]).is_none());
+
+        // 2. Simulate close_other_tabs keeping only tab 1
+        if let Some(l) = state.leaves.get_mut(&leaf) {
+            let keep = l.tabs.remove(1);
+            l.tabs.clear();
+            l.tabs.push(keep);
+            l.active_tab_index = 0;
+        }
+        state.cleanup_orphaned_documents_and_views();
+
+        let snap_others = state.memory_snapshot();
+        assert_eq!(snap_others.document_count, 1);
+        assert_eq!(snap_others.by_path_count, 1);
+        assert_eq!(snap_others.view_count, 1);
+
+        // 3. Close the last tab
+        state.close_leaf_tab(leaf, 0);
+        let snap_final = state.memory_snapshot();
+        assert_eq!(snap_final.document_count, 0);
+        assert_eq!(snap_final.document_bytes, 0);
+        assert_eq!(snap_final.by_path_count, 0);
+        assert_eq!(snap_final.view_count, 0);
+        assert_eq!(snap_final.active_note_bytes, 0);
+
+        let _ = std::fs::remove_dir_all(&ws_path);
+    }
+
+    #[test]
+    fn test_memory_snapshots_session_restore_shared_zero_duplicate() {
+        let ws_path = std::env::temp_dir().join(format!("aquilum_test_session_restore_mem_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&ws_path);
+        let shared_path = ws_path.join("Shared.md");
+        let content = "Shared Content Across Multiple Windows".to_string();
+        std::fs::write(&shared_path, &content).unwrap();
+
+        let mut state = AppState::new_empty();
+        state.workspace_path = Some(ws_path.clone());
+        let l1 = state.workspace.active_leaf;
+        state.open_note(shared_path.clone());
+
+        let l2 = crate::workspace::LeafId::new();
+        state.workspace.split_leaf(l1, crate::workspace::SplitDirection::Row, l2);
+        state.workspace.active_leaf = l2;
+        state.open_note(shared_path.clone());
+
+        // Export session
+        let session = state.export_workspace_session_v2();
+
+        // Restore into a fresh state instance
+        let mut restored_state = AppState::new_empty();
+        restored_state.workspace_path = Some(ws_path.clone());
+        restored_state.restore_workspace_session_v2(session);
+
+        let snap = restored_state.memory_snapshot();
+        // Exactly one document buffer restored and shared across both windows
+        assert_eq!(snap.document_count, 1);
+        assert_eq!(snap.by_path_count, 1);
+        assert_eq!(snap.document_bytes, content.len());
+
+        let _ = std::fs::remove_dir_all(&ws_path);
+    }
+
+    #[test]
+    fn test_handle_file_deleted_synchronizes_all_leaves_and_unloads_memory() {
+        let mut state = AppState::new_empty();
+        let ws_path = std::env::temp_dir().join(format!("vibe_test_delete_sync_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&ws_path);
+        let note_path = ws_path.join("sync_delete.md");
+        let content = "# To Be Deleted\nContent to be removed.".to_string();
+        std::fs::write(&note_path, &content).unwrap();
+
+        state.workspace_path = Some(ws_path.clone());
+
+        // Split into 2 leaves (windows)
+        let l1 = state.workspace.active_leaf;
+        let l2 = crate::workspace::LeafId::new();
+        state.workspace.split_leaf(l1, crate::workspace::SplitDirection::Row, l2);
+        state.leaves.insert(l2, LeafState::new(l2));
+
+        // Open the same file in both windows
+        state.workspace.active_leaf = l1;
+        state.open_note(note_path.clone());
+        state.workspace.active_leaf = l2;
+        state.open_note(note_path.clone());
+
+        let snap_before = state.memory_snapshot();
+        assert_eq!(snap_before.document_count, 1);
+        assert_eq!(snap_before.by_path_count, 1);
+
+        // Delete the file using handle_file_deleted
+        let closed = state.handle_file_deleted(&note_path, true);
+        assert!(closed);
+
+        let snap_after = state.memory_snapshot();
+        // Document must be completely unloaded from memory
+        assert_eq!(snap_after.document_count, 0);
+        assert_eq!(snap_after.by_path_count, 0);
+        assert_eq!(snap_after.document_bytes, 0);
+        assert_eq!(snap_after.open_tabs_count, 0);
+        assert!(state.active_note.is_none());
+        assert!(!state.open_tabs.contains(&note_path));
+        assert!(!state.session.open_tabs.contains(&note_path));
+        assert!(!state.nav_history.contains(&note_path));
+
+        let _ = std::fs::remove_dir_all(&ws_path);
+    }
+
+    #[test]
+    fn test_handle_file_deleted_preserves_dirty_file_when_configured() {
+        let mut state = AppState::new_empty();
+        let ws_path = std::env::temp_dir().join(format!("vibe_test_delete_dirty_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&ws_path);
+        let note_path = ws_path.join("dirty_note.md");
+        let content = "# Unsaved edits\nPlease do not lose me!".to_string();
+        std::fs::write(&note_path, &content).unwrap();
+
+        state.workspace_path = Some(ws_path.clone());
+        state.open_note(note_path.clone());
+
+        // Mark document as dirty
+        let doc_id = state.find_document_by_path(&note_path).unwrap();
+        state.documents.get_mut(&doc_id).unwrap().is_dirty = true;
+        if let Some(ref mut n) = state.active_note {
+            n.is_dirty = true;
+        }
+
+        // When keep_if_dirty is true, should NOT close the tab
+        let closed = state.handle_file_deleted(&note_path, true);
+        assert!(!closed, "Dirty document must be preserved when keep_if_dirty is true");
+
+        let snap = state.memory_snapshot();
+        assert_eq!(snap.document_count, 1);
+        assert_eq!(snap.by_path_count, 1);
+        assert!(state.documents.contains_key(&doc_id));
+
+        // When keep_if_dirty is false, should close anyway
+        let force_closed = state.handle_file_deleted(&note_path, false);
+        assert!(force_closed, "Document must be closed when keep_if_dirty is false");
+        let snap_after = state.memory_snapshot();
+        assert_eq!(snap_after.document_count, 0);
+
+        let _ = std::fs::remove_dir_all(&ws_path);
+    }
+
+    #[test]
+    fn test_handle_file_renamed_updates_all_windows_and_tabs_synchronously() {
+        let mut state = AppState::new_empty();
+        let ws_path = std::env::temp_dir().join(format!("vibe_test_rename_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&ws_path);
+        let old_path = ws_path.join("original.md");
+        let new_path = ws_path.join("renamed.md");
+        let content = "# Original Note\nHello world.".to_string();
+        std::fs::write(&old_path, &content).unwrap();
+
+        state.workspace_path = Some(ws_path.clone());
+
+        // Split into 2 leaves
+        let l1 = state.workspace.active_leaf;
+        let l2 = crate::workspace::LeafId::new();
+        state.workspace.split_leaf(l1, crate::workspace::SplitDirection::Row, l2);
+        state.leaves.insert(l2, LeafState::new(l2));
+
+        // Open original file in both leaves
+        state.workspace.active_leaf = l1;
+        state.open_note(old_path.clone());
+        state.workspace.active_leaf = l2;
+        state.open_note(old_path.clone());
+
+        let doc_id = state.find_document_by_path(&old_path).unwrap();
+        assert_eq!(state.documents.get(&doc_id).unwrap().title, "original");
+
+        // Rename the file
+        let renamed = state.handle_file_renamed(&old_path, &new_path);
+        assert!(renamed);
+
+        // Verify document path and title updated
+        let doc = state.documents.get(&doc_id).unwrap();
+        assert_eq!(doc.path, new_path);
+        assert_eq!(doc.title, "renamed");
+
+        // Verify by_path map updated
+        assert!(state.find_document_by_path(&old_path).is_none());
+        assert_eq!(state.find_document_by_path(&new_path), Some(doc_id));
+
+        // Verify open_tabs and active_note updated
+        assert!(state.open_tabs.contains(&new_path));
+        assert!(!state.open_tabs.contains(&old_path));
+        if let Some(ref note) = state.active_note {
+            assert_eq!(note.path, new_path);
+            assert_eq!(note.title, "renamed");
+        }
+
+        let _ = std::fs::remove_dir_all(&ws_path);
+    }
+
+    #[test]
+    fn test_check_fs_changes_atomic_save_debounce() {
+        let mut state = AppState::new_empty();
+        let ws_path = std::env::temp_dir().join(format!("vibe_test_atomic_save_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&ws_path);
+        let note_path = ws_path.join("atomic_doc.md");
+        std::fs::write(&note_path, "# Atomic Test").unwrap();
+
+        state.workspace_path = Some(ws_path.clone());
+        state.open_note(note_path.clone());
+
+        let mut pending = HashMap::new();
+        let debounce = Duration::from_millis(200);
+
+        // 1. Initial check: file exists -> no events
+        let evs = state.check_fs_changes(&mut pending, debounce);
+        assert!(evs.is_empty());
+        assert!(pending.is_empty());
+
+        // 2. Simulate unlink (file deleted temporarily)
+        std::fs::remove_file(&note_path).unwrap();
+
+        // 3. First check after deletion: queued into pending, no Deleted event yet
+        let evs1 = state.check_fs_changes(&mut pending, debounce);
+        assert!(evs1.is_empty(), "First tick must not emit Deleted due to debounce");
+        assert!(pending.contains_key(&note_path));
+
+        // 4. Simulate atomic save: file reappears before debounce expires!
+        std::fs::write(&note_path, "# Atomic Test Replaced").unwrap();
+        let evs2 = state.check_fs_changes(&mut pending, debounce);
+        assert!(evs2.is_empty(), "Must not emit Deleted if file reappeared");
+        assert!(!pending.contains_key(&note_path), "Pending deletion must be cancelled");
+
+        // 5. Now delete for real and wait past debounce
+        std::fs::remove_file(&note_path).unwrap();
+        let _ = state.check_fs_changes(&mut pending, debounce);
+        assert!(pending.contains_key(&note_path));
+
+        // Sleep to exceed debounce window
+        std::thread::sleep(Duration::from_millis(250));
+
+        let evs3 = state.check_fs_changes(&mut pending, debounce);
+        assert_eq!(evs3, vec![FsChangeEvent::Deleted(note_path)]);
+        assert!(pending.is_empty());
+
+        let _ = std::fs::remove_dir_all(&ws_path);
     }
 }
 

@@ -1,5 +1,5 @@
 use gpui::{
-    div, prelude::*, px, rgb, Context, IntoElement, MouseButton, Styled,
+    div, prelude::*, px, rgb, Context, IntoElement, MouseButton, MouseDownEvent, Styled,
 };
 use crate::icons;
 use crate::theme::Theme;
@@ -14,6 +14,12 @@ impl AppView {
             }
         }
         self.commit_title_rename_internal();
+        for leaf in self.state.leaves.values_mut() {
+            leaf.tabs.clear();
+            leaf.tabs.push(crate::workspace::Tab::new_empty());
+            leaf.active_tab_index = 0;
+        }
+        self.state.cleanup_orphaned_documents_and_views();
         self.state.open_tabs.clear();
         self.state.active_note = None;
         self.state.active_empty_tab = None;
@@ -54,6 +60,63 @@ impl AppView {
                     this.open_tabs_popup(window, cx);
                 }
             }))
+    }
+
+    /// Renders the chevron-down button for opening the tabs dropdown menu for a specific leaf/window.
+    pub fn render_leaf_tabs_dropdown_button(
+        &self,
+        leaf_id: crate::workspace::LeafId,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let is_tabs_popup_open_for_leaf = self.tabs_popup_leaf == Some(leaf_id);
+        div()
+            .id(gpui::ElementId::Name(format!("leaf-btn-tabs-dropdown-{}", leaf_id.0).into()))
+            .flex()
+            .items_center()
+            .justify_center()
+            .h_full()
+            .w(px(32.0))
+            .flex_shrink_0()
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                if this.tabs_popup_leaf == Some(leaf_id) {
+                    this.close_tabs_popup(cx);
+                } else {
+                    let x: f32 = event.position.x.into();
+                    let y: f32 = event.position.y.into();
+                    this.open_leaf_tabs_popup(leaf_id, x, y, window, cx);
+                }
+            }))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    if let Some((l, _)) = this.hovered_tab {
+                        if l == leaf_id {
+                            this.hovered_tab = None;
+                            cx.notify();
+                        }
+                    }
+                }
+            }))
+            .child(
+                div()
+                    .id(gpui::ElementId::Name(format!("leaf-btn-tabs-dropdown-inner-{}", leaf_id.0).into()))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(28.0))
+                    .h(px(28.0))
+                    .rounded_md()
+                    .cursor_pointer()
+                    .when(is_tabs_popup_open_for_leaf, |d| d.bg(theme.bg_hover))
+                    .hover(|h| h.bg(theme.bg_hover))
+                    .child(icons::icon(
+                        icons::ICON_CHEVRON_DOWN,
+                        13.0,
+                        if is_tabs_popup_open_for_leaf { theme.text_primary } else { theme.text_muted },
+                    )),
+            )
     }
 
     /// Renders the right sidebar toggle button.
@@ -170,7 +233,7 @@ impl AppView {
                         cx.stop_propagation();
                     })
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.save_on_exit(window);
+                        this.prepare_shutdown(window, cx);
                         cx.quit();
                     }))
             })

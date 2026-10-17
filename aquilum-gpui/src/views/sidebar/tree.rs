@@ -377,7 +377,7 @@ impl AppView {
                 }))
                 .on_mouse_down(MouseButton::Middle, cx.listener(|this, _: &MouseDownEvent, _, cx| {
                     // One gesture at a time: a border drag already owns the pointer.
-                    if this.is_resizing_sidebar {
+                    if this.is_resizing_any() {
                         return;
                     }
                     cx.stop_propagation();
@@ -454,7 +454,7 @@ impl AppView {
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                     // One gesture at a time: a border drag already owns the pointer, so a
                     // track click must not jump the list out from under it.
-                    if this.is_resizing_sidebar {
+                    if this.is_resizing_any() {
                         return;
                     }
                     cx.stop_propagation();
@@ -463,7 +463,7 @@ impl AppView {
                     cx.notify();
                 }),
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                    if this.is_resizing_sidebar {
+                    if this.is_resizing_any() {
                         return;
                     }
                     cx.stop_propagation();

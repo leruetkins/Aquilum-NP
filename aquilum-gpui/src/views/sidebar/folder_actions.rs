@@ -154,8 +154,11 @@ pub fn duplicate_folder(folder: &Path) -> Result<PathBuf, String> {
     Ok(candidate)
 }
 
-/// Renames a folder to a new name.
+/// Renames a folder or file to a new name.
 pub fn rename_folder(src: &Path, new_name: &str) -> Result<PathBuf, String> {
+    if src.is_file() {
+        return crate::views::sidebar::file_actions::rename_file(src, new_name);
+    }
     let trimmed = new_name.trim();
     if trimmed.is_empty() {
         return Err("Имя папки не может быть пустым".to_string());
@@ -208,12 +211,16 @@ pub fn move_folder(src: &Path, dest_parent: &Path) -> Result<PathBuf, String> {
     Ok(target)
 }
 
-/// Deletes a folder and all its contents.
+/// Deletes a folder and all its contents, or a single file if target is a file.
 pub fn delete_folder_recursive(folder: &Path) -> Result<(), String> {
     if !folder.exists() {
         return Ok(());
     }
-    fs::remove_dir_all(folder).map_err(|e| format!("Ошибка удаления папки: {}", e))
+    if folder.is_dir() {
+        fs::remove_dir_all(folder).map_err(|e| format!("Ошибка удаления папки: {}", e))
+    } else {
+        fs::remove_file(folder).map_err(|e| format!("Ошибка удаления файла: {}", e))
+    }
 }
 
 /// Launches the native OS explorer window showing this folder.

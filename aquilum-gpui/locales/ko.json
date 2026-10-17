@@ -147,7 +147,11 @@
     "files": {
       "title": "파일 및 미디어",
       "attachments_folder": "첨부파일 폴더",
-      "attachments_folder_desc": "붙여넣은 이미지, 비디오, 문서가 저장되는 곳"
+      "attachments_folder_desc": "붙여넣은 이미지, 비디오, 문서가 저장되는 곳",
+      "close_deleted_tabs": "Close tabs of deleted files",
+      "close_deleted_tabs_desc": "Automatically close all related tabs and release resources when a file is deleted on disk or by a plugin",
+      "keep_modified_on_delete": "Keep tab open on delete if modified",
+      "keep_modified_on_delete_desc": "Keep the tab open when a file is deleted if the document has unsaved edits"
     },
     "analysis": {
       "title": "링크 분석 방법",
@@ -305,7 +309,9 @@
     "move_to_new_window": "새창으로 이동",
     "pinned_status": "탭 \"{}\"이 고정되었습니다.",
     "link_tab_status": "탭 연결이 곧 제공될 예정입니다.",
-    "new_window_status": "새 창으로 이동이 곧 제공됩니다"
+    "new_window_status": "새 창으로 이동이 곧 제공됩니다",
+    "split_right": "오른쪽으로 분할",
+    "split_down": "아래로 분할"
   },
   "editor": {
     "create_note": "메모 만들기",

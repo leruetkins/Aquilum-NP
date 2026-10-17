@@ -112,9 +112,11 @@ impl AppView {
         {
             match folder_actions::rename_folder(&folder_path, &new_name) {
                 Ok(new_path) => {
+                    self.state.handle_file_renamed(&folder_path, &new_path);
                     self.state.expanded_folders.remove(folder_path);
                     self.state.expanded_folders.insert(new_path);
                     self.state.reload_file_tree();
+                    self.state.publish_snapshot();
                     self.state.status_text = self.t_fmt("sidebar.folder_renamed", &[new_name]);
                     self.folder_modal = FolderModal::None;
                 }
@@ -133,8 +135,13 @@ impl AppView {
         if let FolderModal::Delete { ref folder_path, ref folder_name } = self.folder_modal.clone() {
             match folder_actions::delete_folder_recursive(&folder_path) {
                 Ok(_) => {
+                    let config = self.state.settings.get_config();
+                    if config.files.close_deleted_tabs {
+                        self.state.handle_file_deleted(&folder_path, config.files.keep_modified_on_delete);
+                    }
                     self.state.expanded_folders.remove(folder_path);
                     self.state.reload_file_tree();
+                    self.state.publish_snapshot();
                     self.state.status_text = self.t_fmt("sidebar.folder_deleted", &[folder_name]);
                     self.folder_modal = FolderModal::None;
                 }
@@ -152,10 +159,12 @@ impl AppView {
         if let FolderModal::Move { ref folder_path, .. } = self.folder_modal.clone() {
             match folder_actions::move_folder(&folder_path, &dest_parent) {
                 Ok(new_path) => {
+                    self.state.handle_file_renamed(&folder_path, &new_path);
                     self.state.expanded_folders.remove(folder_path);
                     self.state.expanded_folders.insert(dest_parent);
                     self.state.expanded_folders.insert(new_path);
                     self.state.reload_file_tree();
+                    self.state.publish_snapshot();
                     self.state.status_text = self.t("sidebar.folder_moved");
                     self.folder_modal = FolderModal::None;
                 }

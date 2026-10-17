@@ -31,6 +31,11 @@ pub struct LineIndex {
 }
 
 impl LineIndex {
+    /// Empty index for uninitialized buffers.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
     /// Build the index in one `memchr` pass over `text`.
     pub fn new(text: &str) -> Self {
         let bytes = text.as_bytes();

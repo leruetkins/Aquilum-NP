@@ -28,17 +28,6 @@ impl AppView {
             .w(px(1.0))
             .h_full()
             .bg(resizer_color)
-            .when(is_resizer_active, |this| {
-                this.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .right(px(-1.0))
-                        .w(px(3.0))
-                        .bg(theme.accent),
-                )
-            })
             .child(
                 div()
                     .id("right-sidebar-resizer-hitbox")

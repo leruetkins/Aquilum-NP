@@ -147,7 +147,11 @@
     "files": {
       "title": "文件和媒體",
       "attachments_folder": "附件資料夾",
-      "attachments_folder_desc": "貼上的圖像、影片和文件的儲存位置"
+      "attachments_folder_desc": "貼上的圖像、影片和文件的儲存位置",
+      "close_deleted_tabs": "Close tabs of deleted files",
+      "close_deleted_tabs_desc": "Automatically close all related tabs and release resources when a file is deleted on disk or by a plugin",
+      "keep_modified_on_delete": "Keep tab open on delete if modified",
+      "keep_modified_on_delete_desc": "Keep the tab open when a file is deleted if the document has unsaved edits"
     },
     "analysis": {
       "title": "連結分析方法",
@@ -305,7 +309,9 @@
     "move_to_new_window": "移至新視窗",
     "pinned_status": "選項卡“{}”已固定",
     "link_tab_status": "標籤連結即將推出",
-    "new_window_status": "即將移至新視窗"
+    "new_window_status": "即將移至新視窗",
+    "split_right": "向右分割",
+    "split_down": "向下分割"
   },
   "editor": {
     "create_note": "建立註釋",

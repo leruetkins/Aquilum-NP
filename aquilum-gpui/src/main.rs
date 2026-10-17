@@ -22,9 +22,11 @@ pub mod save_manager;
 pub mod settings;
 pub mod snap;
 pub mod state;
+pub mod document_buffer;
 pub mod theme;
 pub mod vault;
 pub mod views;
+pub mod workspace;
 
 use gpui::{App, AppContext, Application, WindowOptions};
 use views::app_view::AppView;
@@ -131,17 +133,22 @@ fn main() {
                                     });
                                 }
                             }
-                            timer_executor.timer(std::time::Duration::from_millis(100)).await;
+                            let weak = weak_app.clone();
+                            let _ = cx.update(|cx| {
+                                if let Some(app) = weak.upgrade() {
+                                    let _ = app.update(cx, |this, cx| {
+                                        this.poll_fs_changes(cx);
+                                    });
+                                }
+                            });
+                            timer_executor.timer(std::time::Duration::from_millis(150)).await;
                         }
                     }).detach();
 
                     window.on_window_should_close(cx, move |window, cx| {
                         if let Some(view) = weak.upgrade() {
                             let _ = view.update(cx, |app, cx| {
-                                app.catalog_window_manager.close_if_open(cx);
-                                app.settings_window_manager.close_if_open(cx);
-                                app.unload_all_plugins();
-                                app.save_on_exit(window);
+                                app.prepare_shutdown(window, cx);
                             });
                         }
                         true

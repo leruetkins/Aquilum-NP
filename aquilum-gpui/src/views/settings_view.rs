@@ -4158,7 +4158,7 @@ impl SettingsView {
     // =========================================================================
 
     /// Renders file attachment paths and storage configuration tab.
-    fn render_files_tab(&self, _cx: &Context<Self>) -> gpui::Div {
+    fn render_files_tab(&self, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
         let config = &self.config;
 
@@ -4176,6 +4176,30 @@ impl SettingsView {
                     .text_xs()
                     .text_color(theme.text_primary)
                     .child(config.files.folder.clone()),
+            ),
+            self.render_setting_row(
+                &self.t("settings.files.close_deleted_tabs"),
+                Some(&self.t("settings.files.close_deleted_tabs_desc")),
+                div()
+                    .id("row-close-deleted-tabs")
+                    .cursor_pointer()
+                    .child(self.render_toggle_switch(config.files.close_deleted_tabs))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.config.files.close_deleted_tabs = !this.config.files.close_deleted_tabs;
+                        this.save_settings(cx);
+                    })),
+            ),
+            self.render_setting_row(
+                &self.t("settings.files.keep_modified_on_delete"),
+                Some(&self.t("settings.files.keep_modified_on_delete_desc")),
+                div()
+                    .id("row-keep-modified-on-delete")
+                    .cursor_pointer()
+                    .child(self.render_toggle_switch(config.files.keep_modified_on_delete))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.config.files.keep_modified_on_delete = !this.config.files.keep_modified_on_delete;
+                        this.save_settings(cx);
+                    })),
             ),
         ];
 

@@ -92,6 +92,24 @@ pub fn register_builtin_commands(registry: &CommandRegistry) {
         hotkey: Some("Ctrl+O".into()),
         callback: Arc::new(|| {}),
     });
+
+    // 10. Разделить справа (Ctrl+\)
+    registry.register(Command {
+        id: "workspace:split-right".into(),
+        name: "Split right".into(),
+        owner: None,
+        hotkey: Some("Ctrl+\\".into()),
+        callback: Arc::new(|| {}),
+    });
+
+    // 11. Разделить снизу (Ctrl+Shift+\)
+    registry.register(Command {
+        id: "workspace:split-down".into(),
+        name: "Split down".into(),
+        owner: None,
+        hotkey: Some("Ctrl+Shift+\\".into()),
+        callback: Arc::new(|| {}),
+    });
 }
 
 #[cfg(test)]

@@ -14,6 +14,8 @@ use crate::views::app_view::AppView;
 pub struct TabContextMenuState {
     pub is_open: bool,
     pub tab_path: PathBuf,
+    pub leaf_id: Option<crate::workspace::LeafId>,
+    pub tab_idx: Option<usize>,
     pub position_x: f32,
     pub position_y: f32,
 }
@@ -23,6 +25,8 @@ impl Default for TabContextMenuState {
         Self {
             is_open: false,
             tab_path: PathBuf::new(),
+            leaf_id: None,
+            tab_idx: None,
             position_x: 0.0,
             position_y: 0.0,
         }
@@ -34,6 +38,8 @@ impl AppView {
     pub fn open_tab_context_menu(
         &mut self,
         tab_path: PathBuf,
+        leaf_id: Option<crate::workspace::LeafId>,
+        tab_idx: Option<usize>,
         x: f32,
         y: f32,
         cx: &mut Context<Self>,
@@ -46,6 +52,8 @@ impl AppView {
         self.tab_context_menu = TabContextMenuState {
             is_open: true,
             tab_path,
+            leaf_id,
+            tab_idx,
             position_x: x,
             position_y: y,
         };
@@ -62,6 +70,26 @@ impl AppView {
 
     /// Closes every open tab except `keep`, switching to it first if needed.
     pub fn close_other_tabs(&mut self, keep: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let active_leaf_id = self.state.workspace.active_leaf;
+        if let Some(leaf) = self.state.leaves.get_mut(&active_leaf_id) {
+            let keep_idx = leaf.tabs.iter().position(|t| match &t.content {
+                crate::workspace::TabContent::Document { id } => {
+                    self.state.documents.get(id).map(|d| d.path.as_path() == keep).unwrap_or(false)
+                }
+                _ => false,
+            });
+            if let Some(keep_i) = keep_idx {
+                let keep_tab = leaf.tabs.remove(keep_i);
+                leaf.tabs.clear();
+                leaf.tabs.push(keep_tab);
+                leaf.active_tab_index = 0;
+                self.state.cleanup_orphaned_documents_and_views();
+                self.select_leaf_tab(active_leaf_id, 0, window, cx);
+                cx.notify();
+                return;
+            }
+        }
+
         if !self.state.open_tabs.iter().any(|p| p == keep) {
             return;
         }
@@ -89,12 +117,97 @@ impl AppView {
 
     /// Closes all tabs strictly to the right of `path` in the tab strip order.
     pub fn close_tabs_to_right(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let active_leaf_id = self.state.workspace.active_leaf;
+        if let Some(leaf) = self.state.leaves.get_mut(&active_leaf_id) {
+            let keep_idx = leaf.tabs.iter().position(|t| match &t.content {
+                crate::workspace::TabContent::Document { id } => {
+                    self.state.documents.get(id).map(|d| d.path.as_path() == path).unwrap_or(false)
+                }
+                _ => false,
+            });
+            if let Some(ix) = keep_idx {
+                leaf.tabs.truncate(ix + 1);
+                if leaf.active_tab_index > ix {
+                    leaf.active_tab_index = ix;
+                }
+                self.state.cleanup_orphaned_documents_and_views();
+                cx.notify();
+                return;
+            }
+        }
+
         let Some(ix) = self.state.open_tabs.iter().position(|p| p == path) else {
             return;
         };
         let to_close: Vec<PathBuf> = self.state.open_tabs.iter().skip(ix + 1).cloned().collect();
         for tab in to_close {
             self.close_tab(&tab, cx);
+        }
+    }
+
+    pub fn split_tab_right(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        self.split_tab_in_direction(path, crate::workspace::SplitDirection::Row, window, cx);
+    }
+
+    pub fn split_tab_down(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        self.split_tab_in_direction(path, crate::workspace::SplitDirection::Column, window, cx);
+    }
+
+    pub fn split_tab_in_direction(
+        &mut self,
+        path: &Path,
+        dir: crate::workspace::SplitDirection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let active_leaf = self.tab_context_menu.leaf_id.unwrap_or(self.state.workspace.active_leaf);
+        let is_empty = crate::state::is_empty_tab_path(path)
+            || path.to_string_lossy() == "newtab"
+            || self.tab_context_menu.leaf_id.and_then(|lid| self.state.leaves.get(&lid))
+                .and_then(|l| self.tab_context_menu.tab_idx.and_then(|idx| l.tabs.get(idx)))
+                .map(|t| matches!(t.content, crate::workspace::TabContent::Empty))
+                .unwrap_or(false);
+
+        if is_empty {
+            let new_leaf_id = crate::workspace::LeafId::new();
+            let mut new_leaf = crate::workspace::LeafState::new(new_leaf_id);
+            new_leaf.tabs.push(crate::workspace::Tab::new_empty());
+            new_leaf.active_tab_index = 0;
+            self.state.workspace.split_leaf(active_leaf, dir, new_leaf_id);
+            self.state.leaves.insert(new_leaf_id, new_leaf);
+            self.switch_to_leaf(new_leaf_id, window, cx);
+            return;
+        }
+
+        let doc_id = if let Some(id) = self.state.find_document_by_path(path) {
+            id
+        } else {
+            let title = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Untitled".to_string());
+            let content = std::fs::read_to_string(path).unwrap_or_default();
+            self.state.get_or_open_document(path, title, content)
+        };
+
+        let outcome = self.state.workspace.open_file(
+            &mut self.state.leaves,
+            doc_id,
+            active_leaf,
+            crate::workspace::OpenMode::OpenInDirection(dir),
+        );
+
+        if let crate::workspace::OpenOutcome::SplitCreated { new_leaf, tab_id } = outcome {
+            let mut view_state = crate::workspace::EditorViewState::new(tab_id, doc_id);
+            if let Some(ref note) = self.state.active_note {
+                if note.path == path {
+                    view_state.cursor_offset = note.cursor_offset;
+                    view_state.scroll_top = self.current_scroll_top_f64();
+                    view_state.viewport.offset = self.editor_anchor_line.get();
+                }
+            }
+            self.state.views.insert(tab_id, view_state);
+            self.switch_to_leaf(new_leaf, window, cx);
         }
     }
 
@@ -143,9 +256,9 @@ impl AppView {
         let window_h: f32 = window_size.height.into();
         let window_w: f32 = window_size.width.into();
 
-        // 7 rows x 30px + 2 dividers (~9px each) + panel padding (~8px).
+        // 9 rows x 30px + 3 dividers (~9px each) + panel padding (~8px).
         let menu_w = 270.0;
-        let menu_h = 244.0;
+        let menu_h = 312.0;
 
         let click_y = self.tab_context_menu.position_y;
         let menu_y = if click_y + menu_h + 36.0 > window_h {
@@ -233,8 +346,14 @@ impl AppView {
                         cx,
                         {
                             let p = target_path.clone();
-                            move |this, _, cx| {
-                                this.close_tab(&p, cx);
+                            let opt_leaf = self.tab_context_menu.leaf_id;
+                            let opt_idx = self.tab_context_menu.tab_idx;
+                            move |this, window, cx| {
+                                if let (Some(lid), Some(idx)) = (opt_leaf, opt_idx) {
+                                    this.close_leaf_tab(lid, idx, window, cx);
+                                } else {
+                                    this.close_tab(&p, cx);
+                                }
                                 this.close_tab_context_menu(cx);
                             }
                         },
@@ -247,7 +366,23 @@ impl AppView {
                         cx,
                         {
                             let p = target_path.clone();
+                            let opt_leaf = self.tab_context_menu.leaf_id;
+                            let opt_idx = self.tab_context_menu.tab_idx;
                             move |this, window, cx| {
+                                if let (Some(lid), Some(idx)) = (opt_leaf, opt_idx) {
+                                    if let Some(leaf) = this.state.leaves.get_mut(&lid) {
+                                        if idx < leaf.tabs.len() {
+                                            let keep_tab = leaf.tabs.remove(idx);
+                                            leaf.tabs.clear();
+                                            leaf.tabs.push(keep_tab);
+                                            leaf.active_tab_index = 0;
+                                            this.state.cleanup_orphaned_documents_and_views();
+                                            this.select_leaf_tab(lid, 0, window, cx);
+                                            this.close_tab_context_menu(cx);
+                                            return;
+                                        }
+                                    }
+                                }
                                 this.close_other_tabs(&p, window, cx);
                                 this.close_tab_context_menu(cx);
                             }
@@ -261,7 +396,30 @@ impl AppView {
                         cx,
                         {
                             let p = target_path.clone();
-                            move |this, _, cx| {
+                            let opt_leaf = self.tab_context_menu.leaf_id;
+                            let opt_idx = self.tab_context_menu.tab_idx;
+                            move |this, window, cx| {
+                                if let (Some(lid), Some(idx)) = (opt_leaf, opt_idx) {
+                                    let active_to_select = if let Some(leaf) = this.state.leaves.get_mut(&lid) {
+                                        if idx + 1 < leaf.tabs.len() {
+                                            leaf.tabs.truncate(idx + 1);
+                                            if leaf.active_tab_index > idx {
+                                                leaf.active_tab_index = idx;
+                                            }
+                                            Some(leaf.active_tab_index)
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    };
+                                    this.state.cleanup_orphaned_documents_and_views();
+                                    if let Some(target_idx) = active_to_select {
+                                        this.select_leaf_tab(lid, target_idx, window, cx);
+                                        this.close_tab_context_menu(cx);
+                                        return;
+                                    }
+                                }
                                 this.close_tabs_to_right(&p, cx);
                                 this.close_tab_context_menu(cx);
                             }
@@ -273,9 +431,46 @@ impl AppView {
                         self.t("tabs.close_all"),
                         theme,
                         cx,
-                        move |this, _, cx| {
-                            this.close_all_tabs(cx);
-                            this.close_tab_context_menu(cx);
+                        {
+                            let opt_leaf = self.tab_context_menu.leaf_id;
+                            move |this, window, cx| {
+                                if let Some(lid) = opt_leaf {
+                                    this.close_leaf_all_tabs(lid, window, cx);
+                                } else {
+                                    this.close_all_tabs(cx);
+                                }
+                                this.close_tab_context_menu(cx);
+                            }
+                        },
+                    ))
+                    .child(self.render_menu_divider(theme))
+                    // --- SECTION 1b: splitting ---
+                    .child(self.render_tab_menu_item(
+                        "tab-menu-split-right",
+                        icons::ICON_SPLIT,
+                        self.t("tabs.split_right"),
+                        theme,
+                        cx,
+                        {
+                            let p = target_path.clone();
+                            move |this, window, cx| {
+                                this.split_tab_right(&p, window, cx);
+                                this.close_tab_context_menu(cx);
+                            }
+                        },
+                    ))
+                    .child(self.render_tab_menu_item(
+                        "tab-menu-split-down",
+                        icons::ICON_SPLIT,
+                        self.t("tabs.split_down"),
+                        theme,
+                        cx,
+                        {
+                            let p = target_path.clone();
+                            move |this, window, cx| {
+                                this.split_tab_down(&p, window, cx);
+                                this.close_tab_context_menu(cx);
+                            }
                         },
                     ))
                     .child(self.render_menu_divider(theme))

@@ -343,6 +343,12 @@ impl AppView {
                 let _ = self.state.plugin_host.send_event(&plugin_id, event);
             }
             ApiRequest::VaultDelete { path } => {
+                let abs_path = if let Some(vault) = &self.state.vault {
+                    vault.resolve(&path).unwrap_or_else(|_| std::path::PathBuf::from(&path))
+                } else {
+                    std::path::PathBuf::from(&path)
+                };
+
                 let result = match &self.state.vault {
                     Some(vault) => vault.delete_file(&path),
                     None => Err(VaultError::NotFound("No vault opened".into())),
@@ -350,6 +356,10 @@ impl AppView {
 
                 let event = match result {
                     Ok(_) => {
+                        let config = self.state.settings.get_config();
+                        if config.files.close_deleted_tabs {
+                            self.state.handle_file_deleted(&abs_path, config.files.keep_modified_on_delete);
+                        }
                         self.state.events.emit_vault(&crate::events::VaultEvent::Delete {
                             path: path.clone(),
                         });
@@ -363,6 +373,17 @@ impl AppView {
                 let _ = self.state.plugin_host.send_event(&plugin_id, event);
             }
             ApiRequest::VaultRename { old_path, new_path } => {
+                let old_abs = if let Some(vault) = &self.state.vault {
+                    vault.resolve(&old_path).unwrap_or_else(|_| std::path::PathBuf::from(&old_path))
+                } else {
+                    std::path::PathBuf::from(&old_path)
+                };
+                let new_abs = if let Some(vault) = &self.state.vault {
+                    vault.resolve(&new_path).unwrap_or_else(|_| std::path::PathBuf::from(&new_path))
+                } else {
+                    std::path::PathBuf::from(&new_path)
+                };
+
                 let result = match &self.state.vault {
                     Some(vault) => vault.rename_file(&old_path, &new_path),
                     None => Err(VaultError::NotFound("No vault opened".into())),
@@ -370,6 +391,7 @@ impl AppView {
 
                 let event = match result {
                     Ok(_) => {
+                        self.state.handle_file_renamed(&old_abs, &new_abs);
                         self.state.events.emit_vault(&crate::events::VaultEvent::Rename {
                             old_path: old_path.clone(),
                             new_path: new_path.clone(),

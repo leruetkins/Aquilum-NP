@@ -331,11 +331,17 @@ impl Default for TemplateSettings {
 #[serde(rename_all = "camelCase", default)]
 pub struct FilesSettings {
     pub folder: String,
+    pub close_deleted_tabs: bool,
+    pub keep_modified_on_delete: bool,
 }
 
 impl Default for FilesSettings {
     fn default() -> Self {
-        Self { folder: "Files".to_string() }
+        Self {
+            folder: "Files".to_string(),
+            close_deleted_tabs: true,
+            keep_modified_on_delete: true,
+        }
     }
 }
 
