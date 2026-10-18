@@ -4264,12 +4264,17 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         in_titlebar: bool,
         available_strip_w: f32,
         theme: &Theme,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &Context<Self>,
     ) -> gpui::Stateful<Div> {
         let leaf = self.state.leaves.get(&leaf_id);
         let active_tab_index = leaf.map(|l| l.active_tab_index).unwrap_or(0);
         let num_tabs = leaf.map(|l| l.tabs.len()).unwrap_or(0);
+
+        // Keep the panel strip an exact whole number of device pixels so its bottom
+        // border coincides with the tabs' bottom and the active-tab baseline mask.
+        let scale = window.scale_factor();
+        let strip_h = if scale > 0.0 { (38.0 * scale).round() / scale } else { 38.0 };
 
         let tab_layout = crate::views::tabs_menu::calculate_tab_widths(
             num_tabs,
@@ -4761,7 +4766,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 .flex()
                 .flex_row()
                 .items_center()
-                .h(px(38.0))
+                .h(px(strip_h))
                 .w_full()
                 .min_w_0()
                 .bg(theme.bg_sidebar)
@@ -5024,6 +5029,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         &self,
         node: &crate::workspace::WorkspaceNode,
         tree_path: &[usize],
+        avail_w: f32,
+        avail_h: f32,
         theme: &Theme,
         window: &mut Window,
         cx: &Context<Self>,
@@ -5046,8 +5053,19 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     container = container.flex_col();
                 }
 
+                // Snap pane boundaries and the divider to whole physical pixels so the
+                // pane's tab strip bottom (and every border on it) lands on an exact
+                // device-pixel row at any split ratio / fractional DPI.
+                let scale = window.scale_factor();
+                let snap = |v: f32| if scale > 0.0 { (v * scale).round() / scale } else { v };
+                let div_len = snap(1.0);
+                let main_avail = if is_row { avail_w } else { avail_h };
+                let cross_avail = if is_row { avail_h } else { avail_w };
+                let mut acc: f32 = 0.0;
+
                 for (idx, child) in children.iter().enumerate() {
                     if idx > 0 {
+                        acc = snap(acc + div_len);
                         let div_idx = idx - 1;
                         let div_path = tree_path.to_vec();
                         let dir = *direction;
@@ -5072,7 +5090,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
                         if is_row {
                             divider_el = divider_el
-                                .w(px(1.0))
+                                .w(px(div_len))
                                 .h_full()
                                 .child(
                                     div()
@@ -5121,7 +5139,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                 );
                         } else {
                             divider_el = divider_el
-                                .h(px(1.0))
+                                .h(px(div_len))
                                 .w_full()
                                 .child(
                                     div()
@@ -5171,32 +5189,46 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     }
 
                     let ratio = ratios.get(idx).copied().unwrap_or(1.0 / children.len().max(1) as f32);
+                    let is_last = idx + 1 == children.len();
+                    // Non-last panes get an exact device-snapped extent; the last pane
+                    // fills the rest, so its (already snapped) top stays pixel-aligned.
+                    let main_size = if is_last {
+                        (snap(main_avail) - acc).max(0.0)
+                    } else {
+                        (snap(acc + ratio * main_avail) - acc).max(0.0)
+                    };
+                    let (cell_w, cell_h) = if is_row {
+                        (main_size, cross_avail)
+                    } else {
+                        (cross_avail, main_size)
+                    };
+
                     let mut child_path = tree_path.to_vec();
                     child_path.push(idx);
 
-                    let child_rendered = self.render_workspace_node(child, &child_path, theme, window, cx);
+                    let child_rendered = self.render_workspace_node(child, &child_path, cell_w, cell_h, theme, window, cx);
                     let mut pane_wrapper = div()
                         .flex()
                         .min_w_0()
                         .min_h_0()
                         .overflow_hidden();
 
-                    let is_last = idx + 1 == children.len();
                     if is_row {
                         if is_last {
                             pane_wrapper = pane_wrapper.flex_1().min_w_0().h_full();
                         } else {
-                            pane_wrapper = pane_wrapper.w(gpui::relative(ratio)).flex_shrink_0().h_full();
+                            pane_wrapper = pane_wrapper.w(px(main_size)).flex_shrink_0().h_full();
                         }
                     } else {
                         if is_last {
                             pane_wrapper = pane_wrapper.flex_1().min_h_0().w_full();
                         } else {
-                            pane_wrapper = pane_wrapper.h(gpui::relative(ratio)).flex_shrink_0().w_full();
+                            pane_wrapper = pane_wrapper.h(px(main_size)).flex_shrink_0().w_full();
                         }
                     }
 
                     container = container.child(pane_wrapper.child(child_rendered));
+                    acc += main_size;
                 }
 
                 container
@@ -7953,9 +7985,15 @@ impl Render for AppView {
                         )
                     })
                     // ----- Центральная область редактора -----
-                    .child(
-                        self.render_workspace_node(&self.state.workspace.root, &[], theme, window, cx)
-                    )
+                    .child({
+                        let win_w: f32 = window.bounds().size.width.into();
+                        let win_h: f32 = window.bounds().size.height.into();
+                        let left_w = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
+                        let right_w = if self.right_sidebar_collapsed { 0.0 } else { self.right_sidebar_width + 1.0 };
+                        let avail_w = (win_w - left_w - right_w).max(100.0);
+                        let avail_h = (win_h - 66.0).max(100.0);
+                        self.render_workspace_node(&self.state.workspace.root, &[], avail_w, avail_h, theme, window, cx)
+                    })
                     // ----- Right Sidebar Resizer & Right Sidebar -----
                     .when(!self.right_sidebar_collapsed, |s| {
                         s.child(self.render_right_resizer(theme, cx))
