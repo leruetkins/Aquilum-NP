@@ -3741,9 +3741,22 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 crumbs
             }
         };
-        let is_dirty = doc_override.map(|d| d.is_dirty).unwrap_or_else(|| {
+        let is_dirty = if let Some(doc) = doc_override {
+            doc.is_dirty
+        } else if let Some(lid) = leaf_id {
+            self.state
+                .leaves
+                .get(&lid)
+                .and_then(|l| l.active_tab())
+                .and_then(|t| match &t.content {
+                    crate::workspace::TabContent::Document { id } => self.state.documents.get(id),
+                    _ => None,
+                })
+                .map(|d| d.is_dirty)
+                .unwrap_or(false)
+        } else {
             self.state.active_document().map(|d| d.is_dirty).unwrap_or(false)
-        });
+        };
         let is_editing = self.edit_mode;
         let disabled_nav_color = if theme.is_dark {
             gpui::rgba(0x7f849c44)
