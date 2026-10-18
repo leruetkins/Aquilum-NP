@@ -71,24 +71,29 @@ impl AppView {
     /// Closes every open tab except `keep`, switching to it first if needed.
     pub fn close_other_tabs(&mut self, keep: &Path, window: &mut Window, cx: &mut Context<Self>) {
         let active_leaf_id = self.state.workspace.active_leaf;
-        if let Some(leaf) = self.state.leaves.get_mut(&active_leaf_id) {
-            let keep_idx = leaf.tabs.iter().position(|t| match &t.content {
+        let keep_idx = if let Some(leaf) = self.state.leaves.get(&active_leaf_id) {
+            leaf.tabs.iter().position(|t| match &t.content {
                 crate::workspace::TabContent::Document { id } => {
-                    self.state.documents.get(id).map(|d| d.path.as_path() == keep).unwrap_or(false)
+                    self.state.document_path(*id).map(|d| d == keep).unwrap_or(false)
                 }
                 _ => false,
-            });
-            if let Some(keep_i) = keep_idx {
+            })
+        } else {
+            None
+        };
+
+        if let Some(keep_i) = keep_idx {
+            if let Some(leaf) = self.state.leaves.get_mut(&active_leaf_id) {
                 let keep_tab = leaf.tabs.remove(keep_i);
                 leaf.tabs.clear();
                 leaf.tabs.push(keep_tab);
                 leaf.active_tab_index = 0;
-                self.state.save_dirty_documents();
-                self.state.cleanup_orphaned_documents_and_views();
-                self.select_leaf_tab(active_leaf_id, 0, window, cx);
-                cx.notify();
-                return;
             }
+            self.state.save_dirty_documents();
+            self.state.cleanup_orphaned_documents_and_views();
+            self.select_leaf_tab(active_leaf_id, 0, window, cx);
+            cx.notify();
+            return;
         }
 
         if !self.state.open_tabs.iter().any(|p| p == keep) {
@@ -118,23 +123,28 @@ impl AppView {
     /// Closes all tabs strictly to the right of `path` in the tab strip order.
     pub fn close_tabs_to_right(&mut self, path: &Path, cx: &mut Context<Self>) {
         let active_leaf_id = self.state.workspace.active_leaf;
-        if let Some(leaf) = self.state.leaves.get_mut(&active_leaf_id) {
-            let keep_idx = leaf.tabs.iter().position(|t| match &t.content {
+        let keep_idx = if let Some(leaf) = self.state.leaves.get(&active_leaf_id) {
+            leaf.tabs.iter().position(|t| match &t.content {
                 crate::workspace::TabContent::Document { id } => {
-                    self.state.documents.get(id).map(|d| d.path.as_path() == path).unwrap_or(false)
+                    self.state.document_path(*id).map(|d| d == path).unwrap_or(false)
                 }
                 _ => false,
-            });
-            if let Some(ix) = keep_idx {
+            })
+        } else {
+            None
+        };
+
+        if let Some(ix) = keep_idx {
+            if let Some(leaf) = self.state.leaves.get_mut(&active_leaf_id) {
                 leaf.tabs.truncate(ix + 1);
                 if leaf.active_tab_index > ix {
                     leaf.active_tab_index = ix;
                 }
-                self.state.save_dirty_documents();
-                self.state.cleanup_orphaned_documents_and_views();
-                cx.notify();
-                return;
             }
+            self.state.save_dirty_documents();
+            self.state.cleanup_orphaned_documents_and_views();
+            cx.notify();
+            return;
         }
 
         let Some(ix) = self.state.open_tabs.iter().position(|p| p == path) else {
@@ -183,6 +193,7 @@ impl AppView {
         }
 
         let doc_id = if let Some(id) = self.state.find_document_by_path(path) {
+            self.state.ensure_document_loaded(id);
             id
         } else {
             let title = path

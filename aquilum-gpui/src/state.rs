@@ -392,6 +392,21 @@ pub struct Snapshot {
     pub files: Arc<[crate::vault::FileInfo]>,
 }
 
+
+/// Metadata for a document tracked by the workspace.
+/// Stored even when the document buffer's content is evicted from memory.
+#[derive(Clone, Debug)]
+pub struct DocumentMetadata {
+    pub id: DocumentId,
+    pub path: PathBuf,
+    pub title: String,
+    pub is_dirty: bool,
+    pub last_accessed: Instant,
+}
+
+pub const DEFAULT_MAX_INACTIVE_DOCS: usize = 4;
+pub const MAX_INACTIVE_DOC_BYTES: usize = 64 * 1024 * 1024; // 64 MB
+
 pub struct AppState {
     pub settings: Arc<crate::settings::SettingsManager>,
     pub workspace_path: Option<PathBuf>,
@@ -421,6 +436,10 @@ pub struct AppState {
     pub documents: HashMap<DocumentId, DocumentBuffer>,
     /// Map of normalized paths to DocumentId
     pub by_path: HashMap<PathBuf, DocumentId>,
+    /// Metadata for all open documents (survives memory eviction)
+    pub doc_meta: HashMap<DocumentId, DocumentMetadata>,
+    /// Maximum number of inactive documents kept in memory (LRU limit)
+    pub max_inactive_docs: usize,
     /// Multi-document workspace tree
     pub workspace: WorkspaceTree,
     /// Leaves state keyed by LeafId
@@ -484,6 +503,8 @@ impl AppState {
             session,
             documents: HashMap::new(),
             by_path: HashMap::new(),
+            doc_meta: HashMap::new(),
+            max_inactive_docs: DEFAULT_MAX_INACTIVE_DOCS,
             workspace: {
                 let default_leaf_id = LeafId::new();
                 WorkspaceTree::new_single_leaf(default_leaf_id)
@@ -524,7 +545,7 @@ impl AppState {
             if let Some(leaf) = state.leaves.get(&state.workspace.active_leaf) {
                 state.open_tabs = leaf.tabs.iter().filter_map(|t| match &t.content {
                     crate::workspace::TabContent::Document { id } => {
-                        state.documents.get(id).map(|d| d.path.clone())
+                        state.document_path(*id).map(|p| p.to_path_buf())
                     }
                     crate::workspace::TabContent::Empty => Some(empty_tab_path()),
                     _ => None,
@@ -629,6 +650,14 @@ impl AppState {
         self.by_path.get(&norm).copied().or_else(|| {
             self.documents.iter().find_map(|(id, doc)| {
                 if doc.path == path {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+        }).or_else(|| {
+            self.doc_meta.iter().find_map(|(id, meta)| {
+                if meta.path == path {
                     Some(*id)
                 } else {
                     None
@@ -812,16 +841,192 @@ impl AppState {
         view.move_cursor_right(doc, shift);
     }
 
+    /// Returns the set of all DocumentIds that are currently visible
+    /// as active tabs in ANY leaf/split (1, 4, 8, etc.).
+    /// Visible documents are never evicted.
+    pub fn visible_document_ids(&self) -> HashSet<DocumentId> {
+        let mut visible = HashSet::new();
+        for leaf in self.leaves.values() {
+            if let Some(tab) = leaf.active_tab() {
+                if let crate::workspace::TabContent::Document { id } = tab.content {
+                    visible.insert(id);
+                }
+            }
+        }
+        visible
+    }
+
+    /// Update last access timestamp for a document in the LRU tracker.
+    pub fn touch_document_accessed(&mut self, doc_id: DocumentId) {
+        if let Some(meta) = self.doc_meta.get_mut(&doc_id) {
+            meta.last_accessed = Instant::now();
+        }
+    }
+
+    /// Path of a document, whether currently loaded into memory or evicted.
+    pub fn document_path(&self, id: DocumentId) -> Option<&Path> {
+        self.documents
+            .get(&id)
+            .map(|d| d.path.as_path())
+            .or_else(|| self.doc_meta.get(&id).map(|m| m.path.as_path()))
+    }
+
+    /// Title of a document, whether currently loaded into memory or evicted.
+    pub fn document_title(&self, id: DocumentId) -> Option<&str> {
+        self.documents
+            .get(&id)
+            .map(|d| d.title.as_str())
+            .or_else(|| self.doc_meta.get(&id).map(|m| m.title.as_str()))
+    }
+
+    /// Dirty status of a document.
+    pub fn is_document_dirty(&self, id: DocumentId) -> bool {
+        self.documents
+            .get(&id)
+            .map(|d| d.is_dirty)
+            .or_else(|| self.doc_meta.get(&id).map(|m| m.is_dirty))
+            .unwrap_or(false)
+    }
+
+    /// Checks if a document is currently loaded in memory.
+    pub fn is_document_loaded(&self, id: DocumentId) -> bool {
+        self.documents.contains_key(&id)
+    }
+
+    /// Ensures that the given document is loaded in memory.
+    /// If it was evicted or not yet read from disk, it is loaded on demand.
+    pub fn ensure_document_loaded(&mut self, doc_id: DocumentId) -> bool {
+        self.touch_document_accessed(doc_id);
+        if self.documents.contains_key(&doc_id) {
+            return true;
+        }
+
+        let Some(meta) = self.doc_meta.get(&doc_id) else {
+            return false;
+        };
+        let path = meta.path.clone();
+        let title = meta.title.clone();
+
+        let content = if path.to_string_lossy() == "Welcome.md" {
+            DEFAULT_WELCOME_NOTE.to_owned()
+        } else {
+            match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(err) => {
+                    eprintln!("Failed to read file on lazy load: {:?}: {}", path, err);
+                    String::new()
+                }
+            }
+        };
+
+        let buf = DocumentBuffer::new(doc_id, path.clone(), title, content, 1);
+        self.documents.insert(doc_id, buf);
+        let norm = Self::normalize_path(&path);
+        self.by_path.insert(norm, doc_id);
+
+        self.evict_inactive_documents_excluding(Some(doc_id));
+        true
+    }
+
+    /// Evicts inactive document buffers from memory using LRU policy.
+    /// Documents that are active in any visible leaf are NEVER evicted.
+    /// If an inactive document is dirty, it is saved to disk before eviction.
+    pub fn evict_inactive_documents_if_needed(&mut self) {
+        self.evict_inactive_documents_excluding(None);
+    }
+
+    pub fn evict_inactive_documents_excluding(&mut self, excluded: Option<DocumentId>) {
+        let visible = self.visible_document_ids();
+
+        let mut inactive_candidates: Vec<DocumentId> = self
+            .documents
+            .keys()
+            .filter(|id| !visible.contains(id) && Some(**id) != excluded)
+            .copied()
+            .collect();
+
+        if inactive_candidates.is_empty() {
+            return;
+        }
+
+        // Sort ascending by last_accessed: oldest accessed first
+        inactive_candidates.sort_by_key(|id| {
+            self.doc_meta
+                .get(id)
+                .map(|m| m.last_accessed)
+                .unwrap_or_else(Instant::now)
+        });
+
+        let max_inactive = self.max_inactive_docs;
+        let mut total_inactive_bytes: usize = inactive_candidates
+            .iter()
+            .filter_map(|id| self.documents.get(id))
+            .map(|d| d.content().len())
+            .sum();
+
+        for doc_id in inactive_candidates {
+            let inactive_count = self
+                .documents
+                .keys()
+                .filter(|id| !visible.contains(id) && Some(**id) != excluded)
+                .count();
+
+            if inactive_count <= max_inactive && total_inactive_bytes <= MAX_INACTIVE_DOC_BYTES {
+                break;
+            }
+
+            if let Some(mut doc) = self.documents.remove(&doc_id) {
+                total_inactive_bytes = total_inactive_bytes.saturating_sub(doc.content().len());
+
+                // If dirty, safely persist before eviction
+                if doc.is_dirty {
+                    if let Err(err) = crate::save_manager::safe_write(&doc.path, doc.content()) {
+                        eprintln!(
+                            "Failed to save dirty document before eviction: {:?}: {}",
+                            doc.path, err
+                        );
+                    } else {
+                        doc.is_dirty = false;
+                    }
+                }
+
+                // Keep metadata up to date
+                if let Some(meta) = self.doc_meta.get_mut(&doc_id) {
+                    meta.is_dirty = doc.is_dirty;
+                    meta.title = doc.title;
+                }
+            }
+        }
+    }
+
     pub fn get_or_open_document(&mut self, path: &Path, title: String, content: String) -> DocumentId {
         let norm = Self::normalize_path(path);
         if let Some(&doc_id) = self.by_path.get(&norm) {
+            self.ensure_document_loaded(doc_id);
+            self.touch_document_accessed(doc_id);
+            return doc_id;
+        }
+        if let Some(doc_id) = self.find_document_by_path(path) {
+            self.ensure_document_loaded(doc_id);
+            self.touch_document_accessed(doc_id);
             return doc_id;
         }
 
         let doc_id = DocumentId::new();
-        let buf = DocumentBuffer::new(doc_id, path.to_path_buf(), title, content, 1);
+        let buf = DocumentBuffer::new(doc_id, path.to_path_buf(), title.clone(), content, 1);
         self.documents.insert(doc_id, buf);
         self.by_path.insert(norm, doc_id);
+        self.doc_meta.insert(
+            doc_id,
+            DocumentMetadata {
+                id: doc_id,
+                path: path.to_path_buf(),
+                title,
+                is_dirty: false,
+                last_accessed: Instant::now(),
+            },
+        );
+        self.evict_inactive_documents_excluding(Some(doc_id));
         doc_id
     }
 
@@ -850,6 +1055,15 @@ impl AppState {
                 true
             } else {
                 removed_paths.push(doc.path.clone());
+                false
+            }
+        });
+
+        self.doc_meta.retain(|doc_id, meta| {
+            if active_doc_ids.contains(doc_id) {
+                true
+            } else {
+                removed_paths.push(meta.path.clone());
                 false
             }
         });
@@ -902,7 +1116,7 @@ impl AppState {
         let norm_target = Self::normalize_path(path);
 
         // Find all documents matching this path or starting with this folder
-        let matching_doc_ids: Vec<DocumentId> = self
+        let mut matching_doc_ids: Vec<DocumentId> = self
             .documents
             .iter()
             .filter_map(|(id, doc)| {
@@ -919,17 +1133,29 @@ impl AppState {
             })
             .collect();
 
+        for (id, meta) in &self.doc_meta {
+            let norm_doc = Self::normalize_path(&meta.path);
+            if (meta.path == path
+                || norm_doc == norm_target
+                || meta.path.starts_with(path)
+                || norm_doc.starts_with(&norm_target))
+                && !matching_doc_ids.contains(id)
+            {
+                matching_doc_ids.push(*id);
+            }
+        }
+
         let mut any_closed = false;
         let mut any_kept_dirty = false;
 
         for doc_id in matching_doc_ids {
-            let doc_path = if let Some(doc) = self.documents.get(&doc_id) {
-                doc.path.clone()
+            let doc_path = if let Some(p) = self.document_path(doc_id) {
+                p.to_path_buf()
             } else {
                 continue;
             };
 
-            let is_doc_dirty = self.documents.get(&doc_id).map(|d| d.is_dirty).unwrap_or(false);
+            let is_doc_dirty = self.is_document_dirty(doc_id);
 
             if keep_if_dirty && is_doc_dirty {
                 self.status_text = format!(
@@ -979,18 +1205,22 @@ impl AppState {
                 }
             }
 
-            // Remove from document buffers and by_path mapping
-            if let Some(doc) = self.documents.remove(&doc_id) {
-                let norm = Self::normalize_path(&doc.path);
+            // Remove from document buffers, doc_meta and by_path mapping
+            let removed_path = self.documents.remove(&doc_id).map(|d| d.path)
+                .or_else(|| self.doc_meta.remove(&doc_id).map(|m| m.path));
+            self.doc_meta.remove(&doc_id);
+
+            if let Some(target_p) = removed_path {
+                let norm = Self::normalize_path(&target_p);
                 self.by_path.remove(&norm);
                 self.by_path.remove(&Self::normalize_path(path));
-                self.open_tabs.retain(|p| p != &doc.path && p != path && p != &norm);
-                self.session.open_tabs.retain(|p| p != &doc.path && p != path && p != &norm);
-                self.nav_history.retain(|p| p != &doc.path && p != path && p != &norm);
-                self.note_states.remove(&doc.path);
+                self.open_tabs.retain(|p| p != &target_p && p != path && p != &norm);
+                self.session.open_tabs.retain(|p| p != &target_p && p != path && p != &norm);
+                self.nav_history.retain(|p| p != &target_p && p != path && p != &norm);
+                self.note_states.remove(&target_p);
                 self.note_states.remove(path);
 
-                if self.session.active_note.as_ref().map(|p| p == &doc.path || p == path).unwrap_or(false) {
+                if self.session.active_note.as_ref().map(|p| p == &target_p || p == path).unwrap_or(false) {
                     self.session.active_note = None;
                 }
                 any_closed = true;
@@ -1045,7 +1275,7 @@ impl AppState {
         let norm_old = Self::normalize_path(old_path);
         let norm_new = Self::normalize_path(new_path);
 
-        let matching_docs: Vec<(DocumentId, PathBuf)> = self
+        let mut matching_docs: Vec<(DocumentId, PathBuf)> = self
             .documents
             .iter()
             .filter_map(|(id, doc)| {
@@ -1062,6 +1292,24 @@ impl AppState {
             })
             .collect();
 
+        for (id, meta) in &self.doc_meta {
+            let norm_doc = Self::normalize_path(&meta.path);
+            let target = if meta.path == old_path || norm_doc == norm_old {
+                Some(new_path.to_path_buf())
+            } else if let Ok(suffix) = meta.path.strip_prefix(old_path) {
+                Some(new_path.join(suffix))
+            } else if let Ok(suffix) = norm_doc.strip_prefix(&norm_old) {
+                Some(norm_new.join(suffix))
+            } else {
+                None
+            };
+            if let Some(target_p) = target {
+                if !matching_docs.iter().any(|(d, _)| d == id) {
+                    matching_docs.push((*id, target_p));
+                }
+            }
+        }
+
         let mut any_renamed = false;
 
         for (doc_id, target_new_path) in matching_docs {
@@ -1073,6 +1321,14 @@ impl AppState {
             let old_doc_path = if let Some(doc) = self.documents.get_mut(&doc_id) {
                 let prev = std::mem::replace(&mut doc.path, target_new_path.clone());
                 doc.title = new_title.clone();
+                if let Some(meta) = self.doc_meta.get_mut(&doc_id) {
+                    meta.path = target_new_path.clone();
+                    meta.title = new_title.clone();
+                }
+                prev
+            } else if let Some(meta) = self.doc_meta.get_mut(&doc_id) {
+                let prev = std::mem::replace(&mut meta.path, target_new_path.clone());
+                meta.title = new_title.clone();
                 prev
             } else {
                 continue;
@@ -1243,7 +1499,7 @@ impl AppState {
                 .filter(|t| matches!(t.content, crate::workspace::TabContent::Document { id } if id == doc_id))
                 .count();
             let is_last = tab_count <= 1;
-            let is_dirty = self.documents.get(&doc_id).map_or(false, |d| d.is_dirty);
+            let is_dirty = self.is_document_dirty(doc_id);
             if is_last && is_dirty {
                 effects.push(crate::workspace::CloseEffect::FlushDoc(doc_id));
             }
@@ -1275,6 +1531,8 @@ impl AppState {
             crate::workspace::CloseEffect::CommitTitle { tab_id, doc_id, new_title } => {
                 let (current_path, current_title) = if let Some(doc) = self.documents.get(doc_id) {
                     (doc.path.clone(), doc.title.clone())
+                } else if let Some(meta) = self.doc_meta.get(doc_id) {
+                    (meta.path.clone(), meta.title.clone())
                 } else {
                     return Err("Document not found".to_string());
                 };
@@ -1408,11 +1666,14 @@ impl AppState {
                 });
 
                 if !still_open {
-                    if let Some(doc) = self.documents.remove(&doc_id) {
-                        let norm = Self::normalize_path(&doc.path);
+                    let doc_path = self.documents.remove(&doc_id).map(|d| d.path)
+                        .or_else(|| self.doc_meta.remove(&doc_id).map(|m| m.path));
+                    self.doc_meta.remove(&doc_id);
+                    if let Some(doc_path) = doc_path {
+                        let norm = Self::normalize_path(&doc_path);
                         self.by_path.remove(&norm);
-                        self.open_tabs.retain(|p| p != &doc.path);
-                        Some(doc.path)
+                        self.open_tabs.retain(|p| p != &doc_path);
+                        Some(doc_path)
                     } else {
                         None
                     }
@@ -1781,8 +2042,11 @@ impl AppState {
                 })
             });
             if !still_open {
-                if let Some(doc) = self.documents.remove(&doc_id) {
-                    let norm = Self::normalize_path(&doc.path);
+                let doc_path = self.documents.remove(&doc_id).map(|d| d.path)
+                    .or_else(|| self.doc_meta.remove(&doc_id).map(|m| m.path));
+                self.doc_meta.remove(&doc_id);
+                if let Some(doc_path) = doc_path {
+                    let norm = Self::normalize_path(&doc_path);
                     self.by_path.remove(&norm);
                 }
             }
@@ -1947,6 +2211,7 @@ impl AppState {
 
         let doc_id = if let Some(doc_id) = self.find_document_by_path(&path) {
             self.status_text = format!("Switched: {}", path.file_name().unwrap_or_default().to_string_lossy());
+            self.ensure_document_loaded(doc_id);
             doc_id
         } else {
             let content = if path.to_string_lossy() == "Welcome.md" {
@@ -1966,6 +2231,7 @@ impl AppState {
             self.get_or_open_document(&path, title.clone(), content)
         };
 
+        self.ensure_document_loaded(doc_id);
         if let Some(doc) = self.documents.get(&doc_id) {
             self.workspace.open_file(&mut self.leaves, doc_id, self.workspace.active_leaf, crate::workspace::OpenMode::Reuse);
             if at_front {
@@ -2008,6 +2274,7 @@ impl AppState {
             self.events.emit_workspace(&crate::events::WorkspaceEvent::FileOpen { path: rel });
             self.publish_snapshot();
         }
+        self.evict_inactive_documents_if_needed();
     }
 
     pub fn snapshot_active_note_settings(&mut self, scroll_top: f32, edit_mode: bool, word_wrap: bool) {
@@ -2038,6 +2305,9 @@ impl AppState {
                 return false;
             } else {
                 doc.mark_clean();
+                if let Some(meta) = self.doc_meta.get_mut(&doc_id) {
+                    meta.is_dirty = false;
+                }
                 self.status_text = format!("Saved: {}", doc.title);
                 let rel_path = self.vault.as_ref()
                     .and_then(|v| doc.path.strip_prefix(&v.root).ok())
@@ -2168,8 +2438,19 @@ impl AppState {
                                     let doc_id = if let Some(&id) = state.by_path.get(&norm) {
                                         id
                                     } else {
-                                        let text = std::fs::read_to_string(&path).unwrap_or_default();
-                                        state.get_or_open_document(&path, title, text)
+                                        let doc_id = DocumentId::new();
+                                        state.by_path.insert(norm, doc_id);
+                                        state.doc_meta.insert(
+                                            doc_id,
+                                            DocumentMetadata {
+                                                id: doc_id,
+                                                path: path.clone(),
+                                                title: title.clone(),
+                                                is_dirty: false,
+                                                last_accessed: Instant::now(),
+                                            },
+                                        );
+                                        doc_id
                                     };
                                     if let Some(pv) = p_tab.view {
                                         let mut ev = crate::workspace::EditorViewState::new(p_tab.id, doc_id);
@@ -2222,6 +2503,19 @@ impl AppState {
         self.workspace.root.flatten_same_direction_splits();
         self.workspace.root.normalize_ratios();
         self.workspace.active_leaf = session.active_leaf;
+
+        // Ensure active tabs in all leaves are loaded
+        let visible_docs: Vec<DocumentId> = self.leaves.values()
+            .filter_map(|l| l.active_tab())
+            .filter_map(|t| match &t.content {
+                crate::workspace::TabContent::Document { id } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        for id in visible_docs {
+            self.ensure_document_loaded(id);
+        }
+        self.evict_inactive_documents_if_needed();
     }
 
     pub fn save_session_state(&mut self) {
@@ -2326,11 +2620,18 @@ impl AppState {
         }
 
         // Update multi-document workspace state
-        if let Some(doc_id) = self.by_path.remove(old_path) {
-            self.by_path.insert(new_path.clone(), doc_id);
+        let norm_old = Self::normalize_path(old_path);
+        let norm_new = Self::normalize_path(&new_path);
+        let opt_doc_id = self.by_path.remove(old_path).or_else(|| self.by_path.remove(&norm_old));
+        if let Some(doc_id) = opt_doc_id {
+            self.by_path.insert(norm_new, doc_id);
             if let Some(doc) = self.documents.get_mut(&doc_id) {
                 doc.path = new_path.clone();
                 doc.title = trimmed.to_string();
+            }
+            if let Some(meta) = self.doc_meta.get_mut(&doc_id) {
+                meta.path = new_path.clone();
+                meta.title = trimmed.to_string();
             }
         }
 
@@ -3165,6 +3466,8 @@ mod tests {
             known_vaults: Vec::new(),
             documents,
             by_path,
+            doc_meta: HashMap::new(),
+            max_inactive_docs: DEFAULT_MAX_INACTIVE_DOCS,
             workspace: WorkspaceTree::new_single_leaf(default_leaf_id),
             leaves,
             views,
@@ -3649,6 +3952,7 @@ mod tests {
                     })
                 });
                 if !still_open {
+                    state.doc_meta.remove(&doc_id);
                     if let Some(doc) = state.documents.remove(&doc_id) {
                         let norm = AppState::normalize_path(&doc.path);
                         state.by_path.remove(&norm);
@@ -4468,6 +4772,231 @@ mod tests {
 
         // Verify layout caches were invalidated so stale bounds don't freeze the viewport
         assert!(state.leaves.get(&l1).unwrap().bounds.is_none(), "Stale bounds must be invalidated");
+    }
+
+    #[test]
+    fn test_inactive_documents_lru_eviction() {
+        let temp_dir = std::env::temp_dir().join(format!("aquilum_lru_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let mut paths = Vec::new();
+        for i in 1..=6 {
+            let p = temp_dir.join(format!("note_{}.md", i));
+            std::fs::write(&p, format!("Content of note {}", i)).unwrap();
+            paths.push(p);
+        }
+
+        let mut state = AppState::new();
+        state.documents.clear();
+        state.doc_meta.clear();
+        state.by_path.clear();
+        state.max_inactive_docs = 10;
+        let leaf_id = state.workspace.active_leaf;
+
+        // Open 6 notes in sequence in the same leaf
+        let mut doc_ids = Vec::new();
+        for (i, p) in paths.iter().enumerate() {
+            let doc_id = state.get_or_open_document(p, format!("Note {}", i + 1), format!("Content of note {}", i + 1));
+            doc_ids.push(doc_id);
+            if i == 0 {
+                if let Some(leaf) = state.leaves.get_mut(&leaf_id) {
+                    leaf.tabs.clear();
+                    leaf.tabs.push(crate::workspace::Tab::new_document(doc_id));
+                    leaf.active_tab_index = 0;
+                }
+            } else {
+                if let Some(leaf) = state.leaves.get_mut(&leaf_id) {
+                    leaf.tabs.push(crate::workspace::Tab::new_document(doc_id));
+                    leaf.active_tab_index = leaf.tabs.len() - 1;
+                }
+            }
+            // Emulate slight time delay so access times are distinct
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            state.touch_document_accessed(doc_id);
+        }
+
+        // Active tab is note 6 (doc_ids[5]). Notes 1..5 are inactive.
+        assert_eq!(state.documents.len(), 6);
+        assert_eq!(state.doc_meta.len(), 6);
+
+        // Set max_inactive_docs to 2
+        state.max_inactive_docs = 2;
+        state.evict_inactive_documents_if_needed();
+
+        // Visible note 6 must still be loaded.
+        assert!(state.is_document_loaded(doc_ids[5]));
+
+        // Most recent inactive notes 4 and 5 must still be loaded.
+        assert!(state.is_document_loaded(doc_ids[4]));
+        assert!(state.is_document_loaded(doc_ids[3]));
+
+        // Oldest inactive notes 1, 2, 3 must be evicted from RAM!
+        assert!(!state.is_document_loaded(doc_ids[0]));
+        assert!(!state.is_document_loaded(doc_ids[1]));
+        assert!(!state.is_document_loaded(doc_ids[2]));
+
+        // But metadata (title, path) for evicted notes is still 100% available
+        assert_eq!(state.document_title(doc_ids[0]), Some("Note 1"));
+        assert_eq!(state.document_path(doc_ids[0]), Some(paths[0].as_path()));
+
+        // Lazy reload note 1 on demand
+        assert!(state.ensure_document_loaded(doc_ids[0]));
+        assert!(state.is_document_loaded(doc_ids[0]));
+        assert_eq!(state.documents.get(&doc_ids[0]).unwrap().content(), "Content of note 1");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_visible_tabs_across_more_than_4_leaves_never_evicted() {
+        let temp_dir = std::env::temp_dir().join(format!("aquilum_lru_splits_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let mut state = AppState::new();
+        state.documents.clear();
+        state.doc_meta.clear();
+        state.by_path.clear();
+        state.leaves.clear();
+
+        // Create 6 leaves (splits), each having 1 visible active document tab
+        let mut visible_doc_ids = Vec::new();
+        for i in 1..=6 {
+            let p = temp_dir.join(format!("visible_note_{}.md", i));
+            std::fs::write(&p, format!("Visible content {}", i)).unwrap();
+            let doc_id = state.get_or_open_document(&p, format!("Visible {}", i), format!("Visible content {}", i));
+            visible_doc_ids.push(doc_id);
+
+            let leaf_id = crate::workspace::LeafId::new();
+            let mut leaf = crate::workspace::LeafState::new(leaf_id);
+            leaf.tabs.push(crate::workspace::Tab::new_document(doc_id));
+            leaf.active_tab_index = 0;
+            state.leaves.insert(leaf_id, leaf);
+        }
+
+        // Add 5 inactive tabs hidden in the first leaf
+        let mut inactive_doc_ids = Vec::new();
+        for i in 1..=5 {
+            let p = temp_dir.join(format!("inactive_note_{}.md", i));
+            std::fs::write(&p, format!("Inactive content {}", i)).unwrap();
+            let doc_id = state.get_or_open_document(&p, format!("Inactive {}", i), format!("Inactive content {}", i));
+            inactive_doc_ids.push(doc_id);
+
+            let first_leaf_id = *state.leaves.keys().next().unwrap();
+            state.leaves.get_mut(&first_leaf_id).unwrap().tabs.push(crate::workspace::Tab::new_document(doc_id));
+        }
+
+        // Limit inactive docs to 2
+        state.max_inactive_docs = 2;
+        state.evict_inactive_documents_if_needed();
+
+        // ALL 6 visible tabs across the 6 leaves must NEVER be evicted!
+        for (i, doc_id) in visible_doc_ids.iter().enumerate() {
+            assert!(
+                state.is_document_loaded(*doc_id),
+                "Visible document {} across >4 leaves must never be evicted",
+                i + 1
+            );
+        }
+
+        // Only up to 2 inactive documents are kept loaded
+        let loaded_inactive_count = inactive_doc_ids.iter().filter(|id| state.is_document_loaded(**id)).count();
+        assert_eq!(loaded_inactive_count, 2);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_dirty_inactive_document_auto_saved_before_eviction() {
+        let temp_dir = std::env::temp_dir().join(format!("aquilum_lru_dirty_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let p1 = temp_dir.join("dirty_note.md");
+        let p2 = temp_dir.join("active_note.md");
+        std::fs::write(&p1, "Initial dirty file").unwrap();
+        std::fs::write(&p2, "Active note content").unwrap();
+
+        let mut state = AppState::new();
+        state.documents.clear();
+        state.doc_meta.clear();
+        state.by_path.clear();
+        let leaf_id = state.workspace.active_leaf;
+
+        let doc1 = state.get_or_open_document(&p1, "Dirty Note".to_string(), "Initial dirty file".to_string());
+        // Edit doc1 so it is dirty
+        if let Some(buf) = state.documents.get_mut(&doc1) {
+            buf.apply_edit(0, buf.content().len(), "Modified unsaved text!", None, 0, 0);
+            assert!(buf.is_dirty);
+        }
+        if let Some(meta) = state.doc_meta.get_mut(&doc1) {
+            meta.is_dirty = true;
+        }
+
+        // Now open active doc2
+        let doc2 = state.get_or_open_document(&p2, "Active Note".to_string(), "Active note content".to_string());
+        if let Some(leaf) = state.leaves.get_mut(&leaf_id) {
+            leaf.tabs.clear();
+            leaf.tabs.push(crate::workspace::Tab::new_document(doc1));
+            leaf.tabs.push(crate::workspace::Tab::new_document(doc2));
+            leaf.active_tab_index = 1; // doc2 is active, doc1 is inactive
+        }
+
+        // Set max_inactive_docs to 0 so doc1 must be evicted
+        state.max_inactive_docs = 0;
+        state.evict_inactive_documents_if_needed();
+
+        // doc1 should have been evicted from RAM
+        assert!(!state.is_document_loaded(doc1));
+
+        // Disk file must have received the flushed changes!
+        let disk_content = std::fs::read_to_string(&p1).unwrap();
+        assert_eq!(disk_content, "Modified unsaved text!");
+
+        // Metadata is clean
+        assert!(!state.is_document_dirty(doc1));
+
+        // Reload doc1
+        assert!(state.ensure_document_loaded(doc1));
+        assert_eq!(state.documents.get(&doc1).unwrap().content(), "Modified unsaved text!");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_large_document_opens_on_first_try_without_premature_eviction() {
+        let temp_dir = std::env::temp_dir().join(format!("aquilum_lru_large_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let p = temp_dir.join("large_note.md");
+        // Create a note with 70MB (exceeding MAX_INACTIVE_DOC_BYTES of 64MB)
+        let large_string = "A".repeat(70 * 1024 * 1024);
+        std::fs::write(&p, &large_string).unwrap();
+
+        let mut state = AppState::new();
+        state.documents.clear();
+        state.doc_meta.clear();
+        state.by_path.clear();
+        if let Some(leaf) = state.leaves.get_mut(&state.workspace.active_leaf) {
+            leaf.tabs.clear();
+        }
+
+        // Open the large note on the first attempt
+        state.open_note_internal_at(p.clone(), false);
+        let doc_id = state.find_document_by_path(&p).expect("Document should be found");
+
+        // Verify the document is loaded in memory and NOT immediately evicted
+        assert!(state.is_document_loaded(doc_id), "Large document must remain loaded when opened");
+        assert_eq!(state.documents.get(&doc_id).unwrap().content().len(), 70 * 1024 * 1024);
+
+        // Verify the active leaf has this tab
+        let leaf_id = state.workspace.active_leaf;
+        let leaf = state.leaves.get(&leaf_id).unwrap();
+        assert_eq!(leaf.tabs.len(), 1);
+        match &leaf.tabs[0].content {
+            crate::workspace::TabContent::Document { id } => assert_eq!(*id, doc_id),
+            _ => panic!("Expected document tab"),
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
 

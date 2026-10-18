@@ -812,6 +812,9 @@ impl AppView {
                             Ok(()) => {
                                 if doc.version == version {
                                     doc.mark_clean();
+                                    if let Some(meta) = this.state.doc_meta.get_mut(&doc_id) {
+                                        meta.is_dirty = false;
+                                    }
                                 }
                                 this.state.status_text = format!("Saved: {}", title);
                                 let rel_path = this.state.vault.as_ref()
@@ -970,6 +973,7 @@ impl AppView {
         self.suspend_cursor_blinks(cx);
         self.state.active_empty_tab = None;
         self.state.documents.clear();
+        self.state.doc_meta.clear();
         self.state.by_path.clear();
         self.state.views.clear();
         self.pending_file_deletions.clear();
@@ -3749,10 +3753,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 .get(&lid)
                 .and_then(|l| l.active_tab())
                 .and_then(|t| match &t.content {
-                    crate::workspace::TabContent::Document { id } => self.state.documents.get(id),
+                    crate::workspace::TabContent::Document { id } => Some(self.state.is_document_dirty(*id)),
                     _ => None,
                 })
-                .map(|d| d.is_dirty)
                 .unwrap_or(false)
         } else {
             self.state.active_document().map(|d| d.is_dirty).unwrap_or(false)
@@ -4114,6 +4117,14 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         }
         self.state.workspace.active_leaf = leaf_id;
 
+        // Ensure incoming leaf's active document is loaded into memory
+        if let Some(doc_id) = self.state.leaves.get(&leaf_id).and_then(|l| l.active_tab()).and_then(|t| match &t.content {
+            crate::workspace::TabContent::Document { id } => Some(*id),
+            _ => None,
+        }) {
+            self.state.ensure_document_loaded(doc_id);
+        }
+
         // 3. Load incoming leaf's active tab
         if let Some(leaf) = self.state.leaves.get(&leaf_id) {
             if let Some(tab) = leaf.active_tab() {
@@ -4178,7 +4189,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
             self.state.open_tabs = leaf.tabs.iter().filter_map(|t| match &t.content {
                 crate::workspace::TabContent::Document { id } => {
-                    self.state.documents.get(id).map(|d| d.path.clone())
+                    self.state.document_path(*id).map(|p| p.to_path_buf())
                 }
                 crate::workspace::TabContent::Empty => Some(std::path::PathBuf::from("newtab")),
                 _ => None,
@@ -4405,6 +4416,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     crate::workspace::TabContent::Document { id } => {
                         if let Some(doc) = self.state.documents.get(id) {
                             (doc.title.clone(), doc.is_dirty, Some(doc.path.clone()))
+                        } else if let Some(meta) = self.state.doc_meta.get(id) {
+                            (meta.title.clone(), meta.is_dirty, Some(meta.path.clone()))
                         } else {
                             (self.t("common.untitled"), false, None)
                         }
