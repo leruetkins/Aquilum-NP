@@ -1924,6 +1924,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             self.state.create_new_note()
         };
         if let Some(_) = created {
+            self.state.active_empty_tab = None;
             self.edit_mode = true;
             self.word_wrap = true;
             self.set_editor_scroll_top(0.0);
@@ -3744,6 +3745,11 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             self.state.active_document().map(|d| d.is_dirty).unwrap_or(false)
         });
         let is_editing = self.edit_mode;
+        let disabled_nav_color = if theme.is_dark {
+            gpui::rgba(0x7f849c44)
+        } else {
+            gpui::rgba(0x5c5f7744)
+        };
 
         div()
             .id("editor-navigation-bar")
@@ -3753,6 +3759,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             .justify_between()
             .w_full()
             .h(px(40.0))
+            .flex_shrink_0()
             .min_w_0()
             .overflow_hidden()
             .px_3()
@@ -3786,7 +3793,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             })
                             .when(!can_go_back, |d| {
                                 d.cursor_default()
-                                    .child(icons::icon(icons::ICON_ARROW_LEFT, 16.0, theme.border))
+                                    .child(icons::icon(icons::ICON_ARROW_LEFT, 16.0, disabled_nav_color))
                             }),
                     )
                     // Forward button
@@ -3809,7 +3816,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             })
                             .when(!can_go_forward, |d| {
                                 d.cursor_default()
-                                    .child(icons::icon(icons::ICON_ARROW_RIGHT, 16.0, theme.border))
+                                    .child(icons::icon(icons::ICON_ARROW_RIGHT, 16.0, disabled_nav_color))
                             }),
                     )
                     // Spacer between arrows and breadcrumbs
@@ -3874,7 +3881,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                         crumbs_bar
                     }),
             )
-            // Right: Info and Obsidian-style action buttons
+            // Right: Obsidian-style action buttons
             .child(
                 div()
                     .flex()
@@ -3882,22 +3889,6 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     .items_center()
                     .gap_1p5()
                     .flex_shrink_0()
-                    .when_some(doc_override.or(self.state.active_document()), |r, doc| {
-                        use crate::state::TextStats;
-                        let label = match doc.text_stats() {
-                            TextStats::Exact { words, chars } => format!("{}w • {}c", words, chars),
-                            TextStats::Large { bytes } => {
-                                format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-                            }
-                        };
-                        r.child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.text_muted)
-                                .mr_2()
-                                .child(label),
-                        )
-                    })
                     // Toggle wrap
                     .child(
                         div()
@@ -8030,6 +8021,20 @@ impl Render for AppView {
                             .flex()
                             .flex_shrink_0()
                             .gap_4()
+                            .when_some(self.state.active_document(), |s, doc| {
+                                use crate::state::TextStats;
+                                let stats_label = match doc.text_stats() {
+                                    TextStats::Exact { words, chars } => format!("{}w • {}c", words, chars),
+                                    TextStats::Large { bytes } => {
+                                        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+                                    }
+                                };
+                                s.child(
+                                    div()
+                                        .id("status-text-stats")
+                                        .child(stats_label),
+                                )
+                            })
                             .when_some(self.state.active_view_and_doc(), |s, (view, doc)| {
                                 let (line, col) = view.line_col(doc);
                                 s.child(format!("Ln {}, Col {}", line + 1, col + 1))

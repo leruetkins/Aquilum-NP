@@ -668,11 +668,13 @@ pub trait InteractiveElement: Sized {
 
     /// Apply the given style to this element when the mouse hovers over it
     fn hover(mut self, f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self {
-        debug_assert!(
-            self.interactivity().hover_style.is_none(),
-            "hover style already set"
-        );
-        self.interactivity().hover_style = Some(Box::new(f(StyleRefinement::default())));
+        use refineable::Refineable;
+        let refinement = f(StyleRefinement::default());
+        if let Some(existing) = self.interactivity().hover_style.as_mut() {
+            existing.refine(&refinement);
+        } else {
+            self.interactivity().hover_style = Some(Box::new(refinement));
+        }
         self
     }
 
