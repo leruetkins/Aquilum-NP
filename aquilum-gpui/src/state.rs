@@ -2190,6 +2190,9 @@ impl AppState {
                         let norm = Self::normalize_path(&doc.path);
                         self.by_path.remove(&norm);
                         self.open_tabs.retain(|p| p != &doc.path);
+                        if self.active_note.as_ref().map(|n| Self::normalize_path(&n.path) == norm).unwrap_or(false) {
+                            self.active_note = None;
+                        }
                         Some(doc.path)
                     } else {
                         None
@@ -4311,6 +4314,42 @@ mod tests {
         assert_eq!(closed_p2, Some(note_path));
         assert_eq!(state.documents.len(), 0);
         assert!(state.find_document_by_path(Path::new("SharedNote.md")).is_none());
+
+        let _ = std::fs::remove_dir_all(&ws_path);
+    }
+
+    #[test]
+    fn test_two_notes_close_second_tab() {
+        let ws_path = std::env::temp_dir().join(format!("aquilum_test_close2_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&ws_path);
+        let note1_path = ws_path.join("Note1.md");
+        let note2_path = ws_path.join("Note2.md");
+        std::fs::write(&note1_path, "Content 1").unwrap();
+        std::fs::write(&note2_path, "Content 2").unwrap();
+
+        let mut state = AppState::new_empty();
+        state.workspace_path = Some(ws_path.clone());
+        state.open_note(note1_path.clone());
+        let leaf = state.workspace.active_leaf;
+        assert_eq!(state.leaves.get(&leaf).unwrap().tabs.len(), 1);
+        assert_eq!(state.active_note.as_ref().unwrap().path, note1_path);
+
+        state.open_note(note2_path.clone());
+        assert_eq!(state.leaves.get(&leaf).unwrap().tabs.len(), 2);
+        assert_eq!(state.leaves.get(&leaf).unwrap().active_tab_index, 1);
+        assert_eq!(state.active_note.as_ref().unwrap().path, note2_path);
+
+        let closed = state.close_leaf_tab(leaf, 1);
+        assert_eq!(closed, Some(note2_path.clone()));
+        assert_eq!(state.leaves.get(&leaf).unwrap().tabs.len(), 1);
+        assert_eq!(state.leaves.get(&leaf).unwrap().active_tab_index, 0);
+        assert!(state.active_note.is_none());
+
+        let doc1_id = state.find_document_by_path(&note1_path).unwrap();
+        let doc1 = state.documents.get(&doc1_id).unwrap();
+        println!("doc1.path: {:?}", doc1.path);
+        println!("doc1.title: {:?}", doc1.title);
+        println!("doc1.content: {:?}", doc1.content());
 
         let _ = std::fs::remove_dir_all(&ws_path);
     }
