@@ -104,7 +104,9 @@ impl PluginHostState {
             }
             ApiRequest::VaultModify { .. }
             | ApiRequest::VaultCreate { .. }
+            | ApiRequest::VaultCreateFolder { .. }
             | ApiRequest::VaultDelete { .. }
+            | ApiRequest::VaultTrash { .. }
             | ApiRequest::VaultRename { .. } => {
                 if plugin.manifest.permissions.vault < VaultAccess::Write {
                     return Err(format!("Plugin '{}' lacks vault:write permission", plugin_id));
@@ -342,6 +344,29 @@ impl AppView {
                 };
                 let _ = self.state.plugin_host.send_event(&plugin_id, event);
             }
+            ApiRequest::VaultCreateFolder { path } => {
+                let result: Result<(), String> = match &self.state.vault {
+                    Some(vault) => match vault.resolve(&path) {
+                        Ok(abs) => std::fs::create_dir_all(&abs).map_err(|e| e.to_string()),
+                        Err(e) => Err(e.to_string()),
+                    },
+                    None => Err(VaultError::NotFound("No vault opened".into()).to_string()),
+                };
+
+                let event = match result {
+                    Ok(_) => {
+                        self.state.events.emit_vault(&crate::events::VaultEvent::Create {
+                            path: path.clone(),
+                        });
+                        self.state.reload_file_tree();
+                        self.state.publish_snapshot();
+                        cx.notify();
+                        HostEvent::response_ok(request_id, serde_json::Value::Null)
+                    }
+                    Err(e) => HostEvent::response_err(request_id, &e),
+                };
+                let _ = self.state.plugin_host.send_event(&plugin_id, event);
+            }
             ApiRequest::VaultDelete { path } => {
                 let abs_path = if let Some(vault) = &self.state.vault {
                     vault.resolve(&path).unwrap_or_else(|_| std::path::PathBuf::from(&path))
@@ -351,6 +376,40 @@ impl AppView {
 
                 let result = match &self.state.vault {
                     Some(vault) => vault.delete_file(&path),
+                    None => Err(VaultError::NotFound("No vault opened".into())),
+                };
+
+                let event = match result {
+                    Ok(_) => {
+                        let config = self.state.settings.get_config();
+                        if config.files.close_deleted_tabs {
+                            self.state.handle_file_deleted(&abs_path, config.files.keep_modified_on_delete);
+                        }
+                        self.state.events.emit_vault(&crate::events::VaultEvent::Delete {
+                            path: path.clone(),
+                        });
+                        self.state.reload_file_tree();
+                        self.state.publish_snapshot();
+                        cx.notify();
+                        HostEvent::response_ok(request_id, serde_json::Value::Null)
+                    }
+                    Err(e) => HostEvent::response_err(request_id, &e.to_string()),
+                };
+                let _ = self.state.plugin_host.send_event(&plugin_id, event);
+            }
+            ApiRequest::VaultTrash { path, system } => {
+                let abs_path = if let Some(vault) = &self.state.vault {
+                    vault.resolve(&path).unwrap_or_else(|_| std::path::PathBuf::from(&path))
+                } else {
+                    std::path::PathBuf::from(&path)
+                };
+
+                // Obsidian's trash is a *safe* delete. The OS-recycle-bin variant (`system: true`)
+                // is not available natively, so both fall back to the vault-local `.trash` folder
+                // rather than unlinking the file.
+                let _ = system;
+                let result = match &self.state.vault {
+                    Some(vault) => vault.trash_file(&path),
                     None => Err(VaultError::NotFound("No vault opened".into())),
                 };
 

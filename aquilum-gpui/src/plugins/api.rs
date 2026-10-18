@@ -12,8 +12,12 @@ pub enum ApiRequest {
     VaultModify { path: String, data: String },
     /// Create new file within vault: app.vault.create(path, data)
     VaultCreate { path: String, data: String },
+    /// Create a folder within vault: app.vault.createFolder(path)
+    VaultCreateFolder { path: String },
     /// Delete file within vault: app.vault.delete(path)
     VaultDelete { path: String },
+    /// Move file to the safe trash (Obsidian trash or OS recycle bin): app.vault.trash(path, system)
+    VaultTrash { path: String, system: bool },
     /// Rename or move file within vault: app.vault.rename(old_path, new_path)
     VaultRename { old_path: String, new_path: String },
     /// Display notification notice: new Notice(text, timeout)

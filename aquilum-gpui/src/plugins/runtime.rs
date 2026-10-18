@@ -305,6 +305,21 @@ fn setup_plugin_environment<'js>(
     })?;
     globals.set("__host_get_language", get_lang_fn)?;
 
+    // 3b. Static host platform description, consumed by obsidian.Platform and navigator.userAgent.
+    // The host is a native desktop application, so mobile flags are always false.
+    let platform_os = if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "linux"
+    };
+    ctx.eval::<(), _>(format!(
+        "globalThis.__host_platform = {{ os: \"{}\", arch: \"{}\" }};",
+        platform_os,
+        std::env::consts::ARCH
+    ))?;
+
     // 4. Inject manifest and CommonJS module / exports
     let manifest_json = serde_json::to_string(manifest).unwrap_or_else(|_| "{}".to_string());
     ctx.eval::<(), _>(format!(
@@ -564,6 +579,17 @@ fn setup_plugin_environment<'js>(
             String.prototype.contains = function(target) { return this.includes(target); };
         }
 
+        // Mirrors Component.load()'s child pass for the plugin root, which the host constructs
+        // directly (so it never goes through Component.load()).
+        function __load_component_children(component) {
+            if (!component || !Array.isArray(component._children)) return;
+            for (const child of component._children.slice()) {
+                if (child && typeof child.load === "function") {
+                    try { child.load(); } catch (e) { console.error("Component onload error:", e); }
+                }
+            }
+        }
+
         async function __bootstrap_plugin_instance() {
             let exported = globalThis.module ? globalThis.module.exports : null;
             if (exported && exported.default && typeof exported !== "function") {
@@ -573,9 +599,13 @@ fn setup_plugin_environment<'js>(
                 try {
                     const inst = new exported(globalThis.app, globalThis.__plugin_manifest);
                     globalThis.__plugin_instance = inst;
+                    // Obsidian marks the plugin loaded before onload() so addChild() during
+                    // onload() actually loads its child; then it loads children added in onload().
+                    inst._loaded = true;
                     if (typeof inst.onload === "function") {
                         await inst.onload();
                     }
+                    __load_component_children(inst);
                     if (typeof inst.onUserEnable === "function") {
                         await inst.onUserEnable();
                     }
@@ -585,7 +615,9 @@ fn setup_plugin_environment<'js>(
             } else if (exported && typeof exported.onload === "function") {
                 globalThis.__plugin_instance = exported;
                 try {
+                    exported._loaded = true;
                     await exported.onload();
+                    __load_component_children(exported);
                     if (typeof exported.onUserEnable === "function") {
                         await exported.onUserEnable();
                     }
@@ -593,6 +625,9 @@ fn setup_plugin_environment<'js>(
                     console.error("Plugin onload error:", e);
                 }
             }
+            // onload() has finished against a workspace that already exists, so queued
+            // workspace.onLayoutReady() callbacks can run now.
+            markLayoutReady();
         }
 
         function __dispatch_host_response(id, ok, resultJson) {
@@ -2150,19 +2185,36 @@ fn setup_plugin_environment<'js>(
         class Component {
             constructor() {
                 this._children = [];
+                this._disposers = [];
                 this._loaded = false;
             }
             load() {
+                if (this._loaded) return;
+                // Obsidian marks the component loaded *before* onload() so that addChild()
+                // inside onload() actually loads the child, then loads any children added.
                 this._loaded = true;
                 if (typeof this.onload === "function") this.onload();
+                for (const c of this._children.slice()) {
+                    if (c && typeof c.load === "function") c.load();
+                }
             }
             unload() {
+                if (!this._loaded) return;
                 this._loaded = false;
-                if (typeof this.onunload === "function") this.onunload();
-                for (const c of this._children) {
-                    if (c && typeof c.unload === "function") c.unload();
+                // LIFO: children, then disposers, then onunload() last. Unwinding in reverse
+                // registration order mirrors nested finally blocks and keeps onunload's own
+                // resources alive until it runs.
+                while (this._children.length > 0) {
+                    const child = this._children.pop();
+                    if (child && typeof child.unload === "function") {
+                        try { child.unload(); } catch (e) { console.error(e); }
+                    }
                 }
-                this._children = [];
+                while (this._disposers.length > 0) {
+                    const dispose = this._disposers.pop();
+                    try { dispose(); } catch (e) { console.error(e); }
+                }
+                if (typeof this.onunload === "function") this.onunload();
             }
             onload() {}
             onunload() {}
@@ -2185,10 +2237,18 @@ fn setup_plugin_environment<'js>(
             }
             register(cb) {
                 if (typeof cb === "function") {
-                    this._children.push({ unload: cb });
+                    this._disposers.push(cb);
                 }
             }
             registerEvent(ref) {
+                if (!ref) return ref;
+                // Obsidian's EventRef carries `.e` (the Events instance). Host refs carry an
+                // `unload` closure. Support both so event subscriptions are actually removed.
+                if (ref.e && typeof ref.e.offref === "function") {
+                    this.register(() => ref.e.offref(ref));
+                } else if (typeof ref.unload === "function") {
+                    this.register(() => ref.unload());
+                }
                 return ref;
             }
             registerDomEvent(el, type, cb, options) {
@@ -2201,6 +2261,11 @@ fn setup_plugin_environment<'js>(
                 this.register(() => clearInterval(id));
                 return id;
             }
+            registerScopeEvent(ref) {
+                if (ref && ref.scope && typeof ref.scope.unregister === "function") {
+                    this.register(() => ref.scope.unregister(ref));
+                }
+            }
             registerHoverLinkSource(source, info) {}
         }
 
@@ -2210,7 +2275,8 @@ fn setup_plugin_environment<'js>(
             }
             on(name, cb, ctx) {
                 if (!this._events.has(name)) this._events.set(name, []);
-                const ref = { cb, ctx };
+                // `.e` mirrors Obsidian's EventRef so Component.registerEvent() can offref().
+                const ref = { e: this, cb, ctx };
                 this._events.get(name).push(ref);
                 return ref;
             }
@@ -2309,6 +2375,25 @@ fn setup_plugin_environment<'js>(
             getIcon() { return "layout"; }
             async onOpen() {}
             async onClose() {}
+        }
+
+        // The document buffer lives in the host, not in the plugin runtime. A MarkdownView here is a
+        // handle on the file the host currently shows, not an owner of its text: `file`, `getMode()`
+        // and `getViewType()` are authoritative, while `editor` only reaches the host through the
+        // existing selection channel. Reading the buffer (editor.getValue and friends) needs a host
+        // request that does not exist yet, so it is deliberately not faked here.
+        class MarkdownView extends ItemView {
+            constructor(leaf, file) {
+                super(leaf);
+                this.file = file || null;
+                this.navigation = true;
+                this.__editor = new Editor("");
+            }
+            getViewType() { return "markdown"; }
+            getDisplayText() { return this.file ? this.file.basename : ""; }
+            getIcon() { return "document"; }
+            getMode() { return "source"; }
+            get editor() { return this.__editor; }
         }
 
         class MarkdownRenderChild extends Component {
@@ -2512,6 +2597,87 @@ fn setup_plugin_environment<'js>(
             }
         }
 
+        // ---- Workspace activation and layout readiness -------------------------------------------
+        // Two kinds of views coexist: plugin-owned leaves (tracked in __workspace_leaves) and the
+        // host's own editor, which the runtime can only observe through __host_get_active_file().
+        // Both are projected onto the single active leaf Obsidian exposes.
+        let __active_leaf = null;
+        let __most_recent_leaf = null;
+        let __native_leaf = null;
+        let __native_markdown_view = null;
+
+        function getNativeMarkdownView() {
+            let path = null;
+            try { path = __host_get_active_file(); } catch (e) { path = null; }
+            if (!path) {
+                __native_markdown_view = null;
+                return null;
+            }
+            if (!__native_markdown_view) {
+                __native_markdown_view = new MarkdownView(null, new TFile(path));
+            } else if (!__native_markdown_view.file || __native_markdown_view.file.path !== path) {
+                __native_markdown_view.file = new TFile(path);
+            }
+            return __native_markdown_view;
+        }
+
+        function getActiveLeaf() {
+            if (__active_leaf) return __active_leaf;
+            const view = getNativeMarkdownView();
+            if (!view) return null;
+            if (!__native_leaf) {
+                __native_leaf = new WorkspaceLeaf(rawWorkspace, "center");
+            }
+            __native_leaf.view = view;
+            __native_leaf.viewState = { type: "markdown", state: { file: view.file.path } };
+            return __native_leaf;
+        }
+
+        function activateLeaf(leaf) {
+            __active_leaf = leaf || null;
+            if (__active_leaf) __most_recent_leaf = __active_leaf;
+        }
+
+        // Resolves an Obsidian link target ("[[Note|alias]]", "folder/Note", "Note.md#heading") to a
+        // vault path. Links are vault-relative in Obsidian, so a missing path is matched by suffix and
+        // then by basename, preferring the folder the link came from.
+        function resolveLinkTarget(linktext, sourcePath) {
+            let t = String(linktext == null ? "" : linktext).trim();
+            if (t.startsWith("[[") && t.endsWith("]]")) t = t.slice(2, -2);
+            t = t.split("|")[0].split("#")[0].split("^")[0];
+            t = normalizePath(t);
+            if (!t) return null;
+            const files = __host_get_markdown_files();
+            if (files.includes(t)) return t;
+            const withExt = /\.[A-Za-z0-9]+$/.test(t) ? t : t + ".md";
+            if (files.includes(withExt)) return withExt;
+            const bySuffix = files.find((f) => f.endsWith("/" + withExt));
+            if (bySuffix) return bySuffix;
+            const name = withExt.split("/").pop();
+            const candidates = files.filter((f) => f.split("/").pop() === name);
+            if (candidates.length === 0) return null;
+            if (candidates.length === 1) return candidates[0];
+            const folder = normalizePath(sourcePath || "").split("/").slice(0, -1).join("/");
+            return candidates.find((f) => folder && f.startsWith(folder + "/")) || candidates[0];
+        }
+
+        // Obsidian drains onLayoutReady callbacks once the workspace layout exists. The host has a
+        // built workspace before plugins load, so the honest boundary is the end of plugin onload().
+        let __layout_ready = false;
+        const __layout_ready_queue = [];
+
+        function runLayoutReadyCallback(cb) {
+            try { cb(); } catch (e) { console.error("[plugin] onLayoutReady callback error:", e); }
+        }
+
+        function markLayoutReady() {
+            if (__layout_ready) return;
+            __layout_ready = true;
+            while (__layout_ready_queue.length > 0) {
+                runLayoutReadyCallback(__layout_ready_queue.shift());
+            }
+        }
+
         class WorkspaceLeaf {
             constructor(workspace, location = "right") {
                 this.workspace = workspace;
@@ -2531,6 +2697,14 @@ fn setup_plugin_environment<'js>(
                         const creator = globalThis.__registered_views.get(type);
                         const view = creator(this);
                         this.view = view;
+                        if (!state || state.active !== false) {
+                            activateLeaf(this);
+                        }
+                        // Obsidian order: createView -> load() -> onOpen(). load() runs the view's
+                        // onload() and loads any components it registered as children.
+                        if (typeof view.load === "function") {
+                            view.load();
+                        }
                         if (typeof view.onOpen === "function") {
                             await view.onOpen();
                         }
@@ -2574,8 +2748,16 @@ fn setup_plugin_environment<'js>(
             }
             detach() {
                 globalThis.__workspace_leaves.delete(this.id);
-                if (this.view && typeof this.view.onClose === "function") {
-                    try { this.view.onClose(); } catch (e) { console.error("ItemView onClose error:", e); }
+                if (__active_leaf === this) activateLeaf(null);
+                if (__most_recent_leaf === this) __most_recent_leaf = null;
+                if (this.view) {
+                    // Obsidian order: detach() -> unload() (disposes registrations/children) -> onClose().
+                    if (typeof this.view.unload === "function") {
+                        try { this.view.unload(); } catch (e) { console.error("ItemView unload error:", e); }
+                    }
+                    if (typeof this.view.onClose === "function") {
+                        try { this.view.onClose(); } catch (e) { console.error("ItemView onClose error:", e); }
+                    }
                 }
                 return __invoke_host("close_leaf", { leaf_id: this.id });
             }
@@ -2649,6 +2831,169 @@ fn setup_plugin_environment<'js>(
             };
         }
 
+        // ---- Markdown rendering -------------------------------------------------------------------
+        // The host's UiNode model has no bold/italic/list styling (TextStyle is normal/muted/heading/
+        // code), so inline emphasis is flattened to plain text on purpose: emitting <strong> would hit
+        // the serializer's "bold with text becomes a heading" branch and blow up a word mid-sentence.
+        // Headings and code do have real styles, so those are emitted as elements.
+        function mdText(parent, value) {
+            if (!value) return;
+            parent.appendChild(new VElement("#text", { text: value }));
+        }
+
+        // Links render as text carrying the usual Obsidian class, not as <a>: the serializer turns <a>
+        // into a full button, which would put a button in the middle of a sentence. Clicking is a
+        // separate problem — UiNode has no inline link target yet.
+        function mdLink(parent, label, target, external) {
+            const link = new VElement("span", { text: label || target });
+            link.addClass(external ? "external-link" : "internal-link");
+            parent.appendChild(link);
+        }
+
+        function mdInline(text, parent) {
+            const re = /(`[^`\n]+`)|(\[\[[^\]\n]+\]\])|(!?\[[^\]\n]*\]\([^)\s]+\))|(\*\*[^*\n]+\*\*)|(__[^_\n]+__)|(\*[^*\n]+\*)|(_[^_\n]+_)|(~~[^~\n]+~~)/g;
+            let last = 0;
+            let m;
+            while ((m = re.exec(text))) {
+                if (m.index > last) mdText(parent, text.slice(last, m.index));
+                const tok = m[0];
+                if (m[1]) {
+                    parent.appendChild(new VElement("code", { text: tok.slice(1, -1) }));
+                } else if (m[2]) {
+                    const inner = tok.slice(2, -2);
+                    const bar = inner.indexOf("|");
+                    const target = (bar === -1 ? inner : inner.slice(0, bar)).split("#")[0];
+                    mdLink(parent, bar === -1 ? inner : inner.slice(bar + 1), target, false);
+                } else if (m[3]) {
+                    const isImage = tok[0] === "!";
+                    const close = tok.indexOf("](");
+                    const label = tok.slice(isImage ? 2 : 1, close);
+                    const href = tok.slice(close + 2, -1);
+                    if (isImage) mdText(parent, label || href);
+                    else mdLink(parent, label, href, true);
+                } else if (m[4] || m[5]) {
+                    mdText(parent, tok.slice(2, -2));
+                } else if (m[6] || m[7]) {
+                    mdText(parent, tok.slice(1, -1));
+                } else if (m[8]) {
+                    mdText(parent, tok.slice(2, -2));
+                }
+                last = m.index + tok.length;
+            }
+            if (last < text.length) mdText(parent, text.slice(last));
+        }
+
+        const MD_LIST_ITEM = /^\s*([-*+]|\d+[.)])\s+/;
+        const MD_FENCE_OPEN = /^\s*(```+|~~~+)\s*([\w+#.-]*)\s*$/;
+        const MD_BLOCK_START = /^\s*(#{1,6}\s|>|([-*+]|\d+[.)])\s|```|~~~)/;
+
+        function mdBlocks(lines, parent) {
+            let i = 0;
+            while (i < lines.length) {
+                const line = lines[i];
+                if (!line.trim()) { i++; continue; }
+
+                const fence = MD_FENCE_OPEN.exec(line);
+                if (fence) {
+                    const marker = fence[1][0] === "`" ? "```" : "~~~";
+                    const lang = fence[2];
+                    const body = [];
+                    i++;
+                    while (i < lines.length && lines[i].trim().indexOf(marker) !== 0) {
+                        body.push(lines[i]);
+                        i++;
+                    }
+                    i++;
+                    const code = new VElement("code", { text: body.join("\n") });
+                    if (lang) code.addClass("language-" + lang);
+                    parent.appendChild(code);
+                    continue;
+                }
+
+                const heading = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
+                if (heading) {
+                    parent.appendChild(new VElement("h" + heading[1].length, { text: heading[2] }));
+                    i++;
+                    continue;
+                }
+
+                if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
+                    parent.appendChild(new VElement("hr"));
+                    i++;
+                    continue;
+                }
+
+                if (/^\s*>/.test(line)) {
+                    const quoted = [];
+                    while (i < lines.length && /^\s*>/.test(lines[i])) {
+                        quoted.push(lines[i].replace(/^\s*>\s?/, ""));
+                        i++;
+                    }
+                    const quote = new VElement("blockquote");
+                    mdBlocks(quoted, quote);
+                    parent.appendChild(quote);
+                    continue;
+                }
+
+                if (MD_LIST_ITEM.test(line)) {
+                    const list = new VElement(/^\s*\d/.test(line) ? "ol" : "ul");
+                    while (i < lines.length && MD_LIST_ITEM.test(lines[i])) {
+                        const item = new VElement("li");
+                        mdInline(lines[i].replace(MD_LIST_ITEM, ""), item);
+                        list.appendChild(item);
+                        i++;
+                    }
+                    parent.appendChild(list);
+                    continue;
+                }
+
+                if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+                    const rows = [];
+                    while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+                        rows.push(lines[i]);
+                        i++;
+                    }
+                    rows.splice(1, 1);
+                    const table = new VElement("table");
+                    for (const row of rows) {
+                        const tr = new VElement("tr");
+                        for (const cell of row.trim().replace(/^\||\|$/g, "").split("|")) {
+                            const td = new VElement("td");
+                            mdInline(cell.trim(), td);
+                            tr.appendChild(td);
+                        }
+                        table.appendChild(tr);
+                    }
+                    parent.appendChild(table);
+                    continue;
+                }
+
+                const para = [];
+                while (i < lines.length && lines[i].trim() && !MD_BLOCK_START.test(lines[i])) {
+                    para.push(lines[i]);
+                    i++;
+                }
+                if (para.length === 0) {
+                    para.push(lines[i]);
+                    i++;
+                }
+                const p = new VElement("p");
+                mdInline(para.join(" "), p);
+                parent.appendChild(p);
+            }
+        }
+
+        class MarkdownRenderer {
+            static async render(_app, markdown, el, _sourcePath, _component) {
+                if (!el || typeof el.appendChild !== "function") return;
+                const text = String(markdown == null ? "" : markdown).replace(/\r\n?/g, "\n");
+                mdBlocks(text.split("\n"), el);
+            }
+            static async renderMarkdown(markdown, el, sourcePath, component) {
+                return MarkdownRenderer.render(null, markdown, el, sourcePath, component);
+            }
+        }
+
         function createLazyFailProxy(moduleName) {
             const target = function() {};
             return new Proxy(target, {
@@ -2678,8 +3023,7 @@ fn setup_plugin_environment<'js>(
         const KNOWN_UNIMPLEMENTED_OBSIDIAN_METHODS = new Set([
             'app.vault.copy',
             'app.workspace.splitActiveLeaf',
-            'app.fileManager.processFrontMatter',
-            'app.workspace.iterateAllLeaves'
+            'app.fileManager.processFrontMatter'
         ]);
 
         function makeAuditedProxy(target, targetName) {
@@ -2783,9 +3127,7 @@ fn setup_plugin_environment<'js>(
                     }
                 }
             }
-            registerEvent(eventRef) {
-                return eventRef;
-            }
+            // registerEvent() is inherited from Component so plugin subscriptions are disposed on unload.
             async loadData() {
                 return __invoke_host("load_data", {});
             }
@@ -2805,6 +3147,8 @@ fn setup_plugin_environment<'js>(
         }
 
         const rawVault = {
+            // Obsidian's default config folder name. Plugins join it onto paths to reach settings files.
+            configDir: ".obsidian",
             read: async (path) => {
                 const p = typeof path === 'object' ? path.path : path;
                 console.log(`[plugin] vault.read: "${p}"`);
@@ -2812,21 +3156,35 @@ fn setup_plugin_environment<'js>(
                     const res = await __invoke_host("vault_read", { path: p });
                     return res != null ? String(res) : "";
                 } catch (e) {
+                    // Never fabricate content: a read-modify-write plugin would persist the fake
+                    // string into the user's note. Failing loudly keeps the file intact.
                     console.warn(`[plugin] vault.read error for "${p}":`, e);
-                    return "non-empty-fallback-on-error";
+                    throw e;
                 }
             },
+            // cachedRead differs from read only in Obsidian's source: it resolves from the metadata
+            // cache when fresh. This host has no cache to serve, so the result is the file content.
+            cachedRead: (file) => rawVault.read(file),
             modify: (path, data) => __invoke_host("vault_modify", { path: typeof path === 'object' ? path.path : path, data }),
             create: (path, data) => __invoke_host("vault_create", { path, data }),
+            createFolder: async (path) => {
+                const p = normalizePath(typeof path === 'object' ? path.path : path);
+                if (!p) throw new Error("vault.createFolder: empty path");
+                await __invoke_host("vault_create_folder", { path: p });
+                return new TFolder(p);
+            },
             delete: (path) => {
                 const p = typeof path === 'object' ? path.path : path;
                 console.log(`[plugin] vault.delete: "${p}"`);
                 return __invoke_host("vault_delete", { path: p });
             },
+            // trash is Obsidian's *safe* delete (Obsidian trash or the OS recycle bin), never an
+            // irreversible unlink. The host resolves the destination; a plugin that picked trash
+            // for safety must not get a permanent delete.
             trash: (path, system) => {
                 const p = typeof path === 'object' ? path.path : path;
                 console.log(`[plugin] vault.trash: "${p}"`);
-                return __invoke_host("vault_delete", { path: p });
+                return __invoke_host("vault_trash", { path: p, system: !!system });
             },
             process: async (file, fn) => {
                 const path = typeof file === 'object' ? file.path : file;
@@ -2849,13 +3207,19 @@ fn setup_plugin_environment<'js>(
                 const files = __host_get_markdown_files();
                 return files.map(p => new TFile(p));
             },
+            // Exact-path lookups. Return null for anything the host does not actually list (including
+            // folders, which the host does not model) instead of fabricating a TFile for a missing file.
             getFileByPath: (path) => {
                 const p = typeof path === 'object' ? path.path : path;
-                return p ? new TFile(p) : null;
+                if (!p) return null;
+                const norm = normalizePath(String(p));
+                return __host_get_markdown_files().includes(norm) ? new TFile(norm) : null;
             },
             getAbstractFileByPath: (path) => {
                 const p = typeof path === 'object' ? path.path : path;
-                return p ? new TFile(p) : null;
+                if (!p) return null;
+                const norm = normalizePath(String(p));
+                return __host_get_markdown_files().includes(norm) ? new TFile(norm) : null;
             },
             on: (event, cb) => {
                 const evName = String(event);
@@ -2866,6 +3230,9 @@ fn setup_plugin_environment<'js>(
                     globalThis.__vault_listeners.get(evName).push(cb);
                 }
                 return {
+                    e: rawVault,
+                    name: evName,
+                    cb,
                     id: "vault-sub-" + Math.random().toString(36).substr(2, 9),
                     unload: () => {
                         const list = globalThis.__vault_listeners.get(evName);
@@ -2875,6 +3242,9 @@ fn setup_plugin_environment<'js>(
                         }
                     }
                 };
+            },
+            offref: (ref) => {
+                if (ref && typeof ref.unload === "function") ref.unload();
             },
             off: (event, cb) => {
                 const evName = String(event);
@@ -2892,15 +3262,60 @@ fn setup_plugin_environment<'js>(
                     }
                 }
             },
+            // Obsidian's DataAdapter. The host owns the filesystem, so most calls map onto existing
+            // vault_* requests; binary reads/writes have no transport and fail loudly rather than
+            // corrupting a file with text where the plugin expects bytes.
             adapter: {
+                getBasePath: () => "",
+                getResourcePath: (path) => String(path),
+                exists: async (path) => {
+                    const norm = normalizePath(String(path));
+                    return __host_get_markdown_files().includes(norm);
+                },
                 read: async (path) => {
                     const res = await __invoke_host("vault_read", { path });
                     return res != null ? String(res) : "";
                 },
                 write: (path, data) => __invoke_host("vault_modify", { path, data }),
-                exists: async (path) => {
-                    const files = __host_get_markdown_files();
-                    return files.includes(String(path));
+                append: async (path, data) => {
+                    let existing = "";
+                    try {
+                        const res = await __invoke_host("vault_read", { path });
+                        existing = res != null ? String(res) : "";
+                    } catch (e) {
+                        existing = "";
+                    }
+                    return __invoke_host("vault_modify", { path, data: existing + String(data) });
+                },
+                mkdir: (path) => __invoke_host("vault_create_folder", { path }),
+                remove: (path) => __invoke_host("vault_delete", { path }),
+                rmdir: (path) => __invoke_host("vault_delete", { path }),
+                rename: (path, newPath) => __invoke_host("vault_rename", { old_path: path, new_path: newPath }),
+                stat: async (path) => {
+                    const norm = normalizePath(String(path));
+                    if (!__host_get_markdown_files().includes(norm)) return null;
+                    return { type: "file", ctime: 0, mtime: 0, size: 0 };
+                },
+                // Derives a directory listing from the flat markdown-file list the host provides.
+                list: async (path) => {
+                    const norm = normalizePath(String(path)).replace(/\/+$/, "");
+                    const prefix = norm ? norm + "/" : "";
+                    const files = [];
+                    const folders = new Set();
+                    for (const f of __host_get_markdown_files()) {
+                        if (!f.startsWith(prefix)) continue;
+                        const rest = f.slice(prefix.length);
+                        const slash = rest.indexOf("/");
+                        if (slash === -1) files.push(f);
+                        else folders.add(prefix + rest.slice(0, slash));
+                    }
+                    return { files, folders: Array.from(folders) };
+                },
+                readBinary: async () => {
+                    throw new Error("adapter.readBinary is not supported by the Vibecodium host");
+                },
+                writeBinary: async () => {
+                    throw new Error("adapter.writeBinary is not supported by the Vibecodium host");
                 }
             }
         };
@@ -2909,6 +3324,45 @@ fn setup_plugin_environment<'js>(
             getActiveFile: () => {
                 const p = __host_get_active_file();
                 return p ? new TFile(p) : null;
+            },
+            get activeLeaf() {
+                return getActiveLeaf();
+            },
+            get activeEditor() {
+                const leaf = getActiveLeaf();
+                return leaf && leaf.view instanceof MarkdownView ? leaf.view : null;
+            },
+            get layoutReady() {
+                return __layout_ready;
+            },
+            getActiveViewOfType: (type) => {
+                const leaf = getActiveLeaf();
+                const view = leaf ? leaf.view : null;
+                if (!view) return null;
+                if (typeof type !== "function") return view;
+                return view instanceof type ? view : null;
+            },
+            setActiveLeaf: (leaf, _options) => {
+                activateLeaf(leaf);
+            },
+            getMostRecentLeaf: () => __most_recent_leaf || getActiveLeaf(),
+            iterateAllLeaves: (cb) => {
+                if (typeof cb !== "function") return;
+                // Materialise the native leaf first so it takes part in the iteration.
+                getActiveLeaf();
+                for (const leaf of [...globalThis.__workspace_leaves.values()]) {
+                    try { cb(leaf); } catch (e) { console.error("[plugin] iterateAllLeaves callback error:", e); }
+                }
+            },
+            openLinkText: async (linktext, sourcePath, _newLeaf) => {
+                const raw = String(linktext == null ? "" : linktext).trim();
+                if (!raw) return;
+                if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) {
+                    await __invoke_host("open_url", { url: raw });
+                    return;
+                }
+                const target = resolveLinkTarget(raw, sourcePath);
+                if (target) await __invoke_host("open_file", { path: target });
             },
             openFile: (path) => __invoke_host("open_file", { path: typeof path === 'object' ? path.path : path }),
             getLeaf: (create) => new WorkspaceLeaf(rawWorkspace, "center"),
@@ -2934,7 +3388,12 @@ fn setup_plugin_environment<'js>(
                 return leaves[0];
             },
             onLayoutReady: (cb) => {
-                if (typeof cb === "function") setTimeout(cb, 10);
+                if (typeof cb !== "function") return;
+                if (__layout_ready) {
+                    runLayoutReadyCallback(cb);
+                } else {
+                    __layout_ready_queue.push(cb);
+                }
             },
             revealLeaf: (leaf) => {
                 if (leaf && leaf.id) {
@@ -2955,6 +3414,9 @@ fn setup_plugin_environment<'js>(
                     globalThis.__workspace_listeners.get(evName).push(cb);
                 }
                 return {
+                    e: rawWorkspace,
+                    name: evName,
+                    cb,
                     id: "workspace-sub-" + Math.random().toString(36).substr(2, 9),
                     unload: () => {
                         const list = globalThis.__workspace_listeners.get(evName);
@@ -2964,6 +3426,9 @@ fn setup_plugin_environment<'js>(
                         }
                     }
                 };
+            },
+            offref: (ref) => {
+                if (ref && typeof ref.unload === "function") ref.unload();
             },
             off: (event, cb) => {
                 const evName = String(event);
@@ -2984,14 +3449,28 @@ fn setup_plugin_environment<'js>(
         };
 
         const rawMetadataCache = {
-            getFileCache: (_file) => ({
-                tags: [],
-                links: [],
-                headings: [],
-                frontmatter: {}
+            // The host has no parsed tag/link cache. Return null ("no metadata available") rather
+            // than an empty object, which a plugin could not tell apart from "file has no metadata".
+            getFileCache: (_file) => null,
+            getCache: (_path) => null,
+            // Returns a TFile or null (never a bare string): callers read .path/.basename/.extension.
+            getFirstLinkpathDest: (linkpath, sourcePath) => {
+                const hit = resolveLinkTarget(linkpath, sourcePath);
+                return hit ? new TFile(hit) : null;
+            },
+            resolvedLinks: {},
+            fileToLinktext: (file, _sourcePath, omitMdExtension) => {
+                const p = file && typeof file === 'object' ? file.path : String(file == null ? "" : file);
+                if (!p) return "";
+                const base = p.split("/").pop();
+                return omitMdExtension === false ? base : base.replace(/\.md$/i, "");
+            },
+            on: (_event, _cb) => ({
+                e: rawMetadataCache,
+                id: "meta-sub",
+                unload: () => {}
             }),
-            getFirstLinkpathDest: (path, _sourcePath) => path,
-            on: (_event, _cb) => ({ id: "meta-sub" }),
+            offref: (_ref) => {},
             trigger: () => {}
         };
 
@@ -3000,7 +3479,21 @@ fn setup_plugin_environment<'js>(
             workspace: makeAuditedProxy(rawWorkspace, "app.workspace"),
             metadataCache: makeAuditedProxy(rawMetadataCache, "app.metadataCache"),
             commands: {
-                executeCommandById: (id) => __invoke_host("execute_command", { id: String(id) }),
+                // Obsidian returns synchronously (boolean), not a Promise. Run a command this plugin
+                // registered directly; otherwise forward to the host registry and report success.
+                executeCommandById: (id) => {
+                    const commandId = String(id);
+                    let handler = globalThis.__command_handlers.get(commandId);
+                    if (!handler && commandId.includes(":")) {
+                        handler = globalThis.__command_handlers.get(commandId.split(":").slice(1).join(":"));
+                    }
+                    if (typeof handler === "function") {
+                        try { handler(); } catch (e) { console.error("executeCommandById error:", e); }
+                        return true;
+                    }
+                    __invoke_host("execute_command", { id: commandId });
+                    return true;
+                },
             },
             internalPlugins: {
                 getEnabledPluginById: (_id) => null
@@ -3024,7 +3517,9 @@ fn setup_plugin_environment<'js>(
         globalThis.FuzzySuggestModal = FuzzySuggestModal;
         globalThis.View = View;
         globalThis.ItemView = ItemView;
+        globalThis.MarkdownView = MarkdownView;
         globalThis.MarkdownRenderChild = MarkdownRenderChild;
+        globalThis.MarkdownRenderer = MarkdownRenderer;
         globalThis.Events = Events;
         globalThis.Scope = Scope;
         globalThis.WorkspaceLeaf = WorkspaceLeaf;
@@ -3073,6 +3568,30 @@ fn setup_plugin_environment<'js>(
             return "ru";
         };
         globalThis.getLanguage = getLanguage;
+
+        // obsidian.Platform. The host is a native desktop application, so every mobile flag is false
+        // by construction; only the OS identity varies and comes from the host, not from a guess.
+        const __platform = globalThis.__host_platform || { os: "windows", arch: "x86_64" };
+        const Platform = {
+            isDesktop: true,
+            isMobile: false,
+            isDesktopApp: true,
+            isMobileApp: false,
+            isIosApp: false,
+            isAndroidApp: false,
+            isPhone: false,
+            isTablet: false,
+            isMacOS: __platform.os === "macos",
+            isWin: __platform.os === "windows",
+            isLinux: __platform.os === "linux",
+            isSafari: false,
+            resourcePathPrefix: "",
+            canExportPdf: false,
+            canPopoutWindow: false,
+            canStackTabs: false,
+            canSplit: true
+        };
+        globalThis.Platform = Platform;
         globalThis.window = globalThis;
         moment.locale = () => getLanguage();
         globalThis.window.moment = moment;
@@ -3087,10 +3606,13 @@ fn setup_plugin_environment<'js>(
             if (typeof callback === "function") callback(frag);
             return frag;
         };
+        const __ua_os = __platform.os === "macos"
+            ? "Macintosh; Intel Mac OS X 10_15_7"
+            : (__platform.os === "linux" ? "X11; Linux x86_64" : "Windows NT 10.0; Win64; x64");
         globalThis.navigator = {
             language: "ru-RU",
             languages: ["ru-RU", "ru", "en"],
-            userAgent: "Aquilum/1.0 (Windows NT 10.0; Win64; x64) Obsidian/1.8.0"
+            userAgent: `Aquilum/1.0 (${__ua_os}) Obsidian/1.8.0`
         };
         const __doc_body = new VElement("body");
         const __doc_head = new VElement("head");
@@ -3203,6 +3725,7 @@ fn setup_plugin_environment<'js>(
             EditorSuggest,
             View,
             ItemView,
+            MarkdownView,
             MarkdownRenderChild,
             Events,
             Scope,
@@ -3224,9 +3747,11 @@ fn setup_plugin_environment<'js>(
             TFolder,
             TAbstractFile,
             normalizePath,
+            MarkdownRenderer,
             requestUrl,
             moment,
             getLanguage,
+            Platform,
             addIcon: (name, svg) => {},
             setIcon: (el, icon) => {
                 if (el) {
@@ -3344,6 +3869,14 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
                 .to_string();
             ApiRequest::VaultCreate { path, data }
         }
+        "vault_create_folder" => {
+            let path = payload
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::VaultCreateFolder { path }
+        }
         "vault_delete" => {
             let path = payload
                 .get("path")
@@ -3351,6 +3884,18 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
                 .unwrap_or_default()
                 .to_string();
             ApiRequest::VaultDelete { path }
+        }
+        "vault_trash" => {
+            let path = payload
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let system = payload
+                .get("system")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            ApiRequest::VaultTrash { path, system }
         }
         "open_file" => {
             let path = payload

@@ -50,6 +50,33 @@ impl std::fmt::Display for VaultError {
 
 impl std::error::Error for VaultError {}
 
+/// Куда переместить файл в корзине vault, не затирая ранее выброшенный файл с тем же путём.
+fn unique_trash_destination(root: &Path, rel_path: &str) -> PathBuf {
+    let trash_root = root.join(".trash");
+    let mut dest = trash_root.join(rel_path);
+    if !dest.exists() {
+        return dest;
+    }
+    let parent = dest.parent().map(Path::to_path_buf).unwrap_or(trash_root);
+    let stem = dest
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = dest.extension().map(|s| s.to_string_lossy().into_owned());
+    let mut n = 1u32;
+    loop {
+        let name = match &ext {
+            Some(e) => format!("{stem} {n}.{e}"),
+            None => format!("{stem} {n}"),
+        };
+        let candidate = parent.join(name);
+        if !candidate.exists() {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
 /// Ядро vault без зависимости от GPUI.
 /// Управляет файловой структурой заметки, проверкой путей и данными плагинов.
 pub struct VaultCore {
@@ -199,6 +226,21 @@ impl VaultCore {
             return Err(VaultError::NotFound(rel_path.to_string()));
         }
         std::fs::remove_file(&abs).map_err(|e| VaultError::Io(e.to_string()))
+    }
+
+    /// Безопасное удаление: файл перемещается в корзину vault (`.trash/<rel_path>`),
+    /// а не удаляется безвозвратно. `.trash` — скрытая директория, поэтому корзина
+    /// не попадает в снапшот и файловое дерево.
+    pub fn trash_file(&self, rel_path: &str) -> Result<(), VaultError> {
+        let abs = self.resolve(rel_path)?;
+        if !abs.exists() {
+            return Err(VaultError::NotFound(rel_path.to_string()));
+        }
+        let dest = unique_trash_destination(&self.root, rel_path);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| VaultError::Io(e.to_string()))?;
+        }
+        std::fs::rename(&abs, &dest).map_err(|e| VaultError::Io(e.to_string()))
     }
 
     /// Переименование / перемещение файла внутри vault.
