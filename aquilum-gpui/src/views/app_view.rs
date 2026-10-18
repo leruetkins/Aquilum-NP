@@ -6263,6 +6263,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
                 let mut row_div = div()
                     .id(gpui::ElementId::Name(format!("v-row-{}-{}", lid_tag, v_idx).into()))
+                    .relative()
                     .w_full()
                     .flex_shrink_0()
                     .flex()
@@ -6279,7 +6280,19 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     } else {
                         let mut faint_bg = theme.bg_hover;
                         faint_bg.a *= 0.45;
-                        row_div = row_div.bg(faint_bg);
+                        let mut border_c = theme.text_muted;
+                        border_c.a = 0.5;
+                        row_div = row_div
+                            .bg(faint_bg)
+                            .child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .rounded_sm()
+                                    .border_1()
+                                    .border_dashed()
+                                    .border_color(border_c),
+                            );
                     }
                 }
 
