@@ -6160,17 +6160,6 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
                 let chip_inset = code_chip_inset(row_h);
                 let mut backdrop_rects = Vec::new();
-                if show_current_line_highlight {
-                    backdrop_rects.push(
-                        div()
-                            .absolute()
-                            .left(px(0.0))
-                            .top_0()
-                            .h(px(row_h))
-                            .w_full()
-                            .bg(theme.bg_hover),
-                    );
-                }
                 for &(code_start, code_end) in row_layout.code_ranges() {
                     let (chip_x, chip_w) = row_layout.selection_rect(code_start, code_end, pixel_scale);
                     backdrop_rects.push(
@@ -6290,13 +6279,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     } else {
                         let mut faint_bg = theme.bg_hover;
                         faint_bg.a *= 0.45;
-                        let mut border_c = theme.text_muted;
-                        border_c.a = 0.5;
-                        row_div = row_div
-                            .bg(faint_bg)
-                            .border_1()
-                            .border_dashed()
-                            .border_color(border_c);
+                        row_div = row_div.bg(faint_bg);
                     }
                 }
 
