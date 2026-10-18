@@ -8,11 +8,7 @@ use crate::views::app_view::AppView;
 impl AppView {
     /// Closes all open tabs and resets active note state.
     pub fn close_all_tabs(&mut self, cx: &mut Context<Self>) {
-        if let Some(doc) = self.state.active_document() {
-            if doc.is_dirty {
-                self.state.save_active_note();
-            }
-        }
+        self.state.save_dirty_documents();
         self.commit_title_rename_internal();
         for leaf in self.state.leaves.values_mut() {
             leaf.tabs.clear();

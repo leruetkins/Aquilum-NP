@@ -4090,6 +4090,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         }
 
         self.commit_title_rename_internal();
+        if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
+            self.state.save_active_note();
+        }
 
         // 1. Snapshot outgoing note settings & view state
         let current_scroll = self.current_scroll_top();

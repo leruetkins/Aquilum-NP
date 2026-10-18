@@ -4258,6 +4258,56 @@ mod tests {
     }
 
     #[test]
+    fn test_save_active_note_flushes_only_active_pane() {
+        let temp_dir = std::env::temp_dir().join(format!("vibe_active_save_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let note1 = temp_dir.join("NoteA.md");
+        let note2 = temp_dir.join("NoteB.md");
+        std::fs::write(&note1, "A").unwrap();
+        std::fs::write(&note2, "B").unwrap();
+
+        let mut state = AppState::new();
+        state.open_tabs.clear();
+        state.documents.clear();
+        state.by_path.clear();
+        state.views.clear();
+        state.leaves.clear();
+        let leaf1 = LeafId::new();
+        state.leaves.insert(leaf1, LeafState::new(leaf1));
+        state.workspace.root = crate::workspace::WorkspaceNode::Leaf { id: leaf1 };
+        state.workspace.active_leaf = leaf1;
+        state.workspace_path = Some(temp_dir.clone());
+
+        state.open_note(note1.clone());
+        let doc1 = state.find_document_by_path(&note1).unwrap();
+
+        // Second pane with its own document
+        let leaf2 = LeafId::new();
+        state.workspace.split_leaf(leaf1, crate::workspace::SplitDirection::Row, leaf2);
+        state.leaves.insert(leaf2, LeafState::new(leaf2));
+        state.workspace.active_leaf = leaf2;
+        state.open_note(note2.clone());
+        let doc2 = state.find_document_by_path(&note2).unwrap();
+
+        state.documents.get_mut(&doc1).unwrap().apply_edit(0, 0, "Saved ", None, 0, 6);
+        state.documents.get_mut(&doc2).unwrap().apply_edit(0, 0, "Saved ", None, 0, 6);
+        assert!(state.documents.get(&doc1).unwrap().is_dirty);
+        assert!(state.documents.get(&doc2).unwrap().is_dirty);
+
+        // Flush the active pane only: leaf1 is active, leaf2 must stay untouched
+        state.workspace.active_leaf = leaf1;
+        assert!(state.active_document().map(|d| d.is_dirty).unwrap_or(false));
+        state.save_active_note();
+
+        assert!(!state.documents.get(&doc1).unwrap().is_dirty);
+        assert!(state.documents.get(&doc2).unwrap().is_dirty, "Other pane must keep its unsaved edits");
+        assert_eq!(std::fs::read_to_string(&note1).unwrap(), "Saved A");
+        assert_eq!(std::fs::read_to_string(&note2).unwrap(), "B");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
     fn test_stage3_multi_split_viewport_stability_when_editing_in_other_split() {
         let temp_dir = std::env::temp_dir().join(format!("vibe_stage3_vp_{}", uuid::Uuid::new_v4()));
         let _ = std::fs::create_dir_all(&temp_dir);

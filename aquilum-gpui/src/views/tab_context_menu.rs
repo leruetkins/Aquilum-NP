@@ -83,6 +83,7 @@ impl AppView {
                 leaf.tabs.clear();
                 leaf.tabs.push(keep_tab);
                 leaf.active_tab_index = 0;
+                self.state.save_dirty_documents();
                 self.state.cleanup_orphaned_documents_and_views();
                 self.select_leaf_tab(active_leaf_id, 0, window, cx);
                 cx.notify();
@@ -129,6 +130,7 @@ impl AppView {
                 if leaf.active_tab_index > ix {
                     leaf.active_tab_index = ix;
                 }
+                self.state.save_dirty_documents();
                 self.state.cleanup_orphaned_documents_and_views();
                 cx.notify();
                 return;
@@ -381,6 +383,7 @@ impl AppView {
                                             leaf.tabs.clear();
                                             leaf.tabs.push(keep_tab);
                                             leaf.active_tab_index = 0;
+                                            this.state.save_dirty_documents();
                                             this.state.cleanup_orphaned_documents_and_views();
                                             this.select_leaf_tab(lid, 0, window, cx);
                                             this.close_tab_context_menu(cx);
@@ -418,6 +421,7 @@ impl AppView {
                                     } else {
                                         None
                                     };
+                                    this.state.save_dirty_documents();
                                     this.state.cleanup_orphaned_documents_and_views();
                                     if let Some(target_idx) = active_to_select {
                                         this.select_leaf_tab(lid, target_idx, window, cx);
