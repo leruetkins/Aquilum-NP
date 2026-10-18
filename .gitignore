@@ -48,3 +48,4 @@ aquilum-app/tmp-fm.*
 /aquilum-gpui/target
 /obsidian_plugins
 
+/aquilum-gpui/TODO/window-manager/target

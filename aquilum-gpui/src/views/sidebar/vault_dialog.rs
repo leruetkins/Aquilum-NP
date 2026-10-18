@@ -56,22 +56,15 @@ impl AppView {
         self.load_installed_plugins_for_vault();
         let still_valid = self
             .state
-            .active_note
-            .as_ref()
-            .map(|n| n.path.starts_with(&path))
+            .active_document()
+            .map(|d| d.path.starts_with(&path))
             .unwrap_or(false);
         if !still_valid {
             if let Some(first) = AppState::first_file_in_tree(&self.state.file_tree) {
                 self.select_note(first, true, window, cx);
                 return;
             }
-            self.state.active_note = None;
             self.state.active_empty_tab = None;
-            self.title_editing_path = None;
-            self.title_edit_text.clear();
-            self.title_cursor_pos = 0;
-            self.title_selection_anchor = None;
-            self.title_is_mouse_selecting = false;
         }
         self.need_scroll_sidebar_to_active.set(true);
         cx.notify();

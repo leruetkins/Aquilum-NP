@@ -8,8 +8,8 @@ use crate::views::app_view::AppView;
 impl AppView {
     /// Closes all open tabs and resets active note state.
     pub fn close_all_tabs(&mut self, cx: &mut Context<Self>) {
-        if let Some(ref note) = self.state.active_note {
-            if note.is_dirty {
+        if let Some(doc) = self.state.active_document() {
+            if doc.is_dirty {
                 self.state.save_active_note();
             }
         }
@@ -21,16 +21,10 @@ impl AppView {
         }
         self.state.cleanup_orphaned_documents_and_views();
         self.state.open_tabs.clear();
-        self.state.active_note = None;
         self.state.active_empty_tab = None;
         self.state.session.open_tabs.clear();
         self.state.session.active_note = None;
         self.state.save_session_state();
-        self.title_editing_path = None;
-        self.title_edit_text.clear();
-        self.title_cursor_pos = 0;
-        self.title_selection_anchor = None;
-        self.title_is_mouse_selecting = false;
         cx.notify();
     }
 

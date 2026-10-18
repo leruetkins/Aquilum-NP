@@ -1,9 +1,12 @@
 use std::time::Instant;
 
 use crate::document_buffer::{
-    transform_offset, transform_selection_range, Bias, DocumentId, Edit, ViewportAnchor,
+    transform_offset, transform_selection_range, Bias, BufferEvent, DocumentBuffer, DocumentId,
+    Edit, ViewportAnchor,
 };
 use crate::editor_window::EditorWindow;
+use crate::state::NoteEditEvent;
+use crate::workspace::session_core::ops::{EditEvent, TextOp};
 use crate::workspace::TabId;
 
 #[derive(Clone, Copy, Debug)]
@@ -13,15 +16,176 @@ pub struct WheelEaseState {
     pub t0: Instant,
 }
 
-#[derive(Clone, Debug)]
-pub struct EditorViewState {
-    pub tab_id: TabId,
-    pub doc_id: DocumentId,
-    pub cursor_offset: usize,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitleInput {
+    pub text: String,
+    pub cursor_pos: usize,
     pub selection_anchor: Option<usize>,
-    pub viewport: ViewportAnchor,
-    pub scroll_top: f64,
-    pub wheel_ease: Option<WheelEaseState>,
+    pub is_focused: bool,
+    pub is_mouse_selecting: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CloseEffect {
+    CommitTitle {
+        tab_id: TabId,
+        doc_id: DocumentId,
+        new_title: String,
+    },
+    FlushDoc(DocumentId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CloseRequest {
+    Ready,
+    NeedsEffects(Vec<CloseEffect>),
+}
+
+impl TitleInput {
+    pub fn new(text: String) -> Self {
+        let cursor_pos = text.chars().count();
+        Self {
+            text,
+            cursor_pos,
+            selection_anchor: None,
+            is_focused: true,
+            is_mouse_selecting: false,
+        }
+    }
+
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        if anchor != self.cursor_pos {
+            let start = anchor.min(self.cursor_pos);
+            let end = anchor.max(self.cursor_pos);
+            Some((start, end))
+        } else {
+            None
+        }
+    }
+
+    pub fn selected_text(&self) -> Option<String> {
+        let (s_start, s_end) = self.selection_range()?;
+        Some(self.text.chars().skip(s_start).take(s_end - s_start).collect())
+    }
+
+    pub fn delete_selection(&mut self) -> bool {
+        if let Some((s_start, s_end)) = self.selection_range() {
+            let mut chars: Vec<char> = self.text.chars().collect();
+            if s_start < chars.len() {
+                chars.drain(s_start..s_end.min(chars.len()));
+                self.text = chars.into_iter().collect();
+            }
+            self.cursor_pos = s_start;
+            self.selection_anchor = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn select_all(&mut self) {
+        self.selection_anchor = Some(0);
+        self.cursor_pos = self.text.chars().count();
+    }
+
+    pub fn insert_text(&mut self, text: &str) {
+        self.delete_selection();
+        let mut chars: Vec<char> = self.text.chars().collect();
+        let pos = self.cursor_pos.min(chars.len());
+        for (i, c) in text.chars().enumerate() {
+            chars.insert(pos + i, c);
+        }
+        self.cursor_pos = pos + text.chars().count();
+        self.text = chars.into_iter().collect();
+    }
+
+    pub fn move_left(&mut self, select: bool) {
+        if select {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor_pos);
+            }
+            if self.cursor_pos > 0 {
+                self.cursor_pos -= 1;
+            }
+        } else {
+            if let Some((s_start, _)) = self.selection_range() {
+                self.cursor_pos = s_start;
+                self.selection_anchor = None;
+            } else if self.cursor_pos > 0 {
+                self.cursor_pos -= 1;
+            }
+        }
+    }
+
+    pub fn move_right(&mut self, select: bool) {
+        let total_chars = self.text.chars().count();
+        if select {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor_pos);
+            }
+            if self.cursor_pos < total_chars {
+                self.cursor_pos += 1;
+            }
+        } else {
+            if let Some((_, s_end)) = self.selection_range() {
+                self.cursor_pos = s_end;
+                self.selection_anchor = None;
+            } else if self.cursor_pos < total_chars {
+                self.cursor_pos += 1;
+            }
+        }
+    }
+
+    pub fn move_home(&mut self, select: bool) {
+        if select {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor_pos);
+            }
+        } else {
+            self.selection_anchor = None;
+        }
+        self.cursor_pos = 0;
+    }
+
+    pub fn move_end(&mut self, select: bool) {
+        let total_chars = self.text.chars().count();
+        if select {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor_pos);
+            }
+        } else {
+            self.selection_anchor = None;
+        }
+        self.cursor_pos = total_chars;
+    }
+
+    pub fn backspace(&mut self) {
+        if !self.delete_selection() {
+            let mut chars: Vec<char> = self.text.chars().collect();
+            let pos = self.cursor_pos.min(chars.len());
+            if pos > 0 {
+                chars.remove(pos - 1);
+                self.cursor_pos = pos - 1;
+                self.text = chars.into_iter().collect();
+            }
+        }
+    }
+
+    pub fn delete(&mut self) {
+        if !self.delete_selection() {
+            let mut chars: Vec<char> = self.text.chars().collect();
+            let pos = self.cursor_pos.min(chars.len());
+            if pos < chars.len() {
+                chars.remove(pos);
+                self.text = chars.into_iter().collect();
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ViewCache {
     pub window: EditorWindow,
     pub above_lines: usize,
     pub below_lines: usize,
@@ -30,18 +194,58 @@ pub struct EditorViewState {
     pub est_rows_per_line: f64,
     pub est_row_h: f64,
     pub visual_cache_dirty: bool,
+}
+
+impl Default for ViewCache {
+    fn default() -> Self {
+        Self {
+            window: EditorWindow::default(),
+            above_lines: 0,
+            below_lines: 0,
+            above_h: 0.0,
+            below_h: 0.0,
+            est_rows_per_line: 1.0,
+            est_row_h: 24.0,
+            visual_cache_dirty: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TabSession {
+    pub tab_id: TabId,
+    pub doc_id: DocumentId,
+    pub cursor_offset: usize,
+    pub selection_anchor: Option<usize>,
+    pub viewport: ViewportAnchor,
+    pub scroll_top: f64,
+    pub wheel_ease: Option<WheelEaseState>,
     pub is_mouse_selecting: bool,
     pub word_wrap: bool,
     pub edit_mode: bool,
-    // File name input above the editor (R16): per tab, not in AppView
-    pub title_edit_text: String,
-    pub title_cursor_pos: usize,
-    pub title_selection_anchor: Option<usize>,
-    pub title_is_focused: bool,
+    pub title_input: Option<TitleInput>,
     pub measured_viewport_h: Option<f32>,
+    pub cache: ViewCache,
 }
 
-impl EditorViewState {
+pub type EditorViewState = TabSession;
+
+impl std::ops::Deref for TabSession {
+    type Target = ViewCache;
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.cache
+    }
+}
+
+impl std::ops::DerefMut for TabSession {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.cache
+    }
+}
+
+impl TabSession {
     pub fn new(tab_id: TabId, doc_id: DocumentId) -> Self {
         Self {
             tab_id,
@@ -51,23 +255,407 @@ impl EditorViewState {
             viewport: ViewportAnchor::default(),
             scroll_top: 0.0,
             wheel_ease: None,
-            window: EditorWindow::default(),
-            above_lines: 0,
-            below_lines: 0,
-            above_h: 0.0,
-            below_h: 0.0,
-            est_rows_per_line: 1.0,
-            est_row_h: 24.0,
-            visual_cache_dirty: true,
             is_mouse_selecting: false,
             word_wrap: true,
             edit_mode: false,
-            title_edit_text: String::new(),
-            title_cursor_pos: 0,
-            title_selection_anchor: None,
-            title_is_focused: false,
+            title_input: None,
             measured_viewport_h: None,
+            cache: ViewCache::default(),
         }
+    }
+
+    #[inline]
+    pub fn title_text<'a>(&'a self, doc: &'a DocumentBuffer) -> &'a str {
+        if let Some(ref ti) = self.title_input {
+            &ti.text
+        } else {
+            &doc.title
+        }
+    }
+
+    pub fn start_title_edit(&mut self, initial_text: String) {
+        self.title_input = Some(TitleInput::new(initial_text));
+    }
+
+    pub fn cancel_title_edit(&mut self) {
+        self.title_input = None;
+    }
+
+    pub fn selection_range(&self, doc_len: usize) -> Option<std::ops::Range<usize>> {
+        let anchor = self.selection_anchor?;
+        if anchor != self.cursor_offset {
+            let start = anchor.min(self.cursor_offset).min(doc_len);
+            let end = anchor.max(self.cursor_offset).min(doc_len);
+            if start != end {
+                return Some(start..end);
+            }
+        }
+        None
+    }
+
+    pub fn selected_text(&self, doc: &DocumentBuffer) -> Option<String> {
+        let range = self.selection_range(doc.len())?;
+        if doc.content().is_char_boundary(range.start) && doc.content().is_char_boundary(range.end) {
+            Some(doc.content()[range].to_string())
+        } else {
+            None
+        }
+    }
+
+    pub fn select_all(&mut self, doc: &DocumentBuffer) {
+        self.selection_anchor = Some(0);
+        self.cursor_offset = doc.len();
+    }
+
+    pub fn move_cursor_left(&mut self, doc: &DocumentBuffer, shift: bool) {
+        if !shift && self.selection_anchor.is_some() {
+            if let Some(range) = self.selection_range(doc.len()) {
+                self.cursor_offset = range.start;
+                self.selection_anchor = None;
+                return;
+            }
+        }
+        if shift && self.selection_anchor.is_none() {
+            self.selection_anchor = Some(self.cursor_offset);
+        }
+        if self.cursor_offset == 0 {
+            return;
+        }
+        let mut prev = self.cursor_offset - 1;
+        while prev > 0 && !doc.content().is_char_boundary(prev) {
+            prev -= 1;
+        }
+        self.cursor_offset = prev;
+        if !shift {
+            self.selection_anchor = None;
+        }
+    }
+
+    pub fn move_cursor_right(&mut self, doc: &DocumentBuffer, shift: bool) {
+        if !shift && self.selection_anchor.is_some() {
+            if let Some(range) = self.selection_range(doc.len()) {
+                self.cursor_offset = range.end;
+                self.selection_anchor = None;
+                return;
+            }
+        }
+        if shift && self.selection_anchor.is_none() {
+            self.selection_anchor = Some(self.cursor_offset);
+        }
+        if self.cursor_offset >= doc.len() {
+            return;
+        }
+        let mut next = self.cursor_offset + 1;
+        while next <= doc.len() && !doc.content().is_char_boundary(next) {
+            next += 1;
+        }
+        if next <= doc.len() {
+            self.cursor_offset = next;
+        }
+        if !shift {
+            self.selection_anchor = None;
+        }
+    }
+
+    pub fn delete_selection(&mut self, doc: &mut DocumentBuffer) -> Option<(BufferEvent, NoteEditEvent, EditEvent)> {
+        let range = self.selection_range(doc.len())?;
+        let cursor_before = self.cursor_offset;
+        let removed = doc.content()[range.clone()].to_string();
+        let at = range.start;
+        self.cursor_offset = at;
+        self.selection_anchor = None;
+        self.visual_cache_dirty = true;
+        Some(doc.record_change(at, removed, String::new(), cursor_before, at, Some(self.tab_id)))
+    }
+
+    pub fn replace_selection(&mut self, doc: &mut DocumentBuffer, text: &str) -> (BufferEvent, NoteEditEvent, EditEvent) {
+        if let Some(range) = self.selection_range(doc.len()) {
+            let cursor_before = self.cursor_offset;
+            let removed = doc.content()[range.clone()].to_string();
+            let at = range.start;
+            let new_cursor = at + text.len();
+            self.cursor_offset = new_cursor;
+            self.selection_anchor = None;
+            self.visual_cache_dirty = true;
+            doc.record_change(at, removed, text.to_string(), cursor_before, new_cursor, Some(self.tab_id))
+        } else {
+            let mut offset = self.cursor_offset.min(doc.len());
+            while offset > 0 && !doc.content().is_char_boundary(offset) {
+                offset -= 1;
+            }
+            let cursor_before = self.cursor_offset;
+            let at = offset;
+            let new_cursor = at + text.len();
+            self.cursor_offset = new_cursor;
+            self.selection_anchor = None;
+            self.visual_cache_dirty = true;
+            doc.record_change(at, String::new(), text.to_string(), cursor_before, new_cursor, Some(self.tab_id))
+        }
+    }
+
+    pub fn insert_text(&mut self, doc: &mut DocumentBuffer, text: &str) -> (BufferEvent, NoteEditEvent, EditEvent) {
+        self.replace_selection(doc, text)
+    }
+
+    pub fn delete_backwards(&mut self, doc: &mut DocumentBuffer) -> Option<(BufferEvent, NoteEditEvent, EditEvent)> {
+        if self.selection_range(doc.len()).is_some() {
+            return self.delete_selection(doc);
+        }
+        if self.cursor_offset == 0 || doc.is_empty() {
+            return None;
+        }
+        let mut prev = self.cursor_offset - 1;
+        while prev > 0 && !doc.content().is_char_boundary(prev) {
+            prev -= 1;
+        }
+        let cursor_before = self.cursor_offset;
+        let removed = doc.content()[prev..self.cursor_offset].to_string();
+        self.cursor_offset = prev;
+        self.selection_anchor = None;
+        self.visual_cache_dirty = true;
+        Some(doc.record_change(prev, removed, String::new(), cursor_before, prev, Some(self.tab_id)))
+    }
+
+    pub fn delete_forwards(&mut self, doc: &mut DocumentBuffer) -> Option<(BufferEvent, NoteEditEvent, EditEvent)> {
+        if self.selection_range(doc.len()).is_some() {
+            return self.delete_selection(doc);
+        }
+        let offset = self.cursor_offset.min(doc.len());
+        if offset >= doc.len() {
+            return None;
+        }
+        let mut next = offset + 1;
+        while next <= doc.len() && !doc.content().is_char_boundary(next) {
+            next += 1;
+        }
+        let cursor_before = self.cursor_offset;
+        let removed = doc.content()[offset..next].to_string();
+        self.cursor_offset = offset;
+        self.selection_anchor = None;
+        self.visual_cache_dirty = true;
+        Some(doc.record_change(offset, removed, String::new(), cursor_before, offset, Some(self.tab_id)))
+    }
+
+    pub fn insert_newline_auto_indent(&mut self, doc: &mut DocumentBuffer) -> (BufferEvent, NoteEditEvent, EditEvent) {
+        let (line_idx, _) = self.line_col(doc);
+        let line_start = doc.line_index.start(doc.content(), line_idx);
+        let line_end = doc.line_index.end(doc.content(), line_idx).min(doc.len());
+        let line = &doc.content()[line_start..line_end];
+        let indent: String = line.chars().take_while(|c| c.is_whitespace() && *c != '\n').collect();
+        let text = format!("\n{}", indent);
+        self.replace_selection(doc, &text)
+    }
+
+    pub fn undo(&mut self, doc: &mut DocumentBuffer) -> Option<(BufferEvent, Vec<NoteEditEvent>, EditEvent)> {
+        let (cursor_before, note_edits, edit_event) = doc.undo_step(Some(self.tab_id))?;
+        self.cursor_offset = cursor_before.min(doc.len());
+        self.selection_anchor = None;
+        self.visual_cache_dirty = true;
+        let buf_event = BufferEvent::Edited {
+            edit: Edit {
+                start: edit_event.ops.first().map(|op| match op {
+                    TextOp::Insert { at, .. } | TextOp::Delete { at, .. } => *at,
+                }).unwrap_or(0),
+                old_len: 0,
+                new_len: 0,
+            },
+            source: Some(self.tab_id),
+            version: doc.version,
+        };
+        Some((buf_event, note_edits, edit_event))
+    }
+
+    pub fn redo(&mut self, doc: &mut DocumentBuffer) -> Option<(BufferEvent, Vec<NoteEditEvent>, EditEvent)> {
+        let (cursor_after, note_edits, edit_event) = doc.redo_step(Some(self.tab_id))?;
+        self.cursor_offset = cursor_after.min(doc.len());
+        self.selection_anchor = None;
+        self.visual_cache_dirty = true;
+        let buf_event = BufferEvent::Edited {
+            edit: Edit {
+                start: edit_event.ops.first().map(|op| match op {
+                    TextOp::Insert { at, .. } | TextOp::Delete { at, .. } => *at,
+                }).unwrap_or(0),
+                old_len: 0,
+                new_len: 0,
+            },
+            source: Some(self.tab_id),
+            version: doc.version,
+        };
+        Some((buf_event, note_edits, edit_event))
+    }
+
+    pub fn doc_y_of_local_v_idx(&self, local_v_idx: usize) -> f64 {
+        self.above_h + self.window.height_index.top_of(local_v_idx)
+    }
+
+    pub fn local_v_idx_at_doc_y(&self, doc_y: f64) -> usize {
+        if self.window.visual_rows.is_empty() {
+            return 0;
+        }
+        self.window.height_index.v_idx_at_y(doc_y - self.above_h)
+    }
+
+    pub fn doc_y_of_line(&self, lines_total: usize, line: usize) -> f64 {
+        if lines_total == 0 {
+            return 0.0;
+        }
+        let line = line.min(lines_total.saturating_sub(1));
+
+        if self.window.covers_line(line) {
+            if let Some(v_idx) = self.window.first_row_of_line(line) {
+                return self.above_h + self.window.height_index.top_of(v_idx);
+            }
+        }
+
+        if line < self.window.start_line {
+            if self.window.start_line == 0 || self.above_lines == 0 {
+                return 0.0;
+            }
+            return (line as f64 / self.above_lines as f64) * self.above_h;
+        }
+
+        let window_bottom_y = self.above_h + self.window.total_height();
+        if self.below_lines == 0 {
+            return window_bottom_y;
+        }
+        let lines_below = line.saturating_sub(self.window.end_line);
+        let fraction = (lines_below as f64 / self.below_lines as f64).clamp(0.0, 1.0);
+        window_bottom_y + fraction * self.below_h
+    }
+
+    pub fn line_col(&self, doc: &DocumentBuffer) -> (usize, usize) {
+        let offset = self.cursor_offset.min(doc.len());
+        let line_idx = doc.line_index.line_of(doc.content(), offset);
+        let line_start = doc.line_index.start(doc.content(), line_idx).min(offset);
+        let col_idx = doc.content()[line_start..offset].chars().count();
+        (line_idx, col_idx)
+    }
+
+    pub fn offset_for_line_col(&self, doc: &DocumentBuffer, target_line: usize, target_col: usize) -> usize {
+        if target_line >= doc.line_index.lines() {
+            return doc.len();
+        }
+        let line_start = doc.line_index.start(doc.content(), target_line);
+        let line_end = doc
+            .line_index
+            .end(doc.content(), target_line)
+            .max(line_start)
+            .min(doc.len());
+        let line = &doc.content()[line_start.min(doc.len())..line_end];
+        let actual_col = target_col.min(line.chars().count());
+        let byte_col: usize = line.chars().take(actual_col).map(|c| c.len_utf8()).sum();
+        line_start + byte_col
+    }
+
+    pub fn rebuild_visual_cache_with_headings(
+        &mut self,
+        doc: &mut DocumentBuffer,
+        word_wrap: bool,
+        wrap_cols: usize,
+        headings: Option<&crate::settings::HeadingsSettings>,
+        anchor_line: usize,
+    ) {
+        let basis_stale = self.window.is_empty()
+            || self.window.word_wrap != word_wrap
+            || self.window.wrap_cols != wrap_cols;
+
+        let lines_total = doc.line_index.lines();
+        let (start, end) = if lines_total <= 2 * crate::editor_window::MARGIN_LINES + 1 {
+            (0, lines_total)
+        } else if !self.window.is_empty()
+            && !self.window.should_move_to(anchor_line, lines_total, word_wrap, wrap_cols)
+        {
+            let target_len = self
+                .window
+                .line_count()
+                .max(2 * crate::editor_window::MARGIN_LINES + 1);
+            let start = self.window.start_line.min(lines_total.saturating_sub(1));
+            let end = (start + target_len).min(lines_total);
+            (start, end)
+        } else {
+            crate::editor_window::EditorWindow::bounds_for(anchor_line, lines_total)
+        };
+
+        doc.ensure_checkpoints(start + 1);
+        let initial = doc.checkpoint_state_at(start).unwrap_or_default();
+        let window = crate::editor_window::EditorWindow::build(
+            doc.content(),
+            &doc.line_index,
+            start,
+            end,
+            word_wrap,
+            wrap_cols,
+            headings,
+            initial,
+        );
+
+        self.above_lines = window.start_line;
+        self.below_lines = doc
+            .line_index
+            .lines()
+            .saturating_sub(window.end_line);
+        self.window = window;
+        if basis_stale {
+            self.refresh_estimate_basis();
+        }
+        self.recompute_estimate();
+        self.visual_cache_dirty = false;
+    }
+
+    pub fn refresh_estimate_basis(&mut self) {
+        let rows = self.window.visual_rows.len();
+        let lines = self.window.line_count();
+        if rows == 0 || lines == 0 {
+            return;
+        }
+        self.est_rows_per_line = rows as f64 / lines as f64;
+        self.est_row_h = self.window.total_height() / rows as f64;
+    }
+
+    pub fn recompute_estimate(&mut self) {
+        let rows_per_line = self.est_rows_per_line.max(f64::MIN_POSITIVE);
+        let row_h = self.est_row_h;
+        self.above_h = (self.above_lines as f64 * rows_per_line).round() * row_h;
+        self.below_h = (self.below_lines as f64 * rows_per_line).round() * row_h;
+    }
+
+    pub fn ensure_visual_cache_with_headings(
+        &mut self,
+        doc: &mut DocumentBuffer,
+        word_wrap: bool,
+        wrap_cols: usize,
+        headings: Option<&crate::settings::HeadingsSettings>,
+        anchor_line: usize,
+    ) {
+        if self.visual_cache_dirty
+            || self.window.should_move_to(
+                anchor_line,
+                doc.line_index.lines(),
+                word_wrap,
+                wrap_cols,
+            )
+        {
+            self.rebuild_visual_cache_with_headings(doc, word_wrap, wrap_cols, headings, anchor_line);
+        }
+    }
+
+    pub fn rebuild_visual_cache(
+        &mut self,
+        doc: &mut DocumentBuffer,
+        word_wrap: bool,
+        wrap_cols: usize,
+    ) {
+        self.rebuild_visual_cache_with_headings(doc, word_wrap, wrap_cols, None, 0);
+    }
+
+    pub fn ensure_visual_cache(
+        &mut self,
+        doc: &mut DocumentBuffer,
+        word_wrap: bool,
+        wrap_cols: usize,
+        anchor_line: usize,
+    ) {
+        self.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, None, anchor_line);
     }
 
     /// Handles `BufferEvent::Edited` from another view/panel according to Section 5.
@@ -463,5 +1051,165 @@ mod tests {
         let vr = view.window.height_index.visible_range(local_scroll, 600.0, 300.0);
         assert!(vr.start <= new_first_v);
         assert!(vr.end > new_first_v);
+    }
+
+    #[test]
+    fn test_apply_external_edit_detailed_cursor_and_selection_cases() {
+        let tab_id = TabId::new();
+        let doc_id = DocumentId::new();
+
+        // 1. Edit strictly above selection: [20..30], edit at 5 (insert 10 bytes)
+        let mut view = EditorViewState::new(tab_id, doc_id);
+        view.cursor_offset = 30;
+        view.selection_anchor = Some(20);
+        let edit = crate::state::NoteEditEvent {
+            edit_line: 0,
+            at: 5,
+            old_len: 0,
+            new_len: 10,
+            line_diff: 0,
+        };
+        view.apply_external_edit_detailed(&edit);
+        assert_eq!(view.cursor_offset, 40);
+        assert_eq!(view.selection_anchor, Some(30));
+
+        // 2. Edit strictly below selection: [20..30], edit at 50 (insert 10 bytes)
+        let mut view = EditorViewState::new(tab_id, doc_id);
+        view.cursor_offset = 30;
+        view.selection_anchor = Some(20);
+        let edit = crate::state::NoteEditEvent {
+            edit_line: 5,
+            at: 50,
+            old_len: 0,
+            new_len: 10,
+            line_diff: 0,
+        };
+        view.apply_external_edit_detailed(&edit);
+        assert_eq!(view.cursor_offset, 30);
+        assert_eq!(view.selection_anchor, Some(20));
+
+        // 3. Edit inside selection: [20..30], edit at 25 (insert 5 bytes)
+        let mut view = EditorViewState::new(tab_id, doc_id);
+        view.cursor_offset = 30;
+        view.selection_anchor = Some(20);
+        let edit = crate::state::NoteEditEvent {
+            edit_line: 2,
+            at: 25,
+            old_len: 0,
+            new_len: 5,
+            line_diff: 0,
+        };
+        view.apply_external_edit_detailed(&edit);
+        // Start (20) unchanged, end (30) expanded to 35
+        assert_eq!(view.selection_anchor, Some(20));
+        assert_eq!(view.cursor_offset, 35);
+
+        // 4. Edit at start boundary: [20..30], insert at 20
+        let mut view = EditorViewState::new(tab_id, doc_id);
+        view.cursor_offset = 30;
+        view.selection_anchor = Some(20);
+        let edit = crate::state::NoteEditEvent {
+            edit_line: 2,
+            at: 20,
+            old_len: 0,
+            new_len: 5,
+            line_diff: 0,
+        };
+        view.apply_external_edit_detailed(&edit);
+        // Start mapped with Bias::Left stays at 20, end mapped with Bias::Right shifts to 35
+        assert_eq!(view.selection_anchor, Some(20));
+        assert_eq!(view.cursor_offset, 35);
+
+        // 5. Cursor without selection at boundary of insert: cursor=20, insert at 20
+        let mut view = EditorViewState::new(tab_id, doc_id);
+        view.cursor_offset = 20;
+        view.selection_anchor = None;
+        let edit = crate::state::NoteEditEvent {
+            edit_line: 2,
+            at: 20,
+            old_len: 0,
+            new_len: 5,
+            line_diff: 0,
+        };
+        view.apply_external_edit_detailed(&edit);
+        // Single cursor with Bias::Left stays at 20
+        assert_eq!(view.cursor_offset, 20);
+    }
+
+    #[test]
+    fn test_multi_window_switch_stability_no_drift() {
+        let text = (0..500)
+            .map(|i| format!("Line {:03}: some meaningful content here for testing.\n", i))
+            .collect::<String>();
+        let mut doc = DocumentBuffer::new(
+            DocumentId::new(),
+            std::path::PathBuf::from("test.md"),
+            "test".to_string(),
+            text,
+            1,
+        );
+        let lines_total = doc.line_index.lines();
+
+        let tab1 = TabId::new();
+        let tab2 = TabId::new();
+        let mut view1 = EditorViewState::new(tab1, doc.id);
+        let mut view2 = EditorViewState::new(tab2, doc.id);
+
+        let wrap_cols = 60;
+        view1.rebuild_visual_cache_with_headings(&mut doc, true, wrap_cols, None, 100);
+        view2.rebuild_visual_cache_with_headings(&mut doc, true, wrap_cols, None, 50);
+
+        let initial_scroll_1 = view1.doc_y_of_line(lines_total, 100);
+        let initial_scroll_2 = view2.doc_y_of_line(lines_total, 50);
+
+        view1.scroll_top = initial_scroll_1;
+        view1.viewport.offset = view1.line_at_doc_y(lines_total, initial_scroll_1);
+        let line_top1 = view1.doc_y_of_line(lines_total, view1.viewport.offset);
+        view1.viewport.px_in_line = ((initial_scroll_1 - line_top1) as f32).max(0.0);
+
+        view2.scroll_top = initial_scroll_2;
+        view2.viewport.offset = view2.line_at_doc_y(lines_total, initial_scroll_2);
+        let line_top2 = view2.doc_y_of_line(lines_total, view2.viewport.offset);
+        view2.viewport.px_in_line = ((initial_scroll_2 - line_top2) as f32).max(0.0);
+
+        // Simulate 20 alternating switch cycles between Split 1 and Split 2
+        for _ in 0..20 {
+            // Switch 1 -> 2:
+            // 1) Snapshot outgoing (view1)
+            view1.viewport.offset = view1.line_at_doc_y(lines_total, view1.scroll_top);
+            let top1 = view1.doc_y_of_line(lines_total, view1.viewport.offset);
+            view1.viewport.px_in_line = ((view1.scroll_top - top1) as f32).max(0.0);
+
+            // 2) Restore incoming (view2)
+            view2.ensure_visual_cache_with_headings(&mut doc, true, wrap_cols, None, view2.viewport.offset);
+            let restore_y2 = if view2.window.wrap_cols == wrap_cols {
+                view2.scroll_top
+            } else {
+                let top2 = view2.doc_y_of_line(lines_total, view2.viewport.offset);
+                top2 + view2.viewport.px_in_line as f64
+            };
+            view2.scroll_top = restore_y2;
+
+            // Switch 2 -> 1:
+            // 1) Snapshot outgoing (view2)
+            view2.viewport.offset = view2.line_at_doc_y(lines_total, view2.scroll_top);
+            let top2 = view2.doc_y_of_line(lines_total, view2.viewport.offset);
+            view2.viewport.px_in_line = ((view2.scroll_top - top2) as f32).max(0.0);
+
+            // 2) Restore incoming (view1)
+            view1.ensure_visual_cache_with_headings(&mut doc, true, wrap_cols, None, view1.viewport.offset);
+            let restore_y1 = if view1.window.wrap_cols == wrap_cols {
+                view1.scroll_top
+            } else {
+                let top1 = view1.doc_y_of_line(lines_total, view1.viewport.offset);
+                top1 + view1.viewport.px_in_line as f64
+            };
+            view1.scroll_top = restore_y1;
+        }
+
+        assert_eq!(view1.scroll_top, initial_scroll_1, "Split 1 scroll_top must have zero drift after repeated switches");
+        assert_eq!(view1.viewport.offset, 100, "Split 1 anchor line must remain line 100");
+        assert_eq!(view2.scroll_top, initial_scroll_2, "Split 2 scroll_top must have zero drift after repeated switches");
+        assert_eq!(view2.viewport.offset, 50, "Split 2 anchor line must remain line 50");
     }
 }

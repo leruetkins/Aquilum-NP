@@ -309,8 +309,8 @@ impl AppView {
 
     /// Persists the modified AppConfig to disk via SettingsModel.
     pub fn save_settings(&mut self, cx: &mut Context<Self>) {
-        if let Some(ref mut note) = self.state.active_note {
-            note.visual_cache_dirty = true;
+        for view in self.state.views.values_mut() {
+            view.visual_cache_dirty = true;
         }
         let config = self.config.clone();
         self.settings_model.update(cx, |m, cx| {

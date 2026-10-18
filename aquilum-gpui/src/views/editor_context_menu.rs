@@ -106,17 +106,14 @@ impl AppView {
 
         let has_selection = self
             .state
-            .active_note
-            .as_ref()
-            .and_then(|n| n.selection_range())
+            .active_view()
+            .and_then(|v| self.state.active_document().and_then(|d| v.selection_range(d.len())))
             .map(|r| r.start < r.end)
             .unwrap_or(false);
 
         let selected_text = self
             .state
-            .active_note
-            .as_ref()
-            .and_then(|n| n.selected_text())
+            .active_selected_text()
             .unwrap_or_default();
 
         let is_ru = self.config.ui.language.starts_with("ru");
@@ -354,31 +351,27 @@ impl AppView {
 
     /// Wraps the current editor selection with prefix and suffix.
     fn wrap_editor_selection(&mut self, prefix: &str, suffix: &str, cx: &mut Context<Self>) {
-        if let Some(ref mut note) = self.state.active_note {
-            let sel = note.selected_text().unwrap_or_default();
-            let repl = format!("{prefix}{sel}{suffix}");
-            note.replace_selection(&repl);
-            self.state.save_active_note();
-            cx.notify();
-        }
+        let sel = self.state.active_selected_text().unwrap_or_default();
+        let repl = format!("{prefix}{sel}{suffix}");
+        self.state.active_replace_selection(&repl);
+        self.state.save_active_note();
+        cx.notify();
     }
 
     /// Prefixes each selected line (or cursor position) with given prefix.
     fn prefix_editor_selection(&mut self, prefix: &str, cx: &mut Context<Self>) {
-        if let Some(ref mut note) = self.state.active_note {
-            let sel = note.selected_text().unwrap_or_default();
-            let repl = if sel.is_empty() {
-                prefix.to_string()
-            } else {
-                sel.lines()
-                    .map(|l| format!("{prefix}{l}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
-            note.replace_selection(&repl);
-            self.state.save_active_note();
-            cx.notify();
-        }
+        let sel = self.state.active_selected_text().unwrap_or_default();
+        let repl = if sel.is_empty() {
+            prefix.to_string()
+        } else {
+            sel.lines()
+                .map(|l| format!("{prefix}{l}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        self.state.active_replace_selection(&repl);
+        self.state.save_active_note();
+        cx.notify();
     }
 
     /// Handles a clicked item in the context menu.
@@ -390,84 +383,66 @@ impl AppView {
 
         match action_id.as_str() {
             "editor-cut" => {
-                if let Some(ref mut note) = self.state.active_note {
-                    if let Some(text) = note.selected_text() {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                        note.delete_selection();
-                        self.state.save_active_note();
-                        cx.notify();
-                    }
+                if let Some(text) = self.state.active_selected_text() {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                    self.state.active_delete_selection();
+                    self.state.save_active_note();
+                    cx.notify();
                 }
             }
             "editor-copy" => {
-                if let Some(ref note) = self.state.active_note {
-                    if let Some(text) = note.selected_text() {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                    }
+                if let Some(text) = self.state.active_selected_text() {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                 }
             }
             "editor-paste" | "editor-paste-plain" => {
                 if let Some(clipboard) = cx.read_from_clipboard() {
                     if let Some(text) = clipboard.text() {
-                        if let Some(ref mut note) = self.state.active_note {
-                            note.replace_selection(&text);
-                            self.state.save_active_note();
-                            cx.notify();
-                        }
+                        self.state.active_replace_selection(&text);
+                        self.state.save_active_note();
+                        cx.notify();
                     }
                 }
             }
             "editor-select-all" => {
-                if let Some(ref mut note) = self.state.active_note {
-                    note.select_all();
-                    cx.notify();
-                }
+                self.state.active_select_all();
+                cx.notify();
             }
             "editor-insert-link" => {
-                if let Some(ref mut note) = self.state.active_note {
-                    let sel = note.selected_text().unwrap_or_default();
-                    let repl = if sel.is_empty() { "[[]]".to_string() } else { format!("[[{sel}]]") };
-                    note.replace_selection(&repl);
-                    self.state.save_active_note();
-                    cx.notify();
-                }
+                let sel = self.state.active_selected_text().unwrap_or_default();
+                let repl = if sel.is_empty() { "[[]]".to_string() } else { format!("[[{sel}]]") };
+                self.state.active_replace_selection(&repl);
+                self.state.save_active_note();
+                cx.notify();
             }
             "editor-insert-external-link" => {
-                if let Some(ref mut note) = self.state.active_note {
-                    let sel = note.selected_text().unwrap_or_default();
-                    let repl = if sel.is_empty() { "[](url)".to_string() } else { format!("[{sel}](url)") };
-                    note.replace_selection(&repl);
-                    self.state.save_active_note();
-                    cx.notify();
-                }
+                let sel = self.state.active_selected_text().unwrap_or_default();
+                let repl = if sel.is_empty() { "[](url)".to_string() } else { format!("[{sel}](url)") };
+                self.state.active_replace_selection(&repl);
+                self.state.save_active_note();
+                cx.notify();
             }
             "editor-search-vault" => {
-                if let Some(ref note) = self.state.active_note {
-                    if let Some(sel) = note.selected_text() {
-                        if !sel.trim().is_empty() {
-                            self.search_dialog.is_open = true;
-                            self.search_dialog.query = sel.clone();
-                            self.search_dialog.cursor_pos = sel.len();
-                            self.run_goto_search();
-                            cx.notify();
-                        }
+                if let Some(sel) = self.state.active_selected_text() {
+                    if !sel.trim().is_empty() {
+                        self.search_dialog.is_open = true;
+                        self.search_dialog.query = sel.clone();
+                        self.search_dialog.cursor_pos = sel.len();
+                        self.run_goto_search();
+                        cx.notify();
                     }
                 }
             }
             "editor-extract-selection" => {
-                if let Some(ref mut note) = self.state.active_note {
-                    if let Some(sel) = note.selected_text() {
-                        if !sel.trim().is_empty() {
-                            note.delete_selection();
+                if let Some(sel) = self.state.active_selected_text() {
+                    if !sel.trim().is_empty() {
+                        self.state.active_delete_selection();
+                        self.state.save_active_note();
+                        if let Some(_path) = self.state.create_new_note() {
+                            self.state.active_replace_selection(&sel);
                             self.state.save_active_note();
-                            if let Some(_path) = self.state.create_new_note() {
-                                if let Some(ref mut new_note) = self.state.active_note {
-                                    new_note.replace_selection(&sel);
-                                    self.state.save_active_note();
-                                }
-                            }
-                            cx.notify();
                         }
+                        cx.notify();
                     }
                 }
             }
@@ -497,87 +472,71 @@ impl AppView {
             "editor-paragraph-task" => self.prefix_editor_selection("- [ ] ", cx),
             "editor-paragraph-quote" => self.prefix_editor_selection("> ", cx),
             "editor-insert-callout" => {
-                if let Some(ref mut note) = self.state.active_note {
-                    note.replace_selection("\n> [!NOTE]\n> \n");
-                    self.state.save_active_note();
-                    cx.notify();
-                }
+                self.state.active_replace_selection("\n> [!NOTE]\n> \n");
+                self.state.save_active_note();
+                cx.notify();
             }
             "editor-insert-codeblock" => {
-                if let Some(ref mut note) = self.state.active_note {
-                    note.replace_selection("\n```\n\n```\n");
-                    self.state.save_active_note();
-                    cx.notify();
-                }
+                self.state.active_replace_selection("\n```\n\n```\n");
+                self.state.save_active_note();
+                cx.notify();
             }
             "editor-insert-table" => {
-                if let Some(ref mut note) = self.state.active_note {
-                    let table = "\n| Заголовок 1 | Заголовок 2 |\n| --- | --- |\n| Текст 1 | Текст 2 |\n";
-                    note.replace_selection(table);
-                    self.state.save_active_note();
-                    cx.notify();
-                }
+                let table = "\n| Заголовок 1 | Заголовок 2 |\n| --- | --- |\n| Текст 1 | Текст 2 |\n";
+                self.state.active_replace_selection(table);
+                self.state.save_active_note();
+                cx.notify();
             }
             "editor-insert-math" => {
                 self.wrap_editor_selection("$$", "$$", cx);
             }
             "editor-insert-footnote" => {
-                if let Some(ref mut note) = self.state.active_note {
-                    note.replace_selection("[^1]");
+                self.state.active_replace_selection("[^1]");
+                self.state.save_active_note();
+                cx.notify();
+            }
+            "editor-text-upper" => {
+                if let Some(sel) = self.state.active_selected_text() {
+                    let upper = sel.to_uppercase();
+                    self.state.active_replace_selection(&upper);
                     self.state.save_active_note();
                     cx.notify();
                 }
             }
-            "editor-text-upper" => {
-                if let Some(ref mut note) = self.state.active_note {
-                    if let Some(sel) = note.selected_text() {
-                        let upper = sel.to_uppercase();
-                        note.replace_selection(&upper);
-                        self.state.save_active_note();
-                        cx.notify();
-                    }
-                }
-            }
             "editor-text-lower" => {
-                if let Some(ref mut note) = self.state.active_note {
-                    if let Some(sel) = note.selected_text() {
-                        let lower = sel.to_lowercase();
-                        note.replace_selection(&lower);
-                        self.state.save_active_note();
-                        cx.notify();
-                    }
+                if let Some(sel) = self.state.active_selected_text() {
+                    let lower = sel.to_lowercase();
+                    self.state.active_replace_selection(&lower);
+                    self.state.save_active_note();
+                    cx.notify();
                 }
             }
             "editor-text-title" => {
-                if let Some(ref mut note) = self.state.active_note {
-                    if let Some(sel) = note.selected_text() {
-                        let title = sel
-                            .split_whitespace()
-                            .map(|word| {
-                                let mut chars = word.chars();
-                                match chars.next() {
-                                    None => String::new(),
-                                    Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        note.replace_selection(&title);
-                        self.state.save_active_note();
-                        cx.notify();
-                    }
+                if let Some(sel) = self.state.active_selected_text() {
+                    let title = sel
+                        .split_whitespace()
+                        .map(|word| {
+                            let mut chars = word.chars();
+                            match chars.next() {
+                                None => String::new(),
+                                Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    self.state.active_replace_selection(&title);
+                    self.state.save_active_note();
+                    cx.notify();
                 }
             }
             "editor-text-sort" => {
-                if let Some(ref mut note) = self.state.active_note {
-                    if let Some(sel) = note.selected_text() {
-                        let mut lines: Vec<&str> = sel.lines().collect();
-                        lines.sort();
-                        let sorted = lines.join("\n");
-                        note.replace_selection(&sorted);
-                        self.state.save_active_note();
-                        cx.notify();
-                    }
+                if let Some(sel) = self.state.active_selected_text() {
+                    let mut lines: Vec<&str> = sel.lines().collect();
+                    lines.sort();
+                    let sorted = lines.join("\n");
+                    self.state.active_replace_selection(&sorted);
+                    self.state.save_active_note();
+                    cx.notify();
                 }
             }
             _ => {

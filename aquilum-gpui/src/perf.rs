@@ -136,27 +136,31 @@ mod tests {
 
         for &line_count in &[50, 500, 5000, 10000] {
             let doc_text = generate_test_doc(line_count);
-            let mut note = crate::state::OpenedNote::new(
+            let doc_id = crate::document_buffer::DocumentId::new();
+            let tab_id = crate::workspace::TabId::new();
+            let doc = crate::document_buffer::DocumentBuffer::new(
+                doc_id,
                 std::path::PathBuf::from("test.md"),
                 "test".to_string(),
                 doc_text,
                 1,
             );
+            let mut view = crate::workspace::EditorViewState::new(tab_id, doc_id);
             // Поставим курсор в середину (на границу UTF-8 символа)
-            let mut offset = note.content.len() / 2;
-            while !note.content.is_char_boundary(offset) {
+            let mut offset = doc.content().len() / 2;
+            while !doc.content().is_char_boundary(offset) {
                 offset += 1;
             }
-            note.cursor_offset = offset;
+            view.cursor_offset = offset;
             let wrap_cols = 80;
 
             // 1. Замер движения курсора вверх (move_cursor_up_visual логика)
             let iterations = if line_count <= 500 { 100 } else { 10 };
             let t0 = Instant::now();
             for _ in 0..iterations {
-                let lines: Vec<&str> = note.content.split('\n').collect();
+                let lines: Vec<&str> = doc.content().split('\n').collect();
                 let visual_rows = crate::markdown::build_visual_rows(&lines, true, wrap_cols);
-                let (cursor_line, cursor_col) = note.line_col();
+                let (cursor_line, cursor_col) = view.line_col(&doc);
                 let (curr_v_idx, col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col)
                     .unwrap_or((0, 0));
                 if curr_v_idx > 0 {
@@ -164,8 +168,8 @@ mod tests {
                     let target_len = target_v.char_end.saturating_sub(target_v.char_start);
                     let target_col = col_in_row.min(target_len);
                     let target_char = target_v.char_start + target_col;
-                    let offset = note.offset_for_line_col(target_v.line_idx, target_char);
-                    note.cursor_offset = offset;
+                    let offset = view.offset_for_line_col(&doc, target_v.line_idx, target_char);
+                    view.cursor_offset = offset;
                 }
             }
             let cursor_elapsed = t0.elapsed() / iterations;
@@ -173,8 +177,8 @@ mod tests {
             // 2. Замер scroll_cursor_into_view (вызывается на каждый стрелочный клик)
             let t1 = Instant::now();
             for _ in 0..iterations {
-                let (cursor_line, cursor_col) = note.line_col();
-                let lines: Vec<&str> = note.content.split('\n').collect();
+                let (cursor_line, cursor_col) = view.line_col(&doc);
+                let lines: Vec<&str> = doc.content().split('\n').collect();
                 let visual_rows = crate::markdown::build_visual_rows(&lines, true, wrap_cols);
                 let _ = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col);
             }
@@ -183,9 +187,9 @@ mod tests {
             // 3. Замер подготовки кадра в render (lines allocation, visual_rows, code_states, line_starts)
             let t2 = Instant::now();
             for _ in 0..iterations {
-                let lines: Vec<String> = note.content.split('\n').map(String::from).collect();
+                let lines: Vec<String> = doc.content().split('\n').map(String::from).collect();
                 let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
-                let (cursor_line, cursor_col) = note.line_col();
+                let (cursor_line, cursor_col) = view.line_col(&doc);
                 let visual_rows = crate::markdown::build_visual_rows(&line_refs, true, wrap_cols);
                 let _ = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col);
 
@@ -425,30 +429,34 @@ mod tests {
             let doc_mb = text.len() as f64 / (1024.0 * 1024.0);
 
             let t_open = Instant::now();
-            let mut note = crate::state::OpenedNote::new(
+            let doc_id = crate::document_buffer::DocumentId::new();
+            let tab_id = crate::workspace::TabId::new();
+            let mut doc = crate::document_buffer::DocumentBuffer::new(
+                doc_id,
                 std::path::PathBuf::from("bench.md"),
                 "bench".to_string(),
                 text,
                 1,
             );
+            let mut view = crate::workspace::EditorViewState::new(tab_id, doc_id);
             let open = t_open.elapsed();
 
             let t_cache = Instant::now();
-            note.ensure_visual_cache(true, 80, 0);
+            view.ensure_visual_cache(&mut doc, true, 80, 0);
             let cache = t_cache.elapsed();
 
             // Auxiliary memory: everything except the text itself. Every column
             // but `starts` measures the *window*, so none of them grows with the
             // document — that is the whole point of the open-path budget, and it
             // is what the `строк` column is there to show.
-            let lines_bytes = note.window.lines.bytes();
-            let vrows = note.window.visual_rows.capacity()
+            let lines_bytes = view.window.lines.bytes();
+            let vrows = view.window.visual_rows.capacity()
                 * std::mem::size_of::<crate::markdown::VisualRow>();
-            let codes = note.window.code_states.bytes();
+            let codes = view.window.code_states.bytes();
             // Line addressing used to be a `Vec<usize>` with one entry per line;
             // it is now a checkpoint index, so this column is kilobytes.
-            let starts = note.line_index.bytes();
-            let heights = note.window.height_index.bytes();
+            let starts = doc.line_index.bytes();
+            let heights = view.window.height_index.bytes();
             let total = lines_bytes + vrows + codes + starts + heights;
 
             println!(

@@ -1,12 +1,11 @@
 use serde::{Deserialize, Serialize};
-use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::document_buffer::{DocumentBuffer, DocumentId};
+use crate::workspace::session_core::ops::EditEvent;
 use crate::workspace::{EditorViewState, LeafId, LeafState, TabId, WorkspaceTree};
 
 pub fn app_data_dir() -> PathBuf {
@@ -384,1033 +383,6 @@ pub struct NoteEditEvent {
     pub line_diff: isize,
 }
 
-pub struct OpenedNote {
-    pub path: PathBuf,
-    pub title: String,
-    pub content: String,
-    #[allow(dead_code)]
-    pub version: u64,
-    pub cursor_offset: usize,
-    pub selection_anchor: Option<usize>,
-    pub is_dirty: bool,
-    pub first_dirty_time: Option<std::time::Instant>,
-    pub undo_stack: Vec<UndoStep>,
-    pub redo_stack: Vec<UndoStep>,
-    pub pending_edits: Vec<NoteEditEvent>,
-
-    /// Line addressing for `content`, in O(1) memory per `LINE_BLOCK` lines.
-    /// Kept in sync with `content` on every mutation; see `refresh_line_index`.
-    pub line_index: crate::line_index::LineIndex,
-
-    /// Fence state every [`crate::code_scan::CHECKPOINT_LINES`] lines.
-    ///
-    /// The window can open anywhere, so it needs the code-fence state at its
-    /// first line rather than at line 0. These checkpoints make that a bounded
-    /// lookup instead of a scan from the top of the file; see
-    /// [`crate::code_scan`].
-    pub code_checkpoints: crate::code_scan::CodeCheckpoints,
-
-    /// The materialised slice of the document: lines, wrapped rows, code-fence
-    /// states and row geometry, for a bounded range around the viewport. The
-    /// renderer only ever draws a viewport, so this is all it needs — see
-    /// [`crate::editor_window`].
-    pub window: crate::editor_window::EditorWindow,
-    /// Document lines before [`OpenedNote::window`], addressed by estimate only.
-    pub above_lines: usize,
-    /// Document lines after [`OpenedNote::window`], addressed by estimate only.
-    pub below_lines: usize,
-    /// Estimated height above the window, in logical pixels.
-    pub above_h: f64,
-    /// Estimated height below the window, in logical pixels.
-    pub below_h: f64,
-    /// Rows per line and row height the estimate above and below uses.
-    ///
-    /// Frozen when the window is built for a given wrap setting, so that
-    /// `total_height` — and with it the scrollbar and `max_scroll` — does not
-    /// drift as the window moves. Recomputing them from every new window would
-    /// make the whole document jump whenever the density of the text changed.
-    pub est_rows_per_line: f64,
-    pub est_row_h: f64,
-    pub visual_cache_dirty: bool,
-
-    /// (version, content.len(), stats). Recomputed only when the text changes.
-    pub stats_cache: Cell<Option<(u64, usize, TextStats)>>,
-    pub view_shell_cursor_line_col: Option<(usize, usize)>,
-    pub view_shell_selection_range: Option<Range<usize>>,
-    pub view_shell_window_start_byte: Option<(usize, usize)>,
-    pub view_shell_sel_lines: Option<(usize, usize)>,
-}
-
-impl OpenedNote {
-    pub fn new(path: PathBuf, title: String, content: String, version: u64) -> Self {
-        let line_index = crate::line_index::LineIndex::new(&content);
-        Self {
-            path,
-            title,
-            content,
-            version,
-            cursor_offset: 0,
-            selection_anchor: None,
-            is_dirty: false,
-            first_dirty_time: None,
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
-            pending_edits: Vec::new(),
-            line_index,
-            code_checkpoints: crate::code_scan::CodeCheckpoints::new(),
-            window: crate::editor_window::EditorWindow::default(),
-            above_lines: 0,
-            below_lines: 0,
-            above_h: 0.0,
-            below_h: 0.0,
-            est_rows_per_line: 1.0,
-            est_row_h: 24.0,
-            visual_cache_dirty: true,
-            stats_cache: Cell::new(None),
-            view_shell_cursor_line_col: None,
-            view_shell_selection_range: None,
-            view_shell_window_start_byte: None,
-            view_shell_sel_lines: None,
-        }
-    }
-
-    pub fn new_view_shell(
-        path: PathBuf,
-        title: String,
-        version: u64,
-        cursor_offset: usize,
-        selection_anchor: Option<usize>,
-        is_dirty: bool,
-        first_dirty_time: Option<std::time::Instant>,
-        line_index: crate::line_index::LineIndex,
-        window: crate::editor_window::EditorWindow,
-        above_lines: usize,
-        below_lines: usize,
-        above_h: f64,
-        below_h: f64,
-        est_rows_per_line: f64,
-        est_row_h: f64,
-        stats: Option<TextStats>,
-    ) -> Self {
-        Self {
-            path,
-            title,
-            content: String::new(),
-            version,
-            cursor_offset,
-            selection_anchor,
-            is_dirty,
-            first_dirty_time,
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
-            pending_edits: Vec::new(),
-            line_index,
-            code_checkpoints: crate::code_scan::CodeCheckpoints::new(),
-            window,
-            above_lines,
-            below_lines,
-            above_h,
-            below_h,
-            est_rows_per_line,
-            est_row_h,
-            visual_cache_dirty: false,
-            stats_cache: Cell::new(stats.map(|s| (version, 0, s))),
-            view_shell_cursor_line_col: None,
-            view_shell_selection_range: None,
-            view_shell_window_start_byte: None,
-            view_shell_sel_lines: None,
-        }
-    }
-
-    pub fn with_view_shell_layout(
-        mut self,
-        cursor_line_col: (usize, usize),
-        selection_range: Option<Range<usize>>,
-        window_start_byte: (usize, usize),
-        sel_lines: Option<(usize, usize)>,
-    ) -> Self {
-        self.view_shell_cursor_line_col = Some(cursor_line_col);
-        self.view_shell_selection_range = selection_range;
-        self.view_shell_window_start_byte = Some(window_start_byte);
-        self.view_shell_sel_lines = sel_lines;
-        self
-    }
-
-    /// Marks the note dirty, recording `first_dirty_time` if this is the start
-    /// of an unwritten edit sequence.
-    pub fn mark_dirty(&mut self) {
-        self.is_dirty = true;
-        if self.first_dirty_time.is_none() {
-            self.first_dirty_time = Some(std::time::Instant::now());
-        }
-    }
-
-    /// Clears the dirty state and resets `first_dirty_time`.
-    pub fn clear_dirty(&mut self) {
-        self.is_dirty = false;
-        self.first_dirty_time = None;
-    }
-
-    /// Word/char statistics for the navigation bar. Cheap for large documents:
-    /// above `TEXT_STATS_EXACT_LIMIT` it reports the byte size instead of
-    /// running two full passes over the text on the UI thread.
-    pub fn text_stats(&self) -> TextStats {
-        let len = self.content.len();
-        if let Some((v, l, s)) = self.stats_cache.get() {
-            if v == self.version && (l == len || self.content.is_empty()) {
-                return s;
-            }
-        }
-        let stats = compute_text_stats(&self.content);
-        self.stats_cache.set(Some((self.version, len, stats)));
-        stats
-    }
-
-    pub fn rebuild_visual_cache(&mut self, word_wrap: bool, wrap_cols: usize) {
-        self.rebuild_visual_cache_with_headings(word_wrap, wrap_cols, None, 0);
-    }
-
-    /// Materialise the window that holds `anchor_line`.
-    ///
-    /// This is the entire cost of opening a note: the `LineIndex` pass over the
-    /// text (in [`OpenedNote::new`]) plus a split, a wrap, a code-fence scan and
-    /// a measure of `MARGIN_LINES` lines on each side of the anchor — never of
-    /// the document. A note small enough to fit in two margins is built whole,
-    /// exactly as before.
-    pub fn rebuild_visual_cache_with_headings(
-        &mut self,
-        word_wrap: bool,
-        wrap_cols: usize,
-        headings: Option<&crate::settings::HeadingsSettings>,
-        anchor_line: usize,
-    ) {
-        crate::perf::PERF.parse_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        // The estimate is only valid for the wrap setting it was measured with.
-        let basis_stale = self.window.is_empty()
-            || self.window.word_wrap != word_wrap
-            || self.window.wrap_cols != wrap_cols;
-
-        let lines_total = self.line_index.lines();
-        let (start, end) = if lines_total <= 2 * crate::editor_window::MARGIN_LINES + 1 {
-            (0, lines_total)
-        } else if !self.window.is_empty()
-            && !self.window.should_move_to(anchor_line, lines_total, word_wrap, wrap_cols)
-        {
-            let target_len = self
-                .window
-                .line_count()
-                .max(2 * crate::editor_window::MARGIN_LINES + 1);
-            let start = self.window.start_line.min(lines_total.saturating_sub(1));
-            let end = (start + target_len).min(lines_total);
-            (start, end)
-        } else {
-            crate::editor_window::EditorWindow::bounds_for(anchor_line, lines_total)
-        };
-        // The window can open anywhere, so it needs the fence state at its first
-        // line. Extending the checkpoints is bounded by `start`, not by the
-        // document: a note opened at the top scans a few thousand lines, and a
-        // jump into the middle pays for the distance once and caches it.
-        self.code_checkpoints
-            .ensure(&self.content, &self.line_index, start + 1);
-        let initial = self
-            .code_checkpoints
-            .state_at(&self.content, &self.line_index, start)
-            .unwrap_or_default();
-        let window = crate::editor_window::EditorWindow::build(
-            &self.content,
-            &self.line_index,
-            start,
-            end,
-            word_wrap,
-            wrap_cols,
-            headings,
-            initial,
-        );
-        crate::perf::PERF
-            .span_rebuilds
-            .fetch_add(window.line_count() as u64, std::sync::atomic::Ordering::Relaxed);
-
-        self.above_lines = window.start_line;
-        self.below_lines = self
-            .line_index
-            .lines()
-            .saturating_sub(window.end_line);
-        self.window = window;
-        if basis_stale {
-            self.refresh_estimate_basis();
-        }
-        self.recompute_estimate();
-        self.visual_cache_dirty = false;
-    }
-
-    /// Rows-per-line and row-height of the current window.
-    fn refresh_estimate_basis(&mut self) {
-        let rows = self.window.visual_rows.len();
-        let lines = self.window.line_count();
-        if rows == 0 || lines == 0 {
-            return;
-        }
-        self.est_rows_per_line = rows as f64 / lines as f64;
-        self.est_row_h = self.window.total_height() / rows as f64;
-    }
-
-    /// Height of the estimated region on each side of the window.
-    ///
-    /// `above_lines + window + below_lines` is always the whole document, so
-    /// `total_height` does not depend on where the window sits and the
-    /// scrollbar stays put while the user scrolls.
-    fn recompute_estimate(&mut self) {
-        let rows_per_line = self.est_rows_per_line.max(f64::MIN_POSITIVE);
-        let row_h = self.est_row_h;
-        self.above_h = (self.above_lines as f64 * rows_per_line).round() * row_h;
-        self.below_h = (self.below_lines as f64 * rows_per_line).round() * row_h;
-    }
-
-    pub fn ensure_visual_cache(&mut self, word_wrap: bool, wrap_cols: usize, anchor_line: usize) {
-        self.ensure_visual_cache_with_headings(word_wrap, wrap_cols, None, anchor_line);
-    }
-
-    /// Make sure the window covers `anchor_line`, re-placing it if it does not.
-    ///
-    /// `anchor_line` is the document line at the top of the viewport: the window
-    /// has to hold what is on screen, not what the caret is on.
-    pub fn ensure_visual_cache_with_headings(
-        &mut self,
-        word_wrap: bool,
-        wrap_cols: usize,
-        headings: Option<&crate::settings::HeadingsSettings>,
-        anchor_line: usize,
-    ) {
-        if self.visual_cache_dirty
-            || self.window.should_move_to(
-                anchor_line,
-                self.line_index.lines(),
-                word_wrap,
-                wrap_cols,
-            )
-        {
-            self.rebuild_visual_cache_with_headings(word_wrap, wrap_cols, headings, anchor_line);
-        }
-    }
-
-    /// Total height of the document: the exact window plus the estimate on
-    /// either side.
-    pub fn total_height(&self) -> f64 {
-        self.above_h + self.window.total_height() + self.below_h
-    }
-
-    /// Document Y of a window-local visual row index.
-    pub fn doc_y_of_local_v_idx(&self, local_v_idx: usize) -> f64 {
-        self.above_h + self.window.height_index.top_of(local_v_idx)
-    }
-
-    /// Document Y of a document line: exact inside the window, estimated outside it.
-    pub fn doc_y_of_line(&self, line: usize) -> f64 {
-        let lines_total = self.line_index.lines();
-        if lines_total == 0 {
-            return 0.0;
-        }
-        let line = line.min(lines_total.saturating_sub(1));
-
-        // 1. Inside the window: exact row height from height_index
-        if self.window.covers_line(line) {
-            if let Some(v_idx) = self.window.first_row_of_line(line) {
-                return self.above_h + self.window.height_index.top_of(v_idx);
-            }
-        }
-
-        // 2. Above the window: estimated proportional height
-        if line < self.window.start_line {
-            if self.window.start_line == 0 || self.above_lines == 0 {
-                return 0.0;
-            }
-            return (line as f64 / self.above_lines as f64) * self.above_h;
-        }
-
-        // 3. Below the window: estimated proportional height
-        let window_bottom_y = self.above_h + self.window.total_height();
-        if self.below_lines == 0 {
-            return window_bottom_y;
-        }
-        let lines_below = line.saturating_sub(self.window.end_line);
-        let fraction = (lines_below as f64 / self.below_lines as f64).clamp(0.0, 1.0);
-        window_bottom_y + fraction * self.below_h
-    }
-
-    /// Window-local visual row index at a document Y.
-    ///
-    /// The window is placed to cover the viewport, so this is exact for every
-    /// point the user can actually see; outside it clamps to the window edge.
-    pub fn local_v_idx_at_doc_y(&self, doc_y: f64) -> usize {
-        if self.window.visual_rows.is_empty() {
-            return 0;
-        }
-        self.window.height_index.v_idx_at_y(doc_y - self.above_h)
-    }
-
-    /// Document line at a document Y: exact inside the window, proportional
-    /// outside it.
-    pub fn line_at_doc_y(&self, doc_y: f64) -> usize {
-        let last_line = self.line_index.lines().saturating_sub(1);
-        if self.window.visual_rows.is_empty() {
-            // No window yet: one row per line is the only honest guess.
-            let row_h = self.est_row_h.max(1.0);
-            return ((doc_y.max(0.0) / row_h) as usize).min(last_line);
-        }
-        let rows_per_line = self.est_rows_per_line.max(f64::MIN_POSITIVE);
-        let row_h = self.est_row_h.max(1.0);
-        let local = doc_y - self.above_h;
-        if local < 0.0 {
-            let rows_above = (-local / row_h).ceil();
-            let lines_above = (rows_above / rows_per_line).round() as usize;
-            return self.window.start_line.saturating_sub(lines_above);
-        }
-        let window_h = self.window.total_height();
-        if local >= window_h {
-            let rows_below = (local - window_h) / row_h;
-            let lines_below = (rows_below / rows_per_line).round() as usize;
-            return self.window.end_line.saturating_add(lines_below).min(last_line);
-        }
-        let local_v = self.window.height_index.v_idx_at_y(local);
-        self.window
-            .visual_rows
-            .get(local_v)
-            .map(|v| v.line_idx)
-            .unwrap_or(self.window.start_line)
-    }
-
-    pub fn record_change(&mut self, at: usize, removed: String, inserted: String, cursor_before: usize, cursor_after: usize) {
-        if removed.is_empty() && inserted.is_empty() {
-            return;
-        }
-        let edit_line = self.line_index.line_of(&self.content, at);
-        let line_diff = (inserted.matches('\n').count() as isize) - (removed.matches('\n').count() as isize);
-        self.pending_edits.push(NoteEditEvent {
-            edit_line,
-            at,
-            old_len: removed.len(),
-            new_len: inserted.len(),
-            line_diff,
-        });
-
-        self.redo_stack.clear();
-        let now = std::time::Instant::now();
-        let change = TextChange { at, removed, inserted };
-
-        if let Some(last_step) = self.undo_stack.last_mut() {
-            if now.duration_since(last_step.time) < std::time::Duration::from_millis(1000)
-                && last_step.changes.len() == 1
-            {
-                let last = &mut last_step.changes[0];
-                // 1. Sequential typing without newlines
-                if last.removed.is_empty()
-                    && change.removed.is_empty()
-                    && !change.inserted.contains('\n')
-                    && last.at + last.inserted.len() == change.at
-                {
-                    last.inserted.push_str(&change.inserted);
-                    last_step.cursor_after = cursor_after;
-                    last_step.time = now;
-                    return;
-                }
-                // 2. Sequential backspace without newlines
-                if last.inserted.is_empty()
-                    && change.inserted.is_empty()
-                    && !change.removed.contains('\n')
-                    && change.at + change.removed.len() == last.at
-                {
-                    last.removed.insert_str(0, &change.removed);
-                    last.at = change.at;
-                    last_step.cursor_after = cursor_after;
-                    last_step.time = now;
-                    return;
-                }
-            }
-        }
-
-        if self.undo_stack.len() >= 1000 {
-            self.undo_stack.remove(0);
-        }
-        self.undo_stack.push(UndoStep {
-            changes: vec![change],
-            cursor_before,
-            cursor_after,
-            time: now,
-        });
-    }
-
-    pub fn snapshot_undo(&mut self) {
-        // No-op: changes are now recorded incrementally as deltas in undo_stack
-    }
-
-    pub fn undo(&mut self) {
-        if let Some(step) = self.undo_stack.pop() {
-            for change in step.changes.iter().rev() {
-                self.content.replace_range(change.at..change.at + change.inserted.len(), &change.removed);
-                self.refresh_line_index_incremental(change.at, &change.inserted, &change.removed);
-                let edit_line = self.line_index.line_of(&self.content, change.at);
-                let line_diff = (change.removed.matches('\n').count() as isize) - (change.inserted.matches('\n').count() as isize);
-                self.pending_edits.push(NoteEditEvent {
-                    edit_line,
-                    at: change.at,
-                    old_len: change.inserted.len(),
-                    new_len: change.removed.len(),
-                    line_diff,
-                });
-            }
-            self.version += 1;
-            self.cursor_offset = step.cursor_before.min(self.content.len());
-            self.selection_anchor = None;
-            self.mark_dirty();
-            self.visual_cache_dirty = true;
-            self.redo_stack.push(step);
-        }
-    }
-
-    pub fn redo(&mut self) {
-        if let Some(step) = self.redo_stack.pop() {
-            for change in step.changes.iter() {
-                self.content.replace_range(change.at..change.at + change.removed.len(), &change.inserted);
-                self.refresh_line_index_incremental(change.at, &change.removed, &change.inserted);
-                let edit_line = self.line_index.line_of(&self.content, change.at);
-                let line_diff = (change.inserted.matches('\n').count() as isize) - (change.removed.matches('\n').count() as isize);
-                self.pending_edits.push(NoteEditEvent {
-                    edit_line,
-                    at: change.at,
-                    old_len: change.removed.len(),
-                    new_len: change.inserted.len(),
-                    line_diff,
-                });
-            }
-            self.version += 1;
-            self.cursor_offset = step.cursor_after.min(self.content.len());
-            self.selection_anchor = None;
-            self.mark_dirty();
-            self.visual_cache_dirty = true;
-            self.undo_stack.push(step);
-        }
-    }
-
-    pub fn selection_range(&self) -> Option<Range<usize>> {
-        if let Some(ref r) = self.view_shell_selection_range {
-            return Some(r.clone());
-        }
-        if let Some(anchor) = self.selection_anchor {
-            if anchor != self.cursor_offset {
-                let mut start = anchor.min(self.cursor_offset).min(self.content.len());
-                let mut end = anchor.max(self.cursor_offset).min(self.content.len());
-                while start > 0 && !self.content.is_char_boundary(start) {
-                    start -= 1;
-                }
-                while end > 0 && !self.content.is_char_boundary(end) {
-                    end -= 1;
-                }
-                if start != end {
-                    return Some(start..end);
-                }
-            }
-        }
-        None
-    }
-
-    pub fn selected_text(&self) -> Option<String> {
-        let range = self.selection_range()?;
-        if self.content.is_char_boundary(range.start) && self.content.is_char_boundary(range.end) {
-            Some(self.content[range].to_string())
-        } else {
-            None
-        }
-    }
-
-    pub fn delete_selection(&mut self) -> bool {
-        if let Some(range) = self.selection_range() {
-            let cursor_before = self.cursor_offset;
-            let removed = self.content[range.clone()].to_string();
-            let at = range.start;
-            self.content.replace_range(range.clone(), "");
-            self.version += 1;
-            self.refresh_line_index_incremental(at, &removed, "");
-            self.cursor_offset = at;
-            self.selection_anchor = None;
-            self.mark_dirty();
-            self.visual_cache_dirty = true;
-            self.record_change(at, removed, String::new(), cursor_before, at);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn replace_selection(&mut self, text: &str) -> bool {
-        if let Some(range) = self.selection_range() {
-            let cursor_before = self.cursor_offset;
-            let removed = self.content[range.clone()].to_string();
-            let at = range.start;
-            let new_cursor = at + text.len();
-            self.content.replace_range(range.clone(), text);
-            self.version += 1;
-            self.refresh_line_index_incremental(at, &removed, text);
-            self.cursor_offset = new_cursor;
-            self.selection_anchor = None;
-            self.mark_dirty();
-            self.visual_cache_dirty = true;
-            self.record_change(at, removed, text.to_string(), cursor_before, new_cursor);
-            true
-        } else {
-            let mut offset = self.cursor_offset.min(self.content.len());
-            while offset > 0 && !self.content.is_char_boundary(offset) {
-                offset -= 1;
-            }
-            let cursor_before = self.cursor_offset;
-            let at = offset;
-            let new_cursor = at + text.len();
-            self.content.replace_range(offset..offset, text);
-            self.version += 1;
-            self.refresh_line_index_incremental(at, "", text);
-            self.cursor_offset = new_cursor;
-            self.selection_anchor = None;
-            self.mark_dirty();
-            self.visual_cache_dirty = true;
-            self.record_change(at, String::new(), text.to_string(), cursor_before, new_cursor);
-            true
-        }
-    }
-
-    pub fn select_all(&mut self) {
-        self.selection_anchor = Some(0);
-        self.cursor_offset = self.content.len();
-    }
-
-    pub fn word_range_at(&self, offset: usize) -> (usize, usize) {
-        if self.content.is_empty() {
-            return (0, 0);
-        }
-        let mut offset = offset.min(self.content.len());
-        while offset > 0 && !self.content.is_char_boundary(offset) {
-            offset -= 1;
-        }
-        let chars: Vec<(usize, char)> = self.content.char_indices().collect();
-        if chars.is_empty() {
-            return (0, 0);
-        }
-        let char_idx = chars.iter().position(|(idx, _)| *idx >= offset).unwrap_or(chars.len() - 1);
-        let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
-
-        let mut start_idx = char_idx;
-        while start_idx > 0 && is_word_char(chars[start_idx - 1].1) {
-            start_idx -= 1;
-        }
-        let mut end_idx = char_idx;
-        while end_idx < chars.len() && is_word_char(chars[end_idx].1) {
-            end_idx += 1;
-        }
-        if start_idx == end_idx {
-            return (offset, offset);
-        }
-        let start_byte = chars[start_idx].0;
-        let end_byte = if end_idx < chars.len() {
-            chars[end_idx].0
-        } else {
-            self.content.len()
-        };
-        (start_byte, end_byte)
-    }
-
-    pub fn line_range_at(&self, offset: usize) -> (usize, usize) {
-        let mut offset = offset.min(self.content.len());
-        while offset > 0 && !self.content.is_char_boundary(offset) {
-            offset -= 1;
-        }
-        let start = self.content[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let end = self.content[offset..].find('\n').map(|i| offset + i + 1).unwrap_or(self.content.len());
-        (start, end)
-    }
-
-    /// Rebuild [`OpenedNote::line_index`] from `content`, and drop the code
-    /// checkpoints the edit invalidated.
-    ///
-    /// Called from every path that mutates the text. One `memchr` pass, no
-    /// allocation per line — this is what replaced the old `Vec<String>` plus
-    /// `Vec<usize>` pair on the caret path. Making it incremental (splice the
-    /// checkpoints after the edit instead of rescanning) is stage 6 of
-    /// `TODO/perf-plan-large-file-open.md`.
-    ///
-    /// `edited_at` is the byte offset the text changed at, or `None` when the
-    /// whole text was replaced wholesale (undo/redo) and no prefix can be
-    /// trusted. An edit at line `E` cannot change the fence state of any line
-    /// above `E`, so the checkpoints above it survive and the rest are
-    /// rescanned on demand — which keeps a keystroke in the middle of a 400 MB
-    /// note from throwing away the whole scan.
-    #[cfg(test)]
-    fn refresh_line_index(&mut self, edited_at: Option<usize>) {
-        self.line_index = crate::line_index::LineIndex::new(&self.content);
-        match edited_at {
-            Some(byte) => {
-                let line = self.line_index.line_of(&self.content, byte);
-                self.code_checkpoints.truncate_to(line);
-            }
-            None => self.code_checkpoints.reset(),
-        }
-    }
-
-    fn refresh_line_index_incremental(&mut self, edit_byte: usize, removed: &str, inserted: &str) {
-        self.line_index.splice(&self.content, edit_byte, removed, inserted);
-        let line = self.line_index.line_of(&self.content, edit_byte);
-        self.code_checkpoints.truncate_to(line);
-    }
-
-    /// Walk a little further ahead through the document's code fences.
-    ///
-    /// Called once per frame from the render path. The window only ever needs
-    /// the state at its first line, and that is extended on demand — this is
-    /// what makes a later jump to the end of a huge note free instead of a
-    /// one-off scan of the whole distance. Bounded by `max_lines`, so it costs
-    /// a fraction of a millisecond and never blocks a frame.
-    pub fn scan_code_ahead(&mut self, max_lines: usize) -> usize {
-        if self.code_checkpoints.is_complete(self.line_index.lines()) {
-            return 0;
-        }
-        self.code_checkpoints
-            .extend_slice(&self.content, &self.line_index, max_lines)
-    }
-
-    /// Возвращает (line_index, col_index) 0-indexed
-    pub fn line_col(&self) -> (usize, usize) {
-        if let Some(lc) = self.view_shell_cursor_line_col {
-            return lc;
-        }
-        let mut offset = self.cursor_offset.min(self.content.len());
-        while offset > 0 && !self.content.is_char_boundary(offset) {
-            offset -= 1;
-        }
-        let line_idx = self.line_index.line_of(&self.content, offset);
-        // `min(offset)` guards against a stale index after an unindexed edit:
-        // slicing must stay in bounds even if the two ever disagree.
-        let line_start = self.line_index.start(&self.content, line_idx).min(offset);
-        let col_idx = self.content[line_start..offset].chars().count();
-        (line_idx, col_idx)
-    }
-
-    pub fn offset_for_line_col(&self, target_line: usize, target_col: usize) -> usize {
-        if target_line >= self.line_index.lines() {
-            return self.content.len();
-        }
-        let line_start = self.line_index.start(&self.content, target_line);
-        let line_end = self
-            .line_index
-            .end(&self.content, target_line)
-            .max(line_start)
-            .min(self.content.len());
-        let line = &self.content[line_start.min(self.content.len())..line_end];
-        let actual_col = target_col.min(line.chars().count());
-        let byte_col: usize = line.chars().take(actual_col).map(|c| c.len_utf8()).sum();
-        line_start + byte_col
-    }
-
-    /// Byte offset where `line` starts.
-    ///
-    /// Replaces the old `cached_line_starts` lookup: that array held one offset
-    /// per line (8 bytes × lines), this jumps to the nearest checkpoint and
-    /// scans at most `LINE_BLOCK` lines with `memchr`.
-    pub fn line_start_byte(&self, line: usize) -> usize {
-        if let Some((w_start_line, w_start_byte)) = self.view_shell_window_start_byte {
-            if line >= w_start_line && line < w_start_line + self.window.lines.len() {
-                let offset_in_window: usize = self.window.lines.as_slice()[..line - w_start_line]
-                    .iter()
-                    .map(|l| l.len() + 1)
-                    .sum();
-                return w_start_byte + offset_in_window;
-            }
-        }
-        self.line_index.start(&self.content, line)
-    }
-
-    /// Index of the line containing `byte`.
-    ///
-    /// Same contract as `cached_line_starts.binary_search(&byte)` with
-    /// `Err(idx) => idx - 1`: the byte belongs to the last line starting at or
-    /// before it.
-    pub fn line_of_byte(&self, byte: usize) -> usize {
-        if let Some(sel) = self.view_shell_selection_range.as_ref() {
-            if let Some((s_line, e_line)) = self.view_shell_sel_lines {
-                if byte == sel.start {
-                    return s_line;
-                }
-                if byte == sel.end {
-                    return e_line;
-                }
-            }
-        }
-        if let Some((w_start_line, w_start_byte)) = self.view_shell_window_start_byte {
-            let mut at = w_start_byte;
-            for (i, l) in self.window.lines.as_slice().iter().enumerate() {
-                let next = at + l.len() + 1;
-                if byte < next {
-                    return w_start_line + i;
-                }
-                at = next;
-            }
-        }
-        self.line_index.line_of(&self.content, byte)
-    }
-
-    pub fn insert_text(&mut self, text: &str) {
-        self.replace_selection(text);
-    }
-
-    pub fn insert_newline_auto_indent(&mut self) {
-        if self.selection_range().is_some() {
-            self.delete_selection();
-        }
-
-        let mut offset = self.cursor_offset.min(self.content.len());
-        while offset > 0 && !self.content.is_char_boundary(offset) {
-            offset -= 1;
-        }
-        let prefix = &self.content[..offset];
-        let last_line = prefix.split('\n').last().unwrap_or("");
-        let indent_len = last_line.chars().take_while(|c| c.is_whitespace()).count();
-        let indent: String = last_line.chars().take(indent_len).collect();
-
-        let insert_str = format!("\n{}", indent);
-        let cursor_before = self.cursor_offset;
-        let at = offset;
-        let new_cursor = at + insert_str.len();
-
-        self.content.replace_range(offset..offset, &insert_str);
-        self.version += 1;
-        self.refresh_line_index_incremental(at, "", &insert_str);
-        self.cursor_offset = new_cursor;
-        self.selection_anchor = None;
-        self.mark_dirty();
-        self.visual_cache_dirty = true;
-        self.record_change(at, String::new(), insert_str, cursor_before, new_cursor);
-    }
-
-    pub fn delete_backwards(&mut self) {
-        if self.delete_selection() {
-            return;
-        }
-        if self.cursor_offset == 0 || self.content.is_empty() {
-            return;
-        }
-        let mut offset = self.cursor_offset.min(self.content.len());
-        while offset > 0 && !self.content.is_char_boundary(offset) {
-            offset -= 1;
-        }
-        if offset == 0 {
-            return;
-        }
-        let mut prev = offset - 1;
-        while prev > 0 && !self.content.is_char_boundary(prev) {
-            prev -= 1;
-        }
-        let cursor_before = self.cursor_offset;
-        let removed = self.content[prev..offset].to_string();
-        self.content.replace_range(prev..offset, "");
-        self.version += 1;
-        self.refresh_line_index_incremental(prev, &removed, "");
-        self.cursor_offset = prev;
-        self.selection_anchor = None;
-        self.mark_dirty();
-        self.visual_cache_dirty = true;
-        self.record_change(prev, removed, String::new(), cursor_before, prev);
-    }
-
-    pub fn delete_forwards(&mut self) {
-        if self.delete_selection() {
-            return;
-        }
-        let mut offset = self.cursor_offset.min(self.content.len());
-        while offset > 0 && !self.content.is_char_boundary(offset) {
-            offset -= 1;
-        }
-        if offset >= self.content.len() {
-            return;
-        }
-        let mut next = offset + 1;
-        while next <= self.content.len() && !self.content.is_char_boundary(next) {
-            next += 1;
-        }
-        let cursor_before = self.cursor_offset;
-        let removed = self.content[offset..next].to_string();
-        self.content.replace_range(offset..next, "");
-        self.version += 1;
-        self.refresh_line_index_incremental(offset, &removed, "");
-        self.cursor_offset = offset;
-        self.selection_anchor = None;
-        self.mark_dirty();
-        self.visual_cache_dirty = true;
-        self.record_change(offset, removed, String::new(), cursor_before, offset);
-    }
-
-    pub fn move_cursor_left(&mut self, shift: bool) {
-        if !shift && self.selection_anchor.is_some() {
-            if let Some(range) = self.selection_range() {
-                self.cursor_offset = range.start;
-                self.selection_anchor = None;
-                return;
-            }
-        }
-        if shift && self.selection_anchor.is_none() {
-            self.selection_anchor = Some(self.cursor_offset);
-        }
-        if self.cursor_offset == 0 {
-            return;
-        }
-        let mut prev = self.cursor_offset - 1;
-        while prev > 0 && !self.content.is_char_boundary(prev) {
-            prev -= 1;
-        }
-        self.cursor_offset = prev;
-        if !shift {
-            self.selection_anchor = None;
-        }
-    }
-
-    pub fn move_cursor_right(&mut self, shift: bool) {
-        if !shift && self.selection_anchor.is_some() {
-            if let Some(range) = self.selection_range() {
-                self.cursor_offset = range.end;
-                self.selection_anchor = None;
-                return;
-            }
-        }
-        if shift && self.selection_anchor.is_none() {
-            self.selection_anchor = Some(self.cursor_offset);
-        }
-        if self.cursor_offset >= self.content.len() {
-            return;
-        }
-        let mut next = self.cursor_offset + 1;
-        while next <= self.content.len() && !self.content.is_char_boundary(next) {
-            next += 1;
-        }
-        if next <= self.content.len() {
-            self.cursor_offset = next;
-        }
-        if !shift {
-            self.selection_anchor = None;
-        }
-    }
-
-    pub fn move_cursor_up(&mut self, shift: bool) {
-        if shift && self.selection_anchor.is_none() {
-            self.selection_anchor = Some(self.cursor_offset);
-        }
-        let (line_idx, col_idx) = self.line_col();
-        if line_idx == 0 {
-            self.cursor_offset = 0;
-            if !shift {
-                self.selection_anchor = None;
-            }
-            return;
-        }
-
-        let lines: Vec<&str> = self.content.split('\n').collect();
-        let target_line = line_idx - 1;
-        let mut offset = 0;
-        for (i, line) in lines.iter().enumerate() {
-            if i == target_line {
-                let char_count = line.chars().count();
-                let actual_col = col_idx.min(char_count);
-                let byte_col: usize = line.chars().take(actual_col).map(|c| c.len_utf8()).sum();
-                self.cursor_offset = offset + byte_col;
-                if !shift {
-                    self.selection_anchor = None;
-                }
-                return;
-            }
-            offset += line.len() + 1;
-        }
-    }
-
-    pub fn move_cursor_down(&mut self, shift: bool) {
-        if shift && self.selection_anchor.is_none() {
-            self.selection_anchor = Some(self.cursor_offset);
-        }
-        let (line_idx, col_idx) = self.line_col();
-        let lines: Vec<&str> = self.content.split('\n').collect();
-        if line_idx + 1 >= lines.len() {
-            self.cursor_offset = self.content.len();
-            if !shift {
-                self.selection_anchor = None;
-            }
-            return;
-        }
-
-        let target_line = line_idx + 1;
-        let mut offset = 0;
-        for (i, line) in lines.iter().enumerate() {
-            if i == target_line {
-                let char_count = line.chars().count();
-                let actual_col = col_idx.min(char_count);
-                let byte_col: usize = line.chars().take(actual_col).map(|c| c.len_utf8()).sum();
-                self.cursor_offset = offset + byte_col;
-                if !shift {
-                    self.selection_anchor = None;
-                }
-                return;
-            }
-            offset += line.len() + 1;
-        }
-    }
-
-    pub fn set_cursor_to_line_start(&mut self, target_line: usize) {
-        let lines: Vec<&str> = self.content.split('\n').collect();
-        let mut offset = 0;
-        for (i, line) in lines.iter().enumerate() {
-            if i == target_line {
-                self.cursor_offset = offset;
-                self.selection_anchor = None;
-                return;
-            }
-            offset += line.len() + 1;
-        }
-    }
-
-    pub fn set_cursor_to_line_end(&mut self, target_line: usize) {
-        let lines: Vec<&str> = self.content.split('\n').collect();
-        let mut offset = 0;
-        for (i, line) in lines.iter().enumerate() {
-            if i == target_line {
-                self.cursor_offset = offset + line.len();
-                self.selection_anchor = None;
-                return;
-            }
-            offset += line.len() + 1;
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn set_cursor_to_line_col(&mut self, target_line: usize, target_col: usize) {
-        self.cursor_offset = self.offset_for_line_col(target_line, target_col);
-        self.selection_anchor = None;
-    }
-
-    pub fn home(&mut self, shift: bool) {
-        if shift && self.selection_anchor.is_none() {
-            self.selection_anchor = Some(self.cursor_offset);
-        }
-        let (line_idx, _) = self.line_col();
-        self.set_cursor_to_line_start(line_idx);
-        if !shift {
-            self.selection_anchor = None;
-        }
-    }
-
-    pub fn end(&mut self, shift: bool) {
-        if shift && self.selection_anchor.is_none() {
-            self.selection_anchor = Some(self.cursor_offset);
-        }
-        let (line_idx, _) = self.line_col();
-        self.set_cursor_to_line_end(line_idx);
-        if !shift {
-            self.selection_anchor = None;
-        }
-    }
-}
-
 /// Неизменяемый снимок состояния vault и активного файла для синхронных геттеров плагинов.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
@@ -1435,10 +407,8 @@ pub struct AppState {
     pub file_tree: Vec<FileNode>,
     pub expanded_folders: HashSet<PathBuf>,
     pub search_query: String,
-    pub active_note: Option<OpenedNote>,
     pub open_tabs: Vec<PathBuf>,
     /// Active empty-tab sentinel, if the current tab has no file on disk.
-    /// Mutually exclusive with `active_note`: exactly one of them is `Some`.
     pub active_empty_tab: Option<PathBuf>,
     pub nav_history: Vec<PathBuf>,
     pub nav_history_index: usize,
@@ -1498,7 +468,6 @@ impl AppState {
             file_tree: Vec::new(),
             expanded_folders: session.expanded_folders.clone(),
             search_query: String::new(),
-            active_note: None,
             open_tabs: valid_tabs,
             active_empty_tab: None,
             nav_history: Vec::new(),
@@ -1564,59 +533,16 @@ impl AppState {
                 if let Some(tab) = leaf.active_tab() {
                     match &tab.content {
                         crate::workspace::TabContent::Document { id } => {
-                            if let Some(doc) = state.documents.get_mut(id) {
+                            if let Some(doc) = state.documents.get(id) {
                                 let doc_path = doc.path.clone();
-                                let doc_title = doc.title.clone();
-                                let doc_dirty = doc.is_dirty;
-                                let (c, li, cp, us, rs, fdt) = doc.take_for_active_note();
-                                let line_index = if li.lines() > 0 && li.len() == c.len() {
-                                    li
-                                } else {
-                                    crate::line_index::LineIndex::new(&c)
-                                };
-                                let mut opened = OpenedNote {
-                                    path: doc_path,
-                                    title: doc_title,
-                                    content: c,
-                                    version: 0,
-                                    cursor_offset: 0,
-                                    selection_anchor: None,
-                                    is_dirty: doc_dirty,
-                                    first_dirty_time: fdt,
-                                    undo_stack: us,
-                                    redo_stack: rs,
-                                    pending_edits: Vec::new(),
-                                    line_index,
-                                    code_checkpoints: cp,
-                                    window: crate::editor_window::EditorWindow::default(),
-                                    above_lines: 0,
-                                    below_lines: 0,
-                                    above_h: 0.0,
-                                    below_h: 0.0,
-                                    est_rows_per_line: 1.0,
-                                    est_row_h: 24.0,
-                                    visual_cache_dirty: true,
-                                    stats_cache: std::cell::Cell::new(None),
-                                    view_shell_cursor_line_col: None,
-                                    view_shell_selection_range: None,
-                                    view_shell_window_start_byte: None,
-                                    view_shell_sel_lines: None,
-                                };
-                                if let Some(v) = state.views.get(&tab.id) {
-                                    opened.cursor_offset = v.cursor_offset.min(opened.content.len());
-                                    opened.selection_anchor = v.selection_anchor.map(|a| a.min(opened.content.len()));
-                                }
-                                state.reveal_path_in_tree(&opened.path.clone());
-                                state.active_note = Some(opened);
+                                state.reveal_path_in_tree(&doc_path);
                                 state.active_empty_tab = None;
                             }
                         }
                         crate::workspace::TabContent::Empty => {
-                            state.active_note = None;
                             state.active_empty_tab = Some(empty_tab_path());
                         }
                         crate::workspace::TabContent::Plugin { .. } => {
-                            state.active_note = None;
                             state.active_empty_tab = None;
                         }
                     }
@@ -1652,12 +578,14 @@ impl AppState {
                 state.open_tabs.push(welcome_path.clone());
                 state.nav_history.push(welcome_path.clone());
                 state.nav_history_index = 0;
-                state.active_note = Some(OpenedNote::new(
-                    welcome_path,
-                    "Welcome to Vibecodium".to_owned(),
-                    DEFAULT_WELCOME_NOTE.to_owned(),
-                    0,
-                ));
+                let doc_id = state.get_or_open_document(&welcome_path, "Welcome to Vibecodium".to_owned(), DEFAULT_WELCOME_NOTE.to_owned());
+                state.workspace.open_file(&mut state.leaves, doc_id, state.workspace.active_leaf, crate::workspace::OpenMode::Reuse);
+                if let Some(leaf) = state.leaves.get(&state.workspace.active_leaf) {
+                    if let Some(tab) = leaf.active_tab() {
+                        state.views.entry(tab.id).or_insert_with(|| crate::workspace::EditorViewState::new(tab.id, doc_id));
+                    }
+                }
+                state.session.active_note = Some(welcome_path);
             }
         }
 
@@ -1674,7 +602,6 @@ impl AppState {
         state.by_path.clear();
         state.views.clear();
         state.open_tabs.clear();
-        state.active_note = None;
         state.active_empty_tab = None;
         let default_leaf_id = LeafId::new();
         state.workspace = WorkspaceTree::new_single_leaf(default_leaf_id);
@@ -1708,6 +635,181 @@ impl AppState {
                 }
             })
         })
+    }
+
+    pub fn active_tab_id(&self) -> Option<TabId> {
+        self.leaves.get(&self.workspace.active_leaf).and_then(|l| l.active_tab()).map(|t| t.id)
+    }
+
+    pub fn active_tab(&self) -> Option<&crate::workspace::Tab> {
+        self.leaves.get(&self.workspace.active_leaf).and_then(|l| l.active_tab())
+    }
+
+    pub fn active_doc_id(&self) -> Option<DocumentId> {
+        self.active_tab().and_then(|t| match &t.content {
+            crate::workspace::TabContent::Document { id } => Some(*id),
+            _ => None,
+        })
+    }
+
+    pub fn active_document(&self) -> Option<&DocumentBuffer> {
+        let doc_id = self.active_doc_id()?;
+        self.documents.get(&doc_id)
+    }
+
+    pub fn active_document_mut(&mut self) -> Option<&mut DocumentBuffer> {
+        let doc_id = self.active_doc_id()?;
+        self.documents.get_mut(&doc_id)
+    }
+
+    pub fn active_view(&self) -> Option<&EditorViewState> {
+        let tab_id = self.active_tab_id()?;
+        self.views.get(&tab_id)
+    }
+
+    pub fn active_view_mut(&mut self) -> Option<&mut EditorViewState> {
+        let tab_id = self.active_tab_id()?;
+        self.views.get_mut(&tab_id)
+    }
+
+    pub fn active_view_and_doc(&self) -> Option<(&EditorViewState, &DocumentBuffer)> {
+        let tab_id = self.active_tab_id()?;
+        let doc_id = self.active_doc_id()?;
+        let view = self.views.get(&tab_id)?;
+        let doc = self.documents.get(&doc_id)?;
+        Some((view, doc))
+    }
+
+    pub fn active_view_and_doc_mut(&mut self) -> Option<(&mut EditorViewState, &mut DocumentBuffer)> {
+        let tab_id = self.active_tab_id()?;
+        let doc_id = self.active_doc_id()?;
+        let view = self.views.get_mut(&tab_id)?;
+        let doc = self.documents.get_mut(&doc_id)?;
+        Some((view, doc))
+    }
+
+    pub fn dispatch_edit_event(&mut self, ev: &EditEvent, note_edit: &NoteEditEvent) {
+        for (tab_id, view) in self.views.iter_mut() {
+            if view.doc_id == ev.doc {
+                if Some(*tab_id) == ev.origin {
+                    if let Some(c) = ev.cursor_after {
+                        view.cursor_offset = c;
+                        view.selection_anchor = None;
+                    }
+                    view.visual_cache_dirty = true;
+                } else {
+                    view.apply_external_edit_detailed(note_edit);
+                }
+            }
+        }
+    }
+
+    pub fn active_insert_text(&mut self, text: &str) {
+        let Some(tab_id) = self.active_tab_id() else { return; };
+        let Some(doc_id) = self.active_doc_id() else { return; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return; };
+        let (_, note_edit, edit_event) = view.insert_text(doc, text);
+        self.dispatch_edit_event(&edit_event, &note_edit);
+    }
+
+    pub fn active_delete_backwards(&mut self) {
+        let Some(tab_id) = self.active_tab_id() else { return; };
+        let Some(doc_id) = self.active_doc_id() else { return; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return; };
+        if let Some((_, note_edit, edit_event)) = view.delete_backwards(doc) {
+            self.dispatch_edit_event(&edit_event, &note_edit);
+        }
+    }
+
+    pub fn active_delete_forwards(&mut self) {
+        let Some(tab_id) = self.active_tab_id() else { return; };
+        let Some(doc_id) = self.active_doc_id() else { return; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return; };
+        if let Some((_, note_edit, edit_event)) = view.delete_forwards(doc) {
+            self.dispatch_edit_event(&edit_event, &note_edit);
+        }
+    }
+
+    pub fn active_insert_newline_auto_indent(&mut self) {
+        let Some(tab_id) = self.active_tab_id() else { return; };
+        let Some(doc_id) = self.active_doc_id() else { return; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return; };
+        let (_, note_edit, edit_event) = view.insert_newline_auto_indent(doc);
+        self.dispatch_edit_event(&edit_event, &note_edit);
+    }
+
+    pub fn active_delete_selection(&mut self) -> bool {
+        let Some(tab_id) = self.active_tab_id() else { return false; };
+        let Some(doc_id) = self.active_doc_id() else { return false; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return false; };
+        if let Some((_, note_edit, edit_event)) = view.delete_selection(doc) {
+            self.dispatch_edit_event(&edit_event, &note_edit);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn active_replace_selection(&mut self, text: &str) {
+        let Some(tab_id) = self.active_tab_id() else { return; };
+        let Some(doc_id) = self.active_doc_id() else { return; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return; };
+        let (_, note_edit, edit_event) = view.replace_selection(doc, text);
+        self.dispatch_edit_event(&edit_event, &note_edit);
+    }
+
+    pub fn active_undo(&mut self) -> bool {
+        let Some(tab_id) = self.active_tab_id() else { return false; };
+        let Some(doc_id) = self.active_doc_id() else { return false; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return false; };
+        if let Some((_, note_edits, edit_event)) = view.undo(doc) {
+            for note_edit in &note_edits {
+                self.dispatch_edit_event(&edit_event, note_edit);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn active_redo(&mut self) -> bool {
+        let Some(tab_id) = self.active_tab_id() else { return false; };
+        let Some(doc_id) = self.active_doc_id() else { return false; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return false; };
+        if let Some((_, note_edits, edit_event)) = view.redo(doc) {
+            for note_edit in &note_edits {
+                self.dispatch_edit_event(&edit_event, note_edit);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn active_select_all(&mut self) {
+        let Some(tab_id) = self.active_tab_id() else { return; };
+        let Some(doc_id) = self.active_doc_id() else { return; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return; };
+        view.select_all(doc);
+    }
+
+    pub fn active_selected_text(&self) -> Option<String> {
+        let (view, doc) = self.active_view_and_doc()?;
+        view.selected_text(doc)
+    }
+
+    pub fn active_move_cursor_left(&mut self, shift: bool) {
+        let Some(tab_id) = self.active_tab_id() else { return; };
+        let Some(doc_id) = self.active_doc_id() else { return; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return; };
+        view.move_cursor_left(doc, shift);
+    }
+
+    pub fn active_move_cursor_right(&mut self, shift: bool) {
+        let Some(tab_id) = self.active_tab_id() else { return; };
+        let Some(doc_id) = self.active_doc_id() else { return; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return; };
+        view.move_cursor_right(doc, shift);
     }
 
     pub fn get_or_open_document(&mut self, path: &Path, title: String, content: String) -> DocumentId {
@@ -1752,14 +854,11 @@ impl AppState {
             }
         });
 
-        // 4. Clean up by_path, open_tabs, and active_note
+        // 4. Clean up by_path and open_tabs
         for p in &removed_paths {
             let norm = Self::normalize_path(p);
             self.by_path.remove(&norm);
             self.open_tabs.retain(|x| x != p);
-            if self.active_note.as_ref().map(|n| &n.path == p).unwrap_or(false) {
-                self.active_note = None;
-            }
         }
     }
 
@@ -1774,19 +873,19 @@ impl AppState {
         if let Some(na) = next {
             self.workspace.active_leaf = na;
         }
+        self.invalidate_layout_caches();
         next
     }
 
     /// Captures a point-in-time snapshot of document memory allocations and open counts.
     pub fn memory_snapshot(&self) -> MemorySnapshot {
         let doc_bytes: usize = self.documents.values().map(|d| d.content().len()).sum();
-        let active_bytes: usize = self.active_note.as_ref().map(|n| n.content.len()).unwrap_or(0);
         MemorySnapshot {
             document_count: self.documents.len(),
             document_bytes: doc_bytes,
             by_path_count: self.by_path.len(),
             view_count: self.views.len(),
-            active_note_bytes: active_bytes,
+            active_note_bytes: 0,
             open_tabs_count: self.open_tabs.len(),
         }
     }
@@ -1830,11 +929,7 @@ impl AppState {
                 continue;
             };
 
-            let is_doc_dirty = self.documents.get(&doc_id).map(|d| d.is_dirty).unwrap_or(false)
-                || self.active_note.as_ref().map(|n| {
-                    (n.path == doc_path || Self::normalize_path(&n.path) == Self::normalize_path(&doc_path))
-                        && n.is_dirty
-                }).unwrap_or(false);
+            let is_doc_dirty = self.documents.get(&doc_id).map(|d| d.is_dirty).unwrap_or(false);
 
             if keep_if_dirty && is_doc_dirty {
                 self.status_text = format!(
@@ -1898,9 +993,6 @@ impl AppState {
                 if self.session.active_note.as_ref().map(|p| p == &doc.path || p == path).unwrap_or(false) {
                     self.session.active_note = None;
                 }
-                if self.active_note.as_ref().map(|n| n.path == doc.path || n.path == path).unwrap_or(false) {
-                    self.active_note = None;
-                }
                 any_closed = true;
             }
         }
@@ -1912,8 +1004,7 @@ impl AppState {
             self.session.open_tabs.retain(|p| p != path && Self::normalize_path(p) != norm_p && !p.starts_with(path));
             self.nav_history.retain(|p| p != path && Self::normalize_path(p) != norm_p && !p.starts_with(path));
 
-            if self.active_note.as_ref().map(|n| n.path == path || Self::normalize_path(&n.path) == norm_p).unwrap_or(false) {
-                self.active_note = None;
+            if self.session.active_note.as_ref().map(|p| p == path || Self::normalize_path(p) == norm_p).unwrap_or(false) {
                 self.session.active_note = None;
                 any_closed = true;
             }
@@ -1921,21 +1012,14 @@ impl AppState {
 
         self.cleanup_orphaned_documents_and_views();
 
-        // If active_note is None, try activating whatever tab is in active_leaf
-        if self.active_note.is_none() {
+        // If session active_note is None, try activating whatever tab is in active_leaf
+        if self.session.active_note.is_none() {
             let active_leaf_id = self.workspace.active_leaf;
             if let Some(leaf) = self.leaves.get(&active_leaf_id) {
                 if let Some(tab) = leaf.active_tab() {
                     match &tab.content {
                         crate::workspace::TabContent::Document { id } => {
                             if let Some(doc) = self.documents.get(id) {
-                                let opened = OpenedNote::new(
-                                    doc.path.clone(),
-                                    doc.title.clone(),
-                                    doc.content().to_string(),
-                                    doc.version,
-                                );
-                                self.active_note = Some(opened);
                                 self.session.active_note = Some(doc.path.clone());
                             }
                         }
@@ -2023,13 +1107,6 @@ impl AppState {
                 self.note_states.insert(target_new_path.clone(), settings);
             }
 
-            // Update active note if it pointed to the old path
-            if let Some(ref mut note) = self.active_note {
-                if note.path == old_doc_path || Self::normalize_path(&note.path) == norm_old_doc {
-                    note.path = target_new_path.clone();
-                    note.title = new_title.clone();
-                }
-            }
             if self.session.active_note.as_ref().map(|p| p == &old_doc_path || Self::normalize_path(p) == norm_old_doc).unwrap_or(false) {
                 self.session.active_note = Some(target_new_path);
             }
@@ -2037,7 +1114,7 @@ impl AppState {
             any_renamed = true;
         }
 
-        // Also check if active_note or open_tabs match old_path directly even if not in documents
+        // Also check if open_tabs match old_path directly even if not in documents
         if !any_renamed {
             for p in self.open_tabs.iter_mut() {
                 if *p == old_path || Self::normalize_path(p) == norm_old {
@@ -2057,16 +1134,6 @@ impl AppState {
                     any_renamed = true;
                 }
             }
-            if let Some(ref mut note) = self.active_note {
-                if note.path == old_path || Self::normalize_path(&note.path) == norm_old {
-                    note.path = new_path.to_path_buf();
-                    note.title = new_path
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "untitled".to_string());
-                    any_renamed = true;
-                }
-            }
         }
 
         self.save_session_state();
@@ -2078,14 +1145,10 @@ impl AppState {
     /// If the file is open and clean (not dirty), reloads content from disk.
     /// If the file has unsaved edits, keeps the user's edits and warns in status.
     pub fn handle_file_modified(&mut self, path: &Path) -> bool {
-        let norm = Self::normalize_path(path);
         let opt_doc_id = self.find_document_by_path(path);
 
         if let Some(doc_id) = opt_doc_id {
-            let is_dirty = self.documents.get(&doc_id).map(|d| d.is_dirty).unwrap_or(false)
-                || self.active_note.as_ref().map(|n| {
-                    (n.path == path || Self::normalize_path(&n.path) == norm) && n.is_dirty
-                }).unwrap_or(false);
+            let is_dirty = self.documents.get(&doc_id).map(|d| d.is_dirty).unwrap_or(false);
 
             if is_dirty {
                 self.status_text = format!(
@@ -2097,14 +1160,11 @@ impl AppState {
 
             if let Ok(new_content) = std::fs::read_to_string(path) {
                 if let Some(doc) = self.documents.get_mut(&doc_id) {
-                    doc.reload(new_content.clone());
+                    doc.reload(new_content);
                 }
-                if let Some(ref mut note) = self.active_note {
-                    if note.path == path || Self::normalize_path(&note.path) == norm {
-                        note.content = new_content;
-                        note.version += 1;
-                        note.line_index = crate::line_index::LineIndex::new(&note.content);
-                        note.rebuild_visual_cache(true, 80);
+                for view in self.views.values_mut() {
+                    if view.doc_id == doc_id {
+                        view.visual_cache_dirty = true;
                     }
                 }
                 self.status_text = format!(
@@ -2154,7 +1214,169 @@ impl AppState {
         events
     }
 
+    /// Request closing a tab in a leaf. Returns any effects (title commit, disk flush)
+    /// that must be successfully executed before the tab can actually be closed.
+    pub fn request_close_leaf_tab(&self, leaf_id: LeafId, tab_index: usize) -> Result<(TabId, crate::workspace::CloseRequest), String> {
+        let leaf = self.leaves.get(&leaf_id).ok_or_else(|| "Unknown leaf".to_string())?;
+        let tab = leaf.tabs.get(tab_index).ok_or_else(|| "Unknown tab index".to_string())?;
+        let tab_id = tab.id;
+        let mut effects = Vec::new();
+
+        if let Some(view) = self.views.get(&tab_id) {
+            if let Some(title_input) = &view.title_input {
+                if let crate::workspace::TabContent::Document { id } = tab.content {
+                    effects.push(crate::workspace::CloseEffect::CommitTitle {
+                        tab_id,
+                        doc_id: id,
+                        new_title: title_input.text.clone(),
+                    });
+                }
+            }
+        }
+
+        if let crate::workspace::TabContent::Document { id } = tab.content {
+            let doc_id = id;
+            let tab_count = self
+                .leaves
+                .values()
+                .flat_map(|l| &l.tabs)
+                .filter(|t| matches!(t.content, crate::workspace::TabContent::Document { id } if id == doc_id))
+                .count();
+            let is_last = tab_count <= 1;
+            let is_dirty = self.documents.get(&doc_id).map_or(false, |d| d.is_dirty);
+            if is_last && is_dirty {
+                effects.push(crate::workspace::CloseEffect::FlushDoc(doc_id));
+            }
+        }
+
+        let req = if effects.is_empty() {
+            crate::workspace::CloseRequest::Ready
+        } else {
+            crate::workspace::CloseRequest::NeedsEffects(effects)
+        };
+        Ok((tab_id, req))
+    }
+
+    /// Request closing a tab by its TabId.
+    pub fn request_close_tab(&self, tab_id: TabId) -> Result<crate::workspace::CloseRequest, String> {
+        for (leaf_id, leaf) in &self.leaves {
+            if let Some(idx) = leaf.tabs.iter().position(|t| t.id == tab_id) {
+                let (_, req) = self.request_close_leaf_tab(*leaf_id, idx)?;
+                return Ok(req);
+            }
+        }
+        Err("Unknown tab".to_string())
+    }
+
+    /// Executes a single close effect with real IO.
+    /// If renaming or saving fails, returns Err and leaves state intact.
+    pub fn run_close_effect(&mut self, effect: &crate::workspace::CloseEffect) -> Result<(), String> {
+        match effect {
+            crate::workspace::CloseEffect::CommitTitle { tab_id, doc_id, new_title } => {
+                let (current_path, current_title) = if let Some(doc) = self.documents.get(doc_id) {
+                    (doc.path.clone(), doc.title.clone())
+                } else {
+                    return Err("Document not found".to_string());
+                };
+                let trimmed = new_title.trim();
+                if !trimmed.is_empty() && trimmed != current_title {
+                    self.rename_note(&current_path, trimmed)?;
+                }
+                if let Some(view) = self.views.get_mut(tab_id) {
+                    view.title_input = None;
+                }
+                Ok(())
+            }
+            crate::workspace::CloseEffect::FlushDoc(doc_id) => {
+                if self.save_document(*doc_id) {
+                    Ok(())
+                } else {
+                    Err("Failed to save document".to_string())
+                }
+            }
+        }
+    }
+
+    /// Performs the final step of closing a leaf tab after all effects have been satisfied.
+    pub fn finish_close_leaf_tab(&mut self, leaf_id: LeafId, tab_index: usize) -> Result<Option<PathBuf>, String> {
+        let (_tab_id, req) = self.request_close_leaf_tab(leaf_id, tab_index)?;
+        if let crate::workspace::CloseRequest::NeedsEffects(_) = req {
+            return Err("Pending effects must be executed before finish_close".to_string());
+        }
+        Ok(self.close_leaf_tab_direct(leaf_id, tab_index))
+    }
+
+    /// Performs the final step of closing a tab by TabId after all effects have been satisfied.
+    pub fn finish_close_tab(&mut self, tab_id: TabId) -> Result<Option<PathBuf>, String> {
+        let mut target = None;
+        for (leaf_id, leaf) in &self.leaves {
+            if let Some(idx) = leaf.tabs.iter().position(|t| t.id == tab_id) {
+                target = Some((*leaf_id, idx));
+                break;
+            }
+        }
+        let (leaf_id, idx) = target.ok_or_else(|| "Unknown tab".to_string())?;
+        self.finish_close_leaf_tab(leaf_id, idx)
+    }
+
+    /// Updates the cached geometry bounds for all leaves based on the window size,
+    /// sidebar widths, and current split ratios.
+    pub fn update_leaf_bounds_from_layout(
+        &mut self,
+        win_w: f32,
+        win_h: f32,
+        left_sidebar_w: f32,
+        right_sidebar_w: f32,
+    ) {
+        let workspace_w = (win_w - left_sidebar_w - right_sidebar_w).max(100.0);
+        let workspace_h = (win_h - 66.0).max(100.0);
+        let leaf_ids: Vec<LeafId> = self.leaves.keys().copied().collect();
+        for lid in leaf_ids {
+            let w_ratio = self.workspace.horizontal_width_ratio_of_leaf(lid);
+            let h_ratio = self.workspace.vertical_height_ratio_of_leaf(lid);
+            let w = (workspace_w * w_ratio).max(60.0);
+            let h = (workspace_h * h_ratio).max(50.0);
+            if let Some(leaf) = self.leaves.get_mut(&lid) {
+                leaf.set_bounds(w, h);
+            }
+        }
+    }
+
+    /// Invalidates geometry and viewport caches across all leaves and views
+    /// after layout structure changes (e.g. split or leaf close).
+    pub fn invalidate_layout_caches(&mut self) {
+        for leaf in self.leaves.values_mut() {
+            leaf.bounds = None;
+        }
+        for view in self.views.values_mut() {
+            view.measured_viewport_h = None;
+        }
+    }
+
+    /// Selects a tab within a leaf by TabId, switching only pointers.
+    pub fn select_tab(&mut self, leaf_id: LeafId, tab_id: TabId) -> Result<(), String> {
+        let leaf = self.leaves.get_mut(&leaf_id).ok_or_else(|| "Unknown leaf".to_string())?;
+        let pos = leaf.tabs.iter().position(|t| t.id == tab_id).ok_or_else(|| "Unknown tab".to_string())?;
+        leaf.active_tab_index = pos;
+        self.workspace.active_leaf = leaf_id;
+        Ok(())
+    }
+
     pub fn close_leaf_tab(&mut self, leaf_id: LeafId, tab_index: usize) -> Option<PathBuf> {
+        if let Ok((_tab_id, req)) = self.request_close_leaf_tab(leaf_id, tab_index) {
+            if let crate::workspace::CloseRequest::NeedsEffects(effects) = req {
+                for eff in effects {
+                    if let Err(e) = self.run_close_effect(&eff) {
+                        self.status_text = format!("Close cancelled: {}", e);
+                        return None;
+                    }
+                }
+            }
+        }
+        self.close_leaf_tab_direct(leaf_id, tab_index)
+    }
+
+    pub fn close_leaf_tab_direct(&mut self, leaf_id: LeafId, tab_index: usize) -> Option<PathBuf> {
         let (removed_tab, leaf_is_empty) = if let Some(leaf) = self.leaves.get_mut(&leaf_id) {
             if tab_index < leaf.tabs.len() {
                 let tab = leaf.tabs.remove(tab_index);
@@ -2190,9 +1412,6 @@ impl AppState {
                         let norm = Self::normalize_path(&doc.path);
                         self.by_path.remove(&norm);
                         self.open_tabs.retain(|p| p != &doc.path);
-                        if self.active_note.as_ref().map(|n| Self::normalize_path(&n.path) == norm).unwrap_or(false) {
-                            self.active_note = None;
-                        }
                         Some(doc.path)
                     } else {
                         None
@@ -2214,6 +1433,7 @@ impl AppState {
                         self.workspace.active_leaf = first;
                     }
                 }
+                self.invalidate_layout_caches();
             } else if let Some(leaf) = self.leaves.get_mut(&leaf_id) {
                 leaf.tabs.push(crate::workspace::Tab::new_empty());
                 leaf.active_tab_index = 0;
@@ -2269,9 +1489,10 @@ impl AppState {
 
     /// Публикует актуальный иммутабельный снимок состояния vault и активного файла
     pub fn publish_snapshot(&self) {
-        let active = self.active_note.as_ref().and_then(|note| {
+        let active_doc = self.active_document();
+        let active = active_doc.as_ref().and_then(|doc| {
             self.vault.as_ref().and_then(|v| {
-                crate::vault::FileInfo::from_path(&v.root, &note.path)
+                crate::vault::FileInfo::from_path(&v.root, &doc.path)
             })
         });
         let files: Vec<crate::vault::FileInfo> = self.vault
@@ -2279,7 +1500,7 @@ impl AppState {
             .map(|v| v.list_markdown_files())
             .unwrap_or_default();
 
-        let version = self.active_note.as_ref().map(|n| n.version).unwrap_or(0);
+        let version = active_doc.as_ref().map(|d| d.version).unwrap_or(0);
         let language = crate::i18n::LocaleInfo::normalize(&self.settings.get_config().ui.language).to_string();
         self.snapshot.store(Arc::new(Snapshot {
             version,
@@ -2419,8 +1640,8 @@ impl AppState {
         } else {
             self.open_note(candidate.clone());
         }
-        if let Some(ref mut note) = self.active_note {
-            note.cursor_offset = note.content.len();
+        if let Some((view, doc)) = self.active_view_and_doc_mut() {
+            view.cursor_offset = doc.content().len();
         }
         Some(candidate)
     }
@@ -2454,8 +1675,8 @@ impl AppState {
         let _ = std::fs::write(&candidate, String::new());
         self.reload_file_tree();
         self.open_note(candidate.clone());
-        if let Some(ref mut note) = self.active_note {
-            note.cursor_offset = note.content.len();
+        if let Some((view, doc)) = self.active_view_and_doc_mut() {
+            view.cursor_offset = doc.content().len();
         }
         Some(candidate)
     }
@@ -2464,20 +1685,22 @@ impl AppState {
     /// is shown instead of an editor. The sentinel is added to `open_tabs`
     /// like a regular tab so it renders in the tab strip.
     pub fn open_empty_tab(&mut self) -> PathBuf {
-        // Save current note's cursor and selection before switching
-        if let Some(ref current) = self.active_note {
-            let entry = self.note_states.entry(current.path.clone()).or_default();
-            entry.cursor_offset = current.cursor_offset;
-            entry.selection_anchor = current.selection_anchor;
-            self.session.cursor_positions.insert(current.path.clone(), current.cursor_offset);
-            self.session.note_states.insert(current.path.clone(), entry.clone());
+        // Save current view's cursor and selection before switching
+        let active_info = self.active_view().and_then(|v| {
+            self.active_document().map(|d| (d.path.clone(), v.cursor_offset, v.selection_anchor))
+        });
+        if let Some((path, cursor, anchor)) = active_info {
+            let entry = self.note_states.entry(path.clone()).or_default();
+            entry.cursor_offset = cursor;
+            entry.selection_anchor = anchor;
+            self.session.cursor_positions.insert(path.clone(), cursor);
+            self.session.note_states.insert(path, entry.clone());
         }
         let path = empty_tab_path();
         self.push_nav_history(path.clone());
         if !self.open_tabs.iter().any(|p| p == &path) {
             self.open_tabs.push(path.clone());
         }
-        self.active_note = None;
         self.active_empty_tab = Some(path.clone());
         self.session.active_note = Some(path.clone());
         self.save_session_state();
@@ -2486,18 +1709,20 @@ impl AppState {
 
     /// Activates an already open empty tab.
     pub fn activate_empty_tab(&mut self, path: PathBuf) {
-        if let Some(ref current) = self.active_note {
-            let entry = self.note_states.entry(current.path.clone()).or_default();
-            entry.cursor_offset = current.cursor_offset;
-            entry.selection_anchor = current.selection_anchor;
-            self.session.cursor_positions.insert(current.path.clone(), current.cursor_offset);
-            self.session.note_states.insert(current.path.clone(), entry.clone());
+        let active_info = self.active_view().and_then(|v| {
+            self.active_document().map(|d| (d.path.clone(), v.cursor_offset, v.selection_anchor))
+        });
+        if let Some((p, cursor, anchor)) = active_info {
+            let entry = self.note_states.entry(p.clone()).or_default();
+            entry.cursor_offset = cursor;
+            entry.selection_anchor = anchor;
+            self.session.cursor_positions.insert(p.clone(), cursor);
+            self.session.note_states.insert(p, entry.clone());
         }
         self.push_nav_history(path.clone());
         if !self.open_tabs.iter().any(|p| p == &path) {
             self.open_tabs.push(path.clone());
         }
-        self.active_note = None;
         self.active_empty_tab = Some(path.clone());
         self.session.active_note = Some(path);
         self.save_session_state();
@@ -2535,14 +1760,13 @@ impl AppState {
 
         if let Some(pos) = self.open_tabs.iter().position(|p| p == path) {
             self.open_tabs.remove(pos);
-            if self.active_note.as_ref().map(|n| &n.path == path).unwrap_or(false) {
+            if self.session.active_note.as_deref() == Some(path) {
                 self.activate_neighbor_after_close(pos);
             } else if self.active_empty_tab.as_deref() == Some(path) {
                 self.active_empty_tab = None;
                 self.activate_neighbor_after_close(pos);
             }
-        } else if self.active_note.as_ref().map(|n| &n.path == path).unwrap_or(false) {
-            self.active_note = None;
+        } else if self.session.active_note.as_deref() == Some(path) {
             self.session.active_note = None;
         } else if self.active_empty_tab.as_deref() == Some(path) {
             self.active_empty_tab = None;
@@ -2580,7 +1804,6 @@ impl AppState {
         match next_path {
             Some(target) => {
                 if is_empty_tab_path(&target) {
-                    self.active_note = None;
                     self.active_empty_tab = Some(target.clone());
                     self.session.active_note = Some(target);
                 } else {
@@ -2589,7 +1812,6 @@ impl AppState {
                 }
             }
             None => {
-                self.active_note = None;
                 self.active_empty_tab = None;
                 self.session.active_note = None;
             }
@@ -2647,11 +1869,11 @@ impl AppState {
     }
 
     pub fn note_breadcrumbs(&self) -> Vec<String> {
-        let Some(ref note) = self.active_note else {
+        let Some(doc) = self.active_document() else {
             return Vec::new();
         };
         if let Some(ref ws) = self.workspace_path {
-            if let Ok(rel) = note.path.strip_prefix(ws) {
+            if let Ok(rel) = doc.path.strip_prefix(ws) {
                 let mut parts = Vec::new();
                 for comp in rel.components() {
                     let comp_str = comp.as_os_str().to_string_lossy().to_string();
@@ -2671,7 +1893,7 @@ impl AppState {
                 }
             }
         }
-        vec![note.title.clone()]
+        vec![doc.title.clone()]
     }
 
     pub fn open_note(&mut self, path: PathBuf) {
@@ -2698,27 +1920,16 @@ impl AppState {
         }
         self.reveal_path_in_tree(&path);
 
-        // Save current note's cursor, selection, and stash its state into DocumentBuffer before switching
-        if let Some(mut current) = self.active_note.take() {
-            let entry = self.note_states.entry(current.path.clone()).or_default();
-            entry.cursor_offset = current.cursor_offset;
-            entry.selection_anchor = current.selection_anchor;
-            self.session.cursor_positions.insert(current.path.clone(), current.cursor_offset);
-            self.session.note_states.insert(current.path.clone(), entry.clone());
-
-            if let Some(doc_id) = self.find_document_by_path(&current.path) {
-                if let Some(doc) = self.documents.get_mut(&doc_id) {
-                    doc.stash_from_note(
-                        std::mem::take(&mut current.content),
-                        std::mem::take(&mut current.line_index),
-                        std::mem::take(&mut current.code_checkpoints),
-                        std::mem::take(&mut current.undo_stack),
-                        std::mem::take(&mut current.redo_stack),
-                        current.is_dirty,
-                        current.first_dirty_time,
-                    );
-                }
-            }
+        // Save current view's cursor, selection before switching
+        let active_info = self.active_view().and_then(|v| {
+            self.active_document().map(|d| (d.path.clone(), v.cursor_offset, v.selection_anchor))
+        });
+        if let Some((p, cursor, anchor)) = active_info {
+            let entry = self.note_states.entry(p.clone()).or_default();
+            entry.cursor_offset = cursor;
+            entry.selection_anchor = anchor;
+            self.session.cursor_positions.insert(p.clone(), cursor);
+            self.session.note_states.insert(p, entry.clone());
         }
 
         if !self.open_tabs.iter().any(|p| p == &path) {
@@ -2734,63 +1945,28 @@ impl AppState {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or(fallback);
 
-        let mut opened_note = None;
-        if path.to_string_lossy() == "Welcome.md" {
-            opened_note = Some(OpenedNote::new(
-                path.clone(),
-                "Welcome to Vibecodium".to_owned(),
-                DEFAULT_WELCOME_NOTE.to_owned(),
-                0,
-            ));
-        } else if let Some(doc_id) = self.find_document_by_path(&path) {
-            // Already open in memory (e.g. in another leaf/window or previously loaded):
-            // Take the buffer directly into OpenedNote to avoid duplicate memory and preserve unsaved edits.
-            if let Some(doc) = self.documents.get_mut(&doc_id) {
-                let (content, line_index, code_checkpoints, undo_stack, redo_stack, first_dirty_time) = doc.take_for_active_note();
-                let mut content = content;
-                let mut line_index = line_index;
-                if content.is_empty() {
-                    if let Ok(disk_content) = std::fs::read_to_string(&path) {
-                        line_index = crate::line_index::LineIndex::new(&disk_content);
-                        content = disk_content;
-                    }
-                } else if line_index.lines() == 0 || line_index.len() != content.len() {
-                    line_index = crate::line_index::LineIndex::new(&content);
-                }
-                let mut note = OpenedNote::new(
-                    path.clone(),
-                    doc.title.clone(),
-                    content,
-                    doc.version,
-                );
-                note.line_index = line_index;
-                note.code_checkpoints = code_checkpoints;
-                note.undo_stack = undo_stack;
-                note.redo_stack = redo_stack;
-                note.is_dirty = doc.is_dirty;
-                note.first_dirty_time = first_dirty_time;
-                opened_note = Some(note);
-                self.status_text = format!("Switched: {}", path.file_name().unwrap_or_default().to_string_lossy());
-            }
+        let doc_id = if let Some(doc_id) = self.find_document_by_path(&path) {
+            self.status_text = format!("Switched: {}", path.file_name().unwrap_or_default().to_string_lossy());
+            doc_id
         } else {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                opened_note = Some(OpenedNote::new(
-                    path.clone(),
-                    title.clone(),
-                    content,
-                    0,
-                ));
-                self.status_text = format!("Opened: {}", path.file_name().unwrap_or_default().to_string_lossy());
+            let content = if path.to_string_lossy() == "Welcome.md" {
+                DEFAULT_WELCOME_NOTE.to_owned()
             } else {
-                eprintln!("Failed to read file: {:?}", path);
-            }
-        }
+                match std::fs::read_to_string(&path) {
+                    Ok(c) => {
+                        self.status_text = format!("Opened: {}", path.file_name().unwrap_or_default().to_string_lossy());
+                        c
+                    }
+                    Err(err) => {
+                        eprintln!("Failed to read file: {:?}: {}", path, err);
+                        String::new()
+                    }
+                }
+            };
+            self.get_or_open_document(&path, title.clone(), content)
+        };
 
-        if let Some(mut note) = opened_note {
-            let doc_id = self.get_or_open_document(&note.path, note.title.clone(), String::new());
-            if let Some(doc) = self.documents.get_mut(&doc_id) {
-                doc.line_index = note.line_index.clone();
-            }
+        if let Some(doc) = self.documents.get(&doc_id) {
             self.workspace.open_file(&mut self.leaves, doc_id, self.workspace.active_leaf, crate::workspace::OpenMode::Reuse);
             if at_front {
                 if let Some(leaf) = self.leaves.get_mut(&self.workspace.active_leaf) {
@@ -2801,29 +1977,27 @@ impl AppState {
                     }
                 }
             }
-            if let Some(leaf) = self.leaves.get(&self.workspace.active_leaf) {
-                if let Some(tab) = leaf.active_tab() {
-                    self.views.entry(tab.id).or_insert_with(|| crate::workspace::EditorViewState::new(tab.id, doc_id));
-                }
-            }
+            let active_tab_id = self.leaves.get(&self.workspace.active_leaf).and_then(|leaf| leaf.active_tab().map(|t| t.id));
+            if let Some(tab_id) = active_tab_id {
+                let view = self.views.entry(tab_id).or_insert_with(|| crate::workspace::EditorViewState::new(tab_id, doc_id));
 
-            // Restore saved settings (cursor and selection) for this note
-            if let Some(settings) = self.note_states.get(&path) {
-                let mut offset = settings.cursor_offset.min(note.content.len());
-                while offset > 0 && !note.content.is_char_boundary(offset) {
-                    offset -= 1;
-                }
-                note.cursor_offset = offset;
-
-                note.selection_anchor = settings.selection_anchor.map(|anchor| {
-                    let mut a = anchor.min(note.content.len());
-                    while a > 0 && !note.content.is_char_boundary(a) {
-                        a -= 1;
+                // Restore saved settings (cursor and selection) for this note
+                if let Some(settings) = self.note_states.get(&path) {
+                    let mut offset = settings.cursor_offset.min(doc.content().len());
+                    while offset > 0 && !doc.content().is_char_boundary(offset) {
+                        offset -= 1;
                     }
-                    a
-                });
+                    view.cursor_offset = offset;
+
+                    view.selection_anchor = settings.selection_anchor.map(|anchor| {
+                        let mut a = anchor.min(doc.content().len());
+                        while a > 0 && !doc.content().is_char_boundary(a) {
+                            a -= 1;
+                        }
+                        a
+                    });
+                }
             }
-            self.active_note = Some(note);
             self.active_empty_tab = None;
             self.session.active_note = Some(path.clone());
             self.save_session_state();
@@ -2837,17 +2011,20 @@ impl AppState {
     }
 
     pub fn snapshot_active_note_settings(&mut self, scroll_top: f32, edit_mode: bool, word_wrap: bool) {
-        if let Some(ref note) = self.active_note {
+        if let (Some(view), Some(doc)) = (self.active_view(), self.active_document()) {
+            let path = doc.path.clone();
+            let cursor_offset = view.cursor_offset;
+            let selection_anchor = view.selection_anchor;
             let settings = NoteSettings {
-                cursor_offset: note.cursor_offset,
-                selection_anchor: note.selection_anchor,
+                cursor_offset,
+                selection_anchor,
                 scroll_top,
                 edit_mode,
                 word_wrap,
             };
-            self.note_states.insert(note.path.clone(), settings.clone());
-            self.session.note_states.insert(note.path.clone(), settings);
-            self.session.cursor_positions.insert(note.path.clone(), note.cursor_offset);
+            self.note_states.insert(path.clone(), settings.clone());
+            self.session.note_states.insert(path.clone(), settings);
+            self.session.cursor_positions.insert(path, cursor_offset);
         }
     }
 
@@ -2890,27 +2067,8 @@ impl AppState {
     }
 
     pub fn save_active_note(&mut self) {
-        let opt_doc_id = self.active_note.as_ref().and_then(|n| self.find_document_by_path(&n.path));
-        if let Some(ref mut note) = self.active_note {
-            if let Err(err) = crate::save_manager::safe_write(&note.path, &note.content) {
-                self.status_text = format!("Save error: {}", err);
-            } else {
-                note.clear_dirty();
-                self.status_text = format!("Saved: {}", note.title);
-
-                if let Some(doc_id) = opt_doc_id {
-                    if let Some(doc) = self.documents.get_mut(&doc_id) {
-                        doc.mark_clean();
-                    }
-                }
-
-                let rel_path = self.vault.as_ref()
-                    .and_then(|v| note.path.strip_prefix(&v.root).ok())
-                    .map(|p| p.to_string_lossy().replace('\\', "/"))
-                    .unwrap_or_else(|| note.path.to_string_lossy().into_owned());
-                self.events.emit_vault(&crate::events::VaultEvent::Modify { path: rel_path });
-                self.publish_snapshot();
-            }
+        if let Some(doc_id) = self.active_doc_id() {
+            self.save_document(doc_id);
         }
         self.save_session_state();
     }
@@ -3067,13 +2225,16 @@ impl AppState {
     }
 
     pub fn save_session_state(&mut self) {
-        if let Some(ref note) = self.active_note {
-            let entry = self.note_states.entry(note.path.clone()).or_default();
-            entry.cursor_offset = note.cursor_offset;
-            entry.selection_anchor = note.selection_anchor;
-            self.session.note_states.insert(note.path.clone(), entry.clone());
-            self.session.cursor_positions.insert(note.path.clone(), note.cursor_offset);
-            self.session.active_note = Some(note.path.clone());
+        let active_info = self.active_view().and_then(|v| {
+            self.active_document().map(|d| (d.path.clone(), v.cursor_offset, v.selection_anchor))
+        });
+        if let Some((path, cursor, anchor)) = active_info {
+            let entry = self.note_states.entry(path.clone()).or_default();
+            entry.cursor_offset = cursor;
+            entry.selection_anchor = anchor;
+            self.session.note_states.insert(path.clone(), entry.clone());
+            self.session.cursor_positions.insert(path.clone(), cursor);
+            self.session.active_note = Some(path);
             self.active_empty_tab = None;
         } else if let Some(ref empty) = self.active_empty_tab.clone() {
             self.session.active_note = Some(empty.clone());
@@ -3129,10 +2290,13 @@ impl AppState {
         }
 
         // If currently open and dirty, save it before rename
-        if let Some(ref mut note) = self.active_note {
-            if note.path == old_path && note.is_dirty {
-                let _ = std::fs::write(old_path, &note.content);
-                note.is_dirty = false;
+        let opt_doc_id = self.find_document_by_path(old_path);
+        if let Some(doc_id) = opt_doc_id {
+            if let Some(doc) = self.documents.get_mut(&doc_id) {
+                if doc.is_dirty {
+                    let _ = std::fs::write(old_path, doc.content());
+                    doc.is_dirty = false;
+                }
             }
         }
 
@@ -3140,14 +2304,6 @@ impl AppState {
         if old_path.exists() {
             std::fs::rename(old_path, &new_path)
                 .map_err(|e| format!("Failed to rename file: {}", e))?;
-        }
-
-        // Update active note if it is the renamed note
-        if let Some(ref mut note) = self.active_note {
-            if note.path == old_path {
-                note.path = new_path.clone();
-                note.title = trimmed.to_string();
-            }
         }
 
         // Update open tabs
@@ -3261,28 +2417,32 @@ mod tests {
             text.push_str(&format!("Line {} with **bold** text and `code`\n", i));
         }
 
-        let mut note = OpenedNote::new(
+        let doc_id = DocumentId::new();
+        let tab_id = TabId::new();
+        let mut doc = DocumentBuffer::new(
+            doc_id,
             PathBuf::from("test.md"),
             "test".to_string(),
             text,
             1,
         );
+        let mut view = EditorViewState::new(tab_id, doc_id);
 
         // Initial cache build
-        note.ensure_visual_cache(true, 80, 0);
-        assert_eq!(note.window.lines.len(), 5001); // 5000 lines + trailing empty
-        assert_eq!(note.line_index.lines(), 5001);
-        let initial_lines = Arc::clone(&note.window.lines);
+        view.ensure_visual_cache(&mut doc, true, 80, 0);
+        assert_eq!(view.window.lines.len(), 5001); // 5000 lines + trailing empty
+        assert_eq!(doc.line_index.lines(), 5001);
+        let initial_lines = Arc::clone(&view.window.lines);
 
         let t0 = std::time::Instant::now();
         const MOVES: usize = 1000;
         for _ in 0..MOVES {
-            note.move_cursor_right(false);
-            note.ensure_visual_cache(true, 80, 0);
+            view.move_cursor_right(&doc, false);
+            view.ensure_visual_cache(&mut doc, true, 80, 0);
         }
         for _ in 0..MOVES {
-            note.move_cursor_left(false);
-            note.ensure_visual_cache(true, 80, 0);
+            view.move_cursor_left(&doc, false);
+            view.ensure_visual_cache(&mut doc, true, 80, 0);
         }
         let elapsed = t0.elapsed();
         let per_move_us = elapsed.as_micros() as f64 / (MOVES * 2) as f64;
@@ -3294,8 +2454,8 @@ mod tests {
 
         // CRITICAL REQUIREMENTS:
         // 1. Cached lines Arc must NOT have been reallocated or rebuilt during cursor movements:
-        assert!(Arc::ptr_eq(&note.window.lines, &initial_lines), "Cache must not be rebuilt during cursor moves");
-        assert!(!note.visual_cache_dirty, "Cache must remain clean");
+        assert!(Arc::ptr_eq(&view.window.lines, &initial_lines), "Cache must not be rebuilt during cursor moves");
+        assert!(!view.visual_cache_dirty, "Cache must remain clean");
         // 2. Must be << 200 µs (0.2 ms)
         assert!(per_move_us < 200.0, "Per move latency should be under 200 µs, got {:.2} µs", per_move_us);
     }
@@ -3303,93 +2463,101 @@ mod tests {
     #[test]
     fn test_opened_note_incremental_text_edit() {
         let text = "# Title\n\nSome paragraph text here.\n".to_string();
-        let mut note = OpenedNote::new(
+        let doc_id = DocumentId::new();
+        let tab_id = TabId::new();
+        let mut doc = DocumentBuffer::new(
+            doc_id,
             PathBuf::from("edit.md"),
             "edit".to_string(),
             text,
             1,
         );
+        let mut view = EditorViewState::new(tab_id, doc_id);
 
-        note.ensure_visual_cache(true, 80, 0);
-        assert!(!note.visual_cache_dirty);
+        view.ensure_visual_cache(&mut doc, true, 80, 0);
+        assert!(!view.visual_cache_dirty);
 
         // Move cursor to inside paragraph: line 2 ("Some paragraph text here.")
         // "# Title\n\n" is 9 bytes. "Some " is 5 bytes. Offset 14 is right after "Some ".
-        note.cursor_offset = 14;
+        view.cursor_offset = 14;
 
         // Insert text incrementally
-        note.insert_text("awesome ");
-        assert_eq!(note.content, "# Title\n\nSome awesome paragraph text here.\n");
-        assert!(note.visual_cache_dirty, "Cache must be marked dirty after text insertion");
+        view.insert_text(&mut doc, "awesome ");
+        assert_eq!(doc.content(), "# Title\n\nSome awesome paragraph text here.\n");
+        assert!(view.visual_cache_dirty, "Cache must be marked dirty after text insertion");
 
         // Rebuilding cache should reflect the new content
-        note.ensure_visual_cache(true, 80, 0);
-        assert!(!note.visual_cache_dirty);
-        assert_eq!(note.window.lines[2], "Some awesome paragraph text here.");
+        view.ensure_visual_cache(&mut doc, true, 80, 0);
+        assert!(!view.visual_cache_dirty);
+        assert_eq!(view.window.lines[2], "Some awesome paragraph text here.");
 
         // Undo
-        note.undo();
-        assert_eq!(note.content, "# Title\n\nSome paragraph text here.\n");
-        assert!(note.visual_cache_dirty);
+        view.undo(&mut doc);
+        assert_eq!(doc.content(), "# Title\n\nSome paragraph text here.\n");
+        assert!(view.visual_cache_dirty);
 
-        note.ensure_visual_cache(true, 80, 0);
-        assert_eq!(note.window.lines[2], "Some paragraph text here.");
+        view.ensure_visual_cache(&mut doc, true, 80, 0);
+        assert_eq!(view.window.lines[2], "Some paragraph text here.");
 
         // Redo
-        note.redo();
-        assert_eq!(note.content, "# Title\n\nSome awesome paragraph text here.\n");
+        view.redo(&mut doc);
+        assert_eq!(doc.content(), "# Title\n\nSome awesome paragraph text here.\n");
     }
 
     #[test]
     fn test_delta_undo_stack_memory_and_sequential_edits() {
-        let mut note = OpenedNote::new(
+        let doc_id = DocumentId::new();
+        let tab_id = TabId::new();
+        let mut doc = DocumentBuffer::new(
+            doc_id,
             PathBuf::from("test.md"),
             "test".to_string(),
             "Initial line.\n".to_string(),
             0,
         );
+        let mut view = EditorViewState::new(tab_id, doc_id);
 
         // 1. Sequential typing: "Hello " letter by letter
         for ch in ["H", "e", "l", "l", "o", " "] {
-            note.insert_text(ch);
+            view.insert_text(&mut doc, ch);
         }
-        assert_eq!(note.content, "Hello Initial line.\n");
+        assert_eq!(doc.content(), "Hello Initial line.\n");
         // Merging sequential keystrokes: undo_stack should only have 1 step!
-        assert_eq!(note.undo_stack.len(), 1);
-        assert_eq!(note.undo_stack[0].changes[0].inserted, "Hello ");
+        assert_eq!(doc.undo_stack.len(), 1);
+        assert_eq!(doc.undo_stack[0].changes[0].inserted, "Hello ");
 
         // 2. Undo the whole typed word
-        note.undo();
-        assert_eq!(note.content, "Initial line.\n");
-        assert_eq!(note.cursor_offset, 0);
+        view.undo(&mut doc);
+        assert_eq!(doc.content(), "Initial line.\n");
+        assert_eq!(view.cursor_offset, 0);
 
         // 3. Redo
-        note.redo();
-        assert_eq!(note.content, "Hello Initial line.\n");
-        assert_eq!(note.cursor_offset, 6);
+        view.redo(&mut doc);
+        assert_eq!(doc.content(), "Hello Initial line.\n");
+        assert_eq!(view.cursor_offset, 6);
 
         // 4. Backspace 3 times
-        note.delete_backwards();
-        note.delete_backwards();
-        note.delete_backwards();
-        assert_eq!(note.content, "HelInitial line.\n");
-        assert_eq!(note.cursor_offset, 3);
+        view.delete_backwards(&mut doc);
+        view.delete_backwards(&mut doc);
+        view.delete_backwards(&mut doc);
+        assert_eq!(doc.content(), "HelInitial line.\n");
+        assert_eq!(view.cursor_offset, 3);
         // Sequential backspaces should be merged into 1 step
-        assert_eq!(note.undo_stack.len(), 2);
+        assert_eq!(doc.undo_stack.len(), 2);
 
         // 5. Undo backspaces
-        note.undo();
-        assert_eq!(note.content, "Hello Initial line.\n");
-        assert_eq!(note.cursor_offset, 6);
+        view.undo(&mut doc);
+        assert_eq!(doc.content(), "Hello Initial line.\n");
+        assert_eq!(view.cursor_offset, 6);
 
         // 6. Selection replace
-        note.cursor_offset = 6;
-        note.selection_anchor = Some(0);
-        note.replace_selection("Welcome to ");
-        assert_eq!(note.content, "Welcome to Initial line.\n");
+        view.cursor_offset = 6;
+        view.selection_anchor = Some(0);
+        view.replace_selection(&mut doc, "Welcome to ");
+        assert_eq!(doc.content(), "Welcome to Initial line.\n");
 
-        note.undo();
-        assert_eq!(note.content, "Hello Initial line.\n");
+        view.undo(&mut doc);
+        assert_eq!(doc.content(), "Hello Initial line.\n");
     }
 
     #[test]
@@ -3410,20 +2578,24 @@ mod tests {
             }
         }
 
-        let mut note = OpenedNote::new(
+        let doc_id = DocumentId::new();
+        let tab_id = TabId::new();
+        let mut doc = DocumentBuffer::new(
+            doc_id,
             PathBuf::from("prop.md"),
             "prop".to_string(),
             text,
             1,
         );
+        let mut view = EditorViewState::new(tab_id, doc_id);
 
-        note.ensure_visual_cache(true, 40, 0); // wrap at 40 cols
-        let visual_rows = Arc::clone(&note.window.visual_rows);
+        view.ensure_visual_cache(&mut doc, true, 40, 0); // wrap at 40 cols
+        let visual_rows = Arc::clone(&view.window.visual_rows);
 
         // Test every single possible cursor offset in the document!
-        for offset in 1..=note.content.len() {
-            note.cursor_offset = offset;
-            let (cursor_line, cursor_col) = note.line_col();
+        for offset in 1..=doc.content().len() {
+            view.cursor_offset = offset;
+            let (cursor_line, cursor_col) = view.line_col(&doc);
             let (curr_v_idx, col_in_row) = match crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col) {
                 Some(res) => res,
                 None => continue,
@@ -3442,10 +2614,10 @@ mod tests {
             };
             let target_col = col_in_row.min(max_col);
             let target_char = target_v.char_start + target_col;
-            let new_offset = note.offset_for_line_col(target_v.line_idx, target_char);
+            let new_offset = view.offset_for_line_col(&doc, target_v.line_idx, target_char);
 
-            note.cursor_offset = new_offset;
-            let (new_line, new_col) = note.line_col();
+            view.cursor_offset = new_offset;
+            let (new_line, new_col) = view.line_col(&doc);
             let (new_v_idx, _) = crate::markdown::find_visual_row_for_cursor(&visual_rows, new_line, new_col)
                 .unwrap_or((0, 0));
 
@@ -3477,19 +2649,23 @@ mod tests {
             }
         }
 
-        let mut note = OpenedNote::new(
+        let doc_id = DocumentId::new();
+        let tab_id = TabId::new();
+        let mut doc = DocumentBuffer::new(
+            doc_id,
             PathBuf::from("prop_down.md"),
             "prop_down".to_string(),
             text,
             1,
         );
+        let mut view = EditorViewState::new(tab_id, doc_id);
 
-        note.ensure_visual_cache(true, 40, 0); // wrap at 40 cols
-        let visual_rows = Arc::clone(&note.window.visual_rows);
+        view.ensure_visual_cache(&mut doc, true, 40, 0); // wrap at 40 cols
+        let visual_rows = Arc::clone(&view.window.visual_rows);
 
-        for offset in 0..note.content.len() {
-            note.cursor_offset = offset;
-            let (cursor_line, cursor_col) = note.line_col();
+        for offset in 0..doc.content().len() {
+            view.cursor_offset = offset;
+            let (cursor_line, cursor_col) = view.line_col(&doc);
             let (curr_v_idx, col_in_row) = match crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col) {
                 Some(res) => res,
                 None => continue,
@@ -3508,10 +2684,10 @@ mod tests {
             };
             let target_col = col_in_row.min(max_col);
             let target_char = target_v.char_start + target_col;
-            let new_offset = note.offset_for_line_col(target_v.line_idx, target_char);
+            let new_offset = view.offset_for_line_col(&doc, target_v.line_idx, target_char);
 
-            note.cursor_offset = new_offset;
-            let (new_line, new_col) = note.line_col();
+            view.cursor_offset = new_offset;
+            let (new_line, new_col) = view.line_col(&doc);
             let (new_v_idx, _) = crate::markdown::find_visual_row_for_cursor(&visual_rows, new_line, new_col)
                 .unwrap_or((0, 0));
 
@@ -3547,23 +2723,26 @@ mod tests {
                 _ => text.push_str(&format!("```\nfence body {i}\n```\n")),
             }
         }
-        let mut note = OpenedNote::new(PathBuf::from("stable.md"), "stable".to_string(), text, 1);
+        let doc_id = DocumentId::new();
+        let tab_id = TabId::new();
+        let mut doc = DocumentBuffer::new(doc_id, PathBuf::from("stable.md"), "stable".to_string(), text, 1);
+        let mut view = EditorViewState::new(tab_id, doc_id);
 
         // The first build freezes the estimate basis; it sits at the top.
-        note.ensure_visual_cache(true, 80, 0);
-        assert_eq!(note.above_lines, 0, "the first window sits at the top");
-        assert!(note.below_lines > 0, "the note must be windowed");
-        let first = note.total_height();
+        view.ensure_visual_cache(&mut doc, true, 80, 0);
+        assert_eq!(view.above_lines, 0, "the first window sits at the top");
+        assert!(view.below_lines > 0, "the note must be windowed");
+        let first = view.total_height();
         assert!(first > 0.0);
 
         let mut worst = 0.0f64;
-        for anchor in (0..note.line_index.lines()).step_by(997) {
-            note.ensure_visual_cache(true, 80, anchor);
+        for anchor in (0..doc.line_index.lines()).step_by(997) {
+            view.ensure_visual_cache(&mut doc, true, 80, anchor);
             assert!(
-                note.window.covers_line(anchor),
+                view.window.covers_line(anchor),
                 "the window must hold its anchor {anchor}"
             );
-            let total = note.total_height();
+            let total = view.total_height();
             worst = worst.max((total - first).abs() / first);
         }
         assert!(
@@ -3592,13 +2771,16 @@ mod tests {
                 text.push_str(&format!("line {i}\n"));
             }
         }
-        let mut note = OpenedNote::new(PathBuf::from("caret.md"), "caret".to_string(), text, 1);
-        note.ensure_visual_cache(true, 80, 12_000);
+        let doc_id = DocumentId::new();
+        let tab_id = TabId::new();
+        let mut doc = DocumentBuffer::new(doc_id, PathBuf::from("caret.md"), "caret".to_string(), text, 1);
+        let mut view = EditorViewState::new(tab_id, doc_id);
+        view.ensure_visual_cache(&mut doc, true, 80, 12_000);
 
-        let rows = Arc::clone(&note.window.visual_rows);
-        let start = note.window.start_line;
-        let end = note.window.end_line;
-        assert!(start > 0 && end < note.line_index.lines(), "must be windowed");
+        let rows = Arc::clone(&view.window.visual_rows);
+        let start = view.window.start_line;
+        let end = view.window.end_line;
+        assert!(start > 0 && end < doc.line_index.lines(), "must be windowed");
 
         for line in (start..end).step_by(13) {
             let (v_idx, _) = crate::markdown::find_visual_row_for_cursor(&rows, line, 0)
@@ -3613,9 +2795,9 @@ mod tests {
             crate::markdown::find_visual_row_for_cursor(&rows, outside, 0).expect("clamped row");
         assert_eq!(v_idx, 0, "a line above the window clamps to its first row");
 
-        note.ensure_visual_cache(true, 80, outside);
-        assert!(note.window.covers_line(outside));
-        let rows = Arc::clone(&note.window.visual_rows);
+        view.ensure_visual_cache(&mut doc, true, 80, outside);
+        assert!(view.window.covers_line(outside));
+        let rows = Arc::clone(&view.window.visual_rows);
         let (v_idx, _) = crate::markdown::find_visual_row_for_cursor(&rows, outside, 0)
             .expect("row after re-placing the window");
         assert_eq!(rows[v_idx].line_idx, outside);
@@ -3637,21 +2819,24 @@ mod tests {
             text.push_str(&format!("let v{i} = {i};\n"));
         }
         text.push_str("```\ndone\n");
-        let mut note = OpenedNote::new(PathBuf::from("code.md"), "code".to_string(), text, 1);
+        let doc_id = DocumentId::new();
+        let tab_id = TabId::new();
+        let mut doc = DocumentBuffer::new(doc_id, PathBuf::from("code.md"), "code".to_string(), text, 1);
+        let mut view = EditorViewState::new(tab_id, doc_id);
 
-        note.ensure_visual_cache(true, 0, 100_000);
-        assert!(note.above_lines > 0, "the note must be windowed");
+        view.ensure_visual_cache(&mut doc, true, 0, 100_000);
+        assert!(view.above_lines > 0, "the note must be windowed");
 
-        let start = note.window.start_line;
+        let start = view.window.start_line;
         assert!(start > 2, "the window must start below the opening fence");
         assert!(
-            note.code_checkpoints.scanned_lines() > start,
+            doc.code_checkpoints.scanned_lines() > start,
             "the checkpoints must reach the window's first line"
         );
 
         // The state the window reports for its own first line is the checkpoint
         // state, not the default of a fresh scan.
-        let state = note
+        let state = view
             .window
             .code_state(start)
             .expect("the window's first line must be inside the code block");
@@ -3659,9 +2844,9 @@ mod tests {
         assert_eq!(state.block_id, 0);
 
         // And so is the line of the first row actually painted.
-        let first_line = note.window.visual_rows.first().unwrap().line_idx;
+        let first_line = view.window.visual_rows.first().unwrap().line_idx;
         assert_eq!(
-            note.window.code_state(first_line).map(|s| s.kind),
+            view.window.code_state(first_line).map(|s| s.kind),
             Some(CodeBlockKind::InsideCode)
         );
     }
@@ -3677,10 +2862,13 @@ mod tests {
             text.push_str(&format!("body {i}\n"));
         }
         text.push_str("```\n");
-        let mut note = OpenedNote::new(PathBuf::from("cp.md"), "cp".to_string(), text, 1);
-        note.ensure_visual_cache(true, 0, 15_000);
-        let start = note.window.start_line;
-        let scanned = note.code_checkpoints.scanned_lines();
+        let doc_id = DocumentId::new();
+        let tab_id = TabId::new();
+        let mut doc = DocumentBuffer::new(doc_id, PathBuf::from("cp.md"), "cp".to_string(), text, 1);
+        let mut view = EditorViewState::new(tab_id, doc_id);
+        view.ensure_visual_cache(&mut doc, true, 0, 15_000);
+        let start = view.window.start_line;
+        let scanned = doc.code_checkpoints.scanned_lines();
         assert!(
             scanned >= start + 1,
             "the scan must reach the window's first line"
@@ -3688,23 +2876,23 @@ mod tests {
 
         // Type a character deep inside the block.
         let edit_line = 10_000usize;
-        note.cursor_offset = note.line_start_byte(edit_line) + 3;
-        note.insert_text("X");
+        view.cursor_offset = doc.line_start_byte(edit_line) + 3;
+        view.insert_text(&mut doc, "X");
 
         let kept =
             (edit_line / crate::code_scan::CHECKPOINT_LINES) * crate::code_scan::CHECKPOINT_LINES;
         assert_eq!(
-            note.code_checkpoints.scanned_lines(),
+            doc.code_checkpoints.scanned_lines(),
             kept,
             "the checkpoints must be truncated exactly at the edit's checkpoint"
         );
         assert!(kept > 0 && kept < scanned, "the prefix must survive");
 
         // And the window still resolves its code state after the edit.
-        note.ensure_visual_cache(true, 0, 15_000);
-        let start = note.window.start_line;
+        view.ensure_visual_cache(&mut doc, true, 0, 15_000);
+        let start = view.window.start_line;
         assert_eq!(
-            note.window.code_state(start).map(|s| s.kind),
+            view.window.code_state(start).map(|s| s.kind),
             Some(CodeBlockKind::InsideCode)
         );
     }
@@ -3753,82 +2941,90 @@ mod tests {
 
     #[test]
     fn test_opened_note_utf8_cyrillic_typing_and_line_col() {
-        let mut note = OpenedNote::new(
+        let doc_id = DocumentId::new();
+        let tab_id = TabId::new();
+        let mut doc = DocumentBuffer::new(
+            doc_id,
             PathBuf::from("test.md"),
             "test".to_string(),
             "# Заметка\n".to_string(),
             1,
         );
-        note.ensure_visual_cache(true, 80, 0);
+        let mut view = EditorViewState::new(tab_id, doc_id);
+        view.ensure_visual_cache(&mut doc, true, 80, 0);
 
         // Move cursor to the end of the first line
-        note.cursor_offset = note.content.len();
+        view.cursor_offset = doc.content().len();
 
         let russian_text = "Привет мир! Это тестовая строка на русском языке.";
         for ch in russian_text.chars() {
             let mut s = String::new();
             s.push(ch);
-            note.insert_text(&s);
-            assert!(note.visual_cache_dirty);
+            view.insert_text(&mut doc, &s);
+            assert!(view.visual_cache_dirty);
 
             // Crucial: line_col() must not panic while visual_cache_dirty is true
-            let (line, col) = note.line_col();
+            let (line, col) = view.line_col(&doc);
             assert_eq!(line, 1);
             // col should match number of characters on line 1
-            let expected_col = note.content.split('\n').nth(1).unwrap().chars().count();
+            let expected_col = doc.content().split('\n').nth(1).unwrap().chars().count();
             assert_eq!(col, expected_col);
         }
 
         // Backspace test with multi-byte characters
         for _ in 0..10 {
-            note.delete_backwards();
-            let (line, col) = note.line_col();
+            view.delete_backwards(&mut doc);
+            let (line, col) = view.line_col(&doc);
             assert_eq!(line, 1);
-            let expected_col = note.content.split('\n').nth(1).unwrap().chars().count();
+            let expected_col = doc.content().split('\n').nth(1).unwrap().chars().count();
             assert_eq!(col, expected_col);
         }
 
         // Move cursor left and delete forwards
-        note.cursor_offset = note.content.len().saturating_sub(6); // inside Cyrillic text
-        while !note.content.is_char_boundary(note.cursor_offset) {
-            note.cursor_offset -= 1;
+        view.cursor_offset = doc.content().len().saturating_sub(6); // inside Cyrillic text
+        while !doc.content().is_char_boundary(view.cursor_offset) {
+            view.cursor_offset -= 1;
         }
-        note.delete_forwards();
-        let _ = note.line_col();
+        view.delete_forwards(&mut doc);
+        let _ = view.line_col(&doc);
 
         // Selection across multi-byte characters
-        note.selection_anchor = Some(2); // inside "# Заметка"
-        let range = note.selection_range();
+        view.selection_anchor = Some(2); // inside "# Заметка"
+        let range = view.selection_range(doc.content().len());
         assert!(range.is_some());
         let range = range.unwrap();
-        assert!(note.content.is_char_boundary(range.start));
-        assert!(note.content.is_char_boundary(range.end));
-        let selected = note.selected_text();
+        assert!(doc.content().is_char_boundary(range.start));
+        assert!(doc.content().is_char_boundary(range.end));
+        let selected = view.selected_text(&doc);
         assert!(selected.is_some());
 
         // Test with exact template from create_note_in_folder: "# Без названия\n\n"
-        let mut new_note = OpenedNote::new(
+        let doc_id2 = DocumentId::new();
+        let tab_id2 = TabId::new();
+        let mut new_doc = DocumentBuffer::new(
+            doc_id2,
             PathBuf::from("Без названия.md"),
             "Без названия".to_string(),
             "# Без названия\n\n".to_string(),
             1,
         );
-        new_note.ensure_visual_cache(true, 80, 0);
-        new_note.cursor_offset = new_note.content.len();
+        let mut new_view = EditorViewState::new(tab_id2, doc_id2);
+        new_view.ensure_visual_cache(&mut new_doc, true, 80, 0);
+        new_view.cursor_offset = new_doc.content().len();
 
         // Type text containing 'ё' and other Cyrillic characters
         let sample = "Привет, моё солнышко! Ещё одна заметка.";
         for ch in sample.chars() {
             let mut s = String::new();
             s.push(ch);
-            new_note.insert_text(&s);
-            let _ = new_note.line_col();
+            new_view.insert_text(&mut new_doc, &s);
+            let _ = new_view.line_col(&new_doc);
         }
 
         // Backspace every character one by one
         for _ in 0..sample.chars().count() {
-            new_note.delete_backwards();
-            let _ = new_note.line_col();
+            new_view.delete_backwards(&mut new_doc);
+            let _ = new_view.line_col(&new_doc);
         }
     }
 
@@ -3875,26 +3071,31 @@ mod tests {
     }
 
     #[test]
-    fn test_opened_note_version_increments() {
-        let mut note = OpenedNote::new(
+    fn test_document_buffer_version_increments() {
+        let doc_id = DocumentId::new();
+        let tab_id = TabId::new();
+        let mut doc = DocumentBuffer::new(
+            doc_id,
             PathBuf::from("test.md"),
             "test".to_string(),
             "initial".to_string(),
             0,
         );
-        assert_eq!(note.version, 0);
+        let mut view = EditorViewState::new(tab_id, doc_id);
+        assert_eq!(doc.version, 0);
 
-        note.insert_text(" text");
-        assert_eq!(note.version, 1);
+        view.cursor_offset = doc.content().len();
+        view.insert_text(&mut doc, " text");
+        assert_eq!(doc.version, 1);
 
-        note.delete_backwards();
-        assert_eq!(note.version, 2);
+        view.delete_backwards(&mut doc);
+        assert_eq!(doc.version, 2);
 
-        note.undo();
-        assert_eq!(note.version, 3);
+        view.undo(&mut doc);
+        assert_eq!(doc.version, 3);
 
-        note.redo();
-        assert_eq!(note.version, 4);
+        view.redo(&mut doc);
+        assert_eq!(doc.version, 4);
     }
 
     #[test]
@@ -3909,13 +3110,35 @@ mod tests {
         let commands = Arc::new(crate::commands::CommandRegistry::new());
         let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
 
-        let mut note = OpenedNote::new(
+        let doc_id = DocumentId::new();
+        let tab_id = TabId::new();
+        let default_leaf_id = LeafId::new();
+        let doc = DocumentBuffer::new(
+            doc_id,
             temp_dir.join("Note1.md"),
             "Note1".into(),
             "content 1".into(),
             42,
         );
-        note.version = 42;
+        let view = EditorViewState::new(tab_id, doc_id);
+        let mut leaf = LeafState::new(default_leaf_id);
+        leaf.tabs.push(crate::workspace::Tab {
+            id: tab_id,
+            content: crate::workspace::TabContent::Document { id: doc_id },
+            pinned: false,
+        });
+        leaf.active_tab_index = 0;
+
+        let mut documents = HashMap::new();
+        let mut by_path = HashMap::new();
+        by_path.insert(doc.path.clone(), doc_id);
+        documents.insert(doc_id, doc);
+
+        let mut views = HashMap::new();
+        views.insert(tab_id, view);
+
+        let mut leaves = HashMap::new();
+        leaves.insert(default_leaf_id, leaf);
 
         let state = AppState {
             settings: Arc::new(crate::settings::SettingsManager::new(&temp_dir)),
@@ -3932,7 +3155,6 @@ mod tests {
             file_tree: Vec::new(),
             expanded_folders: HashSet::new(),
             search_query: String::new(),
-            active_note: Some(note),
             open_tabs: Vec::new(),
             active_empty_tab: None,
             nav_history: Vec::new(),
@@ -3941,14 +3163,11 @@ mod tests {
             session: SessionState::default(),
             note_states: HashMap::new(),
             known_vaults: Vec::new(),
-            documents: HashMap::new(),
-            by_path: HashMap::new(),
-            workspace: {
-                let default_leaf_id = LeafId::new();
-                WorkspaceTree::new_single_leaf(default_leaf_id)
-            },
-            leaves: HashMap::new(),
-            views: HashMap::new(),
+            documents,
+            by_path,
+            workspace: WorkspaceTree::new_single_leaf(default_leaf_id),
+            leaves,
+            views,
         };
 
         state.publish_snapshot();
@@ -3965,41 +3184,41 @@ mod tests {
 
     #[test]
     fn text_stats_exact_for_small_and_cached() {
-        let mut note = OpenedNote::new(
+        let doc_id = DocumentId::new();
+        let mut doc = DocumentBuffer::new(
+            doc_id,
             PathBuf::from("test.md"),
             "test".to_string(),
             String::new(),
             1,
         );
-        note.content = "hello  world\nтест".to_string();
-        note.version += 1;
-        note.refresh_line_index(None);
-        assert_eq!(note.text_stats(), TextStats::Exact { words: 3, chars: 17 });
+        doc.reload("hello  world\nтест".to_string());
+        assert_eq!(doc.text_stats(), TextStats::Exact { words: 3, chars: 17 });
 
         // The cache must return the same value without recomputing.
-        let first = note.stats_cache.get();
-        let _ = note.text_stats();
-        assert_eq!(note.stats_cache.get(), first);
+        let first = doc.stats_cache.get();
+        let _ = doc.text_stats();
+        assert_eq!(doc.stats_cache.get(), first);
 
         // Editing the text invalidates the cache.
-        note.content.push_str(" ещё");
-        note.version += 1;
-        note.refresh_line_index(None);
-        assert_eq!(note.text_stats(), TextStats::Exact { words: 4, chars: 21 });
+        let mut text = doc.content().to_string();
+        text.push_str(" ещё");
+        doc.reload(text);
+        assert_eq!(doc.text_stats(), TextStats::Exact { words: 4, chars: 21 });
     }
 
     #[test]
     fn text_stats_large_skips_exact_count() {
-        let mut note = OpenedNote::new(
+        let doc_id = DocumentId::new();
+        let mut doc = DocumentBuffer::new(
+            doc_id,
             PathBuf::from("test.md"),
             "test".to_string(),
             String::new(),
             1,
         );
-        note.content = "a ".repeat(TEXT_STATS_EXACT_LIMIT); // 4 MB > limit
-        note.version += 1;
-        note.refresh_line_index(None);
-        assert!(matches!(note.text_stats(), TextStats::Large { .. }));
+        doc.reload("a ".repeat(TEXT_STATS_EXACT_LIMIT)); // 4 MB > limit
+        assert!(matches!(doc.text_stats(), TextStats::Large { .. }));
     }
 
     #[test]
@@ -4008,24 +3227,28 @@ mod tests {
         for i in 0..40_000 {
             text.push_str(&format!("line {i}\n"));
         }
-        let mut note = OpenedNote::new(
+        let doc_id = DocumentId::new();
+        let tab_id = TabId::new();
+        let mut doc = DocumentBuffer::new(
+            doc_id,
             PathBuf::from("big.md"),
             "big".to_string(),
             text,
             1,
         );
-        note.ensure_visual_cache(false, 0, 20_000);
+        let mut view = EditorViewState::new(tab_id, doc_id);
+        view.ensure_visual_cache(&mut doc, false, 0, 20_000);
 
-        let total_lines = note.line_index.lines();
+        let total_lines = doc.line_index.lines();
         assert_eq!(total_lines, 40_001);
 
-        let y_start = note.doc_y_of_line(0);
-        let y_before = note.doc_y_of_line(100);
-        let y_window_start = note.doc_y_of_line(note.window.start_line);
-        let y_middle = note.doc_y_of_line(20_000);
-        let y_window_end = note.doc_y_of_line(note.window.end_line);
-        let y_after = note.doc_y_of_line(35_000);
-        let y_end = note.doc_y_of_line(40_000);
+        let y_start = view.doc_y_of_line(total_lines, 0);
+        let y_before = view.doc_y_of_line(total_lines, 100);
+        let y_window_start = view.doc_y_of_line(total_lines, view.window.start_line);
+        let y_middle = view.doc_y_of_line(total_lines, 20_000);
+        let y_window_end = view.doc_y_of_line(total_lines, view.window.end_line);
+        let y_after = view.doc_y_of_line(total_lines, 35_000);
+        let y_end = view.doc_y_of_line(total_lines, 40_000);
 
         assert_eq!(y_start, 0.0);
         assert!(y_before > y_start);
@@ -4034,7 +3257,7 @@ mod tests {
         assert!(y_window_end > y_middle);
         assert!(y_after > y_window_end);
         assert!(y_end > y_after);
-        assert!(y_end <= note.total_height());
+        assert!(y_end <= view.total_height());
     }
 
     #[test]
@@ -4043,39 +3266,43 @@ mod tests {
         for i in 0..50_000 {
             text.push_str(&format!("line {i}\n"));
         }
-        let mut note = OpenedNote::new(
+        let doc_id = DocumentId::new();
+        let tab_id = TabId::new();
+        let mut doc = DocumentBuffer::new(
+            doc_id,
             PathBuf::from("big.md"),
             "big".to_string(),
             text,
             1,
         );
+        let mut view = EditorViewState::new(tab_id, doc_id);
         let initial_anchor = 25_000;
-        note.ensure_visual_cache(false, 0, initial_anchor);
+        view.ensure_visual_cache(&mut doc, false, 0, initial_anchor);
 
-        let initial_start = note.window.start_line;
-        let initial_above_lines = note.above_lines;
-        let initial_above_h = note.above_h;
+        let initial_start = view.window.start_line;
+        let initial_above_lines = view.above_lines;
+        let initial_above_h = view.above_h;
 
         // Position cursor at line 25,100
-        let offset = note.offset_for_line_col(25_100, 4);
-        note.cursor_offset = offset;
+        let offset = view.offset_for_line_col(&doc, 25_100, 4);
+        view.cursor_offset = offset;
 
         // Type characters repeatedly with slight anchor perturbations within slack
         for i in 0..20 {
-            note.insert_text("a");
+            view.insert_text(&mut doc, "a");
             let perturbed_anchor = initial_anchor + (i % 5);
-            note.ensure_visual_cache(false, 0, perturbed_anchor);
+            view.ensure_visual_cache(&mut doc, false, 0, perturbed_anchor);
 
             assert_eq!(
-                note.window.start_line, initial_start,
+                view.window.start_line, initial_start,
                 "window start_line must remain rock-solid during typing"
             );
             assert_eq!(
-                note.above_lines, initial_above_lines,
+                view.above_lines, initial_above_lines,
                 "above_lines must remain rock-solid during typing"
             );
             assert_eq!(
-                note.above_h, initial_above_h,
+                view.above_h, initial_above_h,
                 "above_h must remain rock-solid during typing"
             );
         }
@@ -4181,12 +3408,12 @@ mod tests {
         state.workspace_path = Some(ws_path.clone());
         state.open_note(note_path.clone());
 
-        // 1. Text is owned by active_note, not duplicated in DocumentBuffer.content
-        assert!(state.active_note.is_some());
-        assert_eq!(state.active_note.as_ref().unwrap().content, "sample text content");
+        // 1. Text is owned by DocumentBuffer.content
+        assert!(state.active_document().is_some());
+        assert_eq!(state.active_document().unwrap().content(), "sample text content");
         let doc_id = state.find_document_by_path(&note_path).unwrap();
         let doc = state.documents.get(&doc_id).unwrap();
-        assert!(doc.content().is_empty());
+        assert_eq!(doc.content(), "sample text content");
         assert_eq!(doc.line_index.lines(), 1);
 
         // 2. Closing the tab unloads DocumentBuffer from documents and by_path
@@ -4224,27 +3451,26 @@ mod tests {
         let doc1_id = state.find_document_by_path(&note1_path).unwrap();
 
         // Populate checkpoints in Note 1
-        if let Some(ref mut note) = state.active_note {
-            note.scan_code_ahead(100);
-            assert!(note.code_checkpoints.scanned_lines() > 0);
+        if let Some(doc) = state.active_document_mut() {
+            doc.scan_code_ahead(100);
+            assert!(doc.code_checkpoints.scanned_lines() > 0);
         }
-        let note1_scanned = state.active_note.as_ref().unwrap().code_checkpoints.scanned_lines();
+        let note1_scanned = state.active_document().unwrap().code_checkpoints.scanned_lines();
 
         // 2. Open Note 2
         state.open_note(note2_path.clone());
         let doc2_id = state.find_document_by_path(&note2_path).unwrap();
 
         // Active note is now Note 2
-        assert_eq!(state.active_note.as_ref().unwrap().path, note2_path);
-        // Note 1 in state.documents must hold the stashed text, but Note 1 is NOT duplicated
-        // (state.active_note holds Note 2)
+        assert_eq!(state.active_document().unwrap().path, note2_path);
+        // Note 1 in state.documents holds its text
         let doc1 = state.documents.get(&doc1_id).unwrap();
         assert_eq!(doc1.content(), content1);
         assert_eq!(doc1.line_index.lines(), 6);
         assert_eq!(doc1.code_checkpoints.scanned_lines(), note1_scanned);
-        // Note 2 in state.documents has empty content because active_note holds it directly
+        // Note 2 in state.documents also holds its text
         let doc2 = state.documents.get(&doc2_id).unwrap();
-        assert!(doc2.content().is_empty());
+        assert_eq!(doc2.content(), content2);
 
         let _ = std::fs::remove_dir_all(&ws_path);
     }
@@ -4277,9 +3503,9 @@ mod tests {
 
         // Exactly one document buffer exists in state.documents
         assert_eq!(state.documents.len(), 1);
-        // While active, doc.content() in documents is empty because active_note holds it
-        assert!(state.documents.get(&doc_id).unwrap().content().is_empty());
-        assert_eq!(state.active_note.as_ref().unwrap().content, content);
+        // While active, doc.content() in documents holds the content
+        assert_eq!(state.documents.get(&doc_id).unwrap().content(), content);
+        assert_eq!(state.active_document().unwrap().content(), content);
 
         // 2. Create Pane 2 (split leaf1 to the right)
         let leaf2 = crate::workspace::LeafId::new();
@@ -4294,9 +3520,9 @@ mod tests {
         let doc_id_after = state.find_document_by_path(&note_path).unwrap();
         assert_eq!(doc_id, doc_id_after);
 
-        // Active note in leaf2 holds the content, buffer in state.documents is empty
-        assert_eq!(state.active_note.as_ref().unwrap().content, content);
-        assert!(state.documents.get(&doc_id).unwrap().content().is_empty());
+        // Active note in leaf2 holds the content, buffer in state.documents also holds the content
+        assert_eq!(state.active_document().unwrap().content(), content);
+        assert_eq!(state.documents.get(&doc_id).unwrap().content(), content);
 
         // Both leaves point to the SAME doc_id
         let l1_tab = state.leaves.get(&leaf1).unwrap().active_tab().unwrap();
@@ -4332,18 +3558,18 @@ mod tests {
         state.open_note(note1_path.clone());
         let leaf = state.workspace.active_leaf;
         assert_eq!(state.leaves.get(&leaf).unwrap().tabs.len(), 1);
-        assert_eq!(state.active_note.as_ref().unwrap().path, note1_path);
+        assert_eq!(state.active_document().unwrap().path, note1_path);
 
         state.open_note(note2_path.clone());
         assert_eq!(state.leaves.get(&leaf).unwrap().tabs.len(), 2);
         assert_eq!(state.leaves.get(&leaf).unwrap().active_tab_index, 1);
-        assert_eq!(state.active_note.as_ref().unwrap().path, note2_path);
+        assert_eq!(state.active_document().unwrap().path, note2_path);
 
         let closed = state.close_leaf_tab(leaf, 1);
         assert_eq!(closed, Some(note2_path.clone()));
         assert_eq!(state.leaves.get(&leaf).unwrap().tabs.len(), 1);
         assert_eq!(state.leaves.get(&leaf).unwrap().active_tab_index, 0);
-        assert!(state.active_note.is_none());
+        assert_eq!(state.active_document().unwrap().path, note1_path);
 
         let doc1_id = state.find_document_by_path(&note1_path).unwrap();
         let doc1 = state.documents.get(&doc1_id).unwrap();
@@ -4679,7 +3905,7 @@ mod tests {
         assert_eq!(snap_after.by_path_count, 0);
         assert_eq!(snap_after.document_bytes, 0);
         assert_eq!(snap_after.open_tabs_count, 0);
-        assert!(state.active_note.is_none());
+        assert!(state.active_document().is_none());
         assert!(!state.open_tabs.contains(&note_path));
         assert!(!state.session.open_tabs.contains(&note_path));
         assert!(!state.nav_history.contains(&note_path));
@@ -4702,9 +3928,6 @@ mod tests {
         // Mark document as dirty
         let doc_id = state.find_document_by_path(&note_path).unwrap();
         state.documents.get_mut(&doc_id).unwrap().is_dirty = true;
-        if let Some(ref mut n) = state.active_note {
-            n.is_dirty = true;
-        }
 
         // When keep_if_dirty is true, should NOT close the tab
         let closed = state.handle_file_deleted(&note_path, true);
@@ -4767,9 +3990,9 @@ mod tests {
         // Verify open_tabs and active_note updated
         assert!(state.open_tabs.contains(&new_path));
         assert!(!state.open_tabs.contains(&old_path));
-        if let Some(ref note) = state.active_note {
-            assert_eq!(note.path, new_path);
-            assert_eq!(note.title, "renamed");
+        if let Some(doc) = state.active_document() {
+            assert_eq!(doc.path, new_path);
+            assert_eq!(doc.title, "renamed");
         }
 
         let _ = std::fs::remove_dir_all(&ws_path);
@@ -4824,50 +4047,377 @@ mod tests {
     }
 
     #[test]
-    fn test_view_shell_preserves_text_stats() {
+    fn test_document_buffer_preserves_text_stats() {
         let stats = TextStats::Large { bytes: 354 * 1024 * 1024 };
-        let shell = OpenedNote::new_view_shell(
+        let doc_id = DocumentId::new();
+        let doc = DocumentBuffer::new(
+            doc_id,
             PathBuf::from("/test/file.md"),
             "file".to_string(),
+            String::new(),
             1,
-            0,
-            None,
-            false,
-            None,
-            crate::line_index::LineIndex::empty(),
-            crate::editor_window::EditorWindow::default(),
-            0,
-            0,
-            0.0,
-            0.0,
-            1.0,
-            24.0,
-            Some(stats),
         );
-
-        assert_eq!(shell.text_stats(), stats);
+        doc.stats_cache.set(Some((1, stats)));
+        assert_eq!(doc.text_stats(), stats);
 
         let small_stats = TextStats::Exact { words: 123, chars: 456 };
-        let small_shell = OpenedNote::new_view_shell(
+        let doc_id2 = DocumentId::new();
+        let small_doc = DocumentBuffer::new(
+            doc_id2,
             PathBuf::from("/test/small.md"),
             "small".to_string(),
+            String::new(),
             1,
-            0,
-            None,
-            false,
-            None,
-            crate::line_index::LineIndex::empty(),
-            crate::editor_window::EditorWindow::default(),
-            0,
-            0,
-            0.0,
-            0.0,
-            1.0,
-            24.0,
-            Some(small_stats),
+        );
+        small_doc.stats_cache.set(Some((1, small_stats)));
+        assert_eq!(small_doc.text_stats(), small_stats);
+    }
+
+    #[test]
+    fn test_stage2_two_phase_close_with_title_commit_and_flush() {
+        let temp_dir = std::env::temp_dir().join(format!("vibe_stage2_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let note_path = temp_dir.join("Note1.md");
+        std::fs::write(&note_path, "Initial text").unwrap();
+
+        let mut state = AppState::new();
+        state.open_tabs.clear();
+        state.documents.clear();
+        state.by_path.clear();
+        state.views.clear();
+        state.leaves.clear();
+        let root_leaf = LeafId::new();
+        state.leaves.insert(root_leaf, LeafState::new(root_leaf));
+        state.workspace.root = crate::workspace::WorkspaceNode::Leaf { id: root_leaf };
+        state.workspace.active_leaf = root_leaf;
+        state.workspace_path = Some(temp_dir.clone());
+
+        state.open_note(note_path.clone());
+
+        let leaf_id = state.workspace.active_leaf;
+        let active_idx = state.leaves.get(&leaf_id).unwrap().active_tab_index;
+        let tab_id = state.leaves.get(&leaf_id).unwrap().tabs[active_idx].id;
+        let doc_id = state.find_document_by_path(&note_path).unwrap();
+
+        // 1. Enter title edit mode
+        if let Some(view) = state.views.get_mut(&tab_id) {
+            view.title_input = Some(crate::workspace::TitleInput::new("RenamedNote".to_string()));
+        }
+
+        // 2. Make document dirty
+        if let Some(doc) = state.documents.get_mut(&doc_id) {
+            doc.apply_edit(0, 0, "Modified ", None, 0, 9);
+            assert!(doc.is_dirty);
+        }
+
+        // 3. Request close: should produce CommitTitle and FlushDoc effects
+        let (req_tab_id, req) = state.request_close_leaf_tab(leaf_id, active_idx).unwrap();
+        assert_eq!(req_tab_id, tab_id);
+        match req {
+            crate::workspace::CloseRequest::NeedsEffects(effects) => {
+                assert_eq!(effects.len(), 2);
+                assert!(matches!(effects[0], crate::workspace::CloseEffect::CommitTitle { .. }));
+                assert!(matches!(effects[1], crate::workspace::CloseEffect::FlushDoc(_)));
+
+                // Attempting finish_close before running effects must fail
+                assert!(state.finish_close_leaf_tab(leaf_id, active_idx).is_err());
+
+                // Run each effect
+                for eff in &effects {
+                    state.run_close_effect(eff).unwrap();
+                }
+            }
+            crate::workspace::CloseRequest::Ready => panic!("Expected NeedsEffects"),
+        }
+
+        // 4. Now finish_close must succeed and document is clean on disk
+        let closed = state.finish_close_leaf_tab(leaf_id, active_idx).unwrap();
+        assert!(closed.is_some());
+        assert!(!state.documents.contains_key(&doc_id));
+
+        let renamed_path = temp_dir.join("RenamedNote.md");
+        assert!(renamed_path.exists());
+        let saved_text = std::fs::read_to_string(&renamed_path).unwrap();
+        assert_eq!(saved_text, "Modified Initial text");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_stage2_multi_tab_shared_doc_flush_only_on_last() {
+        let temp_dir = std::env::temp_dir().join(format!("vibe_stage2_multi_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let note_path = temp_dir.join("Shared.md");
+        std::fs::write(&note_path, "Base content").unwrap();
+
+        let mut state = AppState::new();
+        state.open_tabs.clear();
+        state.documents.clear();
+        state.by_path.clear();
+        state.views.clear();
+        state.leaves.clear();
+        let root_leaf = LeafId::new();
+        state.leaves.insert(root_leaf, LeafState::new(root_leaf));
+        state.workspace.root = crate::workspace::WorkspaceNode::Leaf { id: root_leaf };
+        state.workspace.active_leaf = root_leaf;
+        state.workspace_path = Some(temp_dir.clone());
+
+        state.open_note(note_path.clone());
+
+        let leaf1 = state.workspace.active_leaf;
+        let doc_id = state.find_document_by_path(&note_path).unwrap();
+
+        // Create second split with same document
+        let leaf2 = LeafId::new();
+        state.workspace.split_leaf(leaf1, crate::workspace::SplitDirection::Row, leaf2);
+        let mut l2 = LeafState::new(leaf2);
+        let tab2 = crate::workspace::Tab::new_document(doc_id);
+        let tab2_id = tab2.id;
+        l2.tabs.push(tab2);
+        l2.active_tab_index = 0;
+        state.leaves.insert(leaf2, l2);
+        state.views.insert(tab2_id, crate::workspace::EditorViewState::new(tab2_id, doc_id));
+
+        // Make doc dirty
+        if let Some(doc) = state.documents.get_mut(&doc_id) {
+            doc.apply_edit(0, 0, "Dirty ", None, 0, 6);
+            assert!(doc.is_dirty);
+        }
+
+        // Closing tab in leaf1 is NOT the last tab, so FlushDoc must NOT be required
+        let active1 = state.leaves.get(&leaf1).unwrap().active_tab_index;
+        let (_, req1) = state.request_close_leaf_tab(leaf1, active1).unwrap();
+        assert_eq!(req1, crate::workspace::CloseRequest::Ready);
+        let closed1 = state.close_leaf_tab(leaf1, active1);
+        assert_eq!(closed1, None, "Doc must NOT be unloaded while tab2 is open");
+        assert!(state.documents.contains_key(&doc_id));
+        assert!(state.documents.get(&doc_id).unwrap().is_dirty);
+
+        // Closing tab in leaf2 IS the last tab: FlushDoc must be required and executed
+        let active2 = state.leaves.get(&leaf2).unwrap().active_tab_index;
+        let (_, req2) = state.request_close_leaf_tab(leaf2, active2).unwrap();
+        match req2 {
+            crate::workspace::CloseRequest::NeedsEffects(effects) => {
+                assert_eq!(effects.len(), 1);
+                assert!(matches!(effects[0], crate::workspace::CloseEffect::FlushDoc(_)));
+            }
+            crate::workspace::CloseRequest::Ready => panic!("Expected FlushDoc for last dirty tab"),
+        }
+
+        let closed2 = state.close_leaf_tab(leaf2, active2);
+        assert!(closed2.is_some());
+        assert!(!state.documents.contains_key(&doc_id));
+
+        let disk_content = std::fs::read_to_string(&note_path).unwrap();
+        assert_eq!(disk_content, "Dirty Base content");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_stage2_save_dirty_documents_flushes_all_dirty() {
+        let temp_dir = std::env::temp_dir().join(format!("vibe_stage2_dirty_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let note1 = temp_dir.join("NoteA.md");
+        let note2 = temp_dir.join("NoteB.md");
+        std::fs::write(&note1, "A").unwrap();
+        std::fs::write(&note2, "B").unwrap();
+
+        let mut state = AppState::new();
+        state.open_tabs.clear();
+        state.documents.clear();
+        state.by_path.clear();
+        state.views.clear();
+        state.leaves.clear();
+        let root_leaf = LeafId::new();
+        state.leaves.insert(root_leaf, LeafState::new(root_leaf));
+        state.workspace.root = crate::workspace::WorkspaceNode::Leaf { id: root_leaf };
+        state.workspace.active_leaf = root_leaf;
+        state.workspace_path = Some(temp_dir.clone());
+
+        state.open_note(note1.clone());
+        state.open_note(note2.clone());
+
+        let doc_id1 = state.find_document_by_path(&note1).unwrap();
+        let doc_id2 = state.find_document_by_path(&note2).unwrap();
+
+        state.documents.get_mut(&doc_id1).unwrap().apply_edit(0, 0, "Saved ", None, 0, 6);
+        state.documents.get_mut(&doc_id2).unwrap().apply_edit(0, 0, "Saved ", None, 0, 6);
+
+        assert!(state.documents.get(&doc_id1).unwrap().is_dirty);
+        assert!(state.documents.get(&doc_id2).unwrap().is_dirty);
+
+        state.save_dirty_documents();
+
+        assert!(!state.documents.get(&doc_id1).unwrap().is_dirty);
+        assert!(!state.documents.get(&doc_id2).unwrap().is_dirty);
+        assert_eq!(std::fs::read_to_string(&note1).unwrap(), "Saved A");
+        assert_eq!(std::fs::read_to_string(&note2).unwrap(), "Saved B");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_stage3_multi_split_viewport_stability_when_editing_in_other_split() {
+        let temp_dir = std::env::temp_dir().join(format!("vibe_stage3_vp_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let note_path = temp_dir.join("Doc.md");
+
+        let mut content = String::new();
+        for i in 0..500 {
+            content.push_str(&format!("Line {i}\n"));
+        }
+        std::fs::write(&note_path, &content).unwrap();
+
+        let mut state = AppState::new();
+        state.open_tabs.clear();
+        state.documents.clear();
+        state.by_path.clear();
+        state.views.clear();
+        state.leaves.clear();
+        let leaf1 = LeafId::new();
+        state.leaves.insert(leaf1, LeafState::new(leaf1));
+        state.workspace.root = crate::workspace::WorkspaceNode::Leaf { id: leaf1 };
+        state.workspace.active_leaf = leaf1;
+        state.workspace_path = Some(temp_dir.clone());
+
+        // Open note in leaf 1
+        state.open_note(note_path.clone());
+        let doc_id = state.find_document_by_path(&note_path).unwrap();
+        let tab1_id = state.leaves.get(&leaf1).unwrap().active_tab().unwrap().id;
+
+        // Create second split (leaf 2) with the same document
+        let leaf2 = LeafId::new();
+        state.workspace.split_leaf(leaf1, crate::workspace::SplitDirection::Row, leaf2);
+        let mut l2 = LeafState::new(leaf2);
+        let tab2 = crate::workspace::Tab::new_document(doc_id);
+        let tab2_id = tab2.id;
+        l2.tabs.push(tab2);
+        l2.active_tab_index = 0;
+        state.leaves.insert(leaf2, l2);
+
+        let mut view2 = crate::workspace::EditorViewState::new(tab2_id, doc_id);
+        // Anchor view 2 at line 200
+        view2.viewport.offset = 200;
+        view2.viewport.px_in_line = 4.0;
+        {
+            let doc = state.documents.get_mut(&doc_id).unwrap();
+            view2.ensure_visual_cache(doc, false, 0, 200);
+        }
+        let initial_local_scroll2 = view2.scroll_top - view2.above_h;
+        state.views.insert(tab2_id, view2);
+
+        // Active split is leaf 1. Place cursor at start of line 0 and insert 5 new lines
+        state.workspace.active_leaf = leaf1;
+        if let Some(v1) = state.views.get_mut(&tab1_id) {
+            v1.cursor_offset = 0;
+        }
+
+        state.active_insert_text("New1\nNew2\nNew3\nNew4\nNew5\n");
+
+        // Split 2 must have had its anchor line shifted by exactly 5 lines (200 -> 205)
+        let view2_after = state.views.get(&tab2_id).unwrap();
+        assert_eq!(view2_after.viewport.offset, 205, "Anchor line in Split 2 must shift by 5 lines");
+
+        // Split 2's local scroll (visible text position) must remain 100% UNCHANGED (zero jump!)
+        let local_scroll2_after = view2_after.scroll_top - view2_after.above_h;
+        assert_eq!(
+            local_scroll2_after, initial_local_scroll2,
+            "Visible text position in Split 2 must NOT jump when editing in Split 1 above it"
         );
 
-        assert_eq!(small_shell.text_stats(), small_stats);
+        // Undo in Split 1
+        assert!(state.active_undo());
+
+        // Split 2 must have its anchor restored to 200
+        let view2_after_undo = state.views.get(&tab2_id).unwrap();
+        assert_eq!(view2_after_undo.viewport.offset, 200, "Anchor line in Split 2 must restore to 200 after undo");
+        let local_scroll2_after_undo = view2_after_undo.scroll_top - view2_after_undo.above_h;
+        assert_eq!(local_scroll2_after_undo, initial_local_scroll2);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_stage3_splitter_drag_updates_leaf_bounds_without_invalidating_unrelated() {
+        let mut state = AppState::new();
+        state.leaves.clear();
+
+        let l1 = LeafId::new();
+        let l2 = LeafId::new();
+        let l3 = LeafId::new();
+
+        state.leaves.insert(l1, LeafState::new(l1));
+        state.leaves.insert(l2, LeafState::new(l2));
+        state.leaves.insert(l3, LeafState::new(l3));
+
+        // Layout: Split(Row, [l1, Split(Column, [l2, l3])])
+        state.workspace.root = crate::workspace::WorkspaceNode::Leaf { id: l1 };
+        state.workspace.split_leaf(l1, crate::workspace::SplitDirection::Row, l2);
+        state.workspace.split_leaf(l2, crate::workspace::SplitDirection::Column, l3);
+
+        // Update bounds for 1200x800 window
+        state.update_leaf_bounds_from_layout(1200.0, 800.0, 44.0, 0.0);
+
+        let b1 = state.leaves.get(&l1).unwrap().bounds.unwrap();
+        let b2 = state.leaves.get(&l2).unwrap().bounds.unwrap();
+        let b3 = state.leaves.get(&l3).unwrap().bounds.unwrap();
+
+        assert!(b1.w > 500.0);
+        assert!(b2.w > 500.0);
+        assert!(b3.w > 500.0);
+        assert!((b2.h - b3.h).abs() < 5.0, "Equal column split height");
+
+        // Drag column divider between l2 and l3: l1 ratios and bounds remain untouched
+        state.workspace.set_split_ratio_at(&[1], 0, 0.7);
+        state.update_leaf_bounds_from_layout(1200.0, 800.0, 44.0, 0.0);
+
+        let b1_new = state.leaves.get(&l1).unwrap().bounds.unwrap();
+        let b2_new = state.leaves.get(&l2).unwrap().bounds.unwrap();
+        let b3_new = state.leaves.get(&l3).unwrap().bounds.unwrap();
+
+        assert_eq!(b1_new, b1, "Leaf 1 bounds must remain unaffected when dragging l2-l3 divider");
+        assert!(b2_new.h > b3_new.h, "Leaf 2 height must increase relative to Leaf 3");
+    }
+
+    #[test]
+    fn test_closing_downward_split_restores_full_height() {
+        let mut state = AppState::new();
+        let l1 = LeafId::new();
+        let l2 = LeafId::new();
+
+        state.leaves.insert(l1, LeafState::new(l1));
+        state.leaves.insert(l2, LeafState::new(l2));
+        state.workspace.root = crate::workspace::WorkspaceNode::Leaf { id: l1 };
+        state.workspace.active_leaf = l1;
+
+        // Split vertically (Column: top l1, bottom l2)
+        state.workspace.split_leaf(l1, crate::workspace::SplitDirection::Column, l2);
+        assert_eq!(state.workspace.leaves().len(), 2);
+        assert!((state.workspace.vertical_height_ratio_of_leaf(l1) - 0.5).abs() < 0.001);
+        assert!((state.workspace.vertical_height_ratio_of_leaf(l2) - 0.5).abs() < 0.001);
+
+        // Update layout bounds for a 1200x800 window
+        state.update_leaf_bounds_from_layout(1200.0, 800.0, 44.0, 0.0);
+        let b1 = state.leaves.get(&l1).unwrap().bounds.unwrap();
+        let b2 = state.leaves.get(&l2).unwrap().bounds.unwrap();
+        assert!((b1.h - 367.0).abs() < 5.0, "Initial half height for top leaf");
+        assert!((b2.h - 367.0).abs() < 5.0, "Initial half height for bottom leaf");
+
+        // Close bottom split (l2)
+        let next_active = state.close_leaf(l2);
+        assert_eq!(next_active, Some(l1));
+        assert_eq!(state.workspace.leaves().len(), 1);
+
+        // Verify root collapsed to Leaf(l1) and ratio is 1.0 (full height)
+        match &state.workspace.root {
+            crate::workspace::WorkspaceNode::Leaf { id } => assert_eq!(*id, l1),
+            _ => panic!("Root split must collapse to single leaf"),
+        }
+        assert!((state.workspace.vertical_height_ratio_of_leaf(l1) - 1.0).abs() < 0.001, "Top leaf must expand to 100% vertical ratio");
+
+        // Verify layout caches were invalidated so stale bounds don't freeze the viewport
+        assert!(state.leaves.get(&l1).unwrap().bounds.is_none(), "Stale bounds must be invalidated");
     }
 }
 

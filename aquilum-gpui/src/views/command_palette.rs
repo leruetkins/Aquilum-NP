@@ -142,8 +142,8 @@ impl AppView {
                 self.open_empty_tab(window, cx);
             }
             "workspace:close-tab" => {
-                if let Some(ref note) = self.state.active_note {
-                    let path = note.path.clone();
+                if let Some(doc) = self.state.active_document() {
+                    let path = doc.path.clone();
                     self.close_tab(&path, cx);
                 }
             }

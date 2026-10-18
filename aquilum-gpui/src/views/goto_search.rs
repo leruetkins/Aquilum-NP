@@ -239,13 +239,6 @@ impl AppView {
         }
         self.close_search_dialog(window, cx);
         if self.state.create_named_note(&title).is_some() {
-            if let Some(ref note) = self.state.active_note {
-                self.title_editing_path = Some(note.path.clone());
-                self.title_edit_text = note.title.clone();
-                self.title_cursor_pos = self.title_edit_text.chars().count();
-                self.title_selection_anchor = None;
-                self.title_is_mouse_selecting = false;
-            }
             self.edit_mode = true;
             self.word_wrap = true;
             self.set_editor_scroll_top(0.0);

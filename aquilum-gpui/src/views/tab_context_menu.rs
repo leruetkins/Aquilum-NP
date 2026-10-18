@@ -96,9 +96,8 @@ impl AppView {
         let keep_path = keep.to_path_buf();
         let needs_switch = self
             .state
-            .active_note
-            .as_ref()
-            .map(|n| n.path != keep_path)
+            .active_document()
+            .map(|d| d.path != keep_path)
             .unwrap_or(true);
         if needs_switch {
             self.select_note(keep_path.clone(), false, window, cx);
@@ -175,6 +174,8 @@ impl AppView {
             new_leaf.active_tab_index = 0;
             self.state.workspace.split_leaf(active_leaf, dir, new_leaf_id);
             self.state.leaves.insert(new_leaf_id, new_leaf);
+            self.state.invalidate_layout_caches();
+            self.layout_settle_frames.set(crate::views::app_view::SCROLL_SETTLE_FRAMES);
             self.switch_to_leaf(new_leaf_id, window, cx);
             return;
         }
@@ -199,31 +200,18 @@ impl AppView {
 
         if let crate::workspace::OpenOutcome::SplitCreated { new_leaf, tab_id } = outcome {
             let mut view_state = crate::workspace::EditorViewState::new(tab_id, doc_id);
-            if let Some(ref note) = self.state.active_note {
-                if note.path == path {
-                    let anchor_line = self.editor_anchor_line.get();
-                    let scroll_top = self.current_scroll_top_f64();
-                    let line_top = note.doc_y_of_line(anchor_line);
-                    view_state.cursor_offset = note.cursor_offset;
-                    view_state.selection_anchor = note.selection_anchor;
-                    view_state.scroll_top = scroll_top;
-                    view_state.viewport.offset = anchor_line;
-                    view_state.viewport.px_in_line = ((scroll_top - line_top) as f32).max(0.0);
-                    view_state.window = note.window.clone();
-                    view_state.above_lines = note.above_lines;
-                    view_state.below_lines = note.below_lines;
-                    view_state.above_h = note.above_h;
-                    view_state.below_h = note.below_h;
-                    view_state.est_rows_per_line = note.est_rows_per_line;
-                    view_state.est_row_h = note.est_row_h;
-                    let measured_h = f32::from(self.editor_scroll_handle.bounds().size.height);
-                    if measured_h > 50.0 {
-                        view_state.measured_viewport_h = Some(measured_h);
-                    }
-                    view_state.visual_cache_dirty = false;
+            if let (Some(active_view), Some(active_doc)) = (self.state.active_view(), self.state.active_document()) {
+                if active_doc.path == path {
+                    view_state = active_view.clone();
+                    view_state.tab_id = tab_id;
+                    view_state.doc_id = doc_id;
+                    view_state.title_input = None;
+                    view_state.measured_viewport_h = None;
                 }
             }
             self.state.views.insert(tab_id, view_state);
+            self.state.invalidate_layout_caches();
+            self.layout_settle_frames.set(crate::views::app_view::SCROLL_SETTLE_FRAMES);
             self.switch_to_leaf(new_leaf, window, cx);
         }
     }

@@ -1,4 +1,5 @@
 pub mod persistence;
+pub mod session_core;
 pub mod tree;
 pub mod view_state;
 

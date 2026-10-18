@@ -7,7 +7,7 @@
 //! of work and several times the size of the text, before a single row is
 //! painted, and the renderer only ever looks at a viewport. This type keeps the
 //! same structures for a bounded slice around the viewport instead; everything
-//! outside it is an estimate (`OpenedNote::above_h` / `below_h`).
+//! outside it is an estimate (`EditorViewState::above_h` / `below_h`).
 //!
 //! See `TODO/perf-plan-large-file-open.md`.
 //!

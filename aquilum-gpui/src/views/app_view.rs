@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 /// has been measured (see `layout_settle_frames`). Three frames is enough: one
 /// drawn from the estimates, one from the freshly measured handle, one that
 /// confirms nothing moved.
-const SCROLL_SETTLE_FRAMES: u8 = 3;
+pub(crate) const SCROLL_SETTLE_FRAMES: u8 = 3;
 
 /// Px one wheel "line" is worth. 24 = the editor row height, so a notch (three
 /// lines on Windows) moves three rows of text.
@@ -182,11 +182,6 @@ pub struct AppView {
     pub last_editor_h: Cell<f32>,
     /// Document line at the top of the viewport, refreshed once per frame.
     ///
-    /// The editor window has to cover what is on screen, so this is the anchor
-    /// its placement uses. It is stored rather than computed on demand because
-    /// the callers that need it — mouse handlers, autoscroll — already hold a
-    /// mutable borrow of the note and could not call back into `self`.
-    pub editor_anchor_line: Cell<usize>,
     pub config: crate::settings::AppConfig,
     pub last_saved_geometry: Option<(f32, f32, Option<f32>, Option<f32>, bool)>,
     pub initial_scroll_done: bool,
@@ -214,13 +209,7 @@ pub struct AppView {
     pub last_scroll_inputs: Cell<(f32, f64)>,
     pub is_hovering_close: bool,
     pub title_focus_handle: FocusHandle,
-    pub title_edit_text: String,
-    pub title_editing_path: Option<PathBuf>,
-    pub title_cursor_pos: usize,
     pub was_title_focused: bool,
-    pub title_selection_anchor: Option<usize>,
-    pub title_is_mouse_selecting: bool,
-    pub title_is_focused: bool,
     pub title_blink: BlinkManager,
     pub auto_save_epoch: usize,
     pub active_color_picker: Option<&'static str>,
@@ -295,7 +284,7 @@ impl AppView {
         let mut edit_mode = true;
         let mut word_wrap = true;
         let mut initial_scroll_top = 0.0;
-        if let Some(ref note) = state.active_note {
+        if let Some(doc) = state.active_document() {
             if let Some(leaf) = state.leaves.get(&state.workspace.active_leaf) {
                 if let Some(tab) = leaf.active_tab() {
                     if let Some(v) = state.views.get(&tab.id) {
@@ -306,17 +295,13 @@ impl AppView {
                 }
             }
             if initial_scroll_top == 0.0 {
-                if let Some(settings) = state.note_states.get(&note.path) {
+                if let Some(settings) = state.note_states.get(&doc.path) {
                     edit_mode = settings.edit_mode;
                     word_wrap = settings.word_wrap;
                     initial_scroll_top = settings.scroll_top;
                 }
             }
         }
-
-        let title_editing_path = state.active_note.as_ref().map(|n| n.path.clone());
-        let title_edit_text = state.active_note.as_ref().map(|n| n.title.clone()).unwrap_or_default();
-        let title_cursor_pos = title_edit_text.chars().count();
 
         // Restore the sidebar geometry persisted in the session. Old session
         // files predate these keys (width 0.0), so anything outside the
@@ -404,7 +389,6 @@ impl AppView {
             editor_middle_active: false,
             editor_middle_last_y: Cell::new(None),
             last_editor_h: Cell::new(600.0),
-            editor_anchor_line: Cell::new(0),
             config,
             last_saved_geometry,
             initial_scroll_done: false,
@@ -415,13 +399,7 @@ impl AppView {
             last_scroll_inputs: Cell::new((0.0, 0.0)),
             is_hovering_close: false,
             title_focus_handle: cx.focus_handle(),
-            title_edit_text,
-            title_editing_path,
-            title_cursor_pos,
             was_title_focused: false,
-            title_selection_anchor: None,
-            title_is_mouse_selecting: false,
-            title_is_focused: false,
             title_blink: BlinkManager::new(),
             auto_save_epoch: 0,
             active_color_picker: None,
@@ -487,8 +465,8 @@ impl AppView {
             match event {
                 crate::settings::SettingsEvent::ConfigChanged => {
                     this.config = model.read(cx).config.clone();
-                    if let Some(ref mut note) = this.state.active_note {
-                        note.visual_cache_dirty = true;
+                    for view in this.state.views.values_mut() {
+                        view.visual_cache_dirty = true;
                     }
                     cx.notify();
                 }
@@ -501,8 +479,8 @@ impl AppView {
                 }
                 crate::settings::SettingsEvent::WordWrapToggled(wrap) => {
                     this.word_wrap = *wrap;
-                    if let Some(ref mut note) = this.state.active_note {
-                        note.visual_cache_dirty = true;
+                    for view in this.state.views.values_mut() {
+                        view.visual_cache_dirty = true;
                     }
                     cx.notify();
                 }
@@ -708,13 +686,10 @@ impl AppView {
     }
 
     pub fn title_selection_range(&self) -> Option<(usize, usize)> {
-        if let Some(anchor) = self.title_selection_anchor {
-            let pos = self.title_cursor_pos;
-            if anchor != pos {
-                return Some((anchor.min(pos), anchor.max(pos)));
-            }
-        }
-        None
+        self.state
+            .active_view()
+            .and_then(|v| v.title_input.as_ref())
+            .and_then(|ti| ti.selection_range())
     }
 
     pub fn reset_title_cursor_blink(&mut self, cx: &mut Context<Self>) {
@@ -747,7 +722,7 @@ impl AppView {
         if self.editor_is_focused {
             self.editor_blink.suspend_visible(cx);
         }
-        if self.title_is_focused {
+        if self.was_title_focused {
             self.title_blink.suspend_visible(cx);
         }
         if self.hex_is_focused {
@@ -779,7 +754,7 @@ impl AppView {
         if self.editor_is_focused {
             self.editor_blink.enable(BlinkTarget::Editor, cx);
         }
-        if self.title_is_focused {
+        if self.was_title_focused {
             self.title_blink.enable(BlinkTarget::Title, cx);
         }
         if self.hex_is_focused {
@@ -808,9 +783,9 @@ impl AppView {
     /// Immediately dispatches writing of any dirty note to disk in the background,
     /// without blocking the UI thread. Used on blur/minimize, auto-save timers, and manual save.
     pub fn flush_active_note_now(&mut self, cx: &mut Context<Self>) {
-        let to_save = match self.state.active_note.as_ref() {
-            Some(note) if note.is_dirty => {
-                Some((note.path.clone(), note.content.clone(), note.title.clone(), note.version))
+        let to_save = match self.state.active_document() {
+            Some(doc) if doc.is_dirty => {
+                Some((doc.path.clone(), doc.content().to_string(), doc.title.clone(), doc.version))
             }
             _ => None,
         };
@@ -831,18 +806,18 @@ impl AppView {
             }).await;
 
             let _ = entity.update(&mut async_cx, |this, cx| {
-                if let Some(ref mut note) = this.state.active_note {
-                    if note.path == path {
+                if let Some(doc_id) = this.state.find_document_by_path(&path) {
+                    if let Some(doc) = this.state.documents.get_mut(&doc_id) {
                         match write_res {
                             Ok(()) => {
-                                if note.version == version {
-                                    note.clear_dirty();
+                                if doc.version == version {
+                                    doc.mark_clean();
                                 }
                                 this.state.status_text = format!("Saved: {}", title);
                                 let rel_path = this.state.vault.as_ref()
-                                    .and_then(|v| note.path.strip_prefix(&v.root).ok())
+                                    .and_then(|v| doc.path.strip_prefix(&v.root).ok())
                                     .map(|p| p.to_string_lossy().replace('\\', "/"))
-                                    .unwrap_or_else(|| note.path.to_string_lossy().into_owned());
+                                    .unwrap_or_else(|| doc.path.to_string_lossy().into_owned());
                                 this.state.events.emit_vault(&crate::events::VaultEvent::Modify { path: rel_path });
                                 this.state.publish_snapshot();
                             }
@@ -859,10 +834,10 @@ impl AppView {
     }
 
     pub fn schedule_auto_save(&mut self, cx: &mut Context<Self>) {
-        let (content_len, first_dirty) = match self.state.active_note.as_ref() {
-            Some(note) if note.is_dirty => (
-                note.content.len(),
-                note.first_dirty_time.unwrap_or_else(std::time::Instant::now),
+        let (content_len, first_dirty) = match self.state.active_document() {
+            Some(doc) if doc.is_dirty => (
+                doc.len(),
+                doc.first_dirty_time.unwrap_or_else(std::time::Instant::now),
             ),
             _ => return,
         };
@@ -888,9 +863,9 @@ impl AppView {
         cx.foreground_executor().spawn(async move {
             background.timer(wait_dur).await;
             let _ = entity.update(&mut async_cx, |this, cx| {
-                if let Some(ref note) = this.state.active_note {
+                if let Some(doc) = this.state.active_document() {
                     let deadline_reached = std::time::Instant::now() >= deadline;
-                    if (this.auto_save_epoch == epoch || deadline_reached) && note.is_dirty {
+                    if (this.auto_save_epoch == epoch || deadline_reached) && doc.is_dirty {
                         this.flush_active_note_now(cx);
                     }
                 }
@@ -930,9 +905,8 @@ impl AppView {
         // visibility against the fresh cache — no extra rebuilds involved.
         if self
             .state
-            .active_note
-            .as_ref()
-            .map(|n| n.path.as_path() == path)
+            .active_document()
+            .map(|d| d.path.as_path() == path)
             .unwrap_or(false)
         {
             self.pending_editor_restore = Some(f64::from(restore_to));
@@ -957,37 +931,19 @@ impl AppView {
         window_state.save(&crate::state::app_data_dir());
 
         self.commit_title_rename_internal();
-        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
+        if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
         }
 
-        // Sync active note state into views and documents before persisting
+        // Sync active view before persisting
         let current_leaf_id = self.state.workspace.active_leaf;
         let current_scroll_f64 = self.current_scroll_top_f64();
-        let anchor_line = self.editor_anchor_line.get();
-        if let Some(ref note) = self.state.active_note {
-            let note_path = note.path.clone();
-            let note_cursor = note.cursor_offset;
-            let note_anchor = note.selection_anchor;
-            if let Some(leaf) = self.state.leaves.get(&current_leaf_id) {
-                if let Some(tab) = leaf.active_tab() {
-                    if let Some(view) = self.state.views.get_mut(&tab.id) {
-                        view.cursor_offset = note_cursor;
-                        view.selection_anchor = note_anchor;
-                        view.scroll_top = current_scroll_f64;
-                        view.viewport.offset = anchor_line;
-                    }
+        if let Some(leaf) = self.state.leaves.get(&current_leaf_id) {
+            if let Some(tab) = leaf.active_tab() {
+                if let Some(view) = self.state.views.get_mut(&tab.id) {
+                    view.scroll_top = current_scroll_f64;
                 }
             }
-            if let Some(doc_id) = self.state.find_document_by_path(&note_path) {
-                if let Some(doc) = self.state.documents.get_mut(&doc_id) {
-                    doc.is_dirty = note.is_dirty;
-                }
-            }
-        }
-
-        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
-            self.state.save_active_note();
         }
 
         let current_scroll = self.current_scroll_top();
@@ -1002,9 +958,7 @@ impl AppView {
     /// Completely flushes data, closes child windows, unloads plugins, cancels subscriptions,
     /// and frees document buffers on application shutdown.
     pub fn prepare_shutdown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
-            self.state.save_active_note();
-        }
+        self.state.save_dirty_documents();
         self.catalog_window_manager.close_if_open(cx);
         self.settings_window_manager.close_if_open(cx);
         self.unload_all_plugins();
@@ -1014,7 +968,6 @@ impl AppView {
         self.close_tab_context_menu(cx);
         self.window_activation_subscription = None;
         self.suspend_cursor_blinks(cx);
-        self.state.active_note = None;
         self.state.active_empty_tab = None;
         self.state.documents.clear();
         self.state.by_path.clear();
@@ -1138,27 +1091,27 @@ impl AppView {
     }
 
     fn move_cursor_up_visual(&mut self, shift: bool) {
-        let Some(ref mut note) = self.state.active_note else {
+        let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
         };
-        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
-        let visual_rows = Arc::clone(&note.window.visual_rows);
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+        let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
         }
 
-        let (cursor_line, cursor_col) = note.line_col();
+        let (cursor_line, cursor_col) = view.line_col(doc);
         let (curr_v_idx, col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col)
             .unwrap_or((0, 0));
 
-        if shift && note.selection_anchor.is_none() {
-            note.selection_anchor = Some(note.cursor_offset);
+        if shift && view.selection_anchor.is_none() {
+            view.selection_anchor = Some(view.cursor_offset);
         }
 
         if curr_v_idx == 0 {
-            note.cursor_offset = 0;
+            view.cursor_offset = 0;
             if !shift {
-                note.selection_anchor = None;
+                view.selection_anchor = None;
             }
             return;
         }
@@ -1172,35 +1125,35 @@ impl AppView {
         };
         let target_col = col_in_row.min(max_col);
         let target_char = target_v.char_start + target_col;
-        let offset = note.offset_for_line_col(target_v.line_idx, target_char);
-        note.cursor_offset = offset;
+        let offset = view.offset_for_line_col(doc, target_v.line_idx, target_char);
+        view.cursor_offset = offset;
         if !shift {
-            note.selection_anchor = None;
+            view.selection_anchor = None;
         }
     }
 
     fn move_cursor_down_visual(&mut self, shift: bool) {
-        let Some(ref mut note) = self.state.active_note else {
+        let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
         };
-        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
-        let visual_rows = Arc::clone(&note.window.visual_rows);
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+        let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
         }
 
-        let (cursor_line, cursor_col) = note.line_col();
+        let (cursor_line, cursor_col) = view.line_col(doc);
         let (curr_v_idx, col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col)
             .unwrap_or((0, 0));
 
-        if shift && note.selection_anchor.is_none() {
-            note.selection_anchor = Some(note.cursor_offset);
+        if shift && view.selection_anchor.is_none() {
+            view.selection_anchor = Some(view.cursor_offset);
         }
 
         if curr_v_idx + 1 >= visual_rows.len() {
-            note.cursor_offset = note.content.len();
+            view.cursor_offset = doc.len();
             if !shift {
-                note.selection_anchor = None;
+                view.selection_anchor = None;
             }
             return;
         }
@@ -1214,29 +1167,29 @@ impl AppView {
         };
         let target_col = col_in_row.min(max_col);
         let target_char = target_v.char_start + target_col;
-        let offset = note.offset_for_line_col(target_v.line_idx, target_char);
-        note.cursor_offset = offset;
+        let offset = view.offset_for_line_col(doc, target_v.line_idx, target_char);
+        view.cursor_offset = offset;
         if !shift {
-            note.selection_anchor = None;
+            view.selection_anchor = None;
         }
     }
 
     fn move_cursor_home_visual(&mut self, shift: bool) {
-        let Some(ref mut note) = self.state.active_note else {
+        let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
         };
-        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
-        let visual_rows = Arc::clone(&note.window.visual_rows);
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+        let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
         }
-        let (cursor_line, cursor_col) = note.line_col();
+        let (cursor_line, cursor_col) = view.line_col(doc);
         let (curr_v_idx, _) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col)
             .unwrap_or((0, 0));
         let v = &visual_rows[curr_v_idx];
 
-        if shift && note.selection_anchor.is_none() {
-            note.selection_anchor = Some(note.cursor_offset);
+        if shift && view.selection_anchor.is_none() {
+            view.selection_anchor = Some(view.cursor_offset);
         }
 
         let target_char = if cursor_col == v.char_start && v.sub_idx > 0 {
@@ -1244,31 +1197,31 @@ impl AppView {
         } else {
             v.char_start
         };
-        note.cursor_offset = note.offset_for_line_col(v.line_idx, target_char);
+        view.cursor_offset = view.offset_for_line_col(doc, v.line_idx, target_char);
         if !shift {
-            note.selection_anchor = None;
+            view.selection_anchor = None;
         }
     }
 
     fn move_cursor_end_visual(&mut self, shift: bool) {
-        let Some(ref mut note) = self.state.active_note else {
+        let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
         };
-        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
-        let visual_rows = Arc::clone(&note.window.visual_rows);
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+        let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
         }
-        let (cursor_line, cursor_col) = note.line_col();
+        let (cursor_line, cursor_col) = view.line_col(doc);
         let (curr_v_idx, _) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col)
             .unwrap_or((0, 0));
         let v = &visual_rows[curr_v_idx];
 
-        if shift && note.selection_anchor.is_none() {
-            note.selection_anchor = Some(note.cursor_offset);
+        if shift && view.selection_anchor.is_none() {
+            view.selection_anchor = Some(view.cursor_offset);
         }
 
-        let line_len = note.window.lines.get(v.line_idx).map(|l| l.chars().count()).unwrap_or(0);
+        let line_len = view.window.lines.get(v.line_idx).map(|l| l.chars().count()).unwrap_or(0);
         let sub_end = if v.is_last_sub {
             v.char_end
         } else {
@@ -1279,9 +1232,9 @@ impl AppView {
         } else {
             sub_end
         };
-        note.cursor_offset = note.offset_for_line_col(v.line_idx, target_char);
+        view.cursor_offset = view.offset_for_line_col(doc, v.line_idx, target_char);
         if !shift {
-            note.selection_anchor = None;
+            view.selection_anchor = None;
         }
     }
 
@@ -1380,34 +1333,35 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
     let geometry = {
         let word_wrap = self.word_wrap;
         let wrap_cols = self.last_wrap_cols;
-        let note = match self.state.active_note.as_mut() {
-            Some(n) => n,
+        let (view, doc) = match self.state.active_view_and_doc_mut() {
+            Some(p) => p,
             None => return,
         };
-        let (cursor_line, cursor_col) = note.line_col();
-        let anchor = if note.window.covers_line(cursor_line) && note.window.covers_line(self.editor_anchor_line.get()) {
-            self.editor_anchor_line.get()
+        let (cursor_line, cursor_col) = view.line_col(doc);
+        let anchor = if view.window.covers_line(cursor_line) && view.window.covers_line(view.viewport.offset) {
+            view.viewport.offset
         } else {
-            self.editor_anchor_line.set(cursor_line);
+            view.viewport.offset = cursor_line;
             cursor_line
         };
-        note.ensure_visual_cache_with_headings(
+        view.ensure_visual_cache_with_headings(
+            doc,
             word_wrap,
             wrap_cols,
             Some(&self.config.editor.headings),
             anchor,
         );
         crate::markdown::find_visual_row_for_cursor(
-            &note.window.visual_rows,
+            &view.window.visual_rows,
             cursor_line,
             cursor_col,
         )
         .map(|(v_idx, _)| {
-            let top = note.doc_y_of_local_v_idx(v_idx);
+            let top = view.doc_y_of_local_v_idx(v_idx);
             (
                 top,
-                top + f64::from(note.window.height_index.height_of(v_idx)),
-                note.total_height(),
+                top + f64::from(view.window.height_index.height_of(v_idx)),
+                view.total_height(),
             )
         })
     };
@@ -1723,12 +1677,12 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         } else {
             132.0
         };
-        let Some(ref mut note) = self.state.active_note else {
+        let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return None;
         };
         let wrap_cols = if self.last_wrap_cols > 0 { self.last_wrap_cols } else { 80 };
-        note.ensure_visual_cache_with_headings(self.word_wrap, wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
-        let total = note.total_height();
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+        let total = view.total_height();
         let max_scroll = (total - f64::from(viewport_h)).max(0.0);
         if max_scroll <= 1.0 {
             return None;
@@ -1897,11 +1851,11 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         if !self.is_dragging_scrollbar {
             return;
         }
-        let Some(ref mut note) = self.state.active_note else {
+        let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
         };
-        note.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
-        let total_content_h = note.total_height();
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+        let total_content_h = view.total_height();
         let window_h = f32::from(window.bounds().size.height);
         let (_, viewport_h, max_scroll_content, _) = self.editor_scroll_metrics(total_content_h, window_h);
         let thumb_h = Self::editor_thumb_h(viewport_h, total_content_h, self.config.editor.wide_scrollbar);
@@ -1929,7 +1883,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     this.unload_all_plugins();
                     this.state.open_workspace(folder);
                     this.load_installed_plugins_for_vault();
-                    if this.state.active_note.is_none() {
+                    if this.state.active_document().is_none() {
                         if let Some(first_file) = AppState::first_file_in_tree(&this.state.file_tree) {
                             this.state.open_note(first_file);
                         }
@@ -1959,7 +1913,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
     fn create_new_note_placed(&mut self, window: &mut Window, cx: &mut Context<Self>, at_front: bool) {
         self.commit_title_rename_internal();
-        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
+        if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
         }
         let current_scroll = self.current_scroll_top();
@@ -1970,13 +1924,6 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             self.state.create_new_note()
         };
         if let Some(_) = created {
-            if let Some(ref note) = self.state.active_note {
-                self.title_editing_path = Some(note.path.clone());
-                self.title_edit_text = note.title.clone();
-                self.title_cursor_pos = self.title_edit_text.chars().count();
-                self.title_selection_anchor = None;
-                self.title_is_mouse_selecting = false;
-            }
             self.edit_mode = true;
             self.word_wrap = true;
             self.set_editor_scroll_top(0.0);
@@ -1991,7 +1938,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
     /// invisible gap extenders around it, so every pixel opens a tab).
     #[allow(dead_code)]
     pub(crate) fn select_tab_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        if self.state.active_note.as_ref().map(|n| &n.path != &path).unwrap_or(true) {
+        if self.state.active_document().map(|d| &d.path != &path).unwrap_or(true) {
             self.select_note(path, true, window, cx);
         } else {
             self.need_scroll_sidebar_to_active.set(true);
@@ -2007,7 +1954,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             return;
         }
         self.commit_title_rename_internal();
-        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
+        if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
         }
         let current_scroll = self.current_scroll_top();
@@ -2028,13 +1975,6 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             path: Some(rel_str),
         });
         self.apply_note_settings_for_path(&path);
-        if let Some(ref note) = self.state.active_note {
-            self.title_editing_path = Some(note.path.clone());
-            self.title_edit_text = note.title.clone();
-            self.title_cursor_pos = self.title_edit_text.chars().count();
-            self.title_selection_anchor = None;
-            self.title_is_mouse_selecting = false;
-        }
         if center_in_sidebar {
             self.need_scroll_sidebar_to_active.set(true);
         }
@@ -2044,58 +1984,34 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
     }
 
     pub(crate) fn close_tab(&mut self, path: &Path, cx: &mut Context<Self>) {
-        if self.state.active_note.as_ref().map(|n| n.path == path).unwrap_or(false) {
+        if self.state.active_document().map(|d| d.path == path).unwrap_or(false) {
             self.commit_title_rename_internal();
         }
-        if self.state.active_note.as_ref().map(|n| n.is_dirty && n.path == path).unwrap_or(false) {
+        if self.state.active_document().map(|d| d.is_dirty && d.path == path).unwrap_or(false) {
             self.state.save_active_note();
         }
-        let is_closing_active = self.state.active_note.as_ref().map(|n| n.path == path).unwrap_or(false);
+        let is_closing_active = self.state.active_document().map(|d| d.path == path).unwrap_or(false);
         if is_closing_active {
             let current_scroll = self.current_scroll_top();
             self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         }
         self.state.close_tab(path);
-        if let Some((target_path, title)) = self.state.active_note.as_ref().map(|n| (n.path.clone(), n.title.clone())) {
+        if let Some((target_path, _title)) = self.state.active_document().map(|d| (d.path.clone(), d.title.clone())) {
             self.apply_note_settings_for_path(&target_path);
-            self.title_editing_path = Some(target_path);
-            self.title_edit_text = title;
-            self.title_cursor_pos = self.title_edit_text.chars().count();
-            self.title_selection_anchor = None;
-            self.title_is_mouse_selecting = false;
             self.need_scroll_sidebar_to_active.set(true);
-        } else {
-            self.title_editing_path = None;
-            self.title_edit_text.clear();
-            self.title_cursor_pos = 0;
-            self.title_selection_anchor = None;
-            self.title_is_mouse_selecting = false;
         }
         cx.notify();
     }
 
     fn navigate_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_title_rename_internal();
-        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
+        if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
         }
         let current_scroll = self.current_scroll_top();
         self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         if let Some(target) = self.state.navigate_back() {
             self.apply_note_settings_for_path(&target);
-            if let Some(ref note) = self.state.active_note {
-                self.title_editing_path = Some(note.path.clone());
-                self.title_edit_text = note.title.clone();
-                self.title_cursor_pos = self.title_edit_text.chars().count();
-                self.title_selection_anchor = None;
-                self.title_is_mouse_selecting = false;
-            } else {
-                self.title_editing_path = None;
-                self.title_edit_text.clear();
-                self.title_cursor_pos = 0;
-                self.title_selection_anchor = None;
-                self.title_is_mouse_selecting = false;
-            }
             self.need_scroll_sidebar_to_active.set(true);
             window.focus(&self.focus_handle);
             cx.notify();
@@ -2104,26 +2020,13 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
     fn navigate_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_title_rename_internal();
-        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
+        if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
         }
         let current_scroll = self.current_scroll_top();
         self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         if let Some(target) = self.state.navigate_forward() {
             self.apply_note_settings_for_path(&target);
-            if let Some(ref note) = self.state.active_note {
-                self.title_editing_path = Some(note.path.clone());
-                self.title_edit_text = note.title.clone();
-                self.title_cursor_pos = self.title_edit_text.chars().count();
-                self.title_selection_anchor = None;
-                self.title_is_mouse_selecting = false;
-            } else {
-                self.title_editing_path = None;
-                self.title_edit_text.clear();
-                self.title_cursor_pos = 0;
-                self.title_selection_anchor = None;
-                self.title_is_mouse_selecting = false;
-            }
             self.need_scroll_sidebar_to_active.set(true);
             window.focus(&self.focus_handle);
             cx.notify();
@@ -2141,15 +2044,19 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
     }
 
     fn handle_editor_mouse_down(&mut self, click_x: f32, click_y: f32, shift: bool, click_count: usize, window: &Window, cx: &mut Context<Self>) {
-        if self.state.active_note.is_none() {
+        if self.state.active_doc_id().is_none() {
             return;
         }
 
-        let editor_rows_top_y = 132.0;
+        let in_titlebar = self.state.workspace.is_leaf_in_titlebar(self.state.workspace.active_leaf);
+        let editor_rows_top_y = if in_titlebar { 90.0 } else { 126.0 };
+        if click_y < editor_rows_top_y {
+            return;
+        }
         // f64: at the tail of a huge note an f32 scroll position is only good to
         // 16 px, which is enough to pick the neighbouring row.
         let current_scroll_y = self.current_scroll_top_f64();
-        let rel_y = f64::from(click_y) - editor_rows_top_y + current_scroll_y;
+        let rel_y = f64::from(click_y) - f64::from(editor_rows_top_y) + current_scroll_y;
 
         let editor_font = self.editor_font_family();
         let font_id = cx.text_system().resolve_font(&gpui::font(&editor_font));
@@ -2162,12 +2069,12 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let word_wrap = self.word_wrap;
         let wrap_cols = self.last_wrap_cols;
 
-        let Some(ref mut note) = self.state.active_note else {
+        let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
         };
 
-        note.ensure_visual_cache_with_headings(word_wrap, wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
-        let visual_rows = Arc::clone(&note.window.visual_rows);
+        view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+        let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
         }
@@ -2175,16 +2082,16 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let target_v_idx = if rel_y <= 0.0 {
             0
         } else {
-            note.local_v_idx_at_doc_y(rel_y)
+            view.local_v_idx_at_doc_y(rel_y)
         };
 
         let v = &visual_rows[target_v_idx];
         let v_len = v.char_end.saturating_sub(v.char_start);
 
-        let (cursor_line, _) = note.line_col();
-        let selection_range = note.selection_range();
-        let line = &note.window.lines[v.line_idx];
-        let line_start = note.line_start_byte(v.line_idx);
+        let (cursor_line, _) = view.line_col(doc);
+        let selection_range = view.selection_range(doc.len());
+        let line = &view.window.lines[v.line_idx];
+        let line_start = doc.line_start_byte(v.line_idx);
         let line_end = line_start + line.len();
         let is_line_in_selection = selection_range.as_ref().map_or(false, |sel| {
             if sel.start == sel.end {
@@ -2195,14 +2102,14 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 sel.end > line_start && sel.start < line_end
             }
         });
-        let is_in_active_block = note.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map_or(false, |s| {
-            let cursor_in_block = note.window.code_states.get(cursor_line).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id);
+        let is_in_active_block = view.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map_or(false, |s| {
+            let cursor_in_block = view.window.code_states.get(cursor_line).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id);
             let sel_in_block = selection_range.as_ref().map_or(false, |sel| {
-                let sel_start_l = note.line_of_byte(sel.start).max(note.window.code_states.start());
-                let sel_end_l = note.line_of_byte(sel.end).min(note.window.code_states.end().saturating_sub(1));
+                let sel_start_l = doc.line_of_byte(sel.start).max(view.window.code_states.start());
+                let sel_end_l = doc.line_of_byte(sel.end).min(view.window.code_states.end().saturating_sub(1));
                 if sel_start_l <= sel_end_l {
                     (sel_start_l..=sel_end_l).any(|l_idx| {
-                        note.window.code_states.get(l_idx).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id)
+                        view.window.code_states.get(l_idx).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id)
                     })
                 } else {
                     false
@@ -2211,7 +2118,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             cursor_in_block || sel_in_block
         });
         let is_active_line = Self::is_active_editor_line(self.edit_mode, v.line_idx, cursor_line, is_line_in_selection, is_in_active_block);
-        let code_state = note.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
+        let code_state = view.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
         let classified = crate::markdown::classify_line(line, code_state);
         let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &self.config.editor.headings, line_char_width);
         let (_, row_char_w, _, _, _) = Self::heading_typography_metrics_with_widths(&classified, &self.config.editor.headings, 24.0, line_char_width, Some(&heading_widths));
@@ -2237,24 +2144,24 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         };
 
         let target_char = v.char_start + col_in_row;
-        let offset = note.offset_for_line_col(v.line_idx, target_char);
+        let offset = view.offset_for_line_col(doc, v.line_idx, target_char);
 
         if click_count == 2 {
-            let (w_start, w_end) = note.word_range_at(offset);
-            note.selection_anchor = Some(w_start);
-            note.cursor_offset = w_end;
+            let (w_start, w_end) = doc.word_range_at(offset);
+            view.selection_anchor = Some(w_start);
+            view.cursor_offset = w_end;
         } else if click_count >= 3 {
-            let (l_start, l_end) = note.line_range_at(offset);
-            note.selection_anchor = Some(l_start);
-            note.cursor_offset = l_end;
+            let (l_start, l_end) = doc.line_range_at(offset);
+            view.selection_anchor = Some(l_start);
+            view.cursor_offset = l_end;
         } else if shift {
-            if note.selection_anchor.is_none() {
-                note.selection_anchor = Some(note.cursor_offset);
+            if view.selection_anchor.is_none() {
+                view.selection_anchor = Some(view.cursor_offset);
             }
-            note.cursor_offset = offset;
+            view.cursor_offset = offset;
         } else {
-            note.cursor_offset = offset;
-            note.selection_anchor = Some(offset);
+            view.cursor_offset = offset;
+            view.selection_anchor = Some(offset);
         }
         self.reset_editor_cursor_blink(cx);
         cx.notify();
@@ -2264,7 +2171,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         if !self.is_mouse_selecting {
             return;
         }
-        if self.state.active_note.is_none() {
+        if self.state.active_doc_id().is_none() {
             return;
         }
 
@@ -2296,12 +2203,12 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let word_wrap = self.word_wrap;
         let wrap_cols = self.last_wrap_cols;
 
-        let Some(ref mut note) = self.state.active_note else {
+        let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
         };
 
-        note.ensure_visual_cache_with_headings(word_wrap, wrap_cols, Some(&self.config.editor.headings), self.editor_anchor_line.get());
-        let visual_rows = Arc::clone(&note.window.visual_rows);
+        view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+        let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
         }
@@ -2309,16 +2216,16 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let target_v_idx = if rel_y <= 0.0 {
             0
         } else {
-            note.local_v_idx_at_doc_y(rel_y)
+            view.local_v_idx_at_doc_y(rel_y)
         };
 
         let v = &visual_rows[target_v_idx];
         let v_len = v.char_end.saturating_sub(v.char_start);
 
-        let (cursor_line, _) = note.line_col();
-        let selection_range = note.selection_range();
-        let line = &note.window.lines[v.line_idx];
-        let line_start = note.line_start_byte(v.line_idx);
+        let (cursor_line, _) = view.line_col(doc);
+        let selection_range = view.selection_range(doc.len());
+        let line = &view.window.lines[v.line_idx];
+        let line_start = doc.line_start_byte(v.line_idx);
         let line_end = line_start + line.len();
         let is_line_in_selection = selection_range.as_ref().map_or(false, |sel| {
             if sel.start == sel.end {
@@ -2329,14 +2236,14 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 sel.end > line_start && sel.start < line_end
             }
         });
-        let is_in_active_block = note.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map_or(false, |s| {
-            let cursor_in_block = note.window.code_states.get(cursor_line).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id);
+        let is_in_active_block = view.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map_or(false, |s| {
+            let cursor_in_block = view.window.code_states.get(cursor_line).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id);
             let sel_in_block = selection_range.as_ref().map_or(false, |sel| {
-                let sel_start_l = note.line_of_byte(sel.start).max(note.window.code_states.start());
-                let sel_end_l = note.line_of_byte(sel.end).min(note.window.code_states.end().saturating_sub(1));
+                let sel_start_l = doc.line_of_byte(sel.start).max(view.window.code_states.start());
+                let sel_end_l = doc.line_of_byte(sel.end).min(view.window.code_states.end().saturating_sub(1));
                 if sel_start_l <= sel_end_l {
                     (sel_start_l..=sel_end_l).any(|l_idx| {
-                        note.window.code_states.get(l_idx).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id)
+                        view.window.code_states.get(l_idx).and_then(|cs| cs.as_ref()).map_or(false, |cs| cs.block_id == s.block_id)
                     })
                 } else {
                     false
@@ -2345,7 +2252,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             cursor_in_block || sel_in_block
         });
         let is_active_line = Self::is_active_editor_line(self.edit_mode, v.line_idx, cursor_line, is_line_in_selection, is_in_active_block);
-        let code_state = note.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
+        let code_state = view.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
         let classified = crate::markdown::classify_line(line, code_state);
         let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &self.config.editor.headings, line_char_width);
         let (_, row_char_w, _, _, _) = Self::heading_typography_metrics_with_widths(&classified, &self.config.editor.headings, 24.0, line_char_width, Some(&heading_widths));
@@ -2368,9 +2275,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         };
 
         let target_char = v.char_start + col_in_row;
-        let offset = note.offset_for_line_col(v.line_idx, target_char);
-        if note.cursor_offset != offset {
-            note.cursor_offset = offset;
+        let offset = view.offset_for_line_col(doc, v.line_idx, target_char);
+        if view.cursor_offset != offset {
+            view.cursor_offset = offset;
             cx.notify();
         }
     }
@@ -3307,51 +3214,30 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
     }
 
     pub(crate) fn commit_title_rename_internal(&mut self) -> bool {
-        let Some(ref note) = self.state.active_note else {
+        let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return false;
         };
-        if let Some(ref edit_path) = self.title_editing_path {
-            if crate::state::AppState::normalize_path(edit_path) != crate::state::AppState::normalize_path(&note.path) {
-                return false;
-            }
-        } else {
+        let Some(input) = view.title_input.take() else {
             return false;
-        }
-        let current_path = note.path.clone();
-        let current_title = note.title.clone();
-        let new_title = self.title_edit_text.trim();
+        };
+        let new_title = input.text.trim();
+        let current_path = doc.path.clone();
+        let current_title = doc.title.clone();
 
-        if new_title.is_empty() {
-            self.title_edit_text = current_title;
-            self.title_cursor_pos = self.title_edit_text.chars().count();
-            self.title_selection_anchor = None;
-            self.title_is_mouse_selecting = false;
+        if new_title.is_empty() || new_title == current_title {
             return false;
         }
 
-        if new_title != current_title {
-            match self.state.rename_note(&current_path, new_title) {
-                Ok(new_path) => {
-                    self.title_editing_path = Some(new_path);
-                    self.title_edit_text = new_title.to_string();
-                    self.title_cursor_pos = self.title_edit_text.chars().count();
-                    self.title_selection_anchor = None;
-                    self.title_is_mouse_selecting = false;
-                    return true;
+        match self.state.rename_note(&current_path, new_title) {
+            Ok(_) => true,
+            Err(err) => {
+                if let Some(view) = self.state.active_view_mut() {
+                    view.title_input = Some(input);
                 }
-                Err(err) => {
-                    self.state.status_text = format!("Rename failed: {}", err);
-                    self.title_edit_text = current_title;
-                    self.title_cursor_pos = self.title_edit_text.chars().count();
-                    self.title_selection_anchor = None;
-                    self.title_is_mouse_selecting = false;
-                    return false;
-                }
+                self.state.status_text = format!("Rename failed: {}", err);
+                false
             }
         }
-        self.title_selection_anchor = None;
-        self.title_is_mouse_selecting = false;
-        false
     }
 
     pub fn commit_title_rename(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -3367,7 +3253,6 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let alt = event.keystroke.modifiers.alt;
 
         if key == "enter" || key == "tab" {
-            self.title_selection_anchor = None;
             self.commit_title_rename(window, cx);
             window.focus(&self.focus_handle);
             cx.notify();
@@ -3375,10 +3260,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         }
 
         if key == "escape" {
-            self.title_selection_anchor = None;
-            if let Some(ref note) = self.state.active_note {
-                self.title_edit_text = note.title.clone();
-                self.title_cursor_pos = self.title_edit_text.chars().count();
+            if let Some(view) = self.state.active_view_mut() {
+                view.cancel_title_edit();
             }
             window.focus(&self.focus_handle);
             cx.notify();
@@ -3386,21 +3269,26 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         }
 
         if key == "down" {
-            self.title_selection_anchor = None;
             self.commit_title_rename(window, cx);
-            if let Some(ref mut note) = self.state.active_note {
-                note.cursor_offset = 0;
-                note.selection_anchor = None;
+            if let Some(view) = self.state.active_view_mut() {
+                view.cursor_offset = 0;
+                view.selection_anchor = None;
             }
             window.focus(&self.focus_handle);
             cx.notify();
             return;
         }
 
+        let Some(view) = self.state.active_view_mut() else {
+            return;
+        };
+        let Some(ref mut input) = view.title_input else {
+            return;
+        };
+
         // Ctrl + A (Select All)
         if ctrl && (key.eq_ignore_ascii_case("a") || key == "ф" || key == "Ф") {
-            self.title_selection_anchor = Some(0);
-            self.title_cursor_pos = self.title_edit_text.chars().count();
+            input.select_all();
             self.reset_title_cursor_blink(cx);
             cx.notify();
             return;
@@ -3408,8 +3296,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         // Ctrl + C (Copy selected text)
         if ctrl && (key.eq_ignore_ascii_case("c") || key == "с" || key == "С") {
-            if let Some((s_start, s_end)) = self.title_selection_range() {
-                let selected: String = self.title_edit_text.chars().skip(s_start).take(s_end - s_start).collect();
+            if let Some(selected) = input.selected_text() {
                 cx.write_to_clipboard(ClipboardItem::new_string(selected));
             }
             return;
@@ -3417,14 +3304,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         // Ctrl + X (Cut selected text)
         if ctrl && (key.eq_ignore_ascii_case("x") || key == "ч" || key == "Ч") {
-            if let Some((s_start, s_end)) = self.title_selection_range() {
-                let selected: String = self.title_edit_text.chars().skip(s_start).take(s_end - s_start).collect();
+            if let Some(selected) = input.selected_text() {
                 cx.write_to_clipboard(ClipboardItem::new_string(selected));
-                let mut chars: Vec<char> = self.title_edit_text.chars().collect();
-                chars.drain(s_start..s_end);
-                self.title_edit_text = chars.into_iter().collect();
-                self.title_cursor_pos = s_start;
-                self.title_selection_anchor = None;
+                input.delete_selection();
                 self.reset_title_cursor_blink(cx);
                 cx.notify();
             }
@@ -3448,19 +3330,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                         .filter(|c| !invalid_chars.contains(c) && !c.is_control())
                         .collect();
                     if !filtered.is_empty() {
-                        let mut chars: Vec<char> = self.title_edit_text.chars().collect();
-                        let pos = if let Some((s_start, s_end)) = self.title_selection_range() {
-                            chars.drain(s_start..s_end);
-                            self.title_selection_anchor = None;
-                            s_start
-                        } else {
-                            self.title_cursor_pos.min(chars.len())
-                        };
-                        for (i, c) in filtered.chars().enumerate() {
-                            chars.insert(pos + i, c);
-                        }
-                        self.title_cursor_pos = pos + filtered.chars().count();
-                        self.title_edit_text = chars.into_iter().collect();
+                        input.insert_text(&filtered);
                         self.reset_title_cursor_blink(cx);
                         cx.notify();
                     }
@@ -3471,21 +3341,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         // Left Arrow
         if key == "left" {
-            if shift {
-                if self.title_selection_anchor.is_none() {
-                    self.title_selection_anchor = Some(self.title_cursor_pos);
-                }
-                if self.title_cursor_pos > 0 {
-                    self.title_cursor_pos -= 1;
-                }
-            } else {
-                if let Some((s_start, _)) = self.title_selection_range() {
-                    self.title_cursor_pos = s_start;
-                    self.title_selection_anchor = None;
-                } else if self.title_cursor_pos > 0 {
-                    self.title_cursor_pos -= 1;
-                }
-            }
+            input.move_left(shift);
             self.reset_title_cursor_blink(cx);
             cx.notify();
             return;
@@ -3493,22 +3349,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         // Right Arrow
         if key == "right" {
-            let total_chars = self.title_edit_text.chars().count();
-            if shift {
-                if self.title_selection_anchor.is_none() {
-                    self.title_selection_anchor = Some(self.title_cursor_pos);
-                }
-                if self.title_cursor_pos < total_chars {
-                    self.title_cursor_pos += 1;
-                }
-            } else {
-                if let Some((_, s_end)) = self.title_selection_range() {
-                    self.title_cursor_pos = s_end;
-                    self.title_selection_anchor = None;
-                } else if self.title_cursor_pos < total_chars {
-                    self.title_cursor_pos += 1;
-                }
-            }
+            input.move_right(shift);
             self.reset_title_cursor_blink(cx);
             cx.notify();
             return;
@@ -3516,15 +3357,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         // Home
         if key == "home" {
-            if shift {
-                if self.title_selection_anchor.is_none() {
-                    self.title_selection_anchor = Some(self.title_cursor_pos);
-                }
-                self.title_cursor_pos = 0;
-            } else {
-                self.title_selection_anchor = None;
-                self.title_cursor_pos = 0;
-            }
+            input.move_home(shift);
             self.reset_title_cursor_blink(cx);
             cx.notify();
             return;
@@ -3532,16 +3365,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         // End
         if key == "end" {
-            let total_chars = self.title_edit_text.chars().count();
-            if shift {
-                if self.title_selection_anchor.is_none() {
-                    self.title_selection_anchor = Some(self.title_cursor_pos);
-                }
-                self.title_cursor_pos = total_chars;
-            } else {
-                self.title_selection_anchor = None;
-                self.title_cursor_pos = total_chars;
-            }
+            input.move_end(shift);
             self.reset_title_cursor_blink(cx);
             cx.notify();
             return;
@@ -3549,46 +3373,17 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         // Backspace
         if key == "backspace" {
-            let mut chars: Vec<char> = self.title_edit_text.chars().collect();
-            if let Some((s_start, s_end)) = self.title_selection_range() {
-                chars.drain(s_start..s_end);
-                self.title_cursor_pos = s_start;
-                self.title_selection_anchor = None;
-                self.title_edit_text = chars.into_iter().collect();
-                self.reset_title_cursor_blink(cx);
-                cx.notify();
-            } else {
-                let pos = self.title_cursor_pos.min(chars.len());
-                if pos > 0 {
-                    chars.remove(pos - 1);
-                    self.title_cursor_pos = pos - 1;
-                    self.title_edit_text = chars.into_iter().collect();
-                    self.reset_title_cursor_blink(cx);
-                    cx.notify();
-                }
-            }
+            input.backspace();
+            self.reset_title_cursor_blink(cx);
+            cx.notify();
             return;
         }
 
         // Delete
         if key == "delete" {
-            let mut chars: Vec<char> = self.title_edit_text.chars().collect();
-            if let Some((s_start, s_end)) = self.title_selection_range() {
-                chars.drain(s_start..s_end);
-                self.title_cursor_pos = s_start;
-                self.title_selection_anchor = None;
-                self.title_edit_text = chars.into_iter().collect();
-                self.reset_title_cursor_blink(cx);
-                cx.notify();
-            } else {
-                let pos = self.title_cursor_pos.min(chars.len());
-                if pos < chars.len() {
-                    chars.remove(pos);
-                    self.title_edit_text = chars.into_iter().collect();
-                    self.reset_title_cursor_blink(cx);
-                    cx.notify();
-                }
-            }
+            input.delete();
+            self.reset_title_cursor_blink(cx);
+            cx.notify();
             return;
         }
 
@@ -3611,19 +3406,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     .filter(|c| !invalid_chars.contains(c) && !c.is_control())
                     .collect();
                 if !filtered.is_empty() {
-                    let mut chars: Vec<char> = self.title_edit_text.chars().collect();
-                    let pos = if let Some((s_start, s_end)) = self.title_selection_range() {
-                        chars.drain(s_start..s_end);
-                        self.title_selection_anchor = None;
-                        s_start
-                    } else {
-                        self.title_cursor_pos.min(chars.len())
-                    };
-                    for (i, c) in filtered.chars().enumerate() {
-                        chars.insert(pos + i, c);
-                    }
-                    self.title_cursor_pos = pos + filtered.chars().count();
-                    self.title_edit_text = chars.into_iter().collect();
+                    input.insert_text(&filtered);
                     self.reset_title_cursor_blink(cx);
                     cx.notify();
                 }
@@ -3776,8 +3559,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         // Ctrl + W (Закрыть текущую вкладку)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("w") || keystroke.key == "ц" || keystroke.key == "Ц") {
-            if let Some(ref note) = self.state.active_note {
-                let path = note.path.clone();
+            if let Some(doc) = self.state.active_document() {
+                let path = doc.path.clone();
                 self.close_tab(&path, cx);
             }
             return;
@@ -3793,9 +3576,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         // Ctrl + Z (Undo)
         if ctrl && !shift && (keystroke.key.eq_ignore_ascii_case("z") || keystroke.key == "я" || keystroke.key == "Я") {
-            if let Some(ref mut note) = self.state.active_note {
-                note.undo();
-                self.sync_views_for_active_note();
+            if self.state.active_undo() {
                 cx.notify();
             }
             self.schedule_auto_save(cx);
@@ -3806,9 +3587,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         if (ctrl && (keystroke.key.eq_ignore_ascii_case("y") || keystroke.key == "н" || keystroke.key == "Н"))
             || (ctrl && shift && (keystroke.key.eq_ignore_ascii_case("z") || keystroke.key == "я" || keystroke.key == "Я"))
         {
-            if let Some(ref mut note) = self.state.active_note {
-                note.redo();
-                self.sync_views_for_active_note();
+            if self.state.active_redo() {
                 cx.notify();
             }
             self.schedule_auto_save(cx);
@@ -3817,32 +3596,25 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         // Ctrl + A (Выделить всё)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("a") || keystroke.key == "ф" || keystroke.key == "Ф") {
-            if let Some(ref mut note) = self.state.active_note {
-                note.select_all();
-                cx.notify();
-            }
+            self.state.active_select_all();
+            cx.notify();
             return;
         }
 
         // Ctrl + C (Копировать)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("c") || keystroke.key == "с" || keystroke.key == "С") {
-            if let Some(ref note) = self.state.active_note {
-                if let Some(text) = note.selected_text() {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
-                }
+            if let Some(text) = self.state.active_selected_text() {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
             }
             return;
         }
 
         // Ctrl + X (Вырезать)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("x") || keystroke.key == "ч" || keystroke.key == "Ч") {
-            if let Some(ref mut note) = self.state.active_note {
-                if let Some(text) = note.selected_text() {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
-                    note.delete_selection();
-                    self.sync_views_for_active_note();
-                    cx.notify();
-                }
+            if let Some(text) = self.state.active_selected_text() {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                self.state.active_delete_selection();
+                cx.notify();
             }
             self.schedule_auto_save(cx);
             return;
@@ -3858,72 +3630,66 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         if ctrl && (keystroke.key.eq_ignore_ascii_case("v") || keystroke.key == "м" || keystroke.key == "М") {
             if let Some(item) = cx.read_from_clipboard() {
                 if let Some(text) = item.text() {
-                    if let Some(ref mut note) = self.state.active_note {
-                        note.insert_text(&text);
-                        self.sync_views_for_active_note();
-                        cx.notify();
-                    }
+                    self.state.active_insert_text(&text);
+                    cx.notify();
                 }
             }
             self.schedule_auto_save(cx);
             return;
         }
 
-        if self.state.active_note.is_none() {
+        if self.state.active_doc_id().is_none() {
             return;
         }
 
         match keystroke.key.as_str() {
-            "backspace" => { if let Some(ref mut n) = self.state.active_note { n.delete_backwards(); } }
-            "delete" => { if let Some(ref mut n) = self.state.active_note { n.delete_forwards(); } }
-            "enter" => { if let Some(ref mut n) = self.state.active_note { n.insert_newline_auto_indent(); } }
-            "tab" => { if let Some(ref mut n) = self.state.active_note { n.insert_text("    "); } }
-            "space" => { if let Some(ref mut n) = self.state.active_note { n.insert_text(" "); } }
-            "left" => { if let Some(ref mut n) = self.state.active_note { n.move_cursor_left(shift); } }
-            "right" => { if let Some(ref mut n) = self.state.active_note { n.move_cursor_right(shift); } }
+            "backspace" => self.state.active_delete_backwards(),
+            "delete" => self.state.active_delete_forwards(),
+            "enter" => self.state.active_insert_newline_auto_indent(),
+            "tab" => self.state.active_insert_text("    "),
+            "space" => self.state.active_insert_text(" "),
+            "left" => self.state.active_move_cursor_left(shift),
+            "right" => self.state.active_move_cursor_right(shift),
             "up" => self.move_cursor_up_visual(shift),
             "down" => self.move_cursor_down_visual(shift),
             "home" => self.move_cursor_home_visual(shift),
             "end" => self.move_cursor_end_visual(shift),
             _ => {
                 if !ctrl && !keystroke.modifiers.alt && !keystroke.modifiers.platform {
-                    if let Some(ref mut n) = self.state.active_note {
-                        if let Some(ch) = &keystroke.key_char {
-                            n.insert_text(ch);
-                        } else if keystroke.key.chars().count() == 1 {
-                            n.insert_text(&keystroke.key);
-                        }
+                    if let Some(ch) = &keystroke.key_char {
+                        self.state.active_insert_text(ch);
+                    } else if keystroke.key.chars().count() == 1 {
+                        self.state.active_insert_text(&keystroke.key);
                     }
                 }
             }
         }
-        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
+        if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
             self.schedule_auto_save(cx);
         }
         // Refresh the rows before revealing: every edit above marked the
         // cache dirty, and the lookup below must see the new rows already —
         // otherwise a row created at the very bottom (Enter) stays hidden
         // under the status bar until the next frame's rebuild.
-        if let Some(ref mut note) = self.state.active_note {
-            let (cursor_line, _) = note.line_col();
-            let anchor = if note.window.covers_line(cursor_line) && note.window.covers_line(self.editor_anchor_line.get()) {
-                self.editor_anchor_line.get()
+        if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
+            let (cursor_line, _) = view.line_col(doc);
+            let anchor = if view.window.covers_line(cursor_line) && view.window.covers_line(view.viewport.offset) {
+                view.viewport.offset
             } else {
-                self.editor_anchor_line.set(cursor_line);
+                view.viewport.offset = cursor_line;
                 cursor_line
             };
             let word_wrap = self.word_wrap;
             let wrap_cols = self.last_wrap_cols;
-            note.ensure_visual_cache_with_headings(word_wrap, wrap_cols, Some(&self.config.editor.headings), anchor);
+            view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&self.config.editor.headings), anchor);
         }
-        self.sync_views_for_active_note();
         self.scroll_cursor_into_view();
         cx.notify();
     }
 
     fn render_navigation_bar(
         &self,
-        note_override: Option<&crate::state::OpenedNote>,
+        doc_override: Option<&crate::document_buffer::DocumentBuffer>,
         leaf_id: Option<crate::workspace::LeafId>,
         theme: &Theme,
         cx: &Context<Self>,
@@ -3932,13 +3698,13 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             .and_then(|lid| self.state.leaves.get(&lid))
             .and_then(|l| l.active_tab())
             .map(|t| matches!(t.content, crate::workspace::TabContent::Empty))
-            .unwrap_or(note_override.is_none() && self.state.active_note.is_none() && self.state.active_empty_tab.is_some());
+            .unwrap_or(doc_override.is_none() && self.state.active_doc_id().is_none() && self.state.active_empty_tab.is_some());
 
         let can_go_back = self.state.can_navigate_back();
         let can_go_forward = self.state.can_navigate_forward();
-        let breadcrumbs = if let Some(n) = note_override {
+        let breadcrumbs = if let Some(doc) = doc_override {
             if let Some(ref ws) = self.state.workspace_path {
-                if let Ok(rel) = n.path.strip_prefix(ws) {
+                if let Ok(rel) = doc.path.strip_prefix(ws) {
                     let mut parts = Vec::new();
                     for comp in rel.components() {
                         let comp_str = comp.as_os_str().to_string_lossy().to_string();
@@ -3956,13 +3722,13 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     if !parts.is_empty() {
                         parts
                     } else {
-                        vec![n.title.clone()]
+                        vec![doc.title.clone()]
                     }
                 } else {
-                    vec![n.title.clone()]
+                    vec![doc.title.clone()]
                 }
             } else {
-                vec![n.title.clone()]
+                vec![doc.title.clone()]
             }
         } else if is_empty_tab {
             vec![self.t("tabs.newTab")]
@@ -3974,8 +3740,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 crumbs
             }
         };
-        let is_dirty = note_override.map(|n| n.is_dirty).unwrap_or_else(|| {
-            self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false)
+        let is_dirty = doc_override.map(|d| d.is_dirty).unwrap_or_else(|| {
+            self.state.active_document().map(|d| d.is_dirty).unwrap_or(false)
         });
         let is_editing = self.edit_mode;
 
@@ -4116,9 +3882,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     .items_center()
                     .gap_1p5()
                     .flex_shrink_0()
-                    .when_some(note_override.or(self.state.active_note.as_ref()), |r, note| {
+                    .when_some(doc_override.or(self.state.active_document()), |r, doc| {
                         use crate::state::TextStats;
-                        let label = match note.text_stats() {
+                        let label = match doc.text_stats() {
                             TextStats::Exact { words, chars } => format!("{}w • {}c", words, chars),
                             TextStats::Large { bytes } => {
                                 format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
@@ -4200,32 +3966,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             )
     }
 
-    pub fn sync_views_for_active_note(&mut self) {
-        let (note_path, edits) = match self.state.active_note.as_mut() {
-            Some(n) if !n.pending_edits.is_empty() => (n.path.clone(), std::mem::take(&mut n.pending_edits)),
-            _ => return,
-        };
-
-        let active_leaf_id = self.state.workspace.active_leaf;
-        let active_tab_id = self.state.leaves.get(&active_leaf_id).and_then(|l| l.active_tab()).map(|t| t.id);
-
-        let matching_doc_ids: Vec<crate::document_buffer::DocumentId> = self.state.documents
-            .iter()
-            .filter(|(_, doc)| doc.path == note_path)
-            .map(|(id, _)| *id)
-            .collect();
-
-        for (tab_id, view) in self.state.views.iter_mut() {
-            if Some(*tab_id) == active_tab_id {
-                continue;
-            }
-            if matching_doc_ids.contains(&view.doc_id) {
-                for edit in &edits {
-                    view.apply_external_edit_detailed(edit);
-                }
-            }
-        }
-    }
+    pub fn sync_views_for_active_note(&mut self) {}
 
     pub fn ensure_inactive_views_built(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let active_leaf_id = self.state.workspace.active_leaf;
@@ -4261,7 +4002,6 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let crate::state::AppState {
             ref documents,
             ref mut views,
-            ref active_note,
             ..
         } = self.state;
 
@@ -4271,15 +4011,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 None => continue,
             };
 
-            let (doc_content, line_index, mut checkpoints) = if let Some(ref active) = active_note {
-                if active.path == doc.path {
-                    (active.content.as_str(), &active.line_index, active.code_checkpoints.clone())
-                } else {
-                    (doc.content(), &doc.line_index, doc.code_checkpoints.clone())
-                }
-            } else {
-                (doc.content(), &doc.line_index, doc.code_checkpoints.clone())
-            };
+            let doc_content = doc.content();
+            let line_index = &doc.line_index;
+            let mut checkpoints = doc.code_checkpoints.clone();
 
             let lines_total = line_index.lines();
             let view = views.entry(tab_id).or_insert_with(|| crate::workspace::EditorViewState::new(tab_id, doc_id));
@@ -4314,11 +4048,15 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 let row_h = view.est_row_h;
                 view.above_h = (view.above_lines as f64 * rows_per_line).round() * row_h;
                 view.below_h = (view.below_lines as f64 * rows_per_line).round() * row_h;
-                let first_v_idx = new_window.first_row_of_line(view.viewport.offset).unwrap_or(0);
-                let line_local_y = new_window.height_index.top_of(first_v_idx);
-                view.scroll_top = view.above_h + line_local_y + view.viewport.px_in_line as f64;
+                let wrap_changed = view.window.wrap_cols != wrap_cols;
                 view.window = new_window;
                 view.visual_cache_dirty = false;
+                if wrap_changed {
+                    if let Some(first_v_idx) = view.window.first_row_of_line(view.viewport.offset) {
+                        let line_local_y = view.window.height_index.top_of(first_v_idx);
+                        view.scroll_top = view.above_h + line_local_y + view.viewport.px_in_line as f64;
+                    }
+                }
             }
         }
     }
@@ -4340,119 +4078,25 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.sync_views_for_active_note();
         let current_leaf_id = self.state.workspace.active_leaf;
         let is_same_leaf = current_leaf_id == leaf_id;
         let same_tab = is_same_leaf && self.state.leaves.get(&leaf_id).map(|l| l.active_tab_index) == Some(tab_index);
-        let current_doc_matches = match (
-            self.state.active_note.as_ref(),
-            self.state.leaves.get(&leaf_id).and_then(|l| l.tabs.get(tab_index)),
-        ) {
-            (Some(note), Some(tab)) => match &tab.content {
-                crate::workspace::TabContent::Document { id } => {
-                    self.state.documents.get(id).map(|d| d.path == note.path).unwrap_or(false)
-                }
-                _ => false,
-            },
-            (None, Some(tab)) => matches!(tab.content, crate::workspace::TabContent::Empty) && self.state.active_empty_tab.is_some(),
-            _ => false,
-        };
-        if same_tab && current_doc_matches {
+        if same_tab {
             return;
         }
 
         self.commit_title_rename_internal();
 
-        // 1. Snapshot outgoing note state into DocumentBuffer and EditorViewState
-        if let Some(mut note) = self.state.active_note.take() {
-            let note_path = note.path.clone();
-            let note_cursor = note.cursor_offset;
-            let note_anchor = note.selection_anchor;
-            let note_dirty = note.is_dirty;
-            let scroll_top = self.current_scroll_top_f64();
-            let anchor_line = self.editor_anchor_line.get();
-
-            let norm_note_path = crate::state::AppState::normalize_path(&note_path);
-
-            let outgoing_tab = self.state.leaves.get(&current_leaf_id).and_then(|leaf| {
-                leaf.tabs.iter().find(|t| match &t.content {
-                    crate::workspace::TabContent::Document { id } => {
-                        self.state.documents.get(id).map(|d| {
-                            crate::state::AppState::normalize_path(&d.path) == norm_note_path
-                        }).unwrap_or(false)
-                    }
-                    _ => false,
-                })
-            });
-
-            if let Some(tab) = outgoing_tab {
-                let doc_id = match tab.content {
-                    crate::workspace::TabContent::Document { id } => id,
-                    _ => self.state.find_document_by_path(&note_path).unwrap_or(crate::document_buffer::DocumentId(uuid::Uuid::nil())),
-                };
-                let view = self.state.views.entry(tab.id).or_insert_with(|| crate::workspace::EditorViewState::new(tab.id, doc_id));
-                view.cursor_offset = note_cursor;
-                view.selection_anchor = note_anchor;
-                view.scroll_top = scroll_top;
-                view.viewport.offset = anchor_line;
-                let line_top = note.doc_y_of_line(anchor_line);
-                view.viewport.px_in_line = ((scroll_top - line_top) as f32).max(0.0);
-                view.window = note.window.clone();
-                view.above_lines = note.above_lines;
-                view.below_lines = note.below_lines;
-                view.above_h = note.above_h;
-                view.below_h = note.below_h;
-                view.est_rows_per_line = note.est_rows_per_line;
-                view.est_row_h = note.est_row_h;
-                if self.title_editing_path.as_ref().map(|p| crate::state::AppState::normalize_path(p) == norm_note_path).unwrap_or(false) {
-                    view.title_edit_text = self.title_edit_text.clone();
-                    view.title_cursor_pos = self.title_cursor_pos;
-                    view.title_selection_anchor = self.title_selection_anchor;
-                    view.title_is_focused = self.title_is_focused;
-                }
-                view.visual_cache_dirty = false;
-                let measured_h = f32::from(self.editor_scroll_handle.bounds().size.height);
-                let (leaf_v_ratio, in_tb) = (
-                    self.state.workspace.vertical_height_ratio_of_leaf(current_leaf_id),
-                    self.state.workspace.is_leaf_in_titlebar(current_leaf_id),
-                );
-                let win_h: f32 = window.viewport_size().height.into();
-                let est_vh = ((win_h - 66.0).max(100.0) * leaf_v_ratio - (if in_tb { 90.0 } else { 126.0 })).max(50.0);
-                if measured_h > 50.0 && (measured_h - est_vh).abs() < (est_vh * 0.35).max(40.0) {
-                    view.measured_viewport_h = Some(measured_h);
-                }
-            }
-
-            let target_doc_path = self.state.leaves.get(&leaf_id)
-                .and_then(|l| l.tabs.get(tab_index))
-                .and_then(|t| match &t.content {
-                    crate::workspace::TabContent::Document { id } => self.state.documents.get(id).map(|d| d.path.clone()),
-                    _ => None,
-                });
-
-            let is_same_doc = target_doc_path.as_ref().map(|p| crate::state::AppState::normalize_path(p)) == Some(norm_note_path);
-
-            if let Some(doc_id) = self.state.find_document_by_path(&note_path) {
-                if let Some(doc) = self.state.documents.get_mut(&doc_id) {
-                    if is_same_doc {
-                        doc.is_dirty = note_dirty;
-                    } else {
-                        doc.stash_from_note(
-                            std::mem::take(&mut note.content),
-                            std::mem::take(&mut note.line_index),
-                            std::mem::take(&mut note.code_checkpoints),
-                            std::mem::take(&mut note.undo_stack),
-                            std::mem::take(&mut note.redo_stack),
-                            note_dirty,
-                            note.first_dirty_time,
-                        );
-                    }
-                }
-            }
-
-            if is_same_doc {
-                self.state.active_note = Some(note);
-            }
+        // 1. Snapshot outgoing note settings & view state
+        let current_scroll = self.current_scroll_top();
+        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+        let current_scroll_f64 = self.current_scroll_top_f64();
+        if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
+            let lines_total = doc.line_index.lines();
+            view.scroll_top = current_scroll_f64;
+            view.viewport.offset = view.line_at_doc_y(lines_total, current_scroll_f64);
+            let line_top = view.doc_y_of_line(lines_total, view.viewport.offset);
+            view.viewport.px_in_line = ((current_scroll_f64 - line_top) as f32).max(0.0);
         }
 
         // 2. Set new active tab index in target leaf and set active leaf
@@ -4469,199 +4113,58 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 match &tab.content {
                     crate::workspace::TabContent::Document { id } => {
                         let doc_id = *id;
-                        if let Some(doc) = self.state.documents.get(&doc_id) {
+                        let viewport_w: f32 = window.viewport_size().width.into();
+                        let editor_font = self.editor_font_family();
+                        let font_id = cx.text_system().resolve_font(&gpui::font(editor_font));
+                        let line_char_width = cx
+                            .text_system()
+                            .advance(font_id, px(14.0), 'x')
+                            .map(|s| f32::from(s.width))
+                            .unwrap_or(7.7);
+                        let target_wrap_cols = self.compute_wrap_cols_for_leaf(Some(leaf_id), viewport_w, line_char_width);
+                        self.last_wrap_cols = target_wrap_cols;
+
+                        if let Some(doc) = self.state.documents.get_mut(&doc_id) {
                             let doc_path = doc.path.clone();
-                            let doc_title = doc.title.clone();
-                            let doc_dirty = doc.is_dirty;
-                            let doc_version = doc.version;
+                            let lines_total = doc.line_index.lines();
 
-                            let view_state = self.state.views.get(&tab.id).cloned();
+                            let restore_y = {
+                                let view = self.state.views.entry(tab.id).or_insert_with(|| crate::workspace::EditorViewState::new(tab.id, doc_id));
 
-                            let mut opened = if let Some(existing) = self.state.active_note.take() {
-                                if existing.path == doc_path {
-                                    existing
+                                view.ensure_visual_cache_with_headings(doc, self.word_wrap, target_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+                                if view.window.wrap_cols == target_wrap_cols {
+                                    view.scroll_top
                                 } else {
-                                    let (content, line_index, code_checkpoints, undo_stack, redo_stack, first_dirty_time) =
-                                        if let Some(doc_mut) = self.state.documents.get_mut(&doc_id) {
-                                            let (c, li, cp, us, rs, fdt) = doc_mut.take_for_active_note();
-                                            let li = if li.lines() > 0 && li.len() == c.len() {
-                                                li
-                                            } else {
-                                                crate::line_index::LineIndex::new(&c)
-                                            };
-                                            (c, li, cp, us, rs, fdt)
-                                        } else {
-                                            (String::new(), crate::line_index::LineIndex::empty(), crate::code_scan::CodeCheckpoints::new(), Vec::new(), Vec::new(), None)
-                                        };
-                                    let mut content = content;
-                                    let mut line_index = line_index;
-                                    if content.is_empty() {
-                                        if let Ok(disk_content) = std::fs::read_to_string(&doc_path) {
-                                            line_index = crate::line_index::LineIndex::new(&disk_content);
-                                            content = disk_content;
-                                        }
-                                    }
-                                    crate::state::OpenedNote {
-                                        path: doc_path.clone(),
-                                        title: doc_title.clone(),
-                                        content,
-                                        version: doc_version,
-                                        cursor_offset: 0,
-                                        selection_anchor: None,
-                                        is_dirty: doc_dirty,
-                                        first_dirty_time,
-                                        undo_stack,
-                                        redo_stack,
-                                        pending_edits: Vec::new(),
-                                        line_index,
-                                        code_checkpoints,
-                                        window: crate::editor_window::EditorWindow::default(),
-                                        above_lines: 0,
-                                        below_lines: 0,
-                                        above_h: 0.0,
-                                        below_h: 0.0,
-                                        est_rows_per_line: 1.0,
-                                        est_row_h: 24.0,
-                                        visual_cache_dirty: true,
-                                        stats_cache: std::cell::Cell::new(None),
-                                        view_shell_cursor_line_col: None,
-                                        view_shell_selection_range: None,
-                                        view_shell_window_start_byte: None,
-                                        view_shell_sel_lines: None,
-                                    }
-                                }
-                            } else {
-                                let (content, line_index, code_checkpoints, undo_stack, redo_stack, first_dirty_time) =
-                                    if let Some(doc_mut) = self.state.documents.get_mut(&doc_id) {
-                                        let (c, li, cp, us, rs, fdt) = doc_mut.take_for_active_note();
-                                        let li = if li.lines() > 0 && li.len() == c.len() {
-                                            li
-                                        } else {
-                                            crate::line_index::LineIndex::new(&c)
-                                        };
-                                        (c, li, cp, us, rs, fdt)
+                                    let line_top = view.doc_y_of_line(lines_total, view.viewport.offset);
+                                    let calculated = line_top + view.viewport.px_in_line as f64;
+                                    if (calculated - view.scroll_top).abs() < 1.0 {
+                                        view.scroll_top
                                     } else {
-                                        (String::new(), crate::line_index::LineIndex::empty(), crate::code_scan::CodeCheckpoints::new(), Vec::new(), Vec::new(), None)
-                                    };
-                                let mut content = content;
-                                let mut line_index = line_index;
-                                if content.is_empty() {
-                                    if let Ok(disk_content) = std::fs::read_to_string(&doc_path) {
-                                        line_index = crate::line_index::LineIndex::new(&disk_content);
-                                        content = disk_content;
+                                        calculated
                                     }
-                                }
-                                crate::state::OpenedNote {
-                                    path: doc_path.clone(),
-                                    title: doc_title.clone(),
-                                    content,
-                                    version: doc_version,
-                                    cursor_offset: 0,
-                                    selection_anchor: None,
-                                    is_dirty: doc_dirty,
-                                    first_dirty_time,
-                                    undo_stack,
-                                    redo_stack,
-                                    pending_edits: Vec::new(),
-                                    line_index,
-                                    code_checkpoints,
-                                    window: crate::editor_window::EditorWindow::default(),
-                                    above_lines: 0,
-                                    below_lines: 0,
-                                    above_h: 0.0,
-                                    below_h: 0.0,
-                                    est_rows_per_line: 1.0,
-                                    est_row_h: 24.0,
-                                    visual_cache_dirty: true,
-                                    stats_cache: std::cell::Cell::new(None),
-                                    view_shell_cursor_line_col: None,
-                                    view_shell_selection_range: None,
-                                    view_shell_window_start_byte: None,
-                                    view_shell_sel_lines: None,
                                 }
                             };
 
-                            opened.is_dirty = doc_dirty;
+                            self.set_editor_scroll_top_f64(restore_y);
+                            self.pending_editor_restore = Some(restore_y);
+                            self.need_reveal_cursor = false;
+                            self.layout_settle_frames.set(SCROLL_SETTLE_FRAMES);
 
-                            if let Some(ref v) = view_state {
-                                let mut co = v.cursor_offset.min(opened.content.len());
-                                while co > 0 && !opened.content.is_char_boundary(co) {
-                                    co -= 1;
-                                }
-                                opened.cursor_offset = co;
-                                opened.selection_anchor = v.selection_anchor.map(|a| {
-                                    let mut sa = a.min(opened.content.len());
-                                    while sa > 0 && !opened.content.is_char_boundary(sa) {
-                                        sa -= 1;
-                                    }
-                                    sa
-                                });
-                                if !v.window.is_empty() && v.window.covers_line(v.viewport.offset) {
-                                    opened.window = v.window.clone();
-                                    opened.above_lines = v.above_lines;
-                                    opened.below_lines = v.below_lines;
-                                    opened.above_h = v.above_h;
-                                    opened.below_h = v.below_h;
-                                    opened.est_rows_per_line = v.est_rows_per_line;
-                                    opened.est_row_h = v.est_row_h;
-                                    opened.visual_cache_dirty = false;
-                                } else {
-                                    opened.ensure_visual_cache_with_headings(self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), v.viewport.offset);
-                                }
-                                let line_top = opened.doc_y_of_line(v.viewport.offset);
-                                let calculated = line_top + v.viewport.px_in_line as f64;
-                                let restore_y = if (calculated - v.scroll_top).abs() < 1.0 {
-                                    v.scroll_top
-                                } else {
-                                    calculated
-                                };
-                                self.set_editor_scroll_top_f64(restore_y);
-                                self.editor_anchor_line.set(v.viewport.offset);
-                                self.pending_editor_restore = Some(restore_y);
-                                self.need_reveal_cursor = false;
-                                self.layout_settle_frames.set(SCROLL_SETTLE_FRAMES);
-                            }
-
-                            self.state.active_note = Some(opened);
                             self.state.active_empty_tab = None;
-                            if let Some(ref v) = view_state {
-                                if !v.title_edit_text.is_empty() {
-                                    self.title_edit_text = v.title_edit_text.clone();
-                                    self.title_cursor_pos = v.title_cursor_pos;
-                                    self.title_selection_anchor = v.title_selection_anchor;
-                                    self.title_is_focused = v.title_is_focused;
-                                } else {
-                                    self.title_edit_text = doc_title;
-                                    self.title_cursor_pos = self.title_edit_text.chars().count();
-                                    self.title_selection_anchor = None;
-                                    self.title_is_focused = false;
-                                }
-                            } else {
-                                self.title_edit_text = doc_title;
-                                self.title_cursor_pos = self.title_edit_text.chars().count();
-                                self.title_selection_anchor = None;
-                                self.title_is_focused = false;
-                            }
-                            self.title_editing_path = Some(doc_path.clone());
-                            self.title_is_mouse_selecting = false;
+                            self.state.session.active_note = Some(doc_path);
                         }
                     }
                     crate::workspace::TabContent::Empty => {
-                        self.state.active_note = None;
                         self.state.active_empty_tab = Some(std::path::PathBuf::from("newtab"));
                         self.active_center_leaf = None;
-                        self.title_editing_path = None;
-                        self.title_edit_text.clear();
-                        self.title_cursor_pos = 0;
+                        self.state.session.active_note = Some(crate::state::empty_tab_path());
                     }
                     crate::workspace::TabContent::Plugin { view_id } => {
-                        self.state.active_note = None;
                         self.state.active_empty_tab = None;
                         self.active_center_leaf = Some(view_id.clone());
                     }
                 }
             } else {
-                self.state.active_note = None;
                 self.state.active_empty_tab = None;
                 self.active_center_leaf = None;
             }
@@ -4673,10 +4176,26 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 crate::workspace::TabContent::Empty => Some(std::path::PathBuf::from("newtab")),
                 _ => None,
             }).collect();
+            self.state.session.open_tabs = self.state.open_tabs.clone();
         }
 
         window.focus(&self.focus_handle);
         cx.notify();
+    }
+
+    /// Selects a tab within a leaf by its TabId.
+    pub fn select_tab(
+        &mut self,
+        leaf_id: crate::workspace::LeafId,
+        tab_id: crate::workspace::TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(leaf) = self.state.leaves.get(&leaf_id) {
+            if let Some(idx) = leaf.tabs.iter().position(|t| t.id == tab_id) {
+                self.select_leaf_tab(leaf_id, idx, window, cx);
+            }
+        }
     }
 
     pub fn close_leaf_tab(
@@ -4686,51 +4205,29 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let is_active_note_closing = match (
-            self.state.active_note.as_ref(),
-            self.state.leaves.get(&leaf_id).and_then(|l| l.tabs.get(tab_index)),
-        ) {
-            (Some(note), Some(tab)) => match &tab.content {
-                crate::workspace::TabContent::Document { id } => {
-                    self.state.documents.get(id).map(|d| {
-                        crate::state::AppState::normalize_path(&d.path) == crate::state::AppState::normalize_path(&note.path)
-                    }).unwrap_or(false)
-                }
-                _ => false,
-            },
-            _ => false,
+        let req = match self.state.request_close_leaf_tab(leaf_id, tab_index) {
+            Ok((_tab_id, req)) => req,
+            Err(_) => return,
         };
 
-        if is_active_note_closing {
-            if let Some(ref note) = self.state.active_note {
-                if note.is_dirty {
-                    self.state.save_active_note();
+        if let crate::workspace::CloseRequest::NeedsEffects(effects) = req {
+            for eff in effects {
+                if let Err(err) = self.state.run_close_effect(&eff) {
+                    self.state.status_text = format!("Close cancelled: {}", err);
+                    cx.notify();
+                    return;
                 }
             }
-            self.state.active_note = None;
-            self.title_editing_path = None;
-            self.title_edit_text.clear();
-            self.title_cursor_pos = 0;
-            self.title_selection_anchor = None;
-            self.title_is_mouse_selecting = false;
         }
 
-        let closed_path = self.state.close_leaf_tab(leaf_id, tab_index);
-        if let Some(ref path) = closed_path {
-            let norm_closed = crate::state::AppState::normalize_path(path);
-            if self.state.active_note.as_ref().map(|n| crate::state::AppState::normalize_path(&n.path) == norm_closed).unwrap_or(false) {
-                self.state.active_note = None;
-                self.title_editing_path = None;
-                self.title_edit_text.clear();
-                self.title_cursor_pos = 0;
-                self.title_selection_anchor = None;
-                self.title_is_mouse_selecting = false;
-            }
+        if self.state.finish_close_leaf_tab(leaf_id, tab_index).is_err() {
+            return;
         }
 
         let active = self.state.workspace.active_leaf;
         let active_idx = self.state.leaves.get(&active).map(|l| l.active_tab_index).unwrap_or(0);
         self.select_leaf_tab(active, active_idx, window, cx);
+        self.layout_settle_frames.set(SCROLL_SETTLE_FRAMES);
         cx.notify();
     }
 
@@ -4747,27 +4244,17 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(ref note) = self.state.active_note {
-            if note.is_dirty {
-                self.state.save_active_note();
+        while let Some(count) = self.state.leaves.get(&leaf_id).map(|l| l.tabs.len()) {
+            if count == 0 {
+                break;
+            }
+            let prev_count = count;
+            self.close_leaf_tab(leaf_id, count - 1, window, cx);
+            if self.state.leaves.get(&leaf_id).map(|l| l.tabs.len()) == Some(prev_count) {
+                break;
             }
         }
-
-        if let Some(leaf) = self.state.leaves.get_mut(&leaf_id) {
-            leaf.tabs.clear();
-            leaf.tabs.push(crate::workspace::Tab::new_empty());
-            leaf.active_tab_index = 0;
-        }
-
-        self.state.cleanup_orphaned_documents_and_views();
-
-        if self.state.workspace.active_leaf == leaf_id {
-            self.commit_title_rename_internal();
-            self.state.active_note = None;
-            self.state.active_empty_tab = None;
-        }
-
-        self.select_leaf_tab(leaf_id, 0, window, cx);
+        self.layout_settle_frames.set(SCROLL_SETTLE_FRAMES);
         cx.notify();
     }
 
@@ -5507,9 +4994,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                     this.is_dragging_scrollbar = false;
                                     this.is_hovering_editor_scrollbar = false;
                                     this.is_hovering_editor_thumb = false;
-                                    if let Some(ref note) = this.state.active_note {
-                                        let top_y = this.current_scroll_top_f64();
-                                        this.editor_anchor_line.set(note.line_at_doc_y(top_y));
+                                    let top_y = this.current_scroll_top_f64();
+                                    if let Some((view, doc)) = this.state.active_view_and_doc_mut() {
+                                        view.viewport.offset = view.line_at_doc_y(doc.line_index.lines(), top_y);
                                     }
                                     let editor_left_w = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
                                     let editor_right_w = if this.right_sidebar_collapsed { 0.0 } else { this.right_sidebar_width + 1.0 };
@@ -5613,9 +5100,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                             this.is_dragging_scrollbar = false;
                                             this.is_hovering_editor_scrollbar = false;
                                             this.is_hovering_editor_thumb = false;
-                                            if let Some(ref note) = this.state.active_note {
-                                                let top_y = this.current_scroll_top_f64();
-                                                this.editor_anchor_line.set(note.line_at_doc_y(top_y));
+                                            let top_y = this.current_scroll_top_f64();
+                                            if let Some((view, doc)) = this.state.active_view_and_doc_mut() {
+                                                view.viewport.offset = view.line_at_doc_y(doc.line_index.lines(), top_y);
                                             }
                                             let editor_left_w = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
                                             let editor_right_w = if this.right_sidebar_collapsed { 0.0 } else { this.right_sidebar_width + 1.0 };
@@ -5662,9 +5149,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                             this.is_dragging_scrollbar = false;
                                             this.is_hovering_editor_scrollbar = false;
                                             this.is_hovering_editor_thumb = false;
-                                            if let Some(ref note) = this.state.active_note {
-                                                let top_y = this.current_scroll_top_f64();
-                                                this.editor_anchor_line.set(note.line_at_doc_y(top_y));
+                                            let top_y = this.current_scroll_top_f64();
+                                            if let Some((view, doc)) = this.state.active_view_and_doc_mut() {
+                                                view.viewport.offset = view.line_at_doc_y(doc.line_index.lines(), top_y);
                                             }
                                             let win_h: f32 = window.bounds().size.height.into();
                                             let span = (win_h - 66.0).max(100.0);
@@ -5761,7 +5248,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         if is_active {
             leaf_container.child(
-                self.render_central_editor(None, true, Some(leaf_id), theme, window, cx)
+                self.render_central_editor(None, None, true, Some(leaf_id), theme, window, cx)
             )
         } else {
             let active_tab = self.state.leaves.get(&leaf_id).and_then(|l| l.active_tab());
@@ -5769,149 +5256,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 match &tab.content {
                     crate::workspace::TabContent::Document { id } => {
                         if let Some(doc) = self.state.documents.get(id) {
-                            let (doc_content_ref, line_index_ref) = if let Some(ref active) = self.state.active_note {
-                                if active.path == doc.path {
-                                    (active.content.as_str(), &active.line_index)
-                                } else {
-                                    (doc.content(), &doc.line_index)
-                                }
-                            } else {
-                                (doc.content(), &doc.line_index)
-                            };
-
-                            let view = self.state.views.get(&tab.id).cloned();
-                            let cursor_offset = view.as_ref().map(|v| v.cursor_offset).unwrap_or(0);
-                            let selection_anchor = view.as_ref().and_then(|v| v.selection_anchor);
-                            let anchor_line = view.as_ref().map(|v| v.viewport.offset).unwrap_or(0);
-
-                            let editor_font = self.editor_font_family();
-                            let font_id = cx.text_system().resolve_font(&gpui::font(editor_font));
-                            let line_char_width = cx
-                                .text_system()
-                                .advance(font_id, px(14.0), 'x')
-                                .map(|s| f32::from(s.width))
-                                .unwrap_or(7.7);
-                            let viewport_w: f32 = window.viewport_size().width.into();
-                            let leaf_wrap_cols = self.compute_wrap_cols_for_leaf(Some(leaf_id), viewport_w, line_char_width);
-
-                            let mut editor_window = view.as_ref().map(|v| v.window.clone()).unwrap_or_default();
-                            let lines_total = line_index_ref.lines();
-                            if editor_window.is_empty() || editor_window.should_move_to(anchor_line, lines_total, self.word_wrap, leaf_wrap_cols) {
-                                let (start, end) = crate::editor_window::EditorWindow::bounds_for(anchor_line, lines_total);
-                                let mut checkpoints = if let Some(ref active) = self.state.active_note {
-                                    if active.path == doc.path {
-                                        active.code_checkpoints.clone()
-                                    } else {
-                                        doc.code_checkpoints.clone()
-                                    }
-                                } else {
-                                    doc.code_checkpoints.clone()
-                                };
-                                checkpoints.ensure(doc_content_ref, line_index_ref, start + 1);
-                                let initial = checkpoints.state_at(doc_content_ref, line_index_ref, start).unwrap_or_default();
-                                editor_window = crate::editor_window::EditorWindow::build(
-                                    doc_content_ref,
-                                    line_index_ref,
-                                    start,
-                                    end,
-                                    self.word_wrap,
-                                    leaf_wrap_cols,
-                                    Some(&self.config.editor.headings),
-                                    initial,
-                                );
-                            }
-
-                            let above_lines = editor_window.start_line;
-                            let below_lines = line_index_ref.lines().saturating_sub(editor_window.end_line);
-                            let rows = editor_window.visual_rows.len();
-                            let lines = editor_window.line_count();
-                            let (est_rows_per_line, est_row_h) = if rows > 0 && lines > 0 {
-                                (rows as f64 / lines as f64, editor_window.total_height() / rows as f64)
-                            } else {
-                                (1.0, 24.0)
-                            };
-                            let rows_per_line = est_rows_per_line.max(f64::MIN_POSITIVE);
-                            let above_h = (above_lines as f64 * rows_per_line).round() * est_row_h;
-                            let below_h = (below_lines as f64 * rows_per_line).round() * est_row_h;
-
-                            let stats = if let Some(ref active) = self.state.active_note {
-                                if active.path == doc.path {
-                                    Some(active.text_stats())
-                                } else {
-                                    Some(doc.text_stats())
-                                }
-                            } else {
-                                Some(doc.text_stats())
-                            };
-
-                            let mut valid_cursor_offset = cursor_offset.min(doc_content_ref.len());
-                            while valid_cursor_offset > 0 && !doc_content_ref.is_char_boundary(valid_cursor_offset) {
-                                valid_cursor_offset -= 1;
-                            }
-
-                            let cursor_line = line_index_ref.line_of(doc_content_ref, valid_cursor_offset);
-                            let mut line_start = line_index_ref.start(doc_content_ref, cursor_line).min(valid_cursor_offset);
-                            while line_start > 0 && !doc_content_ref.is_char_boundary(line_start) {
-                                line_start -= 1;
-                            }
-                            let cursor_col = if valid_cursor_offset >= line_start && valid_cursor_offset <= doc_content_ref.len() {
-                                doc_content_ref[line_start..valid_cursor_offset].chars().count()
-                            } else {
-                                0
-                            };
-                            let valid_anchor = selection_anchor.map(|anchor| {
-                                let mut a = anchor.min(doc_content_ref.len());
-                                while a > 0 && !doc_content_ref.is_char_boundary(a) {
-                                    a -= 1;
-                                }
-                                a
-                            });
-                            let sel_range = if let Some(anchor) = valid_anchor {
-                                if anchor != valid_cursor_offset {
-                                    let s = anchor.min(valid_cursor_offset);
-                                    let e = anchor.max(valid_cursor_offset);
-                                    if s != e { Some(s..e) } else { None }
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            };
-                            let sel_lines = sel_range.as_ref().map(|r| {
-                                (
-                                    line_index_ref.line_of(doc_content_ref, r.start),
-                                    line_index_ref.line_of(doc_content_ref, r.end),
-                                )
-                            });
-                            let window_start_line = editor_window.start_line;
-                            let window_start_byte = line_index_ref.start(doc_content_ref, window_start_line);
-
-                            let temp_note = crate::state::OpenedNote::new_view_shell(
-                                doc.path.clone(),
-                                doc.title.clone(),
-                                doc.version,
-                                valid_cursor_offset,
-                                valid_anchor,
-                                doc.is_dirty,
-                                doc.first_dirty_time,
-                                line_index_ref.clone(),
-                                editor_window,
-                                above_lines,
-                                below_lines,
-                                above_h,
-                                below_h,
-                                est_rows_per_line,
-                                est_row_h,
-                                stats,
-                            ).with_view_shell_layout(
-                                (cursor_line, cursor_col),
-                                sel_range,
-                                (window_start_line, window_start_byte),
-                                sel_lines,
-                            );
-
+                            let view = self.state.views.get(&tab.id);
                             leaf_container.child(
-                                self.render_central_editor(Some(&temp_note), false, Some(leaf_id), theme, window, cx)
+                                self.render_central_editor(view, Some(doc), false, Some(leaf_id), theme, window, cx)
                             )
                         } else {
                             leaf_container.child(
@@ -5927,7 +5274,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     }
                     crate::workspace::TabContent::Empty => {
                         leaf_container.child(
-                            self.render_central_editor(None, false, Some(leaf_id), theme, window, cx)
+                            self.render_central_editor(None, None, false, Some(leaf_id), theme, window, cx)
                         )
                     }
                     crate::workspace::TabContent::Plugin { view_id } => {
@@ -5976,7 +5323,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
     pub(crate) fn render_central_editor(
         &self,
-        override_note: Option<&crate::state::OpenedNote>,
+        override_view: Option<&crate::workspace::EditorViewState>,
+        override_doc: Option<&crate::document_buffer::DocumentBuffer>,
         is_leaf_active: bool,
         leaf_id: Option<crate::workspace::LeafId>,
         theme: &Theme,
@@ -6016,6 +5364,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| {
                         this.switch_to_leaf(lid, window, cx);
+                        window.focus(&this.focus_handle);
+                        cx.notify();
                     }))
                     .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, window, cx| {
                         this.switch_to_leaf(lid, window, cx);
@@ -6024,35 +5374,35 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             }
         }
 
-        editor_root = editor_root.child(self.render_navigation_bar(override_note, leaf_id, theme, cx));
+        editor_root = editor_root.child(self.render_navigation_bar(override_doc, leaf_id, theme, cx));
 
-        let current_note = if let Some(n) = override_note {
-            Some(n)
-        } else if is_leaf_active && self.active_center_leaf.is_none() {
-            self.state.active_note.as_ref()
-        } else {
-            None
+        let current_view_and_doc = match (override_view, override_doc) {
+            (Some(v), Some(d)) => Some((v, d)),
+            _ if is_leaf_active && self.active_center_leaf.is_none() => {
+                self.state.active_view_and_doc()
+            }
+            _ => None,
         };
 
-        if let Some(note) = current_note {
-            let note_title = note
+        if let Some((view, doc)) = current_view_and_doc {
+            let note_title = doc
                 .path
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "Untitled".to_string());
 
-            let lines_arc = Arc::clone(&note.window.lines);
-            let line_number_digits = note.line_index.lines().max(1).to_string().len().max(3);
+            let lines_arc = Arc::clone(&view.window.lines);
+            let line_number_digits = doc.line_index.lines().max(1).to_string().len().max(3);
             let line_number_width = 40.0 + line_number_digits.saturating_sub(3) as f32 * line_char_width;
-            let visual_rows_arc = Arc::clone(&note.window.visual_rows);
-            let code_states_arc = Arc::clone(&note.window.code_states);
-            let height_index_arc = Arc::clone(&note.window.height_index);
+            let visual_rows_arc = Arc::clone(&view.window.visual_rows);
+            let code_states_arc = Arc::clone(&view.window.code_states);
+            let height_index_arc = Arc::clone(&view.window.height_index);
 
-            let (cursor_line, cursor_col) = note.line_col();
+            let (cursor_line, cursor_col) = view.line_col(doc);
             let (active_v_idx, active_col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows_arc, cursor_line, cursor_col)
                 .unwrap_or((0, 0));
 
-            let selection_range = note.selection_range();
+            let selection_range = view.selection_range(doc.len());
             let is_editing = is_leaf_active && self.edit_mode;
             let mut active_block_ids: std::collections::HashSet<usize> = std::collections::HashSet::new();
             if is_editing {
@@ -6061,8 +5411,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 }
                 if let Some(ref sel) = selection_range {
                     if sel.start < sel.end {
-                        let sel_start_line = note.line_of_byte(sel.start);
-                        let sel_end_line = note.line_of_byte(sel.end);
+                        let sel_start_line = doc.line_of_byte(sel.start);
+                        let sel_end_line = doc.line_of_byte(sel.end);
                         let win_start = code_states_arc.start();
                         let win_end = code_states_arc.end();
                         let scan_start = sel_start_line.max(win_start);
@@ -6082,7 +5432,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
             let theme_scrollbar = theme.clone();
 
-            let total_content_h = note.total_height();
+            let total_content_h = view.total_height();
             let (slice_h, viewport_h, max_scroll_content, track_top_y) =
                 self.editor_scroll_metrics_for_leaf(leaf_id, is_leaf_active, total_content_h, window_h);
             if is_leaf_active {
@@ -6095,11 +5445,11 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             let leaf_scroll_top = if is_leaf_active {
                 if let Some(target) = self.pending_editor_restore {
                     target
-                } else if self.is_resizing_any() && note.window.covers_line(self.editor_anchor_line.get()) {
-                    let first_v_idx = note.window.first_row_of_line(self.editor_anchor_line.get()).unwrap_or(0);
-                    let line_y = note.above_h + note.window.height_index.top_of(first_v_idx);
+                } else if self.is_resizing_any() && view.window.covers_line(view.viewport.offset) {
+                    let first_v_idx = view.window.first_row_of_line(view.viewport.offset).unwrap_or(0);
+                    let line_y = view.above_h + view.window.height_index.top_of(first_v_idx);
                     let curr = self.current_scroll_top_f64();
-                    if (curr - line_y).abs() > (note.window.total_height() * 0.4).max(500.0) {
+                    if (curr - line_y).abs() > (view.window.total_height() * 0.4).max(500.0) {
                         line_y
                     } else {
                         curr
@@ -6112,19 +5462,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     self.state.leaves.get(&lid)
                         .and_then(|l| l.active_tab())
                         .and_then(|t| self.state.views.get(&t.id))
-                        .map(|v| {
-                            if note.window.covers_line(v.viewport.offset) {
-                                let first_v_idx = note.window.first_row_of_line(v.viewport.offset).unwrap_or(0);
-                                let calculated = note.above_h + note.window.height_index.top_of(first_v_idx) + v.viewport.px_in_line as f64;
-                                if (calculated - v.scroll_top).abs() < 1.0 {
-                                    v.scroll_top
-                                } else {
-                                    calculated
-                                }
-                            } else {
-                                v.scroll_top
-                            }
-                        })
+                        .map(|v| v.scroll_top)
                 }).unwrap_or(0.0)
             };
 
@@ -6167,17 +5505,18 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             .clamp(0.0, f64::from(viewport_h) - 2.0)
                             as f32
                     };
-                    let cursor_doc_y = if note.window.covers_line(cursor_line) {
-                        note.doc_y_of_local_v_idx(active_v_idx)
+                    let lines_total = doc.line_index.lines();
+                    let cursor_doc_y = if view.window.covers_line(cursor_line) {
+                        view.doc_y_of_local_v_idx(active_v_idx)
                     } else {
-                        note.doc_y_of_line(cursor_line)
+                        view.doc_y_of_line(lines_total, cursor_line)
                     };
                     let cursor_y = to_track(cursor_doc_y);
-                    let sel_span = note.selection_range().map(|sel| {
-                        let start_line = note.line_of_byte(sel.start);
-                        let end_line = note.line_of_byte(sel.end);
-                        let a = note.doc_y_of_line(start_line);
-                        let b = note.doc_y_of_line(end_line);
+                    let sel_span = view.selection_range(doc.len()).map(|sel| {
+                        let start_line = doc.line_of_byte(sel.start);
+                        let end_line = doc.line_of_byte(sel.end);
+                        let a = view.doc_y_of_line(lines_total, start_line);
+                        let b = view.doc_y_of_line(lines_total, end_line);
                         let top = to_track(a.min(b));
                         let bottom = to_track(a.max(b)) + 2.0;
                         (top, (bottom - top).max(3.0))
@@ -6193,27 +5532,30 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 && ruler_cursor_y < thumb_top + thumb_h
                 && ruler_cursor_y + 2.0 > thumb_top;
 
-            let is_title_focused = is_leaf_active && self.title_focus_handle.is_focused(window);
-            let inactive_leaf_title = if !is_leaf_active {
-                leaf_id.and_then(|lid| {
-                    self.state.leaves.get(&lid)
-                        .and_then(|l| l.active_tab())
-                        .and_then(|t| self.state.views.get(&t.id))
-                        .and_then(|v| if !v.title_edit_text.is_empty() { Some(v.title_edit_text.clone()) } else { None })
-                })
+            let leaf_active_tab_id = leaf_id.and_then(|lid| {
+                self.state.leaves.get(&lid).and_then(|l| l.active_tab()).map(|t| t.id)
+            });
+            let leaf_view = leaf_active_tab_id.and_then(|tid| self.state.views.get(&tid));
+            let title_input_opt = leaf_view.and_then(|v| v.title_input.as_ref());
+            let is_editing_title = title_input_opt.is_some();
+            let is_title_focused = is_leaf_active && is_editing_title && self.title_focus_handle.is_focused(window);
+
+            let title_text: String = if let Some(input) = title_input_opt {
+                input.text.clone()
+            } else {
+                note_title.clone()
+            };
+            let title_chars: Vec<char> = title_text.chars().collect();
+            let cursor_pos = if let Some(input) = title_input_opt {
+                input.cursor_pos.min(title_chars.len())
+            } else {
+                0
+            };
+            let title_selection_range = if is_leaf_active {
+                title_input_opt.and_then(|i| i.selection_range())
             } else {
                 None
             };
-            let title_text = if is_leaf_active {
-                &self.title_edit_text
-            } else if let Some(ref t) = inactive_leaf_title {
-                t
-            } else {
-                &note_title
-            };
-            let title_chars: Vec<char> = title_text.chars().collect();
-            let cursor_pos = if is_leaf_active { self.title_cursor_pos.min(title_chars.len()) } else { 0 };
-            let title_selection_range = if is_leaf_active { self.title_selection_range() } else { None };
 
             let run = gpui::TextRun {
                 len: title_text.len(),
@@ -6288,21 +5630,25 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 title_box = title_box
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
                         window.focus(&this.title_focus_handle);
-                        this.title_is_focused = true;
+                        if let Some((view, doc)) = this.state.active_view_and_doc_mut() {
+                            if view.title_input.is_none() {
+                                view.start_title_edit(doc.title.clone());
+                            }
+                            if let Some(ref mut input) = view.title_input {
+                                input.is_focused = true;
+                                input.cursor_pos = input.text.chars().count();
+                                input.selection_anchor = None;
+                                input.is_mouse_selecting = false;
+                            }
+                        }
                         this.reset_title_cursor_blink(cx);
-                        this.title_cursor_pos = this.title_edit_text.chars().count();
-                        this.title_selection_anchor = None;
                         cx.notify();
                     }));
             } else if let Some(lid) = leaf_id {
                 title_box = title_box
                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| {
                         this.switch_to_leaf(lid, window, cx);
-                        window.focus(&this.title_focus_handle);
-                        this.title_is_focused = true;
-                        this.reset_title_cursor_blink(cx);
-                        this.title_cursor_pos = this.title_edit_text.chars().count();
-                        this.title_selection_anchor = None;
+                        window.focus(&this.focus_handle);
                         cx.notify();
                     }));
             }
@@ -6324,7 +5670,6 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                         cx.stop_propagation();
                         window.focus(&this.title_focus_handle);
-                        this.title_is_focused = true;
                         this.reset_title_cursor_blink(cx);
 
                         let click_x: f32 = event.position.x.into();
@@ -6335,11 +5680,18 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                         let title_left_x = editor_left_x + leaf_ratio * editor_total_w + 48.0;
                         let rel_x = (click_x - title_left_x).max(0.0);
 
-                        let clicked_pos = if this.title_edit_text.is_empty() {
+                        let Some((view, doc)) = this.state.active_view_and_doc_mut() else { return; };
+                        if view.title_input.is_none() {
+                            view.start_title_edit(doc.title.clone());
+                        }
+                        let Some(ref mut input) = view.title_input else { return; };
+                        input.is_focused = true;
+
+                        let clicked_pos = if input.text.is_empty() {
                             0
                         } else {
                             let run = gpui::TextRun {
-                                len: this.title_edit_text.len(),
+                                len: input.text.len(),
                                 font: gpui::font("Segoe UI").bold(),
                                 color: Default::default(),
                                 underline: Default::default(),
@@ -6347,29 +5699,28 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                 background_color: None,
                             };
                             let shaped = window.text_system().shape_line(
-                                SharedString::from(this.title_edit_text.clone()),
+                                SharedString::from(input.text.clone()),
                                 px(28.0),
                                 &[run],
                                 None,
                             );
                             let byte_idx = shaped.closest_index_for_x(px(rel_x));
-                            this.title_edit_text[..byte_idx.min(this.title_edit_text.len())].chars().count()
+                            input.text[..byte_idx.min(input.text.len())].chars().count()
                         };
 
                         if event.click_count == 2 {
-                            this.title_selection_anchor = Some(0);
-                            this.title_cursor_pos = this.title_edit_text.chars().count();
-                            this.title_is_mouse_selecting = false;
+                            input.select_all();
+                            input.is_mouse_selecting = false;
                         } else if event.modifiers.shift {
-                            if this.title_selection_anchor.is_none() {
-                                this.title_selection_anchor = Some(this.title_cursor_pos);
+                            if input.selection_anchor.is_none() {
+                                input.selection_anchor = Some(input.cursor_pos);
                             }
-                            this.title_cursor_pos = clicked_pos;
-                            this.title_is_mouse_selecting = true;
+                            input.cursor_pos = clicked_pos;
+                            input.is_mouse_selecting = true;
                         } else {
-                            this.title_cursor_pos = clicked_pos;
-                            this.title_selection_anchor = Some(clicked_pos);
-                            this.title_is_mouse_selecting = true;
+                            input.cursor_pos = clicked_pos;
+                            input.selection_anchor = Some(clicked_pos);
+                            input.is_mouse_selecting = true;
                         }
                         cx.notify();
                     }))
@@ -6379,51 +5730,10 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     }));
             } else if let Some(lid) = leaf_id {
                 title_input = title_input
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
                         this.switch_to_leaf(lid, window, cx);
-                        window.focus(&this.title_focus_handle);
-                        this.title_is_focused = true;
-                        this.reset_title_cursor_blink(cx);
-
-                        let click_x: f32 = event.position.x.into();
-                        let editor_left_x = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
-                        let leaf_ratio = this.state.workspace.horizontal_ratio_of_leaf(lid);
-                        let window_w: f32 = window.bounds().size.width.into();
-                        let editor_total_w = (window_w - editor_left_x).max(0.0);
-                        let title_left_x = editor_left_x + leaf_ratio * editor_total_w + 48.0;
-                        let rel_x = (click_x - title_left_x).max(0.0);
-
-                        let clicked_pos = if this.title_edit_text.is_empty() {
-                            0
-                        } else {
-                            let run = gpui::TextRun {
-                                len: this.title_edit_text.len(),
-                                font: gpui::font("Segoe UI").bold(),
-                                color: Default::default(),
-                                underline: Default::default(),
-                                strikethrough: None,
-                                background_color: None,
-                            };
-                            let shaped = window.text_system().shape_line(
-                                SharedString::from(this.title_edit_text.clone()),
-                                px(28.0),
-                                &[run],
-                                None,
-                            );
-                            let byte_idx = shaped.closest_index_for_x(px(rel_x));
-                            this.title_edit_text[..byte_idx.min(this.title_edit_text.len())].chars().count()
-                        };
-
-                        if event.click_count == 2 {
-                            this.title_selection_anchor = Some(0);
-                            this.title_cursor_pos = this.title_edit_text.chars().count();
-                            this.title_is_mouse_selecting = false;
-                        } else {
-                            this.title_cursor_pos = clicked_pos;
-                            this.title_selection_anchor = Some(clicked_pos);
-                            this.title_is_mouse_selecting = true;
-                        }
+                        window.focus(&this.focus_handle);
                         cx.notify();
                     }));
             }
@@ -6520,14 +5830,14 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                         window.focus(&this.focus_handle);
                         let click_x: f32 = event.position.x.into();
                         let click_y: f32 = event.position.y.into();
-                        let has_selection = this.state.active_note.as_ref()
-                            .and_then(|n| n.selection_range())
+                        let has_selection = this.state.active_view()
+                            .and_then(|v| this.state.active_document().and_then(|d| v.selection_range(d.len())))
                             .map(|r| r.start < r.end)
                             .unwrap_or(false);
                         if !has_selection {
                             this.handle_editor_mouse_down(click_x, click_y, false, 1, window, cx);
-                            if let Some(ref mut note) = this.state.active_note {
-                                note.selection_anchor = None;
+                            if let Some(view) = this.state.active_view_mut() {
+                                view.selection_anchor = None;
                             }
                         }
                         this.open_editor_context_menu(click_x, click_y, cx);
@@ -6591,9 +5901,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                         this.sidebar_scrollbar_drag.end();
                         this.plugin_modal_scrollbar_drag.end();
                         this.is_mouse_selecting = false;
-                        if let Some(ref mut n) = this.state.active_note {
-                            if n.selection_anchor == Some(n.cursor_offset) {
-                                n.selection_anchor = None;
+                        if let Some(view) = this.state.active_view_mut() {
+                            if view.selection_anchor == Some(view.cursor_offset) {
+                                view.selection_anchor = None;
                             }
                         }
                         cx.notify();
@@ -6646,7 +5956,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 if is_leaf_active && !self.is_resizing_any() && (raw_scroll_y - scroll_y).abs() > 0.5 {
                     self.set_editor_scroll_top_f64(scroll_y);
                 }
-                let local_scroll = scroll_y - note.above_h;
+                let local_scroll = scroll_y - view.above_h;
                 let vr = height_index_arc.visible_range(
                     local_scroll,
                     f64::from(slice_h),
@@ -6668,7 +5978,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     let first = visual_rows_arc[lo].line_idx;
                     let last = visual_rows_arc[hi - 1].line_idx;
                     let mut starts = Vec::with_capacity(last - first + 1);
-                    let mut at = note.line_start_byte(first);
+                    let mut at = doc.line_start_byte(first);
                     for l_idx in first..=last {
                         starts.push(at);
                         at += lines_arc[l_idx].len() + 1;
@@ -7008,24 +6318,24 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                 0
                             };
                             let target_char = v_char_start + col_in_row;
-                            if let Some(ref mut n) = this.state.active_note {
-                                let offset = n.offset_for_line_col(v_line_idx, target_char);
+                            if let Some((view, doc)) = this.state.active_view_and_doc_mut() {
+                                let offset = view.offset_for_line_col(doc, v_line_idx, target_char);
                                 if event.click_count == 2 {
-                                    let (w_start, w_end) = n.word_range_at(offset);
-                                    n.selection_anchor = Some(w_start);
-                                    n.cursor_offset = w_end;
+                                    let (w_start, w_end) = doc.word_range_at(offset);
+                                    view.selection_anchor = Some(w_start);
+                                    view.cursor_offset = w_end;
                                 } else if event.click_count >= 3 {
-                                    let (l_start, l_end) = n.line_range_at(offset);
-                                    n.selection_anchor = Some(l_start);
-                                    n.cursor_offset = l_end;
+                                    let (l_start, l_end) = doc.line_range_at(offset);
+                                    view.selection_anchor = Some(l_start);
+                                    view.cursor_offset = l_end;
                                 } else if event.modifiers.shift {
-                                    if n.selection_anchor.is_none() {
-                                        n.selection_anchor = Some(n.cursor_offset);
+                                    if view.selection_anchor.is_none() {
+                                        view.selection_anchor = Some(view.cursor_offset);
                                     }
-                                    n.cursor_offset = offset;
+                                    view.cursor_offset = offset;
                                 } else {
-                                    n.cursor_offset = offset;
-                                    n.selection_anchor = Some(offset);
+                                    view.cursor_offset = offset;
+                                    view.selection_anchor = Some(offset);
                                 }
                             }
                             window.focus(&this.focus_handle);
@@ -7043,13 +6353,13 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                     0
                                 };
                                 let target_char = v_char_start + col_in_row;
-                                if let Some(ref mut n) = this.state.active_note {
-                                    let new_offset = n.offset_for_line_col(v_line_idx, target_char);
-                                    if n.selection_anchor.is_none() {
-                                        n.selection_anchor = Some(n.cursor_offset);
+                                if let Some((view, doc)) = this.state.active_view_and_doc_mut() {
+                                    let new_offset = view.offset_for_line_col(doc, v_line_idx, target_char);
+                                    if view.selection_anchor.is_none() {
+                                        view.selection_anchor = Some(view.cursor_offset);
                                     }
-                                    if n.cursor_offset != new_offset {
-                                        n.cursor_offset = new_offset;
+                                    if view.cursor_offset != new_offset {
+                                        view.cursor_offset = new_offset;
                                         cx.notify();
                                     }
                                 }
@@ -7140,20 +6450,27 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         cx,
                                     )),
                             )
-                            .when(is_current && is_editor_focused && self.editor_blink.visible(), |s| {
+                            .when(is_current && ((is_leaf_active && is_editor_focused && self.editor_blink.visible()) || !is_leaf_active), |s| {
                                 let cursor_col = row_layout.column_for_line_char(v_char_start + active_col_in_row);
                                 let cursor_x = crate::snap::snap_x(
                                     row_layout.x_for_column(cursor_col),
                                     pixel_scale,
                                 );
+                                let (caret_w, caret_bg) = if is_leaf_active {
+                                    (2.0, theme.accent)
+                                } else {
+                                    let mut c = theme.text_muted;
+                                    c.a = 0.6;
+                                    (1.5, c)
+                                };
                                 s.child(
                                     div()
                                         .absolute()
                                         .left(px(cursor_x))
                                         .top_0()
                                         .h_full()
-                                        .w(px(2.0))
-                                        .bg(theme.accent)
+                                        .w(px(caret_w))
+                                        .bg(caret_bg)
                                         .rounded_xs(),
                                 )
                             })
@@ -7175,8 +6492,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         .hover(|h| h.bg(theme.bg_hover))
                                         .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
                                             cx.stop_propagation();
-                                            let body = match this.state.active_note.as_ref() {
-                                                Some(n) => code_block_body(&n.window, fence_line, block_id),
+                                            let body = match this.state.active_view() {
+                                                Some(v) => code_block_body(&v.window, fence_line, block_id),
                                                 None => return,
                                             };
                                             cx.write_to_clipboard(ClipboardItem::new_string(body));
@@ -7263,15 +6580,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         view.scroll_top = (view.scroll_top - delta).clamp(0.0, max_scroll_content);
                                         if let crate::workspace::TabContent::Document { id } = tab.content {
                                             if let Some(doc) = this.state.documents.get(&id) {
-                                                let lines_total = if let Some(ref active) = this.state.active_note {
-                                                    if active.path == doc.path {
-                                                        active.line_index.lines()
-                                                    } else {
-                                                        doc.line_index.lines()
-                                                    }
-                                                } else {
-                                                    doc.line_index.lines()
-                                                };
+                                                let lines_total = doc.line_index.lines();
                                                 view.viewport.offset = view.line_at_doc_y(lines_total, view.scroll_top);
                                             }
                                         }
@@ -7552,7 +6861,6 @@ fn log_fps_tick() {}
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         log_fps_tick();
-        self.sync_views_for_active_note();
         self.ensure_inactive_views_built(window, cx);
 
         // Advance the optional wheel ease before anything else touches the
@@ -7588,23 +6896,18 @@ impl Render for AppView {
         let anchor_doc_y = self
             .pending_editor_restore
             .unwrap_or_else(|| self.current_scroll_top_f64());
-        let anchor_line = if self.pending_editor_restore.is_some() || self.is_resizing_any() {
-            self.editor_anchor_line.get()
-        } else {
-            self.state
-                .active_note
-                .as_ref()
-                .map(|n| n.line_at_doc_y(anchor_doc_y))
-                .unwrap_or(0)
-        };
-        self.editor_anchor_line.set(anchor_line);
+        if !self.is_resizing_any() {
+            if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
+                view.viewport.offset = view.line_at_doc_y(doc.line_index.lines(), anchor_doc_y);
+            }
+        }
 
         // Walk the code-fence checkpoints a little further ahead, once per
         // frame. Nothing here is needed for the current frame — it is what
         // makes a later jump to the end of a huge note cheap, without a
         // background thread and without copying the text.
-        if let Some(note) = self.state.active_note.as_mut() {
-            note.scan_code_ahead(crate::code_scan::SCAN_SLICE_LINES);
+        if let Some(doc) = self.state.active_document_mut() {
+            doc.scan_code_ahead(crate::code_scan::SCAN_SLICE_LINES);
         }
 
         let is_maximized = window.is_maximized();
@@ -7643,15 +6946,13 @@ impl Render for AppView {
         }
 
         let is_title_focused = self.title_focus_handle.is_focused(window);
-        if !self.title_is_focused && is_title_focused {
-            self.title_is_focused = true;
+        if !self.was_title_focused && is_title_focused {
             self.enable_title_cursor_blink(cx);
-        } else if self.title_is_focused && !is_title_focused {
-            self.title_is_focused = false;
+        } else if self.was_title_focused && !is_title_focused {
             self.disable_title_cursor_blink(cx);
-            self.title_selection_anchor = None;
-            self.title_is_mouse_selecting = false;
+            self.commit_title_rename_internal();
         }
+        self.was_title_focused = is_title_focused;
 
         let is_search_focused = self.search_focus_handle.is_focused(window);
         self.quick_filter.sync_focus(is_search_focused, cx);
@@ -7672,32 +6973,6 @@ impl Render for AppView {
             self.disable_editor_cursor_blink(cx);
         }
 
-        // In-window focus reacts to UI elements within the window. Background cursor
-        // blink pausing and save-on-blur / save-on-minimize are handled reactively by
-        // `observe_window_activation` (see `init_window_observers`), which fires on OS
-        // activation changes even when minimized (bypassing render frame requirements).
-
-        if self.was_title_focused && !is_title_focused {
-            self.commit_title_rename_internal();
-        }
-        self.was_title_focused = is_title_focused;
-
-        if let Some(ref note) = self.state.active_note {
-            if self.title_editing_path.as_ref() != Some(&note.path) {
-                self.title_editing_path = Some(note.path.clone());
-                self.title_edit_text = note.title.clone();
-                self.title_cursor_pos = self.title_edit_text.chars().count();
-                self.title_selection_anchor = None;
-                self.title_is_mouse_selecting = false;
-            }
-        } else {
-            self.title_editing_path = None;
-            self.title_edit_text.clear();
-            self.title_cursor_pos = 0;
-            self.title_selection_anchor = None;
-            self.title_is_mouse_selecting = false;
-        }
-
         // Row geometry, the restore and the caret reveal run before `theme`
         // borrows `self`: the reveal may re-place the editor window on the caret,
         // and that needs the note mutably.
@@ -7714,19 +6989,19 @@ impl Render for AppView {
         self.last_wrap_cols = wrap_cols;
         let curr_scroll = self.current_scroll_top_f64();
         let mut new_active_scroll = None;
-        if let Some(ref mut note) = self.state.active_note {
-            let anchor_line = self.editor_anchor_line.get();
-            let old_line_top = note.doc_y_of_line(anchor_line);
+        if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
+            let anchor_line = view.viewport.offset;
+            let old_line_top = view.doc_y_of_line(doc.line_index.lines(), anchor_line);
             let px_in_line = (curr_scroll - old_line_top).max(0.0);
-            let old_above_h = note.above_h;
-            let old_wrap_cols = note.window.wrap_cols;
+            let old_above_h = view.above_h;
+            let old_wrap_cols = view.window.wrap_cols;
 
-            note.ensure_visual_cache_with_headings(self.word_wrap, wrap_cols, Some(&self.config.editor.headings), anchor_line);
+            view.ensure_visual_cache_with_headings(doc, self.word_wrap, wrap_cols, Some(&self.config.editor.headings), anchor_line);
 
-            if note.window.wrap_cols != old_wrap_cols || (note.above_h - old_above_h).abs() > 0.5 {
-                let first_v_idx = note.window.first_row_of_line(anchor_line).unwrap_or(0);
-                let line_local_y = note.window.height_index.top_of(first_v_idx);
-                let new_scroll_y = note.above_h + line_local_y + px_in_line;
+            if view.window.wrap_cols != old_wrap_cols || (view.above_h - old_above_h).abs() > 0.5 {
+                let first_v_idx = view.window.first_row_of_line(anchor_line).unwrap_or(0);
+                let line_local_y = view.window.height_index.top_of(first_v_idx);
+                let new_scroll_y = view.above_h + line_local_y + px_in_line;
                 new_active_scroll = Some(new_scroll_y);
             }
         }
@@ -7760,9 +7035,8 @@ impl Render for AppView {
         if self.pending_editor_restore.is_some() {
             let total = self
                 .state
-                .active_note
-                .as_ref()
-                .map(|n| n.total_height())
+                .active_view()
+                .map(|v| v.total_height())
                 .unwrap_or(0.0);
             let (_, viewport_h, _, _) =
                 self.editor_scroll_metrics_for_leaf(Some(active_leaf_id), true, total, window_h);
@@ -7786,7 +7060,7 @@ impl Render for AppView {
         self.theme = Theme::from_config(&self.config.ui.theme, Some(window.appearance()));
         let cx = &*cx;
         let theme = &self.theme;
-        let active_path = self.state.active_note.as_ref().map(|n| n.path.clone());
+        let active_path = self.state.active_document().map(|d| d.path.clone());
         let _is_editing = self.edit_mode;
 
         // Draw the frames the scrollbar needs to settle.
@@ -7805,8 +7079,8 @@ impl Render for AppView {
         // so two consecutive frames agree and the burst ends. The counter alone
         // is not enough: a resize or a rewrap moves the inputs without going
         // through the arm sites.
-        if let Some(note) = self.state.active_note.as_ref() {
-            let total = note.total_height();
+        if let Some(view) = self.state.active_view() {
+            let total = view.total_height();
             let (_, viewport_h, max_scroll, _) = self.editor_scroll_metrics(total, window_h);
             let inputs = (viewport_h.round(), max_scroll.round());
             let settling = self.layout_settle_frames.get();
@@ -7857,6 +7131,11 @@ impl Render for AppView {
                     let ratio_delta = if drag.span > 1.0 { delta / drag.span } else { 0.0 };
                     let new_ratio = drag.initial_ratio + ratio_delta;
                     this.state.workspace.set_split_ratio_at(&drag.path, drag.divider_index, new_ratio);
+                    let win_w: f32 = window.bounds().size.width.into();
+                    let win_h: f32 = window.bounds().size.height.into();
+                    let left_w = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
+                    let right_w = if this.right_sidebar_collapsed { 0.0 } else { this.right_sidebar_width + 1.0 };
+                    this.state.update_leaf_bounds_from_layout(win_w, win_h, left_w, right_w);
                     cx.notify();
                 } else if this.sidebar_middle_active {
                     // Middle-button smart scroll keeps working even when the
@@ -7884,7 +7163,7 @@ impl Render for AppView {
                 } else if this.plugin_modal_scrollbar_drag.active {
                     let y: f32 = event.position.y.into();
                     this.handle_plugin_modal_scrollbar_drag(y, cx);
-                } else if this.title_is_mouse_selecting {
+                } else if this.state.active_view().and_then(|v| v.title_input.as_ref()).map(|ti| ti.is_mouse_selecting).unwrap_or(false) {
                     let x: f32 = event.position.x.into();
                     let editor_left_x = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
                     let leaf_ratio = this.state.workspace.horizontal_ratio_of_leaf(this.state.workspace.active_leaf);
@@ -7892,30 +7171,34 @@ impl Render for AppView {
                     let editor_total_w = (window_w - editor_left_x).max(0.0);
                     let title_left_x = editor_left_x + leaf_ratio * editor_total_w + 48.0;
                     let rel_x = (x - title_left_x).max(0.0);
-                    let new_pos = if this.title_edit_text.is_empty() {
-                        0
-                    } else {
-                        let run = gpui::TextRun {
-                            len: this.title_edit_text.len(),
-                            font: gpui::font("Segoe UI").bold(),
-                            color: Default::default(),
-                            underline: Default::default(),
-                            strikethrough: None,
-                            background_color: None,
-                        };
-                        let shaped = window.text_system().shape_line(
-                            SharedString::from(this.title_edit_text.clone()),
-                            px(28.0),
-                            &[run],
-                            None,
-                        );
-                        let byte_idx = shaped.closest_index_for_x(px(rel_x));
-                        this.title_edit_text[..byte_idx.min(this.title_edit_text.len())].chars().count()
-                    };
-                    if this.title_cursor_pos != new_pos {
-                        this.title_cursor_pos = new_pos;
-                        this.reset_title_cursor_blink(cx);
-                        cx.notify();
+                    if let Some(view) = this.state.active_view_mut() {
+                        if let Some(ref mut input) = view.title_input {
+                            let new_pos = if input.text.is_empty() {
+                                0
+                            } else {
+                                let run = gpui::TextRun {
+                                    len: input.text.len(),
+                                    font: gpui::font("Segoe UI").bold(),
+                                    color: Default::default(),
+                                    underline: Default::default(),
+                                    strikethrough: None,
+                                    background_color: None,
+                                };
+                                let shaped = window.text_system().shape_line(
+                                    SharedString::from(input.text.clone()),
+                                    px(28.0),
+                                    &[run],
+                                    None,
+                                );
+                                let byte_idx = shaped.closest_index_for_x(px(rel_x));
+                                input.text[..byte_idx.min(input.text.len())].chars().count()
+                            };
+                            if input.cursor_pos != new_pos {
+                                input.cursor_pos = new_pos;
+                                this.reset_title_cursor_blink(cx);
+                                cx.notify();
+                            }
+                        }
                     }
                 } else if this.quick_filter.is_mouse_selecting {
                     this.quick_filter.handle_mouse_move(event, &this.state.search_query, window, cx);
@@ -7952,12 +7235,16 @@ impl Render for AppView {
                     this.state.session.sidebar_width = this.sidebar_width;
                     this.state.save_session_state();
                 }
-                if this.title_is_mouse_selecting {
-                    this.title_is_mouse_selecting = false;
-                    if this.title_selection_anchor == Some(this.title_cursor_pos) {
-                        this.title_selection_anchor = None;
+                if let Some(view) = this.state.active_view_mut() {
+                    if let Some(ref mut input) = view.title_input {
+                        if input.is_mouse_selecting {
+                            input.is_mouse_selecting = false;
+                            if input.selection_anchor == Some(input.cursor_pos) {
+                                input.selection_anchor = None;
+                            }
+                            cx.notify();
+                        }
                     }
-                    cx.notify();
                 }
                 this.is_resizing_sidebar = false;
                 this.is_resizing_right_sidebar = false;
@@ -7967,9 +7254,9 @@ impl Render for AppView {
                 this.is_dragging_scrollbar = false;
                 this.sidebar_scrollbar_drag.end();
                 this.plugin_modal_scrollbar_drag.end();
-                if let Some(ref mut n) = this.state.active_note {
-                    if n.selection_anchor == Some(n.cursor_offset) {
-                        n.selection_anchor = None;
+                if let Some(view) = this.state.active_view_mut() {
+                    if view.selection_anchor == Some(view.cursor_offset) {
+                        view.selection_anchor = None;
                     }
                 }
                 cx.notify();
@@ -7980,12 +7267,16 @@ impl Render for AppView {
                 this.goto_scrollbar_drag.end();
                 this.handle_panel_mouse_up(cx);
                 this.panel_scrollbar_drag.end();
-                if this.title_is_mouse_selecting {
-                    this.title_is_mouse_selecting = false;
-                    if this.title_selection_anchor == Some(this.title_cursor_pos) {
-                        this.title_selection_anchor = None;
+                if let Some(view) = this.state.active_view_mut() {
+                    if let Some(ref mut input) = view.title_input {
+                        if input.is_mouse_selecting {
+                            input.is_mouse_selecting = false;
+                            if input.selection_anchor == Some(input.cursor_pos) {
+                                input.selection_anchor = None;
+                            }
+                            cx.notify();
+                        }
                     }
-                    cx.notify();
                 }
                 this.is_resizing_sidebar = false;
                 this.is_resizing_right_sidebar = false;
@@ -8067,8 +7358,8 @@ impl Render for AppView {
                     && !keystroke.modifiers.shift
                     && (keystroke.key == "\\" || keystroke.key == "|")
                 {
-                    if let Some(ref note) = this.state.active_note {
-                        let path = note.path.clone();
+                    if let Some(doc) = this.state.active_document() {
+                        let path = doc.path.clone();
                         this.split_tab_right(&path, window, cx);
                     }
                 }
@@ -8077,8 +7368,8 @@ impl Render for AppView {
                     && keystroke.modifiers.shift
                     && (keystroke.key == "\\" || keystroke.key == "|")
                 {
-                    if let Some(ref note) = this.state.active_note {
-                        let path = note.path.clone();
+                    if let Some(doc) = this.state.active_document() {
+                        let path = doc.path.clone();
                         this.split_tab_down(&path, window, cx);
                     }
                 }
@@ -8705,8 +7996,8 @@ impl Render for AppView {
                             .flex()
                             .flex_shrink_0()
                             .gap_4()
-                            .when_some(self.state.active_note.as_ref(), |s, note| {
-                                let (line, col) = note.line_col();
+                            .when_some(self.state.active_view_and_doc(), |s, (view, doc)| {
+                                let (line, col) = view.line_col(doc);
                                 s.child(format!("Ln {}, Col {}", line + 1, col + 1))
                             })
                             .children(self.state.status_bar.all().into_iter().map(|item| {
@@ -10467,48 +9758,52 @@ mod tests {
         for i in 0..40_000 {
             text.push_str(&format!("line {i}\n"));
         }
-        let mut note = crate::state::OpenedNote::new(
+        let doc_id = crate::document_buffer::DocumentId::new();
+        let tab_id = crate::workspace::TabId::new();
+        let mut doc = crate::document_buffer::DocumentBuffer::new(
+            doc_id,
             std::path::PathBuf::from("big.md"),
             "big".to_string(),
             text,
             1,
         );
+        let mut view = crate::workspace::EditorViewState::new(tab_id, doc_id);
         let viewport = 800.0f64;
         let overscan = f64::from(EDITOR_OVERSCAN_PX);
-        note.ensure_visual_cache(true, 0, 20_000);
+        view.ensure_visual_cache(&mut doc, true, 0, 20_000);
 
         // The note really is windowed and the window really is a window: a test
         // that silently fell back to a whole-document cache would prove nothing.
         assert!(
-            note.above_lines > 0 && note.below_lines > 0,
+            view.above_lines > 0 && view.below_lines > 0,
             "the note must be windowed"
         );
         assert_eq!(
-            note.window.line_count(),
+            view.window.line_count(),
             2 * crate::editor_window::MARGIN_LINES + 1
         );
 
-        let window_h = note.window.total_height();
-        let max_scroll = note.total_height() - viewport;
+        let window_h = view.window.total_height();
+        let max_scroll = view.total_height() - viewport;
         for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
             let scroll_y = (max_scroll * fraction).clamp(0.0, max_scroll);
             // What `render` does each frame: anchor on the line at the top of the
             // viewport, then place the window around it.
-            let anchor = note.line_at_doc_y(scroll_y);
-            note.ensure_visual_cache(true, 0, anchor);
+            let anchor = view.line_at_doc_y(doc.line_index.lines(), scroll_y);
+            view.ensure_visual_cache(&mut doc, true, 0, anchor);
             assert!(
-                note.window.covers_line(note.line_at_doc_y(scroll_y)),
+                view.window.covers_line(view.line_at_doc_y(doc.line_index.lines(), scroll_y)),
                 "the window must hold the anchor at scroll {scroll_y}"
             );
 
-            let local_scroll = scroll_y - note.above_h;
+            let local_scroll = scroll_y - view.above_h;
             assert!(
                 local_scroll >= 0.0 && local_scroll + viewport <= window_h,
                 "the window must cover the viewport: local {local_scroll}, window {window_h}"
             );
 
-            let vr = note.window.height_index.visible_range(local_scroll, viewport, overscan);
-            let shift = note.window.height_index.top_of(vr.start) - local_scroll;
+            let vr = view.window.height_index.visible_range(local_scroll, viewport, overscan);
+            let shift = view.window.height_index.top_of(vr.start) - local_scroll;
             assert!(
                 shift.abs() <= overscan + 24.0,
                 "slice shift {shift} is not small at scroll {scroll_y}"
@@ -10517,15 +9812,15 @@ mod tests {
                 // The row painted at this pixel of the viewport…
                 let painted = (vr.start..vr.end).find(|&k| {
                     let top = shift
-                        + (note.window.height_index.top_of(k)
-                            - note.window.height_index.top_of(vr.start));
-                    let bottom = top + f64::from(note.window.height_index.height_of(k));
+                        + (view.window.height_index.top_of(k)
+                            - view.window.height_index.top_of(vr.start));
+                    let bottom = top + f64::from(view.window.height_index.height_of(k));
                     px >= top && px < bottom
                 });
                 let painted = painted.unwrap_or_else(|| panic!("no row painted at {px}"));
                 // …and the row the mouse handler resolves the same pixel to.
                 assert_eq!(
-                    note.local_v_idx_at_doc_y(scroll_y + px),
+                    view.local_v_idx_at_doc_y(scroll_y + px),
                     painted,
                     "px {px} at scroll {scroll_y}"
                 );

@@ -4,12 +4,16 @@ use uuid::Uuid;
 
 use crate::document_buffer::DocumentId;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct LeafId(pub Uuid);
 
 impl LeafId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
+    }
+
+    pub const fn from_u64(val: u64) -> Self {
+        Self(Uuid::from_u128(val as u128))
     }
 }
 
@@ -19,12 +23,16 @@ impl Default for LeafId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TabId(pub Uuid);
 
 impl TabId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
+    }
+
+    pub const fn from_u64(val: u64) -> Self {
+        Self(Uuid::from_u128(val as u128))
     }
 }
 
@@ -94,11 +102,19 @@ impl Tab {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LeafBounds {
+    pub w: f32,
+    pub h: f32,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LeafState {
     pub id: LeafId,
     pub tabs: Vec<Tab>,
     pub active_tab_index: usize,
+    #[serde(default)]
+    pub bounds: Option<LeafBounds>,
 }
 
 impl LeafState {
@@ -107,6 +123,7 @@ impl LeafState {
             id,
             tabs: Vec::new(),
             active_tab_index: 0,
+            bounds: None,
         }
     }
 
@@ -115,7 +132,12 @@ impl LeafState {
             id,
             tabs: vec![tab],
             active_tab_index: 0,
+            bounds: None,
         }
+    }
+
+    pub fn set_bounds(&mut self, w: f32, h: f32) {
+        self.bounds = Some(LeafBounds { w, h });
     }
 
     pub fn active_tab(&self) -> Option<&Tab> {

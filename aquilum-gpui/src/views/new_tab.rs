@@ -13,7 +13,7 @@ impl AppView {
     /// `Create note / Go to file / Close` actions.
     pub(crate) fn open_empty_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_title_rename_internal();
-        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
+        if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
         }
         let current_scroll = self.current_scroll_top();
@@ -21,11 +21,6 @@ impl AppView {
             .snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         self.state.open_empty_tab();
         self.active_center_leaf = None;
-        self.title_editing_path = None;
-        self.title_edit_text.clear();
-        self.title_cursor_pos = 0;
-        self.title_selection_anchor = None;
-        self.title_is_mouse_selecting = false;
         window.focus(&self.focus_handle);
         self.reset_editor_cursor_blink(cx);
         cx.notify();
@@ -40,7 +35,7 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         self.commit_title_rename_internal();
-        if self.state.active_note.as_ref().map(|n| n.is_dirty).unwrap_or(false) {
+        if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
             self.state.save_active_note();
         }
         let current_scroll = self.current_scroll_top();
@@ -50,11 +45,6 @@ impl AppView {
         self.state.session.sidebar_scroll_top = sidebar_offset_y;
         self.state.activate_empty_tab(path);
         self.active_center_leaf = None;
-        self.title_editing_path = None;
-        self.title_edit_text.clear();
-        self.title_cursor_pos = 0;
-        self.title_selection_anchor = None;
-        self.title_is_mouse_selecting = false;
         if center_in_sidebar {
             self.need_scroll_sidebar_to_active.set(true);
         }

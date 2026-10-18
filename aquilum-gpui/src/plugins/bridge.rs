@@ -619,8 +619,9 @@ impl AppView {
                 );
             }
             ApiRequest::EditorReplaceSelection { text } => {
-                let replaced = if let Some(ref mut note) = self.state.active_note {
-                    note.replace_selection(&text)
+                let replaced = if self.state.active_doc_id().is_some() {
+                    self.state.active_replace_selection(&text);
+                    true
                 } else {
                     false
                 };
