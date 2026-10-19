@@ -3686,6 +3686,17 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             return;
         }
 
+        // Escape cancels selection if active
+        if keystroke.key == "escape" {
+            if let Some(view) = self.state.active_view_mut() {
+                if view.selection_anchor.is_some() && view.selection_anchor != Some(view.cursor_offset) {
+                    view.selection_anchor = None;
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+
         // Ctrl + , (Toggle Settings modal)
         if ctrl && (keystroke.key == "," || keystroke.key == "<" || keystroke.key == "б" || keystroke.key == "Б") {
             self.toggle_settings(cx);
@@ -3798,9 +3809,13 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             let r2 = t1.row_of_line(end_line).unwrap_or(t1.row_count().saturating_sub(1));
                             let c1 = crate::table::cell_index_at(&crate::table::split_row(crate::table::get_table_line(t1, &lines_ref, start_line)), start_col);
                             let c2 = crate::table::cell_index_at(&crate::table::split_row(crate::table::get_table_line(t1, &lines_ref, end_line)), end_col);
-                            let rect = crate::table::CellRect::new(r1, r2, c1, c2);
-                            let model = crate::table::TableModel::parse(t1, &lines_ref);
-                            Some(model.to_tsv(rect.row_start..rect.row_end, rect.col_start..rect.col_end))
+                            if r1 != r2 || c1 != c2 {
+                                let rect = crate::table::CellRect::new(r1, c1, r2, c2);
+                                let model = crate::table::TableModel::parse(t1, &lines_ref);
+                                Some(model.to_tsv(rect.row_start..rect.row_end, rect.col_start..rect.col_end))
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
@@ -4208,6 +4223,61 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 return;
             }
             TableKeyAction::PassThrough => {}
+        }
+
+        if keystroke.key == "backspace" || keystroke.key == "delete" {
+            let edit_opt = if let Some((view, doc)) = self.state.active_view_and_doc() {
+                let tables = doc.ensure_table_index();
+                if let Some(range) = view.selection_range(doc.len()) {
+                    let start_line = doc.line_of_byte(range.start);
+                    let end_line = doc.line_of_byte(range.end);
+                    if let (Some(t1), Some(t2)) = (tables.at(start_line), tables.at(end_line)) {
+                        if t1.first_line == t2.first_line && start_line != end_line && view.grid_table_at(&tables, start_line, start_line).is_some() {
+                            let start_line_byte = doc.line_start_byte(start_line);
+                            let end_line_byte = doc.line_start_byte(end_line);
+                            let start_col = doc.slice_to_string(start_line_byte..range.start).chars().count();
+                            let end_col = doc.slice_to_string(end_line_byte..range.end).chars().count();
+                            let line_strings = Self::table_lines_slice(doc, t1);
+                            let lines_ref: Vec<&str> = line_strings.iter().map(|s| s.as_str()).collect();
+                            let r1 = t1.row_of_line(start_line).unwrap_or(0);
+                            let r2 = t1.row_of_line(end_line).unwrap_or(t1.row_count().saturating_sub(1));
+                            let c1 = crate::table::cell_index_at(&crate::table::split_row(crate::table::get_table_line(t1, &lines_ref, start_line)), start_col);
+                            let c2 = crate::table::cell_index_at(&crate::table::split_row(crate::table::get_table_line(t1, &lines_ref, end_line)), end_col);
+                            let rect = crate::table::CellRect::new(r1, c1, r2, c2);
+                            let mut model = crate::table::TableModel::parse(t1, &lines_ref);
+                            for r in rect.row_start..rect.row_end {
+                                for c in rect.col_start..rect.col_end {
+                                    if let Some(row) = model.rows.get_mut(r) {
+                                        if let Some(cell) = row.get_mut(c) {
+                                            cell.clear();
+                                        }
+                                    }
+                                }
+                            }
+                            let edit = crate::table::rewrite(t1, &model, false, &crate::table::char_width);
+                            Some((t1.first_line, edit))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some((first_line, edit)) = edit_opt {
+                self.table_layouts.borrow_mut().remove(&first_line);
+                self.state.active_apply_table_line_edit(&edit, None);
+                if let Some(v) = self.state.active_view_mut() {
+                    v.selection_anchor = None;
+                }
+                self.schedule_auto_save(cx);
+                cx.notify();
+                return;
+            }
         }
 
         match keystroke.key.as_str() {
@@ -6673,6 +6743,61 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     }
                 }
 
+                if let Some(tbl) = view.grid_table_at(&tables, line_idx, cursor_line) {
+                    let sel_s_line = doc.line_of_byte(sel.start);
+                    let sel_e_line = doc.line_of_byte(sel.end);
+                    if tbl.contains(sel_s_line) && tbl.contains(sel_e_line) {
+                        if line_idx == tbl.sep_line() || line_idx < sel_s_line || line_idx > sel_e_line {
+                            return None;
+                        }
+                        let s_line_start = doc.line_start_byte(sel_s_line);
+                        let s_char = doc.slice_to_string(s_line_start..sel.start).chars().count();
+                        let e_line_start = doc.line_start_byte(sel_e_line);
+                        let e_char = doc.slice_to_string(e_line_start..sel.end).chars().count();
+
+                        let s_cells = crate::table::split_row(&lines_arc[sel_s_line]);
+                        let e_cells = crate::table::split_row(&lines_arc[sel_e_line]);
+                        let col1 = crate::table::cell_index_at(&s_cells, s_char);
+                        let col2 = crate::table::cell_index_at(&e_cells, e_char);
+                        let col_min = col1.min(col2);
+                        let col_max = col1.max(col2);
+
+                        if sel_s_line == sel_e_line {
+                            let cur_cells = crate::table::split_row(line);
+                            let c_start = cur_cells.get(col_min).map(|c| c.content.start).unwrap_or(0);
+                            let c_end = cur_cells.get(col_max).map(|c| c.content.end).unwrap_or(line.chars().count());
+                            let row_start = s_char.clamp(c_start, c_end);
+                            let row_end = e_char.clamp(c_start, c_end);
+                            let (c_s, c_e) = (row_start.min(row_end), row_start.max(row_end));
+                            if c_s < c_e {
+                                let vis_s = row_layout.column_for_line_char(c_s);
+                                let vis_e = row_layout.column_for_line_char(c_e);
+                                if vis_s < vis_e {
+                                    return Some(row_layout.selection_rect(vis_s, vis_e, pixel_scale));
+                                }
+                            }
+                            return None;
+                        } else {
+                            let table_layout = Self::get_or_compute_table_layout(
+                                &self.table_layouts,
+                                window.text_system(),
+                                &|idx| lines_arc.get(idx).map(|s| s.as_str()),
+                                tbl,
+                                &editor_font,
+                                self.manual_table_col_widths.get(&tbl.first_line).map(|w| w.as_slice()),
+                            );
+                            let col_x = table_layout.col_x.get(col_min).copied().unwrap_or(0.0);
+                            let col_w = if let Some(&max_x) = table_layout.col_x.get(col_max) {
+                                let max_w = table_layout.col_widths.get(col_max).copied().unwrap_or(0.0);
+                                (max_x + max_w - col_x).max(0.0)
+                            } else {
+                                table_layout.total_width - col_x
+                            };
+                            return Some(crate::snap::snapped_span(col_x, col_x + col_w, pixel_scale));
+                        }
+                    }
+                }
+
                 let mut byte_s = sel.start.saturating_sub(line_start).min(line.len());
                 let mut byte_e = sel.end.saturating_sub(line_start).min(line.len());
                 while byte_s > 0 && !line.is_char_boundary(byte_s) {
@@ -6802,41 +6927,101 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     }
                 } else if let Some(sel) = selection_range.as_ref() {
                     if sel.start < sel.end {
-                        let mut byte_s = sel.start.saturating_sub(line_start).min(line.len());
-                        let mut byte_e = sel.end.saturating_sub(line_start).min(line.len());
-                        while byte_s > 0 && !line.is_char_boundary(byte_s) {
-                            byte_s -= 1;
-                        }
-                        while byte_e > 0 && !line.is_char_boundary(byte_e) {
-                            byte_e -= 1;
-                        }
-                        let char_s = line[..byte_s].chars().count();
-                        let char_e = char_s + line[byte_s..byte_e].chars().count();
-
-                        let includes_newline = v.is_last_sub && sel.end > line_end && sel.start <= line_end;
-
-                        if byte_s < byte_e {
-                            let intersect_s = char_s.max(v.char_start);
-                            let intersect_e = char_e.min(v.char_end);
-                            if intersect_s <= intersect_e {
-                                let vis_s = row_layout.column_for_line_char(intersect_s);
-                                let mut vis_e = row_layout.column_for_line_char(intersect_e);
-                                if includes_newline {
-                                    vis_e += 1;
-                                }
-                                if vis_s < vis_e {
-                                    Some(row_layout.selection_rect(vis_s, vis_e, pixel_scale))
+                        let table_rect = if let Some(tbl) = grid_tbl {
+                            let sel_s_line = doc.line_of_byte(sel.start);
+                            let sel_e_line = doc.line_of_byte(sel.end);
+                            if tbl.contains(sel_s_line) && tbl.contains(sel_e_line) {
+                                if v.line_idx == tbl.sep_line() || v.line_idx < sel_s_line || v.line_idx > sel_e_line {
+                                    Some(None)
                                 } else {
-                                    None
+                                    let s_line_start = doc.line_start_byte(sel_s_line);
+                                    let s_char = doc.slice_to_string(s_line_start..sel.start).chars().count();
+                                    let e_line_start = doc.line_start_byte(sel_e_line);
+                                    let e_char = doc.slice_to_string(e_line_start..sel.end).chars().count();
+
+                                    let s_cells = crate::table::split_row(&lines_arc[sel_s_line]);
+                                    let e_cells = crate::table::split_row(&lines_arc[sel_e_line]);
+                                    let col1 = crate::table::cell_index_at(&s_cells, s_char);
+                                    let col2 = crate::table::cell_index_at(&e_cells, e_char);
+                                    let col_min = col1.min(col2);
+                                    let col_max = col1.max(col2);
+
+                                    if sel_s_line == sel_e_line {
+                                        let cur_cells = crate::table::split_row(line);
+                                        let c_start = cur_cells.get(col_min).map(|c| c.content.start).unwrap_or(0);
+                                        let c_end = cur_cells.get(col_max).map(|c| c.content.end).unwrap_or(line.chars().count());
+                                        let row_start = s_char.clamp(c_start, c_end);
+                                        let row_end = e_char.clamp(c_start, c_end);
+                                        let (c_s, c_e) = (row_start.min(row_end), row_start.max(row_end));
+                                        if c_s < c_e {
+                                            let vis_s = row_layout.column_for_line_char(c_s);
+                                            let vis_e = row_layout.column_for_line_char(c_e);
+                                            if vis_s < vis_e {
+                                                Some(Some(row_layout.selection_rect(vis_s, vis_e, pixel_scale)))
+                                            } else {
+                                                Some(None)
+                                            }
+                                        } else {
+                                            Some(None)
+                                        }
+                                    } else {
+                                        let tl = table_layout.as_ref().unwrap();
+                                        let col_x = tl.col_x.get(col_min).copied().unwrap_or(0.0);
+                                        let col_w = if let Some(&max_x) = tl.col_x.get(col_max) {
+                                            let max_w = tl.col_widths.get(col_max).copied().unwrap_or(0.0);
+                                            (max_x + max_w - col_x).max(0.0)
+                                        } else {
+                                            tl.total_width - col_x
+                                        };
+                                        Some(Some(crate::snap::snapped_span(col_x, col_x + col_w, pixel_scale)))
+                                    }
                                 }
                             } else {
                                 None
                             }
-                        } else if includes_newline && char_s == v.char_end {
-                            let vis_s = row_layout.column_for_line_char(v.char_end);
-                            Some(row_layout.selection_rect(vis_s, vis_s + 1, pixel_scale))
                         } else {
                             None
+                        };
+
+                        if let Some(rect_opt) = table_rect {
+                            rect_opt
+                        } else {
+                            let mut byte_s = sel.start.saturating_sub(line_start).min(line.len());
+                            let mut byte_e = sel.end.saturating_sub(line_start).min(line.len());
+                            while byte_s > 0 && !line.is_char_boundary(byte_s) {
+                                byte_s -= 1;
+                            }
+                            while byte_e > 0 && !line.is_char_boundary(byte_e) {
+                                byte_e -= 1;
+                            }
+                            let char_s = line[..byte_s].chars().count();
+                            let char_e = char_s + line[byte_s..byte_e].chars().count();
+
+                            let includes_newline = v.is_last_sub && sel.end > line_end && sel.start <= line_end;
+
+                            if byte_s < byte_e {
+                                let intersect_s = char_s.max(v.char_start);
+                                let intersect_e = char_e.min(v.char_end);
+                                if intersect_s <= intersect_e {
+                                    let vis_s = row_layout.column_for_line_char(intersect_s);
+                                    let mut vis_e = row_layout.column_for_line_char(intersect_e);
+                                    if includes_newline {
+                                        vis_e += 1;
+                                    }
+                                    if vis_s < vis_e {
+                                        Some(row_layout.selection_rect(vis_s, vis_e, pixel_scale))
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else if includes_newline && char_s == v.char_end {
+                                let vis_s = row_layout.column_for_line_char(v.char_end);
+                                Some(row_layout.selection_rect(vis_s, vis_s + 1, pixel_scale))
+                            } else {
+                                None
+                            }
                         }
                     } else {
                         None
@@ -8186,6 +8371,11 @@ impl Render for AppView {
                 this.is_dragging_scrollbar = false;
                 this.sidebar_scrollbar_drag.end();
                 this.plugin_modal_scrollbar_drag.end();
+                if let Some(view) = this.state.active_view_mut() {
+                    if view.selection_anchor == Some(view.cursor_offset) {
+                        view.selection_anchor = None;
+                    }
+                }
                 cx.notify();
             }))
             .on_mouse_up(MouseButton::Middle, cx.listener(|this, _, _, cx| {
@@ -10071,29 +10261,16 @@ fn render_live_styled_row(
                 .when(is_last_col, |d| d.border_r_1().border_color(theme.border_subtle))
                 .when(is_header, |d| d.border_t_1().border_color(theme.border_subtle))
                 .when(!is_header, |d| d.border_b_1().border_color(theme.border_subtle))
-                .when(is_header && is_first_col, |d| d.rounded_tl_sm())
-                .when(is_header && is_last_col, |d| d.rounded_tr_sm())
-                .when(is_last_row && is_first_col, |d| d.rounded_bl_sm())
-                .when(is_last_row && is_last_col, |d| d.rounded_br_sm())
                 .when(is_header, |d| {
                     let mut bg = theme.text_muted;
                     bg.a = 0.08;
                     d.bg(bg)
                 })
+                .when(is_header && is_first_col, |d| d.rounded_tl_sm())
+                .when(is_header && is_last_col, |d| d.rounded_tr_sm())
+                .when(is_last_row && is_first_col, |d| d.rounded_bl_sm())
+                .when(is_last_row && is_last_col, |d| d.rounded_br_sm())
                 .cursor(gpui::CursorStyle::IBeam)
-                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
-                    window.focus(&this.focus_handle);
-                    if let Some((view, doc)) = this.state.active_view_and_doc_mut() {
-                        let offset = view.offset_for_line_col(doc, line_idx, cell_start_col);
-                        view.cursor_offset = offset;
-                        view.selection_anchor = Some(offset);
-                        if !view.raw_tables.is_empty() {
-                            view.visual_cache_dirty = true;
-                        }
-                    }
-                    this.reset_editor_cursor_blink(cx);
-                    cx.notify();
-                }))
                 .on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
                     window.focus(&this.focus_handle);
@@ -11587,6 +11764,43 @@ mod tests {
             _ => false,
         };
         assert!(!is_cursor_in_b, "Table B must NOT show plus buttons when cursor is in Table A");
+    }
+
+    #[test]
+    fn test_table_selection_column_span() {
+        let block = crate::table::TableBlock {
+            first_line: 0,
+            last_line: 3,
+            aligns: vec![crate::table::Align::Left, crate::table::Align::Left, crate::table::Align::Left],
+        };
+        let lines = vec![
+            "| col0 | col1 | col2 |",
+            "|---|---|---|",
+            "| val0 | val1 | val2 |",
+            "| val3 | val4 | val5 |",
+        ];
+
+        // Column identification
+        let s_cells = crate::table::split_row(lines[0]);
+        let e_cells = crate::table::split_row(lines[3]);
+        // Click inside col1 on line 0 (char 8), drag down to col1 on line 3 (char 8)
+        let col1 = crate::table::cell_index_at(&s_cells, 8);
+        let col2 = crate::table::cell_index_at(&e_cells, 8);
+        assert_eq!(col1, 1);
+        assert_eq!(col2, 1);
+
+        let col_min = col1.min(col2);
+        let col_max = col1.max(col2);
+        assert_eq!(col_min, 1);
+        assert_eq!(col_max, 1);
+
+        // Separator line (line 1) is skipped
+        assert_eq!(block.sep_line(), 1);
+        let is_sep_line = |l: usize| l == block.sep_line();
+        assert!(is_sep_line(1));
+        assert!(!is_sep_line(0));
+        assert!(!is_sep_line(2));
+        assert!(!is_sep_line(3));
     }
 }
 

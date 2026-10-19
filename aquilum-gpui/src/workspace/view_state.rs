@@ -217,12 +217,46 @@ impl Default for ViewCache {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TableCellSelection {
+    pub table_first_line: usize,
+    pub anchor_row: usize,
+    pub anchor_col: usize,
+    pub head_row: usize,
+    pub head_col: usize,
+}
+
+impl TableCellSelection {
+    pub fn new(table_first_line: usize, row: usize, col: usize) -> Self {
+        Self {
+            table_first_line,
+            anchor_row: row,
+            anchor_col: col,
+            head_row: row,
+            head_col: col,
+        }
+    }
+
+    pub fn rect(&self) -> crate::table::CellRect {
+        crate::table::CellRect::new(self.anchor_row, self.anchor_col, self.head_row, self.head_col)
+    }
+
+    pub fn is_multi_cell(&self) -> bool {
+        self.anchor_row != self.head_row || self.anchor_col != self.head_col
+    }
+
+    pub fn contains(&self, row: usize, col: usize) -> bool {
+        self.rect().contains_cell(row, col)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TabSession {
     pub tab_id: TabId,
     pub doc_id: DocumentId,
     pub cursor_offset: usize,
     pub selection_anchor: Option<usize>,
+    pub table_cell_selection: Option<TableCellSelection>,
     pub viewport: ViewportAnchor,
     pub scroll_top: f64,
     pub wheel_ease: Option<WheelEaseState>,
@@ -258,6 +292,7 @@ impl TabSession {
             doc_id,
             cursor_offset: 0,
             selection_anchor: None,
+            table_cell_selection: None,
             viewport: ViewportAnchor::default(),
             scroll_top: 0.0,
             wheel_ease: None,
@@ -1412,5 +1447,33 @@ mod tests {
             assert!(view.grid_table_at(&tables4, 2, 8).is_some(), "Table 1 displays as grid mode");
             assert!(view.grid_table_at(&tables4, 8, 8).is_some(), "Table 2 displays as inline grid mode");
         }
+    }
+
+    #[test]
+    fn test_table_cell_selection_column_drag() {
+        let mut sel = TableCellSelection::new(2, 6, 2); // anchor: row 6, col 2
+        assert!(!sel.is_multi_cell());
+        assert!(sel.contains(6, 2));
+        assert!(!sel.contains(5, 2));
+
+        // Dragging upwards in the same column to row 1
+        sel.head_row = 1;
+        sel.head_col = 2;
+        assert!(sel.is_multi_cell());
+        let rect = sel.rect();
+        assert_eq!(rect.row_start, 1);
+        assert_eq!(rect.row_end, 7);
+        assert_eq!(rect.col_start, 2);
+        assert_eq!(rect.col_end, 3);
+
+        // All rows 1..=6 in col 2 are in the selection
+        for r in 1..=6 {
+            assert!(sel.contains(r, 2), "row {} in col 2 must be selected", r);
+            assert!(!sel.contains(r, 0), "col 0 must not be selected");
+            assert!(!sel.contains(r, 1), "col 1 must not be selected");
+            assert!(!sel.contains(r, 3), "col 3 must not be selected");
+        }
+        assert!(!sel.contains(0, 2), "row 0 not selected");
+        assert!(!sel.contains(7, 2), "row 7 not selected");
     }
 }
