@@ -2434,10 +2434,12 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             let (w_start, w_end) = doc.word_range_at(offset);
             view.selection_anchor = Some(w_start);
             view.cursor_offset = w_end;
+            self.is_mouse_selecting = false;
         } else if click_count >= 3 {
             let (l_start, l_end) = doc.line_range_at(offset);
             view.selection_anchor = Some(l_start);
             view.cursor_offset = l_end;
+            self.is_mouse_selecting = false;
         } else if shift {
             if view.selection_anchor.is_none() {
                 view.selection_anchor = Some(view.cursor_offset);
@@ -6555,6 +6557,11 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                         };
 
                         if event.click_count == 2 {
+                            let (s, e) = crate::views::goto_search::word_range_at(&input.text, clicked_pos);
+                            input.selection_anchor = Some(s);
+                            input.cursor_pos = e;
+                            input.is_mouse_selecting = false;
+                        } else if event.click_count >= 3 {
                             input.select_all();
                             input.is_mouse_selecting = false;
                         } else if event.modifiers.shift {
@@ -7406,10 +7413,12 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                     let (w_start, w_end) = doc.word_range_at(offset);
                                     view.selection_anchor = Some(w_start);
                                     view.cursor_offset = w_end;
+                                    this.is_mouse_selecting = false;
                                 } else if event.click_count >= 3 {
                                     let (l_start, l_end) = doc.line_range_at(offset);
                                     view.selection_anchor = Some(l_start);
                                     view.cursor_offset = l_end;
+                                    this.is_mouse_selecting = false;
                                 } else if event.modifiers.shift {
                                     if view.selection_anchor.is_none() {
                                         view.selection_anchor = Some(view.cursor_offset);
