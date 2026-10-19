@@ -55,6 +55,44 @@ impl LineIndex {
         }
     }
 
+    /// Build line index directly from a `crop::Rope` in O(lines / LINE_BLOCK) time.
+    pub fn new_from_rope(rope: &crop::Rope) -> Self {
+        let len = rope.byte_len();
+        let lines = rope.line_len() + usize::from(len == 0 || rope.byte(len - 1) == b'\n');
+        let mut starts = Vec::with_capacity(lines / LINE_BLOCK + 1);
+        for block in 0..=(lines / LINE_BLOCK) {
+            let line = block * LINE_BLOCK;
+            if line < lines {
+                starts.push(rope.byte_of_line(line));
+            }
+        }
+        if starts.is_empty() {
+            starts.push(0);
+        }
+        Self {
+            starts,
+            len,
+            lines,
+        }
+    }
+
+    /// Update line index from `rope` after an edit at `edit_byte`.
+    pub fn splice_rope(&mut self, rope: &crop::Rope, edit_byte: usize) {
+        let len = rope.byte_len();
+        let lines = rope.line_len() + usize::from(len == 0 || rope.byte(len - 1) == b'\n');
+        self.len = len;
+        self.lines = lines;
+
+        let checkpoint_idx = self.starts.partition_point(|&s| s <= edit_byte).saturating_sub(1);
+        self.starts.truncate(checkpoint_idx + 1);
+        for block in (checkpoint_idx + 1)..=(lines / LINE_BLOCK) {
+            let line = block * LINE_BLOCK;
+            if line < lines {
+                self.starts.push(rope.byte_of_line(line));
+            }
+        }
+    }
+
     /// Number of lines. An empty text has one (empty) line, matching
     /// `str::split('\n')`.
     pub fn lines(&self) -> usize {

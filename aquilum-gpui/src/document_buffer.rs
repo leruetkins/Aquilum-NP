@@ -118,7 +118,7 @@ pub struct DocumentBuffer {
     pub id: DocumentId,
     pub path: PathBuf,
     pub title: String,
-    content: String,
+    pub rope: crop::Rope,
     pub version: u64,
     pub is_dirty: bool,
     pub first_dirty_time: Option<Instant>,
@@ -131,12 +131,17 @@ pub struct DocumentBuffer {
 
 impl DocumentBuffer {
     pub fn new(id: DocumentId, path: PathBuf, title: String, content: String, version: u64) -> Self {
-        let line_index = LineIndex::new(&content);
+        let rope = crop::Rope::from(content);
+        Self::from_rope(id, path, title, rope, version)
+    }
+
+    pub fn from_rope(id: DocumentId, path: PathBuf, title: String, rope: crop::Rope, version: u64) -> Self {
+        let line_index = LineIndex::new_from_rope(&rope);
         Self {
             id,
             path,
             title,
-            content,
+            rope,
             version,
             is_dirty: false,
             first_dirty_time: None,
@@ -148,14 +153,84 @@ impl DocumentBuffer {
         }
     }
 
+    pub fn from_file(id: DocumentId, path: PathBuf, title: String, version: u64) -> std::io::Result<Self> {
+        use std::io::Read;
+        let file = std::fs::File::open(&path)?;
+        let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        if file_len < 2 * 1024 * 1024 {
+            let mut s = String::with_capacity(file_len as usize);
+            let mut reader = std::io::BufReader::new(file);
+            reader.read_to_string(&mut s)?;
+            return Ok(Self::new(id, path, title, s, version));
+        }
+
+        let mut reader = std::io::BufReader::with_capacity(256 * 1024, file);
+        let mut builder = crop::RopeBuilder::new();
+        let mut buf = vec![0u8; 256 * 1024];
+        let mut leftover = 0;
+        loop {
+            let n = reader.read(&mut buf[leftover..])?;
+            if n == 0 {
+                if leftover > 0 {
+                    let s = String::from_utf8_lossy(&buf[..leftover]);
+                    builder.append(&s);
+                }
+                break;
+            }
+            let total = leftover + n;
+            match std::str::from_utf8(&buf[..total]) {
+                Ok(s) => {
+                    builder.append(s);
+                    leftover = 0;
+                }
+                Err(e) => {
+                    let valid_up_to = e.valid_up_to();
+                    if valid_up_to > 0 {
+                        // Safety: validated by std::str::from_utf8
+                        let s = unsafe { std::str::from_utf8_unchecked(&buf[..valid_up_to]) };
+                        builder.append(s);
+                    }
+                    if let Some(err_len) = e.error_len() {
+                        // Invalid byte sequence encountered: replace with replacement char and skip
+                        builder.append("\u{FFFD}");
+                        let next_start = valid_up_to + err_len;
+                        let remaining = total - next_start;
+                        buf.copy_within(next_start..total, 0);
+                        leftover = remaining;
+                    } else {
+                        // Incomplete UTF-8 sequence at end of buffer: wait for next read
+                        let remaining = total - valid_up_to;
+                        buf.copy_within(valid_up_to..total, 0);
+                        leftover = remaining;
+                    }
+                }
+            }
+        }
+        let rope = builder.build();
+        Ok(Self::from_rope(id, path, title, rope, version))
+    }
+
     #[inline]
-    pub fn content(&self) -> &str {
-        &self.content
+    pub fn rope(&self) -> &crop::Rope {
+        &self.rope
+    }
+
+    #[inline]
+    pub fn content(&self) -> String {
+        self.rope.to_string()
+    }
+
+    #[inline]
+    pub fn to_string(&self) -> String {
+        self.rope.to_string()
     }
 
     #[inline]
     pub fn take_content(&mut self) -> String {
-        std::mem::take(&mut self.content)
+        let text = self.rope.to_string();
+        self.rope = crop::Rope::new();
+        self.line_index = LineIndex::new_from_rope(&self.rope);
+        text
     }
 
     pub fn update_from_active_note(
@@ -169,7 +244,7 @@ impl DocumentBuffer {
         is_dirty: bool,
         first_dirty_time: Option<Instant>,
     ) {
-        self.content = content;
+        self.rope = crop::Rope::from(content);
         self.version = version;
         self.line_index = line_index;
         self.code_checkpoints = code_checkpoints;
@@ -186,50 +261,130 @@ impl DocumentBuffer {
                 return s;
             }
         }
-        let s = crate::state::compute_text_stats(&self.content);
+        let len = self.rope.byte_len();
+        if len > crate::state::TEXT_STATS_EXACT_LIMIT {
+            let s = crate::state::TextStats::Large { bytes: len };
+            self.stats_cache.set(Some((self.version, s)));
+            return s;
+        }
+        // Count words and chars by iterating chunks of the rope without allocating a full String
+        let mut words = 0usize;
+        let mut chars = 0usize;
+        let mut in_word = false;
+        for chunk in self.rope.chunks() {
+            chars += chunk.chars().count();
+            for c in chunk.chars() {
+                if c.is_whitespace() {
+                    in_word = false;
+                } else if !in_word {
+                    in_word = true;
+                    words += 1;
+                }
+            }
+        }
+        let s = crate::state::TextStats::Exact { words, chars };
         self.stats_cache.set(Some((self.version, s)));
         s
     }
 
     pub fn ensure_checkpoints(&mut self, up_to_line: usize) {
-        self.code_checkpoints.ensure(&self.content, &self.line_index, up_to_line);
+        self.code_checkpoints.ensure_rope(&self.rope, up_to_line);
     }
 
     pub fn checkpoint_state_at(&self, line: usize) -> Option<crate::markdown::CodeScanState> {
-        self.code_checkpoints.state_at(&self.content, &self.line_index, line)
+        self.code_checkpoints.state_at_rope(&self.rope, line)
     }
 
     pub fn scan_code_ahead(&mut self, max_lines: usize) -> usize {
         if self.code_checkpoints.is_complete(self.line_index.lines()) {
             return 0;
         }
-        self.code_checkpoints
-            .extend_slice(&self.content, &self.line_index, max_lines)
+        self.code_checkpoints.extend_slice_rope(&self.rope, max_lines)
     }
 
     #[inline]
     pub fn line_start_byte(&self, line: usize) -> usize {
-        self.line_index.start(&self.content, line)
+        let lines = self.line_index.lines();
+        if line >= lines {
+            self.rope.byte_len()
+        } else if line < self.rope.line_len() {
+            self.rope.byte_of_line(line)
+        } else {
+            self.rope.byte_len()
+        }
+    }
+
+    #[inline]
+    pub fn line_end_byte(&self, line: usize) -> usize {
+        let lines = self.line_index.lines();
+        if line + 1 >= lines {
+            self.rope.byte_len()
+        } else {
+            let next_start = self.line_start_byte(line + 1);
+            let cur_start = self.line_start_byte(line);
+            next_start.saturating_sub(1).max(cur_start)
+        }
     }
 
     #[inline]
     pub fn line_of_byte(&self, byte: usize) -> usize {
-        self.line_index.line_of(&self.content, byte)
+        let byte = byte.min(self.rope.byte_len());
+        self.rope.line_of_byte(byte)
+    }
+
+    #[inline]
+    pub fn is_char_boundary(&self, byte: usize) -> bool {
+        self.rope.is_char_boundary(byte)
+    }
+
+    #[inline]
+    pub fn slice_to_string(&self, range: std::ops::Range<usize>) -> String {
+        let start = range.start.min(self.rope.byte_len());
+        let end = range.end.min(self.rope.byte_len());
+        if start >= end {
+            String::new()
+        } else {
+            self.rope.byte_slice(start..end).to_string()
+        }
+    }
+
+    #[inline]
+    pub fn line_text(&self, line: usize) -> String {
+        let start = self.line_start_byte(line);
+        let end = self.line_end_byte(line);
+        self.slice_to_string(start..end)
     }
 
     pub fn word_range_at(&self, offset: usize) -> (usize, usize) {
-        if self.content.is_empty() {
+        let len = self.rope.byte_len();
+        if len == 0 {
             return (0, 0);
         }
-        let mut offset = offset.min(self.content.len());
-        while offset > 0 && !self.content.is_char_boundary(offset) {
+        let mut offset = offset.min(len);
+        while offset > 0 && !self.is_char_boundary(offset) {
             offset -= 1;
         }
-        let chars: Vec<(usize, char)> = self.content.char_indices().collect();
-        if chars.is_empty() {
-            return (0, 0);
+
+        // Bounded window around offset: 1024 bytes before and after
+        let win_start = offset.saturating_sub(1024);
+        let mut win_start = win_start;
+        while win_start > 0 && !self.is_char_boundary(win_start) {
+            win_start -= 1;
         }
-        let char_idx = chars.iter().position(|(idx, _)| *idx >= offset).unwrap_or(chars.len() - 1);
+        let win_end = (offset + 1024).min(len);
+        let mut win_end = win_end;
+        while win_end < len && !self.is_char_boundary(win_end) {
+            win_end += 1;
+        }
+
+        let slice = self.slice_to_string(win_start..win_end);
+        let local_offset = offset - win_start;
+
+        let chars: Vec<(usize, char)> = slice.char_indices().collect();
+        if chars.is_empty() {
+            return (offset, offset);
+        }
+        let char_idx = chars.iter().position(|(idx, _)| *idx >= local_offset).unwrap_or(chars.len() - 1);
         let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
 
         let mut start_idx = char_idx;
@@ -243,33 +398,39 @@ impl DocumentBuffer {
         if start_idx == end_idx {
             return (offset, offset);
         }
-        let start_byte = chars[start_idx].0;
+        let start_byte = win_start + chars[start_idx].0;
         let end_byte = if end_idx < chars.len() {
-            chars[end_idx].0
+            win_start + chars[end_idx].0
         } else {
-            self.content.len()
+            win_start + slice.len()
         };
         (start_byte, end_byte)
     }
 
     pub fn line_range_at(&self, offset: usize) -> (usize, usize) {
-        let mut offset = offset.min(self.content.len());
-        while offset > 0 && !self.content.is_char_boundary(offset) {
+        let len = self.rope.byte_len();
+        let mut offset = offset.min(len);
+        while offset > 0 && !self.is_char_boundary(offset) {
             offset -= 1;
         }
-        let start = self.content[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let end = self.content[offset..].find('\n').map(|i| offset + i + 1).unwrap_or(self.content.len());
+        let line = self.line_of_byte(offset);
+        let start = self.line_start_byte(line);
+        let end = if line + 1 < self.line_index.lines() {
+            self.line_start_byte(line + 1)
+        } else {
+            len
+        };
         (start, end)
     }
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.content.len()
+        self.rope.byte_len()
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.content.is_empty()
+        self.rope.byte_len() == 0
     }
 
     pub fn mark_dirty(&mut self) -> Option<BufferEvent> {
@@ -300,11 +461,11 @@ impl DocumentBuffer {
     }
 
     pub fn reload(&mut self, new_content: String) -> BufferEvent {
-        self.content = new_content;
+        self.rope = crop::Rope::from(new_content);
         self.version += 1;
         self.is_dirty = false;
         self.first_dirty_time = None;
-        self.line_index = LineIndex::new(&self.content);
+        self.line_index = LineIndex::new_from_rope(&self.rope);
         self.code_checkpoints = CodeCheckpoints::new();
         self.undo_stack.clear();
         self.redo_stack.clear();
@@ -322,11 +483,11 @@ impl DocumentBuffer {
         cursor_before: usize,
         cursor_after: usize,
     ) -> BufferEvent {
-        assert!(start <= self.content.len(), "start offset exceeds content len");
-        assert!(start + old_len <= self.content.len(), "replaced range exceeds content len");
+        assert!(start <= self.rope.byte_len(), "start offset exceeds content len");
+        assert!(start + old_len <= self.rope.byte_len(), "replaced range exceeds content len");
 
-        let removed = self.content[start..start + old_len].to_string();
-        self.content.replace_range(start..start + old_len, new_text);
+        let removed = self.slice_to_string(start..start + old_len);
+        self.rope.replace(start..start + old_len, new_text);
 
         let edit = Edit {
             start,
@@ -335,7 +496,7 @@ impl DocumentBuffer {
         };
 
         self.version += 1;
-        self.line_index = LineIndex::new(&self.content);
+        self.line_index.splice_rope(&self.rope, start);
 
         // Record undo step
         let undo_step = UndoStep {
@@ -372,7 +533,8 @@ impl DocumentBuffer {
             let old_len = change.inserted.len();
             let new_len = change.removed.len();
 
-            self.content.replace_range(start..start + old_len, &change.removed);
+            self.rope.replace(start..start + old_len, &change.removed);
+            self.line_index.splice_rope(&self.rope, start);
             composite_edit = Some(Edit {
                 start,
                 old_len,
@@ -381,7 +543,6 @@ impl DocumentBuffer {
         }
 
         self.version += 1;
-        self.line_index = LineIndex::new(&self.content);
         self.is_dirty = true;
 
         let edit = composite_edit?;
@@ -406,7 +567,8 @@ impl DocumentBuffer {
             let old_len = change.removed.len();
             let new_len = change.inserted.len();
 
-            self.content.replace_range(start..start + old_len, &change.inserted);
+            self.rope.replace(start..start + old_len, &change.inserted);
+            self.line_index.splice_rope(&self.rope, start);
             composite_edit = Some(Edit {
                 start,
                 old_len,
@@ -415,7 +577,6 @@ impl DocumentBuffer {
         }
 
         self.version += 1;
-        self.line_index = LineIndex::new(&self.content);
         self.is_dirty = true;
 
         let edit = composite_edit?;
@@ -442,7 +603,7 @@ impl DocumentBuffer {
         origin: Option<TabId>,
     ) -> (BufferEvent, NoteEditEvent, EditEvent) {
         if removed.is_empty() && inserted.is_empty() {
-            let edit_line = self.line_index.line_of(&self.content, at);
+            let edit_line = self.line_of_byte(at);
             return (
                 BufferEvent::Edited {
                     edit: Edit { start: at, old_len: 0, new_len: 0 },
@@ -454,7 +615,7 @@ impl DocumentBuffer {
             );
         }
 
-        let edit_line = self.line_index.line_of(&self.content, at);
+        let edit_line = self.line_of_byte(at);
         let line_diff = (inserted.matches('\n').count() as isize) - (removed.matches('\n').count() as isize);
         let note_edit = NoteEditEvent {
             edit_line,
@@ -472,9 +633,9 @@ impl DocumentBuffer {
             ops.push(TextOp::Insert { at, len: inserted.len() });
         }
 
-        self.content.replace_range(at..at + removed.len(), &inserted);
+        self.rope.replace(at..at + removed.len(), &inserted);
         self.version += 1;
-        self.line_index.splice(&self.content, at, &removed, &inserted);
+        self.line_index.splice_rope(&self.rope, at);
         self.code_checkpoints.truncate_to(edit_line);
         self.is_dirty = true;
         if self.first_dirty_time.is_none() {
@@ -560,9 +721,9 @@ impl DocumentBuffer {
             let old_len = change.inserted.len();
             let new_len = change.removed.len();
 
-            self.content.replace_range(at..at + old_len, &change.removed);
-            self.line_index.splice(&self.content, at, &change.inserted, &change.removed);
-            let edit_line = self.line_index.line_of(&self.content, at);
+            self.rope.replace(at..at + old_len, &change.removed);
+            self.line_index.splice_rope(&self.rope, at);
+            let edit_line = self.line_of_byte(at);
             self.code_checkpoints.truncate_to(edit_line);
 
             let line_diff = (change.removed.matches('\n').count() as isize)
@@ -613,9 +774,9 @@ impl DocumentBuffer {
             let old_len = change.removed.len();
             let new_len = change.inserted.len();
 
-            self.content.replace_range(at..at + old_len, &change.inserted);
-            self.line_index.splice(&self.content, at, &change.removed, &change.inserted);
-            let edit_line = self.line_index.line_of(&self.content, at);
+            self.rope.replace(at..at + old_len, &change.inserted);
+            self.line_index.splice_rope(&self.rope, at);
+            let edit_line = self.line_of_byte(at);
             self.code_checkpoints.truncate_to(edit_line);
 
             let line_diff = (change.inserted.matches('\n').count() as isize)
@@ -888,5 +1049,29 @@ mod tests {
             _ => panic!("Expected PathChanged event"),
         }
         assert_eq!(buf.path, PathBuf::from("new_name.md"));
+    }
+
+    #[test]
+    fn test_from_file_large() {
+        let temp_dir = std::env::temp_dir().join(format!("test_large_from_file_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let p = temp_dir.join("test.txt");
+        let text = "Привет мир! Hello world!\n".repeat(500_000); // ~18.5 MB
+        std::fs::write(&p, &text).unwrap();
+        let doc = DocumentBuffer::from_file(
+            DocumentId::new(),
+            p.clone(),
+            "test".into(),
+            1,
+        ).unwrap();
+        println!("Expected len: {}, actual doc len: {}", text.len(), doc.len());
+        assert_eq!(doc.len(), text.len());
+
+        let mut state = crate::state::AppState::new();
+        state.open_note(p.clone());
+        let active_doc = state.active_document().unwrap();
+        assert_eq!(active_doc.len(), text.len());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

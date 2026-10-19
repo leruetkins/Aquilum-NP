@@ -295,8 +295,8 @@ impl TabSession {
 
     pub fn selected_text(&self, doc: &DocumentBuffer) -> Option<String> {
         let range = self.selection_range(doc.len())?;
-        if doc.content().is_char_boundary(range.start) && doc.content().is_char_boundary(range.end) {
-            Some(doc.content()[range].to_string())
+        if doc.is_char_boundary(range.start) && doc.is_char_boundary(range.end) {
+            Some(doc.slice_to_string(range))
         } else {
             None
         }
@@ -322,7 +322,7 @@ impl TabSession {
             return;
         }
         let mut prev = self.cursor_offset - 1;
-        while prev > 0 && !doc.content().is_char_boundary(prev) {
+        while prev > 0 && !doc.is_char_boundary(prev) {
             prev -= 1;
         }
         self.cursor_offset = prev;
@@ -346,7 +346,7 @@ impl TabSession {
             return;
         }
         let mut next = self.cursor_offset + 1;
-        while next <= doc.len() && !doc.content().is_char_boundary(next) {
+        while next <= doc.len() && !doc.is_char_boundary(next) {
             next += 1;
         }
         if next <= doc.len() {
@@ -360,7 +360,7 @@ impl TabSession {
     pub fn delete_selection(&mut self, doc: &mut DocumentBuffer) -> Option<(BufferEvent, NoteEditEvent, EditEvent)> {
         let range = self.selection_range(doc.len())?;
         let cursor_before = self.cursor_offset;
-        let removed = doc.content()[range.clone()].to_string();
+        let removed = doc.slice_to_string(range.clone());
         let at = range.start;
         self.cursor_offset = at;
         self.selection_anchor = None;
@@ -371,7 +371,7 @@ impl TabSession {
     pub fn replace_selection(&mut self, doc: &mut DocumentBuffer, text: &str) -> (BufferEvent, NoteEditEvent, EditEvent) {
         if let Some(range) = self.selection_range(doc.len()) {
             let cursor_before = self.cursor_offset;
-            let removed = doc.content()[range.clone()].to_string();
+            let removed = doc.slice_to_string(range.clone());
             let at = range.start;
             let new_cursor = at + text.len();
             self.cursor_offset = new_cursor;
@@ -380,7 +380,7 @@ impl TabSession {
             doc.record_change(at, removed, text.to_string(), cursor_before, new_cursor, Some(self.tab_id))
         } else {
             let mut offset = self.cursor_offset.min(doc.len());
-            while offset > 0 && !doc.content().is_char_boundary(offset) {
+            while offset > 0 && !doc.is_char_boundary(offset) {
                 offset -= 1;
             }
             let cursor_before = self.cursor_offset;
@@ -388,8 +388,15 @@ impl TabSession {
             let new_cursor = at + text.len();
             self.cursor_offset = new_cursor;
             self.selection_anchor = None;
+            let res = doc.record_change(at, String::new(), text.to_string(), cursor_before, new_cursor, Some(self.tab_id));
+            let (_, ref note_edit, _) = res;
+            if note_edit.line_diff == 0 && self.window.covers_line(note_edit.edit_line) {
+                let new_line_text = doc.line_text(note_edit.edit_line);
+                let delta = note_edit.new_len as isize - note_edit.old_len as isize;
+                let _ = self.window.update_single_line(note_edit.edit_line, new_line_text, delta, None);
+            }
             self.visual_cache_dirty = true;
-            doc.record_change(at, String::new(), text.to_string(), cursor_before, new_cursor, Some(self.tab_id))
+            res
         }
     }
 
@@ -405,15 +412,22 @@ impl TabSession {
             return None;
         }
         let mut prev = self.cursor_offset - 1;
-        while prev > 0 && !doc.content().is_char_boundary(prev) {
+        while prev > 0 && !doc.is_char_boundary(prev) {
             prev -= 1;
         }
         let cursor_before = self.cursor_offset;
-        let removed = doc.content()[prev..self.cursor_offset].to_string();
+        let removed = doc.slice_to_string(prev..self.cursor_offset);
         self.cursor_offset = prev;
         self.selection_anchor = None;
+        let res = doc.record_change(prev, removed, String::new(), cursor_before, prev, Some(self.tab_id));
+        let (_, ref note_edit, _) = res;
+        if note_edit.line_diff == 0 && self.window.covers_line(note_edit.edit_line) {
+            let new_line_text = doc.line_text(note_edit.edit_line);
+            let delta = note_edit.new_len as isize - note_edit.old_len as isize;
+            let _ = self.window.update_single_line(note_edit.edit_line, new_line_text, delta, None);
+        }
         self.visual_cache_dirty = true;
-        Some(doc.record_change(prev, removed, String::new(), cursor_before, prev, Some(self.tab_id)))
+        Some(res)
     }
 
     pub fn delete_forwards(&mut self, doc: &mut DocumentBuffer) -> Option<(BufferEvent, NoteEditEvent, EditEvent)> {
@@ -425,23 +439,28 @@ impl TabSession {
             return None;
         }
         let mut next = offset + 1;
-        while next <= doc.len() && !doc.content().is_char_boundary(next) {
+        while next <= doc.len() && !doc.is_char_boundary(next) {
             next += 1;
         }
         let cursor_before = self.cursor_offset;
-        let removed = doc.content()[offset..next].to_string();
+        let removed = doc.slice_to_string(offset..next);
         self.cursor_offset = offset;
         self.selection_anchor = None;
+        let res = doc.record_change(offset, removed, String::new(), cursor_before, offset, Some(self.tab_id));
+        let (_, ref note_edit, _) = res;
+        if note_edit.line_diff == 0 && self.window.covers_line(note_edit.edit_line) {
+            let new_line_text = doc.line_text(note_edit.edit_line);
+            let delta = note_edit.new_len as isize - note_edit.old_len as isize;
+            let _ = self.window.update_single_line(note_edit.edit_line, new_line_text, delta, None);
+        }
         self.visual_cache_dirty = true;
-        Some(doc.record_change(offset, removed, String::new(), cursor_before, offset, Some(self.tab_id)))
+        Some(res)
     }
 
     pub fn insert_newline_auto_indent(&mut self, doc: &mut DocumentBuffer) -> (BufferEvent, NoteEditEvent, EditEvent) {
         let (line_idx, _) = self.line_col(doc);
-        let line_start = doc.line_index.start(doc.content(), line_idx);
-        let line_end = doc.line_index.end(doc.content(), line_idx).min(doc.len());
-        let line = &doc.content()[line_start..line_end];
-        let indent: String = line.chars().take_while(|c| c.is_whitespace() && *c != '\n').collect();
+        let line_text = doc.line_text(line_idx);
+        let indent: String = line_text.chars().take_while(|c| c.is_whitespace() && *c != '\n').collect();
         let text = format!("\n{}", indent);
         self.replace_selection(doc, &text)
     }
@@ -525,9 +544,10 @@ impl TabSession {
 
     pub fn line_col(&self, doc: &DocumentBuffer) -> (usize, usize) {
         let offset = self.cursor_offset.min(doc.len());
-        let line_idx = doc.line_index.line_of(doc.content(), offset);
-        let line_start = doc.line_index.start(doc.content(), line_idx).min(offset);
-        let col_idx = doc.content()[line_start..offset].chars().count();
+        let line_idx = doc.line_of_byte(offset);
+        let line_start = doc.line_start_byte(line_idx).min(offset);
+        let prefix = doc.slice_to_string(line_start..offset);
+        let col_idx = prefix.chars().count();
         (line_idx, col_idx)
     }
 
@@ -535,13 +555,9 @@ impl TabSession {
         if target_line >= doc.line_index.lines() {
             return doc.len();
         }
-        let line_start = doc.line_index.start(doc.content(), target_line);
-        let line_end = doc
-            .line_index
-            .end(doc.content(), target_line)
-            .max(line_start)
-            .min(doc.len());
-        let line = &doc.content()[line_start.min(doc.len())..line_end];
+        let line_start = doc.line_start_byte(target_line);
+        let line_end = doc.line_end_byte(target_line);
+        let line = doc.slice_to_string(line_start..line_end);
         let actual_col = target_col.min(line.chars().count());
         let byte_col: usize = line.chars().take(actual_col).map(|c| c.len_utf8()).sum();
         line_start + byte_col
@@ -578,11 +594,16 @@ impl TabSession {
 
         doc.ensure_checkpoints(start + 1);
         let initial = doc.checkpoint_state_at(start).unwrap_or_default();
-        let window = crate::editor_window::EditorWindow::build(
-            doc.content(),
-            &doc.line_index,
+        let start_byte = doc.line_start_byte(start);
+        let end_byte = doc.line_end_byte(end.saturating_sub(1)).max(start_byte);
+        let slice = doc.slice_to_string(start_byte..end_byte);
+
+        let window = crate::editor_window::EditorWindow::build_from_slice(
+            &slice,
             start,
             end,
+            start_byte,
+            end_byte,
             word_wrap,
             wrap_cols,
             headings,

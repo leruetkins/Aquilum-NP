@@ -38,14 +38,53 @@ pub fn adaptive_delays(content_len: usize) -> (Duration, Duration) {
     )
 }
 
+/// Safely writes `rope` to `path` chunk-by-chunk without loading into a contiguous string.
+pub fn safe_write_rope(path: &Path, rope: &crop::Rope) -> std::io::Result<()> {
+    use std::io::Write;
+    if rope.byte_len() < ATOMIC_WRITE_THRESHOLD_BYTES {
+        let mut file = std::fs::File::create(path)?;
+        for chunk in rope.chunks() {
+            file.write_all(chunk.as_bytes())?;
+        }
+        return file.flush();
+    }
+
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("note");
+    let pid = std::process::id();
+    let tmp_name = format!(".{file_name}.{pid}.tmp");
+    let tmp_path = match path.parent() {
+        Some(parent) => parent.join(tmp_name),
+        None => std::path::PathBuf::from(tmp_name),
+    };
+
+    let write_res = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&tmp_path)?;
+        for chunk in rope.chunks() {
+            file.write_all(chunk.as_bytes())?;
+        }
+        file.flush()?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp_path, path)
+    })();
+
+    match write_res {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            let mut file = std::fs::File::create(path)?;
+            for chunk in rope.chunks() {
+                file.write_all(chunk.as_bytes())?;
+            }
+            file.flush()
+        }
+    }
+}
+
 /// Safely writes `content` to `path`.
-///
-/// For files < 10 MB, uses standard direct `std::fs::write`.
-/// For files >= 10 MB, performs an atomic safe write via a temporary file:
-/// 1. Writes to `.{name}.{pid}.tmp` in the same directory.
-/// 2. Flushes and calls `sync_all()`.
-/// 3. Atomically renames/replaces the target file.
-/// If rename fails, falls back to direct write and cleans up the temp file.
 pub fn safe_write(path: &Path, content: &str) -> std::io::Result<()> {
     if content.len() < ATOMIC_WRITE_THRESHOLD_BYTES {
         return std::fs::write(path, content.as_bytes());

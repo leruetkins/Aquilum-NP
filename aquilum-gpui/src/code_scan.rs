@@ -128,6 +128,31 @@ impl CodeCheckpoints {
         }
     }
 
+    /// Extend the scan using a `crop::Rope`.
+    pub fn ensure_rope(&mut self, rope: &crop::Rope, to_line: usize) {
+        if to_line > self.scanned {
+            self.extend_by_rope(rope, to_line - self.scanned);
+        }
+    }
+
+    /// Fence state before `line`, scanning forward from the nearest checkpoint using `crop::Rope`.
+    pub fn state_at_rope(&self, rope: &crop::Rope, line: usize) -> Option<CodeScanState> {
+        if line > self.scanned {
+            return None;
+        }
+        let k = (line / CHECKPOINT_LINES).min(self.blocks.len().saturating_sub(1));
+        let base = k * CHECKPOINT_LINES;
+        if base >= line {
+            return Some(self.blocks[k]);
+        }
+        let mut scanner = CodeScanner::from_state(self.blocks[k]);
+        let base_byte = if base < rope.line_len() { rope.byte_of_line(base) } else { rope.byte_len() };
+        let line_byte = if line < rope.line_len() { rope.byte_of_line(line) } else { rope.byte_len() };
+        let slice = if base_byte < line_byte { rope.byte_slice(base_byte..line_byte).to_string() } else { String::new() };
+        consume_slice(&mut scanner, &slice, base, line, |_, _| {});
+        Some(scanner.state())
+    }
+
     /// Extend the scan by at most `max_lines`, returning how many were consumed.
     ///
     /// The opportunistic half of the design: called once per frame so that a
@@ -141,6 +166,41 @@ impl CodeCheckpoints {
         max_lines: usize,
     ) -> usize {
         self.extend_by(content, line_index, max_lines)
+    }
+
+    /// Extend the scan by at most `max_lines` using `crop::Rope`.
+    pub fn extend_slice_rope(&mut self, rope: &crop::Rope, max_lines: usize) -> usize {
+        self.extend_by_rope(rope, max_lines)
+    }
+
+    fn extend_by_rope(&mut self, rope: &crop::Rope, max_lines: usize) -> usize {
+        let lines_total = rope.line_len() + usize::from(rope.byte_len() == 0 || rope.byte(rope.byte_len() - 1) == b'\n');
+        if max_lines == 0 || self.scanned >= lines_total {
+            return 0;
+        }
+        let from = self.scanned;
+        let to = from.saturating_add(max_lines).min(lines_total);
+
+        let from_byte = if from < rope.line_len() { rope.byte_of_line(from) } else { rope.byte_len() };
+        let to_byte = if to < rope.line_len() { rope.byte_of_line(to) } else { rope.byte_len() };
+        let slice = if from_byte < to_byte { rope.byte_slice(from_byte..to_byte).to_string() } else { String::new() };
+
+        let mut scanner = CodeScanner::from_state(self.cursor);
+        let consumed = consume_slice(
+            &mut scanner,
+            &slice,
+            from,
+            to,
+            |line, state| {
+                if line % CHECKPOINT_LINES == 0 {
+                    self.blocks.push(state);
+                }
+            },
+        );
+
+        self.cursor = scanner.state();
+        self.scanned = from + consumed;
+        consumed
     }
 
     fn extend_by(&mut self, content: &str, line_index: &LineIndex, max_lines: usize) -> usize {
@@ -212,6 +272,36 @@ fn consume(
         };
         scanner.step(&content[cursor..line_end]);
         cursor = line_end + 1;
+        line += 1;
+        at_checkpoint(line, scanner.state());
+    }
+    line - from
+}
+
+fn consume_slice(
+    scanner: &mut CodeScanner,
+    slice: &str,
+    from: usize,
+    to: usize,
+    mut at_checkpoint: impl FnMut(usize, CodeScanState),
+) -> usize {
+    if to <= from || slice.is_empty() {
+        return 0;
+    }
+    let mut line = from;
+    let mut cursor = 0;
+    for (nl_idx, _) in slice.match_indices('\n') {
+        let line_text = &slice[cursor..nl_idx];
+        scanner.step(line_text);
+        cursor = nl_idx + 1;
+        line += 1;
+        at_checkpoint(line, scanner.state());
+        if line >= to {
+            break;
+        }
+    }
+    if line < to && cursor < slice.len() {
+        scanner.step(&slice[cursor..]);
         line += 1;
         at_checkpoint(line, scanner.state());
     }

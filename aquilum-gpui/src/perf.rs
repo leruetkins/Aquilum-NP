@@ -147,8 +147,8 @@ mod tests {
             );
             let mut view = crate::workspace::EditorViewState::new(tab_id, doc_id);
             // Поставим курсор в середину (на границу UTF-8 символа)
-            let mut offset = doc.content().len() / 2;
-            while !doc.content().is_char_boundary(offset) {
+            let mut offset = doc.len() / 2;
+            while !doc.is_char_boundary(offset) {
                 offset += 1;
             }
             view.cursor_offset = offset;
@@ -156,9 +156,10 @@ mod tests {
 
             // 1. Замер движения курсора вверх (move_cursor_up_visual логика)
             let iterations = if line_count <= 500 { 100 } else { 10 };
+            let full_text = doc.content();
             let t0 = Instant::now();
             for _ in 0..iterations {
-                let lines: Vec<&str> = doc.content().split('\n').collect();
+                let lines: Vec<&str> = full_text.split('\n').collect();
                 let visual_rows = crate::markdown::build_visual_rows(&lines, true, wrap_cols);
                 let (cursor_line, cursor_col) = view.line_col(&doc);
                 let (curr_v_idx, col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col)
@@ -178,7 +179,7 @@ mod tests {
             let t1 = Instant::now();
             for _ in 0..iterations {
                 let (cursor_line, cursor_col) = view.line_col(&doc);
-                let lines: Vec<&str> = doc.content().split('\n').collect();
+                let lines: Vec<&str> = full_text.split('\n').collect();
                 let visual_rows = crate::markdown::build_visual_rows(&lines, true, wrap_cols);
                 let _ = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col);
             }
@@ -319,6 +320,117 @@ mod tests {
             println!("{:<12} | {:<20?} | {}", line_count, edit_time, doc.blocks.len());
         }
         println!("===================================================================\n");
+    }
+
+    #[test]
+    fn benchmark_rope_typing_at_top() {
+        println!("\n=== ЗАМЕРЫ СКОРОСТИ НАБОРА СВЕРХУ И СНИЗУ ФАЙЛА (DocumentBuffer) ===");
+        println!("{:<12} | {:<12} | {:<20} | {:<20}", "Строк", "Размер (МБ)", "Ввод сверху (0)", "Ввод снизу (EOF)");
+        println!("{:-<12}-+-{:-<12}-+-{:-<20}-+-{:-<20}", "", "", "", "");
+
+        for &line_count in &[5000, 20_000, 50_000] {
+            let doc_text = generate_test_doc(line_count);
+            let mb = doc_text.len() as f64 / (1024.0 * 1024.0);
+
+            // 1. Ввод сверху (offset 0)
+            let mut doc_top = crate::document_buffer::DocumentBuffer::new(
+                crate::document_buffer::DocumentId::new(),
+                std::path::PathBuf::from("test.md"),
+                "test".to_string(),
+                doc_text.clone(),
+                1,
+            );
+            let mut view_top = crate::workspace::EditorViewState::new(
+                crate::workspace::TabId::new(),
+                doc_top.id,
+            );
+            view_top.cursor_offset = 0;
+            view_top.ensure_visual_cache(&mut doc_top, true, 80, 0);
+
+            let iters = 500;
+            let t_top = Instant::now();
+            for _ in 0..iters {
+                view_top.insert_text(&mut doc_top, "a");
+            }
+            let top_time = t_top.elapsed() / (iters as u32);
+
+            // 2. Ввод снизу (EOF)
+            let mut doc_bot = crate::document_buffer::DocumentBuffer::new(
+                crate::document_buffer::DocumentId::new(),
+                std::path::PathBuf::from("test.md"),
+                "test".to_string(),
+                doc_text,
+                1,
+            );
+            let mut view_bot = crate::workspace::EditorViewState::new(
+                crate::workspace::TabId::new(),
+                doc_bot.id,
+            );
+            let eof = doc_bot.len();
+            view_bot.cursor_offset = eof;
+            let total_lines = doc_bot.line_index.lines();
+            view_bot.ensure_visual_cache(&mut doc_bot, true, 80, total_lines);
+
+            let t_bot = Instant::now();
+            for _ in 0..iters {
+                view_bot.insert_text(&mut doc_bot, "a");
+            }
+            let bot_time = t_bot.elapsed() / (iters as u32);
+
+            println!("{:<12} | {:<12.1} | {:<20?} | {:<20?}", line_count, mb, top_time, bot_time);
+            assert!(top_time.as_micros() < 500, "Ввод сверху слишком медленный: {:?}", top_time);
+            assert!(bot_time.as_micros() < 500, "Ввод снизу слишком медленный: {:?}", bot_time);
+        }
+        println!("===================================================================\n");
+    }
+
+    #[test]
+    fn benchmark_create_note_and_tab_switch_with_large_file() {
+        println!("\n=== ЗАМЕРЫ СОЗДАНИЯ ЗАМЕТКИ И ПЕРЕКЛЮЧЕНИЯ ВКЛАДОК С БОЛЬШИМ ФАЙЛОМ ===");
+        let temp_dir = std::env::temp_dir().join(format!("aquilum_perf_tab_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let large_path = temp_dir.join("Large.md");
+        let large_text = generate_test_doc(30_000);
+        let large_mb = large_text.len() as f64 / (1024.0 * 1024.0);
+        std::fs::write(&large_path, &large_text).unwrap();
+
+        let mut state = crate::state::AppState::new();
+        state.workspace_path = Some(temp_dir.clone());
+        state.vault = Some(crate::vault::VaultCore::open(temp_dir.clone()));
+
+        // 1. Открытие большого файла
+        let t_open = Instant::now();
+        state.open_note(large_path.clone());
+        let open_time = t_open.elapsed();
+
+        // 2. Создание новой заметки при открытом большом файле
+        let t_create = Instant::now();
+        let new_note = state.create_new_note().expect("Должна создаться новая заметка");
+        let create_time = t_create.elapsed();
+
+        // 3. Переключение обратно на большой файл
+        let t_switch_large = Instant::now();
+        state.open_note(large_path.clone());
+        let switch_to_large_time = t_switch_large.elapsed();
+
+        // 4. Переключение обратно на новую заметку
+        let t_switch_small = Instant::now();
+        state.open_note(new_note);
+        let switch_to_small_time = t_switch_small.elapsed();
+
+        println!("Размер большого файла: {:.1} МБ", large_mb);
+        println!("1. Открытие большого файла:             {:?}", open_time);
+        println!("2. Создание новой заметки:               {:?}", create_time);
+        println!("3. Переключение на вкладку с большим:   {:?}", switch_to_large_time);
+        println!("4. Переключение на вкладку с маленьким: {:?}", switch_to_small_time);
+        println!("===================================================================\n");
+
+        assert!(create_time.as_millis() < 100, "Создание заметки должно быть мгновенным (< 100ms): {:?}", create_time);
+        assert!(switch_to_large_time.as_millis() < 50, "Переключение на большой файл должно быть мгновенным (< 50ms): {:?}", switch_to_large_time);
+        assert!(switch_to_small_time.as_millis() < 50, "Переключение на малый файл должно быть мгновенным (< 50ms): {:?}", switch_to_small_time);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]

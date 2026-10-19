@@ -53,7 +53,7 @@ impl std::error::Error for VaultError {}
 /// Куда переместить файл в корзине vault, не затирая ранее выброшенный файл с тем же путём.
 fn unique_trash_destination(root: &Path, rel_path: &str) -> PathBuf {
     let trash_root = root.join(".trash");
-    let mut dest = trash_root.join(rel_path);
+    let dest = trash_root.join(rel_path);
     if !dest.exists() {
         return dest;
     }

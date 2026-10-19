@@ -800,12 +800,12 @@ impl AppView {
     pub fn flush_active_note_now(&mut self, cx: &mut Context<Self>) {
         let to_save = match self.state.active_document() {
             Some(doc) if doc.is_dirty => {
-                Some((doc.path.clone(), doc.content().to_string(), doc.title.clone(), doc.version))
+                Some((doc.path.clone(), doc.rope.clone(), doc.title.clone(), doc.version))
             }
             _ => None,
         };
 
-        let Some((path, content, title, version)) = to_save else {
+        let Some((path, rope, title, version)) = to_save else {
             return;
         };
 
@@ -817,7 +817,7 @@ impl AppView {
         cx.foreground_executor().spawn(async move {
             let write_path = path.clone();
             let write_res = background.spawn(async move {
-                crate::save_manager::safe_write(&write_path, &content)
+                crate::save_manager::safe_write_rope(&write_path, &rope)
             }).await;
 
             let _ = entity.update(&mut async_cx, |this, cx| {
@@ -4036,7 +4036,6 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 None => continue,
             };
 
-            let doc_content = doc.content();
             let line_index = &doc.line_index;
             let mut checkpoints = doc.code_checkpoints.clone();
 
@@ -4049,13 +4048,18 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             {
                 let anchor_line = view.viewport.offset;
                 let (start, end) = crate::editor_window::EditorWindow::bounds_for(anchor_line, lines_total);
-                checkpoints.ensure(doc_content, line_index, start + 1);
-                let initial = checkpoints.state_at(doc_content, line_index, start).unwrap_or_default();
-                let new_window = crate::editor_window::EditorWindow::build(
-                    doc_content,
-                    line_index,
+                checkpoints.ensure_rope(doc.rope(), start + 1);
+                let initial = checkpoints.state_at_rope(doc.rope(), start).unwrap_or_default();
+                let start_byte = doc.line_start_byte(start);
+                let end_byte = doc.line_end_byte(end.saturating_sub(1)).max(start_byte);
+                let slice = doc.slice_to_string(start_byte..end_byte);
+
+                let new_window = crate::editor_window::EditorWindow::build_from_slice(
+                    &slice,
                     start,
                     end,
+                    start_byte,
+                    end_byte,
                     word_wrap,
                     wrap_cols,
                     Some(headings),

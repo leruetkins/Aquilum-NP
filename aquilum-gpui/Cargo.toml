@@ -19,6 +19,7 @@ rquickjs = "0.8"
 ureq = { version = "2.10", features = ["json"] }
 sha2 = "0.10"
 memchr = "2"
+crop = { version = "0.4", features = ["utf16-metric", "graphemes"] }
 
 [build-dependencies]
 winres = "0.1"

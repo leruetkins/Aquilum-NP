@@ -428,6 +428,94 @@ impl EditorWindow {
         }
     }
 
+    /// Build a window directly from a bounded window slice string, avoiding any O(document) allocation.
+    pub fn build_from_slice(
+        slice: &str,
+        start_line: usize,
+        end_line: usize,
+        start_byte: usize,
+        end_byte: usize,
+        word_wrap: bool,
+        wrap_cols: usize,
+        headings: Option<&crate::settings::HeadingsSettings>,
+        initial: crate::markdown::CodeScanState,
+    ) -> Self {
+        let lines_total = end_line.max(start_line);
+        if lines_total == 0 || start_line >= end_line {
+            return Self::default();
+        }
+
+        let lines: Vec<String> = slice
+            .split('\n')
+            .map(String::from)
+            .collect();
+        let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let mut visual_rows = markdown::build_visual_rows(&line_refs, word_wrap, wrap_cols);
+        let mut scanner = markdown::CodeScanner::from_state(initial);
+        let code_states: Vec<Option<CodeBlockState>> =
+            line_refs.iter().map(|line| scanner.step(line)).collect();
+        let height_index = VisualRowHeightIndex::from_rows(&lines, &visual_rows, headings);
+        for row in &mut visual_rows {
+            row.line_idx += start_line;
+        }
+
+        Self {
+            start_line,
+            end_line,
+            start_byte,
+            end_byte,
+            lines: Arc::new(WindowLines { start: start_line, lines }),
+            visual_rows: Arc::new(visual_rows),
+            code_states: Arc::new(WindowCodeStates { start: start_line, states: code_states }),
+            height_index: Arc::new(height_index),
+            word_wrap,
+            wrap_cols,
+        }
+    }
+
+    /// Incremental update of a single line inside the window (e.g. typing a character without newline).
+    /// Avoids rebuilding all 6000 window lines and re-parsing markdown across the window.
+    pub fn update_single_line(
+        &mut self,
+        line: usize,
+        new_line_text: String,
+        delta: isize,
+        headings: Option<&crate::settings::HeadingsSettings>,
+    ) -> bool {
+        if !self.covers_line(line) {
+            return false;
+        }
+        let local_line = line - self.start_line;
+        let lines_mut = Arc::make_mut(&mut self.lines);
+        if local_line >= lines_mut.lines.len() {
+            return false;
+        }
+        lines_mut.lines[local_line] = new_line_text.clone();
+
+        self.end_byte = (self.end_byte as isize + delta).max(self.start_byte as isize) as usize;
+
+        let new_rows = markdown::build_visual_rows(&[&new_line_text], self.word_wrap, self.wrap_cols);
+        let vrows_mut = Arc::make_mut(&mut self.visual_rows);
+
+        let first_row = vrows_mut.iter().position(|r| r.line_idx == line);
+        let last_row = vrows_mut.iter().rposition(|r| r.line_idx == line);
+
+        if let (Some(first), Some(last)) = (first_row, last_row) {
+            let mut adjusted_new_rows = new_rows;
+            for r in &mut adjusted_new_rows {
+                r.line_idx = line;
+            }
+            vrows_mut.splice(first..=last, adjusted_new_rows);
+        }
+
+        self.height_index = Arc::new(VisualRowHeightIndex::from_rows(
+            &self.lines.lines,
+            &self.visual_rows,
+            headings,
+        ));
+        true
+    }
+
     /// Bytes held by the window, for the open-path benchmark.
     pub fn bytes(&self) -> usize {
         let rows = self.visual_rows.capacity() * std::mem::size_of::<VisualRow>();
