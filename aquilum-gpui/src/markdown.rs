@@ -621,7 +621,7 @@ pub enum SyntaxSpan {
     BoldItalic(String),
     InlineCode(String),
     Strikethrough(String),
-    LinkText(String),
+    Link { text: String, url: String },
     Underline(String),
     Highlight(String),
 }
@@ -662,7 +662,10 @@ pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
                         let label = &s[1..1 + close_bracket];
                         let url = &after_bracket[1..1 + close_paren];
                         spans.push(SyntaxSpan::Marker("[".to_string()));
-                        spans.push(SyntaxSpan::LinkText(label.to_string()));
+                        spans.push(SyntaxSpan::Link {
+                            text: label.to_string(),
+                            url: url.to_string(),
+                        });
                         let close_marker = format!("]({})", url);
                         spans.push(SyntaxSpan::Marker(close_marker));
                         let total_consumed = 1 + close_bracket + 1 + 1 + close_paren + 1;
@@ -1130,17 +1133,17 @@ pub fn slice_syntax_spans(
     let mut curr_char = 0;
 
     for span in spans {
-        let (kind, text) = match span {
-            SyntaxSpan::Marker(t) => (0, t),
-            SyntaxSpan::Text(t) => (1, t),
-            SyntaxSpan::Bold(t) => (2, t),
-            SyntaxSpan::Italic(t) => (3, t),
-            SyntaxSpan::BoldItalic(t) => (4, t),
-            SyntaxSpan::InlineCode(t) => (5, t),
-            SyntaxSpan::Strikethrough(t) => (6, t),
-            SyntaxSpan::LinkText(t) => (7, t),
-            SyntaxSpan::Underline(t) => (8, t),
-            SyntaxSpan::Highlight(t) => (9, t),
+        let (kind, text, url) = match span {
+            SyntaxSpan::Marker(t) => (0, t, None),
+            SyntaxSpan::Text(t) => (1, t, None),
+            SyntaxSpan::Bold(t) => (2, t, None),
+            SyntaxSpan::Italic(t) => (3, t, None),
+            SyntaxSpan::BoldItalic(t) => (4, t, None),
+            SyntaxSpan::InlineCode(t) => (5, t, None),
+            SyntaxSpan::Strikethrough(t) => (6, t, None),
+            SyntaxSpan::Link { text, url } => (7, text, Some(url)),
+            SyntaxSpan::Underline(t) => (8, t, None),
+            SyntaxSpan::Highlight(t) => (9, t, None),
         };
 
         let span_len = text.chars().count();
@@ -1159,7 +1162,10 @@ pub fn slice_syntax_spans(
                     4 => SyntaxSpan::BoldItalic(sliced_str),
                     5 => SyntaxSpan::InlineCode(sliced_str),
                     6 => SyntaxSpan::Strikethrough(sliced_str),
-                    7 => SyntaxSpan::LinkText(sliced_str),
+                    7 => SyntaxSpan::Link {
+                        text: sliced_str,
+                        url: url.cloned().unwrap_or_default(),
+                    },
                     8 => SyntaxSpan::Underline(sliced_str),
                     9 => SyntaxSpan::Highlight(sliced_str),
                     _ => SyntaxSpan::Text(sliced_str),
@@ -1204,9 +1210,9 @@ pub fn visual_col_to_row_char(
             | SyntaxSpan::BoldItalic(t)
             | SyntaxSpan::InlineCode(t)
             | SyntaxSpan::Strikethrough(t)
-            | SyntaxSpan::LinkText(t)
             | SyntaxSpan::Underline(t)
             | SyntaxSpan::Highlight(t) => (false, t),
+            SyntaxSpan::Link { text, .. } => (false, text),
         };
         let span_len = text.chars().count();
         if is_marker {
@@ -1246,9 +1252,9 @@ pub fn row_char_to_visual_col(
             | SyntaxSpan::BoldItalic(t)
             | SyntaxSpan::InlineCode(t)
             | SyntaxSpan::Strikethrough(t)
-            | SyntaxSpan::LinkText(t)
             | SyntaxSpan::Underline(t)
             | SyntaxSpan::Highlight(t) => (false, t),
+            SyntaxSpan::Link { text, .. } => (false, text),
         };
         let span_len = text.chars().count();
         if is_marker {
@@ -1581,9 +1587,9 @@ pub fn row_painted_text(
                     SyntaxSpan::BoldItalic(t) => (t.as_str(), true, true, false, false),
                     SyntaxSpan::InlineCode(t) => (t.as_str(), base_bold, base_italic, false, true),
                     SyntaxSpan::Strikethrough(t)
-                    | SyntaxSpan::LinkText(t)
                     | SyntaxSpan::Underline(t)
                     | SyntaxSpan::Highlight(t) => (t.as_str(), base_bold, base_italic, false, false),
+                    SyntaxSpan::Link { text, .. } => (text.as_str(), base_bold, base_italic, false, false),
                 };
                 let n = text.chars().count();
                 if n == 0 {
@@ -1613,9 +1619,34 @@ pub fn row_painted_text(
         return PaintedRow { segments, line_chars };
     }
 
-    let terminal = line_chars.last().map(|&c| c + 1).unwrap_or(v.char_end);
+    let terminal = if v.is_last_sub {
+        v.char_end
+    } else {
+        line_chars.last().map(|&c| c + 1).unwrap_or(v.char_end)
+    };
     line_chars.push(terminal);
     PaintedRow { segments, line_chars }
+}
+
+/// Cleans raw markdown link URL (removes title, quotes, angle brackets, adds scheme if needed).
+pub fn clean_link_url(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let url_part = if let Some(idx) = trimmed.find(|c: char| c.is_whitespace()) {
+        &trimmed[..idx]
+    } else {
+        trimmed
+    };
+    let url_part = url_part.trim_start_matches('<').trim_end_matches('>');
+    let url_part = url_part.trim_matches('"').trim_matches('\'');
+    if url_part.is_empty() {
+        return String::new();
+    }
+    if !url_part.contains("://") && !url_part.starts_with("mailto:") && !url_part.starts_with('#') {
+        if url_part.contains('.') {
+            return format!("https://{}", url_part);
+        }
+    }
+    url_part.to_string()
 }
 
 /// Strips inline markdown markers (bold, italic, strikethrough, inline code, links, highlights, underline),
@@ -1659,17 +1690,32 @@ pub fn strip_inline_markdown(mut s: &str) -> String {
             | SyntaxSpan::BoldItalic(t)
             | SyntaxSpan::InlineCode(t)
             | SyntaxSpan::Strikethrough(t)
-            | SyntaxSpan::LinkText(t)
             | SyntaxSpan::Underline(t)
             | SyntaxSpan::Highlight(t) => {
                 out.push_str(&t);
             }
+            SyntaxSpan::Link { text, .. } => {
+                out.push_str(&text);
+            }
         }
     }
 
-    // 3. Clean up any unclosed boundary markers from partial selection (e.g. "**word" or "word**")
-    let trimmed = out.trim_start_matches(|c| c == '*' || c == '_' || c == '~' || c == '=' || c == '`');
-    let trimmed = trimmed.trim_end_matches(|c| c == '*' || c == '_' || c == '~' || c == '=' || c == '`');
+    // 3. Clean up any unclosed boundary markers from partial selection (e.g. "**word", "word**", "[word", "word](url)")
+    let mut cleaned = out;
+    if cleaned.contains('[') && !cleaned.contains(']') {
+        cleaned = cleaned.replace('[', "");
+    }
+    if let Some(pos) = cleaned.find("](") {
+        if !cleaned[..pos].contains('[') {
+            if let Some(end_paren) = cleaned[pos..].find(')') {
+                cleaned.replace_range(pos..pos + end_paren + 1, "");
+            } else {
+                cleaned.truncate(pos);
+            }
+        }
+    }
+    let trimmed = cleaned.trim_start_matches(|c| c == '*' || c == '_' || c == '~' || c == '=' || c == '`' || c == '[');
+    let trimmed = trimmed.trim_end_matches(|c| c == '*' || c == '_' || c == '~' || c == '=' || c == '`' || c == ']');
     trimmed.to_string()
 }
 
@@ -1775,8 +1821,32 @@ mod tests {
 
         assert!(spans.iter().any(|s| matches!(s, SyntaxSpan::Bold(b) if b == "жирным")));
         assert!(spans.iter().any(|s| matches!(s, SyntaxSpan::Underline(u) if u == "HTML-подчёркиванием")));
-        assert!(spans.iter().any(|s| matches!(s, SyntaxSpan::LinkText(l) if l == "ссылкой")));
+        assert!(spans.iter().any(|s| matches!(s, SyntaxSpan::Link { text, url } if text == "ссылкой" && url == "https://example.com")));
         assert!(spans.iter().any(|s| matches!(s, SyntaxSpan::Marker(m) if m == "](https://example.com)")));
+    }
+
+    #[test]
+    fn test_strip_inline_markdown_links() {
+        let input = "Ссылка с заголовком: [Example](https://example.com \"Example Site\")";
+        assert_eq!(strip_inline_markdown(input), "Ссылка с заголовком: Example");
+
+        let partial = "Ссылка с заголовком: [Example";
+        assert_eq!(strip_inline_markdown(partial), "Ссылка с заголовком: Example");
+
+        let only_link = "[Example";
+        assert_eq!(strip_inline_markdown(only_link), "Example");
+
+        let mid_slice = "Example](https://example.com)";
+        assert_eq!(strip_inline_markdown(mid_slice), "Example");
+    }
+
+    #[test]
+    fn test_clean_link_url() {
+        assert_eq!(clean_link_url("https://example.com \"Example Site\""), "https://example.com");
+        assert_eq!(clean_link_url("<https://example.com>"), "https://example.com");
+        assert_eq!(clean_link_url("https://example.com"), "https://example.com");
+        assert_eq!(clean_link_url("example.com"), "https://example.com");
+        assert_eq!(clean_link_url("mailto:user@test.com"), "mailto:user@test.com");
     }
 
     #[test]

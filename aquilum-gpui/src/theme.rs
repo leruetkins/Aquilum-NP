@@ -45,6 +45,15 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// Returns pale green background color for preview/Ctrl-selected text.
+    pub fn preview_selection_bg(&self) -> Rgba {
+        if self.is_dark {
+            rgba(0xa6e3a144)
+        } else {
+            rgba(0x40a02b38)
+        }
+    }
+
     /// Returns the default dark theme (Catppuccin Mocha palette).
     pub fn dark() -> Self {
         Self {

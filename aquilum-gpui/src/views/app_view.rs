@@ -5,7 +5,7 @@ use crate::theme::Theme;
 use crate::views::scrollbar::ScrollbarDrag;
 use gpui::{
     div, prelude::*, px, rgb, rgba, Bounds, ClipboardItem, Context, Div, Entity, FocusHandle,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Render, ScrollHandle, ScrollStrategy,
+    IntoElement, KeyDownEvent, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Render, ScrollHandle, ScrollStrategy,
     SharedString, Subscription, Window, WindowControlArea,
 };
 use std::cell::Cell;
@@ -85,6 +85,8 @@ pub struct AppView {
     pub window_was_active: bool,
     pub is_mouse_selecting: bool,
     pub ctrl_preview_selection: bool,
+    pub ctrl_held: bool,
+    pub hovered_link_id: Option<String>,
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
     pub is_resizing_sidebar: bool,
@@ -344,6 +346,8 @@ impl AppView {
             window_was_active: true,
             is_mouse_selecting: false,
             ctrl_preview_selection: false,
+            ctrl_held: false,
+            hovered_link_id: None,
             sidebar_width,
             sidebar_collapsed: false,
             is_resizing_sidebar: false,
@@ -3626,7 +3630,11 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         self.reset_editor_cursor_blink(cx);
         let keystroke = &event.keystroke;
-        let ctrl = keystroke.modifiers.control;
+        let ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
+        if ctrl && !self.ctrl_held {
+            self.ctrl_held = true;
+            cx.notify();
+        }
         let alt = keystroke.modifiers.alt;
         let shift = keystroke.modifiers.shift;
         if alt && keystroke.key == "left" {
@@ -3791,6 +3799,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         // Ctrl + A (Выделить всё)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("a") || keystroke.key == "ф" || keystroke.key == "Ф") {
+            self.ctrl_preview_selection = false;
             self.state.active_select_all();
             cx.notify();
             return;
@@ -7098,13 +7107,20 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     };
                     let sel_h = if grid_tbl.is_some() { 28.0 } else { row_h };
 
+                    let is_preview_selection = self.ctrl_preview_selection || !self.edit_mode;
+                    let sel_color = if is_preview_selection {
+                        theme.preview_selection_bg()
+                    } else {
+                        theme.selection_bg
+                    };
+
                     let mut sel_rect = div()
                         .absolute()
                         .left(px(sel_x))
                         .top(px(sel_top))
                         .h(px(sel_h))
                         .w(px(sel_w))
-                        .bg(theme.selection_bg);
+                        .bg(sel_color);
 
                     if round_tl {
                         sel_rect = sel_rect.rounded_tl_xs();
@@ -7277,6 +7293,11 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             cx.notify();
                         }))
                         .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                            let ctrl_held = event.modifiers.control || event.modifiers.platform;
+                            if this.ctrl_held != ctrl_held {
+                                this.ctrl_held = ctrl_held;
+                                cx.notify();
+                            }
                             if this.is_mouse_selecting {
                                 cx.stop_propagation();
                                 let click_x: f32 = event.position.x.into();
@@ -7540,6 +7561,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         &classified,
                                         v_char_start,
                                         v_char_end,
+                                        v_line_idx,
                                         v_sub_idx,
                                         is_active_line,
                                         is_in_active_block,
@@ -7555,6 +7577,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         self.plugin_select_popup.as_ref(),
                                         self.plugin_input_blink.visible(),
                                         table_render_arg,
+                                        self.ctrl_held,
+                                        self.hovered_link_id.as_deref(),
                                         window,
                                         cx,
                                     )),
@@ -7847,7 +7871,11 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                     .w(px(ruler_pill_w))
                                     .rounded_full()
                             })
-                            .bg(theme_scrollbar.selection_bg),
+                            .bg(if self.ctrl_preview_selection || !self.edit_mode {
+                                theme_scrollbar.preview_selection_bg()
+                            } else {
+                                theme_scrollbar.selection_bg
+                            }),
                     );
                 }
 
@@ -8222,6 +8250,11 @@ impl Render for AppView {
             .bg(theme.bg_app)
             .text_color(theme.text_primary)
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                let ctrl_held = event.modifiers.control || event.modifiers.platform;
+                if this.ctrl_held != ctrl_held {
+                    this.ctrl_held = ctrl_held;
+                    cx.notify();
+                }
                 if this.is_resizing_sidebar {
                     let x: f32 = event.position.x.into();
                     if x < 100.0 {
@@ -8411,6 +8444,7 @@ impl Render for AppView {
                 if let Some(view) = this.state.active_view_mut() {
                     if view.selection_anchor == Some(view.cursor_offset) {
                         view.selection_anchor = None;
+                        this.ctrl_preview_selection = false;
                     }
                 }
                 cx.notify();
@@ -8426,6 +8460,13 @@ impl Render for AppView {
                 this.stop_sidebar_middle_scroll(cx);
                 this.stop_editor_middle_scroll(cx);
                 this.stop_plugin_modal_middle_scroll(cx);
+            }))
+            .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _window, cx| {
+                let ctrl_held = event.modifiers.control || event.modifiers.platform;
+                if this.ctrl_held != ctrl_held {
+                    this.ctrl_held = ctrl_held;
+                    cx.notify();
+                }
             }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let keystroke = &event.keystroke;
@@ -9383,12 +9424,14 @@ fn render_syntax_spans(
     base_weight: Option<gpui::FontWeight>,
     base_style: Option<gpui::FontStyle>,
     font_family: &gpui::SharedString,
-) -> gpui::StyledText {
+    row_key: &str,
+    ctrl_held: bool,
+    hovered_link_id: Option<&str>,
+    cx: &Context<AppView>,
+) -> gpui::AnyElement {
     let main_color = text_color_override.unwrap_or(theme.text_primary);
     let base_weight = base_weight.unwrap_or(gpui::FontWeight::NORMAL);
     let base_style = base_style.unwrap_or(gpui::FontStyle::Normal);
-    let mut full_text = String::new();
-    let mut runs = Vec::new();
 
     let reg_font = gpui::Font {
         family: font_family.clone(),
@@ -9429,163 +9472,354 @@ fn render_syntax_spans(
         fallbacks: None,
     };
 
-    for span in spans {
-        match span {
-            crate::markdown::SyntaxSpan::Marker(m) => {
-                if let Some(color) = marker_paint(&m, is_active_line, theme) {
-                    let len = m.len();
-                    let font = if crate::markdown::is_inline_code_delim(&m) { code_font.clone() } else { reg_font.clone() };
-                    full_text.push_str(&m);
+    let has_links = spans.iter().any(|s| matches!(s, crate::markdown::SyntaxSpan::Link { .. }));
+
+    if !has_links {
+        let mut full_text = String::new();
+        let mut runs = Vec::new();
+
+        for span in spans {
+            match span {
+                crate::markdown::SyntaxSpan::Marker(m) => {
+                    if let Some(color) = marker_paint(&m, is_active_line, theme) {
+                        let len = m.len();
+                        let font = if crate::markdown::is_inline_code_delim(&m) { code_font.clone() } else { reg_font.clone() };
+                        full_text.push_str(&m);
+                        runs.push(gpui::TextRun {
+                            len,
+                            font,
+                            color,
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        });
+                    }
+                }
+                crate::markdown::SyntaxSpan::Text(t) => {
+                    let len = t.len();
+                    full_text.push_str(&t);
                     runs.push(gpui::TextRun {
                         len,
-                        font,
-                        color,
+                        font: reg_font.clone(),
+                        color: main_color.into(),
                         background_color: None,
                         underline: None,
                         strikethrough: None,
                     });
                 }
-            }
-            crate::markdown::SyntaxSpan::Text(t) => {
-                let len = t.len();
-                full_text.push_str(&t);
-                runs.push(gpui::TextRun {
-                    len,
-                    font: reg_font.clone(),
-                    color: main_color.into(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                });
-            }
-            crate::markdown::SyntaxSpan::Bold(b) => {
-                let len = b.len();
-                full_text.push_str(&b);
-                runs.push(gpui::TextRun {
-                    len,
-                    font: bold_font.clone(),
-                    color: main_color.into(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                });
-            }
-            crate::markdown::SyntaxSpan::Italic(i) => {
-                let len = i.len();
-                full_text.push_str(&i);
-                runs.push(gpui::TextRun {
-                    len,
-                    font: italic_font.clone(),
-                    color: main_color.into(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                });
-            }
-            crate::markdown::SyntaxSpan::BoldItalic(bi) => {
-                let len = bi.len();
-                full_text.push_str(&bi);
-                runs.push(gpui::TextRun {
-                    len,
-                    font: bold_italic_font.clone(),
-                    color: main_color.into(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                });
-            }
-            crate::markdown::SyntaxSpan::InlineCode(c) => {
-                // Inline code keeps the surrounding text colour and is marked out by the
-                // chip the editor paints behind the row plus its heavier face, so its
-                // colour never changes as the caret moves in and out of the line. The
-                // chip is not a run background on purpose: a run background is painted
-                // by the text element, i.e. above the selection rectangle, which would
-                // hide the selection over the code.
-                let len = c.len();
-                full_text.push_str(&c);
-                runs.push(gpui::TextRun {
-                    len,
-                    font: code_font.clone(),
-                    color: main_color.into(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                });
-            }
-            crate::markdown::SyntaxSpan::Strikethrough(s) => {
-                let len = s.len();
-                full_text.push_str(&s);
-                runs.push(gpui::TextRun {
-                    len,
-                    font: reg_font.clone(),
-                    color: theme.text_muted.into(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: Some(gpui::StrikethroughStyle {
-                        thickness: px(1.0),
-                        color: Some(theme.text_muted.into()),
-                    }),
-                });
-            }
-            crate::markdown::SyntaxSpan::LinkText(l) => {
-                let len = l.len();
-                full_text.push_str(&l);
-                runs.push(gpui::TextRun {
-                    len,
-                    font: reg_font.clone(),
-                    color: theme.accent.into(),
-                    background_color: None,
-                    underline: Some(gpui::UnderlineStyle {
-                        thickness: px(1.0),
-                        color: Some(theme.accent.into()),
-                        wavy: false,
-                    }),
-                    strikethrough: None,
-                });
-            }
-            crate::markdown::SyntaxSpan::Underline(u) => {
-                let len = u.len();
-                full_text.push_str(&u);
-                runs.push(gpui::TextRun {
-                    len,
-                    font: reg_font.clone(),
-                    color: main_color.into(),
-                    background_color: None,
-                    underline: Some(gpui::UnderlineStyle {
-                        thickness: px(1.0),
-                        color: Some(main_color.into()),
-                        wavy: false,
-                    }),
-                    strikethrough: None,
-                });
-            }
-            crate::markdown::SyntaxSpan::Highlight(h) => {
-                let hl_bg = if theme.is_dark { gpui::rgba(0xf9e2af44) } else { gpui::rgba(0xdf8e1d33) };
-                let len = h.len();
-                full_text.push_str(&h);
-                runs.push(gpui::TextRun {
-                    len,
-                    font: reg_font.clone(),
-                    color: main_color.into(),
-                    background_color: Some(hl_bg.into()),
-                    underline: None,
-                    strikethrough: None,
-                });
+                crate::markdown::SyntaxSpan::Bold(b) => {
+                    let len = b.len();
+                    full_text.push_str(&b);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: bold_font.clone(),
+                        color: main_color.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
+                crate::markdown::SyntaxSpan::Italic(i) => {
+                    let len = i.len();
+                    full_text.push_str(&i);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: italic_font.clone(),
+                        color: main_color.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
+                crate::markdown::SyntaxSpan::BoldItalic(bi) => {
+                    let len = bi.len();
+                    full_text.push_str(&bi);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: bold_italic_font.clone(),
+                        color: main_color.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
+                crate::markdown::SyntaxSpan::InlineCode(c) => {
+                    let len = c.len();
+                    full_text.push_str(&c);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: code_font.clone(),
+                        color: main_color.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
+                crate::markdown::SyntaxSpan::Strikethrough(s) => {
+                    let len = s.len();
+                    full_text.push_str(&s);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: reg_font.clone(),
+                        color: theme.text_muted.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: Some(gpui::StrikethroughStyle {
+                            thickness: px(1.0),
+                            color: Some(theme.text_muted.into()),
+                        }),
+                    });
+                }
+                crate::markdown::SyntaxSpan::Link { .. } => unreachable!(),
+                crate::markdown::SyntaxSpan::Underline(u) => {
+                    let len = u.len();
+                    full_text.push_str(&u);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: reg_font.clone(),
+                        color: main_color.into(),
+                        background_color: None,
+                        underline: Some(gpui::UnderlineStyle {
+                            thickness: px(1.0),
+                            color: Some(main_color.into()),
+                            wavy: false,
+                        }),
+                        strikethrough: None,
+                    });
+                }
+                crate::markdown::SyntaxSpan::Highlight(h) => {
+                    let hl_bg = if theme.is_dark { gpui::rgba(0xf9e2af44) } else { gpui::rgba(0xdf8e1d33) };
+                    let len = h.len();
+                    full_text.push_str(&h);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: reg_font.clone(),
+                        color: main_color.into(),
+                        background_color: Some(hl_bg.into()),
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
             }
         }
-    }
 
-    if full_text.is_empty() {
-        gpui::StyledText::new(" ").with_runs(vec![gpui::TextRun {
-            len: 1,
-            font: reg_font,
-            color: gpui::rgba(0x00000000).into(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        }])
+        if full_text.is_empty() {
+            gpui::StyledText::new(" ").with_runs(vec![gpui::TextRun {
+                len: 1,
+                font: reg_font,
+                color: gpui::rgba(0x00000000).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }]).into_any_element()
+        } else {
+            gpui::StyledText::new(full_text).with_runs(runs).into_any_element()
+        }
     } else {
-        gpui::StyledText::new(full_text).with_runs(runs)
+        // Has links: render inline text segments interspersed with interactive link elements
+        let mut row_container = div().flex().flex_row().items_center().whitespace_nowrap();
+        let mut full_text = String::new();
+        let mut runs = Vec::new();
+        let mut link_idx = 0;
+
+        for span in spans {
+            match span {
+                crate::markdown::SyntaxSpan::Marker(m) => {
+                    if let Some(color) = marker_paint(&m, is_active_line, theme) {
+                        let len = m.len();
+                        let font = if crate::markdown::is_inline_code_delim(&m) { code_font.clone() } else { reg_font.clone() };
+                        full_text.push_str(&m);
+                        runs.push(gpui::TextRun {
+                            len,
+                            font,
+                            color,
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        });
+                    }
+                }
+                crate::markdown::SyntaxSpan::Text(t) => {
+                    let len = t.len();
+                    full_text.push_str(&t);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: reg_font.clone(),
+                        color: main_color.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
+                crate::markdown::SyntaxSpan::Bold(b) => {
+                    let len = b.len();
+                    full_text.push_str(&b);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: bold_font.clone(),
+                        color: main_color.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
+                crate::markdown::SyntaxSpan::Italic(i) => {
+                    let len = i.len();
+                    full_text.push_str(&i);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: italic_font.clone(),
+                        color: main_color.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
+                crate::markdown::SyntaxSpan::BoldItalic(bi) => {
+                    let len = bi.len();
+                    full_text.push_str(&bi);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: bold_italic_font.clone(),
+                        color: main_color.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
+                crate::markdown::SyntaxSpan::InlineCode(c) => {
+                    let len = c.len();
+                    full_text.push_str(&c);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: code_font.clone(),
+                        color: main_color.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
+                crate::markdown::SyntaxSpan::Strikethrough(s) => {
+                    let len = s.len();
+                    full_text.push_str(&s);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: reg_font.clone(),
+                        color: theme.text_muted.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: Some(gpui::StrikethroughStyle {
+                            thickness: px(1.0),
+                            color: Some(theme.text_muted.into()),
+                        }),
+                    });
+                }
+                crate::markdown::SyntaxSpan::Link { text, url } => {
+                    // Flush preceding text runs
+                    if !full_text.is_empty() {
+                        row_container = row_container.child(
+                            gpui::StyledText::new(std::mem::take(&mut full_text))
+                                .with_runs(std::mem::take(&mut runs))
+                        );
+                    }
+
+                    let link_id = format!("{}-link-{}", row_key, link_idx);
+                    link_idx += 1;
+                    let is_hovered = hovered_link_id == Some(&link_id);
+                    let show_icon = ctrl_held && is_hovered;
+
+                    let link_label = if text.is_empty() { "link".to_string() } else { text };
+                    let link_styled = gpui::StyledText::new(link_label.clone()).with_runs(vec![gpui::TextRun {
+                        len: link_label.len(),
+                        font: reg_font.clone(),
+                        color: theme.accent.into(),
+                        background_color: None,
+                        underline: Some(gpui::UnderlineStyle {
+                            thickness: px(1.0),
+                            color: Some(theme.accent.into()),
+                            wavy: false,
+                        }),
+                        strikethrough: None,
+                    }]);
+
+                    let mut link_div = div()
+                        .id(gpui::ElementId::Name(link_id.clone().into()))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(3.0))
+                        .when(ctrl_held, |d| d.cursor(gpui::CursorStyle::PointingHand))
+                        .on_hover(cx.listener({
+                            let lid = link_id.clone();
+                            move |this, is_h: &bool, _window, cx| {
+                                if *is_h {
+                                    if this.hovered_link_id.as_deref() != Some(&lid) {
+                                        this.hovered_link_id = Some(lid.clone());
+                                        cx.notify();
+                                    }
+                                } else if this.hovered_link_id.as_deref() == Some(&lid) {
+                                    this.hovered_link_id = None;
+                                    cx.notify();
+                                }
+                            }
+                        }))
+                        .on_mouse_down(MouseButton::Left, cx.listener({
+                            let u = url.clone();
+                            move |_this, event: &MouseDownEvent, _window, cx| {
+                                if event.modifiers.control || event.modifiers.platform {
+                                    cx.stop_propagation();
+                                    let clean = crate::markdown::clean_link_url(&u);
+                                    if !clean.is_empty() {
+                                        cx.open_url(&clean);
+                                    }
+                                }
+                            }
+                        }))
+                        .child(link_styled);
+
+                    if show_icon {
+                        link_div = link_div.child(icons::icon(icons::ICON_EXTERNAL_LINK, 12.0, theme.accent));
+                    }
+
+                    row_container = row_container.child(link_div);
+                }
+                crate::markdown::SyntaxSpan::Underline(u) => {
+                    let len = u.len();
+                    full_text.push_str(&u);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: reg_font.clone(),
+                        color: main_color.into(),
+                        background_color: None,
+                        underline: Some(gpui::UnderlineStyle {
+                            thickness: px(1.0),
+                            color: Some(main_color.into()),
+                            wavy: false,
+                        }),
+                        strikethrough: None,
+                    });
+                }
+                crate::markdown::SyntaxSpan::Highlight(h) => {
+                    let hl_bg = if theme.is_dark { gpui::rgba(0xf9e2af44) } else { gpui::rgba(0xdf8e1d33) };
+                    let len = h.len();
+                    full_text.push_str(&h);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: reg_font.clone(),
+                        color: main_color.into(),
+                        background_color: Some(hl_bg.into()),
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
+            }
+        }
+
+        if !full_text.is_empty() {
+            row_container = row_container.child(gpui::StyledText::new(full_text).with_runs(runs));
+        }
+
+        row_container.into_any_element()
     }
 }
 
@@ -10234,6 +10468,7 @@ fn render_live_styled_row(
     classified: &crate::markdown::LineKind<'_>,
     char_start: usize,
     char_end: usize,
+    line_idx: usize,
     sub_idx: usize,
     is_active_line: bool,
     show_fences: bool,
@@ -10249,6 +10484,8 @@ fn render_live_styled_row(
     plugin_select_popup: Option<&Entity<crate::views::tab_list::TabListPopup>>,
     plugin_input_blink_visible: bool,
     table_render: Option<(&crate::table::TableBlock, &TableLayout, Option<usize>, usize)>,
+    ctrl_held: bool,
+    hovered_link_id: Option<&str>,
     window: &Window,
     cx: &Context<AppView>,
 ) -> gpui::Div {
@@ -10321,7 +10558,8 @@ fn render_live_styled_row(
                 crate::table::Align::Center => { cell_div = cell_div.justify_center(); }
                 crate::table::Align::Right => { cell_div = cell_div.justify_end(); }
             }
-            cell_div = cell_div.child(render_syntax_spans(spans, is_active_cell, theme, None, font_weight, None, font_family));
+            let cell_key = format!("tbl-cell-{}-{}-{}", line_idx, c_idx, sub_idx);
+            cell_div = cell_div.child(render_syntax_spans(spans, is_active_cell, theme, None, font_weight, None, font_family, &cell_key, ctrl_held, hovered_link_id, cx));
 
             let col_widths_clone = table_layout.col_widths.clone();
             cell_div = cell_div.child(
@@ -10350,6 +10588,23 @@ fn render_live_styled_row(
         return div().h_full().flex().items_center().child(" ");
     }
 
+    let row_key = format!("row-{}-{}", line_idx, sub_idx);
+    let render_spans = |spans: Vec<crate::markdown::SyntaxSpan>, is_active: bool, text_color: Option<gpui::Rgba>, weight: Option<gpui::FontWeight>, style: Option<gpui::FontStyle>| {
+        render_syntax_spans(
+            spans,
+            is_active,
+            theme,
+            text_color,
+            weight,
+            style,
+            font_family,
+            &row_key,
+            ctrl_held,
+            hovered_link_id,
+            cx,
+        )
+    };
+
     match classified {
         crate::markdown::LineKind::Heading1(_) => {
             let rest = line.strip_prefix("# ").unwrap_or(line);
@@ -10375,7 +10630,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
+                        .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -10394,7 +10649,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
+                            .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -10422,7 +10677,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
+                        .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -10441,7 +10696,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
+                            .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -10469,7 +10724,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
+                        .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -10488,7 +10743,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
+                            .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -10516,7 +10771,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
+                        .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -10535,7 +10790,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
+                            .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -10563,7 +10818,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
+                        .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -10582,7 +10837,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
+                            .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -10610,7 +10865,7 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
+                        .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -10629,7 +10884,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, Some(h_color), Some(h_weight), Some(h_style), font_family)),
+                            .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -10645,7 +10900,7 @@ fn render_live_styled_row(
                     .h_full()
                     .italic()
                     .child(div().text_color(theme.accent).child("> "))
-                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, is_active_line, theme, Some(theme.text_secondary), None, None, font_family)))
+                    .child(div().text_color(theme.text_secondary).child(render_spans(row_spans, is_active_line, Some(theme.text_secondary), None, None)))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -10659,7 +10914,7 @@ fn render_live_styled_row(
                     .h_full()
                     .italic()
                     .child(div().text_color(theme.border_subtle).child("  "))
-                    .child(div().text_color(theme.text_secondary).child(render_syntax_spans(row_spans, is_active_line, theme, Some(theme.text_secondary), None, None, font_family)))
+                    .child(div().text_color(theme.text_secondary).child(render_spans(row_spans, is_active_line, Some(theme.text_secondary), None, None)))
             }
         }
         crate::markdown::LineKind::Task { checked, .. } => {
@@ -10691,7 +10946,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .when(*checked, |s| s.text_color(theme.text_muted).line_through())
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, task_color, None, None, font_family)),
+                            .child(render_spans(row_spans, is_active_line, task_color, None, None)),
                     )
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
@@ -10708,7 +10963,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .when(*checked, |s| s.text_color(theme.text_muted).line_through())
-                            .child(render_syntax_spans(row_spans, is_active_line, theme, task_color, None, None, font_family)),
+                            .child(render_spans(row_spans, is_active_line, task_color, None, None)),
                     )
             }
         }
@@ -10733,7 +10988,7 @@ fn render_live_styled_row(
                     .h_full()
                     .child(div().child(indent.to_string()))
                     .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(bullet.to_string()))
-                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None, font_family))
+                    .child(render_spans(row_spans, is_active_line, None, None, None))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -10746,7 +11001,7 @@ fn render_live_styled_row(
                     .items_center()
                     .h_full()
                     .child(div().child(format!("{}  ", indent)))
-                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None, font_family))
+                    .child(render_spans(row_spans, is_active_line, None, None, None))
             }
         }
         crate::markdown::LineKind::NumberedList { num, .. } => {
@@ -10771,7 +11026,7 @@ fn render_live_styled_row(
                     .h_full()
                     .child(div().child(indent.to_string()))
                     .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(num_part.to_string()))
-                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None, font_family))
+                    .child(render_spans(row_spans, is_active_line, None, None, None))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans(
                     &spans,
@@ -10785,7 +11040,7 @@ fn render_live_styled_row(
                     .items_center()
                     .h_full()
                     .child(div().child(spaces))
-                    .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None, font_family))
+                    .child(render_spans(row_spans, is_active_line, None, None, None))
             }
         }
         crate::markdown::LineKind::HorizontalRule => {
@@ -10914,7 +11169,7 @@ fn render_live_styled_row(
                 .flex_row()
                 .items_center()
                 .h_full()
-                .child(render_syntax_spans(row_spans, is_active_line, theme, None, None, None, font_family))
+                .child(render_spans(row_spans, is_active_line, None, None, None))
         }
     }
 }
