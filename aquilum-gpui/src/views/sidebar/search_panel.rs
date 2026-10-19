@@ -124,6 +124,29 @@ impl AppView {
         cx.notify();
     }
 
+    /// Opens the sidebar search panel with a tag query (e.g. `tag:#миша`) and runs the search.
+    pub fn open_tag_search(&mut self, tag: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_collapsed = false;
+        self.sidebar_mode = SidebarMode::Search;
+        self.state.session.sidebar_mode = SidebarMode::Search;
+        let formatted_query = if tag.starts_with('#') {
+            format!("tag:{}", tag)
+        } else {
+            format!("tag:#{}", tag)
+        };
+        self.sidebar_search.query = formatted_query.clone();
+        self.sidebar_search.cursor_pos = formatted_query.chars().count();
+        self.sidebar_search.selection_anchor = None;
+        self.sidebar_search.is_mouse_selecting = false;
+        self.state.save_session_state();
+        self.run_sidebar_search();
+        window.focus(&self.search_panel_focus_handle);
+        self.sidebar_search
+            .blink
+            .enable(BlinkTarget::SidebarSearch, cx);
+        cx.notify();
+    }
+
     /// Switches the sidebar back to the file tree.
     pub fn close_sidebar_search(&mut self, cx: &mut Context<Self>) {
         self.sidebar_mode = SidebarMode::Files;

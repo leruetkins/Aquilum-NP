@@ -87,6 +87,7 @@ pub struct AppView {
     pub ctrl_preview_selection: bool,
     pub ctrl_held: bool,
     pub hovered_link_id: Option<String>,
+    pub hovered_tag: bool,
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
     pub is_resizing_sidebar: bool,
@@ -348,6 +349,7 @@ impl AppView {
             ctrl_preview_selection: false,
             ctrl_held: false,
             hovered_link_id: None,
+            hovered_tag: false,
             sidebar_width,
             sidebar_collapsed: false,
             is_resizing_sidebar: false,
@@ -7229,6 +7231,27 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             .rounded_sm(),
                     );
                 }
+                for (tag_start, tag_end, tag_name) in row_layout.tag_ranges() {
+                    let (chip_x, chip_w) = row_layout.selection_rect(*tag_start, *tag_end, pixel_scale);
+                    let (bg_color, _) = crate::markdown::tag_color_pair(tag_name, theme.is_dark);
+                    let tag_top = if let Some(tbl) = grid_tbl {
+                        if v.line_idx == tbl.first_line { 14.0 + chip_inset } else { chip_inset }
+                    } else {
+                        chip_inset
+                    };
+                    let tag_h = if grid_tbl.is_some() { 28.0 - 2.0 * chip_inset } else { (row_h - 2.0 * chip_inset).max(1.0) };
+                    let pill_pad = 2.0f32;
+                    backdrop_rects.push(
+                        div()
+                            .absolute()
+                            .left(px(chip_x - pill_pad))
+                            .top(px(tag_top))
+                            .h(px(tag_h))
+                            .w(px(chip_w + 2.0 * pill_pad))
+                            .bg(bg_color)
+                            .rounded_full(),
+                    );
+                }
                 if let Some((sel_x, sel_w)) = row_sel_rect {
                     let sel_right = sel_x + sel_w;
                     let sel_above = if v_idx > 0 { calc_v_row_sel_rect(v_idx - 1) } else { None };
@@ -7388,7 +7411,11 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
                 if is_leaf_active {
                     row_div = row_div
-                        .cursor(gpui::CursorStyle::IBeam)
+                        .cursor(if (self.ctrl_held || !self.edit_mode) && self.hovered_tag {
+                            gpui::CursorStyle::PointingHand
+                        } else {
+                            gpui::CursorStyle::IBeam
+                        })
                         .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                             cx.stop_propagation();
                             if this.is_resizing_any() {
@@ -7402,6 +7429,13 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             let col_in_row = if click_x > text_start_x {
                                 let layout = if ctrl_held { &row_layout_preview_down } else { &row_layout_down };
                                 let column = layout.column_for_x(click_x - text_start_x);
+                                if (ctrl_held || !this.edit_mode) && event.click_count == 1 {
+                                    if let Some((_, _, tag_name)) = layout.tag_ranges().iter().find(|(s, e, _)| column >= *s && column < *e) {
+                                        this.open_tag_search(tag_name, window, cx);
+                                        this.is_mouse_selecting = false;
+                                        return;
+                                    }
+                                }
                                 layout.line_char_for_column(column).saturating_sub(v_char_start).min(row_len)
                             } else {
                                 0
@@ -7438,6 +7472,20 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             if this.ctrl_held != ctrl_held {
                                 this.ctrl_held = ctrl_held;
                                 cx.notify();
+                            }
+                            if !this.is_mouse_selecting {
+                                let move_x: f32 = event.position.x.into();
+                                let is_over_tag = if move_x > text_start_x && (ctrl_held || !this.edit_mode) {
+                                    let layout = if this.ctrl_preview_selection || !this.edit_mode { &row_layout_preview_move } else { &row_layout_move };
+                                    let column = layout.column_for_x(move_x - text_start_x);
+                                    layout.tag_ranges().iter().any(|(s, e, _)| column >= *s && column < *e)
+                                } else {
+                                    false
+                                };
+                                if this.hovered_tag != is_over_tag {
+                                    this.hovered_tag = is_over_tag;
+                                    cx.notify();
+                                }
                             }
                             if this.is_mouse_selecting {
                                 cx.stop_propagation();
@@ -9741,6 +9789,19 @@ fn render_syntax_spans(
                         strikethrough: None,
                     });
                 }
+                crate::markdown::SyntaxSpan::Tag(t) => {
+                    let (_, fg_color) = crate::markdown::tag_color_pair(&t, theme.is_dark);
+                    let len = t.len();
+                    full_text.push_str(&t);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: reg_font.clone(),
+                        color: fg_color.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
             }
         }
 
@@ -9950,6 +10011,19 @@ fn render_syntax_spans(
                         strikethrough: None,
                     });
                 }
+                crate::markdown::SyntaxSpan::Tag(tag) => {
+                    let (_, fg_color) = crate::markdown::tag_color_pair(&tag, theme.is_dark);
+                    let len = tag.len();
+                    full_text.push_str(&tag);
+                    runs.push(gpui::TextRun {
+                        len,
+                        font: reg_font.clone(),
+                        color: fg_color.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
             }
         }
 
@@ -10005,6 +10079,7 @@ pub(crate) struct TableCellLayout {
     pub text: SharedString,
     pub layout: Arc<gpui::LineLayout>,
     pub code_ranges: Vec<(usize, usize)>,
+    pub tag_ranges: Vec<(usize, usize, String)>,
 }
 
 impl TableCellLayout {
@@ -10046,6 +10121,7 @@ pub(crate) struct TableRowLayout {
     pub total_columns: usize,
     pub line_chars: Vec<usize>,
     pub code_ranges: Vec<(usize, usize)>,
+    pub tag_ranges: Vec<(usize, usize, String)>,
 }
 
 impl TableRowLayout {
@@ -10301,12 +10377,14 @@ pub(crate) fn shape_table_row(
             total_columns: 0,
             line_chars: vec![0, line.chars().count()],
             code_ranges: Vec::new(),
+            tag_ranges: Vec::new(),
         });
         return RowShapedLayout {
             layout: dummy_layout,
             text: dummy_text,
             line_chars: vec![0, line.chars().count()],
             code_ranges: Vec::new(),
+            tag_ranges: Vec::new(),
             cell_w,
             table_row: Some(table_row),
         };
@@ -10320,6 +10398,7 @@ pub(crate) fn shape_table_row(
     let mut cells = Vec::with_capacity(n_cols);
     let mut flat_line_chars = Vec::new();
     let mut flat_code_ranges = Vec::new();
+    let mut flat_tag_ranges = Vec::new();
     let mut cur_col_offset = 0;
 
     for c in 0..n_cols {
@@ -10349,6 +10428,10 @@ pub(crate) fn shape_table_row(
         let cell_code_ranges = painted.code_ranges();
         for &(cs, ce) in &cell_code_ranges {
             flat_code_ranges.push((cur_col_offset + cs, cur_col_offset + ce));
+        }
+        let cell_tag_ranges = painted.tag_ranges();
+        for (cs, ce, tag) in &cell_tag_ranges {
+            flat_tag_ranges.push((cur_col_offset + cs, cur_col_offset + ce, tag.clone()));
         }
 
         let mut cell_text = String::new();
@@ -10414,6 +10497,7 @@ pub(crate) fn shape_table_row(
             text: cell_text_shared,
             layout: cell_layout,
             code_ranges: cell_code_ranges,
+            tag_ranges: cell_tag_ranges,
         });
 
         cur_col_offset += cell_columns + 1;
@@ -10427,6 +10511,7 @@ pub(crate) fn shape_table_row(
         total_columns: cur_col_offset,
         line_chars: flat_line_chars.clone(),
         code_ranges: flat_code_ranges.clone(),
+        tag_ranges: flat_tag_ranges.clone(),
     });
 
     RowShapedLayout {
@@ -10434,6 +10519,7 @@ pub(crate) fn shape_table_row(
         text: "".into(),
         line_chars: flat_line_chars,
         code_ranges: flat_code_ranges,
+        tag_ranges: flat_tag_ranges,
         cell_w,
         table_row: Some(table_row),
     }
@@ -10445,6 +10531,7 @@ pub(crate) struct RowShapedLayout {
     text: SharedString,
     line_chars: Vec<usize>,
     code_ranges: Vec<(usize, usize)>,
+    tag_ranges: Vec<(usize, usize, String)>,
     cell_w: f32,
     table_row: Option<Arc<TableRowLayout>>,
 }
@@ -10538,6 +10625,14 @@ impl RowShapedLayout {
         }
     }
 
+    pub fn tag_ranges(&self) -> &[(usize, usize, String)] {
+        if let Some(tr) = &self.table_row {
+            &tr.tag_ranges
+        } else {
+            &self.tag_ranges
+        }
+    }
+
     pub fn selection_rect(&self, sel_s: usize, sel_e: usize, scale_factor: f32) -> (f32, f32) {
         crate::snap::snapped_span(
             self.x_for_column(sel_s),
@@ -10559,6 +10654,7 @@ pub(crate) fn shape_row(
 ) -> RowShapedLayout {
     let painted = crate::markdown::row_painted_text(line, classified, v, is_active_line, headings);
     let code_ranges = painted.code_ranges();
+    let tag_ranges = painted.tag_ranges();
     let (_, _, font_size, _, _) = AppView::heading_typography_metrics_with_widths(classified, headings, 24.0, cell_w, None);
 
     let mut text = String::new();
@@ -10596,6 +10692,7 @@ pub(crate) fn shape_row(
         text,
         line_chars: painted.line_chars,
         code_ranges,
+        tag_ranges,
         cell_w,
         table_row: None,
     }
@@ -12045,6 +12142,7 @@ mod tests {
                 len: 3,
             }),
             code_ranges: Vec::new(),
+            tag_ranges: Vec::new(),
         };
 
         let cell1 = TableCellLayout {
@@ -12067,6 +12165,7 @@ mod tests {
                 len: 3,
             }),
             code_ranges: Vec::new(),
+            tag_ranges: Vec::new(),
         };
 
         let row_layout = TableRowLayout {
@@ -12076,6 +12175,7 @@ mod tests {
             total_columns: 8,
             line_chars: vec![2, 3, 4, 5, 8, 9, 10, 11],
             code_ranges: Vec::new(),
+            tag_ranges: Vec::new(),
         };
 
         // Click past the end of cell 0 text (e.g. at x = 80.0):

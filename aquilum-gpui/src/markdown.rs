@@ -135,6 +135,79 @@ pub fn heading_color_to_hex(name: &str) -> String {
     find_heading_preset(name).hex.to_string()
 }
 
+/// Comprehensive palette of 24 harmonious pastel colors from modern UI color catalogs (Tailwind / Material).
+/// Each entry contains (background, text) hex RGBA colors formatted for light mode.
+pub const TAG_PALETTE_LIGHT_HEX: &[(u32, u32)] = &[
+    (0xfee2e2ff, 0x991b1bff), // 0: Coral / Red
+    (0xffecd9ff, 0xb85d19ff), // 1: Peach / Apricot
+    (0xffedd5ff, 0x9a3412ff), // 2: Orange
+    (0xfef3c7ff, 0x92400eff), // 3: Amber / Honey
+    (0xfef9c3ff, 0x854d0eff), // 4: Warm Yellow
+    (0xecfccbff, 0x3f6212ff), // 5: Lime
+    (0xe2f5d5ff, 0x2d6a1eff), // 6: Sage / Olive
+    (0xddf6ddff, 0x1e8222ff), // 7: Green
+    (0xdcfce7ff, 0x166534ff), // 8: Mint
+    (0xd1fae5ff, 0x065f46ff), // 9: Emerald
+    (0xdbf3f0ff, 0x0e7a75ff), // 10: Teal
+    (0xccfbf1ff, 0x115e59ff), // 11: Aqua / Turquoise
+    (0xcffafeff, 0x155e75ff), // 12: Cyan
+    (0xe0f2feff, 0x0369a1ff), // 13: Sky Blue
+    (0xdbeafeff, 0x1d4ed8ff), // 14: Cerulean / Ocean
+    (0xe0e7ffff, 0x1e40afff), // 15: Blue
+    (0xe8eaf6ff, 0x3730a3ff), // 16: Indigo
+    (0xede9feff, 0x4338caff), // 17: Periwinkle / Slate Blue
+    (0xf3e8ffff, 0x5b21b6ff), // 18: Violet
+    (0xf5e6fbff, 0x6b21a8ff), // 19: Purple
+    (0xfae8ffff, 0x86198fff), // 20: Fuchsia / Orchid
+    (0xfce4ecff, 0x9c276aff), // 21: Magenta / Plum
+    (0xfce7f3ff, 0x9d174dff), // 22: Pink / Blush
+    (0xffe4e6ff, 0x9f1239ff), // 23: Rose / Ruby
+];
+
+/// Dark mode counterpart for the 24-color catalog, using matching luminous accents.
+pub const TAG_PALETTE_DARK_HEX: &[(u32, u32)] = &[
+    (0x7f1d1d4d, 0xfca5a5ff), // 0: Coral / Red
+    (0x7c2d124d, 0xfdba74ff), // 1: Peach / Apricot
+    (0x7c2d124d, 0xfb923cff), // 2: Orange
+    (0x78350f4d, 0xfcd34dff), // 3: Amber / Honey
+    (0x713f124d, 0xfde047ff), // 4: Warm Yellow
+    (0x3653144d, 0xbef264ff), // 5: Lime
+    (0x234e184d, 0xa3e635ff), // 6: Sage / Olive
+    (0x14532d4d, 0x86efacff), // 7: Green
+    (0x14532d4d, 0x6ee7b7ff), // 8: Mint
+    (0x064e3b4d, 0x34d399ff), // 9: Emerald
+    (0x134e4a4d, 0x5eead4ff), // 10: Teal
+    (0x134e4a4d, 0x2dd4bfff), // 11: Aqua / Turquoise
+    (0x164e634d, 0x67e8f9ff), // 12: Cyan
+    (0x0c4a6e4d, 0x7dd3fcff), // 13: Sky Blue
+    (0x1e3a8a4d, 0x60a5faff), // 14: Cerulean / Ocean
+    (0x1e3a8a4d, 0x93c5fdff), // 15: Blue
+    (0x312e814d, 0xa5b4fcff), // 16: Indigo
+    (0x3730a34d, 0xc7d2feff), // 17: Periwinkle / Slate Blue
+    (0x4c1d954d, 0xc4b5fdff), // 18: Violet
+    (0x581c874d, 0xd8b4feff), // 19: Purple
+    (0x701a754d, 0xf0abfcff), // 20: Fuchsia / Orchid
+    (0x701a754d, 0xf472b6ff), // 21: Magenta / Plum
+    (0x8318434d, 0xfb7185ff), // 22: Pink / Blush
+    (0x8813374d, 0xfda4afff), // 23: Rose / Ruby
+];
+
+/// Returns the background and foreground colors (as `(bg, fg)`) for any markdown `#tag`.
+/// Absolutely no hardcoding: any word or tag string is deterministically hashed across the
+/// catalog of harmonious pastel colors, ensuring consistent and distinct badges.
+pub fn tag_color_pair(tag: &str, is_dark: bool) -> (gpui::Rgba, gpui::Rgba) {
+    let clean = tag.trim_start_matches('#').to_lowercase();
+    let mut h: u64 = 0xcbf29ce484222325; // 64-bit FNV-1a hash
+    for b in clean.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    let palette = if is_dark { TAG_PALETTE_DARK_HEX } else { TAG_PALETTE_LIGHT_HEX };
+    let idx = (h as usize) % palette.len();
+    let (bg, fg) = palette[idx];
+    (gpui::rgba(bg), gpui::rgba(fg))
+}
+
 /// Opens the native OS Color Picker dialog (e.g. ChooseColorW on Windows) to visually pick any color.
 #[cfg(target_os = "windows")]
 pub fn open_system_color_picker(initial_hex: &str) -> Option<String> {
@@ -648,6 +721,7 @@ pub enum SyntaxSpan {
     Link { text: String, url: String },
     Underline(String),
     Highlight(String),
+    Tag(String),
 }
 
 pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
@@ -847,6 +921,57 @@ pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
                 spans.push(SyntaxSpan::Marker("~~".to_string()));
                 s = &s[4 + end_idx..];
                 continue;
+            }
+        }
+
+        // Tag: #tag (e.g. #миша, #гончаров, #сергей, #валиев)
+        if s.starts_with('#') {
+            let prev_ok = plain_accum.chars().last().map_or_else(
+                || {
+                    spans.last().map_or(true, |span| {
+                        let last_char = match span {
+                            SyntaxSpan::Text(t)
+                            | SyntaxSpan::Bold(t)
+                            | SyntaxSpan::Italic(t)
+                            | SyntaxSpan::BoldItalic(t)
+                            | SyntaxSpan::InlineCode(t)
+                            | SyntaxSpan::Strikethrough(t)
+                            | SyntaxSpan::Underline(t)
+                            | SyntaxSpan::Highlight(t)
+                            | SyntaxSpan::Tag(t) => t.chars().last(),
+                            SyntaxSpan::Marker(m) => m.chars().last(),
+                            SyntaxSpan::Link { text, .. } => text.chars().last(),
+                        };
+                        last_char.map_or(true, |c| !c.is_alphanumeric() && c != '#' && c != '/' && c != '\\')
+                    })
+                },
+                |c| !c.is_alphanumeric() && c != '#' && c != '/' && c != '\\',
+            );
+            if prev_ok {
+                if let Some(first_char) = s[1..].chars().next() {
+                    if first_char.is_alphabetic() || first_char == '_' {
+                        let mut tag_len = 1;
+                        for c in s[1..].chars() {
+                            if c.is_alphanumeric() || c == '_' || c == '-' || c == '/' {
+                                tag_len += c.len_utf8();
+                            } else {
+                                break;
+                            }
+                        }
+                        while tag_len > 1 && (s.as_bytes()[tag_len - 1] == b'-' || s.as_bytes()[tag_len - 1] == b'/') {
+                            tag_len -= 1;
+                        }
+                        if tag_len > 1 {
+                            if !plain_accum.is_empty() {
+                                spans.push(SyntaxSpan::Text(std::mem::take(&mut plain_accum)));
+                            }
+                            let tag_str = &s[..tag_len];
+                            spans.push(SyntaxSpan::Tag(tag_str.to_string()));
+                            s = &s[tag_len..];
+                            continue;
+                        }
+                    }
+                }
             }
         }
 
@@ -1199,6 +1324,7 @@ pub fn slice_syntax_spans(
             SyntaxSpan::Link { text, url } => (7, text, Some(url)),
             SyntaxSpan::Underline(t) => (8, t, None),
             SyntaxSpan::Highlight(t) => (9, t, None),
+            SyntaxSpan::Tag(t) => (10, t, None),
         };
 
         let span_len = text.chars().count();
@@ -1223,6 +1349,7 @@ pub fn slice_syntax_spans(
                     },
                     8 => SyntaxSpan::Underline(sliced_str),
                     9 => SyntaxSpan::Highlight(sliced_str),
+                    10 => SyntaxSpan::Tag(sliced_str),
                     _ => SyntaxSpan::Text(sliced_str),
                 };
                 result.push(sliced_span);
@@ -1266,7 +1393,8 @@ pub fn visual_col_to_row_char(
             | SyntaxSpan::InlineCode(t)
             | SyntaxSpan::Strikethrough(t)
             | SyntaxSpan::Underline(t)
-            | SyntaxSpan::Highlight(t) => (false, t),
+            | SyntaxSpan::Highlight(t)
+            | SyntaxSpan::Tag(t) => (false, t),
             SyntaxSpan::Link { text, .. } => (false, text),
         };
         let span_len = text.chars().count();
@@ -1308,7 +1436,8 @@ pub fn row_char_to_visual_col(
             | SyntaxSpan::InlineCode(t)
             | SyntaxSpan::Strikethrough(t)
             | SyntaxSpan::Underline(t)
-            | SyntaxSpan::Highlight(t) => (false, t),
+            | SyntaxSpan::Highlight(t)
+            | SyntaxSpan::Tag(t) => (false, t),
             SyntaxSpan::Link { text, .. } => (false, text),
         };
         let span_len = text.chars().count();
@@ -1413,6 +1542,8 @@ pub struct PaintedSegment {
     /// that the selection rectangle — which is painted before the text — is not covered by
     /// it, and so that the chip and the selection are cut from the same columns.
     pub code: bool,
+    /// Full `#tag` name if this segment is a markdown tag.
+    pub tag: Option<String>,
 }
 
 /// The exact text a visual row paints, plus the source line char of every painted char.
@@ -1466,6 +1597,22 @@ impl PaintedRow {
         }
         ranges
     }
+
+    /// Column ranges of any `#tag` badges in this row, with their tag names.
+    pub fn tag_ranges(&self) -> Vec<(usize, usize, String)> {
+        let mut ranges: Vec<(usize, usize, String)> = Vec::new();
+        let mut col = 0usize;
+        for segment in &self.segments {
+            let n = segment.text.chars().count();
+            if let Some(ref tag) = segment.tag {
+                if n > 0 {
+                    ranges.push((col, col + n, tag.clone()));
+                }
+            }
+            col += n;
+        }
+        ranges
+    }
 }
 
 fn push_verbatim(
@@ -1477,13 +1624,26 @@ fn push_verbatim(
     italic: bool,
     code: bool,
 ) {
+    push_verbatim_tagged(segments, line_chars, text, src_start, bold, italic, code, None);
+}
+
+fn push_verbatim_tagged(
+    segments: &mut Vec<PaintedSegment>,
+    line_chars: &mut Vec<usize>,
+    text: &str,
+    src_start: usize,
+    bold: bool,
+    italic: bool,
+    code: bool,
+    tag: Option<String>,
+) {
     if text.is_empty() {
         return;
     }
     for i in 0..text.chars().count() {
         line_chars.push(src_start + i);
     }
-    segments.push(PaintedSegment { text: text.to_string(), bold, italic, code });
+    segments.push(PaintedSegment { text: text.to_string(), bold, italic, code, tag });
 }
 
 /// Padding the renderer synthesises for a wrapped row's continuation indent. Every
@@ -1502,7 +1662,7 @@ fn push_padding(
     for _ in 0..text.chars().count() {
         line_chars.push(src);
     }
-    segments.push(PaintedSegment { text: text.to_string(), bold, italic, code: false });
+    segments.push(PaintedSegment { text: text.to_string(), bold, italic, code: false, tag: None });
 }
 
 /// Number of chars in the first `byte_len` bytes of `line` (clamped to a char boundary).
@@ -1634,17 +1794,18 @@ pub fn row_painted_text(
             // that follows the marker, i.e. at this line char.
             let mut src = head_char_count(line, prefix_offset) + v.char_start.saturating_sub(prefix_offset);
             for span in &row_spans {
-                let (text, bold, italic, is_marker, is_code) = match span {
-                    SyntaxSpan::Marker(t) => (t.as_str(), false, false, true, is_inline_code_delim(t)),
-                    SyntaxSpan::Text(t) => (t.as_str(), base_bold, base_italic, false, false),
-                    SyntaxSpan::Bold(t) => (t.as_str(), true, base_italic, false, false),
-                    SyntaxSpan::Italic(t) => (t.as_str(), base_bold, true, false, false),
-                    SyntaxSpan::BoldItalic(t) => (t.as_str(), true, true, false, false),
-                    SyntaxSpan::InlineCode(t) => (t.as_str(), base_bold, base_italic, false, true),
+                let (text, bold, italic, is_marker, is_code, tag_opt) = match span {
+                    SyntaxSpan::Marker(t) => (t.as_str(), false, false, true, is_inline_code_delim(t), None),
+                    SyntaxSpan::Text(t) => (t.as_str(), base_bold, base_italic, false, false, None),
+                    SyntaxSpan::Bold(t) => (t.as_str(), true, base_italic, false, false, None),
+                    SyntaxSpan::Italic(t) => (t.as_str(), base_bold, true, false, false, None),
+                    SyntaxSpan::BoldItalic(t) => (t.as_str(), true, true, false, false, None),
+                    SyntaxSpan::InlineCode(t) => (t.as_str(), base_bold, base_italic, false, true, None),
                     SyntaxSpan::Strikethrough(t)
                     | SyntaxSpan::Underline(t)
-                    | SyntaxSpan::Highlight(t) => (t.as_str(), base_bold, base_italic, false, false),
-                    SyntaxSpan::Link { text, .. } => (text.as_str(), base_bold, base_italic, false, false),
+                    | SyntaxSpan::Highlight(t) => (t.as_str(), base_bold, base_italic, false, false, None),
+                    SyntaxSpan::Tag(t) => (t.as_str(), base_bold, base_italic, false, false, Some(t.clone())),
+                    SyntaxSpan::Link { text, .. } => (text.as_str(), base_bold, base_italic, false, false, None),
                 };
                 let n = text.chars().count();
                 if n == 0 {
@@ -1660,7 +1821,7 @@ pub fn row_painted_text(
                     src += n;
                     continue;
                 }
-                push_verbatim(&mut segments, &mut line_chars, text, src, bold, italic, is_code);
+                push_verbatim_tagged(&mut segments, &mut line_chars, text, src, bold, italic, is_code, tag_opt);
                 src += n;
             }
         }
@@ -1788,7 +1949,8 @@ pub fn strip_inline_markdown(mut s: &str) -> String {
             | SyntaxSpan::InlineCode(t)
             | SyntaxSpan::Strikethrough(t)
             | SyntaxSpan::Underline(t)
-            | SyntaxSpan::Highlight(t) => {
+            | SyntaxSpan::Highlight(t)
+            | SyntaxSpan::Tag(t) => {
                 out.push_str(&t);
             }
             SyntaxSpan::Link { text, .. } => {
@@ -2559,6 +2721,75 @@ mod tests {
         assert_eq!(strip_markdown_tags("Partial bold**"), "Partial bold");
         assert_eq!(strip_markdown_tags("`partial code"), "partial code");
     }
+
+    #[test]
+    fn test_parse_tags() {
+        let text = "Сегодня я встретил нескольких старых знакомых: #гончаров, #сергей, #валиев и #миша.";
+        let spans = parse_inline_syntax_spans(text);
+        let tags: Vec<String> = spans
+            .into_iter()
+            .filter_map(|s| match s {
+                SyntaxSpan::Tag(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tags, vec!["#гончаров", "#сергей", "#валиев", "#миша"]);
+
+        // Not tags: # followed by space (headings), or mid-word foo#bar
+        let non_tags = parse_inline_syntax_spans("foo#bar # and #123");
+        let non_tags_found: Vec<String> = non_tags
+            .into_iter()
+            .filter_map(|s| match s {
+                SyntaxSpan::Tag(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert!(non_tags_found.is_empty(), "Expected no tags, found: {:?}", non_tags_found);
+    }
+
+    #[test]
+    fn test_tag_colors() {
+        // Determinism: leading '#' and case do not alter color
+        let (bg1, fg1) = tag_color_pair("#Rust", false);
+        let (bg2, fg2) = tag_color_pair("rust", false);
+        assert_eq!(bg1, bg2);
+        assert_eq!(fg1, fg2);
+
+        // Different tags map to the palette deterministically
+        let (bg_dark, fg_dark) = tag_color_pair("#project/work", true);
+        assert!(TAG_PALETTE_DARK_HEX.iter().any(|&(b, f)| gpui::rgba(b) == bg_dark && gpui::rgba(f) == fg_dark));
+
+        let words = ["миша", "гончаров", "сергей", "валиев", "todo", "obsidian", "dev", "notes"];
+        let mut distinct = std::collections::HashSet::new();
+        for w in words {
+            let c = tag_color_pair(w, false).0;
+            distinct.insert((c.r.to_bits(), c.g.to_bits(), c.b.to_bits(), c.a.to_bits()));
+        }
+        assert!(distinct.len() >= 5, "Expected good distribution across catalog, got {}", distinct.len());
+    }
+
+    #[test]
+    fn test_painted_row_tag_ranges() {
+        let line = "Привет #миша и #гончаров!";
+        let char_count = line.chars().count();
+        let painted_row = painted(line, &classify_line(line, None), 0, char_count, 0, false);
+        let ranges = painted_row.tag_ranges();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].2, "#миша");
+        assert_eq!(ranges[1].2, "#гончаров");
+
+        let full_text: String = painted_row.segments.iter().map(|s| s.text.as_str()).collect();
+        let chars: Vec<char> = full_text.chars().collect();
+        let s0 = ranges[0].0;
+        let e0 = ranges[0].1;
+        let s1 = ranges[1].0;
+        let e1 = ranges[1].1;
+        let tag0_str: String = chars[s0..e0].iter().collect();
+        let tag1_str: String = chars[s1..e1].iter().collect();
+        assert_eq!(tag0_str, "#миша");
+        assert_eq!(tag1_str, "#гончаров");
+    }
 }
+
 
 
