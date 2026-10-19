@@ -663,6 +663,8 @@ impl TabSession {
                         Some(crate::markdown::TableRowVisualKind::Delimiter)
                     } else if line == t.first_line {
                         Some(crate::markdown::TableRowVisualKind::Header)
+                    } else if line == t.last_line {
+                        Some(crate::markdown::TableRowVisualKind::LastRow)
                     } else {
                         Some(crate::markdown::TableRowVisualKind::Body)
                     }

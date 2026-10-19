@@ -867,6 +867,7 @@ pub enum TableRowVisualKind {
     Header,
     Delimiter,
     Body,
+    LastRow,
 }
 
 pub fn build_visual_rows_with_table_filter(
@@ -997,8 +998,9 @@ impl VisualRowHeightIndex {
         for v in visual_rows {
             if let Some(t_kind) = table_row_info(v.line_idx) {
                 let row_h = match t_kind {
-                    TableRowVisualKind::Delimiter => 2.0,
-                    TableRowVisualKind::Header | TableRowVisualKind::Body => 28.0,
+                    TableRowVisualKind::Delimiter => 1.0,
+                    TableRowVisualKind::Header | TableRowVisualKind::LastRow => 42.0,
+                    TableRowVisualKind::Body => 28.0,
                 };
                 heights.push(row_h);
                 continue;

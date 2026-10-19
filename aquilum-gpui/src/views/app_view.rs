@@ -183,6 +183,8 @@ pub struct AppView {
     /// Document line at the top of the viewport, refreshed once per frame.
     ///
     pub(crate) table_layouts: std::cell::RefCell<HashMap<usize, (u64, Arc<TableLayout>)>>,
+    pub(crate) manual_table_col_widths: HashMap<usize, Vec<f32>>,
+    pub(crate) table_col_resize_drag: Option<TableColResizeDrag>,
     pub config: crate::settings::AppConfig,
     pub last_saved_geometry: Option<(f32, f32, Option<f32>, Option<f32>, bool)>,
     pub initial_scroll_done: bool,
@@ -459,6 +461,8 @@ impl AppView {
             plugin_api_tx: None,
             pending_file_deletions: HashMap::new(),
             table_layouts: std::cell::RefCell::new(HashMap::new()),
+            manual_table_col_widths: HashMap::new(),
+            table_col_resize_drag: None,
         };
         this.editor_blink.enable(BlinkTarget::Editor, cx);
         crate::commands_builtin::register_builtin_commands(&this.state.commands);
@@ -508,7 +512,34 @@ impl AppView {
 
     /// Returns true if any UI separator/divider drag gesture is currently active.
     pub fn is_resizing_any(&self) -> bool {
-        self.is_resizing_sidebar || self.is_resizing_right_sidebar || self.split_drag_state.is_some()
+        self.is_resizing_sidebar
+            || self.is_resizing_right_sidebar
+            || self.split_drag_state.is_some()
+            || self.table_col_resize_drag.is_some()
+    }
+
+    pub(crate) fn start_table_col_resize(
+        &mut self,
+        table_first_line: usize,
+        col_idx: usize,
+        click_x: f32,
+        current_widths: &[f32],
+    ) {
+        if !self.manual_table_col_widths.contains_key(&table_first_line) {
+            self.manual_table_col_widths.insert(table_first_line, current_widths.to_vec());
+        }
+        let start_width = self
+            .manual_table_col_widths
+            .get(&table_first_line)
+            .and_then(|w| w.get(col_idx))
+            .copied()
+            .unwrap_or(current_widths[col_idx]);
+        self.table_col_resize_drag = Some(TableColResizeDrag {
+            table_first_line,
+            col_idx,
+            start_x: click_x,
+            start_width,
+        });
     }
 
     /// Discovers and spawns all installed plugins located in `<vault>/.vault/plugins/`.
@@ -1146,7 +1177,16 @@ impl AppView {
             return;
         }
 
-        let target_v = &visual_rows[curr_v_idx - 1];
+        let mut target_idx = curr_v_idx - 1;
+        if !shift {
+            let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
+            if let Some(tbl) = tables.at(visual_rows[target_idx].line_idx) {
+                if visual_rows[target_idx].line_idx == tbl.sep_line() && target_idx > 0 {
+                    target_idx -= 1;
+                }
+            }
+        }
+        let target_v = &visual_rows[target_idx];
         let target_len = target_v.char_end.saturating_sub(target_v.char_start);
         let max_col = if target_v.is_last_sub {
             target_len
@@ -1188,7 +1228,16 @@ impl AppView {
             return;
         }
 
-        let target_v = &visual_rows[curr_v_idx + 1];
+        let mut target_idx = curr_v_idx + 1;
+        if !shift {
+            let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
+            if let Some(tbl) = tables.at(visual_rows[target_idx].line_idx) {
+                if visual_rows[target_idx].line_idx == tbl.sep_line() && target_idx + 1 < visual_rows.len() {
+                    target_idx += 1;
+                }
+            }
+        }
+        let target_v = &visual_rows[target_idx];
         let target_len = target_v.char_end.saturating_sub(target_v.char_start);
         let max_col = if target_v.is_last_sub {
             target_len
@@ -2078,12 +2127,18 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         get_line: &dyn Fn(usize) -> Option<&'a str>,
         block: &crate::table::TableBlock,
         font_family: &SharedString,
+        manual_widths: Option<&[f32]>,
     ) -> Arc<TableLayout> {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for l_idx in block.first_line..=block.last_line {
             if let Some(l) = get_line(l_idx) {
                 l.hash(&mut hasher);
+            }
+        }
+        if let Some(mw) = manual_widths {
+            for &w in mw {
+                w.to_bits().hash(&mut hasher);
             }
         }
         let content_hash = hasher.finish();
@@ -2096,7 +2151,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             }
         }
 
-        let layout = Arc::new(compute_table_layout(text_system, get_line, block, font_family));
+        let layout = Arc::new(compute_table_layout(text_system, get_line, block, font_family, manual_widths));
         if let Ok(mut layouts) = table_layouts.try_borrow_mut() {
             layouts.insert(block.first_line, (content_hash, layout.clone()));
         }
@@ -2189,7 +2244,14 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let col_in_row = if click_x > text_start_x {
             let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
             let row_layout = if let Some(tbl) = view.grid_table_at(&tables, v.line_idx, cursor_line) {
-                let table_layout = Self::get_or_compute_table_layout(&self.table_layouts, window.text_system(), &|idx| view.window.lines.get(idx).map(|s| s.as_str()), tbl, &editor_font);
+                let table_layout = Self::get_or_compute_table_layout(
+                    &self.table_layouts,
+                    window.text_system(),
+                    &|idx| view.window.lines.get(idx).map(|s| s.as_str()),
+                    tbl,
+                    &editor_font,
+                    self.manual_table_col_widths.get(&tbl.first_line).map(|w| w.as_slice()),
+                );
                 let cursor_col = if v.line_idx == cursor_line {
                     let (_, col) = view.line_col(doc);
                     Some(col)
@@ -2342,7 +2404,14 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let col_in_row = if pos_x > text_start_x {
             let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
             let row_layout = if let Some(tbl) = view.grid_table_at(&tables, v.line_idx, cursor_line) {
-                let table_layout = Self::get_or_compute_table_layout(&self.table_layouts, window.text_system(), &|idx| view.window.lines.get(idx).map(|s| s.as_str()), tbl, &editor_font);
+                let table_layout = Self::get_or_compute_table_layout(
+                    &self.table_layouts,
+                    window.text_system(),
+                    &|idx| view.window.lines.get(idx).map(|s| s.as_str()),
+                    tbl,
+                    &editor_font,
+                    self.manual_table_col_widths.get(&tbl.first_line).map(|w| w.as_slice()),
+                );
                 let cursor_col = if v.line_idx == cursor_line {
                     let (_, col) = view.line_col(doc);
                     Some(col)
@@ -6431,6 +6500,17 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                         } else if this.is_dragging_scrollbar {
                             let y: f32 = event.position.y.into();
                             this.handle_scrollbar_drag(y, window, cx);
+                        } else if let Some(drag) = this.table_col_resize_drag.clone() {
+                            let x: f32 = event.position.x.into();
+                            let delta = x - drag.start_x;
+                            let new_w = (drag.start_width + delta).max(40.0);
+                            if let Some(widths) = this.manual_table_col_widths.get_mut(&drag.table_first_line) {
+                                if drag.col_idx < widths.len() {
+                                    widths[drag.col_idx] = new_w;
+                                }
+                            }
+                            this.table_layouts.borrow_mut().remove(&drag.table_first_line);
+                            cx.notify();
                         } else if this.is_mouse_selecting {
                             let x: f32 = event.position.x.into();
                             let y: f32 = event.position.y.into();
@@ -6447,6 +6527,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                         this.sidebar_scrollbar_drag.end();
                         this.plugin_modal_scrollbar_drag.end();
                         this.is_mouse_selecting = false;
+                        this.table_col_resize_drag = None;
                         if let Some(view) = this.state.active_view_mut() {
                             if view.selection_anchor == Some(view.cursor_offset) {
                                 view.selection_anchor = None;
@@ -6463,6 +6544,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                         this.sidebar_scrollbar_drag.end();
                         this.plugin_modal_scrollbar_drag.end();
                         this.is_mouse_selecting = false;
+                        this.table_col_resize_drag = None;
                         cx.notify();
                     }))
                     .on_mouse_up(MouseButton::Middle, cx.listener(|this, _, _, cx| {
@@ -6567,7 +6649,14 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 let (_, row_char_w, _, _, _) =
                     Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths));
                 let row_layout = if let Some(tbl) = view.grid_table_at(&tables, line_idx, cursor_line) {
-                    let table_layout = Self::get_or_compute_table_layout(&self.table_layouts, window.text_system(), &|idx| lines_arc.get(idx).map(|s| s.as_str()), tbl, &editor_font);
+                    let table_layout = Self::get_or_compute_table_layout(
+                        &self.table_layouts,
+                        window.text_system(),
+                        &|idx| lines_arc.get(idx).map(|s| s.as_str()),
+                        tbl,
+                        &editor_font,
+                        self.manual_table_col_widths.get(&tbl.first_line).map(|w| w.as_slice()),
+                    );
                     let cursor_col = if is_act_line && line_idx == cursor_line { Some(active_col_in_row) } else { None };
                     shape_table_row(window.text_system(), line, tbl, line_idx, cursor_col, &table_layout, headings, &editor_font, row_char_w)
                 } else {
@@ -6648,10 +6737,31 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 let is_code_line = matches!(classified, crate::markdown::LineKind::CodeLine(_));
                 let row_len = v.char_end.saturating_sub(v.char_start);
 
-                let (row_h, row_char_w, _row_font_size, _cursor_h, _cursor_top) =
+                let (h_metrics_row_h, row_char_w, _row_font_size, _cursor_h, _cursor_top) =
                     Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths));
                 let grid_tbl = view.grid_table_at(&tables, v.line_idx, cursor_line);
-                let table_layout = grid_tbl.map(|tbl| Self::get_or_compute_table_layout(&self.table_layouts, window.text_system(), &|idx| lines_arc.get(idx).map(|s| s.as_str()), tbl, &editor_font));
+                let table_layout = grid_tbl.map(|tbl| {
+                    Self::get_or_compute_table_layout(
+                        &self.table_layouts,
+                        window.text_system(),
+                        &|idx| lines_arc.get(idx).map(|s| s.as_str()),
+                        tbl,
+                        &editor_font,
+                        self.manual_table_col_widths.get(&tbl.first_line).map(|w| w.as_slice()),
+                    )
+                });
+                let is_tbl_sep = grid_tbl.map_or(false, |tbl| v.line_idx == tbl.sep_line());
+                let row_h = if let Some(tbl) = grid_tbl {
+                    if v.line_idx == tbl.sep_line() {
+                        1.0
+                    } else if v.line_idx == tbl.first_line || v.line_idx == tbl.last_line {
+                        42.0
+                    } else {
+                        28.0
+                    }
+                } else {
+                    h_metrics_row_h
+                };
                 let row_layout = if let Some(tbl) = grid_tbl {
                     let cursor_col = if is_active_line && v.line_idx == cursor_line { Some(active_col_in_row) } else { None };
                     shape_table_row(window.text_system(), line, tbl, v.line_idx, cursor_col, table_layout.as_ref().unwrap(), headings, &editor_font, row_char_w)
@@ -6661,8 +6771,10 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 let row_layout_down = row_layout.clone();
                 let row_layout_move = row_layout.clone();
 
-                let line_number_text = if v.sub_idx == 0 {
+                let line_number_text = if v.sub_idx == 0 && !is_tbl_sep {
                     format!("{:>3} ", v.line_idx + 1)
+                } else if is_tbl_sep {
+                    "".to_string()
                 } else {
                     "    ".to_string()
                 };
@@ -6718,16 +6830,23 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     None
                 };
 
-                let chip_inset = code_chip_inset(row_h);
+                let chip_cell_h = if grid_tbl.is_some() { 28.0 } else { row_h };
+                let chip_inset = code_chip_inset(chip_cell_h);
                 let mut backdrop_rects = Vec::new();
                 for &(code_start, code_end) in row_layout.code_ranges() {
                     let (chip_x, chip_w) = row_layout.selection_rect(code_start, code_end, pixel_scale);
+                    let chip_top = if let Some(tbl) = grid_tbl {
+                        if v.line_idx == tbl.first_line { 14.0 + chip_inset } else { chip_inset }
+                    } else {
+                        chip_inset
+                    };
+                    let chip_h = if grid_tbl.is_some() { 28.0 - 2.0 * chip_inset } else { (row_h - 2.0 * chip_inset).max(1.0) };
                     backdrop_rects.push(
                         div()
                             .absolute()
                             .left(px(chip_x))
-                            .top(px(chip_inset))
-                            .h(px((row_h - 2.0 * chip_inset).max(1.0)))
+                            .top(px(chip_top))
+                            .h(px(chip_h))
                             .w(px(chip_w))
                             .bg(theme.code_bg)
                             .rounded_sm(),
@@ -6743,11 +6862,18 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     let round_bl = sel_below.map_or(true, |(bx, bw)| sel_x < bx - 0.5 || sel_x >= bx + bw - 0.5);
                     let round_br = sel_below.map_or(true, |(bx, bw)| sel_right > bx + bw + 0.5 || sel_right <= bx + 0.5);
 
+                    let sel_top = if let Some(tbl) = grid_tbl {
+                        if v.line_idx == tbl.first_line { 14.0 } else { 0.0 }
+                    } else {
+                        0.0
+                    };
+                    let sel_h = if grid_tbl.is_some() { 28.0 } else { row_h };
+
                     let mut sel_rect = div()
                         .absolute()
                         .left(px(sel_x))
-                        .top_0()
-                        .h(px(row_h))
+                        .top(px(sel_top))
+                        .h(px(sel_h))
                         .w(px(sel_w))
                         .bg(theme.selection_bg);
 
@@ -6828,7 +6954,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     .flex_shrink_0()
                     .flex()
                     .flex_row()
-                    .items_center()
+                    .when(grid_tbl.is_none(), |d| d.items_center())
+                    .when(grid_tbl.is_some(), |d| d.items_start())
                     .h(px(row_h))
                     .py_0()
                     .px_2()
@@ -6924,40 +7051,50 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 }
 
                 let is_editor_focused = is_leaf_active && self.editor_is_focused;
-
                 let cursor_table = tables.at(cursor_line);
+                let cursor_in_table = if let Some(tbl) = cursor_table {
+                    tbl.contains(cursor_line)
+                } else {
+                    false
+                };
+
                 let is_raw = self.state.active_view().map_or(false, |v| v.raw_table);
-                let raw_btn = if let Some(tbl) = cursor_table {
-                    if v_line_idx == tbl.first_line {
-                        Some(
-                            div()
-                                .id(gpui::ElementId::Name(format!("table-raw-btn-{}", v_idx).into()))
-                                .absolute()
-                                .right(px(-36.0))
-                                .top(px(0.0))
-                                .w(px(28.0))
-                                .h(px(28.0))
-                                .rounded_md()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .font_family(editor_font.clone())
-                                .text_xs()
-                                .when(is_raw, |d| {
-                                    let mut bg = theme.accent;
-                                    bg.a = 0.2;
-                                    d.bg(bg).border_1().border_color(theme.accent).text_color(theme.accent)
-                                })
-                                .when(!is_raw, |d| {
-                                    d.bg(theme.bg_editor).border_1().border_color(theme.border_subtle).text_color(theme.text_secondary).hover(|h| h.bg(theme.bg_hover))
-                                })
-                                .child("</>")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.state.active_toggle_raw_table();
-                                    cx.notify();
-                                }))
-                        )
+                let raw_btn = if cursor_in_table {
+                    if let Some(tbl) = cursor_table {
+                        if v_line_idx == tbl.first_line {
+                            let total_w = table_layout.as_ref().map(|l| l.total_width).unwrap_or(0.0);
+                            Some(
+                                div()
+                                    .id(gpui::ElementId::Name(format!("table-raw-btn-{}", v_idx).into()))
+                                    .absolute()
+                                    .left(px(total_w + 24.0))
+                                    .top(px(15.0))
+                                    .w(px(26.0))
+                                    .h(px(26.0))
+                                    .rounded_md()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .font_family(editor_font.clone())
+                                    .text_xs()
+                                    .when(is_raw, |d| {
+                                        let mut bg = theme.accent;
+                                        bg.a = 0.2;
+                                        d.bg(bg).border_1().border_color(theme.accent).text_color(theme.accent)
+                                    })
+                                    .when(!is_raw, |d| {
+                                        d.bg(theme.bg_editor).border_1().border_color(theme.border_subtle).text_color(theme.text_secondary).hover(|h| h.bg(theme.bg_hover))
+                                    })
+                                    .child("</>")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.state.active_toggle_raw_table();
+                                        cx.notify();
+                                    }))
+                            )
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
@@ -6965,40 +7102,44 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     None
                 };
 
-                let add_col_btn = if let Some(tbl) = grid_tbl {
-                    if v_line_idx == tbl.first_line {
-                        let total_w = table_layout.as_ref().unwrap().total_width;
-                        let tbl_clone = tbl.clone();
-                        Some(
-                            div()
-                                .id(gpui::ElementId::Name(format!("table-add-col-{}", v_idx).into()))
-                                .absolute()
-                                .left(px(total_w + 4.0))
-                                .top(px(2.0))
-                                .w(px(24.0))
-                                .h(px(24.0))
-                                .rounded_md()
-                                .border_1()
-                                .border_color(theme.border_subtle)
-                                .bg(theme.bg_editor)
-                                .hover(|h| h.bg(theme.bg_hover))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .text_xs()
-                                .text_color(theme.text_secondary)
-                                .child("+")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    let lines: Vec<String> = this.state.active_document().map(|d| Self::table_lines_slice(d, &tbl_clone)).unwrap_or_default();
-                                    let lines_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
-                                    let mut model = crate::table::TableModel::parse(&tbl_clone, &lines_refs);
-                                    model.insert_col(model.col_count());
-                                    let edit = crate::table::rewrite(&tbl_clone, &model, false, &crate::table::char_width);
-                                    this.state.active_apply_table_line_edit(&edit, None);
-                                    cx.notify();
-                                }))
-                        )
+                let add_col_btn = if cursor_in_table {
+                    if let Some(tbl) = grid_tbl {
+                        if v_line_idx == tbl.first_line {
+                            let total_w = table_layout.as_ref().unwrap().total_width;
+                            let tbl_clone = tbl.clone();
+                            Some(
+                                div()
+                                    .id(gpui::ElementId::Name(format!("table-add-col-{}", v_idx).into()))
+                                    .absolute()
+                                    .left(px(total_w - 13.0))
+                                    .top(px(1.0))
+                                    .w(px(26.0))
+                                    .h(px(26.0))
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(theme.border_subtle)
+                                    .bg(theme.bg_editor)
+                                    .hover(|h| h.bg(theme.bg_hover).border_color(theme.accent))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .text_sm()
+                                    .text_color(theme.text_secondary)
+                                    .child("+")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let lines: Vec<String> = this.state.active_document().map(|d| Self::table_lines_slice(d, &tbl_clone)).unwrap_or_default();
+                                        let lines_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+                                        let mut model = crate::table::TableModel::parse(&tbl_clone, &lines_refs);
+                                        model.insert_col(model.col_count());
+                                        let edit = crate::table::rewrite(&tbl_clone, &model, false, &crate::table::char_width);
+                                        this.state.active_apply_table_line_edit(&edit, None);
+                                        cx.notify();
+                                    }))
+                            )
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
@@ -7006,41 +7147,45 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     None
                 };
 
-                let add_row_btn = if let Some(tbl) = grid_tbl {
-                    if v_line_idx == tbl.last_line {
-                        let tbl_clone = tbl.clone();
-                        Some(
-                            div()
-                                .id(gpui::ElementId::Name(format!("table-add-row-{}", v_idx).into()))
-                                .absolute()
-                                .left(px(0.0))
-                                .bottom(px(-28.0))
-                                .w(px(24.0))
-                                .h(px(24.0))
-                                .rounded_md()
-                                .border_1()
-                                .border_color(theme.border_subtle)
-                                .bg(theme.bg_editor)
-                                .hover(|h| h.bg(theme.bg_hover))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .text_xs()
-                                .text_color(theme.text_secondary)
-                                .child("+")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    let lines: Vec<String> = this.state.active_document().map(|d| Self::table_lines_slice(d, &tbl_clone)).unwrap_or_default();
-                                    let lines_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
-                                    let mut model = crate::table::TableModel::parse(&tbl_clone, &lines_refs);
-                                    model.insert_row(model.rows.len());
-                                    let edit = crate::table::rewrite(&tbl_clone, &model, false, &crate::table::char_width);
-                                    let new_r = model.rows.len() - 1;
-                                    let new_l = tbl_clone.line_of_row(new_r);
-                                    this.state.active_apply_table_line_edit(&edit, Some((new_l, 2)));
-                                    cx.notify();
-                                }))
-                        )
+                let add_row_btn = if cursor_in_table {
+                    if let Some(tbl) = grid_tbl {
+                        if v_line_idx == tbl.last_line {
+                            let tbl_clone = tbl.clone();
+                            Some(
+                                div()
+                                    .id(gpui::ElementId::Name(format!("table-add-row-{}", v_idx).into()))
+                                    .absolute()
+                                    .left(px(-13.0))
+                                    .top(px(15.0))
+                                    .w(px(26.0))
+                                    .h(px(26.0))
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(theme.border_subtle)
+                                    .bg(theme.bg_editor)
+                                    .hover(|h| h.bg(theme.bg_hover).border_color(theme.accent))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .text_sm()
+                                    .text_color(theme.text_secondary)
+                                    .child("+")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let lines: Vec<String> = this.state.active_document().map(|d| Self::table_lines_slice(d, &tbl_clone)).unwrap_or_default();
+                                        let lines_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+                                        let mut model = crate::table::TableModel::parse(&tbl_clone, &lines_refs);
+                                        model.insert_row(model.rows.len());
+                                        let edit = crate::table::rewrite(&tbl_clone, &model, false, &crate::table::char_width);
+                                        let new_r = model.rows.len() - 1;
+                                        let new_l = tbl_clone.line_of_row(new_r);
+                                        this.state.active_apply_table_line_edit(&edit, Some((new_l, 2)));
+                                        cx.notify();
+                                    }))
+                            )
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
@@ -7050,6 +7195,14 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
                 let table_render_arg = grid_tbl.map(|tbl| (tbl, table_layout.as_ref().unwrap().as_ref(), if is_active_line && v_line_idx == cursor_line { Some(active_col_in_row) } else { None }, v_line_idx));
 
+                let is_tbl_sep = grid_tbl.map_or(false, |tbl| v_line_idx == tbl.sep_line());
+                let line_num_top = if let Some(tbl) = grid_tbl {
+                    if v_line_idx == tbl.first_line { 14.0 } else { 0.0 }
+                } else {
+                    0.0
+                };
+                let line_num_h = if is_tbl_sep { 0.0 } else if grid_tbl.is_some() { 28.0 } else { row_h };
+
                 row_div = row_div
                     .child(
                         div()
@@ -7058,28 +7211,31 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             .w(px(40.0))
                             .flex_shrink_0()
                             .h(px(row_h))
-                            .child(
-                                div()
-                                    .absolute()
-                                    .right_0()
-                                    .w(px(line_number_width))
-                                    .h(px(row_h))
-                                    .flex()
-                                    .items_center()
-                                    .justify_end()
-                                    .text_xs()
-                                    .text_color(if is_current {
-                                        if is_leaf_active {
-                                            theme.accent
+                            .when(!is_tbl_sep, |d| {
+                                d.child(
+                                    div()
+                                        .absolute()
+                                        .right_0()
+                                        .top(px(line_num_top))
+                                        .w(px(line_number_width))
+                                        .h(px(line_num_h))
+                                        .flex()
+                                        .items_center()
+                                        .justify_end()
+                                        .text_xs()
+                                        .text_color(if is_current {
+                                            if is_leaf_active {
+                                                theme.accent
+                                            } else {
+                                                theme.text_secondary
+                                            }
                                         } else {
-                                            theme.text_secondary
-                                        }
-                                    } else {
-                                        theme.text_muted
-                                    })
-                                    .font_family(editor_font.clone())
-                                    .child(line_number_text),
-                            )
+                                            theme.text_muted
+                                        })
+                                        .font_family(editor_font.clone())
+                                        .child(line_number_text),
+                                )
+                            })
                     )
                     .child(
                         div()
@@ -7087,7 +7243,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             .relative()
                             .flex()
                             .flex_row()
-                            .items_center()
+                            .when(grid_tbl.is_none(), |d| d.items_center())
+                            .when(grid_tbl.is_some(), |d| d.items_start())
                             .flex_1()
                             .min_w_0()
                             .whitespace_nowrap()
@@ -7106,7 +7263,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                     .h_full()
                                     .flex()
                                     .flex_row()
-                                    .items_center()
+                                    .when(grid_tbl.is_none(), |d| d.items_center())
+                                    .when(grid_tbl.is_some(), |d| d.items_start())
                                     .whitespace_nowrap()
                                     .child(render_live_styled_row(
                                         line,
@@ -7148,12 +7306,18 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                     c.a = 0.6;
                                     (1.5, c)
                                 };
+                                let (caret_top, caret_h) = if let Some(tbl) = grid_tbl {
+                                    let top = if v_line_idx == tbl.first_line { 14.0 } else { 0.0 };
+                                    (top, 28.0)
+                                } else {
+                                    (0.0, row_h)
+                                };
                                 s.child(
                                     div()
                                         .absolute()
                                         .left(px(cursor_x))
-                                        .top_0()
-                                        .h_full()
+                                        .top(px(caret_top))
+                                        .h(px(caret_h))
                                         .w(px(caret_w))
                                         .bg(caret_bg)
                                         .rounded_xs(),
@@ -9160,6 +9324,14 @@ fn render_syntax_spans(
 /// This follows Zed's editor: the row's painted text is shaped once and every
 /// pixel <-> column conversion goes through the real glyph positions
 /// (`LineLayout::closest_index_for_x` and `ShapedGlyph::position`).
+#[derive(Clone, Debug)]
+pub(crate) struct TableColResizeDrag {
+    pub table_first_line: usize,
+    pub col_idx: usize,
+    pub start_x: f32,
+    pub start_width: f32,
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) struct TableLayout {
@@ -9217,6 +9389,7 @@ impl TableCellLayout {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub(crate) struct TableRowLayout {
     pub is_delimiter: bool,
@@ -9240,7 +9413,7 @@ impl TableRowLayout {
             return self.total_width + (col - self.total_columns) as f32 * cell_w;
         }
         for cell in &self.cells {
-            if col >= cell.cell_start_col && col < cell.cell_start_col + cell.cell_columns {
+            if col >= cell.cell_start_col && col <= cell.cell_start_col + cell.cell_columns {
                 let k = col - cell.cell_start_col;
                 return cell.content_x + cell.glyph_x(k);
             }
@@ -9259,9 +9432,6 @@ impl TableRowLayout {
         if x < 0.0 {
             return 0;
         }
-        if x >= self.total_width {
-            return self.total_columns;
-        }
         for cell in &self.cells {
             if x >= cell.cell_x && x < cell.cell_x + cell.cell_w {
                 if cell.cell_columns == 0 {
@@ -9273,14 +9443,30 @@ impl TableRowLayout {
                 return cell.cell_start_col + col_in_cell;
             }
         }
+        if let Some(last) = self.cells.last() {
+            return last.cell_start_col + last.cell_columns;
+        }
         self.total_columns
     }
 
     pub fn line_char_for_column(&self, col: usize) -> usize {
-        if self.line_chars.is_empty() {
+        if self.is_delimiter || self.cells.is_empty() {
             return 0;
         }
-        self.line_chars[col.min(self.line_chars.len().saturating_sub(1))]
+        for cell in &self.cells {
+            if col >= cell.cell_start_col && col <= cell.cell_start_col + cell.cell_columns {
+                let k = col - cell.cell_start_col;
+                if k >= cell.cell_columns {
+                    return cell.content_range.end;
+                }
+                return cell.line_chars.get(k).copied().unwrap_or(cell.content_range.end);
+            }
+        }
+        if let Some(last) = self.cells.last() {
+            last.content_range.end
+        } else {
+            0
+        }
     }
 
     pub fn column_for_line_char(&self, lc: usize) -> usize {
@@ -9301,7 +9487,40 @@ impl TableRowLayout {
                 return cell.cell_start_col + k;
             }
         }
-        self.total_columns
+        if let Some(last) = self.cells.last() {
+            last.cell_start_col + last.cell_columns
+        } else {
+            self.total_columns
+        }
+    }
+}
+
+pub(crate) fn fit_table_columns(natural: &[f32], room: f32) -> Vec<f32> {
+    const WIDEST: f32 = 480.0;
+    const NARROWEST: f32 = 96.0;
+
+    if natural.is_empty() {
+        return Vec::new();
+    }
+
+    let capped: Vec<f32> = natural.iter().map(|&w| w.min(WIDEST)).collect();
+    let floor: Vec<f32> = capped.iter().map(|&w| w.min(NARROWEST)).collect();
+    let between = |lo: &[f32], hi: &[f32], r: f32| -> Vec<f32> {
+        let (low, high): (f32, f32) = (lo.iter().sum(), hi.iter().sum());
+        let share = if high <= r { 1.0 } else if high > low { ((r - low) / (high - low)).max(0.0) } else { 0.0 };
+        lo.iter().zip(hi).map(|(&l, &h)| l + (h - l) * share).collect()
+    };
+
+    let widths = if capped.iter().sum::<f32>() <= room {
+        between(&capped, natural, room)
+    } else {
+        between(&floor, &capped, room)
+    };
+    let total: f32 = widths.iter().sum();
+    if total > 0.0 && total < room {
+        widths.iter().map(|&w| w * room / total).collect()
+    } else {
+        widths
     }
 }
 
@@ -9310,6 +9529,7 @@ pub(crate) fn compute_table_layout<'a>(
     get_line: &dyn Fn(usize) -> Option<&'a str>,
     block: &crate::table::TableBlock,
     font_family: &SharedString,
+    manual_widths: Option<&[f32]>,
 ) -> TableLayout {
     const PADDING_X: f32 = 8.0;
     const MIN_COL_WIDTH: f32 = 60.0;
@@ -9374,14 +9594,21 @@ pub(crate) fn compute_table_layout<'a>(
         }
     }
 
-    let mut col_widths = Vec::with_capacity(n_cols);
+    let natural_widths: Vec<f32> = max_widths.iter().map(|&w| (w + PADDING_X * 2.0).max(MIN_COL_WIDTH)).collect();
+    let col_widths = if let Some(mw) = manual_widths {
+        if mw.len() == n_cols {
+            mw.to_vec()
+        } else {
+            fit_table_columns(&natural_widths, 720.0)
+        }
+    } else {
+        fit_table_columns(&natural_widths, 720.0)
+    };
+
     let mut col_x = Vec::with_capacity(n_cols);
     let mut cur_x = 0.0f32;
-
-    for w in max_widths {
-        let col_w = (w + PADDING_X * 2.0).max(MIN_COL_WIDTH);
+    for &col_w in &col_widths {
         col_x.push(cur_x);
-        col_widths.push(col_w);
         cur_x += col_w;
     }
 
@@ -9514,6 +9741,7 @@ pub(crate) fn shape_table_row(
         for &lc in painted.line_chars.iter().take(cell_columns) {
             flat_line_chars.push(lc);
         }
+        flat_line_chars.push(content_range.end);
 
         cells.push(TableCellLayout {
             col_idx: c,
@@ -9530,11 +9758,8 @@ pub(crate) fn shape_table_row(
             code_ranges: cell_code_ranges,
         });
 
-        cur_col_offset += cell_columns;
+        cur_col_offset += cell_columns + 1;
     }
-
-    let terminal_lc = cells.last().map(|c| c.content_range.end).unwrap_or_else(|| line.chars().count());
-    flat_line_chars.push(terminal_lc);
 
     let dummy_layout = text_system.layout_line("", px(14.0), &[], None);
     let table_row = Arc::new(TableRowLayout {
@@ -9741,14 +9966,18 @@ fn render_live_styled_row(
         if line_idx == tbl.sep_line() {
             return div()
                 .w(px(table_layout.total_width))
-                .h(px(2.0))
+                .h(px(1.0))
                 .bg(theme.border_subtle);
         }
 
         let raw_cells = crate::table::split_row(line);
         let is_header = line_idx == tbl.first_line;
+        let is_last_row = line_idx == tbl.last_line && line_idx > tbl.sep_line();
         let active_c = cursor_col.map(|cc| crate::table::cell_index_at(&raw_cells, cc));
-        let mut row_div = div().flex().flex_row().items_center().h_full();
+        let mut row_div = div().flex().flex_row().items_center()
+            .when(is_header, |d| d.h(px(28.0)).mt(px(14.0)))
+            .when(is_last_row, |d| d.h(px(28.0)).mb(px(14.0)))
+            .when(!is_header && !is_last_row, |d| d.h(px(28.0)));
         for (c_idx, &col_w) in table_layout.col_widths.iter().enumerate() {
             let cell_text: String = raw_cells
                 .get(c_idx)
@@ -9758,7 +9987,11 @@ fn render_live_styled_row(
             let spans = crate::markdown::parse_inline_syntax_spans(&cell_text);
             let align = table_layout.aligns.get(c_idx).copied().unwrap_or_default();
             let font_weight = if is_header { Some(gpui::FontWeight::BOLD) } else { None };
+            let is_first_col = c_idx == 0;
+            let is_last_col = c_idx + 1 == table_layout.col_widths.len();
+
             let mut cell_div = div()
+                .relative()
                 .w(px(col_w))
                 .h_full()
                 .flex()
@@ -9766,7 +9999,13 @@ fn render_live_styled_row(
                 .px_2()
                 .border_l_1()
                 .border_color(theme.border_subtle)
-                .when(c_idx + 1 == table_layout.col_widths.len(), |d| d.border_r_1().border_color(theme.border_subtle))
+                .when(is_last_col, |d| d.border_r_1().border_color(theme.border_subtle))
+                .when(is_header, |d| d.border_t_1().border_color(theme.border_subtle))
+                .when(!is_header, |d| d.border_b_1().border_color(theme.border_subtle))
+                .when(is_header && is_first_col, |d| d.rounded_tl_sm())
+                .when(is_header && is_last_col, |d| d.rounded_tr_sm())
+                .when(is_last_row && is_first_col, |d| d.rounded_bl_sm())
+                .when(is_last_row && is_last_col, |d| d.rounded_br_sm())
                 .when(is_header, |d| {
                     let mut bg = theme.text_muted;
                     bg.a = 0.08;
@@ -9778,6 +10017,26 @@ fn render_live_styled_row(
                 crate::table::Align::Right => { cell_div = cell_div.justify_end(); }
             }
             cell_div = cell_div.child(render_syntax_spans(spans, is_active_cell, theme, None, font_weight, None, font_family));
+
+            let tbl_first_line = tbl.first_line;
+            let col_widths_clone = table_layout.col_widths.clone();
+            cell_div = cell_div.child(
+                div()
+                    .id(gpui::ElementId::Name(format!("tbl-rsz-{}-{}-{}", tbl_first_line, line_idx, c_idx).into()))
+                    .absolute()
+                    .right(px(-4.0))
+                    .top_0()
+                    .bottom_0()
+                    .w(px(8.0))
+                    .cursor(gpui::CursorStyle::ResizeLeftRight)
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                        cx.stop_propagation();
+                        let click_x: f32 = event.position.x.into();
+                        this.start_table_col_resize(tbl_first_line, c_idx, click_x, &col_widths_clone);
+                        cx.notify();
+                    }))
+            );
+
             row_div = row_div.child(cell_div);
         }
         return row_div;
@@ -11057,5 +11316,121 @@ mod tests {
         assert_eq!(AppView::editor_thumb_h(800.0, 8000.0, true), WIDE_THUMB_H);
         assert_eq!(AppView::editor_thumb_h(600.0, 1.0e8, true), WIDE_THUMB_H);
         assert_eq!(AppView::editor_thumb_h(800.0, 800.0, true), WIDE_THUMB_H);
+    }
+
+    #[test]
+    fn test_table_cell_end_cursor_and_geometry() {
+        let text = "| aaa | bbb |";
+        let raw_cells = crate::table::split_row(text);
+        assert_eq!(raw_cells.len(), 2);
+        let c0 = &raw_cells[0];
+        let c1 = &raw_cells[1];
+        assert_eq!(c0.content, 2..5);
+        assert_eq!(c1.content, 8..11);
+
+        let cell0 = TableCellLayout {
+            col_idx: 0,
+            cell_x: 0.0,
+            cell_w: 100.0,
+            content_x: 8.0,
+            cell_start_col: 0,
+            cell_columns: 3,
+            content_range: c0.content.clone(),
+            outer_range: c0.outer.clone(),
+            line_chars: vec![2, 3, 4],
+            text: "aaa".into(),
+            layout: Arc::new(gpui::LineLayout {
+                width: px(30.0),
+                runs: Vec::new(),
+                ascent: px(10.0),
+                descent: px(4.0),
+                font_size: px(14.0),
+                len: 3,
+            }),
+            code_ranges: Vec::new(),
+        };
+
+        let cell1 = TableCellLayout {
+            col_idx: 1,
+            cell_x: 100.0,
+            cell_w: 100.0,
+            content_x: 108.0,
+            cell_start_col: 4,
+            cell_columns: 3,
+            content_range: c1.content.clone(),
+            outer_range: c1.outer.clone(),
+            line_chars: vec![8, 9, 10],
+            text: "bbb".into(),
+            layout: Arc::new(gpui::LineLayout {
+                width: px(30.0),
+                runs: Vec::new(),
+                ascent: px(10.0),
+                descent: px(4.0),
+                font_size: px(14.0),
+                len: 3,
+            }),
+            code_ranges: Vec::new(),
+        };
+
+        let row_layout = TableRowLayout {
+            is_delimiter: false,
+            cells: vec![cell0, cell1],
+            total_width: 200.0,
+            total_columns: 8,
+            line_chars: vec![2, 3, 4, 5, 8, 9, 10, 11],
+            code_ranges: Vec::new(),
+        };
+
+        // Click past the end of cell 0 text (e.g. at x = 80.0):
+        let col = row_layout.column_for_x(80.0);
+        assert_eq!(col, 3, "click at end of cell 0 must resolve to cell 0 end slot (col 3)");
+
+        // Column 3 must map to line_char 5 (end of cell 0 'aaa'), NOT jumping to cell 1 (8)!
+        let lc = row_layout.line_char_for_column(col);
+        assert_eq!(lc, 5, "end slot of cell 0 must map to content_range.end (5)");
+
+        // Inverse mapping of line_char 5 must resolve to column 3
+        let col_inv = row_layout.column_for_line_char(5);
+        assert_eq!(col_inv, 3, "line_char 5 must map back to column 3");
+
+        // Cell 1 start column is 4, which maps to line_char 8
+        assert_eq!(row_layout.line_char_for_column(4), 8);
+        assert_eq!(row_layout.column_for_line_char(8), 4);
+
+        // Cell 1 end column is 7, which maps to line_char 11
+        assert_eq!(row_layout.line_char_for_column(7), 11);
+        assert_eq!(row_layout.column_for_line_char(11), 7);
+    }
+
+    #[test]
+    fn test_table_separator_and_delimiter_height() {
+        let lines = vec![
+            "| col1 | col2 |",
+            "|---|---|",
+            "| val1 | val2 |",
+        ];
+        let visual_rows = vec![
+            crate::markdown::VisualRow { line_idx: 0, sub_idx: 0, char_start: 0, char_end: 15, is_last_sub: true },
+            crate::markdown::VisualRow { line_idx: 1, sub_idx: 0, char_start: 0, char_end: 9, is_last_sub: true },
+            crate::markdown::VisualRow { line_idx: 2, sub_idx: 0, char_start: 0, char_end: 15, is_last_sub: true },
+        ];
+        let height_index = crate::markdown::VisualRowHeightIndex::from_rows_with_tables(
+            &lines,
+            &visual_rows,
+            None,
+            |line| {
+                if line == 1 {
+                    Some(crate::markdown::TableRowVisualKind::Delimiter)
+                } else if line == 0 {
+                    Some(crate::markdown::TableRowVisualKind::Header)
+                } else {
+                    Some(crate::markdown::TableRowVisualKind::LastRow)
+                }
+            },
+        );
+
+        assert_eq!(height_index.height_of(0), 42.0, "header row height must be 42.0 (28.0 + 14.0 mt)");
+        assert_eq!(height_index.height_of(1), 1.0, "delimiter row height must be 1.0 (matching 1px border)");
+        assert_eq!(height_index.height_of(2), 42.0, "last row height must be 42.0 (28.0 + 14.0 mb)");
     }
 }
