@@ -3767,8 +3767,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         self.reset_editor_cursor_blink(cx);
         let keystroke = &event.keystroke;
         let ctrl = keystroke.modifiers.control || keystroke.modifiers.platform;
-        if ctrl && !self.ctrl_held {
-            self.ctrl_held = true;
+        if ctrl != self.ctrl_held {
+            self.ctrl_held = ctrl;
             cx.notify();
         }
         let alt = keystroke.modifiers.alt;
@@ -6797,6 +6797,13 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     }))
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                         this.handle_key(event, window, cx);
+                    }))
+                    .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _window, cx| {
+                        let ctrl_held = event.modifiers.control || event.modifiers.platform;
+                        if this.ctrl_held != ctrl_held {
+                            this.ctrl_held = ctrl_held;
+                            cx.notify();
+                        }
                     }));
             }
 
@@ -7231,7 +7238,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             .rounded_sm(),
                     );
                 }
-                for (tag_start, tag_end, tag_name) in row_layout.tag_ranges() {
+                let mut tag_overlays = Vec::new();
+                for (tag_idx, (tag_start, tag_end, tag_name)) in row_layout.tag_ranges().iter().enumerate() {
                     let (chip_x, chip_w) = row_layout.selection_rect(*tag_start, *tag_end, pixel_scale);
                     let (bg_color, _) = crate::markdown::tag_color_pair(tag_name, theme.is_dark);
                     let tag_top = if let Some(tbl) = grid_tbl {
@@ -7251,6 +7259,26 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             .bg(bg_color)
                             .rounded_full(),
                     );
+                    if self.ctrl_held || !self.edit_mode {
+                        let tag_id = format!("v-tag-ov-{}-{}-{}-{}", lid_tag, v_idx, tag_idx, tag_name);
+                        let t = tag_name.clone();
+                        tag_overlays.push(
+                            div()
+                                .id(gpui::ElementId::Name(tag_id.into()))
+                                .absolute()
+                                .left(px(chip_x - pill_pad))
+                                .top(px(tag_top))
+                                .h(px(tag_h))
+                                .w(px(chip_w + 2.0 * pill_pad))
+                                .cursor(gpui::CursorStyle::PointingHand)
+                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                    if event.modifiers.control || event.modifiers.platform || !this.edit_mode {
+                                        cx.stop_propagation();
+                                        this.open_tag_search(&t, window, cx);
+                                    }
+                                })),
+                        );
+                    }
                 }
                 if let Some((sel_x, sel_w)) = row_sel_rect {
                     let sel_right = sel_x + sel_w;
@@ -7411,11 +7439,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
                 if is_leaf_active {
                     row_div = row_div
-                        .cursor(if (self.ctrl_held || !self.edit_mode) && self.hovered_tag {
-                            gpui::CursorStyle::PointingHand
-                        } else {
-                            gpui::CursorStyle::IBeam
-                        })
+                        .cursor(gpui::CursorStyle::IBeam)
                         .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                             cx.stop_propagation();
                             if this.is_resizing_any() {
@@ -7472,20 +7496,6 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             if this.ctrl_held != ctrl_held {
                                 this.ctrl_held = ctrl_held;
                                 cx.notify();
-                            }
-                            if !this.is_mouse_selecting {
-                                let move_x: f32 = event.position.x.into();
-                                let is_over_tag = if move_x > text_start_x && (ctrl_held || !this.edit_mode) {
-                                    let layout = if this.ctrl_preview_selection || !this.edit_mode { &row_layout_preview_move } else { &row_layout_move };
-                                    let column = layout.column_for_x(move_x - text_start_x);
-                                    layout.tag_ranges().iter().any(|(s, e, _)| column >= *s && column < *e)
-                                } else {
-                                    false
-                                };
-                                if this.hovered_tag != is_over_tag {
-                                    this.hovered_tag = is_over_tag;
-                                    cx.notify();
-                                }
                             }
                             if this.is_mouse_selecting {
                                 cx.stop_propagation();
@@ -7772,6 +7782,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         cx,
                                     )),
                             )
+                            .children(tag_overlays)
                             .when(raw_btn.is_some(), |s| s.child(raw_btn.unwrap()))
                             .when(add_col_btn.is_some(), |s| s.child(add_col_btn.unwrap()))
                             .when(add_row_btn.is_some(), |s| s.child(add_row_btn.unwrap()))
