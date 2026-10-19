@@ -572,6 +572,30 @@ pub fn parse_inline_spans(mut s: &str) -> Vec<InlineSpan> {
             }
         }
 
+        // WikiLink: [[target]] or [[target|alias]]
+        if s.starts_with("[[") {
+            if let Some(close_idx) = s[2..].find("]]") {
+                let inner = &s[2..2 + close_idx];
+                if !inner.is_empty() && !inner.contains('\n') {
+                    if !plain_accum.is_empty() {
+                        spans.push(InlineSpan::Text(std::mem::take(&mut plain_accum)));
+                    }
+                    let (target, label) = if let Some((t, a)) = inner.split_once('|') {
+                        (t.trim(), a.trim())
+                    } else {
+                        (inner.trim(), inner.trim())
+                    };
+                    spans.push(InlineSpan::Link {
+                        label: label.to_string(),
+                        url: target.to_string(),
+                    });
+                    let total_consumed = 2 + close_idx + 2;
+                    s = &s[total_consumed..];
+                    continue;
+                }
+            }
+        }
+
         // Link: [label](url)
         if s.starts_with('[') {
             if let Some(close_bracket) = s[1..].find(']') {
@@ -645,6 +669,37 @@ pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
                     spans.push(SyntaxSpan::Marker("\\".to_string()));
                     spans.push(SyntaxSpan::Text(c.to_string()));
                     s = &s[1 + c.len_utf8()..];
+                    continue;
+                }
+            }
+        }
+
+        // WikiLink: [[target]] or [[target|alias]]
+        if s.starts_with("[[") {
+            if let Some(close_idx) = s[2..].find("]]") {
+                let inner = &s[2..2 + close_idx];
+                if !inner.is_empty() && !inner.contains('\n') {
+                    if !plain_accum.is_empty() {
+                        spans.push(SyntaxSpan::Text(std::mem::take(&mut plain_accum)));
+                    }
+                    if let Some((target, alias)) = inner.split_once('|') {
+                        let open_marker = format!("[[{}|", target);
+                        spans.push(SyntaxSpan::Marker(open_marker));
+                        spans.push(SyntaxSpan::Link {
+                            text: alias.to_string(),
+                            url: target.to_string(),
+                        });
+                        spans.push(SyntaxSpan::Marker("]]".to_string()));
+                    } else {
+                        spans.push(SyntaxSpan::Marker("[[".to_string()));
+                        spans.push(SyntaxSpan::Link {
+                            text: inner.to_string(),
+                            url: inner.to_string(),
+                        });
+                        spans.push(SyntaxSpan::Marker("]]".to_string()));
+                    }
+                    let total_consumed = 2 + close_idx + 2;
+                    s = &s[total_consumed..];
                     continue;
                 }
             }
@@ -1628,25 +1683,67 @@ pub fn row_painted_text(
     PaintedRow { segments, line_chars }
 }
 
-/// Cleans raw markdown link URL (removes title, quotes, angle brackets, adds scheme if needed).
+/// Cleans raw markdown link URL (removes title, quotes, angle brackets, adds scheme if needed for web links).
 pub fn clean_link_url(raw: &str) -> String {
     let trimmed = raw.trim();
-    let url_part = if let Some(idx) = trimmed.find(|c: char| c.is_whitespace()) {
+    let url_part = if trimmed.starts_with('<') {
+        if let Some(end_angle) = trimmed.find('>') {
+            &trimmed[1..end_angle]
+        } else {
+            trimmed.trim_start_matches('<')
+        }
+    } else if let Some(idx) = trimmed.find(|c: char| c.is_whitespace()) {
         &trimmed[..idx]
     } else {
         trimmed
     };
-    let url_part = url_part.trim_start_matches('<').trim_end_matches('>');
     let url_part = url_part.trim_matches('"').trim_matches('\'');
     if url_part.is_empty() {
         return String::new();
     }
-    if !url_part.contains("://") && !url_part.starts_with("mailto:") && !url_part.starts_with('#') {
+    let is_local = url_part.starts_with('.')
+        || url_part.starts_with('/')
+        || url_part.starts_with('\\')
+        || url_part.contains('\\')
+        || url_part.ends_with(".md")
+        || url_part.ends_with(".markdown")
+        || (url_part.len() >= 2 && url_part.as_bytes()[1] == b':');
+
+    if !is_local && !url_part.contains("://") && !url_part.starts_with("mailto:") && !url_part.starts_with('#') {
         if url_part.contains('.') {
             return format!("https://{}", url_part);
         }
     }
     url_part.to_string()
+}
+
+/// Decodes percent-encoded characters (e.g. `%20` -> ` `, `%D0%9C` -> `М`).
+pub fn percent_decode(input: &str) -> String {
+    let mut bytes = Vec::with_capacity(input.len());
+    let mut chars = input.bytes();
+    while let Some(b) = chars.next() {
+        if b == b'%' {
+            let h1 = chars.next();
+            let h2 = chars.next();
+            if let (Some(h1), Some(h2)) = (h1, h2) {
+                if let (Some(v1), Some(v2)) = (hex_val(h1), hex_val(h2)) {
+                    bytes.push((v1 << 4) | v2);
+                    continue;
+                }
+            }
+        }
+        bytes.push(b);
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Strips inline markdown markers (bold, italic, strikethrough, inline code, links, highlights, underline),
@@ -1702,6 +1799,9 @@ pub fn strip_inline_markdown(mut s: &str) -> String {
 
     // 3. Clean up any unclosed boundary markers from partial selection (e.g. "**word", "word**", "[word", "word](url)")
     let mut cleaned = out;
+    if cleaned.contains("[[") && !cleaned.contains("]]") {
+        cleaned = cleaned.replace("[[", "");
+    }
     if cleaned.contains('[') && !cleaned.contains(']') {
         cleaned = cleaned.replace('[', "");
     }
@@ -1847,6 +1947,39 @@ mod tests {
         assert_eq!(clean_link_url("https://example.com"), "https://example.com");
         assert_eq!(clean_link_url("example.com"), "https://example.com");
         assert_eq!(clean_link_url("mailto:user@test.com"), "mailto:user@test.com");
+        assert_eq!(clean_link_url("../Люди/Михаил%20Валиев.md"), "../Люди/Михаил%20Валиев.md");
+        assert_eq!(clean_link_url("<../Люди/Михаил Валиев.md>"), "../Люди/Михаил Валиев.md");
+        assert_eq!(clean_link_url("Михаил%20Валиев.md"), "Михаил%20Валиев.md");
+    }
+
+    #[test]
+    fn test_percent_decode() {
+        assert_eq!(percent_decode("../Люди/Михаил%20Валиев.md"), "../Люди/Михаил Валиев.md");
+        assert_eq!(percent_decode("hello%20world"), "hello world");
+        assert_eq!(percent_decode("simple_text.md"), "simple_text.md");
+        assert_eq!(percent_decode("%D0%9C%D0%B8%D1%88%D0%B0"), "Миша");
+    }
+
+    #[test]
+    fn test_obsidian_document_link_and_wikilinks() {
+        let sentence = "Сегодня решил начать вести дневник в Обсидиан. [Миша](../Люди/Михаил%20Валиев.md) на меня так посмотрел, словно рублём одарил. И сказал: \"О, курва!\".";
+        let spans = parse_inline_syntax_spans(sentence);
+        assert!(spans.iter().any(|s| matches!(s, SyntaxSpan::Link { text, url } if text == "Миша" && url == "../Люди/Михаил%20Валиев.md")));
+
+        let stripped = strip_markdown_tags(sentence);
+        assert_eq!(stripped, "Сегодня решил начать вести дневник в Обсидиан. Миша на меня так посмотрел, словно рублём одарил. И сказал: \"О, курва!\".");
+
+        // Wikilink without alias
+        let wiki1 = "Привет [[Михаил Валиев]]!";
+        let spans1 = parse_inline_syntax_spans(wiki1);
+        assert!(spans1.iter().any(|s| matches!(s, SyntaxSpan::Link { text, url } if text == "Михаил Валиев" && url == "Михаил Валиев")));
+        assert_eq!(strip_markdown_tags(wiki1), "Привет Михаил Валиев!");
+
+        // Wikilink with alias
+        let wiki2 = "Привет [[Михаил Валиев|Миша]]!";
+        let spans2 = parse_inline_syntax_spans(wiki2);
+        assert!(spans2.iter().any(|s| matches!(s, SyntaxSpan::Link { text, url } if text == "Миша" && url == "Михаил Валиев")));
+        assert_eq!(strip_markdown_tags(wiki2), "Привет Миша!");
     }
 
     #[test]
