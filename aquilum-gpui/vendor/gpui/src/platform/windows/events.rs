@@ -63,10 +63,10 @@ impl WindowsWindowInner {
             WM_NCLBUTTONDBLCLK | WM_NCLBUTTONDOWN => {
                 self.handle_nc_mouse_down_msg(handle, MouseButton::Left, wparam, lparam)
             }
-            WM_NCRBUTTONDOWN => {
+            WM_NCRBUTTONDBLCLK | WM_NCRBUTTONDOWN => {
                 self.handle_nc_mouse_down_msg(handle, MouseButton::Right, wparam, lparam)
             }
-            WM_NCMBUTTONDOWN => {
+            WM_NCMBUTTONDBLCLK | WM_NCMBUTTONDOWN => {
                 self.handle_nc_mouse_down_msg(handle, MouseButton::Middle, wparam, lparam)
             }
             WM_NCLBUTTONUP => {
@@ -78,10 +78,10 @@ impl WindowsWindowInner {
             WM_NCMBUTTONUP => {
                 self.handle_nc_mouse_up_msg(handle, MouseButton::Middle, wparam, lparam)
             }
-            WM_LBUTTONDOWN => self.handle_mouse_down_msg(handle, MouseButton::Left, lparam),
-            WM_RBUTTONDOWN => self.handle_mouse_down_msg(handle, MouseButton::Right, lparam),
-            WM_MBUTTONDOWN => self.handle_mouse_down_msg(handle, MouseButton::Middle, lparam),
-            WM_XBUTTONDOWN => {
+            WM_LBUTTONDBLCLK | WM_LBUTTONDOWN => self.handle_mouse_down_msg(handle, MouseButton::Left, lparam),
+            WM_RBUTTONDBLCLK | WM_RBUTTONDOWN => self.handle_mouse_down_msg(handle, MouseButton::Right, lparam),
+            WM_MBUTTONDBLCLK | WM_MBUTTONDOWN => self.handle_mouse_down_msg(handle, MouseButton::Middle, lparam),
+            WM_XBUTTONDBLCLK | WM_XBUTTONDOWN => {
                 self.handle_xbutton_msg(handle, wparam, lparam, Self::handle_mouse_down_msg)
             }
             WM_LBUTTONUP => self.handle_mouse_up_msg(handle, MouseButton::Left, lparam),
