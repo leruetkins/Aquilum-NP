@@ -182,6 +182,7 @@ pub struct AppView {
     pub last_editor_h: Cell<f32>,
     /// Document line at the top of the viewport, refreshed once per frame.
     ///
+    pub(crate) table_layouts: std::cell::RefCell<HashMap<usize, (u64, Arc<TableLayout>)>>,
     pub config: crate::settings::AppConfig,
     pub last_saved_geometry: Option<(f32, f32, Option<f32>, Option<f32>, bool)>,
     pub initial_scroll_done: bool,
@@ -457,6 +458,7 @@ impl AppView {
             code_block_views: HashMap::new(),
             plugin_api_tx: None,
             pending_file_deletions: HashMap::new(),
+            table_layouts: std::cell::RefCell::new(HashMap::new()),
         };
         this.editor_blink.enable(BlinkTarget::Editor, cx);
         crate::commands_builtin::register_builtin_commands(&this.state.commands);
@@ -911,6 +913,7 @@ impl AppView {
     }
 
     pub fn apply_note_settings_for_path(&mut self, path: &Path) {
+        self.table_layouts.borrow_mut().clear();
         let mut restore_to = 0.0;
         if let Some(settings) = self.state.note_states.get(path).cloned() {
             self.edit_mode = settings.edit_mode;
@@ -2063,6 +2066,43 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         cx.notify();
     }
 
+    pub(crate) fn table_lines_slice(doc: &crate::document_buffer::DocumentBuffer, block: &crate::table::TableBlock) -> Vec<String> {
+        (block.first_line..=block.last_line)
+            .map(|i| doc.line_text(i))
+            .collect()
+    }
+
+    pub(crate) fn get_or_compute_table_layout<'a>(
+        table_layouts: &std::cell::RefCell<std::collections::HashMap<usize, (u64, Arc<TableLayout>)>>,
+        text_system: &gpui::WindowTextSystem,
+        get_line: &dyn Fn(usize) -> Option<&'a str>,
+        block: &crate::table::TableBlock,
+        font_family: &SharedString,
+    ) -> Arc<TableLayout> {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for l_idx in block.first_line..=block.last_line {
+            if let Some(l) = get_line(l_idx) {
+                l.hash(&mut hasher);
+            }
+        }
+        let content_hash = hasher.finish();
+
+        if let Ok(layouts) = table_layouts.try_borrow() {
+            if let Some((h, layout)) = layouts.get(&block.first_line) {
+                if *h == content_hash {
+                    return layout.clone();
+                }
+            }
+        }
+
+        let layout = Arc::new(compute_table_layout(text_system, get_line, block, font_family));
+        if let Ok(mut layouts) = table_layouts.try_borrow_mut() {
+            layouts.insert(block.first_line, (content_hash, layout.clone()));
+        }
+        layout
+    }
+
     fn handle_editor_mouse_down(&mut self, click_x: f32, click_y: f32, shift: bool, click_count: usize, window: &Window, cx: &mut Context<Self>) {
         if self.state.active_doc_id().is_none() {
             return;
@@ -2147,16 +2187,38 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         // `column * char_width` cell model: wide glyphs (emoji, CJK) do not advance
         // by exactly one cell.
         let col_in_row = if click_x > text_start_x {
-            let row_layout = shape_row(
-                window.text_system(),
-                line,
-                &classified,
-                v,
-                is_active_line,
-                &self.config.editor.headings,
-                &editor_font,
-                row_char_w,
-            );
+            let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
+            let row_layout = if let Some(tbl) = view.grid_table_at(&tables, v.line_idx, cursor_line) {
+                let table_layout = Self::get_or_compute_table_layout(&self.table_layouts, window.text_system(), &|idx| view.window.lines.get(idx).map(|s| s.as_str()), tbl, &editor_font);
+                let cursor_col = if v.line_idx == cursor_line {
+                    let (_, col) = view.line_col(doc);
+                    Some(col)
+                } else {
+                    None
+                };
+                shape_table_row(
+                    window.text_system(),
+                    line,
+                    tbl,
+                    v.line_idx,
+                    cursor_col,
+                    &table_layout,
+                    &self.config.editor.headings,
+                    &editor_font,
+                    row_char_w,
+                )
+            } else {
+                shape_row(
+                    window.text_system(),
+                    line,
+                    &classified,
+                    v,
+                    is_active_line,
+                    &self.config.editor.headings,
+                    &editor_font,
+                    row_char_w,
+                )
+            };
             let column = row_layout.column_for_x(click_x - text_start_x);
             row_layout.line_char_for_column(column).saturating_sub(v.char_start).min(v_len)
         } else {
@@ -2278,16 +2340,38 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let (_, row_char_w, _, _, _) = Self::heading_typography_metrics_with_widths(&classified, &self.config.editor.headings, 24.0, line_char_width, Some(&heading_widths));
 
         let col_in_row = if pos_x > text_start_x {
-            let row_layout = shape_row(
-                window.text_system(),
-                line,
-                &classified,
-                v,
-                is_active_line,
-                &self.config.editor.headings,
-                &editor_font,
-                row_char_w,
-            );
+            let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
+            let row_layout = if let Some(tbl) = view.grid_table_at(&tables, v.line_idx, cursor_line) {
+                let table_layout = Self::get_or_compute_table_layout(&self.table_layouts, window.text_system(), &|idx| view.window.lines.get(idx).map(|s| s.as_str()), tbl, &editor_font);
+                let cursor_col = if v.line_idx == cursor_line {
+                    let (_, col) = view.line_col(doc);
+                    Some(col)
+                } else {
+                    None
+                };
+                shape_table_row(
+                    window.text_system(),
+                    line,
+                    tbl,
+                    v.line_idx,
+                    cursor_col,
+                    &table_layout,
+                    &self.config.editor.headings,
+                    &editor_font,
+                    row_char_w,
+                )
+            } else {
+                shape_row(
+                    window.text_system(),
+                    line,
+                    &classified,
+                    v,
+                    is_active_line,
+                    &self.config.editor.headings,
+                    &editor_font,
+                    row_char_w,
+                )
+            };
             let column = row_layout.column_for_x(pos_x - text_start_x);
             row_layout.line_char_for_column(column).saturating_sub(v.char_start).min(v_len)
         } else {
@@ -3625,10 +3709,47 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         // Ctrl + C (Копировать)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("c") || keystroke.key == "с" || keystroke.key == "С") {
-            if let Some(text) = self.state.active_selected_text() {
+            let copied_tsv = if let Some((view, doc)) = self.state.active_view_and_doc() {
+                let (cursor_line, _) = view.line_col(doc);
+                let tables = doc.ensure_table_index();
+                if let Some(range) = view.selection_range(doc.len()) {
+                    let start_line = doc.line_of_byte(range.start);
+                    let end_line = doc.line_of_byte(range.end);
+                    if let (Some(t1), Some(t2)) = (tables.at(start_line), tables.at(end_line)) {
+                        if t1.first_line == t2.first_line && view.grid_table_at(&tables, cursor_line, cursor_line).is_some() {
+                            let start_line_byte = doc.line_start_byte(start_line);
+                            let end_line_byte = doc.line_start_byte(end_line);
+                            let start_col = doc.slice_to_string(start_line_byte..range.start).chars().count();
+                            let end_col = doc.slice_to_string(end_line_byte..range.end).chars().count();
+                            let line_strings = Self::table_lines_slice(doc, t1);
+                            let lines_ref: Vec<&str> = line_strings.iter().map(|s| s.as_str()).collect();
+                            let r1 = t1.row_of_line(start_line).unwrap_or(0);
+                            let r2 = t1.row_of_line(end_line).unwrap_or(t1.row_count().saturating_sub(1));
+                            let c1 = crate::table::cell_index_at(&crate::table::split_row(crate::table::get_table_line(t1, &lines_ref, start_line)), start_col);
+                            let c2 = crate::table::cell_index_at(&crate::table::split_row(crate::table::get_table_line(t1, &lines_ref, end_line)), end_col);
+                            let rect = crate::table::CellRect::new(r1, r2, c1, c2);
+                            let model = crate::table::TableModel::parse(t1, &lines_ref);
+                            Some(model.to_tsv(rect.row_start..rect.row_end, rect.col_start..rect.col_end))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some(tsv) = copied_tsv {
+                cx.write_to_clipboard(ClipboardItem::new_string(tsv));
+                return;
+            } else if let Some(text) = self.state.active_selected_text() {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
+                return;
             }
-            return;
         }
 
         // Ctrl + X (Вырезать)
@@ -3648,12 +3769,72 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             return;
         }
 
+        // Ctrl + / (Переключение исходника активной таблицы)
+        if ctrl && (keystroke.key == "/" || keystroke.key == "?" || keystroke.key == "." || keystroke.key == "ю" || keystroke.key == "Ю") {
+            if self.state.active_toggle_raw_table() {
+                cx.notify();
+                return;
+            }
+        }
+
         // Ctrl + V (Вставить)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("v") || keystroke.key == "м" || keystroke.key == "М") {
             if let Some(item) = cx.read_from_clipboard() {
                 if let Some(text) = item.text() {
-                    self.state.active_insert_text(&text);
-                    cx.notify();
+                    enum PasteAction {
+                        ApplyEdit(crate::table::LineEdit, Option<(usize, usize)>),
+                        InsertText(String),
+                        Deny,
+                    }
+
+                    let paste_action = if let Some((view, doc)) = self.state.active_view_and_doc() {
+                        let (cursor_line, cursor_col) = view.line_col(doc);
+                        let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
+                        if let Some(tbl) = view.grid_table_at(&tables, cursor_line, cursor_line) {
+                            if cursor_line == tbl.sep_line() {
+                                PasteAction::Deny
+                            } else if text.contains('\t') {
+                                let line_strings = Self::table_lines_slice(doc, tbl);
+                                let lines_ref: Vec<&str> = line_strings.iter().map(|s| s.as_str()).collect();
+                                let row = tbl.row_of_line(cursor_line).unwrap_or(0);
+                                let cells = crate::table::split_row(crate::table::get_table_line(tbl, &lines_ref, cursor_line));
+                                let col = crate::table::cell_index_at(&cells, cursor_col);
+                                let mut model = crate::table::TableModel::parse(tbl, &lines_ref);
+                                if let Some((max_r, max_c)) = model.paste_tsv(row, col, &text) {
+                                    let edit = crate::table::rewrite(tbl, &model, false, &crate::table::char_width);
+                                    let target_line = tbl.line_of_row(max_r);
+                                    let new_row_str = &edit.new_lines[if max_r == 0 { 0 } else { max_r + 1 }];
+                                    let cells_new = crate::table::split_row(new_row_str);
+                                    let target_col = cells_new.get(max_c).map(|c| c.content.end).unwrap_or(2);
+                                    PasteAction::ApplyEdit(edit, Some((target_line, target_col)))
+                                } else {
+                                    PasteAction::InsertText(crate::table::sanitize_cell_input(&text))
+                                }
+                            } else {
+                                PasteAction::InsertText(crate::table::sanitize_cell_input(&text))
+                            }
+                        } else {
+                            PasteAction::InsertText(text)
+                        }
+                    } else {
+                        PasteAction::InsertText(text)
+                    };
+
+                    match paste_action {
+                        PasteAction::ApplyEdit(edit, target_cursor) => {
+                            self.state.active_apply_table_line_edit(&edit, target_cursor);
+                            self.schedule_auto_save(cx);
+                            cx.notify();
+                            return;
+                        }
+                        PasteAction::InsertText(s) => {
+                            self.state.active_insert_text(&s);
+                            cx.notify();
+                        }
+                        PasteAction::Deny => {
+                            return;
+                        }
+                    }
                 }
             }
             self.schedule_auto_save(cx);
@@ -3662,6 +3843,300 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         if self.state.active_doc_id().is_none() {
             return;
+        }
+
+        // Grid Table Navigation and Guarded Edits
+        enum TableKeyAction {
+            SetCursor(usize, usize),
+            ApplyEdit(crate::table::LineEdit, Option<(usize, usize)>),
+            InsertText(String),
+            Deny,
+            PassThrough,
+        }
+
+        let table_action = if let Some((view, doc)) = self.state.active_view_and_doc() {
+            let (cursor_line, cursor_col) = view.line_col(doc);
+            let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
+            if let Some(tbl) = view.grid_table_at(&tables, cursor_line, cursor_line) {
+                let line_str = doc.line_text(cursor_line);
+                let line_strings = Self::table_lines_slice(doc, tbl);
+                let lines_ref: Vec<&str> = line_strings.iter().map(|s| s.as_str()).collect();
+                let cells = crate::table::split_row(&line_str);
+
+                match keystroke.key.as_str() {
+                    "tab" => {
+                        if let Some(nav) = crate::table::tab(tbl, &lines_ref, cursor_line, cursor_col, shift) {
+                            match nav {
+                                crate::table::Nav::To { row, cell } => {
+                                    let (target_l, target_c) = crate::table::nav_cursor(tbl, &lines_ref, row, cell, crate::table::Place::Start);
+                                    TableKeyAction::SetCursor(target_l, target_c)
+                                }
+                                crate::table::Nav::AppendRow { cell } => {
+                                    let mut model = crate::table::TableModel::parse(tbl, &lines_ref);
+                                    model.insert_row(model.rows.len());
+                                    let edit = crate::table::rewrite(tbl, &model, false, &crate::table::char_width);
+                                    let target_l = edit.first_line + edit.new_lines.len() - 1;
+                                    let new_cells = crate::table::split_row(&edit.new_lines[edit.new_lines.len() - 1]);
+                                    let target_c = new_cells.get(cell).map(|c| c.content.start).unwrap_or(2);
+                                    TableKeyAction::ApplyEdit(edit, Some((target_l, target_c)))
+                                }
+                                crate::table::Nav::Exit => {
+                                    if tbl.first_line > 0 {
+                                        TableKeyAction::SetCursor(tbl.first_line - 1, 0)
+                                    } else {
+                                        TableKeyAction::Deny
+                                    }
+                                }
+                            }
+                        } else {
+                            TableKeyAction::Deny
+                        }
+                    }
+                    "enter" => {
+                        if let Some(nav) = crate::table::enter(tbl, &lines_ref, cursor_line, cursor_col, shift) {
+                            match nav {
+                                crate::table::Nav::To { row, cell } => {
+                                    let (target_l, target_c) = crate::table::nav_cursor(tbl, &lines_ref, row, cell, crate::table::Place::Start);
+                                    TableKeyAction::SetCursor(target_l, target_c)
+                                }
+                                crate::table::Nav::AppendRow { cell } => {
+                                    let mut model = crate::table::TableModel::parse(tbl, &lines_ref);
+                                    model.insert_row(model.rows.len());
+                                    let edit = crate::table::rewrite(tbl, &model, false, &crate::table::char_width);
+                                    let target_l = edit.first_line + edit.new_lines.len() - 1;
+                                    let new_cells = crate::table::split_row(&edit.new_lines[edit.new_lines.len() - 1]);
+                                    let target_c = new_cells.get(cell).map(|c| c.content.start).unwrap_or(2);
+                                    TableKeyAction::ApplyEdit(edit, Some((target_l, target_c)))
+                                }
+                                crate::table::Nav::Exit => {
+                                    if tbl.first_line > 0 {
+                                        TableKeyAction::SetCursor(tbl.first_line - 1, 0)
+                                    } else {
+                                        TableKeyAction::Deny
+                                    }
+                                }
+                            }
+                        } else {
+                            TableKeyAction::Deny
+                        }
+                    }
+                    "backspace" => {
+                        if cursor_line == tbl.sep_line() {
+                            TableKeyAction::Deny
+                        } else if let Some(range) = view.selection_range(doc.len()) {
+                            let start_line = doc.line_of_byte(range.start);
+                            let end_line = doc.line_of_byte(range.end);
+                            if start_line == end_line && start_line == cursor_line {
+                                let line_start_byte = doc.line_start_byte(cursor_line);
+                                let start_col = doc.slice_to_string(line_start_byte..range.start).chars().count();
+                                let end_col = doc.slice_to_string(line_start_byte..range.end).chars().count();
+                                if crate::table::guard_edit(tbl, cursor_line, &line_str, start_col..end_col) == crate::table::EditGuard::Deny {
+                                    TableKeyAction::Deny
+                                } else {
+                                    TableKeyAction::PassThrough
+                                }
+                            } else if start_line != end_line && tbl.contains(start_line) && tbl.contains(end_line) {
+                                let start_line_byte = doc.line_start_byte(start_line);
+                                let end_line_byte = doc.line_start_byte(end_line);
+                                let start_col = doc.slice_to_string(start_line_byte..range.start).chars().count();
+                                let end_col = doc.slice_to_string(end_line_byte..range.end).chars().count();
+                                let r1 = tbl.row_of_line(start_line).unwrap_or(0);
+                                let r2 = tbl.row_of_line(end_line).unwrap_or(tbl.row_count().saturating_sub(1));
+                                let c1 = crate::table::cell_index_at(&crate::table::split_row(crate::table::get_table_line(tbl, &lines_ref, start_line)), start_col);
+                                let c2 = crate::table::cell_index_at(&crate::table::split_row(crate::table::get_table_line(tbl, &lines_ref, end_line)), end_col);
+                                let rect = crate::table::CellRect::new(r1, r2, c1, c2);
+                                let mut model = crate::table::TableModel::parse(tbl, &lines_ref);
+                                model.clear_rect(&rect);
+                                let edit = crate::table::rewrite(tbl, &model, false, &crate::table::char_width);
+                                TableKeyAction::ApplyEdit(edit, Some((cursor_line, cursor_col)))
+                            } else {
+                                TableKeyAction::PassThrough
+                            }
+                        } else {
+                            if cursor_col == 0 || crate::table::guard_edit(tbl, cursor_line, &line_str, cursor_col - 1..cursor_col) == crate::table::EditGuard::Deny {
+                                TableKeyAction::Deny
+                            } else {
+                                TableKeyAction::PassThrough
+                            }
+                        }
+                    }
+                    "delete" => {
+                        if cursor_line == tbl.sep_line() {
+                            TableKeyAction::Deny
+                        } else if let Some(range) = view.selection_range(doc.len()) {
+                            let start_line = doc.line_of_byte(range.start);
+                            let end_line = doc.line_of_byte(range.end);
+                            if start_line == end_line && start_line == cursor_line {
+                                let line_start_byte = doc.line_start_byte(cursor_line);
+                                let start_col = doc.slice_to_string(line_start_byte..range.start).chars().count();
+                                let end_col = doc.slice_to_string(line_start_byte..range.end).chars().count();
+                                if crate::table::guard_edit(tbl, cursor_line, &line_str, start_col..end_col) == crate::table::EditGuard::Deny {
+                                    TableKeyAction::Deny
+                                } else {
+                                    TableKeyAction::PassThrough
+                                }
+                            } else if start_line != end_line && tbl.contains(start_line) && tbl.contains(end_line) {
+                                let start_line_byte = doc.line_start_byte(start_line);
+                                let end_line_byte = doc.line_start_byte(end_line);
+                                let start_col = doc.slice_to_string(start_line_byte..range.start).chars().count();
+                                let end_col = doc.slice_to_string(end_line_byte..range.end).chars().count();
+                                let r1 = tbl.row_of_line(start_line).unwrap_or(0);
+                                let r2 = tbl.row_of_line(end_line).unwrap_or(tbl.row_count().saturating_sub(1));
+                                let c1 = crate::table::cell_index_at(&crate::table::split_row(crate::table::get_table_line(tbl, &lines_ref, start_line)), start_col);
+                                let c2 = crate::table::cell_index_at(&crate::table::split_row(crate::table::get_table_line(tbl, &lines_ref, end_line)), end_col);
+                                let rect = crate::table::CellRect::new(r1, r2, c1, c2);
+                                let mut model = crate::table::TableModel::parse(tbl, &lines_ref);
+                                model.clear_rect(&rect);
+                                let edit = crate::table::rewrite(tbl, &model, false, &crate::table::char_width);
+                                TableKeyAction::ApplyEdit(edit, Some((cursor_line, cursor_col)))
+                            } else {
+                                TableKeyAction::PassThrough
+                            }
+                        } else {
+                            if crate::table::guard_edit(tbl, cursor_line, &line_str, cursor_col..cursor_col + 1) == crate::table::EditGuard::Deny {
+                                TableKeyAction::Deny
+                            } else {
+                                TableKeyAction::PassThrough
+                            }
+                        }
+                    }
+                    "left" => {
+                        if !shift {
+                            let cell = crate::table::cell_index_at(&cells, cursor_col);
+                            if let Some(c) = cells.get(cell) {
+                                if cursor_col <= c.content.start && cell > 0 {
+                                    let prev_c = &cells[cell - 1];
+                                    TableKeyAction::SetCursor(cursor_line, prev_c.content.end)
+                                } else {
+                                    TableKeyAction::PassThrough
+                                }
+                            } else {
+                                TableKeyAction::PassThrough
+                            }
+                        } else {
+                            TableKeyAction::PassThrough
+                        }
+                    }
+                    "right" => {
+                        if !shift {
+                            let cell = crate::table::cell_index_at(&cells, cursor_col);
+                            if let Some(c) = cells.get(cell) {
+                                if cursor_col >= c.content.end && cell + 1 < cells.len() {
+                                    let next_c = &cells[cell + 1];
+                                    TableKeyAction::SetCursor(cursor_line, next_c.content.start)
+                                } else {
+                                    TableKeyAction::PassThrough
+                                }
+                            } else {
+                                TableKeyAction::PassThrough
+                            }
+                        } else {
+                            TableKeyAction::PassThrough
+                        }
+                    }
+                    "home" => {
+                        let cell = crate::table::cell_index_at(&cells, cursor_col);
+                        if let Some(c) = cells.get(cell) {
+                            TableKeyAction::SetCursor(cursor_line, c.content.start)
+                        } else {
+                            TableKeyAction::PassThrough
+                        }
+                    }
+                    "end" => {
+                        let cell = crate::table::cell_index_at(&cells, cursor_col);
+                        if let Some(c) = cells.get(cell) {
+                            TableKeyAction::SetCursor(cursor_line, c.content.end)
+                        } else {
+                            TableKeyAction::PassThrough
+                        }
+                    }
+                    "up" => {
+                        if !shift {
+                            let cell = crate::table::cell_index_at(&cells, cursor_col);
+                            if let Some(row) = tbl.row_of_line(cursor_line) {
+                                if row > 0 {
+                                    let (target_l, target_c) = crate::table::nav_cursor(tbl, &lines_ref, row - 1, cell, crate::table::Place::Start);
+                                    TableKeyAction::SetCursor(target_l, target_c)
+                                } else if tbl.first_line > 0 {
+                                    TableKeyAction::SetCursor(tbl.first_line - 1, 0)
+                                } else {
+                                    TableKeyAction::PassThrough
+                                }
+                            } else {
+                                TableKeyAction::PassThrough
+                            }
+                        } else {
+                            TableKeyAction::PassThrough
+                        }
+                    }
+                    "down" => {
+                        if !shift {
+                            let cell = crate::table::cell_index_at(&cells, cursor_col);
+                            if let Some(row) = tbl.row_of_line(cursor_line) {
+                                if row + 1 < tbl.row_count() {
+                                    let (target_l, target_c) = crate::table::nav_cursor(tbl, &lines_ref, row + 1, cell, crate::table::Place::Start);
+                                    TableKeyAction::SetCursor(target_l, target_c)
+                                } else {
+                                    let next_line = tbl.last_line + 1;
+                                    if next_line < doc.line_index.lines() {
+                                        TableKeyAction::SetCursor(next_line, 0)
+                                    } else {
+                                        TableKeyAction::PassThrough
+                                    }
+                                }
+                            } else {
+                                TableKeyAction::PassThrough
+                            }
+                        } else {
+                            TableKeyAction::PassThrough
+                        }
+                    }
+                    _ => {
+                        if !ctrl && !keystroke.modifiers.alt && !keystroke.modifiers.platform {
+                            if cursor_line == tbl.sep_line() {
+                                TableKeyAction::Deny
+                            } else {
+                                let typed_str = keystroke.key_char.as_deref().unwrap_or(keystroke.key.as_str());
+                                if typed_str == "|" {
+                                    TableKeyAction::InsertText("\\|".into())
+                                } else {
+                                    TableKeyAction::PassThrough
+                                }
+                            }
+                        } else {
+                            TableKeyAction::PassThrough
+                        }
+                    }
+                }
+            } else {
+                TableKeyAction::PassThrough
+            }
+        } else {
+            TableKeyAction::PassThrough
+        };
+
+        match table_action {
+            TableKeyAction::SetCursor(line, col) => {
+                self.state.active_set_cursor_line_col(line, col);
+                cx.notify();
+                return;
+            }
+            TableKeyAction::ApplyEdit(edit, target_cursor) => {
+                self.state.active_apply_table_line_edit(&edit, target_cursor);
+                self.schedule_auto_save(cx);
+                cx.notify();
+                return;
+            }
+            TableKeyAction::InsertText(s) => {
+                self.state.active_insert_text(&s);
+                self.schedule_auto_save(cx);
+                cx.notify();
+                return;
+            }
+            TableKeyAction::Deny => {
+                return;
+            }
+            TableKeyAction::PassThrough => {}
         }
 
         match keystroke.key.as_str() {
@@ -6060,6 +6535,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
             let mut items = Vec::with_capacity(visible_range.len());
 
+            let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
             let calc_v_row_sel_rect = |target_v_idx: usize| -> Option<(f32, f32)> {
                 let sel = selection_range.as_ref()?;
                 if sel.start >= sel.end {
@@ -6090,7 +6566,13 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 let classified = crate::markdown::classify_line(line, code_state);
                 let (_, row_char_w, _, _, _) =
                     Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths));
-                let row_layout = shape_row(&text_system, line, &classified, v, is_act_line, headings, &editor_font, row_char_w);
+                let row_layout = if let Some(tbl) = view.grid_table_at(&tables, line_idx, cursor_line) {
+                    let table_layout = Self::get_or_compute_table_layout(&self.table_layouts, window.text_system(), &|idx| lines_arc.get(idx).map(|s| s.as_str()), tbl, &editor_font);
+                    let cursor_col = if is_act_line && line_idx == cursor_line { Some(active_col_in_row) } else { None };
+                    shape_table_row(window.text_system(), line, tbl, line_idx, cursor_col, &table_layout, headings, &editor_font, row_char_w)
+                } else {
+                    shape_row(&text_system, line, &classified, v, is_act_line, headings, &editor_font, row_char_w)
+                };
 
                 if line.is_empty() {
                     if sel.start <= line_start && sel.end > line_start {
@@ -6168,7 +6650,14 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
                 let (row_h, row_char_w, _row_font_size, _cursor_h, _cursor_top) =
                     Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths));
-                let row_layout = shape_row(&text_system, line, &classified, v, is_active_line, headings, &editor_font, row_char_w);
+                let grid_tbl = view.grid_table_at(&tables, v.line_idx, cursor_line);
+                let table_layout = grid_tbl.map(|tbl| Self::get_or_compute_table_layout(&self.table_layouts, window.text_system(), &|idx| lines_arc.get(idx).map(|s| s.as_str()), tbl, &editor_font));
+                let row_layout = if let Some(tbl) = grid_tbl {
+                    let cursor_col = if is_active_line && v.line_idx == cursor_line { Some(active_col_in_row) } else { None };
+                    shape_table_row(window.text_system(), line, tbl, v.line_idx, cursor_col, table_layout.as_ref().unwrap(), headings, &editor_font, row_char_w)
+                } else {
+                    shape_row(&text_system, line, &classified, v, is_active_line, headings, &editor_font, row_char_w)
+                };
                 let row_layout_down = row_layout.clone();
                 let row_layout_move = row_layout.clone();
 
@@ -6436,6 +6925,131 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
                 let is_editor_focused = is_leaf_active && self.editor_is_focused;
 
+                let cursor_table = tables.at(cursor_line);
+                let is_raw = self.state.active_view().map_or(false, |v| v.raw_table);
+                let raw_btn = if let Some(tbl) = cursor_table {
+                    if v_line_idx == tbl.first_line {
+                        Some(
+                            div()
+                                .id(gpui::ElementId::Name(format!("table-raw-btn-{}", v_idx).into()))
+                                .absolute()
+                                .right(px(-36.0))
+                                .top(px(0.0))
+                                .w(px(28.0))
+                                .h(px(28.0))
+                                .rounded_md()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .font_family(editor_font.clone())
+                                .text_xs()
+                                .when(is_raw, |d| {
+                                    let mut bg = theme.accent;
+                                    bg.a = 0.2;
+                                    d.bg(bg).border_1().border_color(theme.accent).text_color(theme.accent)
+                                })
+                                .when(!is_raw, |d| {
+                                    d.bg(theme.bg_editor).border_1().border_color(theme.border_subtle).text_color(theme.text_secondary).hover(|h| h.bg(theme.bg_hover))
+                                })
+                                .child("</>")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.state.active_toggle_raw_table();
+                                    cx.notify();
+                                }))
+                        )
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let add_col_btn = if let Some(tbl) = grid_tbl {
+                    if v_line_idx == tbl.first_line {
+                        let total_w = table_layout.as_ref().unwrap().total_width;
+                        let tbl_clone = tbl.clone();
+                        Some(
+                            div()
+                                .id(gpui::ElementId::Name(format!("table-add-col-{}", v_idx).into()))
+                                .absolute()
+                                .left(px(total_w + 4.0))
+                                .top(px(2.0))
+                                .w(px(24.0))
+                                .h(px(24.0))
+                                .rounded_md()
+                                .border_1()
+                                .border_color(theme.border_subtle)
+                                .bg(theme.bg_editor)
+                                .hover(|h| h.bg(theme.bg_hover))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .text_xs()
+                                .text_color(theme.text_secondary)
+                                .child("+")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let lines: Vec<String> = this.state.active_document().map(|d| Self::table_lines_slice(d, &tbl_clone)).unwrap_or_default();
+                                    let lines_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+                                    let mut model = crate::table::TableModel::parse(&tbl_clone, &lines_refs);
+                                    model.insert_col(model.col_count());
+                                    let edit = crate::table::rewrite(&tbl_clone, &model, false, &crate::table::char_width);
+                                    this.state.active_apply_table_line_edit(&edit, None);
+                                    cx.notify();
+                                }))
+                        )
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let add_row_btn = if let Some(tbl) = grid_tbl {
+                    if v_line_idx == tbl.last_line {
+                        let tbl_clone = tbl.clone();
+                        Some(
+                            div()
+                                .id(gpui::ElementId::Name(format!("table-add-row-{}", v_idx).into()))
+                                .absolute()
+                                .left(px(0.0))
+                                .bottom(px(-28.0))
+                                .w(px(24.0))
+                                .h(px(24.0))
+                                .rounded_md()
+                                .border_1()
+                                .border_color(theme.border_subtle)
+                                .bg(theme.bg_editor)
+                                .hover(|h| h.bg(theme.bg_hover))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .text_xs()
+                                .text_color(theme.text_secondary)
+                                .child("+")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let lines: Vec<String> = this.state.active_document().map(|d| Self::table_lines_slice(d, &tbl_clone)).unwrap_or_default();
+                                    let lines_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+                                    let mut model = crate::table::TableModel::parse(&tbl_clone, &lines_refs);
+                                    model.insert_row(model.rows.len());
+                                    let edit = crate::table::rewrite(&tbl_clone, &model, false, &crate::table::char_width);
+                                    let new_r = model.rows.len() - 1;
+                                    let new_l = tbl_clone.line_of_row(new_r);
+                                    this.state.active_apply_table_line_edit(&edit, Some((new_l, 2)));
+                                    cx.notify();
+                                }))
+                        )
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let table_render_arg = grid_tbl.map(|tbl| (tbl, table_layout.as_ref().unwrap().as_ref(), if is_active_line && v_line_idx == cursor_line { Some(active_col_in_row) } else { None }, v_line_idx));
+
                 row_div = row_div
                     .child(
                         div()
@@ -6513,10 +7127,14 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         self.active_plugin_select.as_ref(),
                                         self.plugin_select_popup.as_ref(),
                                         self.plugin_input_blink.visible(),
+                                        table_render_arg,
                                         window,
                                         cx,
                                     )),
                             )
+                            .when(raw_btn.is_some(), |s| s.child(raw_btn.unwrap()))
+                            .when(add_col_btn.is_some(), |s| s.child(add_col_btn.unwrap()))
+                            .when(add_row_btn.is_some(), |s| s.child(add_row_btn.unwrap()))
                             .when(is_current && ((is_leaf_active && is_editor_focused && self.editor_blink.visible()) || !is_leaf_active), |s| {
                                 let cursor_col = row_layout.column_for_line_char(v_char_start + active_col_in_row);
                                 let cursor_x = crate::snap::snap_x(
@@ -8542,29 +9160,34 @@ fn render_syntax_spans(
 /// This follows Zed's editor: the row's painted text is shaped once and every
 /// pixel <-> column conversion goes through the real glyph positions
 /// (`LineLayout::closest_index_for_x` and `ShapedGlyph::position`).
-#[derive(Clone)]
-pub(crate) struct RowShapedLayout {
-    layout: Arc<gpui::LineLayout>,
-    text: SharedString,
-    /// `line_chars[k]` = line char painted at visual column `k`, plus one trailing
-    /// entry for the line char just past the last painted char.
-    line_chars: Vec<usize>,
-    /// Visual columns the row covers with the inline-code chip, merged and in order.
-    /// The editor paints the chip and the selection from these, so they must come from
-    /// the same painted text the renderer walks (`markdown::row_painted_text`).
-    code_ranges: Vec<(usize, usize)>,
-    /// Monospace cell width. Only used for the virtual cell past the last painted
-    /// char, where a soft-wrapped newline still occupies one cell.
-    cell_w: f32,
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub(crate) struct TableLayout {
+    pub first_line: usize,
+    pub col_widths: Vec<f32>,
+    pub col_x: Vec<f32>,
+    pub total_width: f32,
+    pub aligns: Vec<crate::table::Align>,
 }
 
-impl RowShapedLayout {
-    /// Number of painted character cells in this row.
-    pub fn columns(&self) -> usize {
-        self.line_chars.len().saturating_sub(1)
-    }
+#[allow(dead_code)]
+#[derive(Clone)]
+pub(crate) struct TableCellLayout {
+    pub col_idx: usize,
+    pub cell_x: f32,
+    pub cell_w: f32,
+    pub content_x: f32,
+    pub cell_start_col: usize,
+    pub cell_columns: usize,
+    pub content_range: std::ops::Range<usize>,
+    pub outer_range: std::ops::Range<usize>,
+    pub line_chars: Vec<usize>,
+    pub text: SharedString,
+    pub layout: Arc<gpui::LineLayout>,
+    pub code_ranges: Vec<(usize, usize)>,
+}
 
-    /// Byte offset of painted column `col` in the shaped text.
+impl TableCellLayout {
     fn byte_for_column(&self, col: usize) -> usize {
         self.text
             .char_indices()
@@ -8573,17 +9196,402 @@ impl RowShapedLayout {
             .unwrap_or(self.text.len())
     }
 
-    /// Pixel offset of painted column `col`, measured from the left edge of the row's
-    /// text. Columns past the end fall back to the monospace cell width.
+    fn glyph_x(&self, col: usize) -> f32 {
+        if col >= self.cell_columns {
+            return f32::from(self.layout.width);
+        }
+        let byte = self.byte_for_column(col);
+        let mut cluster_x = 0.0f32;
+        for run in &self.layout.runs {
+            for glyph in &run.glyphs {
+                if glyph.index == byte {
+                    return f32::from(glyph.position.x);
+                }
+                if glyph.index > byte {
+                    return cluster_x;
+                }
+                cluster_x = f32::from(glyph.position.x);
+            }
+        }
+        cluster_x
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct TableRowLayout {
+    pub is_delimiter: bool,
+    pub cells: Vec<TableCellLayout>,
+    pub total_width: f32,
+    pub total_columns: usize,
+    pub line_chars: Vec<usize>,
+    pub code_ranges: Vec<(usize, usize)>,
+}
+
+impl TableRowLayout {
+    pub fn columns(&self) -> usize {
+        self.total_columns
+    }
+
+    pub fn x_for_column(&self, col: usize, cell_w: f32) -> f32 {
+        if self.is_delimiter || self.cells.is_empty() {
+            return 0.0;
+        }
+        if col >= self.total_columns {
+            return self.total_width + (col - self.total_columns) as f32 * cell_w;
+        }
+        for cell in &self.cells {
+            if col >= cell.cell_start_col && col < cell.cell_start_col + cell.cell_columns {
+                let k = col - cell.cell_start_col;
+                return cell.content_x + cell.glyph_x(k);
+            }
+        }
+        if let Some(last) = self.cells.last() {
+            last.content_x + f32::from(last.layout.width)
+        } else {
+            0.0
+        }
+    }
+
+    pub fn column_for_x(&self, x: f32) -> usize {
+        if self.is_delimiter || self.cells.is_empty() {
+            return 0;
+        }
+        if x < 0.0 {
+            return 0;
+        }
+        if x >= self.total_width {
+            return self.total_columns;
+        }
+        for cell in &self.cells {
+            if x >= cell.cell_x && x < cell.cell_x + cell.cell_w {
+                if cell.cell_columns == 0 {
+                    return cell.cell_start_col;
+                }
+                let local_x = (x - cell.content_x).max(0.0);
+                let byte = cell.layout.closest_index_for_x(px(local_x));
+                let col_in_cell = cell.text.get(..byte).map(|s| s.chars().count()).unwrap_or(0).min(cell.cell_columns);
+                return cell.cell_start_col + col_in_cell;
+            }
+        }
+        self.total_columns
+    }
+
+    pub fn line_char_for_column(&self, col: usize) -> usize {
+        if self.line_chars.is_empty() {
+            return 0;
+        }
+        self.line_chars[col.min(self.line_chars.len().saturating_sub(1))]
+    }
+
+    pub fn column_for_line_char(&self, lc: usize) -> usize {
+        if self.is_delimiter || self.cells.is_empty() {
+            return 0;
+        }
+        for cell in &self.cells {
+            if lc <= cell.outer_range.end {
+                if lc <= cell.content_range.start {
+                    return cell.cell_start_col;
+                }
+                if lc >= cell.content_range.end {
+                    return cell.cell_start_col + cell.cell_columns;
+                }
+                let k = cell.line_chars
+                    .partition_point(|&ch| ch < lc)
+                    .min(cell.cell_columns);
+                return cell.cell_start_col + k;
+            }
+        }
+        self.total_columns
+    }
+}
+
+pub(crate) fn compute_table_layout<'a>(
+    text_system: &gpui::WindowTextSystem,
+    get_line: &dyn Fn(usize) -> Option<&'a str>,
+    block: &crate::table::TableBlock,
+    font_family: &SharedString,
+) -> TableLayout {
+    const PADDING_X: f32 = 8.0;
+    const MIN_COL_WIDTH: f32 = 60.0;
+    let n_cols = block.col_count();
+    let mut max_widths = vec![0.0f32; n_cols];
+
+    let font = gpui::Font {
+        family: font_family.clone(),
+        weight: gpui::FontWeight::NORMAL,
+        style: gpui::FontStyle::Normal,
+        features: Default::default(),
+        fallbacks: None,
+    };
+    let bold_font = gpui::Font {
+        weight: gpui::FontWeight::BOLD,
+        ..font.clone()
+    };
+    let dummy_color = gpui::rgba(0x000000ff).into();
+
+    for line_idx in block.first_line..=block.last_line {
+        if line_idx == block.sep_line() {
+            continue;
+        }
+        let Some(line_str) = get_line(line_idx) else { continue; };
+        let cells = crate::table::split_row(line_str);
+        let is_header = line_idx == block.first_line;
+
+        for (c_idx, cell) in cells.into_iter().take(n_cols).enumerate() {
+            let content = if cell.content.start >= cell.content.end {
+                ""
+            } else {
+                let mut b_start = 0;
+                let mut b_end = line_str.len();
+                for (ci, (bi, _)) in line_str.char_indices().enumerate() {
+                    if ci == cell.content.start {
+                        b_start = bi;
+                    }
+                    if ci == cell.content.end {
+                        b_end = bi;
+                        break;
+                    }
+                }
+                &line_str[b_start..b_end]
+            };
+            if content.is_empty() {
+                continue;
+            }
+            let f = if is_header { bold_font.clone() } else { font.clone() };
+            let run = gpui::TextRun {
+                len: content.len(),
+                font: f,
+                color: dummy_color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let l = text_system.layout_line(content, px(14.0), &[run], None);
+            let w = f32::from(l.width);
+            if w > max_widths[c_idx] {
+                max_widths[c_idx] = w;
+            }
+        }
+    }
+
+    let mut col_widths = Vec::with_capacity(n_cols);
+    let mut col_x = Vec::with_capacity(n_cols);
+    let mut cur_x = 0.0f32;
+
+    for w in max_widths {
+        let col_w = (w + PADDING_X * 2.0).max(MIN_COL_WIDTH);
+        col_x.push(cur_x);
+        col_widths.push(col_w);
+        cur_x += col_w;
+    }
+
+    TableLayout {
+        first_line: block.first_line,
+        col_widths,
+        col_x,
+        total_width: cur_x,
+        aligns: block.aligns.clone(),
+    }
+}
+
+pub(crate) fn shape_table_row(
+    text_system: &gpui::WindowTextSystem,
+    line: &str,
+    block: &crate::table::TableBlock,
+    line_idx: usize,
+    cursor_col: Option<usize>,
+    table_layout: &TableLayout,
+    headings: &crate::settings::HeadingsSettings,
+    font_family: &SharedString,
+    cell_w: f32,
+) -> RowShapedLayout {
+    const PADDING_X: f32 = 8.0;
+    if line_idx == block.sep_line() {
+        let dummy_text: SharedString = "".into();
+        let dummy_layout = text_system.layout_line("", px(14.0), &[], None);
+        let table_row = Arc::new(TableRowLayout {
+            is_delimiter: true,
+            cells: Vec::new(),
+            total_width: table_layout.total_width,
+            total_columns: 0,
+            line_chars: vec![0, line.chars().count()],
+            code_ranges: Vec::new(),
+        });
+        return RowShapedLayout {
+            layout: dummy_layout,
+            text: dummy_text,
+            line_chars: vec![0, line.chars().count()],
+            code_ranges: Vec::new(),
+            cell_w,
+            table_row: Some(table_row),
+        };
+    }
+
+    let raw_cells = crate::table::split_row(line);
+    let is_header = line_idx == block.first_line;
+    let n_cols = table_layout.col_widths.len();
+    let active_cell_idx = cursor_col.map(|cc| crate::table::cell_index_at(&raw_cells, cc));
+
+    let mut cells = Vec::with_capacity(n_cols);
+    let mut flat_line_chars = Vec::new();
+    let mut flat_code_ranges = Vec::new();
+    let mut cur_col_offset = 0;
+
+    for c in 0..n_cols {
+        let (content_range, outer_range) = if let Some(rc) = raw_cells.get(c) {
+            (rc.content.clone(), rc.outer.clone())
+        } else {
+            let len = line.chars().count();
+            (len..len, len..len)
+        };
+
+        let is_active_cell = active_cell_idx == Some(c);
+        let v = crate::markdown::VisualRow {
+            line_idx,
+            sub_idx: 0,
+            char_start: content_range.start,
+            char_end: content_range.end,
+            is_last_sub: true,
+        };
+        let painted = crate::markdown::row_painted_text(
+            line,
+            &crate::markdown::LineKind::Paragraph(Default::default()),
+            &v,
+            is_active_cell,
+            headings,
+        );
+
+        let cell_code_ranges = painted.code_ranges();
+        for &(cs, ce) in &cell_code_ranges {
+            flat_code_ranges.push((cur_col_offset + cs, cur_col_offset + ce));
+        }
+
+        let mut cell_text = String::new();
+        let mut runs = Vec::new();
+        let color = rgba(0x000000ff).into();
+
+        for seg in &painted.segments {
+            let weight = if seg.code {
+                inline_code_weight(if seg.bold || is_header { gpui::FontWeight::BOLD } else { gpui::FontWeight::NORMAL })
+            } else if seg.bold || is_header {
+                gpui::FontWeight::BOLD
+            } else {
+                gpui::FontWeight::NORMAL
+            };
+            cell_text.push_str(&seg.text);
+            runs.push(gpui::TextRun {
+                len: seg.text.len(),
+                font: gpui::Font {
+                    family: font_family.clone(),
+                    weight,
+                    style: if seg.italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal },
+                    features: Default::default(),
+                    fallbacks: None,
+                },
+                color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            });
+        }
+
+        let cell_text_shared: SharedString = cell_text.into();
+        let cell_layout = text_system.layout_line(cell_text_shared.as_ref(), px(14.0), &runs, None);
+        let text_w = f32::from(cell_layout.width);
+        let cell_x = table_layout.col_x[c];
+        let cell_w_val = table_layout.col_widths[c];
+        let avail_w = (cell_w_val - 2.0 * PADDING_X).max(0.0);
+        let extra_space = (avail_w - text_w).max(0.0);
+
+        let align_offset = match table_layout.aligns.get(c).copied().unwrap_or_default() {
+            crate::table::Align::None | crate::table::Align::Left => 0.0,
+            crate::table::Align::Center => extra_space / 2.0,
+            crate::table::Align::Right => extra_space,
+        };
+        let content_x = cell_x + PADDING_X + align_offset;
+        let cell_columns = painted.line_chars.len().saturating_sub(1);
+
+        for &lc in painted.line_chars.iter().take(cell_columns) {
+            flat_line_chars.push(lc);
+        }
+
+        cells.push(TableCellLayout {
+            col_idx: c,
+            cell_x,
+            cell_w: cell_w_val,
+            content_x,
+            cell_start_col: cur_col_offset,
+            cell_columns,
+            content_range,
+            outer_range,
+            line_chars: painted.line_chars,
+            text: cell_text_shared,
+            layout: cell_layout,
+            code_ranges: cell_code_ranges,
+        });
+
+        cur_col_offset += cell_columns;
+    }
+
+    let terminal_lc = cells.last().map(|c| c.content_range.end).unwrap_or_else(|| line.chars().count());
+    flat_line_chars.push(terminal_lc);
+
+    let dummy_layout = text_system.layout_line("", px(14.0), &[], None);
+    let table_row = Arc::new(TableRowLayout {
+        is_delimiter: false,
+        cells,
+        total_width: table_layout.total_width,
+        total_columns: cur_col_offset,
+        line_chars: flat_line_chars.clone(),
+        code_ranges: flat_code_ranges.clone(),
+    });
+
+    RowShapedLayout {
+        layout: dummy_layout,
+        text: "".into(),
+        line_chars: flat_line_chars,
+        code_ranges: flat_code_ranges,
+        cell_w,
+        table_row: Some(table_row),
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct RowShapedLayout {
+    layout: Arc<gpui::LineLayout>,
+    text: SharedString,
+    line_chars: Vec<usize>,
+    code_ranges: Vec<(usize, usize)>,
+    cell_w: f32,
+    table_row: Option<Arc<TableRowLayout>>,
+}
+
+impl RowShapedLayout {
+    pub fn columns(&self) -> usize {
+        if let Some(tr) = &self.table_row {
+            tr.columns()
+        } else {
+            self.line_chars.len().saturating_sub(1)
+        }
+    }
+
+    fn byte_for_column(&self, col: usize) -> usize {
+        self.text
+            .char_indices()
+            .nth(col)
+            .map(|(byte, _)| byte)
+            .unwrap_or(self.text.len())
+    }
+
     pub fn x_for_column(&self, col: usize) -> f32 {
+        if let Some(tr) = &self.table_row {
+            return tr.x_for_column(col, self.cell_w);
+        }
         let columns = self.columns();
         if col >= columns {
             return f32::from(self.layout.width) + (col - columns) as f32 * self.cell_w;
         }
         let byte = self.byte_for_column(col);
-        // Walk the glyphs rather than calling `x_for_index`, so that a column landing
-        // inside a multi-glyph cluster (a ZWJ emoji, say) still resolves to the left
-        // edge of that cluster instead of jumping to the next one.
         let mut cluster_x = 0.0f32;
         for run in &self.layout.runs {
             for glyph in &run.glyphs {
@@ -8599,8 +9607,10 @@ impl RowShapedLayout {
         cluster_x
     }
 
-    /// Painted column closest to the given pixel offset.
     pub fn column_for_x(&self, x: f32) -> usize {
+        if let Some(tr) = &self.table_row {
+            return tr.column_for_x(x);
+        }
         let columns = self.columns();
         let end_x = f32::from(self.layout.width);
         if x >= end_x {
@@ -8608,12 +9618,6 @@ impl RowShapedLayout {
         }
         let byte = self.layout.closest_index_for_x(px(x));
         let col = self.text.get(..byte).map(|s| s.chars().count()).unwrap_or(0).min(columns);
-        // `closest_index_for_x` weighs the boundaries that own a glyph, and the position
-        // past the last painted character owns none: it snaps that one to the last
-        // glyph's *left edge* while every other boundary sits in the middle of its cell.
-        // Left alone, dragging onto the last character makes the selection edge lag by
-        // half a glyph and then jump a whole advance (up to ~19px on an emoji) as the
-        // pointer crosses it — which reads as stuttering at the end of the line.
         if col == columns && columns > 0 {
             let mid = (self.x_for_column(columns - 1) + end_x) / 2.0;
             if x < mid {
@@ -8623,33 +9627,30 @@ impl RowShapedLayout {
         col
     }
 
-    /// Line char painted at column `col`.
     pub fn line_char_for_column(&self, col: usize) -> usize {
+        if let Some(tr) = &self.table_row {
+            return tr.line_char_for_column(col);
+        }
         self.line_chars[col.min(self.columns())]
     }
 
-    /// Column that paints line char `lc`: the first column at or past it.
     pub fn column_for_line_char(&self, lc: usize) -> usize {
+        if let Some(tr) = &self.table_row {
+            return tr.column_for_line_char(lc);
+        }
         self.line_chars
             .partition_point(|&line_char| line_char < lc)
             .min(self.columns())
     }
 
-    /// Visual columns covered by the inline-code chip, merged and in order.
     pub fn code_ranges(&self) -> &[(usize, usize)] {
-        &self.code_ranges
+        if let Some(tr) = &self.table_row {
+            &tr.code_ranges
+        } else {
+            &self.code_ranges
+        }
     }
 
-    /// Left edge and width of the selection rectangle covering columns
-    /// `sel_s..sel_e`, in logical px from the row's text origin.
-    ///
-    /// Both edges go through the same device-pixel snapping as the caret
-    /// (`crate::snap::snapped_span`). The rectangle carries `rounded_*_xs()` corners, so
-    /// unlike a plain quad it is painted by the signed-distance path and its edge is
-    /// antialiased: at a fractional x the partially covered pixel column shifts its
-    /// blend ratio with every sub-pixel mouse move, while the snapped caret sitting
-    /// on the same boundary stays crisp — so the painted edge and the caret disagree
-    /// by up to a device pixel and the edge appears to breathe while dragging.
     pub fn selection_rect(&self, sel_s: usize, sel_e: usize, scale_factor: f32) -> (f32, f32) {
         crate::snap::snapped_span(
             self.x_for_column(sel_s),
@@ -8659,11 +9660,6 @@ impl RowShapedLayout {
     }
 }
 
-/// Shape the text one painted visual row draws, so that pixel <-> column conversion
-/// can use real glyph positions instead of a `column * char_width` cell model.
-///
-/// `cell_w` is only used for the virtual cell past the last painted char, so callers
-/// pass the row's own monospace char width.
 pub(crate) fn shape_row(
     text_system: &gpui::WindowTextSystem,
     line: &str,
@@ -8676,20 +9672,12 @@ pub(crate) fn shape_row(
 ) -> RowShapedLayout {
     let painted = crate::markdown::row_painted_text(line, classified, v, is_active_line, headings);
     let code_ranges = painted.code_ranges();
-    // Heading rows paint at the heading size, everything else inherits `text_sm()`.
     let (_, _, font_size, _, _) = AppView::heading_typography_metrics_with_widths(classified, headings, 24.0, cell_w, None);
 
     let mut text = String::new();
     let mut runs = Vec::new();
-    // Colours never move glyphs, so one flat colour is enough for geometry. That holds
-    // only because the text system resolves a font per run: if it merged runs by colour
-    // alone, a flat colour would shape every run with the first segment's face (see the
-    // LOCAL PATCH in `vendor/gpui/src/text_system.rs::layout_line`).
     let color = rgba(0x000000ff).into();
     for segment in &painted.segments {
-        // Inline code is painted heavier than the row's body, so the shaped layout has
-        // to ask for the same face the renderer uses or the chip would be measured with
-        // the wrong advances.
         let weight = if segment.code {
             inline_code_weight(if segment.bold { gpui::FontWeight::BOLD } else { gpui::FontWeight::NORMAL })
         } else if segment.bold {
@@ -8722,6 +9710,7 @@ pub(crate) fn shape_row(
         line_chars: painted.line_chars,
         code_ranges,
         cell_w,
+        table_row: None,
     }
 }
 
@@ -8744,9 +9733,56 @@ fn render_live_styled_row(
     active_plugin_select: Option<&(String, u64, String)>,
     plugin_select_popup: Option<&Entity<crate::views::tab_list::TabListPopup>>,
     plugin_input_blink_visible: bool,
+    table_render: Option<(&crate::table::TableBlock, &TableLayout, Option<usize>, usize)>,
     window: &Window,
     cx: &Context<AppView>,
 ) -> gpui::Div {
+    if let Some((tbl, table_layout, cursor_col, line_idx)) = table_render {
+        if line_idx == tbl.sep_line() {
+            return div()
+                .w(px(table_layout.total_width))
+                .h(px(2.0))
+                .bg(theme.border_subtle);
+        }
+
+        let raw_cells = crate::table::split_row(line);
+        let is_header = line_idx == tbl.first_line;
+        let active_c = cursor_col.map(|cc| crate::table::cell_index_at(&raw_cells, cc));
+        let mut row_div = div().flex().flex_row().items_center().h_full();
+        for (c_idx, &col_w) in table_layout.col_widths.iter().enumerate() {
+            let cell_text: String = raw_cells
+                .get(c_idx)
+                .map(|c| line.chars().skip(c.content.start).take(c.content.end.saturating_sub(c.content.start)).collect())
+                .unwrap_or_default();
+            let is_active_cell = active_c == Some(c_idx);
+            let spans = crate::markdown::parse_inline_syntax_spans(&cell_text);
+            let align = table_layout.aligns.get(c_idx).copied().unwrap_or_default();
+            let font_weight = if is_header { Some(gpui::FontWeight::BOLD) } else { None };
+            let mut cell_div = div()
+                .w(px(col_w))
+                .h_full()
+                .flex()
+                .items_center()
+                .px_2()
+                .border_l_1()
+                .border_color(theme.border_subtle)
+                .when(c_idx + 1 == table_layout.col_widths.len(), |d| d.border_r_1().border_color(theme.border_subtle))
+                .when(is_header, |d| {
+                    let mut bg = theme.text_muted;
+                    bg.a = 0.08;
+                    d.bg(bg)
+                });
+            match align {
+                crate::table::Align::None | crate::table::Align::Left => { cell_div = cell_div.justify_start(); }
+                crate::table::Align::Center => { cell_div = cell_div.justify_center(); }
+                crate::table::Align::Right => { cell_div = cell_div.justify_end(); }
+            }
+            cell_div = cell_div.child(render_syntax_spans(spans, is_active_cell, theme, None, font_weight, None, font_family));
+            row_div = row_div.child(cell_div);
+        }
+        return row_div;
+    }
+
     if line.is_empty() || char_start >= char_end {
         return div().h_full().flex().items_center().child(" ");
     }

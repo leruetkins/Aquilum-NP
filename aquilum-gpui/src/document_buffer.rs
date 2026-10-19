@@ -127,6 +127,7 @@ pub struct DocumentBuffer {
     pub undo_stack: Vec<UndoStep>,
     pub redo_stack: Vec<UndoStep>,
     pub stats_cache: std::cell::Cell<Option<(u64, crate::state::TextStats)>>,
+    pub table_index: std::cell::RefCell<crate::table::TableIndex>,
 }
 
 impl DocumentBuffer {
@@ -150,7 +151,24 @@ impl DocumentBuffer {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             stats_cache: std::cell::Cell::new(None),
+            table_index: std::cell::RefCell::new(crate::table::TableIndex::new()),
         }
+    }
+
+    pub fn ensure_table_index_for_window(&self, start_line: usize, end_line: usize) -> std::cell::Ref<'_, crate::table::TableIndex> {
+        let mut idx = self.table_index.borrow_mut();
+        idx.scan_window(self.version, &self.rope, start_line, end_line);
+        drop(idx);
+        self.table_index.borrow()
+    }
+
+    pub fn ensure_table_index(&self) -> std::cell::Ref<'_, crate::table::TableIndex> {
+        let mut idx = self.table_index.borrow_mut();
+        if idx.rev != self.version || !idx.fully_scanned {
+            idx.scan_rope(self.version, &self.rope);
+        }
+        drop(idx);
+        self.table_index.borrow()
     }
 
     pub fn from_file(id: DocumentId, path: PathBuf, title: String, version: u64) -> std::io::Result<Self> {
@@ -469,6 +487,7 @@ impl DocumentBuffer {
         self.code_checkpoints = CodeCheckpoints::new();
         self.undo_stack.clear();
         self.redo_stack.clear();
+        self.table_index.borrow_mut().scan_rope(self.version, &self.rope);
         BufferEvent::Reloaded
     }
 
@@ -486,7 +505,9 @@ impl DocumentBuffer {
         assert!(start <= self.rope.byte_len(), "start offset exceeds content len");
         assert!(start + old_len <= self.rope.byte_len(), "replaced range exceeds content len");
 
+        let edit_line = self.line_of_byte(start);
         let removed = self.slice_to_string(start..start + old_len);
+        let line_diff = (new_text.matches('\n').count() as isize) - (removed.matches('\n').count() as isize);
         self.rope.replace(start..start + old_len, new_text);
 
         let edit = Edit {
@@ -497,6 +518,7 @@ impl DocumentBuffer {
 
         self.version += 1;
         self.line_index.splice_rope(&self.rope, start);
+        self.table_index.borrow_mut().apply_edit(self.version, edit_line, line_diff, &self.rope);
 
         // Record undo step
         let undo_step = UndoStep {
@@ -544,6 +566,7 @@ impl DocumentBuffer {
 
         self.version += 1;
         self.is_dirty = true;
+        self.table_index.borrow_mut().scan_rope(self.version, &self.rope);
 
         let edit = composite_edit?;
         self.redo_stack.push(step.clone());
@@ -578,6 +601,7 @@ impl DocumentBuffer {
 
         self.version += 1;
         self.is_dirty = true;
+        self.table_index.borrow_mut().scan_rope(self.version, &self.rope);
 
         let edit = composite_edit?;
         let cursor_after = step.cursor_after;
@@ -637,6 +661,7 @@ impl DocumentBuffer {
         self.version += 1;
         self.line_index.splice_rope(&self.rope, at);
         self.code_checkpoints.truncate_to(edit_line);
+        self.table_index.borrow_mut().apply_edit(self.version, edit_line, line_diff, &self.rope);
         self.is_dirty = true;
         if self.first_dirty_time.is_none() {
             self.first_dirty_time = Some(Instant::now());
@@ -748,6 +773,7 @@ impl DocumentBuffer {
         self.version += 1;
         self.is_dirty = true;
         self.stats_cache.set(None);
+        self.table_index.borrow_mut().scan_rope(self.version, &self.rope);
         self.redo_stack.push(step.clone());
 
         let edit_event = EditEvent {
@@ -801,6 +827,7 @@ impl DocumentBuffer {
         self.version += 1;
         self.is_dirty = true;
         self.stats_cache.set(None);
+        self.table_index.borrow_mut().scan_rope(self.version, &self.rope);
         self.undo_stack.push(step.clone());
 
         let edit_event = EditEvent {

@@ -862,13 +862,25 @@ pub fn wrap_line_ranges(line: &str, max_cols: usize) -> Vec<(usize, usize)> {
     ranges
 }
 
-pub fn build_visual_rows(lines: &[&str], word_wrap: bool, wrap_cols: usize) -> Vec<VisualRow> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableRowVisualKind {
+    Header,
+    Delimiter,
+    Body,
+}
+
+pub fn build_visual_rows_with_table_filter(
+    lines: &[&str],
+    word_wrap: bool,
+    wrap_cols: usize,
+    is_table_row: impl Fn(usize) -> bool,
+) -> Vec<VisualRow> {
     let mut visual_rows = Vec::new();
     for (line_idx, line) in lines.iter().enumerate() {
-        let ranges = if word_wrap && wrap_cols > 0 {
-            wrap_line_ranges(line, wrap_cols)
-        } else {
+        let ranges = if is_table_row(line_idx) || !(word_wrap && wrap_cols > 0) {
             vec![(0, line.chars().count())]
+        } else {
+            wrap_line_ranges(line, wrap_cols)
         };
         let count = ranges.len();
         for (sub_idx, (char_start, char_end)) in ranges.into_iter().enumerate() {
@@ -882,6 +894,10 @@ pub fn build_visual_rows(lines: &[&str], word_wrap: bool, wrap_cols: usize) -> V
         }
     }
     visual_rows
+}
+
+pub fn build_visual_rows(lines: &[&str], word_wrap: bool, wrap_cols: usize) -> Vec<VisualRow> {
+    build_visual_rows_with_table_filter(lines, word_wrap, wrap_cols, |_| false)
 }
 
 pub fn find_visual_row_for_cursor(
@@ -968,16 +984,26 @@ impl VisualRowHeightIndex {
         }
     }
 
-    pub fn from_rows(
+    pub fn from_rows_with_tables(
         lines: &[impl AsRef<str>],
         visual_rows: &[VisualRow],
         headings: Option<&crate::settings::HeadingsSettings>,
+        table_row_info: impl Fn(usize) -> Option<TableRowVisualKind>,
     ) -> Self {
         let mut heights = Vec::with_capacity(visual_rows.len());
         let default_headings = crate::settings::HeadingsSettings::default();
         let h_settings = headings.unwrap_or(&default_headings);
 
         for v in visual_rows {
+            if let Some(t_kind) = table_row_info(v.line_idx) {
+                let row_h = match t_kind {
+                    TableRowVisualKind::Delimiter => 2.0,
+                    TableRowVisualKind::Header | TableRowVisualKind::Body => 28.0,
+                };
+                heights.push(row_h);
+                continue;
+            }
+
             let line_str = lines.get(v.line_idx).map(|s| s.as_ref()).unwrap_or("");
             let classified = classify_line(line_str, None);
             let h_size = match classified {
@@ -1006,6 +1032,14 @@ impl VisualRowHeightIndex {
         }
 
         Self::new(heights)
+    }
+
+    pub fn from_rows(
+        lines: &[impl AsRef<str>],
+        visual_rows: &[VisualRow],
+        headings: Option<&crate::settings::HeadingsSettings>,
+    ) -> Self {
+        Self::from_rows_with_tables(lines, visual_rows, headings, |_| None)
     }
 
     pub fn len(&self) -> usize {

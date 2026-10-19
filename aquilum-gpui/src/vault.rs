@@ -84,6 +84,7 @@ pub struct VaultCore {
     pub root: PathBuf,
     /// Имя vault.
     pub name: String,
+    markdown_files_cache: std::sync::Mutex<Option<Vec<FileInfo>>>,
 }
 
 impl VaultCore {
@@ -92,7 +93,11 @@ impl VaultCore {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Workspace".to_owned());
-        Self { root: path, name }
+        Self {
+            root: path,
+            name,
+            markdown_files_cache: std::sync::Mutex::new(None),
+        }
     }
 
     /// Безопасное разрешение пути относительно корня vault.
@@ -216,6 +221,7 @@ impl VaultCore {
             let _ = std::fs::create_dir_all(parent);
         }
         std::fs::write(&abs, data).map_err(|e| VaultError::Io(e.to_string()))?;
+        self.invalidate_markdown_cache();
         Ok(abs)
     }
 
@@ -225,7 +231,9 @@ impl VaultCore {
         if !abs.exists() {
             return Err(VaultError::NotFound(rel_path.to_string()));
         }
-        std::fs::remove_file(&abs).map_err(|e| VaultError::Io(e.to_string()))
+        std::fs::remove_file(&abs).map_err(|e| VaultError::Io(e.to_string()))?;
+        self.invalidate_markdown_cache();
+        Ok(())
     }
 
     /// Безопасное удаление: файл перемещается в корзину vault (`.trash/<rel_path>`),
@@ -240,7 +248,9 @@ impl VaultCore {
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| VaultError::Io(e.to_string()))?;
         }
-        std::fs::rename(&abs, &dest).map_err(|e| VaultError::Io(e.to_string()))
+        std::fs::rename(&abs, &dest).map_err(|e| VaultError::Io(e.to_string()))?;
+        self.invalidate_markdown_cache();
+        Ok(())
     }
 
     /// Переименование / перемещение файла внутри vault.
@@ -257,13 +267,29 @@ impl VaultCore {
             let _ = std::fs::create_dir_all(parent);
         }
         std::fs::rename(&old_abs, &new_abs).map_err(|e| VaultError::Io(e.to_string()))?;
+        self.invalidate_markdown_cache();
         Ok(new_abs)
     }
 
-    /// Рекурсивный список всех markdown-файлов для Snapshot.
+    /// Сбрасывает кэш списка markdown-файлов.
+    pub fn invalidate_markdown_cache(&self) {
+        if let Ok(mut cache) = self.markdown_files_cache.lock() {
+            *cache = None;
+        }
+    }
+
+    /// Рекурсивный список всех markdown-файлов для Snapshot с кэшированием.
     pub fn list_markdown_files(&self) -> Vec<FileInfo> {
+        if let Ok(cache) = self.markdown_files_cache.lock() {
+            if let Some(ref files) = *cache {
+                return files.clone();
+            }
+        }
         let mut result = Vec::new();
         self.walk_dir(&self.root, &mut result);
+        if let Ok(mut cache) = self.markdown_files_cache.lock() {
+            *cache = Some(result.clone());
+        }
         result
     }
 
@@ -273,7 +299,14 @@ impl VaultCore {
             let path = entry.path();
             if path.is_dir() {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
-                if !name.starts_with('.') {
+                // Skip hidden folders and common massive build/dependency directories
+                if !name.starts_with('.')
+                    && name != "target"
+                    && name != "node_modules"
+                    && name != "dist"
+                    && name != "build"
+                    && name != "vendor"
+                {
                     self.walk_dir(&path, out);
                 }
             } else if path.extension().and_then(|e| e.to_str()) == Some("md") {

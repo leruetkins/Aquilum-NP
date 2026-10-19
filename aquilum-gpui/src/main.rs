@@ -23,6 +23,7 @@ pub mod settings;
 pub mod snap;
 pub mod state;
 pub mod document_buffer;
+pub mod table;
 pub mod theme;
 pub mod vault;
 pub mod views;

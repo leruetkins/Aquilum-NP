@@ -428,8 +428,8 @@ impl EditorWindow {
         }
     }
 
-    /// Build a window directly from a bounded window slice string, avoiding any O(document) allocation.
-    pub fn build_from_slice(
+    /// Build a window directly from a bounded window slice string with table filtering, avoiding any O(document) allocation.
+    pub fn build_from_slice_with_tables(
         slice: &str,
         start_line: usize,
         end_line: usize,
@@ -439,6 +439,7 @@ impl EditorWindow {
         wrap_cols: usize,
         headings: Option<&crate::settings::HeadingsSettings>,
         initial: crate::markdown::CodeScanState,
+        table_row_info: impl Fn(usize) -> Option<crate::markdown::TableRowVisualKind>,
     ) -> Self {
         let lines_total = end_line.max(start_line);
         if lines_total == 0 || start_line >= end_line {
@@ -450,11 +451,21 @@ impl EditorWindow {
             .map(String::from)
             .collect();
         let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
-        let mut visual_rows = markdown::build_visual_rows(&line_refs, word_wrap, wrap_cols);
+        let mut visual_rows = markdown::build_visual_rows_with_table_filter(
+            &line_refs,
+            word_wrap,
+            wrap_cols,
+            |idx| table_row_info(start_line + idx).is_some(),
+        );
         let mut scanner = markdown::CodeScanner::from_state(initial);
         let code_states: Vec<Option<CodeBlockState>> =
             line_refs.iter().map(|line| scanner.step(line)).collect();
-        let height_index = VisualRowHeightIndex::from_rows(&lines, &visual_rows, headings);
+        let height_index = VisualRowHeightIndex::from_rows_with_tables(
+            &lines,
+            &visual_rows,
+            headings,
+            |idx| table_row_info(start_line + idx),
+        );
         for row in &mut visual_rows {
             row.line_idx += start_line;
         }
@@ -471,6 +482,32 @@ impl EditorWindow {
             word_wrap,
             wrap_cols,
         }
+    }
+
+    /// Build a window directly from a bounded window slice string, avoiding any O(document) allocation.
+    pub fn build_from_slice(
+        slice: &str,
+        start_line: usize,
+        end_line: usize,
+        start_byte: usize,
+        end_byte: usize,
+        word_wrap: bool,
+        wrap_cols: usize,
+        headings: Option<&crate::settings::HeadingsSettings>,
+        initial: crate::markdown::CodeScanState,
+    ) -> Self {
+        Self::build_from_slice_with_tables(
+            slice,
+            start_line,
+            end_line,
+            start_byte,
+            end_byte,
+            word_wrap,
+            wrap_cols,
+            headings,
+            initial,
+            |_| None,
+        )
     }
 
     /// Incremental update of a single line inside the window (e.g. typing a character without newline).

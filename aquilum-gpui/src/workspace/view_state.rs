@@ -194,6 +194,8 @@ pub struct ViewCache {
     pub est_rows_per_line: f64,
     pub est_row_h: f64,
     pub visual_cache_dirty: bool,
+    pub raw_table: bool,
+    pub cursor_line: usize,
 }
 
 impl Default for ViewCache {
@@ -207,6 +209,8 @@ impl Default for ViewCache {
             est_rows_per_line: 1.0,
             est_row_h: 24.0,
             visual_cache_dirty: true,
+            raw_table: false,
+            cursor_line: 0,
         }
     }
 }
@@ -279,6 +283,20 @@ impl TabSession {
 
     pub fn cancel_title_edit(&mut self) {
         self.title_input = None;
+    }
+
+    pub fn grid_table_at<'a>(
+        &self,
+        tables: &'a crate::table::TableIndex,
+        line: usize,
+        cursor_line: usize,
+    ) -> Option<&'a crate::table::TableBlock> {
+        let t = tables.at(line)?;
+        if self.raw_table && t.contains(cursor_line) {
+            None
+        } else {
+            Some(t)
+        }
     }
 
     pub fn selection_range(&self, doc_len: usize) -> Option<std::ops::Range<usize>> {
@@ -402,6 +420,22 @@ impl TabSession {
 
     pub fn insert_text(&mut self, doc: &mut DocumentBuffer, text: &str) -> (BufferEvent, NoteEditEvent, EditEvent) {
         self.replace_selection(doc, text)
+    }
+
+    pub fn replace_range(
+        &mut self,
+        doc: &mut DocumentBuffer,
+        byte_range: std::ops::Range<usize>,
+        new_text: String,
+        new_cursor: usize,
+    ) -> (BufferEvent, NoteEditEvent, EditEvent) {
+        let cursor_before = self.cursor_offset;
+        let removed = doc.slice_to_string(byte_range.clone());
+        let at = byte_range.start;
+        self.cursor_offset = new_cursor;
+        self.selection_anchor = None;
+        self.visual_cache_dirty = true;
+        doc.record_change(at, removed, new_text, cursor_before, new_cursor, Some(self.tab_id))
     }
 
     pub fn delete_backwards(&mut self, doc: &mut DocumentBuffer) -> Option<(BufferEvent, NoteEditEvent, EditEvent)> {
@@ -598,7 +632,20 @@ impl TabSession {
         let end_byte = doc.line_end_byte(end.saturating_sub(1)).max(start_byte);
         let slice = doc.slice_to_string(start_byte..end_byte);
 
-        let window = crate::editor_window::EditorWindow::build_from_slice(
+        let tables = doc.ensure_table_index_for_window(start, end);
+        let cursor_line = self.cursor_line;
+        if self.raw_table {
+            if let Some(tbl) = tables.at(cursor_line) {
+                if !tbl.contains(cursor_line) {
+                    self.raw_table = false;
+                }
+            } else {
+                self.raw_table = false;
+            }
+        }
+        let raw_table = self.raw_table;
+
+        let window = crate::editor_window::EditorWindow::build_from_slice_with_tables(
             &slice,
             start,
             end,
@@ -608,6 +655,21 @@ impl TabSession {
             wrap_cols,
             headings,
             initial,
+            |line| {
+                if let Some(t) = tables.at(line) {
+                    if raw_table && t.contains(cursor_line) {
+                        None
+                    } else if line == t.sep_line() {
+                        Some(crate::markdown::TableRowVisualKind::Delimiter)
+                    } else if line == t.first_line {
+                        Some(crate::markdown::TableRowVisualKind::Header)
+                    } else {
+                        Some(crate::markdown::TableRowVisualKind::Body)
+                    }
+                } else {
+                    None
+                }
+            },
         );
 
         self.above_lines = window.start_line;
@@ -1232,5 +1294,43 @@ mod tests {
         assert_eq!(view1.viewport.offset, 100, "Split 1 anchor line must remain line 100");
         assert_eq!(view2.scroll_top, initial_scroll_2, "Split 2 scroll_top must have zero drift after repeated switches");
         assert_eq!(view2.viewport.offset, 50, "Split 2 anchor line must remain line 50");
+    }
+
+    #[test]
+    fn test_grid_table_at_and_raw_table_reset() {
+        let text = "Intro\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nOutro";
+        let mut doc = DocumentBuffer::new(
+            DocumentId::new(),
+            std::path::PathBuf::from("test.md"),
+            "test".to_string(),
+            text.to_string(),
+            1,
+        );
+        let tab_id = TabId::new();
+        let mut view = TabSession::new(tab_id, doc.id);
+
+        let tables = doc.ensure_table_index();
+        assert_eq!(tables.blocks.len(), 1);
+        let tbl = &tables.blocks[0];
+        assert_eq!(tbl.first_line, 2);
+        assert_eq!(tbl.last_line, 4);
+
+        // When raw_table is false, grid_table_at returns Some
+        assert!(view.grid_table_at(&tables, 2, 2).is_some());
+        assert!(view.grid_table_at(&tables, 4, 2).is_some());
+
+        // When raw_table is true and cursor is in table, grid_table_at returns None
+        view.raw_table = true;
+        assert!(view.grid_table_at(&tables, 2, 2).is_none());
+        assert!(view.grid_table_at(&tables, 4, 3).is_none());
+
+        // When cursor is outside table, grid_table_at returns Some even if raw_table is true
+        assert!(view.grid_table_at(&tables, 2, 0).is_some());
+
+        // Rebuilding visual cache when cursor moved outside table auto-resets raw_table
+        drop(tables);
+        view.cursor_offset = 0; // line 0 is outside table
+        view.rebuild_visual_cache_with_headings(&mut doc, false, 80, None, 0);
+        assert_eq!(view.raw_table, false, "raw_table must reset when cursor leaves table");
     }
 }

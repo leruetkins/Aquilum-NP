@@ -744,6 +744,90 @@ impl AppState {
         self.dispatch_edit_event(&edit_event, &note_edit);
     }
 
+    pub fn active_replace_range(
+        &mut self,
+        byte_range: std::ops::Range<usize>,
+        new_text: String,
+        new_cursor: usize,
+    ) {
+        let Some(tab_id) = self.active_tab_id() else { return; };
+        let Some(doc_id) = self.active_doc_id() else { return; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return; };
+        let (_, note_edit, edit_event) = view.replace_range(doc, byte_range, new_text, new_cursor);
+        self.dispatch_edit_event(&edit_event, &note_edit);
+    }
+
+    pub fn active_toggle_raw_table(&mut self) -> bool {
+        let Some(tab_id) = self.active_tab_id() else { return false; };
+        let Some(doc_id) = self.active_doc_id() else { return false; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return false; };
+
+        let (cursor_line, _) = view.line_col(doc);
+        let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
+        if let Some(_t) = tables.at(cursor_line) {
+            view.raw_table = !view.raw_table;
+            view.cursor_line = cursor_line;
+            view.visual_cache_dirty = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn active_apply_table_line_edit(
+        &mut self,
+        edit: &crate::table::LineEdit,
+        new_cursor_line_col: Option<(usize, usize)>,
+    ) {
+        let Some(tab_id) = self.active_tab_id() else { return; };
+        let Some(doc_id) = self.active_doc_id() else { return; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return; };
+
+        let total_lines = doc.line_index.lines();
+        let start_byte = doc.line_start_byte(edit.first_line);
+        let end_byte = doc.line_start_byte(edit.first_line + edit.old_line_count);
+        let mut new_text = edit.new_lines.join("\n");
+        if edit.first_line + edit.old_line_count < total_lines {
+            new_text.push('\n');
+        }
+        let target_cursor = if let Some((target_line, target_col)) = new_cursor_line_col {
+            if target_line >= edit.first_line && target_line < edit.first_line + edit.new_lines.len() {
+                let rel_line = target_line - edit.first_line;
+                let mut offset_in_new = 0;
+                for i in 0..rel_line {
+                    offset_in_new += edit.new_lines[i].len() + 1;
+                }
+                let byte_col: usize = edit.new_lines[rel_line]
+                    .chars()
+                    .take(target_col)
+                    .map(|c| c.len_utf8())
+                    .sum();
+                start_byte + offset_in_new + byte_col
+            } else {
+                start_byte
+            }
+        } else {
+            start_byte
+        };
+
+        let (_, note_edit, edit_event) = view.replace_range(doc, start_byte..end_byte, new_text, target_cursor);
+        self.dispatch_edit_event(&edit_event, &note_edit);
+    }
+
+    pub fn active_cursor_line_col(&self) -> Option<(usize, usize)> {
+        let (view, doc) = self.active_view_and_doc()?;
+        Some(view.line_col(doc))
+    }
+
+    pub fn active_set_cursor_line_col(&mut self, line: usize, col: usize) {
+        let Some(tab_id) = self.active_tab_id() else { return; };
+        let Some(doc_id) = self.active_doc_id() else { return; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return; };
+        let offset = view.offset_for_line_col(doc, line, col);
+        view.cursor_offset = offset;
+        view.selection_anchor = None;
+    }
+
     pub fn active_delete_backwards(&mut self) {
         let Some(tab_id) = self.active_tab_id() else { return; };
         let Some(doc_id) = self.active_doc_id() else { return; };

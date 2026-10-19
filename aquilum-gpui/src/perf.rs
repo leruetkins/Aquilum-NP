@@ -587,4 +587,38 @@ mod tests {
         }
         println!("===================================================================\n");
     }
+
+    #[test]
+    fn benchmark_open_note_with_many_tables() {
+        println!("\n=== ОТКРЫТИЕ ЗАМЕТКИ С МНОЖЕСТВОМ ТАБЛИЦ: ЗАМЕРЫ ВРЕМЕНИ ===");
+        let mut text = String::new();
+        // Generate a document with 2,000 tables (each table is 5 lines = 10,000 lines + paragraphs = ~20,000 lines)
+        for i in 0..2000 {
+            text.push_str(&format!("# Section {}\n\nParagraph text before table {}.\n\n", i, i));
+            text.push_str("| Col A | Col B | Col C | Col D |\n| :--- | :---: | ---: | :--- |\n| Val 1 | Val 2 | Val 3 | Val 4 |\n| Row 2 | Data 2 | More | Extra |\n\n");
+        }
+
+        let doc_mb = text.len() as f64 / (1024.0 * 1024.0);
+        let t_open = Instant::now();
+        let doc_id = crate::document_buffer::DocumentId::new();
+        let tab_id = crate::workspace::TabId::new();
+        let mut doc = crate::document_buffer::DocumentBuffer::new(
+            doc_id,
+            std::path::PathBuf::from("bench_many_tables.md"),
+            "bench_many_tables".to_string(),
+            text,
+            1,
+        );
+        let mut view = crate::workspace::EditorViewState::new(tab_id, doc_id);
+        let open_dur = t_open.elapsed();
+
+        let t_cache = Instant::now();
+        view.ensure_visual_cache(&mut doc, true, 80, 0);
+        let cache_dur = t_cache.elapsed();
+
+        println!("Lines: {}, MB: {:.2}", doc.line_index.lines(), doc_mb);
+        println!("Buffer open time: {:?}", open_dur);
+        println!("Windowed visual cache & table build time: {:?}", cache_dur);
+        println!("Total time to first frame: {:?}", open_dur + cache_dur);
+    }
 }
