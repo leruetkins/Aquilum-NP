@@ -7277,12 +7277,13 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                         let is_raw = self.state.active_view().map_or(false, |v| v.raw_tables.contains(&tbl.first_line) && tbl.contains(cursor_line));
                         let (btn_w, btn_h) = (20.0, 18.0);
                         let (btn_left, btn_top) = if is_raw {
-                            (row_layout.width() + 10.0, ((row_h - btn_h) / 2.0).max(0.0))
+                            (row_layout.width() + 18.0, ((row_h - btn_h) / 2.0).max(0.0))
                         } else {
                             let total_w = table_layout.as_ref().map(|l| l.total_width).unwrap_or(0.0);
-                            (total_w + 12.0, 14.0 + (28.0 - btn_h) / 2.0)
+                            (total_w + 24.0, 14.0 + (28.0 - btn_h) / 2.0)
                         };
                         let tbl_first_line = tbl.first_line;
+                        let icon_color = if is_raw { theme.accent } else { theme.text_secondary };
                         Some(
                             div()
                                 .id(gpui::ElementId::Name(format!("table-raw-btn-{}", v_idx).into()))
@@ -7296,18 +7297,15 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                 .items_center()
                                 .justify_center()
                                 .cursor_pointer()
-                                .font_family(editor_font.clone())
-                                .text_size(px(9.5))
-                                .line_height(px(btn_h))
                                 .when(is_raw, |d| {
                                     let mut bg = theme.accent;
                                     bg.a = 0.2;
-                                    d.bg(bg).border_1().border_color(theme.accent).text_color(theme.accent)
+                                    d.bg(bg).border_1().border_color(theme.accent)
                                 })
                                 .when(!is_raw, |d| {
-                                    d.bg(theme.bg_editor).border_1().border_color(theme.border_subtle).text_color(theme.text_secondary).hover(|h| h.bg(theme.bg_hover))
+                                    d.bg(theme.bg_editor).border_1().border_color(theme.border_subtle).hover(|h| h.bg(theme.bg_hover))
                                 })
-                                .child("</>")
+                                .child(icons::icon(icons::ICON_CODE, 11.0, icon_color))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.state.active_toggle_raw_table_at(tbl_first_line);
                                     cx.notify();
