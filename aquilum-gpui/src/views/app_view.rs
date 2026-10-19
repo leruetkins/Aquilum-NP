@@ -7123,7 +7123,12 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     None
                 };
 
-                let add_col_btn = if cursor_in_table {
+                let is_cursor_in_this_table = match (cursor_table, grid_tbl) {
+                    (Some(ct), Some(gt)) => ct.first_line == gt.first_line,
+                    _ => false,
+                };
+
+                let add_col_btn = if is_cursor_in_this_table {
                     if let Some(tbl) = grid_tbl {
                         if v_line_idx == tbl.first_line {
                             let total_w = table_layout.as_ref().unwrap().total_width;
@@ -7172,7 +7177,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     None
                 };
 
-                let add_row_btn = if cursor_in_table {
+                let add_row_btn = if is_cursor_in_this_table {
                     if let Some(tbl) = grid_tbl {
                         if v_line_idx == tbl.last_line {
                             let tbl_clone = tbl.clone();
@@ -10026,7 +10031,12 @@ fn render_live_styled_row(
             let is_first_col = c_idx == 0;
             let is_last_col = c_idx + 1 == table_layout.col_widths.len();
 
+            let tbl_block = tbl.clone();
+            let row_idx = if is_header { 0 } else { tbl.row_of_line(line_idx).unwrap_or(0) };
+            let cell_start_col = raw_cells.get(c_idx).map(|c| c.content.start).unwrap_or(0);
+
             let mut cell_div = div()
+                .id(gpui::ElementId::Name(format!("tbl-cell-{}-{}-{}", tbl.first_line, line_idx, c_idx).into()))
                 .relative()
                 .w(px(col_w))
                 .h_full()
@@ -10046,7 +10056,15 @@ fn render_live_styled_row(
                     let mut bg = theme.text_muted;
                     bg.a = 0.08;
                     d.bg(bg)
-                });
+                })
+                .on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    window.focus(&this.focus_handle);
+                    this.state.active_set_cursor_line_col(line_idx, cell_start_col);
+                    let click_x: f32 = event.position.x.into();
+                    let click_y: f32 = event.position.y.into();
+                    this.open_table_context_menu(tbl_block.clone(), row_idx, c_idx, click_x, click_y, cx);
+                }));
             match align {
                 crate::table::Align::None | crate::table::Align::Left => { cell_div = cell_div.justify_start(); }
                 crate::table::Align::Center => { cell_div = cell_div.justify_center(); }
@@ -11506,4 +11524,33 @@ mod tests {
             });
         });
     }
+
+    #[test]
+    fn test_table_plus_buttons_only_on_active_table() {
+        let table_a = crate::table::TableBlock {
+            first_line: 0,
+            last_line: 2,
+            aligns: vec![crate::table::Align::Left, crate::table::Align::Left],
+        };
+        let table_b = crate::table::TableBlock {
+            first_line: 10,
+            last_line: 12,
+            aligns: vec![crate::table::Align::Left, crate::table::Align::Left],
+        };
+
+        let cursor_table = Some(&table_a);
+
+        let is_cursor_in_a = match (cursor_table, Some(&table_a)) {
+            (Some(ct), Some(gt)) => ct.first_line == gt.first_line,
+            _ => false,
+        };
+        assert!(is_cursor_in_a, "Table A must show plus buttons when cursor is in Table A");
+
+        let is_cursor_in_b = match (cursor_table, Some(&table_b)) {
+            (Some(ct), Some(gt)) => ct.first_line == gt.first_line,
+            _ => false,
+        };
+        assert!(!is_cursor_in_b, "Table B must NOT show plus buttons when cursor is in Table A");
+    }
 }
+

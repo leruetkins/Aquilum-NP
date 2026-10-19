@@ -42,6 +42,7 @@ pub struct ContextMenuState {
     pub items: Vec<ContextMenuItem>,
     /// Hovered path of item indices indicating active submenus at each depth
     pub active_path: Vec<usize>,
+    pub table_target: Option<(crate::table::TableBlock, usize, usize)>,
 }
 
 fn separator(id: &str) -> ContextMenuItem {
@@ -98,6 +99,26 @@ impl AppView {
         self.tab_context_menu.is_open = false;
         self.ribbon_context_menu.is_open = false;
         self.close_tabs_popup(cx);
+
+        // If cursor is within a markdown table, open the specialized table context menu
+        let cursor_table = self.state.active_view().and_then(|view| {
+            self.state.active_document().and_then(|doc| {
+                let (line, col) = view.line_col(doc);
+                let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
+                view.grid_table_at(&tables, line, line).map(|tbl| {
+                    let row = tbl.row_of_line(line).unwrap_or(0);
+                    let line_str = doc.line_text(line);
+                    let cells = crate::table::split_row(&line_str);
+                    let c_idx = crate::table::cell_index_at(&cells, col);
+                    (tbl.clone(), row, c_idx)
+                })
+            })
+        });
+
+        if let Some((tbl, row, col)) = cursor_table {
+            self.open_table_context_menu(tbl, row, col, x, y, cx);
+            return;
+        }
 
         let session_id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -297,6 +318,116 @@ impl AppView {
             position_y: y,
             items,
             active_path: Vec::new(),
+            table_target: None,
+        };
+
+        cx.notify();
+    }
+
+    /// Opens the specialized context menu for Markdown tables at `(x, y)`.
+    pub fn open_table_context_menu(
+        &mut self,
+        tbl: crate::table::TableBlock,
+        row: usize,
+        col: usize,
+        x: f32,
+        y: f32,
+        cx: &mut Context<Self>,
+    ) {
+        self.file_context_menu.is_open = false;
+        self.folder_context_menu.is_open = false;
+        self.tab_context_menu.is_open = false;
+        self.ribbon_context_menu.is_open = false;
+        self.close_tabs_popup(cx);
+
+        let session_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let is_ru = self.config.ui.language.starts_with("ru");
+        let mut items = Vec::new();
+
+        // 1. Copy table
+        items.push(item(
+            "table-copy",
+            if is_ru { "Копировать таблицу".to_string() } else { "Copy table".to_string() },
+            "copy",
+            false,
+        ));
+
+        // 2. Merge cells (disabled in GFM)
+        items.push(item(
+            "table-merge-cells",
+            if is_ru { "Объединить ячейки".to_string() } else { "Merge cells".to_string() },
+            "table-merge-cells",
+            true,
+        ));
+
+        // 3. Split cells (disabled in GFM)
+        items.push(item(
+            "table-split-cells",
+            if is_ru { "Разъединить ячейки".to_string() } else { "Split cells".to_string() },
+            "table-split-cells",
+            true,
+        ));
+
+        // 4. Align left
+        items.push(item(
+            "table-align-left",
+            if is_ru { "Выровнять влево".to_string() } else { "Align left".to_string() },
+            "align-left",
+            false,
+        ));
+
+        // 5. Align center
+        items.push(item(
+            "table-align-center",
+            if is_ru { "По центру".to_string() } else { "Center".to_string() },
+            "align-center",
+            false,
+        ));
+
+        // 6. Align right
+        items.push(item(
+            "table-align-right",
+            if is_ru { "Выровнять вправо".to_string() } else { "Align right".to_string() },
+            "align-right",
+            false,
+        ));
+
+        // 7. Delete row (disabled for header row 0)
+        items.push(item(
+            "table-delete-row",
+            if is_ru { "Удалить строку".to_string() } else { "Delete row".to_string() },
+            "table-delete-row",
+            row == 0,
+        ));
+
+        // 8. Delete column (disabled if only 1 column remains)
+        items.push(item(
+            "table-delete-col",
+            if is_ru { "Удалить столбец".to_string() } else { "Delete column".to_string() },
+            "table-delete-col",
+            tbl.col_count() <= 1,
+        ));
+
+        // 9. Delete table
+        items.push(item(
+            "table-delete-table",
+            if is_ru { "Удалить таблицу".to_string() } else { "Delete table".to_string() },
+            "trash",
+            false,
+        ));
+
+        self.editor_context_menu = ContextMenuState {
+            is_open: true,
+            session_id,
+            position_x: x,
+            position_y: y,
+            items,
+            active_path: Vec::new(),
+            table_target: Some((tbl, row, col)),
         };
 
         cx.notify();
@@ -345,6 +476,7 @@ impl AppView {
             self.editor_context_menu.is_open = false;
             self.editor_context_menu.items.clear();
             self.editor_context_menu.active_path.clear();
+            self.editor_context_menu.table_target = None;
             cx.notify();
         }
     }
@@ -378,6 +510,7 @@ impl AppView {
     pub fn handle_context_menu_action(&mut self, item: &ContextMenuItem, _window: &mut Window, cx: &mut Context<Self>) {
         let action_id = item.id.clone();
         let owner = item.owner_plugin.clone();
+        let table_target = self.editor_context_menu.table_target.clone();
 
         self.close_editor_context_menu(cx);
 
@@ -539,6 +672,89 @@ impl AppView {
                     cx.notify();
                 }
             }
+            "table-copy" => {
+                if let Some((tbl, _, _)) = table_target {
+                    let lines: Vec<String> = self.state.active_document().map(|d| Self::table_lines_slice(d, &tbl)).unwrap_or_default();
+                    let table_markdown = lines.join("\n");
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(table_markdown));
+                }
+            }
+            "table-merge-cells" | "table-split-cells" => {}
+            "table-align-left" | "table-align-center" | "table-align-right" => {
+                if let Some((tbl, _, col)) = table_target {
+                    let target_align = match action_id.as_str() {
+                        "table-align-left" => crate::table::Align::Left,
+                        "table-align-center" => crate::table::Align::Center,
+                        "table-align-right" => crate::table::Align::Right,
+                        _ => unreachable!(),
+                    };
+                    let lines: Vec<String> = self.state.active_document().map(|d| Self::table_lines_slice(d, &tbl)).unwrap_or_default();
+                    let lines_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+                    let mut model = crate::table::TableModel::parse(&tbl, &lines_refs);
+                    if model.set_align(col, target_align) {
+                        let edit = crate::table::rewrite(&tbl, &model, false, &crate::table::char_width);
+                        self.table_layouts.borrow_mut().remove(&tbl.first_line);
+                        self.state.active_apply_table_line_edit(&edit, None);
+                        cx.notify();
+                    }
+                }
+            }
+            "table-delete-row" => {
+                if let Some((tbl, row, _col)) = table_target {
+                    if row == 0 {
+                        return;
+                    }
+                    let lines: Vec<String> = self.state.active_document().map(|d| Self::table_lines_slice(d, &tbl)).unwrap_or_default();
+                    let lines_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+                    let mut model = crate::table::TableModel::parse(&tbl, &lines_refs);
+                    if model.delete_row(row) {
+                        let edit = crate::table::rewrite(&tbl, &model, false, &crate::table::char_width);
+                        self.table_layouts.borrow_mut().remove(&tbl.first_line);
+                        let target_line = if row > 1 {
+                            tbl.line_of_row(row - 1)
+                        } else {
+                            tbl.first_line
+                        };
+                        self.state.active_apply_table_line_edit(&edit, Some((target_line, 2)));
+                        cx.notify();
+                    }
+                }
+            }
+            "table-delete-col" => {
+                if let Some((tbl, row, col)) = table_target {
+                    if tbl.col_count() <= 1 {
+                        return;
+                    }
+                    let lines: Vec<String> = self.state.active_document().map(|d| Self::table_lines_slice(d, &tbl)).unwrap_or_default();
+                    let lines_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+                    let mut model = crate::table::TableModel::parse(&tbl, &lines_refs);
+                    if model.delete_col(col) {
+                        let edit = crate::table::rewrite(&tbl, &model, false, &crate::table::char_width);
+                        if let Some(widths) = self.manual_table_col_widths.get_mut(&tbl.first_line) {
+                            if col < widths.len() {
+                                widths.remove(col);
+                            }
+                        }
+                        self.table_layouts.borrow_mut().remove(&tbl.first_line);
+                        let cur_line = tbl.line_of_row(row);
+                        self.state.active_apply_table_line_edit(&edit, Some((cur_line, 2)));
+                        cx.notify();
+                    }
+                }
+            }
+            "table-delete-table" => {
+                if let Some((tbl, _, _)) = table_target {
+                    self.manual_table_col_widths.remove(&tbl.first_line);
+                    self.table_layouts.borrow_mut().remove(&tbl.first_line);
+                    let edit = crate::table::LineEdit {
+                        first_line: tbl.first_line,
+                        old_line_count: tbl.last_line - tbl.first_line + 1,
+                        new_lines: Vec::new(),
+                    };
+                    self.state.active_apply_table_line_edit(&edit, Some((tbl.first_line, 0)));
+                    cx.notify();
+                }
+            }
             _ => {
                 // If it belongs to a plugin, dispatch action callback
                 if let Some(pid) = owner {
@@ -628,7 +844,9 @@ impl AppView {
 
         // Calculate dynamic width based on the longest item title
         let max_chars = items.iter().map(|it| it.title.chars().count()).max().unwrap_or(20);
-        let menu_w: f32 = (max_chars as f32 * 8.2 + 76.0).max(280.0).min(420.0);
+        let has_sub = items.iter().any(|it| it.submenu.as_ref().map(|s| !s.is_empty()).unwrap_or(false));
+        let min_w = if has_sub { 280.0 } else { 190.0 };
+        let menu_w: f32 = (max_chars as f32 * 8.2 + 54.0).max(min_w).min(420.0);
         let panel_h = Self::calculate_menu_items_height(items);
 
         let clamped_x = panel_x.min(vp_w - menu_w - 12.0).max(8.0);
@@ -870,3 +1088,92 @@ impl AppView {
         root_container
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::table::{Align, TableBlock};
+
+    #[test]
+    fn test_table_context_menu_items_and_states() {
+        let block_multi_col = TableBlock {
+            first_line: 0,
+            last_line: 2,
+            aligns: vec![Align::Left, Align::Center, Align::Right],
+        };
+
+        let block_single_col = TableBlock {
+            first_line: 0,
+            last_line: 2,
+            aligns: vec![Align::None],
+        };
+
+        // Header row (row = 0) with multiple columns
+        let mut app_state = ContextMenuState::default();
+        let is_ru = true;
+        let mut items = Vec::new();
+        let row = 0;
+        let _col = 1;
+        let tbl = block_multi_col.clone();
+
+        items.push(item("table-copy", if is_ru { "Копировать таблицу".to_string() } else { "Copy table".to_string() }, "copy", false));
+        items.push(item("table-merge-cells", if is_ru { "Объединить ячейки".to_string() } else { "Merge cells".to_string() }, "table-merge-cells", true));
+        items.push(item("table-split-cells", if is_ru { "Разъединить ячейки".to_string() } else { "Split cells".to_string() }, "table-split-cells", true));
+        items.push(item("table-align-left", if is_ru { "Выровнять влево".to_string() } else { "Align left".to_string() }, "align-left", false));
+        items.push(item("table-align-center", if is_ru { "По центру".to_string() } else { "Center".to_string() }, "align-center", false));
+        items.push(item("table-align-right", if is_ru { "Выровнять вправо".to_string() } else { "Align right".to_string() }, "align-right", false));
+        items.push(item("table-delete-row", if is_ru { "Удалить строку".to_string() } else { "Delete row".to_string() }, "table-delete-row", row == 0));
+        items.push(item("table-delete-col", if is_ru { "Удалить столбец".to_string() } else { "Delete column".to_string() }, "table-delete-col", tbl.col_count() <= 1));
+        items.push(item("table-delete-table", if is_ru { "Удалить таблицу".to_string() } else { "Delete table".to_string() }, "trash", false));
+
+        app_state.items = items;
+        assert_eq!(app_state.items.len(), 9);
+
+        // Copy is enabled
+        assert!(!app_state.items[0].disabled);
+        assert_eq!(app_state.items[0].id, "table-copy");
+
+        // Merge & Split are disabled
+        assert!(app_state.items[1].disabled);
+        assert_eq!(app_state.items[1].id, "table-merge-cells");
+        assert!(app_state.items[2].disabled);
+        assert_eq!(app_state.items[2].id, "table-split-cells");
+
+        // Alignments are enabled
+        assert!(!app_state.items[3].disabled);
+        assert!(!app_state.items[4].disabled);
+        assert!(!app_state.items[5].disabled);
+
+        // Row 0 delete is disabled for header
+        assert!(app_state.items[6].disabled);
+        assert_eq!(app_state.items[6].id, "table-delete-row");
+
+        // Column delete is enabled since 3 columns exist
+        assert!(!app_state.items[7].disabled);
+        assert_eq!(app_state.items[7].id, "table-delete-col");
+
+        // Delete table is enabled
+        assert!(!app_state.items[8].disabled);
+        assert_eq!(app_state.items[8].id, "table-delete-table");
+
+        // Test body row (row = 1) and single column table
+        let body_row = 1;
+        let delete_row_body = item("table-delete-row", "Удалить строку".to_string(), "table-delete-row", body_row == 0);
+        assert!(!delete_row_body.disabled);
+
+        let delete_col_single = item("table-delete-col", "Удалить столбец".to_string(), "table-delete-col", block_single_col.col_count() <= 1);
+        assert!(delete_col_single.disabled);
+
+        // Verify icon resolution
+        assert_eq!(crate::icons::map_obsidian_icon("copy"), crate::icons::ICON_COPY);
+        assert_eq!(crate::icons::map_obsidian_icon("table-merge-cells"), crate::icons::ICON_TABLE_MERGE_CELLS);
+        assert_eq!(crate::icons::map_obsidian_icon("table-split-cells"), crate::icons::ICON_TABLE_SPLIT_CELLS);
+        assert_eq!(crate::icons::map_obsidian_icon("align-left"), crate::icons::ICON_ALIGN_LEFT);
+        assert_eq!(crate::icons::map_obsidian_icon("align-center"), crate::icons::ICON_ALIGN_CENTER);
+        assert_eq!(crate::icons::map_obsidian_icon("align-right"), crate::icons::ICON_ALIGN_RIGHT);
+        assert_eq!(crate::icons::map_obsidian_icon("table-delete-row"), crate::icons::ICON_TABLE_DELETE_ROW);
+        assert_eq!(crate::icons::map_obsidian_icon("table-delete-col"), crate::icons::ICON_TABLE_DELETE_COL);
+        assert_eq!(crate::icons::map_obsidian_icon("trash"), crate::icons::ICON_TRASH_2);
+    }
+}
+

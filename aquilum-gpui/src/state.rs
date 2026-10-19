@@ -787,7 +787,7 @@ impl AppState {
         let start_byte = doc.line_start_byte(edit.first_line);
         let end_byte = doc.line_start_byte(edit.first_line + edit.old_line_count);
         let mut new_text = edit.new_lines.join("\n");
-        if edit.first_line + edit.old_line_count < total_lines {
+        if !edit.new_lines.is_empty() && edit.first_line + edit.old_line_count < total_lines {
             new_text.push('\n');
         }
         let target_cursor = if let Some((target_line, target_col)) = new_cursor_line_col {

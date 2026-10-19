@@ -65,6 +65,13 @@ pub const LINK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2
 pub const VAULT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="12" cy="12" r="4"/><line x1="12" x2="12" y1="8" y2="10"/><line x1="12" x2="12" y1="14" y2="16"/><line x1="8" x2="10" y1="12" y2="12"/><line x1="14" x2="16" y1="12" y2="12"/></svg>"#;
 pub const COMPUTER: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="12" x="4" y="3" rx="2"/><path d="M2 18h20"/><path d="M12 15v3"/></svg>"#;
 pub const PIN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6a1 1 0 0 0-1-1H8a2 2 0 0 0-2 2z"/><path d="M5 8V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v3"/></svg>"#;
+pub const ALIGN_LEFT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="21" x2="3" y1="6" y2="6"/><line x1="15" x2="3" y1="12" y2="12"/><line x1="17" x2="3" y1="18" y2="18"/></svg>"#;
+pub const ALIGN_CENTER: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="21" x2="3" y1="6" y2="6"/><line x1="17" x2="7" y1="12" y2="12"/><line x1="19" x2="5" y1="18" y2="18"/></svg>"#;
+pub const ALIGN_RIGHT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="21" x2="3" y1="6" y2="6"/><line x1="21" x2="9" y1="12" y2="12"/><line x1="21" x2="7" y1="18" y2="18"/></svg>"#;
+pub const TABLE_MERGE_CELLS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 12h18"/><path d="M12 3v18"/></svg>"#;
+pub const TABLE_SPLIT_CELLS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 12h18"/><path d="M12 3v9"/></svg>"#;
+pub const TABLE_DELETE_ROW: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/></svg>"#;
+pub const TABLE_DELETE_COL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>"#;
 
 pub const ICON_ARROW_LEFT: &str = "icons/arrow_left.svg";
 pub const ICON_ARROW_RIGHT: &str = "icons/arrow_right.svg";
@@ -88,6 +95,13 @@ pub const ICON_LINK: &str = "icons/link.svg";
 pub const ICON_VAULT: &str = "icons/vault.svg";
 pub const ICON_COMPUTER: &str = "icons/computer.svg";
 pub const ICON_PIN: &str = "icons/pin.svg";
+pub const ICON_ALIGN_LEFT: &str = "icons/align_left.svg";
+pub const ICON_ALIGN_CENTER: &str = "icons/align_center.svg";
+pub const ICON_ALIGN_RIGHT: &str = "icons/align_right.svg";
+pub const ICON_TABLE_MERGE_CELLS: &str = "icons/table_merge_cells.svg";
+pub const ICON_TABLE_SPLIT_CELLS: &str = "icons/table_split_cells.svg";
+pub const ICON_TABLE_DELETE_ROW: &str = "icons/table_delete_row.svg";
+pub const ICON_TABLE_DELETE_COL: &str = "icons/table_delete_col.svg";
 
 pub const ICON_CHEVRON_RIGHT: &str = "icons/chevron_right.svg";
 pub const ICON_CHEVRON_DOWN: &str = "icons/chevron_down.svg";
@@ -198,6 +212,13 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_VAULT => Some(VAULT),
             ICON_COMPUTER => Some(COMPUTER),
             ICON_PIN => Some(PIN),
+            ICON_ALIGN_LEFT => Some(ALIGN_LEFT),
+            ICON_ALIGN_CENTER => Some(ALIGN_CENTER),
+            ICON_ALIGN_RIGHT => Some(ALIGN_RIGHT),
+            ICON_TABLE_MERGE_CELLS => Some(TABLE_MERGE_CELLS),
+            ICON_TABLE_SPLIT_CELLS => Some(TABLE_SPLIT_CELLS),
+            ICON_TABLE_DELETE_ROW => Some(TABLE_DELETE_ROW),
+            ICON_TABLE_DELETE_COL => Some(TABLE_DELETE_COL),
             _ => None,
         };
         Ok(svg.map(|s| Cow::Borrowed(s.as_bytes())))
@@ -267,6 +288,13 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_VAULT.into(),
             ICON_COMPUTER.into(),
             ICON_PIN.into(),
+            ICON_ALIGN_LEFT.into(),
+            ICON_ALIGN_CENTER.into(),
+            ICON_ALIGN_RIGHT.into(),
+            ICON_TABLE_MERGE_CELLS.into(),
+            ICON_TABLE_SPLIT_CELLS.into(),
+            ICON_TABLE_DELETE_ROW.into(),
+            ICON_TABLE_DELETE_COL.into(),
         ])
     }
 }
@@ -321,6 +349,13 @@ pub fn map_obsidian_icon(name: &str) -> &'static str {
         "vault" => ICON_VAULT,
         "pin" => ICON_PIN,
         "canvas" => ICON_CANVAS,
+        "align-left" => ICON_ALIGN_LEFT,
+        "align-center" => ICON_ALIGN_CENTER,
+        "align-right" => ICON_ALIGN_RIGHT,
+        "table-merge-cells" | "merge-cells" => ICON_TABLE_MERGE_CELLS,
+        "table-split-cells" | "split-cells" => ICON_TABLE_SPLIT_CELLS,
+        "table-delete-row" | "delete-row" | "rows" => ICON_TABLE_DELETE_ROW,
+        "table-delete-col" | "delete-col" | "columns" => ICON_TABLE_DELETE_COL,
         _ => ICON_NOTE_CREATE,
     }
 }
