@@ -764,14 +764,24 @@ impl AppState {
 
         let (cursor_line, _) = view.line_col(doc);
         let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
-        if let Some(_t) = tables.at(cursor_line) {
-            view.raw_table = !view.raw_table;
+        if let Some(t) = tables.at(cursor_line) {
             view.cursor_line = cursor_line;
-            view.visual_cache_dirty = true;
+            view.toggle_raw_table_at(t.first_line);
             true
         } else {
             false
         }
+    }
+
+    pub fn active_toggle_raw_table_at(&mut self, first_line: usize) -> bool {
+        let Some(tab_id) = self.active_tab_id() else { return false; };
+        let Some(doc_id) = self.active_doc_id() else { return false; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return false; };
+
+        let (cursor_line, _) = view.line_col(doc);
+        view.cursor_line = cursor_line;
+        view.toggle_raw_table_at(first_line);
+        true
     }
 
     pub fn active_apply_table_line_edit(
@@ -782,6 +792,14 @@ impl AppState {
         let Some(tab_id) = self.active_tab_id() else { return; };
         let Some(doc_id) = self.active_doc_id() else { return; };
         let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return; };
+
+        if edit.new_lines.is_empty() {
+            view.raw_tables.remove(&edit.first_line);
+        }
+        let line_diff = edit.new_lines.len() as isize - edit.old_line_count as isize;
+        if line_diff != 0 {
+            view.shift_raw_tables(edit.first_line + 1, line_diff);
+        }
 
         let total_lines = doc.line_index.lines();
         let start_byte = doc.line_start_byte(edit.first_line);

@@ -195,6 +195,7 @@ pub struct ViewCache {
     pub est_row_h: f64,
     pub visual_cache_dirty: bool,
     pub raw_table: bool,
+    pub raw_tables: std::collections::HashSet<usize>,
     pub cursor_line: usize,
 }
 
@@ -210,6 +211,7 @@ impl Default for ViewCache {
             est_row_h: 24.0,
             visual_cache_dirty: true,
             raw_table: false,
+            raw_tables: std::collections::HashSet::new(),
             cursor_line: 0,
         }
     }
@@ -285,6 +287,40 @@ impl TabSession {
         self.title_input = None;
     }
 
+    #[inline]
+    pub fn is_table_raw(&self, first_line: usize) -> bool {
+        self.raw_tables.contains(&first_line)
+    }
+
+    pub fn toggle_raw_table_at(&mut self, first_line: usize) -> bool {
+        let is_now_raw = if self.raw_tables.contains(&first_line) {
+            self.raw_tables.remove(&first_line);
+            false
+        } else {
+            self.raw_tables.insert(first_line);
+            true
+        };
+        self.raw_table = is_now_raw;
+        self.visual_cache_dirty = true;
+        is_now_raw
+    }
+
+    pub fn shift_raw_tables(&mut self, edit_line: usize, line_diff: isize) {
+        if line_diff == 0 || self.raw_tables.is_empty() {
+            return;
+        }
+        let mut updated = std::collections::HashSet::new();
+        for &fl in &self.raw_tables {
+            if fl >= edit_line {
+                let shifted = (fl as isize + line_diff).max(0) as usize;
+                updated.insert(shifted);
+            } else {
+                updated.insert(fl);
+            }
+        }
+        self.raw_tables = updated;
+    }
+
     pub fn grid_table_at<'a>(
         &self,
         tables: &'a crate::table::TableIndex,
@@ -292,7 +328,7 @@ impl TabSession {
         cursor_line: usize,
     ) -> Option<&'a crate::table::TableBlock> {
         let t = tables.at(line)?;
-        if self.raw_table && t.contains(cursor_line) {
+        if self.raw_tables.contains(&t.first_line) && t.contains(cursor_line) {
             None
         } else {
             Some(t)
@@ -633,18 +669,8 @@ impl TabSession {
         let slice = doc.slice_to_string(start_byte..end_byte);
 
         let tables = doc.ensure_table_index_for_window(start, end);
-        let cursor_line = self.cursor_line;
-        if self.raw_table {
-            if let Some(tbl) = tables.at(cursor_line) {
-                if !tbl.contains(cursor_line) {
-                    self.raw_table = false;
-                }
-            } else {
-                self.raw_table = false;
-            }
-        }
-        let raw_table = self.raw_table;
-
+        let (cursor_line, _) = self.line_col(doc);
+        self.cursor_line = cursor_line;
         let window = crate::editor_window::EditorWindow::build_from_slice_with_tables(
             &slice,
             start,
@@ -657,7 +683,7 @@ impl TabSession {
             initial,
             |line| {
                 if let Some(t) = tables.at(line) {
-                    if raw_table && t.contains(cursor_line) {
+                    if self.raw_tables.contains(&t.first_line) && t.contains(cursor_line) {
                         None
                     } else if line == t.sep_line() {
                         Some(crate::markdown::TableRowVisualKind::Delimiter)
@@ -712,6 +738,20 @@ impl TabSession {
         headings: Option<&crate::settings::HeadingsSettings>,
         anchor_line: usize,
     ) {
+        if !self.raw_tables.is_empty() {
+            let (cursor_line, _) = self.line_col(doc);
+            if cursor_line != self.cursor_line {
+                let prev_line = self.cursor_line;
+                self.cursor_line = cursor_line;
+                let tables = doc.ensure_table_index_for_window(self.window.start_line, self.window.end_line);
+                let prev_in_raw = tables.at(prev_line).map_or(false, |t| self.raw_tables.contains(&t.first_line) && t.contains(prev_line));
+                let curr_in_raw = tables.at(cursor_line).map_or(false, |t| self.raw_tables.contains(&t.first_line) && t.contains(cursor_line));
+                if prev_in_raw != curr_in_raw || (prev_in_raw && curr_in_raw && tables.at(prev_line).map(|t| t.first_line) != tables.at(cursor_line).map(|t| t.first_line)) {
+                    self.visual_cache_dirty = true;
+                }
+            }
+        }
+
         if self.visual_cache_dirty
             || self.window.should_move_to(
                 anchor_line,
@@ -799,6 +839,9 @@ impl TabSession {
         let byte_diff = (edit.new_len as isize) - (edit.old_len as isize);
         let line_h = self.est_rows_per_line * self.est_row_h;
         let h_diff = (line_diff as f64) * line_h;
+        if line_diff != 0 {
+            self.shift_raw_tables(edit.edit_line, line_diff);
+        }
 
         // 1. Transform cursor and selection
         if let Some(anchor) = self.selection_anchor {
@@ -1300,7 +1343,7 @@ mod tests {
 
     #[test]
     fn test_grid_table_at_and_raw_table_reset() {
-        let text = "Intro\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nOutro";
+        let text = "Intro\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nMiddle\n\n| C | D |\n|---|---|\n| 3 | 4 |\n\nOutro";
         let mut doc = DocumentBuffer::new(
             DocumentId::new(),
             std::path::PathBuf::from("test.md"),
@@ -1311,28 +1354,63 @@ mod tests {
         let tab_id = TabId::new();
         let mut view = TabSession::new(tab_id, doc.id);
 
-        let tables = doc.ensure_table_index();
-        assert_eq!(tables.blocks.len(), 1);
-        let tbl = &tables.blocks[0];
-        assert_eq!(tbl.first_line, 2);
-        assert_eq!(tbl.last_line, 4);
+        let (tbl1_fl, tbl2_fl) = {
+            let tables = doc.ensure_table_index();
+            assert_eq!(tables.blocks.len(), 2);
+            assert_eq!(tables.blocks[0].first_line, 2);
+            assert_eq!(tables.blocks[0].last_line, 4);
+            assert_eq!(tables.blocks[1].first_line, 8);
+            assert_eq!(tables.blocks[1].last_line, 10);
+            (tables.blocks[0].first_line, tables.blocks[1].first_line)
+        };
 
-        // When raw_table is false, grid_table_at returns Some
-        assert!(view.grid_table_at(&tables, 2, 2).is_some());
-        assert!(view.grid_table_at(&tables, 4, 2).is_some());
+        // Initially both tables return Some (grid mode)
+        {
+            let tables = doc.ensure_table_index();
+            assert!(view.grid_table_at(&tables, 2, 2).is_some());
+            assert!(view.grid_table_at(&tables, 8, 8).is_some());
+        }
 
-        // When raw_table is true and cursor is in table, grid_table_at returns None
-        view.raw_table = true;
-        assert!(view.grid_table_at(&tables, 2, 2).is_none());
-        assert!(view.grid_table_at(&tables, 4, 3).is_none());
+        // Toggle Table 1 into raw mode
+        view.toggle_raw_table_at(tbl1_fl);
+        assert!(view.is_table_raw(tbl1_fl));
+        assert!(!view.is_table_raw(tbl2_fl));
 
-        // When cursor is outside table, grid_table_at returns Some even if raw_table is true
-        assert!(view.grid_table_at(&tables, 2, 0).is_some());
+        // Table 1 is in raw mode (None), Table 2 remains in grid mode (Some)
+        {
+            let tables = doc.ensure_table_index();
+            assert!(view.grid_table_at(&tables, 2, 2).is_none());
+            assert!(view.grid_table_at(&tables, 4, 3).is_none());
+            assert!(view.grid_table_at(&tables, 8, 8).is_some());
+            assert!(view.grid_table_at(&tables, 10, 8).is_some());
+        }
 
-        // Rebuilding visual cache when cursor moved outside table auto-resets raw_table
-        drop(tables);
-        view.cursor_offset = 0; // line 0 is outside table
-        view.rebuild_visual_cache_with_headings(&mut doc, false, 80, None, 0);
-        assert_eq!(view.raw_table, false, "raw_table must reset when cursor leaves table");
+        // When cursor moves outside, both tables display as grid tables, but Table 1 remembers it is raw
+        view.cursor_offset = 0; // outside tables
+        view.ensure_visual_cache_with_headings(&mut doc, false, 80, None, 0);
+        assert!(view.is_table_raw(tbl1_fl), "Table 1 raw setting persists");
+        {
+            let tables2 = doc.ensure_table_index();
+            assert!(view.grid_table_at(&tables2, 2, 0).is_some(), "Table 1 displays as grid mode when cursor outside");
+            assert!(view.grid_table_at(&tables2, 8, 0).is_some(), "Table 2 displays as grid mode");
+        }
+
+        // When cursor moves back to Table 1, Table 1 is in raw code mode
+        view.cursor_offset = doc.line_start_byte(2);
+        view.ensure_visual_cache_with_headings(&mut doc, false, 80, None, 0);
+        {
+            let tables3 = doc.ensure_table_index();
+            assert!(view.grid_table_at(&tables3, 2, 2).is_none(), "Table 1 enters raw mode when cursor returns");
+            assert!(view.grid_table_at(&tables3, 8, 2).is_some(), "Table 2 remains in grid mode");
+        }
+
+        // When cursor moves to Table 2 (which is in inline mode), Table 2 stays in inline mode
+        view.cursor_offset = doc.line_start_byte(8);
+        view.ensure_visual_cache_with_headings(&mut doc, false, 80, None, 0);
+        {
+            let tables4 = doc.ensure_table_index();
+            assert!(view.grid_table_at(&tables4, 2, 8).is_some(), "Table 1 displays as grid mode");
+            assert!(view.grid_table_at(&tables4, 8, 8).is_some(), "Table 2 displays as inline grid mode");
+        }
     }
 }

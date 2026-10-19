@@ -1182,7 +1182,7 @@ impl AppView {
         let mut target_idx = curr_v_idx - 1;
         if !shift {
             let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
-            if let Some(tbl) = tables.at(visual_rows[target_idx].line_idx) {
+            if let Some(tbl) = view.grid_table_at(&tables, visual_rows[target_idx].line_idx, cursor_line) {
                 if visual_rows[target_idx].line_idx == tbl.sep_line() && target_idx > 0 {
                     target_idx -= 1;
                 }
@@ -1233,7 +1233,7 @@ impl AppView {
         let mut target_idx = curr_v_idx + 1;
         if !shift {
             let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
-            if let Some(tbl) = tables.at(visual_rows[target_idx].line_idx) {
+            if let Some(tbl) = view.grid_table_at(&tables, visual_rows[target_idx].line_idx, cursor_line) {
                 if visual_rows[target_idx].line_idx == tbl.sep_line() && target_idx + 1 < visual_rows.len() {
                     target_idx += 1;
                 }
@@ -6731,7 +6731,20 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     .as_ref()
                     .map(|s| active_block_ids.contains(&s.block_id))
                     .unwrap_or(false);
-                let is_active_line = is_editing && (v.line_idx == cursor_line || is_line_in_selection || is_in_active_block);
+                let (is_raw_table_line, is_raw_table_first, is_raw_table_last) = if let Some(tbl) = tables.at(v.line_idx) {
+                    if view.is_table_raw(tbl.first_line) && tbl.contains(cursor_line) {
+                        (
+                            true,
+                            v.line_idx == tbl.first_line && v.sub_idx == 0,
+                            v.line_idx == tbl.last_line && v.is_last_sub,
+                        )
+                    } else {
+                        (false, false, false)
+                    }
+                } else {
+                    (false, false, false)
+                };
+                let is_active_line = is_editing && (v.line_idx == cursor_line || is_line_in_selection || is_in_active_block || is_raw_table_line);
                 let code_state = code_states_arc[v.line_idx].as_ref().map(|s| (s.kind, s.lang.as_deref()));
                 let classified = crate::markdown::classify_line(line, code_state);
                 let is_opening_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: true, .. });
@@ -7073,49 +7086,48 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
                 let is_editor_focused = is_leaf_active && self.editor_is_focused;
                 let cursor_table = tables.at(cursor_line);
-                let cursor_in_table = if let Some(tbl) = cursor_table {
-                    tbl.contains(cursor_line)
-                } else {
-                    false
-                };
 
-                let is_raw = self.state.active_view().map_or(false, |v| v.raw_table);
-                let raw_btn = if cursor_in_table {
-                    if let Some(tbl) = cursor_table {
-                        if v_line_idx == tbl.first_line {
-                            let total_w = table_layout.as_ref().map(|l| l.total_width).unwrap_or(0.0);
-                            Some(
-                                div()
-                                    .id(gpui::ElementId::Name(format!("table-raw-btn-{}", v_idx).into()))
-                                    .absolute()
-                                    .left(px(total_w + 24.0))
-                                    .top(px(15.0))
-                                    .w(px(26.0))
-                                    .h(px(26.0))
-                                    .rounded_md()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .cursor_pointer()
-                                    .font_family(editor_font.clone())
-                                    .text_xs()
-                                    .when(is_raw, |d| {
-                                        let mut bg = theme.accent;
-                                        bg.a = 0.2;
-                                        d.bg(bg).border_1().border_color(theme.accent).text_color(theme.accent)
-                                    })
-                                    .when(!is_raw, |d| {
-                                        d.bg(theme.bg_editor).border_1().border_color(theme.border_subtle).text_color(theme.text_secondary).hover(|h| h.bg(theme.bg_hover))
-                                    })
-                                    .child("</>")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.state.active_toggle_raw_table();
-                                        cx.notify();
-                                    }))
-                            )
+                let raw_btn = if let Some(tbl) = cursor_table {
+                    if v_line_idx == tbl.first_line {
+                        let is_raw = self.state.active_view().map_or(false, |v| v.raw_tables.contains(&tbl.first_line) && tbl.contains(cursor_line));
+                        let (btn_w, btn_h) = (20.0, 18.0);
+                        let (btn_left, btn_top) = if is_raw {
+                            (row_layout.width() + 10.0, ((row_h - btn_h) / 2.0).max(0.0))
                         } else {
-                            None
-                        }
+                            let total_w = table_layout.as_ref().map(|l| l.total_width).unwrap_or(0.0);
+                            (total_w + 12.0, 14.0 + (28.0 - btn_h) / 2.0)
+                        };
+                        let tbl_first_line = tbl.first_line;
+                        Some(
+                            div()
+                                .id(gpui::ElementId::Name(format!("table-raw-btn-{}", v_idx).into()))
+                                .absolute()
+                                .left(px(btn_left))
+                                .top(px(btn_top))
+                                .w(px(btn_w))
+                                .h(px(btn_h))
+                                .rounded(px(3.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .font_family(editor_font.clone())
+                                .text_size(px(9.5))
+                                .line_height(px(btn_h))
+                                .when(is_raw, |d| {
+                                    let mut bg = theme.accent;
+                                    bg.a = 0.2;
+                                    d.bg(bg).border_1().border_color(theme.accent).text_color(theme.accent)
+                                })
+                                .when(!is_raw, |d| {
+                                    d.bg(theme.bg_editor).border_1().border_color(theme.border_subtle).text_color(theme.text_secondary).hover(|h| h.bg(theme.bg_hover))
+                                })
+                                .child("</>")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.state.active_toggle_raw_table_at(tbl_first_line);
+                                    cx.notify();
+                                }))
+                        )
                     } else {
                         None
                     }
@@ -7288,6 +7300,12 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             .when(is_opening_fence, |s| s.bg(theme.code_bg).rounded_t_md())
                             .when(is_closing_fence, |s| s.bg(theme.code_bg).rounded_b_md())
                             .when(is_code_line, |s| s.bg(theme.code_bg))
+                            .when(is_raw_table_line, |s| {
+                                let bg = if theme.is_dark { gpui::rgba(0x9333ea24) } else { gpui::rgba(0x7c3aed18) };
+                                s.bg(bg)
+                            })
+                            .when(is_raw_table_first, |s| s.rounded_t_md())
+                            .when(is_raw_table_last, |s| s.rounded_b_md())
                             .children(backdrop_rects)
                             .child(
                                 div()
@@ -9841,6 +9859,10 @@ impl RowShapedLayout {
         }
     }
 
+    pub fn width(&self) -> f32 {
+        f32::from(self.layout.width)
+    }
+
     fn byte_for_column(&self, col: usize) -> usize {
         self.text
             .char_indices()
@@ -10035,6 +10057,7 @@ fn render_live_styled_row(
             let row_idx = if is_header { 0 } else { tbl.row_of_line(line_idx).unwrap_or(0) };
             let cell_start_col = raw_cells.get(c_idx).map(|c| c.content.start).unwrap_or(0);
 
+            let tbl_first_line = tbl.first_line;
             let mut cell_div = div()
                 .id(gpui::ElementId::Name(format!("tbl-cell-{}-{}-{}", tbl.first_line, line_idx, c_idx).into()))
                 .relative()
@@ -10057,6 +10080,20 @@ fn render_live_styled_row(
                     bg.a = 0.08;
                     d.bg(bg)
                 })
+                .cursor(gpui::CursorStyle::IBeam)
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+                    window.focus(&this.focus_handle);
+                    if let Some((view, doc)) = this.state.active_view_and_doc_mut() {
+                        let offset = view.offset_for_line_col(doc, line_idx, cell_start_col);
+                        view.cursor_offset = offset;
+                        view.selection_anchor = Some(offset);
+                        if !view.raw_tables.is_empty() {
+                            view.visual_cache_dirty = true;
+                        }
+                    }
+                    this.reset_editor_cursor_blink(cx);
+                    cx.notify();
+                }))
                 .on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
                     window.focus(&this.focus_handle);
@@ -10072,7 +10109,6 @@ fn render_live_styled_row(
             }
             cell_div = cell_div.child(render_syntax_spans(spans, is_active_cell, theme, None, font_weight, None, font_family));
 
-            let tbl_first_line = tbl.first_line;
             let col_widths_clone = table_layout.col_widths.clone();
             cell_div = cell_div.child(
                 div()
