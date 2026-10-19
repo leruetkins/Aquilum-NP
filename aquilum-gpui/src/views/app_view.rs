@@ -525,15 +525,17 @@ impl AppView {
         click_x: f32,
         current_widths: &[f32],
     ) {
-        if !self.manual_table_col_widths.contains_key(&table_first_line) {
-            self.manual_table_col_widths.insert(table_first_line, current_widths.to_vec());
-        }
-        let start_width = self
+        let entry = self
             .manual_table_col_widths
-            .get(&table_first_line)
-            .and_then(|w| w.get(col_idx))
+            .entry(table_first_line)
+            .or_insert_with(|| current_widths.to_vec());
+        if entry.len() != current_widths.len() {
+            *entry = current_widths.to_vec();
+        }
+        let start_width = entry
+            .get(col_idx)
             .copied()
-            .unwrap_or(current_widths[col_idx]);
+            .unwrap_or(current_widths.get(col_idx).copied().unwrap_or(100.0));
         self.table_col_resize_drag = Some(TableColResizeDrag {
             table_first_line,
             col_idx,
@@ -6962,24 +6964,43 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     .rounded_sm();
 
                 if show_current_line_highlight {
+                    let is_sep = grid_tbl.map_or(false, |tbl| v.line_idx == tbl.sep_line());
+                    let hl_top = if let Some(tbl) = grid_tbl {
+                        if v.line_idx == tbl.first_line { 14.0 } else { 0.0 }
+                    } else {
+                        0.0
+                    };
+                    let hl_h = if is_sep { 1.0 } else if grid_tbl.is_some() { 28.0 } else { row_h };
+
                     if is_leaf_active {
-                        row_div = row_div.bg(theme.bg_hover);
+                        row_div = row_div.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .top(px(hl_top))
+                                .h(px(hl_h))
+                                .rounded_sm()
+                                .bg(theme.bg_hover),
+                        );
                     } else {
                         let mut faint_bg = theme.bg_hover;
                         faint_bg.a *= 0.45;
                         let mut border_c = theme.text_muted;
                         border_c.a = 0.5;
-                        row_div = row_div
-                            .bg(faint_bg)
-                            .child(
-                                div()
-                                    .absolute()
-                                    .inset_0()
-                                    .rounded_sm()
-                                    .border_1()
-                                    .border_dashed()
-                                    .border_color(border_c),
-                            );
+                        row_div = row_div.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .top(px(hl_top))
+                                .h(px(hl_h))
+                                .rounded_sm()
+                                .bg(faint_bg)
+                                .border_1()
+                                .border_dashed()
+                                .border_color(border_c),
+                        );
                     }
                 }
 
@@ -7133,6 +7154,10 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         let mut model = crate::table::TableModel::parse(&tbl_clone, &lines_refs);
                                         model.insert_col(model.col_count());
                                         let edit = crate::table::rewrite(&tbl_clone, &model, false, &crate::table::char_width);
+                                        if let Some(widths) = this.manual_table_col_widths.get_mut(&tbl_clone.first_line) {
+                                            widths.push(120.0);
+                                        }
+                                        this.table_layouts.borrow_mut().remove(&tbl_clone.first_line);
                                         this.state.active_apply_table_line_edit(&edit, None);
                                         cx.notify();
                                     }))
@@ -7179,6 +7204,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         let edit = crate::table::rewrite(&tbl_clone, &model, false, &crate::table::char_width);
                                         let new_r = model.rows.len() - 1;
                                         let new_l = tbl_clone.line_of_row(new_r);
+                                        this.table_layouts.borrow_mut().remove(&tbl_clone.first_line);
                                         this.state.active_apply_table_line_edit(&edit, Some((new_l, 2)));
                                         cx.notify();
                                     }))
@@ -9532,7 +9558,7 @@ pub(crate) fn compute_table_layout<'a>(
     manual_widths: Option<&[f32]>,
 ) -> TableLayout {
     const PADDING_X: f32 = 8.0;
-    const MIN_COL_WIDTH: f32 = 60.0;
+    const MIN_COL_WIDTH: f32 = 80.0;
     let n_cols = block.col_count();
     let mut max_widths = vec![0.0f32; n_cols];
 
@@ -9596,13 +9622,23 @@ pub(crate) fn compute_table_layout<'a>(
 
     let natural_widths: Vec<f32> = max_widths.iter().map(|&w| (w + PADDING_X * 2.0).max(MIN_COL_WIDTH)).collect();
     let col_widths = if let Some(mw) = manual_widths {
-        if mw.len() == n_cols {
-            mw.to_vec()
-        } else {
-            fit_table_columns(&natural_widths, 720.0)
+        let mut w = mw.to_vec();
+        if w.len() < n_cols {
+            for i in w.len()..n_cols {
+                let def = natural_widths.get(i).copied().unwrap_or(120.0).max(MIN_COL_WIDTH);
+                w.push(def);
+            }
+        } else if w.len() > n_cols {
+            w.truncate(n_cols);
         }
+        w
     } else {
-        fit_table_columns(&natural_widths, 720.0)
+        let sum_natural: f32 = natural_widths.iter().sum();
+        if sum_natural < 720.0 {
+            fit_table_columns(&natural_widths, 720.0)
+        } else {
+            natural_widths
+        }
     };
 
     let mut col_x = Vec::with_capacity(n_cols);
@@ -11432,5 +11468,42 @@ mod tests {
         assert_eq!(height_index.height_of(0), 42.0, "header row height must be 42.0 (28.0 + 14.0 mt)");
         assert_eq!(height_index.height_of(1), 1.0, "delimiter row height must be 1.0 (matching 1px border)");
         assert_eq!(height_index.height_of(2), 42.0, "last row height must be 42.0 (28.0 + 14.0 mb)");
+    }
+
+    #[test]
+    fn test_table_add_column_preserves_widths() {
+        gpui::Application::new().run(|cx: &mut gpui::App| {
+            crate::fonts::register_embedded_fonts(cx);
+            let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                let block = crate::table::TableBlock {
+                    first_line: 0,
+                    last_line: 2,
+                    aligns: vec![crate::table::Align::Left, crate::table::Align::Left, crate::table::Align::Left],
+                };
+                let lines = vec![
+                    "| col1 | col2 | col3 |",
+                    "|---|---|---|",
+                    "| val1 | val2 | val3 |",
+                ];
+                let get_line = |idx: usize| lines.get(idx).copied();
+                let manual = vec![150.0, 200.0]; // previously had 2 columns resized
+                let font = gpui::SharedString::from("Consolas");
+
+                let layout = compute_table_layout(window.text_system(), &get_line, &block, &font, Some(&manual));
+                assert_eq!(layout.col_widths.len(), 3);
+                assert_eq!(layout.col_widths[0], 150.0, "col 0 must keep manual width 150.0");
+                assert_eq!(layout.col_widths[1], 200.0, "col 1 must keep manual width 200.0");
+                assert!(layout.col_widths[2] >= 80.0, "new col 2 must get at least minimum column width");
+
+                cx.quit();
+                struct DummyView;
+                impl gpui::Render for DummyView {
+                    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+                        gpui::div()
+                    }
+                }
+                cx.new(|_| DummyView)
+            });
+        });
     }
 }
