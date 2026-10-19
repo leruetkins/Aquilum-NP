@@ -795,10 +795,10 @@ impl AppView {
         }
     }
 
-    /// Immediately dispatches writing of any dirty note to disk in the background,
-    /// without blocking the UI thread. Used on blur/minimize, auto-save timers, and manual save.
-    pub fn flush_active_note_now(&mut self, cx: &mut Context<Self>) {
-        let to_save = match self.state.active_document() {
+    /// Immediately dispatches writing of a dirty document to disk in the background,
+    /// without blocking the UI thread.
+    pub fn flush_document_now(&mut self, doc_id: crate::document_buffer::DocumentId, cx: &mut Context<Self>) {
+        let to_save = match self.state.documents.get(&doc_id) {
             Some(doc) if doc.is_dirty => {
                 Some((doc.path.clone(), doc.rope.clone(), doc.title.clone(), doc.version))
             }
@@ -849,6 +849,14 @@ impl AppView {
                 this.state.save_session_state();
             });
         }).detach();
+    }
+
+    /// Immediately dispatches writing of any dirty note to disk in the background,
+    /// without blocking the UI thread. Used on blur/minimize, auto-save timers, and manual save.
+    pub fn flush_active_note_now(&mut self, cx: &mut Context<Self>) {
+        if let Some(doc_id) = self.state.active_doc_id() {
+            self.flush_document_now(doc_id, cx);
+        }
     }
 
     pub fn schedule_auto_save(&mut self, cx: &mut Context<Self>) {
@@ -1932,9 +1940,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
     fn create_new_note_placed(&mut self, window: &mut Window, cx: &mut Context<Self>, at_front: bool) {
         self.commit_title_rename_internal();
-        if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
-            self.state.save_active_note();
-        }
+        self.flush_active_note_now(cx);
         let current_scroll = self.current_scroll_top();
         self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         let created = if at_front {
@@ -1974,9 +1980,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             return;
         }
         self.commit_title_rename_internal();
-        if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
-            self.state.save_active_note();
-        }
+        self.flush_active_note_now(cx);
         let current_scroll = self.current_scroll_top();
         self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         let sidebar_offset_y: f32 = self.sidebar_scroll_handle.offset().y.into();
@@ -2007,8 +2011,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         if self.state.active_document().map(|d| d.path == path).unwrap_or(false) {
             self.commit_title_rename_internal();
         }
-        if self.state.active_document().map(|d| d.is_dirty && d.path == path).unwrap_or(false) {
-            self.state.save_active_note();
+        if let Some(doc_id) = self.state.find_document_by_path(path) {
+            self.flush_document_now(doc_id, cx);
         }
         let is_closing_active = self.state.active_document().map(|d| d.path == path).unwrap_or(false);
         if is_closing_active {
@@ -2025,9 +2029,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
     fn navigate_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_title_rename_internal();
-        if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
-            self.state.save_active_note();
-        }
+        self.flush_active_note_now(cx);
         let current_scroll = self.current_scroll_top();
         self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         if let Some(target) = self.state.navigate_back() {
@@ -2040,9 +2042,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
     fn navigate_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_title_rename_internal();
-        if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
-            self.state.save_active_note();
-        }
+        self.flush_active_note_now(cx);
         let current_scroll = self.current_scroll_top();
         self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
         if let Some(target) = self.state.navigate_forward() {
@@ -3545,8 +3545,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         // Ctrl + S (Сохранение)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("s") || keystroke.key == "ы" || keystroke.key == "Ы") {
-            self.state.save_active_note();
-            cx.notify();
+            self.flush_active_note_now(cx);
             return;
         }
 
@@ -4115,9 +4114,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         }
 
         self.commit_title_rename_internal();
-        if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
-            self.state.save_active_note();
-        }
+        self.flush_active_note_now(cx);
 
         // 1. Snapshot outgoing note settings & view state
         let current_scroll = self.current_scroll_top();

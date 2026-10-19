@@ -135,8 +135,7 @@ impl AppView {
         // 2. Execute built-in host actions
         match cmd_id {
             "editor:save" => {
-                self.state.save_active_note();
-                cx.notify();
+                self.flush_active_note_now(cx);
             }
             "workspace:new-tab" => {
                 self.open_empty_tab(window, cx);

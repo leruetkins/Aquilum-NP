@@ -13,9 +13,7 @@ impl AppView {
     /// `Create note / Go to file / Close` actions.
     pub(crate) fn open_empty_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_title_rename_internal();
-        if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
-            self.state.save_active_note();
-        }
+        self.flush_active_note_now(cx);
         let current_scroll = self.current_scroll_top();
         self.state
             .snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
@@ -35,9 +33,7 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         self.commit_title_rename_internal();
-        if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
-            self.state.save_active_note();
-        }
+        self.flush_active_note_now(cx);
         let current_scroll = self.current_scroll_top();
         self.state
             .snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
