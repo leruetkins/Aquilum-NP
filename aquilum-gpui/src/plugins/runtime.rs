@@ -1081,11 +1081,24 @@ fn setup_plugin_environment<'js>(
                         return true;
                     }
                 });
-                this.style = new Proxy({}, {
+                // Цель прокси хранится отдельно: сериализатор читает её напрямую, а плагин
+                // продолжает видеть обычный `el.style.width = ...`.
+                const styleTarget = {};
+                this._styleTarget = styleTarget;
+                this.style = new Proxy(styleTarget, {
                     get: (t, p) => t[p] || "",
                     set: (t, p, v) => { t[p] = v; return true; }
                 });
                 globalThis.__velement_registry.set(this._id, this);
+            }
+
+            /** Obsidian добавляет setCssProps к элементам: набор свойств разом. */
+            setCssProps(props) {
+                if (props && typeof props === "object") {
+                    for (const [k, v] of Object.entries(props)) {
+                        if (v != null) this._styleTarget[k] = String(v);
+                    }
+                }
             }
 
             _notifyModified() {
@@ -1874,7 +1887,7 @@ fn setup_plugin_environment<'js>(
             hide() {}
         }
 
-        function __velement_to_uinode(el) {
+        function __velement_core_to_uinode(el) {
             if (!el) return { type: "text", value: "", class: undefined };
 
             const classList = el.classes ? Array.from(el.classes) : [];
@@ -2180,6 +2193,57 @@ fn setup_plugin_environment<'js>(
                 gap: isRow ? "small" : "none",
                 children
             };
+        }
+
+        // Стили, которые хост умеет применить к нативному узлу. Всё остальное (gap, flexDirection,
+        // zIndex, transform, transition, clipPath, cursor) не пробрасывается: обещать эффект,
+        // которого нет, хуже, чем честно его не показывать.
+        const __STYLE_KEYS = new Set([
+            "display", "width", "height", "minWidth", "maxWidth", "minHeight", "maxHeight",
+            "padding", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+            "margin", "marginTop", "marginRight", "marginBottom", "marginLeft",
+            "background", "backgroundColor", "color", "opacity", "visibility",
+            "borderRadius", "fontSize", "fontWeight", "textAlign", "overflow",
+            "position", "top", "right", "bottom", "left"
+        ]);
+
+        function __css_key(k) {
+            return String(k).trim().replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+        }
+
+        /** Применённые стили элемента или null, если их нет. */
+        function __style_to_uinode(el) {
+            const src = el && el._styleTarget;
+            if (!src) return null;
+            const out = {};
+            for (const [k, v] of Object.entries(src)) {
+                if (v == null) continue;
+                if (k === "cssText") {
+                    // Тот же CSS, но строкой: плагины пишут так 253 раза за корпус.
+                    for (const decl of String(v).split(";")) {
+                        const i = decl.indexOf(":");
+                        if (i < 0) continue;
+                        const key = __css_key(decl.slice(0, i));
+                        if (__STYLE_KEYS.has(key)) out[key] = decl.slice(i + 1).trim();
+                    }
+                    continue;
+                }
+                if (__STYLE_KEYS.has(k)) out[k] = String(v);
+            }
+            return Object.keys(out).length > 0 ? out : null;
+        }
+
+        /**
+         * Элемент с непустым style становится узлом `styled`: style — бокс элемента, child — то,
+         * что из него получилось. Дети идут через эту же функцию, поэтому вложенные стили не теряются.
+         */
+        function __velement_to_uinode(el) {
+            const node = __velement_core_to_uinode(el);
+            const style = __style_to_uinode(el);
+            if (!style) return node;
+            // Пустой div без текста сериализатор обычно выбрасывает, но если у него есть размер
+            // или фон — это распорка/разделитель, и он должен остаться пустым боксом.
+            return { type: "styled", style, child: node || { type: "column", children: [] } };
         }
 
         class Component {
