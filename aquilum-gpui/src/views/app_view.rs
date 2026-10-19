@@ -533,6 +533,21 @@ impl AppView {
             &self.state.plugin_host,
         );
         self.plugin_runtimes = handles;
+
+        // ВРЕМЕННО (снять окно плагина для проверки вёрстки без кликов):
+        // AQUILUM_DEBUG_PLUGIN_CMD="<plugin-id>:<command-id>"
+        if let Ok(spec) = std::env::var("AQUILUM_DEBUG_PLUGIN_CMD") {
+            if let Some((plugin_id, command_id)) = spec.split_once(':') {
+                if let Some(handle) = self.plugin_runtimes.iter().find(|h| h.manifest.id == plugin_id) {
+                    let tx = handle.host_events_tx.clone();
+                    let command_id = command_id.to_string();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(1500));
+                        let _ = tx.unbounded_send(crate::plugins::api::HostEvent::ExecuteCommand { command_id });
+                    });
+                }
+            }
+        }
     }
 
     /// Gracefully unloads all active plugins by sending HostEvent::Unload and clearing registrations.
@@ -2593,6 +2608,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 crate::plugins::ui::UiNode::Column { children, .. } | crate::plugins::ui::UiNode::Row { children, .. } => {
                     children.iter().find_map(find_heading)
                 }
+                // Обёртка стилей — не узел, а бокс: заголовок за ней остаётся заголовком.
+                // Без этой ветки модалка показывала два заголовка сразу — свой и запасной.
+                crate::plugins::ui::UiNode::Styled { child, .. } => find_heading(child),
                 _ => None,
             }
         }

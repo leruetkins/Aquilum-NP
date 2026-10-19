@@ -19,6 +19,14 @@ pub struct PluginRuntimeHandle {
     pub host_events_tx: UnboundedSender<HostEvent>,
 }
 
+/// Исходники плагина: код и необязательная таблица стилей. Отдельная структура, а не два
+/// строковых параметра подряд, — перепутать их местами иначе можно молча.
+#[derive(Debug, Clone)]
+pub struct PluginSources {
+    pub script: String,
+    pub styles: Option<String>,
+}
+
 /// Spawns an isolated worker thread running a QuickJS engine instance for the given plugin.
 pub fn spawn_plugin_runtime(
     manifest: PluginManifest,
@@ -26,6 +34,23 @@ pub fn spawn_plugin_runtime(
     api_tx: UnboundedSender<ApiCall>,
     snapshot: Arc<arc_swap::ArcSwap<Snapshot>>,
 ) -> Result<PluginRuntimeHandle, String> {
+    spawn_plugin_runtime_with_styles(
+        manifest,
+        PluginSources { script: script_source, styles: None },
+        api_tx,
+        snapshot,
+    )
+}
+
+/// То же, но с таблицей стилей плагина: `styles.css` лежит рядом с `main.js`.
+/// Разбирает её шим — только у него есть DOM с классами и родительской цепочкой.
+pub fn spawn_plugin_runtime_with_styles(
+    manifest: PluginManifest,
+    sources: PluginSources,
+    api_tx: UnboundedSender<ApiCall>,
+    snapshot: Arc<arc_swap::ArcSwap<Snapshot>>,
+) -> Result<PluginRuntimeHandle, String> {
+    let PluginSources { script: script_source, styles: styles_css } = sources;
     manifest.validate()?;
 
     let (host_events_tx, mut host_events_rx) = unbounded::<HostEvent>();
@@ -78,6 +103,12 @@ pub fn spawn_plugin_runtime(
             };
 
             // Setup global environment and Obsidian compatibility API
+            if let Some(css) = styles_css.as_deref() {
+                // Бутстрап разберёт её один раз при загрузке плагина.
+                if let Err(e) = ctx.with(|ctx| ctx.globals().set("__plugin_styles_css", css)) {
+                    eprintln!("[plugin:{}] Failed to pass styles.css: {:?}", p_id, e);
+                }
+            }
             let setup_res = ctx.with(|ctx| setup_plugin_environment(&ctx, &manifest, api_tx.clone(), snapshot.clone()));
             if let Err(e) = setup_res {
                 eprintln!("[plugin:{}] Environment setup error: {:?}", p_id, e);
@@ -329,6 +360,18 @@ fn setup_plugin_environment<'js>(
 
     // 5. Inject runtime JavaScript bootstrap defining Obsidian-compatible classes & timers
     let bootstrap_js = r####"
+        // Состояние разбора styles.css объявлено в начале скрипта: мутаторы VElement трогают
+        // его, а они могут сработать раньше, чем дойдёт очередь до объявлений в середине файла.
+        let __css_rules = [];
+        let __css_by_class = new Map();
+        let __css_by_tag = new Map();
+        let __css_universal = [];
+        let __css_show_by_class = new Map();
+        let __css_show_by_tag = new Map();
+        let __css_show_universal = [];
+        let __css_vars = new Map();
+        let __css_epoch = 1;
+
         if (typeof console !== "undefined" && console.log) {
             const __orig_log = console.log;
             const __fmt = (a) => {
@@ -591,6 +634,9 @@ fn setup_plugin_environment<'js>(
         }
 
         async function __bootstrap_plugin_instance() {
+            // Таблица стилей плагина разбирается до onload(): плагин создаёт элементы уже
+            // стилизованными, и первый же кадр должен выглядеть правильно.
+            __init_plugin_css(globalThis.__plugin_styles_css);
             let exported = globalThis.module ? globalThis.module.exports : null;
             if (exported && exported.default && typeof exported !== "function") {
                 exported = exported.default;
@@ -1144,6 +1190,7 @@ fn setup_plugin_environment<'js>(
                 if (typeof val === "string") {
                     val.split(/\s+/).filter(Boolean).forEach(c => this.classes.add(c));
                 }
+                __css_touch();
             }
 
             get classList() {
@@ -1230,6 +1277,7 @@ fn setup_plugin_environment<'js>(
                 newChild.parent = this;
                 this.children.splice(idx, 0, newChild);
                 this._notifyModified();
+                __css_touch();
                 return newChild;
             }
 
@@ -1240,6 +1288,7 @@ fn setup_plugin_environment<'js>(
                     this.children.splice(idx, 1);
                     child.remove();
                     this._notifyModified();
+                    __css_touch();
                     return child;
                 }
                 return null;
@@ -1254,6 +1303,7 @@ fn setup_plugin_environment<'js>(
                     newChild.parent = this;
                     oldChild.remove();
                     this._notifyModified();
+                    __css_touch();
                     return oldChild;
                 }
                 return null;
@@ -1307,6 +1357,7 @@ fn setup_plugin_environment<'js>(
                     child.parent = this;
                     this.children.push(child);
                     this._notifyModified();
+                    __css_touch();
                 }
                 return child;
             }
@@ -1347,6 +1398,7 @@ fn setup_plugin_environment<'js>(
                 this.children = [];
                 this._text = "";
                 this._notifyModified();
+                __css_touch();
                 return this;
             }
 
@@ -1363,6 +1415,7 @@ fn setup_plugin_environment<'js>(
                     }
                     this.parent = null;
                     p._notifyModified();
+                    __css_touch();
                 }
             }
 
@@ -1374,6 +1427,7 @@ fn setup_plugin_environment<'js>(
                 for (const c of classes) {
                     if (c) this.classes.add(c);
                 }
+                __css_touch();
                 return this;
             }
 
@@ -1381,6 +1435,7 @@ fn setup_plugin_environment<'js>(
                 for (const c of classes) {
                     if (c) this.classes.delete(c);
                 }
+                __css_touch();
                 return this;
             }
 
@@ -1451,6 +1506,7 @@ fn setup_plugin_environment<'js>(
             setAttr(name, val) {
                 this.attributes[name] = val;
                 this._notifyModified();
+                __css_touch();
                 return this;
             }
 
@@ -1461,6 +1517,7 @@ fn setup_plugin_environment<'js>(
             setAttribute(name, val) {
                 this.attributes[name] = val;
                 this._notifyModified();
+                __css_touch();
             }
 
             getAttribute(name) {
@@ -1470,6 +1527,7 @@ fn setup_plugin_environment<'js>(
             removeAttribute(name) {
                 delete this.attributes[name];
                 this._notifyModified();
+                __css_touch();
             }
 
             hasAttribute(name) {
@@ -1947,7 +2005,13 @@ fn setup_plugin_environment<'js>(
                     class: classStr,
                     label: el.text || "Button",
                     variant,
+                    // `disabled` приходит двумя путями: свойством (`btn.disabled = true`)
+                    // и атрибутом в разметке (`attr: { disabled: "true" }`). Читать только
+                    // свойство мало — плагины создают выключенную кнопку атрибутом, и она
+                    // рендерилась активной, со своими (нечитаемыми) цветами.
                     disabled: !!el.disabled
+                        || (el.attributes && el.attributes.disabled !== undefined)
+                        || (el.attributes && el.attributes["aria-disabled"] === "true")
                 };
             }
 
@@ -2211,13 +2275,431 @@ fn setup_plugin_environment<'js>(
             return String(k).trim().replace(/-([a-z])/g, (_, c) => c.toUpperCase());
         }
 
-        /** Применённые стили элемента или null, если их нет. */
-        function __style_to_uinode(el) {
-            const src = el && el._styleTarget;
-            if (!src) return null;
+        // ── styles.css плагина ────────────────────────────────────────────────────────────
+        // Таблица стилей лежит рядом с main.js. Сопоставление идёт здесь, а не в Rust:
+        // только в шиме есть настоящий DOM — тег, набор классов и родительская цепочка.
+        // Найденные декларации уходят в тот же канал, что и inline-стили, и проходят тот же
+        // белый список, поэтому хост вообще не знает о существовании CSS-селекторов.
+        //
+        // Чего сознательно нет: псевдоклассов и псевдоэлементов (:hover, :focus, :first-child,
+        // ::before), соседних комбинаторов (+, ~), @media и @supports. Это состояния и условия,
+        // которых у нас не существует; притворяться, что они есть, — врать плагину.
+        // Само состояние объявлено в начале скрипта (см. `__css_epoch`).
+        const __css_stats = { rules: 0, selectors: 0, skipped_pseudo: 0, skipped_at: 0 };
+
+        /** Любое изменение классов или структуры делает закэшированные совпадения неверными. */
+        function __css_touch() {
+            __css_epoch++;
+        }
+
+        function __css_is_dark() {
+            try {
+                return typeof globalThis.app.isDarkMode === "function" ? !!globalThis.app.isDarkMode() : false;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        /** Селекторы, адресующие корень документа: они задают переменные, а не узлы. */
+        function __css_root_selector(sel) {
+            const s = sel.trim().toLowerCase();
+            if (s === ":root" || s === "html" || s === "body" || s === "html body") return "always";
+            if (s === ".theme-dark" || s === "body.theme-dark") return "dark";
+            if (s === ".theme-light" || s === "body.theme-light") return "light";
+            return null;
+        }
+
+        /** Одна составная часть селектора: div.a.b#id[attr="v"]. null — часть не поддержана.
+         *  `stripPseudo` отбрасывает :hover/:focus/::before вместо отказа от части: это нужно,
+         *  чтобы понять, показывается ли элемент вообще (см. `__css_any_show`). */
+        function __css_compound(text, stripPseudo) {
+            const c = { tag: null, id: null, classes: [], attrs: [] };
+            const s = text.trim();
+            let i = 0;
+            while (i < s.length) {
+                const ch = s[i];
+                if (ch === "*") { i++; continue; }
+                if (ch === ".") {
+                    let j = i + 1;
+                    while (j < s.length && /[\w-]/.test(s[j])) j++;
+                    if (j === i + 1) return null;
+                    c.classes.push(s.slice(i + 1, j));
+                    i = j;
+                    continue;
+                }
+                if (ch === "#") {
+                    let j = i + 1;
+                    while (j < s.length && /[\w-]/.test(s[j])) j++;
+                    if (j === i + 1) return null;
+                    c.id = s.slice(i + 1, j);
+                    i = j;
+                    continue;
+                }
+                if (ch === "[") {
+                    const j = s.indexOf("]", i);
+                    if (j < 0) return null;
+                    const inner = s.slice(i + 1, j);
+                    const eq = inner.indexOf("=");
+                    if (eq < 0) {
+                        c.attrs.push([inner.trim(), null]);
+                    } else {
+                        c.attrs.push([
+                            inner.slice(0, eq).trim(),
+                            inner.slice(eq + 1).trim().replace(/^["']|["']$/g, "")
+                        ]);
+                    }
+                    i = j + 1;
+                    continue;
+                }
+                if (ch === ":") {
+                    if (!stripPseudo) return null;
+                    let j = i + 1;
+                    if (s[j] === ":") j++;
+                    while (j < s.length && /[\w-]/.test(s[j])) j++;
+                    if (s[j] === "(") {
+                        let depth = 0;
+                        for (; j < s.length; j++) {
+                            if (s[j] === "(") depth++;
+                            else if (s[j] === ")") { depth--; if (depth === 0) { j++; break; } }
+                        }
+                    }
+                    i = j;
+                    continue;
+                }
+                if (/[\w-]/.test(ch)) {
+                    let j = i;
+                    while (j < s.length && /[\w-]/.test(s[j])) j++;
+                    c.tag = s.slice(i, j).toLowerCase();
+                    i = j;
+                    continue;
+                }
+                return null;
+            }
+            return c;
+        }
+
+        /** "a > .b .c" -> [{text:"a",comb:" "},{text:".b",comb:">"},{text:".c",comb:" "}]. */
+        function __css_split_selector(sel) {
+            const parts = [];
+            let cur = "";
+            let comb = " ";
+            let depth = 0;
+            for (let i = 0; i < sel.length; i++) {
+                const ch = sel[i];
+                if (ch === "[") { depth++; cur += ch; continue; }
+                if (ch === "]") { depth = Math.max(0, depth - 1); cur += ch; continue; }
+                if (depth === 0 && (ch === " " || ch === "\t" || ch === "\n" || ch === "\r" || ch === ">" || ch === "+" || ch === "~")) {
+                    if (cur) { parts.push({ text: cur, comb }); cur = ""; comb = " "; }
+                    if (ch === ">") comb = ">";
+                    else if (ch === "+" || ch === "~") comb = ch;
+                    continue;
+                }
+                cur += ch;
+            }
+            if (cur) parts.push({ text: cur, comb });
+            return parts;
+        }
+
+        /** Разбиение тела правила по ';' с учётом скобок: url(data:...;base64,...) не ломается. */
+        function __css_split_decls(body) {
+            const out = [];
+            let cur = "";
+            let depth = 0;
+            let quote = "";
+            for (const ch of body) {
+                if (quote) {
+                    cur += ch;
+                    if (ch === quote) quote = "";
+                    continue;
+                }
+                if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue; }
+                if (ch === "(") depth++;
+                else if (ch === ")") depth = Math.max(0, depth - 1);
+                if (ch === ";" && depth === 0) { out.push(cur); cur = ""; continue; }
+                cur += ch;
+            }
+            if (cur.trim()) out.push(cur);
+            return out;
+        }
+
+        function __css_declarations(body) {
             const out = {};
+            for (const decl of __css_split_decls(body)) {
+                const i = decl.indexOf(":");
+                if (i < 0) continue;
+                const raw = decl.slice(0, i).trim().toLowerCase();
+                const val = decl.slice(i + 1).trim();
+                if (!raw || !val || raw.startsWith("--")) continue;
+                const key = __css_key(raw);
+                if (!__STYLE_KEYS.has(key)) continue;
+                out[key] = val.replace(/\s*!important\s*$/i, "");
+            }
+            return out;
+        }
+
+        function __css_custom_props(body) {
+            const out = {};
+            for (const decl of __css_split_decls(body)) {
+                const i = decl.indexOf(":");
+                if (i < 0) continue;
+                const raw = decl.slice(0, i).trim();
+                if (!raw.startsWith("--")) continue;
+                out[raw] = decl.slice(i + 1).trim();
+            }
+            return out;
+        }
+
+        function __css_build_compounds(parts, stripPseudo) {
+            const compounds = [];
+            for (const p of parts) {
+                const c = __css_compound(p.text, stripPseudo);
+                if (!c) return null;
+                c.comb = p.comb;
+                compounds.push(c);
+            }
+            return compounds;
+        }
+
+        /** Индекс по правой части селектора: она решает, подходит ли правило узлу вообще. */
+        function __css_index(byClass, byTag, universal, rule) {
+            const last = rule.parts[rule.parts.length - 1];
+            if (last.classes.length > 0) {
+                const key = last.classes[0];
+                if (!byClass.has(key)) byClass.set(key, []);
+                byClass.get(key).push(rule);
+            } else if (last.tag) {
+                if (!byTag.has(last.tag)) byTag.set(last.tag, []);
+                byTag.get(last.tag).push(rule);
+            } else {
+                universal.push(rule);
+            }
+        }
+
+        /**
+         * Правило с псевдоклассом: применить его мы не можем — состояния :hover/:focus у нас
+         * нет. Но если оно показывает элемент, это надо запомнить: иначе парное
+         * `display: none` спрячет кнопку навсегда и до неё будет не добраться.
+         */
+        function __css_note_state_rule(parts, decls) {
+            __css_stats.skipped_pseudo++;
+            const display = decls.display;
+            if (!display || String(display).trim().toLowerCase() === "none") return;
+            const compounds = __css_build_compounds(parts, true);
+            if (!compounds) return;
+            __css_index(__css_show_by_class, __css_show_by_tag, __css_show_universal, {
+                parts: compounds,
+                decls: {},
+                order: 0,
+                key: 0
+            });
+        }
+
+        /** Показывается ли элемент хоть каким-то правилом состояния. */
+        function __css_any_show(el) {
+            const hit = (list) => {
+                if (!list) return false;
+                for (const r of list) {
+                    if (__css_matches(el, r.parts, r.parts.length - 1)) return true;
+                }
+                return false;
+            };
+            if (hit(__css_show_universal)) return true;
+            if (el.tag && hit(__css_show_by_tag.get(el.tag))) return true;
+            if (el.classes) {
+                for (const cls of el.classes) {
+                    if (hit(__css_show_by_class.get(cls))) return true;
+                }
+            }
+            return false;
+        }
+
+        function __css_add_rule(sel, decls, order) {
+            const parts = __css_split_selector(sel);
+            if (parts.length === 0) return;
+            const compounds = __css_build_compounds(parts, false);
+            if (!compounds) {
+                __css_note_state_rule(parts, decls);
+                return;
+            }
+            if (Object.keys(decls).length === 0) return;
+            let ids = 0;
+            let cls = 0;
+            let tags = 0;
+            for (const c of compounds) {
+                if (c.id) ids++;
+                cls += c.classes.length + c.attrs.length;
+                if (c.tag) tags++;
+            }
+            // Ключ каскада считается один раз: сравнивать числа дешевле, чем три поля на кадр.
+            // order ограничен числом правил в файле (тысячи), специфичность — сотнями.
+            const key = ids * 1e12 + cls * 1e9 + tags * 1e6 + order;
+            const rule = { parts: compounds, decls, order, key };
+            __css_rules.push(rule);
+            __css_stats.selectors++;
+            __css_index(__css_by_class, __css_by_tag, __css_universal, rule);
+        }
+
+        /** Разбор таблицы стилей плагина. Вызывается один раз при загрузке. */
+        function __init_plugin_css(src) {
+            __css_rules = [];
+            __css_by_class = new Map();
+            __css_by_tag = new Map();
+            __css_universal = [];
+            __css_show_by_class = new Map();
+            __css_show_by_tag = new Map();
+            __css_show_universal = [];
+            __css_vars = new Map();
+            __css_stats.rules = 0;
+            __css_stats.selectors = 0;
+            __css_stats.skipped_pseudo = 0;
+            __css_stats.skipped_at = 0;
+            __css_touch();
+
+            const text = String(src || "").replace(/\/\*[\s\S]*?\*\//g, "");
+            if (!text.trim()) return;
+            const dark = __css_is_dark();
+            let order = 0;
+            let i = 0;
+            const n = text.length;
+            while (i < n) {
+                let j = i;
+                while (j < n && text[j] !== "{" && text[j] !== "}") j++;
+                if (j >= n) break;
+                if (text[j] === "}") { i = j + 1; continue; }
+                const prelude = text.slice(i, j).trim();
+                let depth = 0;
+                let k = j;
+                for (; k < n; k++) {
+                    if (text[k] === "{") depth++;
+                    else if (text[k] === "}") { depth--; if (depth === 0) break; }
+                }
+                const body = text.slice(j + 1, k);
+                i = k + 1;
+                if (prelude.startsWith("@")) {
+                    __css_stats.skipped_at++;
+                    continue;
+                }
+                const decls = __css_declarations(body);
+                const vars = __css_custom_props(body);
+                for (const sel of prelude.split(",")) {
+                    const s = sel.trim();
+                    if (!s) continue;
+                    const root = __css_root_selector(s);
+                    if (root) {
+                        if (root === "always" || (root === "dark" && dark) || (root === "light" && !dark)) {
+                            for (const [name, value] of Object.entries(vars)) __css_vars.set(name, value);
+                        }
+                        continue;
+                    }
+                    __css_add_rule(s, decls, order);
+                }
+                order++;
+                __css_stats.rules++;
+            }
+        }
+
+        /** var(--x) и var(--x, fallback) из переменных, объявленных на корне и теме. */
+        function __css_resolve_vars(value, depth) {
+            if (depth > 6 || value.indexOf("var(") < 0) return value;
+            return value.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*([^()]*))?\)/g, (m, name, fallback) => {
+                const v = __css_vars.get(name);
+                if (v != null) return __css_resolve_vars(v, depth + 1);
+                return fallback != null ? fallback.trim() : "";
+            });
+        }
+
+        function __css_compound_matches(el, c) {
+            if (!el || el.tag === undefined) return false;
+            if (c.tag && el.tag !== c.tag) return false;
+            if (c.id && el.id !== c.id) return false;
+            if (c.classes.length > 0) {
+                if (!el.classes) return false;
+                for (const cls of c.classes) if (!el.classes.has(cls)) return false;
+            }
+            if (c.attrs.length > 0) {
+                const a = el.attributes || {};
+                for (const [k, v] of c.attrs) {
+                    if (v === null) { if (a[k] === undefined) return false; }
+                    else if (String(a[k]) !== v) return false;
+                }
+            }
+            return true;
+        }
+
+        /** Справа налево: правая часть уже совпала, проверяем предков по комбинатору. */
+        function __css_matches(el, parts, idx) {
+            if (!__css_compound_matches(el, parts[idx])) return false;
+            if (idx === 0) return true;
+            const comb = parts[idx].comb;
+            if (comb === ">") return __css_matches(el.parent, parts, idx - 1);
+            if (comb === "+" || comb === "~") return false;
+            let p = el.parent;
+            while (p) {
+                if (__css_matches(p, parts, idx - 1)) return true;
+                p = p.parent;
+            }
+            return false;
+        }
+
+        function __css_match(el) {
+            const cands = [];
+            const seen = new Set();
+            const add = (list) => {
+                if (!list) return;
+                for (const r of list) {
+                    if (seen.has(r)) continue;
+                    seen.add(r);
+                    cands.push(r);
+                }
+            };
+            add(__css_universal);
+            if (el.tag) add(__css_by_tag.get(el.tag));
+            if (el.classes) for (const cls of el.classes) add(__css_by_class.get(cls));
+            if (cands.length === 0) return null;
+            // Каскад: специфичность, затем порядок в файле. Побеждает последнее применённое.
+            cands.sort((a, b) => a.key - b.key);
+            const out = {};
+            let any = false;
+            for (const r of cands) {
+                if (!__css_matches(el, r.parts, r.parts.length - 1)) continue;
+                for (const [k, v] of Object.entries(r.decls)) {
+                    const resolved = __css_resolve_vars(v, 0);
+                    if (resolved === "") continue;
+                    out[k] = resolved;
+                    any = true;
+                }
+            }
+            // Спрятать насовсем — худшее из возможного: элемент показывается по :hover/:focus,
+            // которого мы не умеем, и до кнопки было бы не добраться. Показываем всегда.
+            if (out.display === "none" && __css_any_show(el)) {
+                delete out.display;
+                any = Object.keys(out).length > 0;
+            }
+            return any ? out : null;
+        }
+
+        function __css_declarations_for(el) {
+            if (!el || __css_rules.length === 0) return null;
+            const cached = el._cssCache;
+            if (cached && cached.epoch === __css_epoch) return cached.decls;
+            const decls = __css_match(el);
+            el._cssCache = { epoch: __css_epoch, decls };
+            return decls;
+        }
+
+        /**
+         * Стили элемента: сначала styles.css, поверх — inline. Возвращает null, если пусто.
+         * `base` — декларации, найденные по селекторам таблицы стилей плагина.
+         */
+        function __style_to_uinode(el, base) {
+            const src = el && el._styleTarget;
+            const out = {};
+            if (base) for (const [k, v] of Object.entries(base)) out[k] = v;
+            if (!src) return Object.keys(out).length > 0 ? out : null;
             for (const [k, v] of Object.entries(src)) {
-                if (v == null) continue;
+                // Пустое значение — это "снять", а не "поставить пустоту": нижележащий
+                // стиль из таблицы должен остаться в силе.
+                if (v == null || v === "") continue;
                 if (k === "cssText") {
                     // Тот же CSS, но строкой: плагины пишут так 253 раза за корпус.
                     for (const decl of String(v).split(";")) {
@@ -2239,7 +2721,7 @@ fn setup_plugin_environment<'js>(
          */
         function __velement_to_uinode(el) {
             const node = __velement_core_to_uinode(el);
-            const style = __style_to_uinode(el);
+            const style = __style_to_uinode(el, __css_declarations_for(el));
             if (!style) return node;
             // Пустой div без текста сериализатор обычно выбрасывает, но если у него есть размер
             // или фон — это распорка/разделитель, и он должен остаться пустым боксом.

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, point, px, relative, AnyElement, Context, Div, ElementId, FocusHandle, InteractiveElement,
+    div, point, px, relative, AnyElement, Context, ElementId, FocusHandle, InteractiveElement,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, TextAlign,
 };
@@ -180,6 +180,25 @@ pub struct NodeStyle {
     pub overflow_hidden: bool,
     /// `display: none` — узел не рендерится, но остаётся в дереве: плагин может вернуть его обратно.
     pub hidden: bool,
+}
+
+impl NodeStyle {
+    /// Трогает ли стиль геометрию. Только такие стили требуют отдельного бокса вокруг узла:
+    /// цвет и кегль достаточно повесить на обёртку-контейнер, а жёсткая колонка внутри строки
+    /// из нескольких `span` сломала бы раскладку.
+    pub fn affects_layout(&self) -> bool {
+        self.width.is_some()
+            || self.height.is_some()
+            || self.min_width.is_some()
+            || self.max_width.is_some()
+            || self.min_height.is_some()
+            || self.max_height.is_some()
+            || self.padding.is_some()
+            || self.margin.is_some()
+            || self.position.is_some()
+            || self.overflow_hidden
+            || self.inset != Inset::default()
+    }
 }
 
 /// Сериализация в ту же плоскую карту строк, что присылает JS: иначе дерево нельзя
@@ -462,7 +481,7 @@ fn has_word(cls: &str, word: &str) -> bool {
 
 /// Применяет стиль поверх того, что уже решили класс и семантика узла: явный стиль плагина
 /// главнее эвристики по классу.
-fn apply_style(mut el: Div, style: &NodeStyle) -> Div {
+fn apply_style<T: Styled>(mut el: T, style: &NodeStyle) -> T {
     if let Some(v) = style.width {
         el = el.w(units(v));
     }
@@ -532,6 +551,31 @@ fn apply_style(mut el: Div, style: &NodeStyle) -> Div {
         el = el.left(units(v));
     }
     el
+}
+
+/// Стиль плагина ложится на тот же бокс, что и эвристика по классу: последнее слово остаётся
+/// за таблицей стилей — ровно как в каскаде CSS. Отдельная обёртка для этого не годится:
+/// бокс с авто-высотой делает родителя «неопределённым», и `flex_1`-ребёнок (basis 0)
+/// схлопывается в ноль — так пропадал список файлов в Empty Files Cleaner.
+///
+/// Обобщён по `Styled`, потому что узел с `id` — уже `Stateful<Div>`, а не `Div`.
+fn apply_sheet<T: Styled>(el: T, sheet: Option<&NodeStyle>) -> T {
+    match sheet {
+        Some(style) => apply_style(el, style),
+        None => el,
+    }
+}
+
+/// Узел, чья ветка рендера сама заканчивается `apply_sheet`: обёртка ему не нужна и вредна.
+///
+/// Только эти три вида несут эвристику по классу, которая спорит с таблицей стилей за одну и ту
+/// же коробку. Всё остальное (текст, поле ввода, чекбокс) получает обёртку — там она безвредна,
+/// потому что геометрию никто не делит.
+fn takes_style_directly(node: &UiNode) -> bool {
+    matches!(
+        node,
+        UiNode::Column { .. } | UiNode::Row { .. } | UiNode::Button { .. }
+    )
 }
 
 /// Declarative UI component tree node transmitted from plugin workers.
@@ -672,9 +716,10 @@ impl UiNode {
             | UiNode::Slider { id, .. }
             | UiNode::Select { id, .. }
             | UiNode::List { id, .. } => Some(id),
-            // Стили не отменяют идентичность: события ввода ищут узел по id и должны найти его
-            // сквозь обёртку.
-            UiNode::Styled { child, .. } => child.id(),
+            // Обёртка стилей — декорация, а не узел: собственной идентичности у неё нет.
+            // Ребёнок попадает в `children()` и там же проходит проверку на дубликат;
+            // делегировать id сюда значило бы показать валидатору один и тот же узел дважды.
+            UiNode::Styled { .. } => None,
             _ => None,
         }
     }
@@ -1050,6 +1095,41 @@ pub fn render_ui_node<V: UiSink>(
     cx: &Context<V>,
     scroll_ctx: Option<&PluginScrollContext>,
 ) -> AnyElement {
+    render_ui_node_inner(
+        node,
+        None,
+        plugin_id,
+        view_id,
+        theme,
+        active_input,
+        input_focus_handle,
+        active_select,
+        select_popup,
+        caret_visible,
+        window,
+        cx,
+        scroll_ctx,
+    )
+}
+
+/// `sheet` — стиль, который `styles.css` плагина уже заявил для этого узла. Он приходит только
+/// из ветки `Styled`: больше никто про таблицу стилей не знает, а эвристике по классу нужно
+/// уметь уступать (см. `BoxOwnership`).
+fn render_ui_node_inner<V: UiSink>(
+    node: &UiNode,
+    sheet: Option<&NodeStyle>,
+    plugin_id: &str,
+    view_id: u64,
+    theme: &Theme,
+    active_input: Option<&PluginInputFocusState>,
+    input_focus_handle: &FocusHandle,
+    active_select: Option<&(String, u64, String)>,
+    select_popup: Option<&gpui::Entity<crate::views::tab_list::TabListPopup>>,
+    caret_visible: bool,
+    window: &gpui::Window,
+    cx: &Context<V>,
+    scroll_ctx: Option<&PluginScrollContext>,
+) -> AnyElement {
     match node {
         UiNode::Column { id, class, gap, children } => {
             if children.is_empty() {
@@ -1093,7 +1173,6 @@ pub fn render_ui_node<V: UiSink>(
                     .min_h_0()
                     .max_h(px(340.0))
                     .overflow_scroll()
-                    .pr(px(18.0))
                     .py(px(4.0));
 
                 if let Some(ctx) = scroll_ctx {
@@ -1130,8 +1209,9 @@ pub fn render_ui_node<V: UiSink>(
                             if let UiNode::Button { class: inner_cls, .. } = &children[i] {
                                 let inner_full = inner_cls.as_deref().map_or(false, |c| c.contains("w-full") || c.contains("full-width") || c.contains("is-fullwidth"));
                                 if !inner_full {
-                                    btn_elements.push(render_ui_node(
+                                    btn_elements.push(render_ui_node_inner(
                                         &children[i],
+                                        None,
                                         plugin_id,
                                         view_id,
                                         theme,
@@ -1184,8 +1264,9 @@ pub fn render_ui_node<V: UiSink>(
                     }
                 }
 
-                rendered_children.push(render_ui_node(
+                rendered_children.push(render_ui_node_inner(
                     &children[i],
+                    None,
                     plugin_id,
                     view_id,
                     theme,
@@ -1200,6 +1281,8 @@ pub fn render_ui_node<V: UiSink>(
                 ));
                 i += 1;
             }
+
+            let col = apply_sheet(col, sheet);
 
             if is_list {
                 if let Some(ctx) = scroll_ctx {
@@ -1223,6 +1306,11 @@ pub fn render_ui_node<V: UiSink>(
                             .min_h_0()
                             .max_h(px(340.0))
                             .w_full()
+                            // Жёлоб под полосу прокрутки — хром хоста, а не отступ плагина.
+                            // В таблице стилей `.ef-list { padding: 8px 0 }`, и если держать
+                            // жёлоб в padding узла, стиль его законно перекрывает — тогда
+                            // содержимое уезжает под полосу.
+                            .pr(px(14.0))
                             .on_mouse_down(MouseButton::Middle, cx.listener(|this, _, _, cx| {
                                 cx.stop_propagation();
                                 this.start_plugin_modal_middle_scroll(cx);
@@ -1342,6 +1430,10 @@ pub fn render_ui_node<V: UiSink>(
                 }
             } else if is_modal_item {
                 row = row
+                    // Высота строки кратна 4: при масштабах 125–200% она приходится на целое
+                    // число пикселей, иначе разделители соседних строк «прыгают» на 1px.
+                    // 68 — по высоте двухстрочной строки (имя + путь) с отступами 10+10.
+                    .min_h(px(68.0))
                     .px(px(24.0))
                     .py(px(8.0))
                     .gap(px(12.0))
@@ -1365,13 +1457,16 @@ pub fn render_ui_node<V: UiSink>(
                     .border_b_1()
                     .border_color(theme.border_subtle);
             } else if is_footer {
+                // Без собственного фона: футер прижат к нижней кромке диалога, а `overflow_hidden`
+                // в этой GPUI обрезает по прямоугольнику (`ContentMask` хранит только `bounds`),
+                // поэтому закрашенный футер вылезал квадратными углами за скругление. Фон диалога
+                // и так тот же — убирать нечего.
                 row = row
                     .flex_shrink_0()
                     .px(px(24.0))
                     .py(px(14.0))
                     .gap(px(10.0))
                     .justify_end()
-                    .bg(theme.bg_card)
                     .border_t_1()
                     .border_color(theme.border_subtle);
             } else {
@@ -1395,23 +1490,25 @@ pub fn render_ui_node<V: UiSink>(
                     this.send_plugin_ui_event(&p_id, view_id, n_id.clone(), "click", None, cx);
                 }));
             }
-            row.children(children.iter().map(|child| {
-                render_ui_node(
-                    child,
-                    plugin_id,
-                    view_id,
-                    theme,
-                    active_input,
-                    input_focus_handle,
-                    active_select,
-                    select_popup,
-                    caret_visible,
-                    window,
-                    cx,
-                    scroll_ctx,
-                )
-            }))
-            .into_any_element()
+            apply_sheet(row, sheet)
+                .children(children.iter().map(|child| {
+                    render_ui_node_inner(
+                        child,
+                        None,
+                        plugin_id,
+                        view_id,
+                        theme,
+                        active_input,
+                        input_focus_handle,
+                        active_select,
+                        select_popup,
+                        caret_visible,
+                        window,
+                        cx,
+                        scroll_ctx,
+                    )
+                }))
+                .into_any_element()
         }
         UiNode::Text { value, class, style } => {
             let cls = class.as_deref().unwrap_or("");
@@ -1511,6 +1608,17 @@ pub fn render_ui_node<V: UiSink>(
             disabled,
         } => {
             let is_disabled = *disabled;
+            // У выключенной кнопки цвета — хозяйские. Плагин не знает нашей темы: его запасные
+            // значения (`var(--text-error, #ff6b6b)` и подобные) подобраны под тёмную тему и на
+            // светлой дают пару «светло-красное на розовом» — надпись не читается. Габариты,
+            // отступы и радиус из таблицы стилей при этом остаются за плагином.
+            let filtered;
+            let sheet = if is_disabled {
+                filtered = sheet.map(|s| NodeStyle { background: None, color: None, opacity: None, ..s.clone() });
+                filtered.as_ref()
+            } else {
+                sheet
+            };
             let cls = class.as_deref().unwrap_or("");
             let is_icon_btn = cls.contains("clickable-icon")
                 || cls.contains("menu-item-icon")
@@ -1660,7 +1768,7 @@ pub fn render_ui_node<V: UiSink>(
                 btn = btn.opacity(0.5);
             }
 
-            btn.child(label.clone()).into_any_element()
+            apply_sheet(btn, sheet).child(label.clone()).into_any_element()
         }
         UiNode::Input {
             id,
@@ -2199,8 +2307,9 @@ pub fn render_ui_node<V: UiSink>(
             .bg(theme.bg_card)
             .rounded(px(4.0))
             .children(children.iter().map(|c| {
-                render_ui_node(
+                render_ui_node_inner(
                     c,
+                    None,
                     plugin_id,
                     view_id,
                     theme,
@@ -2271,8 +2380,9 @@ pub fn render_ui_node<V: UiSink>(
                             UiNode::Textarea { .. } => this.min_w(px(280.0)).max_w(px(460.0)),
                             _ => this.min_w(px(140.0)),
                         })
-                        .child(render_ui_node(
+                        .child(render_ui_node_inner(
                             control,
+                            None,
                             plugin_id,
                             view_id,
                             theme,
@@ -2443,8 +2553,31 @@ pub fn render_ui_node<V: UiSink>(
             if style.hidden {
                 return div().into_any_element();
             }
-            let inner = render_ui_node(
+            // Колонка, строка и кнопка носят стиль на себе: их ветки заканчиваются тем же
+            // `apply_style`, и каскад решается на одном боксе. Обёртка тут не просто лишняя —
+            // она ломает раскладку: бокс с авто-высотой делает родителя «неопределённым»,
+            // и `flex_1`-ребёнок (basis 0) схлопывается в ноль. Именно так исчезал список
+            // файлов в Empty Files Cleaner.
+            if takes_style_directly(child.as_ref()) {
+                return render_ui_node_inner(
+                    child,
+                    Some(style),
+                    plugin_id,
+                    view_id,
+                    theme,
+                    active_input,
+                    input_focus_handle,
+                    active_select,
+                    select_popup,
+                    caret_visible,
+                    window,
+                    cx,
+                    scroll_ctx,
+                );
+            }
+            let inner = render_ui_node_inner(
                 child,
+                None,
                 plugin_id,
                 view_id,
                 theme,
@@ -2458,8 +2591,15 @@ pub fn render_ui_node<V: UiSink>(
                 scroll_ctx,
             );
             // Обёртка — это бокс самого элемента плагина: размеры, отступы, фон, позиция.
-            // Внутренняя раскладка (row/column, gap) остаётся за самим узлом.
-            apply_style(div().flex().flex_col().flex_shrink_0(), style)
+            // Внутренняя раскладка (row/column, gap) остаётся за самим узлом. Стиль без
+            // геометрии (цвет, кегль, начертание) получает обычный бокс: он должен передать
+            // текстовые свойства вниз и не навязывать колонку.
+            let base = if style.affects_layout() {
+                div().flex().flex_col().flex_shrink_0()
+            } else {
+                div()
+            };
+            apply_style(base, style)
                 .child(inner)
                 .into_any_element()
         }
@@ -2524,6 +2664,29 @@ mod tests {
     }
 
     #[test]
+    fn text_only_style_does_not_claim_layout() {
+        let mut style = NodeStyle::default();
+        style.color = Some(0xff0000ff);
+        style.font_size = Some(14.0);
+        style.font_weight = Some(600);
+        // Цвет и кегль обёртке-контейнеру достаточно передать вниз: колонка внутри строки
+        // из нескольких span сломала бы раскладку.
+        assert!(!style.affects_layout());
+
+        style.padding = Some(Sides { top: 4.0, right: 4.0, bottom: 4.0, left: 4.0 });
+        assert!(style.affects_layout());
+
+        let mut inset = NodeStyle::default();
+        inset.inset.left = Some(Len::Px(8.0));
+        assert!(inset.affects_layout());
+
+        let mut hidden = NodeStyle::default();
+        hidden.hidden = true;
+        // display:none не требует бокса — узел и так не рендерится.
+        assert!(!hidden.affects_layout());
+    }
+
+    #[test]
     fn styled_node_keeps_id_and_children() {
         let node = UiNode::Styled {
             style: NodeStyle::default(),
@@ -2533,8 +2696,83 @@ mod tests {
                 value: None,
             }),
         };
-        assert_eq!(node.id(), Some("query"));
+        // Обёртка прозрачна: id остаётся у ребёнка, и валидатор видит его один раз.
+        assert_eq!(node.id(), None);
         assert_eq!(node.children().len(), 1);
+        assert_eq!(node.children()[0].id(), Some("query"));
+        assert!(validate_tree(&node).is_ok());
+    }
+
+    #[test]
+    fn styled_wrapper_does_not_duplicate_child_id() {
+        // Ровно то, что падало в приложении: CSS-правило накрыло поле ввода, обёртка
+        // унаследовала его id, и дерево отвергалось как «Duplicate UI node id».
+        let tree = UiNode::Column {
+            id: None,
+            class: None,
+            gap: Gap::None,
+            children: vec![UiNode::Styled {
+                style: NodeStyle::default(),
+                child: Box::new(UiNode::Input {
+                    id: "search".into(),
+                    placeholder: None,
+                    value: None,
+                }),
+            }],
+        };
+        assert!(validate_tree(&tree).is_ok(), "обёртка не должна давать дубликат id");
+        assert_eq!(tree.get_input_value("search"), None);
+        let mut tree = tree;
+        assert!(tree.update_input_value("search", "typed"));
+        assert_eq!(tree.get_input_value("search"), Some("typed".into()));
+    }
+
+    #[test]
+    fn styled_box_nodes_take_the_sheet_without_a_wrapper() {
+        // Обёртка вокруг колонки делала её родителя «авто-высотой», и `flex_1` (basis 0)
+        // схлопывался в ноль: список файлов в Empty Files Cleaner исчезал целиком.
+        let column = UiNode::Column {
+            id: None,
+            class: Some("ef-list".into()),
+            gap: Gap::None,
+            children: vec![],
+        };
+        let row = UiNode::Row {
+            id: None,
+            class: Some("ef-item".into()),
+            gap: Gap::None,
+            children: vec![],
+        };
+        let text = UiNode::Text {
+            value: "x".into(),
+            class: Some("ef-item-name".into()),
+            style: TextStyle::Normal,
+        };
+        assert!(takes_style_directly(&column));
+        assert!(takes_style_directly(&row));
+        assert!(!takes_style_directly(&text), "тексту обёртка не мешает — у него нет своей геометрии");
+    }
+
+    #[test]
+    fn sheet_padding_wins_over_class_heuristic_on_the_same_box() {
+        // `.ef-header { padding: 28px 28px 20px }` против эвристики `is_header` (24/24/14).
+        // Один бокс, каскад: стиль применён последним и перекрывает все четыре стороны.
+        let style = NodeStyle::from_map(&BTreeMap::from([("padding".to_string(), "28px 28px 20px".to_string())]));
+        let mut el = apply_sheet(div().px(px(24.0)).pt(px(24.0)).pb(px(14.0)), Some(&style));
+        let padding = el.style().padding.clone();
+        assert_eq!(padding.left, Some(px(28.0).into()));
+        assert_eq!(padding.right, Some(px(28.0).into()));
+        assert_eq!(padding.top, Some(px(28.0).into()));
+        assert_eq!(padding.bottom, Some(px(20.0).into()));
+    }
+
+    #[test]
+    fn sheet_without_box_properties_keeps_the_heuristic() {
+        // Цвет в таблице стилей не отменяет отступы эвристики: иначе плагин с одним правилом
+        // `.item { color: red }` потерял бы всю коробку.
+        let style = NodeStyle::from_map(&BTreeMap::from([("color".to_string(), "#ff0000".to_string())]));
+        let mut el = apply_sheet(div().px(px(24.0)), Some(&style));
+        assert_eq!(el.style().padding.left, Some(px(24.0).into()));
     }
 
     #[test]
