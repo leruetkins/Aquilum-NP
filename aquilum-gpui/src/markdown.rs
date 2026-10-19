@@ -1618,6 +1618,141 @@ pub fn row_painted_text(
     PaintedRow { segments, line_chars }
 }
 
+/// Strips inline markdown markers (bold, italic, strikethrough, inline code, links, highlights, underline),
+/// returning the plain visible text.
+pub fn strip_inline_markdown(mut s: &str) -> String {
+    // 1. Handle image links ![alt](url) -> alt
+    let mut intermediate = String::with_capacity(s.len());
+    while !s.is_empty() {
+        if s.starts_with("![") {
+            if let Some(close_bracket) = s[2..].find(']') {
+                let after_bracket = &s[2 + close_bracket + 1..];
+                if after_bracket.starts_with('(') {
+                    if let Some(close_paren) = after_bracket[1..].find(')') {
+                        let alt = &s[2..2 + close_bracket];
+                        intermediate.push_str(alt);
+                        let total_consumed = 2 + close_bracket + 1 + 1 + close_paren + 1;
+                        s = &s[total_consumed..];
+                        continue;
+                    }
+                }
+            }
+        }
+        let mut chars = s.chars();
+        if let Some(c) = chars.next() {
+            intermediate.push(c);
+            s = chars.as_str();
+        } else {
+            break;
+        }
+    }
+
+    // 2. Parse inline syntax spans
+    let spans = parse_inline_syntax_spans(&intermediate);
+    let mut out = String::with_capacity(intermediate.len());
+    for span in spans {
+        match span {
+            SyntaxSpan::Marker(_) => {}
+            SyntaxSpan::Text(t)
+            | SyntaxSpan::Bold(t)
+            | SyntaxSpan::Italic(t)
+            | SyntaxSpan::BoldItalic(t)
+            | SyntaxSpan::InlineCode(t)
+            | SyntaxSpan::Strikethrough(t)
+            | SyntaxSpan::LinkText(t)
+            | SyntaxSpan::Underline(t)
+            | SyntaxSpan::Highlight(t) => {
+                out.push_str(&t);
+            }
+        }
+    }
+
+    // 3. Clean up any unclosed boundary markers from partial selection (e.g. "**word" or "word**")
+    let trimmed = out.trim_start_matches(|c| c == '*' || c == '_' || c == '~' || c == '=' || c == '`');
+    let trimmed = trimmed.trim_end_matches(|c| c == '*' || c == '_' || c == '~' || c == '=' || c == '`');
+    trimmed.to_string()
+}
+
+/// Strips markdown tags and formatting, returning plain rendered text as seen in preview mode.
+pub fn strip_markdown_tags(input: &str) -> String {
+    let mut result_lines = Vec::new();
+    let mut in_code_block = false;
+
+    for line in input.lines() {
+        let trimmed = line.trim();
+        // Check for code fence
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_code_block = !in_code_block;
+            continue; // Code fences are hidden in preview mode
+        }
+
+        if in_code_block {
+            result_lines.push(line.to_string());
+            continue;
+        }
+
+        // Table separator line like |---|---|
+        if crate::table::is_separator(trimmed) {
+            continue;
+        }
+
+        // Table row like | a | b |
+        if (trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() > 1) || crate::table::is_separator(trimmed) {
+            let cells = crate::table::split_row(trimmed);
+            let stripped_cells: Vec<String> = cells
+                .into_iter()
+                .map(|c| {
+                    let cell_content = &trimmed[c.content.clone()];
+                    strip_inline_markdown(cell_content)
+                })
+                .collect();
+            result_lines.push(stripped_cells.join("\t"));
+            continue;
+        }
+
+        // Horizontal rule
+        if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+            continue;
+        }
+
+        // Headings: # Heading
+        let mut work_line = line;
+        let trimmed_start = line.trim_start();
+        let leading_spaces = &line[..line.len() - trimmed_start.len()];
+
+        if let Some(rest) = trimmed_start.strip_prefix("###### ") {
+            work_line = rest;
+        } else if let Some(rest) = trimmed_start.strip_prefix("##### ") {
+            work_line = rest;
+        } else if let Some(rest) = trimmed_start.strip_prefix("#### ") {
+            work_line = rest;
+        } else if let Some(rest) = trimmed_start.strip_prefix("### ") {
+            work_line = rest;
+        } else if let Some(rest) = trimmed_start.strip_prefix("## ") {
+            work_line = rest;
+        } else if let Some(rest) = trimmed_start.strip_prefix("# ") {
+            work_line = rest;
+        } else if let Some(rest) = trimmed_start.strip_prefix("> ") {
+            work_line = rest;
+        } else if let Some(rest) = trimmed_start.strip_prefix(">") {
+            work_line = rest;
+        }
+
+        let stripped = strip_inline_markdown(work_line);
+        if leading_spaces.is_empty() || work_line != line {
+            result_lines.push(stripped);
+        } else {
+            result_lines.push(format!("{}{}", leading_spaces, stripped));
+        }
+    }
+
+    let mut res = result_lines.join("\n");
+    if input.ends_with('\n') {
+        res.push('\n');
+    }
+    res
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2199,6 +2334,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_strip_markdown_tags() {
+        assert_eq!(strip_markdown_tags("# Header 1"), "Header 1");
+        assert_eq!(strip_markdown_tags("### Subheader"), "Subheader");
+        assert_eq!(strip_markdown_tags("Text with **bold** and *italic* and `code`"), "Text with bold and italic and code");
+        assert_eq!(strip_markdown_tags("Link: [Click](https://example.com) and ==highlight=="), "Link: Click and highlight");
+        assert_eq!(strip_markdown_tags("<u>Underlined</u> text"), "Underlined text");
+        assert_eq!(strip_markdown_tags("> Quote line"), "Quote line");
+
+        let code = "```rust\nlet x = 10;\nprintln!(\"{x}\");\n```";
+        assert_eq!(strip_markdown_tags(code), "let x = 10;\nprintln!(\"{x}\");");
+
+        let table = "| Col 1 | Col 2 |\n|---|---|\n| **Val 1** | *Val 2* |";
+        assert_eq!(strip_markdown_tags(table), "Col 1\tCol 2\nVal 1\tVal 2");
+
+        // Partial selection cleanup
+        assert_eq!(strip_markdown_tags("**Partial bold"), "Partial bold");
+        assert_eq!(strip_markdown_tags("Partial bold**"), "Partial bold");
+        assert_eq!(strip_markdown_tags("`partial code"), "partial code");
     }
 }
 

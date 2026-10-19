@@ -84,6 +84,7 @@ pub struct AppView {
     /// the app went to the background and stop blinking there.
     pub window_was_active: bool,
     pub is_mouse_selecting: bool,
+    pub ctrl_preview_selection: bool,
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
     pub is_resizing_sidebar: bool,
@@ -342,6 +343,7 @@ impl AppView {
             editor_is_focused: true,
             window_was_active: true,
             is_mouse_selecting: false,
+            ctrl_preview_selection: false,
             sidebar_width,
             sidebar_collapsed: false,
             is_resizing_sidebar: false,
@@ -2234,7 +2236,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             });
             cursor_in_block || sel_in_block
         });
-        let is_active_line = Self::is_active_editor_line(self.edit_mode, v.line_idx, cursor_line, is_line_in_selection, is_in_active_block);
+        let is_active_line = Self::is_active_editor_line(self.edit_mode && !self.ctrl_preview_selection, v.line_idx, cursor_line, is_line_in_selection, is_in_active_block);
         let code_state = view.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
         let classified = crate::markdown::classify_line(line, code_state);
         let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &self.config.editor.headings, line_char_width);
@@ -2254,7 +2256,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     &editor_font,
                     self.manual_table_col_widths.get(&tbl.first_line).map(|w| w.as_slice()),
                 );
-                let cursor_col = if v.line_idx == cursor_line {
+                let cursor_col = if !self.ctrl_preview_selection && v.line_idx == cursor_line {
                     let (_, col) = view.line_col(doc);
                     Some(col)
                 } else {
@@ -2397,7 +2399,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             });
             cursor_in_block || sel_in_block
         });
-        let is_active_line = Self::is_active_editor_line(self.edit_mode, v.line_idx, cursor_line, is_line_in_selection, is_in_active_block);
+        let is_active_line = Self::is_active_editor_line(self.edit_mode && !self.ctrl_preview_selection, v.line_idx, cursor_line, is_line_in_selection, is_in_active_block);
         let code_state = view.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
         let classified = crate::markdown::classify_line(line, code_state);
         let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &self.config.editor.headings, line_char_width);
@@ -2414,7 +2416,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     &editor_font,
                     self.manual_table_col_widths.get(&tbl.first_line).map(|w| w.as_slice()),
                 );
-                let cursor_col = if v.line_idx == cursor_line {
+                let cursor_col = if !self.ctrl_preview_selection && v.line_idx == cursor_line {
                     let (_, col) = view.line_col(doc);
                     Some(col)
                 } else {
@@ -3688,6 +3690,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         // Escape cancels selection if active
         if keystroke.key == "escape" {
+            self.ctrl_preview_selection = false;
             if let Some(view) = self.state.active_view_mut() {
                 if view.selection_anchor.is_some() && view.selection_anchor != Some(view.cursor_offset) {
                     view.selection_anchor = None;
@@ -3695,6 +3698,10 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     return;
                 }
             }
+        }
+
+        if !ctrl && keystroke.key != "control" && keystroke.key != "shift" && keystroke.key != "alt" {
+            self.ctrl_preview_selection = false;
         }
 
         // Ctrl + , (Toggle Settings modal)
@@ -3829,11 +3836,22 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 None
             };
 
+            let strip_tags = self.ctrl_preview_selection || !self.edit_mode;
             if let Some(tsv) = copied_tsv {
-                cx.write_to_clipboard(ClipboardItem::new_string(tsv));
+                let to_copy = if strip_tags {
+                    crate::markdown::strip_markdown_tags(&tsv)
+                } else {
+                    tsv
+                };
+                cx.write_to_clipboard(ClipboardItem::new_string(to_copy));
                 return;
             } else if let Some(text) = self.state.active_selected_text() {
-                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                let to_copy = if strip_tags {
+                    crate::markdown::strip_markdown_tags(&text)
+                } else {
+                    text
+                };
+                cx.write_to_clipboard(ClipboardItem::new_string(to_copy));
                 return;
             }
         }
@@ -6090,7 +6108,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 .unwrap_or((0, 0));
 
             let selection_range = view.selection_range(doc.len());
-            let is_editing = is_leaf_active && self.edit_mode;
+            let is_editing = is_leaf_active && self.edit_mode && !self.ctrl_preview_selection;
             let mut active_block_ids: std::collections::HashSet<usize> = std::collections::HashSet::new();
             if is_editing {
                 if let Some(s) = code_states_arc.get(cursor_line).and_then(|s| s.as_ref()) {
@@ -6910,6 +6928,17 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 };
                 let row_layout_down = row_layout.clone();
                 let row_layout_move = row_layout.clone();
+                let row_layout_preview = if is_active_line {
+                    if let Some(tbl) = grid_tbl {
+                        shape_table_row(window.text_system(), line, tbl, v.line_idx, None, table_layout.as_ref().unwrap(), headings, &editor_font, row_char_w)
+                    } else {
+                        shape_row(&text_system, line, &classified, v, false, headings, &editor_font, row_char_w)
+                    }
+                } else {
+                    row_layout.clone()
+                };
+                let row_layout_preview_down = row_layout_preview.clone();
+                let row_layout_preview_move = row_layout_preview.clone();
 
                 let line_number_text = if v.sub_idx == 0 && !is_tbl_sep {
                     format!("{:>3} ", v.line_idx + 1)
@@ -7210,12 +7239,15 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             if this.is_resizing_any() {
                                 return;
                             }
+                            let ctrl_held = event.modifiers.control || event.modifiers.platform;
+                            this.ctrl_preview_selection = ctrl_held;
                             this.is_mouse_selecting = true;
                             let click_x: f32 = event.position.x.into();
 
                             let col_in_row = if click_x > text_start_x {
-                                let column = row_layout_down.column_for_x(click_x - text_start_x);
-                                row_layout_down.line_char_for_column(column).saturating_sub(v_char_start).min(row_len)
+                                let layout = if ctrl_held { &row_layout_preview_down } else { &row_layout_down };
+                                let column = layout.column_for_x(click_x - text_start_x);
+                                layout.line_char_for_column(column).saturating_sub(v_char_start).min(row_len)
                             } else {
                                 0
                             };
@@ -7249,8 +7281,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                 cx.stop_propagation();
                                 let click_x: f32 = event.position.x.into();
                                 let col_in_row = if click_x > text_start_x {
-                                    let column = row_layout_move.column_for_x(click_x - text_start_x);
-                                    row_layout_move.line_char_for_column(column).saturating_sub(v_char_start).min(row_len)
+                                    let layout = if this.ctrl_preview_selection { &row_layout_preview_move } else { &row_layout_move };
+                                    let column = layout.column_for_x(click_x - text_start_x);
+                                    layout.line_char_for_column(column).saturating_sub(v_char_start).min(row_len)
                                 } else {
                                     0
                                 };
@@ -7272,45 +7305,49 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 let is_editor_focused = is_leaf_active && self.editor_is_focused;
                 let cursor_table = tables.at(cursor_line);
 
-                let raw_btn = if let Some(tbl) = cursor_table {
-                    if v_line_idx == tbl.first_line {
-                        let is_raw = self.state.active_view().map_or(false, |v| v.raw_tables.contains(&tbl.first_line) && tbl.contains(cursor_line));
-                        let (btn_w, btn_h) = (20.0, 18.0);
-                        let (btn_left, btn_top) = if is_raw {
-                            (row_layout.width() + 18.0, ((row_h - btn_h) / 2.0).max(0.0))
+                let raw_btn = if is_editing {
+                    if let Some(tbl) = cursor_table {
+                        if v_line_idx == tbl.first_line {
+                            let is_raw = self.state.active_view().map_or(false, |v| v.raw_tables.contains(&tbl.first_line) && tbl.contains(cursor_line));
+                            let (btn_w, btn_h) = (20.0, 18.0);
+                            let (btn_left, btn_top) = if is_raw {
+                                (row_layout.width() + 18.0, ((row_h - btn_h) / 2.0).max(0.0))
+                            } else {
+                                let total_w = table_layout.as_ref().map(|l| l.total_width).unwrap_or(0.0);
+                                (total_w + 24.0, 14.0 + (28.0 - btn_h) / 2.0)
+                            };
+                            let tbl_first_line = tbl.first_line;
+                            let icon_color = if is_raw { theme.accent } else { theme.text_secondary };
+                            Some(
+                                div()
+                                    .id(gpui::ElementId::Name(format!("table-raw-btn-{}", v_idx).into()))
+                                    .absolute()
+                                    .left(px(btn_left))
+                                    .top(px(btn_top))
+                                    .w(px(btn_w))
+                                    .h(px(btn_h))
+                                    .rounded(px(3.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .when(is_raw, |d| {
+                                        let mut bg = theme.accent;
+                                        bg.a = 0.2;
+                                        d.bg(bg).border_1().border_color(theme.accent)
+                                    })
+                                    .when(!is_raw, |d| {
+                                        d.bg(theme.bg_editor).border_1().border_color(theme.border_subtle).hover(|h| h.bg(theme.bg_hover))
+                                    })
+                                    .child(icons::icon(icons::ICON_CODE, 11.0, icon_color))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.state.active_toggle_raw_table_at(tbl_first_line);
+                                        cx.notify();
+                                    }))
+                            )
                         } else {
-                            let total_w = table_layout.as_ref().map(|l| l.total_width).unwrap_or(0.0);
-                            (total_w + 24.0, 14.0 + (28.0 - btn_h) / 2.0)
-                        };
-                        let tbl_first_line = tbl.first_line;
-                        let icon_color = if is_raw { theme.accent } else { theme.text_secondary };
-                        Some(
-                            div()
-                                .id(gpui::ElementId::Name(format!("table-raw-btn-{}", v_idx).into()))
-                                .absolute()
-                                .left(px(btn_left))
-                                .top(px(btn_top))
-                                .w(px(btn_w))
-                                .h(px(btn_h))
-                                .rounded(px(3.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .when(is_raw, |d| {
-                                    let mut bg = theme.accent;
-                                    bg.a = 0.2;
-                                    d.bg(bg).border_1().border_color(theme.accent)
-                                })
-                                .when(!is_raw, |d| {
-                                    d.bg(theme.bg_editor).border_1().border_color(theme.border_subtle).hover(|h| h.bg(theme.bg_hover))
-                                })
-                                .child(icons::icon(icons::ICON_CODE, 11.0, icon_color))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.state.active_toggle_raw_table_at(tbl_first_line);
-                                    cx.notify();
-                                }))
-                        )
+                            None
+                        }
                     } else {
                         None
                     }
@@ -7323,7 +7360,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     _ => false,
                 };
 
-                let add_col_btn = if is_cursor_in_this_table {
+                let add_col_btn = if is_editing && is_cursor_in_this_table {
                     if let Some(tbl) = grid_tbl {
                         if v_line_idx == tbl.first_line {
                             let total_w = table_layout.as_ref().unwrap().total_width;
@@ -7372,7 +7409,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     None
                 };
 
-                let add_row_btn = if is_cursor_in_this_table {
+                let add_row_btn = if is_editing && is_cursor_in_this_table {
                     if let Some(tbl) = grid_tbl {
                         if v_line_idx == tbl.last_line {
                             let tbl_clone = tbl.clone();
@@ -7631,6 +7668,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             return;
                         }
                         cx.stop_propagation();
+                        let ctrl_held = event.modifiers.control || event.modifiers.platform;
+                        this.ctrl_preview_selection = ctrl_held;
                         this.commit_title_rename(window, cx);
                         window.focus(&this.focus_handle);
                         this.is_mouse_selecting = true;

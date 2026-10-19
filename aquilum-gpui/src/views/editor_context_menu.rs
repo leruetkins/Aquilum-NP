@@ -525,7 +525,12 @@ impl AppView {
             }
             "editor-copy" => {
                 if let Some(text) = self.state.active_selected_text() {
-                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                    let to_copy = if self.ctrl_preview_selection || !self.edit_mode {
+                        crate::markdown::strip_markdown_tags(&text)
+                    } else {
+                        text
+                    };
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(to_copy));
                 }
             }
             "editor-paste" | "editor-paste-plain" => {
