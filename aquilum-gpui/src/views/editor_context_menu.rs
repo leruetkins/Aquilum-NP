@@ -105,7 +105,7 @@ impl AppView {
             self.state.active_document().and_then(|doc| {
                 let (line, col) = view.line_col(doc);
                 let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
-                view.grid_table_at(&tables, line, line).map(|tbl| {
+                view.grid_table_at(doc, &tables, line, line, self.ctrl_preview_selection || !self.edit_mode).map(|tbl| {
                     let row = tbl.row_of_line(line).unwrap_or(0);
                     let line_str = doc.line_text(line);
                     let cells = crate::table::split_row(&line_str);

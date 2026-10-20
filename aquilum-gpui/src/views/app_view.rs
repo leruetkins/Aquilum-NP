@@ -1165,7 +1165,7 @@ impl AppView {
         let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
         };
-        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
         let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
@@ -1190,7 +1190,7 @@ impl AppView {
         let mut target_idx = curr_v_idx - 1;
         if !shift {
             let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
-            if let Some(tbl) = view.grid_table_at(&tables, visual_rows[target_idx].line_idx, cursor_line) {
+            if let Some(tbl) = view.grid_table_at(doc, &tables, visual_rows[target_idx].line_idx, cursor_line, self.ctrl_preview_selection || !self.edit_mode) {
                 if visual_rows[target_idx].line_idx == tbl.sep_line() && target_idx > 0 {
                     target_idx -= 1;
                 }
@@ -1216,7 +1216,7 @@ impl AppView {
         let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
         };
-        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
         let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
@@ -1241,7 +1241,7 @@ impl AppView {
         let mut target_idx = curr_v_idx + 1;
         if !shift {
             let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
-            if let Some(tbl) = view.grid_table_at(&tables, visual_rows[target_idx].line_idx, cursor_line) {
+            if let Some(tbl) = view.grid_table_at(doc, &tables, visual_rows[target_idx].line_idx, cursor_line, self.ctrl_preview_selection || !self.edit_mode) {
                 if visual_rows[target_idx].line_idx == tbl.sep_line() && target_idx + 1 < visual_rows.len() {
                     target_idx += 1;
                 }
@@ -1267,7 +1267,7 @@ impl AppView {
         let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
         };
-        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
         let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
@@ -1296,7 +1296,7 @@ impl AppView {
         let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
         };
-        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
         let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
@@ -1439,6 +1439,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             wrap_cols,
             Some(&self.config.editor.headings),
             anchor,
+            self.ctrl_preview_selection || !self.edit_mode,
         );
         crate::markdown::find_visual_row_for_cursor(
             &view.window.visual_rows,
@@ -1505,7 +1506,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             };
             let word_wrap = self.word_wrap;
             let wrap_cols = self.last_wrap_cols;
-            view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&self.config.editor.headings), anchor);
+            view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&self.config.editor.headings), anchor, self.ctrl_preview_selection || !self.edit_mode);
         }
         self.scroll_cursor_into_view();
     }
@@ -1789,7 +1790,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             return None;
         };
         let wrap_cols = if self.last_wrap_cols > 0 { self.last_wrap_cols } else { 80 };
-        view.ensure_visual_cache_with_headings(doc, self.word_wrap, wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
         let total = view.total_height();
         let max_scroll = (total - f64::from(viewport_h)).max(0.0);
         if max_scroll <= 1.0 {
@@ -1962,7 +1963,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
         };
-        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
         let total_content_h = view.total_height();
         let window_h = f32::from(window.bounds().size.height);
         let (_, viewport_h, max_scroll_content, _) = self.editor_scroll_metrics(total_content_h, window_h);
@@ -2349,7 +2350,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             return;
         };
 
-        view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+        view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
         let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
@@ -2404,7 +2405,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         // by exactly one cell.
         let col_in_row = if click_x > text_start_x {
             let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
-            let row_layout = if let Some(tbl) = view.grid_table_at(&tables, v.line_idx, cursor_line) {
+            let row_layout = if let Some(tbl) = view.grid_table_at(doc, &tables, v.line_idx, cursor_line, self.ctrl_preview_selection || !self.edit_mode) {
                 let table_layout = Self::get_or_compute_table_layout(
                     &self.table_layouts,
                     window.text_system(),
@@ -2431,12 +2432,15 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     row_char_w,
                 )
             } else {
+                let raw_row = tables
+                    .at(v.line_idx)
+                    .map_or(false, |t| view.table_raw_now(doc, t, cursor_line, self.ctrl_preview_selection || !self.edit_mode));
                 shape_row(
                     window.text_system(),
                     line,
                     &classified,
                     v,
-                    is_active_line,
+                    is_active_line || raw_row,
                     &self.config.editor.headings,
                     &editor_font,
                     row_char_w,
@@ -2514,7 +2518,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             return;
         };
 
-        view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+        view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
         let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
@@ -2566,7 +2570,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         let col_in_row = if pos_x > text_start_x {
             let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
-            let row_layout = if let Some(tbl) = view.grid_table_at(&tables, v.line_idx, cursor_line) {
+            let row_layout = if let Some(tbl) = view.grid_table_at(doc, &tables, v.line_idx, cursor_line, self.ctrl_preview_selection || !self.edit_mode) {
                 let table_layout = Self::get_or_compute_table_layout(
                     &self.table_layouts,
                     window.text_system(),
@@ -2593,12 +2597,15 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     row_char_w,
                 )
             } else {
+                let raw_row = tables
+                    .at(v.line_idx)
+                    .map_or(false, |t| view.table_raw_now(doc, t, cursor_line, self.ctrl_preview_selection || !self.edit_mode));
                 shape_row(
                     window.text_system(),
                     line,
                     &classified,
                     v,
-                    is_active_line,
+                    is_active_line || raw_row,
                     &self.config.editor.headings,
                     &editor_font,
                     row_char_w,
@@ -2634,7 +2641,6 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
     ) -> bool {
         edit_mode && (line_idx == cursor_line || is_line_in_selection || is_in_active_block)
     }
-
 
     pub fn handle_custom_hex_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         self.reset_hex_cursor_blink(cx);
@@ -3969,7 +3975,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     let start_line = doc.line_of_byte(range.start);
                     let end_line = doc.line_of_byte(range.end);
                     if let (Some(t1), Some(t2)) = (tables.at(start_line), tables.at(end_line)) {
-                        if t1.first_line == t2.first_line && view.grid_table_at(&tables, cursor_line, cursor_line).is_some() {
+                        if t1.first_line == t2.first_line && view.grid_table_at(doc, &tables, cursor_line, cursor_line, self.ctrl_preview_selection || !self.edit_mode).is_some() {
                             let start_line_byte = doc.line_start_byte(start_line);
                             let end_line_byte = doc.line_start_byte(end_line);
                             let start_col = doc.slice_to_string(start_line_byte..range.start).chars().count();
@@ -4058,7 +4064,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     let paste_action = if let Some((view, doc)) = self.state.active_view_and_doc() {
                         let (cursor_line, cursor_col) = view.line_col(doc);
                         let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
-                        if let Some(tbl) = view.grid_table_at(&tables, cursor_line, cursor_line) {
+                        if let Some(tbl) = view.grid_table_at(doc, &tables, cursor_line, cursor_line, self.ctrl_preview_selection || !self.edit_mode) {
                             if cursor_line == tbl.sep_line() {
                                 PasteAction::Deny
                             } else if text.contains('\t') {
@@ -4125,7 +4131,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let table_action = if let Some((view, doc)) = self.state.active_view_and_doc() {
             let (cursor_line, cursor_col) = view.line_col(doc);
             let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
-            if let Some(tbl) = view.grid_table_at(&tables, cursor_line, cursor_line) {
+            if let Some(tbl) = view.grid_table_at(doc, &tables, cursor_line, cursor_line, self.ctrl_preview_selection || !self.edit_mode) {
                 let line_str = doc.line_text(cursor_line);
                 let cells = crate::table::split_row(&line_str);
                 let current_row_cell = tbl
@@ -4423,7 +4429,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     let start_line = doc.line_of_byte(range.start);
                     let end_line = doc.line_of_byte(range.end);
                     if let (Some(t1), Some(t2)) = (tables.at(start_line), tables.at(end_line)) {
-                        if t1.first_line == t2.first_line && start_line != end_line && view.grid_table_at(&tables, start_line, start_line).is_some() {
+                        if t1.first_line == t2.first_line && start_line != end_line && view.grid_table_at(doc, &tables, start_line, start_line, self.ctrl_preview_selection || !self.edit_mode).is_some() {
                             let start_line_byte = doc.line_start_byte(start_line);
                             let end_line_byte = doc.line_start_byte(end_line);
                             let start_col = doc.slice_to_string(start_line_byte..range.start).chars().count();
@@ -4963,7 +4969,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             let restore_y = {
                                 let view = self.state.views.entry(tab.id).or_insert_with(|| crate::workspace::EditorViewState::new(tab.id, doc_id));
 
-                                view.ensure_visual_cache_with_headings(doc, self.word_wrap, target_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset);
+                                view.ensure_visual_cache_with_headings(doc, self.word_wrap, target_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
                                 if view.window.wrap_cols == target_wrap_cols {
                                     view.scroll_top
                                 } else {
@@ -6911,7 +6917,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 let classified = crate::markdown::classify_line(line, code_state);
                 let (_, row_char_w, _, _, _) =
                     Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths));
-                let row_layout = if let Some(tbl) = view.grid_table_at(&tables, line_idx, cursor_line) {
+                let row_layout = if let Some(tbl) = view.grid_table_at(doc, &tables, line_idx, cursor_line, self.ctrl_preview_selection || !self.edit_mode) {
                     let table_layout = Self::get_or_compute_table_layout(
                         &self.table_layouts,
                         window.text_system(),
@@ -6923,7 +6929,10 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     let cursor_col = if is_act_line && line_idx == cursor_line { Some(active_col_in_row) } else { None };
                     shape_table_row(window.text_system(), line, tbl, line_idx, cursor_col, &table_layout, headings, &editor_font, row_char_w)
                 } else {
-                    shape_row(&text_system, line, &classified, v, is_act_line, headings, &editor_font, row_char_w)
+                    let raw_row = tables
+                        .at(line_idx)
+                        .map_or(false, |t| view.table_raw_now(doc, t, cursor_line, self.ctrl_preview_selection || !self.edit_mode));
+                    shape_row(&text_system, line, &classified, v, is_act_line || raw_row, headings, &editor_font, row_char_w)
                 };
 
                 if line.is_empty() {
@@ -6934,7 +6943,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     }
                 }
 
-                if let Some(tbl) = view.grid_table_at(&tables, line_idx, cursor_line) {
+                if let Some(tbl) = view.grid_table_at(doc, &tables, line_idx, cursor_line, self.ctrl_preview_selection || !self.edit_mode) {
                     let sel_s_line = doc.line_of_byte(sel.start);
                     let sel_e_line = doc.line_of_byte(sel.end);
                     if tbl.contains(sel_s_line) && tbl.contains(sel_e_line) {
@@ -7048,7 +7057,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     .map(|s| active_block_ids.contains(&s.block_id))
                     .unwrap_or(false);
                 let (is_raw_table_line, is_raw_table_first, is_raw_table_last) = if let Some(tbl) = tables.at(v.line_idx) {
-                    if view.is_table_raw(tbl.first_line) && tbl.contains(cursor_line) {
+                    if view.table_raw_now(doc, tbl, cursor_line, self.ctrl_preview_selection || !self.edit_mode) {
                         (
                             true,
                             v.line_idx == tbl.first_line && v.sub_idx == 0,
@@ -7070,7 +7079,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
                 let (h_metrics_row_h, row_char_w, _row_font_size, _cursor_h, _cursor_top) =
                     Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths));
-                let grid_tbl = view.grid_table_at(&tables, v.line_idx, cursor_line);
+                let grid_tbl = view.grid_table_at(doc, &tables, v.line_idx, cursor_line, self.ctrl_preview_selection || !self.edit_mode);
                 let table_layout = grid_tbl.map(|tbl| {
                     Self::get_or_compute_table_layout(
                         &self.table_layouts,
@@ -7544,7 +7553,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 let raw_btn = if is_editing {
                     if let Some(tbl) = cursor_table {
                         if v_line_idx == tbl.first_line {
-                            let is_raw = self.state.active_view().map_or(false, |v| v.raw_tables.contains(&tbl.first_line) && tbl.contains(cursor_line));
+                            let is_raw = view.table_raw_now(doc, tbl, cursor_line, self.ctrl_preview_selection || !self.edit_mode);
                             let (btn_w, btn_h) = (20.0, 18.0);
                             let (btn_left, btn_top) = if is_raw {
                                 (row_layout.width() + 18.0, ((row_h - btn_h) / 2.0).max(0.0))
@@ -8409,7 +8418,7 @@ impl Render for AppView {
             let old_above_h = view.above_h;
             let old_wrap_cols = view.window.wrap_cols;
 
-            view.ensure_visual_cache_with_headings(doc, self.word_wrap, wrap_cols, Some(&self.config.editor.headings), anchor_line);
+            view.ensure_visual_cache_with_headings(doc, self.word_wrap, wrap_cols, Some(&self.config.editor.headings), anchor_line, self.ctrl_preview_selection || !self.edit_mode);
 
             if view.window.wrap_cols != old_wrap_cols || (view.above_h - old_above_h).abs() > 0.5 {
                 let first_v_idx = view.window.first_row_of_line(anchor_line).unwrap_or(0);
