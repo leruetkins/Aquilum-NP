@@ -6,8 +6,9 @@ use uuid::Uuid;
 
 use crate::code_scan::CodeCheckpoints;
 use crate::line_index::LineIndex;
-use crate::state::{NoteEditEvent, TextChange, UndoStep};
+use crate::state::NoteEditEvent;
 use crate::workspace::session_core::ops::{EditEvent, TextOp};
+use crate::workspace::session_core::undo::{History, Selection, Step, TextChange};
 use crate::workspace::TabId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -124,8 +125,7 @@ pub struct DocumentBuffer {
     pub first_dirty_time: Option<Instant>,
     pub line_index: LineIndex,
     pub code_checkpoints: CodeCheckpoints,
-    pub undo_stack: Vec<UndoStep>,
-    pub redo_stack: Vec<UndoStep>,
+    pub history: History,
     pub stats_cache: std::cell::Cell<Option<(u64, crate::state::TextStats)>>,
     pub table_index: std::cell::RefCell<crate::table::TableIndex>,
 }
@@ -148,8 +148,7 @@ impl DocumentBuffer {
             first_dirty_time: None,
             line_index,
             code_checkpoints: CodeCheckpoints::new(),
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
+            history: History::new(),
             stats_cache: std::cell::Cell::new(None),
             table_index: std::cell::RefCell::new(crate::table::TableIndex::new()),
         }
@@ -241,36 +240,6 @@ impl DocumentBuffer {
     #[inline]
     pub fn to_string(&self) -> String {
         self.rope.to_string()
-    }
-
-    #[inline]
-    pub fn take_content(&mut self) -> String {
-        let text = self.rope.to_string();
-        self.rope = crop::Rope::new();
-        self.line_index = LineIndex::new_from_rope(&self.rope);
-        text
-    }
-
-    pub fn update_from_active_note(
-        &mut self,
-        content: String,
-        version: u64,
-        line_index: LineIndex,
-        code_checkpoints: CodeCheckpoints,
-        undo_stack: Vec<UndoStep>,
-        redo_stack: Vec<UndoStep>,
-        is_dirty: bool,
-        first_dirty_time: Option<Instant>,
-    ) {
-        self.rope = crop::Rope::from(content);
-        self.version = version;
-        self.line_index = line_index;
-        self.code_checkpoints = code_checkpoints;
-        self.undo_stack = undo_stack;
-        self.redo_stack = redo_stack;
-        self.is_dirty = is_dirty;
-        self.first_dirty_time = first_dirty_time;
-        self.stats_cache.set(None);
     }
 
     pub fn text_stats(&self) -> crate::state::TextStats {
@@ -485,136 +454,9 @@ impl DocumentBuffer {
         self.first_dirty_time = None;
         self.line_index = LineIndex::new_from_rope(&self.rope);
         self.code_checkpoints = CodeCheckpoints::new();
-        self.undo_stack.clear();
-        self.redo_stack.clear();
+        self.history = History::new();
         self.table_index.borrow_mut().scan_rope(self.version, &self.rope);
         BufferEvent::Reloaded
-    }
-
-    /// Single point of truth for mutating document content.
-    /// Emits `BufferEvent::Edited` with exact deltas for views.
-    pub fn apply_edit(
-        &mut self,
-        start: usize,
-        old_len: usize,
-        new_text: &str,
-        source: Option<TabId>,
-        cursor_before: usize,
-        cursor_after: usize,
-    ) -> BufferEvent {
-        assert!(start <= self.rope.byte_len(), "start offset exceeds content len");
-        assert!(start + old_len <= self.rope.byte_len(), "replaced range exceeds content len");
-
-        let edit_line = self.line_of_byte(start);
-        let removed = self.slice_to_string(start..start + old_len);
-        let line_diff = (new_text.matches('\n').count() as isize) - (removed.matches('\n').count() as isize);
-        self.rope.replace(start..start + old_len, new_text);
-
-        let edit = Edit {
-            start,
-            old_len,
-            new_len: new_text.len(),
-        };
-
-        self.version += 1;
-        self.line_index.splice_rope(&self.rope, start);
-        self.table_index.borrow_mut().apply_edit(self.version, edit_line, line_diff, &self.rope);
-
-        // Record undo step
-        let undo_step = UndoStep {
-            changes: vec![TextChange {
-                at: start,
-                removed,
-                inserted: new_text.to_string(),
-            }],
-            cursor_before,
-            cursor_after,
-            time: Instant::now(),
-        };
-        self.undo_stack.push(undo_step);
-        self.redo_stack.clear();
-
-        self.is_dirty = true;
-        if self.first_dirty_time.is_none() {
-            self.first_dirty_time = Some(Instant::now());
-        }
-
-        BufferEvent::Edited {
-            edit,
-            source,
-            version: self.version,
-        }
-    }
-
-    pub fn undo(&mut self, source: Option<TabId>) -> Option<(BufferEvent, usize)> {
-        let step = self.undo_stack.pop()?;
-        let mut composite_edit = None;
-
-        for change in step.changes.iter().rev() {
-            let start = change.at;
-            let old_len = change.inserted.len();
-            let new_len = change.removed.len();
-
-            self.rope.replace(start..start + old_len, &change.removed);
-            self.line_index.splice_rope(&self.rope, start);
-            composite_edit = Some(Edit {
-                start,
-                old_len,
-                new_len,
-            });
-        }
-
-        self.version += 1;
-        self.is_dirty = true;
-        self.table_index.borrow_mut().scan_rope(self.version, &self.rope);
-
-        let edit = composite_edit?;
-        self.redo_stack.push(step.clone());
-
-        Some((
-            BufferEvent::Edited {
-                edit,
-                source,
-                version: self.version,
-            },
-            step.cursor_before,
-        ))
-    }
-
-    pub fn redo(&mut self, source: Option<TabId>) -> Option<(BufferEvent, usize)> {
-        let step = self.redo_stack.pop()?;
-        let mut composite_edit = None;
-
-        for change in step.changes.iter() {
-            let start = change.at;
-            let old_len = change.removed.len();
-            let new_len = change.inserted.len();
-
-            self.rope.replace(start..start + old_len, &change.inserted);
-            self.line_index.splice_rope(&self.rope, start);
-            composite_edit = Some(Edit {
-                start,
-                old_len,
-                new_len,
-            });
-        }
-
-        self.version += 1;
-        self.is_dirty = true;
-        self.table_index.borrow_mut().scan_rope(self.version, &self.rope);
-
-        let edit = composite_edit?;
-        let cursor_after = step.cursor_after;
-        self.undo_stack.push(step);
-
-        Some((
-            BufferEvent::Edited {
-                edit,
-                source,
-                version: self.version,
-            },
-            cursor_after,
-        ))
     }
 
     pub fn record_change(
@@ -626,6 +468,20 @@ impl DocumentBuffer {
         cursor_after: usize,
         origin: Option<TabId>,
     ) -> (BufferEvent, NoteEditEvent, EditEvent) {
+        self.record_change_with_selection(at, removed, inserted, Selection::cursor_only(cursor_before), Selection::cursor_only(cursor_after), origin)
+    }
+
+    /// Single point of truth for text mutation from the editing view.
+    /// Every call is one undo step; no coalescing (AkelPad AECO_DETAILEDUNDO).
+    pub fn record_change_with_selection(
+        &mut self,
+        at: usize,
+        removed: String,
+        inserted: String,
+        sel_before: Selection,
+        sel_after: Selection,
+        origin: Option<TabId>,
+    ) -> (BufferEvent, NoteEditEvent, EditEvent) {
         if removed.is_empty() && inserted.is_empty() {
             let edit_line = self.line_of_byte(at);
             return (
@@ -635,7 +491,7 @@ impl DocumentBuffer {
                     version: self.version,
                 },
                 NoteEditEvent { edit_line, at, old_len: 0, new_len: 0, line_diff: 0 },
-                EditEvent { doc: self.id, version: self.version, ops: SmallVec::new(), origin, cursor_after: Some(cursor_after) },
+                EditEvent { doc: self.id, version: self.version, ops: SmallVec::new(), origin, cursor_after: Some(sel_after.cursor) },
             );
         }
 
@@ -668,65 +524,18 @@ impl DocumentBuffer {
         }
         self.stats_cache.set(None);
 
-        let now = Instant::now();
-        let change = TextChange { at, removed, inserted };
-        let mut coalesced = false;
-        if let Some(last_step) = self.undo_stack.last_mut() {
-            if now.duration_since(last_step.time) < std::time::Duration::from_millis(1000)
-                && last_step.changes.len() == 1
-            {
-                let last = &mut last_step.changes[0];
-                if last.removed.is_empty()
-                    && change.removed.is_empty()
-                    && !change.inserted.contains('\n')
-                    && last.at + last.inserted.len() == change.at
-                {
-                    last.inserted.push_str(&change.inserted);
-                    last_step.cursor_after = cursor_after;
-                    last_step.time = now;
-                    coalesced = true;
-                } else if last.inserted.is_empty()
-                    && change.inserted.is_empty()
-                    && !change.removed.contains('\n')
-                    && change.at + change.removed.len() == last.at
-                {
-                    last.removed.insert_str(0, &change.removed);
-                    last.at = change.at;
-                    last_step.cursor_after = cursor_after;
-                    last_step.time = now;
-                    coalesced = true;
-                } else if last.inserted.is_empty()
-                    && change.inserted.is_empty()
-                    && !change.removed.contains('\n')
-                    && change.at == last.at
-                {
-                    last.removed.push_str(&change.removed);
-                    last_step.cursor_after = cursor_after;
-                    last_step.time = now;
-                    coalesced = true;
-                }
-            }
-        }
-
-        if !coalesced {
-            if self.undo_stack.len() >= 1000 {
-                self.undo_stack.remove(0);
-            }
-            self.undo_stack.push(UndoStep {
-                changes: vec![change],
-                cursor_before,
-                cursor_after,
-                time: now,
-            });
-        }
-        self.redo_stack.clear();
+        self.history.record(Step {
+            changes: vec![TextChange { at, removed, inserted }],
+            sel_before,
+            sel_after,
+        });
 
         let edit_event = EditEvent {
             doc: self.id,
             version: self.version,
             ops,
             origin,
-            cursor_after: Some(cursor_after),
+            cursor_after: Some(sel_after.cursor),
         };
 
         let buffer_event = BufferEvent::Edited {
@@ -745,8 +554,8 @@ impl DocumentBuffer {
     pub fn undo_step(
         &mut self,
         origin: Option<TabId>,
-    ) -> Option<(usize, Vec<NoteEditEvent>, EditEvent)> {
-        let step = self.undo_stack.pop()?;
+    ) -> Option<(Selection, Vec<NoteEditEvent>, EditEvent)> {
+        let step = self.history.take(false)?;
         let mut note_edits = Vec::new();
         let mut ops = SmallVec::new();
 
@@ -789,24 +598,23 @@ impl DocumentBuffer {
             self.first_dirty_time = Some(Instant::now());
         }
         self.stats_cache.set(None);
-        self.redo_stack.push(step.clone());
 
         let edit_event = EditEvent {
             doc: self.id,
             version: self.version,
             ops,
             origin,
-            cursor_after: Some(step.cursor_before),
+            cursor_after: Some(step.sel_before.cursor),
         };
 
-        Some((step.cursor_before, note_edits, edit_event))
+        Some((step.sel_before, note_edits, edit_event))
     }
 
     pub fn redo_step(
         &mut self,
         origin: Option<TabId>,
-    ) -> Option<(usize, Vec<NoteEditEvent>, EditEvent)> {
-        let step = self.redo_stack.pop()?;
+    ) -> Option<(Selection, Vec<NoteEditEvent>, EditEvent)> {
+        let step = self.history.take(true)?;
         let mut note_edits = Vec::new();
         let mut ops = SmallVec::new();
 
@@ -849,17 +657,16 @@ impl DocumentBuffer {
             self.first_dirty_time = Some(Instant::now());
         }
         self.stats_cache.set(None);
-        self.undo_stack.push(step.clone());
 
         let edit_event = EditEvent {
             doc: self.id,
             version: self.version,
             ops,
             origin,
-            cursor_after: Some(step.cursor_after),
+            cursor_after: Some(step.sel_after.cursor),
         };
 
-        Some((step.cursor_after, note_edits, edit_event))
+        Some((step.sel_after, note_edits, edit_event))
     }
 }
 
@@ -938,7 +745,7 @@ mod tests {
         assert!(!buf.is_dirty);
 
         // Apply edit
-        let ev = buf.apply_edit(6, 5, "Rust", None, 6, 10);
+        let (ev, _, _) = buf.record_change(6, "World".to_string(), "Rust".to_string(), 6, 10, None);
         match ev {
             BufferEvent::Edited { edit, version, .. } => {
                 assert_eq!(edit.start, 6);
@@ -953,21 +760,13 @@ mod tests {
         assert!(buf.is_dirty);
 
         // Undo
-        let (undo_ev, cursor) = buf.undo(None).expect("Undo should succeed");
-        assert_eq!(cursor, 6);
-        match undo_ev {
-            BufferEvent::Edited { edit, .. } => {
-                assert_eq!(edit.start, 6);
-                assert_eq!(edit.old_len, 4);
-                assert_eq!(edit.new_len, 5);
-            }
-            _ => panic!("Expected Edited event on undo"),
-        }
+        let (sel, _, _) = buf.undo_step(None).expect("Undo should succeed");
+        assert_eq!(sel.cursor, 6);
         assert_eq!(buf.content(), "Hello World");
 
         // Redo
-        let (_redo_ev, cursor_redo) = buf.redo(None).expect("Redo should succeed");
-        assert_eq!(cursor_redo, 10);
+        let (sel_redo, _, _) = buf.redo_step(None).expect("Redo should succeed");
+        assert_eq!(sel_redo.cursor, 10);
         assert_eq!(buf.content(), "Hello Rust");
     }
 
@@ -986,7 +785,7 @@ mod tests {
         assert!(!buf.is_dirty);
 
         // 1. Insertion with newline
-        buf.apply_edit(7, 0, "inserted\n", None, 7, 16);
+        buf.record_change(7, String::new(), "inserted\n".to_string(), 7, 16, None);
         assert_eq!(buf.content(), "line 1\ninserted\nline 2\nline 3");
         assert_eq!(buf.line_index.lines(), 4);
         assert_eq!(buf.version, 2);
@@ -994,14 +793,14 @@ mod tests {
 
         // 2. Deletion across lines
         // Delete "inserted\n" (9 bytes at index 7)
-        buf.apply_edit(7, 9, "", None, 7, 7);
+        buf.record_change(7, "inserted\n".to_string(), String::new(), 7, 7, None);
         assert_eq!(buf.content(), "line 1\nline 2\nline 3");
         assert_eq!(buf.line_index.lines(), 3);
         assert_eq!(buf.version, 3);
 
         // 3. Replacement
         // Replace "line 1" with "header 1"
-        buf.apply_edit(0, 6, "header 1", None, 0, 8);
+        buf.record_change(0, "line 1".to_string(), "header 1".to_string(), 0, 8, None);
         assert_eq!(buf.content(), "header 1\nline 2\nline 3");
         assert_eq!(buf.line_index.lines(), 3);
         assert_eq!(buf.version, 4);
@@ -1019,37 +818,37 @@ mod tests {
         );
 
         // Edit 1: A -> AB
-        buf.apply_edit(1, 0, "B", None, 1, 2);
+        buf.record_change(1, String::new(), "B".to_string(), 1, 2, None);
         // Edit 2: AB -> ABC
-        buf.apply_edit(2, 0, "C", None, 2, 3);
+        buf.record_change(2, String::new(), "C".to_string(), 2, 3, None);
         assert_eq!(buf.content(), "ABC");
-        assert_eq!(buf.undo_stack.len(), 2);
-        assert_eq!(buf.redo_stack.len(), 0);
+        assert_eq!(buf.history.undo_len(), 2);
+        assert_eq!(buf.history.redo_len(), 0);
 
         // Undo edit 2 -> AB
-        let (_, c1) = buf.undo(None).unwrap();
+        let (sel1, _, _) = buf.undo_step(None).unwrap();
         assert_eq!(buf.content(), "AB");
-        assert_eq!(c1, 2);
-        assert_eq!(buf.redo_stack.len(), 1);
+        assert_eq!(sel1.cursor, 2);
+        assert_eq!(buf.history.redo_len(), 1);
 
         // Undo edit 1 -> A
-        let (_, c0) = buf.undo(None).unwrap();
+        let (sel0, _, _) = buf.undo_step(None).unwrap();
         assert_eq!(buf.content(), "A");
-        assert_eq!(c0, 1);
-        assert_eq!(buf.redo_stack.len(), 2);
+        assert_eq!(sel0.cursor, 1);
+        assert_eq!(buf.history.redo_len(), 2);
 
         // Redo edit 1 -> AB
-        let (_, c_r1) = buf.redo(None).unwrap();
+        let (sel_r1, _, _) = buf.redo_step(None).unwrap();
         assert_eq!(buf.content(), "AB");
-        assert_eq!(c_r1, 2);
-        assert_eq!(buf.redo_stack.len(), 1);
+        assert_eq!(sel_r1.cursor, 2);
+        assert_eq!(buf.history.redo_len(), 1);
 
         // New edit while redo stack has items: AB -> AB!
-        buf.apply_edit(2, 0, "!", None, 2, 3);
+        buf.record_change(2, String::new(), "!".to_string(), 2, 3, None);
         assert_eq!(buf.content(), "AB!");
         // Redo stack must be cleared
-        assert_eq!(buf.redo_stack.len(), 0);
-        assert!(buf.redo(None).is_none());
+        assert_eq!(buf.history.redo_len(), 0);
+        assert!(buf.redo_step(None).is_none());
     }
 
     #[test]
@@ -1070,7 +869,7 @@ mod tests {
         assert!(buf.stats_cache.get().is_some());
 
         // Edit changes content and increments version
-        buf.apply_edit(11, 0, " test", None, 11, 16);
+        buf.record_change(11, String::new(), " test".to_string(), 11, 16, None);
         assert_eq!(buf.version, 2);
 
         let s2 = buf.text_stats();
@@ -1100,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn test_forward_delete_coalesces_into_single_undo_step() {
+    fn test_forward_deletes_are_separate_undo_steps() {
         let mut buf = DocumentBuffer::new(
             DocumentId::new(),
             PathBuf::from("delete.md"),
@@ -1112,9 +911,11 @@ mod tests {
         buf.record_change(2, "c".to_string(), String::new(), 3, 2, None);
         buf.record_change(2, "d".to_string(), String::new(), 2, 2, None);
 
-        assert_eq!(buf.undo_stack.len(), 1, "forward deletes must coalesce");
+        assert_eq!(buf.history.undo_len(), 2, "no coalescing: each delete is a step");
         assert_eq!(buf.content(), "abef");
 
+        buf.undo_step(None).expect("undo must succeed");
+        assert_eq!(buf.content(), "abdef");
         buf.undo_step(None).expect("undo must succeed");
         assert_eq!(buf.content(), "abcdef");
     }
@@ -1151,7 +952,8 @@ mod tests {
 
         let start = buf.line_start_byte(4);
         let old_len = buf.line_start_byte(5) - start;
-        buf.apply_edit(start, old_len, "", None, start, start);
+        let removed = buf.slice_to_string(start..start + old_len);
+        buf.record_change(start, removed, String::new(), start, start, None);
 
         {
             let idx = buf.ensure_table_index();

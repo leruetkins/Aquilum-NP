@@ -7,6 +7,7 @@ use crate::document_buffer::{
 use crate::editor_window::EditorWindow;
 use crate::state::NoteEditEvent;
 use crate::workspace::session_core::ops::{EditEvent, TextOp};
+use crate::workspace::session_core::undo::Selection;
 use crate::workspace::TabId;
 
 #[derive(Clone, Copy, Debug)]
@@ -496,38 +497,43 @@ impl TabSession {
         }
     }
 
+    /// Current text selection as an undo-step selection.
+    fn selection(&self) -> Selection {
+        Selection { cursor: self.cursor_offset, anchor: self.selection_anchor }
+    }
+
     pub fn delete_selection(&mut self, doc: &mut DocumentBuffer) -> Option<(BufferEvent, NoteEditEvent, EditEvent)> {
         let range = self.selection_range(doc.len())?;
-        let cursor_before = self.cursor_offset;
+        let sel_before = self.selection();
         let removed = doc.slice_to_string(range.clone());
         let at = range.start;
         self.cursor_offset = at;
         self.selection_anchor = None;
         self.visual_cache_dirty = true;
-        Some(doc.record_change(at, removed, String::new(), cursor_before, at, Some(self.tab_id)))
+        Some(doc.record_change_with_selection(at, removed, String::new(), sel_before, Selection::cursor_only(at), Some(self.tab_id)))
     }
 
     pub fn replace_selection(&mut self, doc: &mut DocumentBuffer, text: &str) -> (BufferEvent, NoteEditEvent, EditEvent) {
         if let Some(range) = self.selection_range(doc.len()) {
-            let cursor_before = self.cursor_offset;
+            let sel_before = self.selection();
             let removed = doc.slice_to_string(range.clone());
             let at = range.start;
             let new_cursor = at + text.len();
             self.cursor_offset = new_cursor;
             self.selection_anchor = None;
             self.visual_cache_dirty = true;
-            doc.record_change(at, removed, text.to_string(), cursor_before, new_cursor, Some(self.tab_id))
+            doc.record_change_with_selection(at, removed, text.to_string(), sel_before, Selection::cursor_only(new_cursor), Some(self.tab_id))
         } else {
             let mut offset = self.cursor_offset.min(doc.len());
             while offset > 0 && !doc.is_char_boundary(offset) {
                 offset -= 1;
             }
-            let cursor_before = self.cursor_offset;
+            let sel_before = self.selection();
             let at = offset;
             let new_cursor = at + text.len();
             self.cursor_offset = new_cursor;
             self.selection_anchor = None;
-            let res = doc.record_change(at, String::new(), text.to_string(), cursor_before, new_cursor, Some(self.tab_id));
+            let res = doc.record_change_with_selection(at, String::new(), text.to_string(), sel_before, Selection::cursor_only(new_cursor), Some(self.tab_id));
             let (_, ref note_edit, _) = res;
             if note_edit.line_diff == 0 && self.window.covers_line(note_edit.edit_line) {
                 let delta = note_edit.new_len as isize - note_edit.old_len as isize;
@@ -580,13 +586,13 @@ impl TabSession {
         new_text: String,
         new_cursor: usize,
     ) -> (BufferEvent, NoteEditEvent, EditEvent) {
-        let cursor_before = self.cursor_offset;
+        let sel_before = self.selection();
         let removed = doc.slice_to_string(byte_range.clone());
         let at = byte_range.start;
         self.cursor_offset = new_cursor;
         self.selection_anchor = None;
         self.visual_cache_dirty = true;
-        doc.record_change(at, removed, new_text, cursor_before, new_cursor, Some(self.tab_id))
+        doc.record_change_with_selection(at, removed, new_text, sel_before, Selection::cursor_only(new_cursor), Some(self.tab_id))
     }
 
     pub fn delete_backwards(&mut self, doc: &mut DocumentBuffer) -> Option<(BufferEvent, NoteEditEvent, EditEvent)> {
@@ -600,11 +606,11 @@ impl TabSession {
         while prev > 0 && !doc.is_char_boundary(prev) {
             prev -= 1;
         }
-        let cursor_before = self.cursor_offset;
+        let sel_before = self.selection();
         let removed = doc.slice_to_string(prev..self.cursor_offset);
         self.cursor_offset = prev;
         self.selection_anchor = None;
-        let res = doc.record_change(prev, removed, String::new(), cursor_before, prev, Some(self.tab_id));
+        let res = doc.record_change_with_selection(prev, removed, String::new(), sel_before, Selection::cursor_only(prev), Some(self.tab_id));
         let (_, ref note_edit, _) = res;
         if note_edit.line_diff == 0 && self.window.covers_line(note_edit.edit_line) {
             let delta = note_edit.new_len as isize - note_edit.old_len as isize;
@@ -626,11 +632,11 @@ impl TabSession {
         while next <= doc.len() && !doc.is_char_boundary(next) {
             next += 1;
         }
-        let cursor_before = self.cursor_offset;
+        let sel_before = self.selection();
         let removed = doc.slice_to_string(offset..next);
         self.cursor_offset = offset;
         self.selection_anchor = None;
-        let res = doc.record_change(offset, removed, String::new(), cursor_before, offset, Some(self.tab_id));
+        let res = doc.record_change_with_selection(offset, removed, String::new(), sel_before, Selection::cursor_only(offset), Some(self.tab_id));
         let (_, ref note_edit, _) = res;
         if note_edit.line_diff == 0 && self.window.covers_line(note_edit.edit_line) {
             let delta = note_edit.new_len as isize - note_edit.old_len as isize;
@@ -649,14 +655,14 @@ impl TabSession {
     }
 
     pub fn undo(&mut self, doc: &mut DocumentBuffer) -> Option<(BufferEvent, Vec<NoteEditEvent>, EditEvent)> {
-        let (cursor_before, note_edits, edit_event) = doc.undo_step(Some(self.tab_id))?;
+        let (sel_before, note_edits, edit_event) = doc.undo_step(Some(self.tab_id))?;
         for edit in &note_edits {
             if edit.line_diff != 0 {
                 self.shift_raw_tables(edit.edit_line, edit.line_diff);
             }
         }
-        self.cursor_offset = cursor_before.min(doc.len());
-        self.selection_anchor = None;
+        self.cursor_offset = sel_before.cursor.min(doc.len());
+        self.selection_anchor = sel_before.anchor;
         self.visual_cache_dirty = true;
         let buf_event = BufferEvent::Edited {
             edit: Edit {
@@ -673,14 +679,14 @@ impl TabSession {
     }
 
     pub fn redo(&mut self, doc: &mut DocumentBuffer) -> Option<(BufferEvent, Vec<NoteEditEvent>, EditEvent)> {
-        let (cursor_after, note_edits, edit_event) = doc.redo_step(Some(self.tab_id))?;
+        let (sel_after, note_edits, edit_event) = doc.redo_step(Some(self.tab_id))?;
         for edit in &note_edits {
             if edit.line_diff != 0 {
                 self.shift_raw_tables(edit.edit_line, edit.line_diff);
             }
         }
-        self.cursor_offset = cursor_after.min(doc.len());
-        self.selection_anchor = None;
+        self.cursor_offset = sel_after.cursor.min(doc.len());
+        self.selection_anchor = sel_after.anchor;
         self.visual_cache_dirty = true;
         let buf_event = BufferEvent::Edited {
             edit: Edit {

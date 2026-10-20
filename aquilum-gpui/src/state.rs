@@ -356,23 +356,7 @@ pub fn compute_text_stats(text: &str) -> TextStats {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextChange {
-    /// Byte offset where the change occurred.
-    pub at: usize,
-    /// Text removed by this change (empty for pure insertion).
-    pub removed: String,
-    /// Text inserted by this change (empty for pure deletion).
-    pub inserted: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct UndoStep {
-    pub changes: Vec<TextChange>,
-    pub cursor_before: usize,
-    pub cursor_after: usize,
-    pub time: std::time::Instant,
-}
+pub use crate::workspace::session_core::undo::TextChange;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NoteEditEvent {
@@ -2965,7 +2949,7 @@ mod tests {
     }
 
     #[test]
-    fn test_delta_undo_stack_memory_and_sequential_edits() {
+    fn test_sequential_edits_undo_per_character() {
         let doc_id = DocumentId::new();
         let tab_id = TabId::new();
         let mut doc = DocumentBuffer::new(
@@ -2982,42 +2966,51 @@ mod tests {
             view.insert_text(&mut doc, ch);
         }
         assert_eq!(doc.content(), "Hello Initial line.\n");
-        // Merging sequential keystrokes: undo_stack should only have 1 step!
-        assert_eq!(doc.undo_stack.len(), 1);
-        assert_eq!(doc.undo_stack[0].changes[0].inserted, "Hello ");
+        // No coalescing: every keystroke is its own step (AkelPad detailed undo)
+        assert_eq!(doc.history.undo_len(), 6);
 
-        // 2. Undo the whole typed word
-        view.undo(&mut doc);
+        // 2. Undo letter by letter: each undo removes one character
+        for expected in ["HelloInitial", "HellInitial", "HelInitial", "HeInitial", "HInitial", "Initial"].iter() {
+            view.undo(&mut doc);
+            assert_eq!(doc.content(), format!("{expected} line.\n"));
+        }
         assert_eq!(doc.content(), "Initial line.\n");
         assert_eq!(view.cursor_offset, 0);
 
-        // 3. Redo
-        view.redo(&mut doc);
+        // 3. Redo letter by letter
+        for _ in 0..6 {
+            view.redo(&mut doc);
+        }
         assert_eq!(doc.content(), "Hello Initial line.\n");
         assert_eq!(view.cursor_offset, 6);
 
-        // 4. Backspace 3 times
+        // 4. Backspace 3 times: each erases exactly the character typed last,
+        // so the mutual-exclusion rule annuls each (insert, delete) pair.
         view.delete_backwards(&mut doc);
         view.delete_backwards(&mut doc);
         view.delete_backwards(&mut doc);
         assert_eq!(doc.content(), "HelInitial line.\n");
         assert_eq!(view.cursor_offset, 3);
-        // Sequential backspaces should be merged into 1 step
-        assert_eq!(doc.undo_stack.len(), 2);
+        assert_eq!(doc.history.undo_len(), 3, "three typed-and-erased pairs are annulled");
 
-        // 5. Undo backspaces
-        view.undo(&mut doc);
-        assert_eq!(doc.content(), "Hello Initial line.\n");
-        assert_eq!(view.cursor_offset, 6);
+        // 5. Undo keeps walking the remaining typing steps character by character
+        for expected in ["HeInitial line.\n", "HInitial line.\n", "Initial line.\n"].iter() {
+            view.undo(&mut doc);
+            assert_eq!(doc.content(), *expected);
+        }
+        assert_eq!(doc.content(), "Initial line.\n");
 
-        // 6. Selection replace
-        view.cursor_offset = 6;
+        // 6. Selection replace: select "Initial" and retype over it
+        view.cursor_offset = 7;
         view.selection_anchor = Some(0);
-        view.replace_selection(&mut doc, "Welcome to ");
-        assert_eq!(doc.content(), "Welcome to Initial line.\n");
+        view.replace_selection(&mut doc, "Rewritten");
+        assert_eq!(doc.content(), "Rewritten line.\n");
 
         view.undo(&mut doc);
-        assert_eq!(doc.content(), "Hello Initial line.\n");
+        assert_eq!(doc.content(), "Initial line.\n");
+        // Selection is restored: the replaced range "Initial" is selected again
+        assert_eq!(view.selection_anchor, Some(0));
+        assert_eq!(view.cursor_offset, 7);
     }
 
     #[test]
@@ -3556,6 +3549,73 @@ mod tests {
 
         view.redo(&mut doc);
         assert_eq!(doc.version, 4);
+    }
+
+    #[test]
+    fn test_typed_then_erased_character_leaves_no_history() {
+        let doc_id = DocumentId::new();
+        let tab_id = TabId::new();
+        let mut doc = DocumentBuffer::new(
+            doc_id,
+            PathBuf::from("test.md"),
+            "test".to_string(),
+            "ab".to_string(),
+            0,
+        );
+        let mut view = EditorViewState::new(tab_id, doc_id);
+        view.cursor_offset = 2;
+
+        // Type one character and erase it with backspace right away.
+        view.insert_text(&mut doc, "c");
+        assert_eq!(doc.content(), "abc");
+        view.delete_backwards(&mut doc);
+        assert_eq!(doc.content(), "ab");
+
+        assert_eq!(doc.history.undo_len(), 0, "the pair is annulled");
+        assert!(view.undo(&mut doc).is_none(), "undo has nothing to do");
+        assert_eq!(doc.content(), "ab");
+        assert!(view.redo(&mut doc).is_none(), "redo is invalidated too");
+
+        // A deletion that does not exactly revert the last step is a real step.
+        view.insert_text(&mut doc, "c");
+        assert_eq!(doc.content(), "abc");
+        view.cursor_offset = 0;
+        view.delete_forwards(&mut doc);
+        assert_eq!(doc.content(), "bc");
+        view.undo(&mut doc);
+        assert_eq!(doc.content(), "abc");
+    }
+
+    #[test]
+    fn test_undo_and_redo_restore_selection() {
+        let doc_id = DocumentId::new();
+        let tab_id = TabId::new();
+        let mut doc = DocumentBuffer::new(
+            doc_id,
+            PathBuf::from("test.md"),
+            "test".to_string(),
+            "one two three".to_string(),
+            0,
+        );
+        let mut view = EditorViewState::new(tab_id, doc_id);
+
+        // Select "two" and retype it.
+        view.cursor_offset = 7;
+        view.selection_anchor = Some(4);
+        view.replace_selection(&mut doc, "TW");
+        assert_eq!(doc.content(), "one TW three");
+
+        // Undo restores both the text and the selection over it.
+        view.undo(&mut doc);
+        assert_eq!(doc.content(), "one two three");
+        assert_eq!(view.selection_anchor, Some(4));
+        assert_eq!(view.cursor_offset, 7);
+
+        // Redo restores the post-edit state as well.
+        view.redo(&mut doc);
+        assert_eq!(doc.content(), "one TW three");
+        assert_eq!(view.selection_anchor, None);
+        assert_eq!(view.cursor_offset, 6);
     }
 
     #[test]
@@ -4570,7 +4630,7 @@ mod tests {
 
         // 2. Make document dirty
         if let Some(doc) = state.documents.get_mut(&doc_id) {
-            doc.apply_edit(0, 0, "Modified ", None, 0, 9);
+            doc.record_change(0, String::new(), "Modified ".to_string(), 0, 9, None);
             assert!(doc.is_dirty);
         }
 
@@ -4644,7 +4704,7 @@ mod tests {
 
         // Make doc dirty
         if let Some(doc) = state.documents.get_mut(&doc_id) {
-            doc.apply_edit(0, 0, "Dirty ", None, 0, 6);
+            doc.record_change(0, String::new(), "Dirty ".to_string(), 0, 6, None);
             assert!(doc.is_dirty);
         }
 
@@ -4705,8 +4765,8 @@ mod tests {
         let doc_id1 = state.find_document_by_path(&note1).unwrap();
         let doc_id2 = state.find_document_by_path(&note2).unwrap();
 
-        state.documents.get_mut(&doc_id1).unwrap().apply_edit(0, 0, "Saved ", None, 0, 6);
-        state.documents.get_mut(&doc_id2).unwrap().apply_edit(0, 0, "Saved ", None, 0, 6);
+        state.documents.get_mut(&doc_id1).unwrap().record_change(0, String::new(), "Saved ".to_string(), 0, 6, None);
+        state.documents.get_mut(&doc_id2).unwrap().record_change(0, String::new(), "Saved ".to_string(), 0, 6, None);
 
         assert!(state.documents.get(&doc_id1).unwrap().is_dirty);
         assert!(state.documents.get(&doc_id2).unwrap().is_dirty);
@@ -4753,8 +4813,8 @@ mod tests {
         state.open_note(note2.clone());
         let doc2 = state.find_document_by_path(&note2).unwrap();
 
-        state.documents.get_mut(&doc1).unwrap().apply_edit(0, 0, "Saved ", None, 0, 6);
-        state.documents.get_mut(&doc2).unwrap().apply_edit(0, 0, "Saved ", None, 0, 6);
+        state.documents.get_mut(&doc1).unwrap().record_change(0, String::new(), "Saved ".to_string(), 0, 6, None);
+        state.documents.get_mut(&doc2).unwrap().record_change(0, String::new(), "Saved ".to_string(), 0, 6, None);
         assert!(state.documents.get(&doc1).unwrap().is_dirty);
         assert!(state.documents.get(&doc2).unwrap().is_dirty);
 
@@ -5084,7 +5144,8 @@ mod tests {
         let doc1 = state.get_or_open_document(&p1, "Dirty Note".to_string(), "Initial dirty file".to_string());
         // Edit doc1 so it is dirty
         if let Some(buf) = state.documents.get_mut(&doc1) {
-            buf.apply_edit(0, buf.content().len(), "Modified unsaved text!", None, 0, 0);
+            let removed = buf.content();
+            buf.record_change(0, removed, "Modified unsaved text!".to_string(), 0, 0, None);
             assert!(buf.is_dirty);
         }
         if let Some(meta) = state.doc_meta.get_mut(&doc1) {

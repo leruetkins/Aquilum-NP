@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use smallvec::smallvec;
 
-use super::ops::{DocumentId, Edit, EditEvent, TabId};
+use super::ops::{DocumentId, Edit, EditEvent, TabId, TextOp};
+use super::undo::{History, Selection, Step, TextChange};
 use super::WsError;
 
 #[derive(Clone, Debug)]
@@ -21,8 +22,7 @@ pub struct DocumentBuffer {
     content: String,
     pub version: u64,
     pub is_dirty: bool,
-    pub undo_stack: Vec<Edit>,
-    pub redo_stack: Vec<Edit>,
+    pub history: History,
 }
 
 impl DocumentBuffer {
@@ -84,8 +84,7 @@ impl DocumentRegistry {
                 content: content.to_string(),
                 version: 0,
                 is_dirty: false,
-                undo_stack: vec![],
-                redo_stack: vec![],
+                history: History::new(),
             },
         );
         self.by_path.insert(key, id);
@@ -150,28 +149,39 @@ impl DocumentRegistry {
             }
         };
         let ev = Self::run(d, &edit, origin);
-        d.undo_stack.push(edit);
-        d.redo_stack.clear();
+        let (at, text, inserted) = match &edit {
+            Edit::Insert { at, text } => (*at, text.clone(), true),
+            Edit::Delete { at, text } => (*at, text.clone(), false),
+        };
+        // Undo puts the caret at the start of the previously inserted text
+        // (or at the end of the reinserted deletion); redo mirrors Edit::cursor_after.
+        let (sel_before, sel_after) = if inserted {
+            (Selection::cursor_only(at), Selection::cursor_only(at + text.len()))
+        } else {
+            (Selection::cursor_only(at + text.len()), Selection::cursor_only(at))
+        };
+        d.history.record(Step {
+            changes: vec![TextChange { at, removed: if inserted { String::new() } else { text.clone() }, inserted: if inserted { text } else { String::new() } }],
+            sel_before,
+            sel_after,
+        });
         Ok(ev)
     }
 
     /// Undo общий на документ: откатывает последнюю правку независимо от вкладки.
     pub fn undo(&mut self, id: DocumentId, origin: TabId) -> Option<EditEvent> {
         let d = self.docs.get_mut(&id)?;
-        let edit = d.undo_stack.pop()?;
-        let ev = Self::run(d, &edit.inverse(), Some(origin));
-        d.redo_stack.push(edit);
-        Some(ev)
+        let step = d.history.take(false)?;
+        Some(Self::apply_step(d, &step, Some(origin), false))
     }
 
     pub fn redo(&mut self, id: DocumentId, origin: TabId) -> Option<EditEvent> {
         let d = self.docs.get_mut(&id)?;
-        let edit = d.redo_stack.pop()?;
-        let ev = Self::run(d, &edit, Some(origin));
-        d.undo_stack.push(edit);
-        Some(ev)
+        let step = d.history.take(true)?;
+        Some(Self::apply_step(d, &step, Some(origin), true))
     }
 
+    /// Applies an edit to content and emits its event; no history involvement.
     fn run(d: &mut DocumentBuffer, edit: &Edit, origin: Option<TabId>) -> EditEvent {
         edit.apply(&mut d.content);
         d.version += 1;
@@ -182,6 +192,40 @@ impl DocumentRegistry {
             ops: smallvec![edit.op()],
             origin,
             cursor_after: Some(edit.cursor_after()),
+        }
+    }
+
+    fn apply_step(d: &mut DocumentBuffer, step: &Step, origin: Option<TabId>, redo: bool) -> EditEvent {
+        let mut ops = smallvec![];
+        // Undo applies changes right-to-left so stored positions stay valid.
+        let ordered: Vec<&TextChange> = if redo {
+            step.changes.iter().collect()
+        } else {
+            step.changes.iter().rev().collect()
+        };
+        for change in &ordered {
+            let (removed, inserted) = if redo {
+                (change.removed.as_str(), change.inserted.as_str())
+            } else {
+                (change.inserted.as_str(), change.removed.as_str())
+            };
+            d.content.replace_range(change.at..change.at + removed.len(), inserted);
+            if !removed.is_empty() {
+                ops.push(TextOp::Delete { at: change.at, len: removed.len() });
+            }
+            if !inserted.is_empty() {
+                ops.push(TextOp::Insert { at: change.at, len: inserted.len() });
+            }
+        }
+        let cursor = if redo { step.sel_after.cursor } else { step.sel_before.cursor };
+        d.version += 1;
+        d.is_dirty = true;
+        EditEvent {
+            doc: d.id,
+            version: d.version,
+            ops,
+            origin,
+            cursor_after: Some(cursor),
         }
     }
 
