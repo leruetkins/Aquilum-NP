@@ -123,6 +123,32 @@ pub fn generate_test_doc(lines: usize) -> String {
     s
 }
 
+/// Simulates holding a key: `count` characters typed one by one through the
+/// full live pipeline a keystroke goes through — `insert_text` (rope mutation
+/// + undo step) and the per-keystroke view bookkeeping.
+///
+/// Returns (total time, per-character mean). This is the "characters per
+/// second" number to compare against a keyboard's key-repeat rate (~30 cps):
+/// the mean must stay far below 33 ms/char for repeat to feel instant.
+fn measure_key_repeat(doc: &mut crate::document_buffer::DocumentBuffer, count: usize, at_eof: bool) -> (std::time::Duration, std::time::Duration) {
+    let mut view = crate::workspace::EditorViewState::new(crate::workspace::TabId::new(), doc.id);
+    let mut anchor = if at_eof { doc.len() } else { doc.len() / 2 };
+    while anchor > 0 && !doc.is_char_boundary(anchor) {
+        anchor -= 1;
+    }
+    view.cursor_offset = anchor;
+    let total_lines = doc.line_index.lines();
+    view.ensure_visual_cache(doc, true, 80, if at_eof { total_lines.saturating_sub(1) } else { total_lines / 2 });
+
+    let t0 = std::time::Instant::now();
+    for _ in 0..count {
+        view.insert_text(doc, "a");
+    }
+    let total = t0.elapsed();
+    let per_char = total / (count as u32);
+    (total, per_char)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,6 +344,44 @@ mod tests {
             let edit_time = t0.elapsed() / (iters as u32);
 
             println!("{:<12} | {:<20?} | {}", line_count, edit_time, doc.blocks.len());
+        }
+        println!("===================================================================\n");
+    }
+
+    /// "Hold a key" benchmark: characters per second through the full live
+    /// pipeline. Key-repeat is ~30 chars/s; the per-char mean must stay
+    /// well below 33 ms for repeat to feel instant.
+    #[test]
+    fn benchmark_key_repeat_throughput() {
+        println!("\n=== ЗАМЕР УДЕРЖАНИЯ КЛАВИШИ: СИМВОЛОВ В СЕКУНДУ (полный пайплайн ввода) ===");
+        println!("{:<10} | {:<10} | {:<16} | {:<16} | {:<12}", "Строк", "Позиция", "время (N симв)", "мс/символ", "симв/с");
+        println!("{:-<10}-+-{:-<10}-+-{:-<16}-+-{:-<16}-+-{:-<12}", "", "", "", "", "");
+
+        const COUNT: usize = 300;
+        const BUDGET_MS: u128 = 10;
+
+        for &line_count in &[50usize, 5000, 50_000] {
+            for at_eof in [false, true] {
+                let doc_text = generate_test_doc(line_count);
+                let mut doc = crate::document_buffer::DocumentBuffer::new(
+                    crate::document_buffer::DocumentId::new(),
+                    std::path::PathBuf::from("test.md"),
+                    "test".to_string(),
+                    doc_text,
+                    1,
+                );
+                let (total, per_char) = measure_key_repeat(&mut doc, COUNT, at_eof);
+                let cps = COUNT as f64 / total.as_secs_f64();
+                let position = if at_eof { "конец" } else { "середина" };
+                println!("{:<10} | {:<10} | {:<16?} | {:<16.3} | {:<12.0}", line_count, position, total, per_char.as_secs_f64() * 1000.0, cps);
+                assert!(
+                    per_char.as_millis() < BUDGET_MS,
+                    "ввод {} на {} строках: {:.3} мс/символ (лимит {BUDGET_MS} мс) — удержание будет подлагивать",
+                    position,
+                    line_count,
+                    per_char.as_secs_f64() * 1000.0
+                );
+            }
         }
         println!("===================================================================\n");
     }

@@ -2031,15 +2031,22 @@ impl AppState {
         self.fs_events_rx = None;
     }
 
+    /// Applies a tree walked off the UI thread (see `AppView::reload_file_tree_async`).
+    /// The only mutation is the assignment plus the status text.
+    pub fn apply_file_tree(&mut self, tree: Vec<FileNode>) {
+        self.file_tree = tree;
+        self.status_text = format!("Vault: {}", self.workspace_name);
+    }
+
     /// Rescan reaction: forget the cached vault file list so the next
-    /// snapshot rebuilds it, and reload the file tree from disk. The tree
-    /// walk stays synchronous here (rare event); moving it off the UI thread
-    /// is tracked in `perf-microfreezes-plan.md` §5.
+    /// snapshot rebuilds it. The tree itself is refreshed by
+    /// `AppView::reload_file_tree_async`, which walks the vault on a
+    /// background thread — a synchronous `reload_file_tree` on the UI thread
+    /// stalled a frame on large vaults.
     pub fn invalidate_markdown_cache_and_tree(&mut self) {
         if let Some(vault) = &self.vault {
             vault.invalidate_markdown_cache();
         }
-        self.reload_file_tree();
     }
 
     /// After a rescan, feeds every open document path into the deletion

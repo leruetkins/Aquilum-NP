@@ -1108,7 +1108,7 @@ impl AppView {
             }
 
             if any_handled {
-                self.state.reload_file_tree();
+                self.reload_file_tree_async(cx);
                 self.state.publish_snapshot();
                 cx.notify();
             }
@@ -2295,8 +2295,34 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
     }
 
     fn reload_files(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.state.reload_file_tree();
-        cx.notify();
+        self.reload_file_tree_async(cx);
+    }
+
+    /// Walks the vault on a background thread and swaps the finished tree in
+    /// on the UI thread (`AppState::apply_file_tree`).
+    ///
+    /// `build_tree` is a recursive `read_dir` over the whole vault; on a large
+    /// vault a synchronous call stalls a frame, so everything that does not
+    /// need the result *inside the same click handler* (watcher deletions,
+    /// rescans) goes through this. Handlers that immediately open/navigate a
+    /// path they just created keep the synchronous `reload_file_tree`.
+    pub fn reload_file_tree_async(&mut self, cx: &mut Context<Self>) {
+        let Some(ws) = self.state.workspace_path.clone() else {
+            return;
+        };
+        let entity = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let background = cx.background_executor().clone();
+        cx.foreground_executor().spawn(async move {
+            let tree = background
+                .spawn(async move { AppState::build_tree(&ws) })
+                .await;
+            let _ = entity.update(&mut async_cx, |this, cx| {
+                this.state.apply_file_tree(tree);
+                this.state.publish_snapshot();
+                cx.notify();
+            });
+        }).detach();
     }
 
     pub(crate) fn save_note(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -2516,16 +2542,20 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         // Top of rows area: Titlebar (38px) + Nav bar (40px) + note-title-panel (54px) = 132px
         let editor_rows_top_y = 132.0;
         let editor_bottom_y = (viewport_h - 28.0).max(editor_rows_top_y + 100.0);
-        let scroll_y = self.current_scroll_top_f64();
+        let scroll_before = self.current_scroll_top_f64();
 
-        // Edge autoscroll when dragging outside or near the top/bottom bounds
-        if pos_y < editor_rows_top_y && scroll_y > 0.0 {
+        // Edge autoscroll when dragging outside or near the top/bottom bounds.
+        // The scroll write must be followed by a repaint even when the cursor
+        // ends up on the same character: the content under the fixed pointer
+        // changed, so the painted selection is stale until a frame runs.
+        if pos_y < editor_rows_top_y && scroll_before > 0.0 {
             let step = f64::from(((editor_rows_top_y - pos_y).max(1.0) * 0.8).min(30.0));
-            self.set_editor_scroll_top_f64((scroll_y - step).max(0.0));
+            self.set_editor_scroll_top_f64((scroll_before - step).max(0.0));
         } else if pos_y > editor_bottom_y - 16.0 {
             let step = f64::from(((pos_y - (editor_bottom_y - 16.0)).max(1.0) * 0.8).min(30.0));
-            self.set_editor_scroll_top_f64(scroll_y + step);
+            self.set_editor_scroll_top_f64(scroll_before + step);
         }
+        let scroll_moved = self.current_scroll_top_f64() != scroll_before;
 
         let current_scroll_y = self.current_scroll_top_f64();
         let rel_y = f64::from(pos_y) - f64::from(editor_rows_top_y) + current_scroll_y;
@@ -2648,6 +2678,11 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let offset = view.offset_for_line_col(doc, v.line_idx, target_char);
         if view.cursor_offset != offset {
             view.cursor_offset = offset;
+            cx.notify();
+        } else if scroll_moved {
+            // Same character under the pointer, but the content scrolled:
+            // without this notify the painted selection waits for the next
+            // mousemove, which is exactly the visible drag lag.
             cx.notify();
         }
     }
@@ -4508,6 +4543,18 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             }
         }
 
+        // A text edit or a cursor/selection move must not just repaint once:
+        // one notify per keystroke renders the editor at key-repeat rate
+        // (~30 fps), and the caret/selection visibly *step* between frames —
+        // plus the scroll reveal and the render-side clamp then fight across
+        // frames and the selection looks one event behind the caret. One
+        // settle frame doubles the cadence to ~60 fps while typing and lets
+        // the scroll converge. This deliberately costs a couple of GPU
+        // percent during typing; the expensive part (a full window rebuild
+        // per character) stays fixed.
+        let version_before = self.state.active_document().map(|d| d.version);
+        let anchor_before = self.state.active_view().and_then(|v| v.selection_anchor);
+        let cursor_before = self.state.active_view().map(|v| v.cursor_offset);
         match keystroke.key.as_str() {
             "backspace" => self.state.active_delete_backwards(),
             "delete" => self.state.active_delete_forwards(),
@@ -4529,6 +4576,13 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     }
                 }
             }
+        }
+        let version_after = self.state.active_document().map(|d| d.version);
+        let state_changed = version_before != version_after
+            || anchor_before != self.state.active_view().and_then(|v| v.selection_anchor)
+            || cursor_before != self.state.active_view().map(|v| v.cursor_offset);
+        if state_changed {
+            self.layout_settle_frames.set(1);
         }
         if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
             self.schedule_auto_save(cx);
@@ -4906,8 +4960,11 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 }
                 let rows_per_line = view.est_rows_per_line.max(f64::MIN_POSITIVE);
                 let row_h = view.est_row_h;
-                view.above_h = (view.above_lines as f64 * rows_per_line).round() * row_h;
-                view.below_h = (view.below_lines as f64 * rows_per_line).round() * row_h;
+                // Same formula as `recompute_estimate`, without `.round()`:
+                // both paths must produce identical above_h/below_h, or every
+                // rebuild here shifts the estimates and the caret jitters.
+                view.above_h = view.above_lines as f64 * rows_per_line * row_h;
+                view.below_h = view.below_lines as f64 * rows_per_line * row_h;
                 let wrap_changed = view.window.wrap_cols != wrap_cols;
                 view.window = new_window;
                 view.headings_cache = headings.clone();

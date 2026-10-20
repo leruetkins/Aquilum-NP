@@ -893,8 +893,15 @@ impl TabSession {
     pub fn recompute_estimate(&mut self) {
         let rows_per_line = self.est_rows_per_line.max(f64::MIN_POSITIVE);
         let row_h = self.est_row_h;
-        self.above_h = (self.above_lines as f64 * rows_per_line).round() * row_h;
-        self.below_h = (self.below_lines as f64 * rows_per_line).round() * row_h;
+        // No `.round()` on the line count: the incremental paths
+        // (`apply_external_edit`, `apply_external_edit_detailed`) grow
+        // above_h/below_h by exact `lines * rows_per_line * row_h` steps, so
+        // rounding here makes every full rebuild jump the estimates by a few
+        // pixels — and the render-side scroll clamp turns that into visible
+        // caret jitter while typing. f64 keeps ~15 significant digits; a
+        // million-line note introduces no visible error.
+        self.above_h = self.above_lines as f64 * rows_per_line * row_h;
+        self.below_h = self.below_lines as f64 * rows_per_line * row_h;
     }
 
     pub fn ensure_visual_cache_with_headings(
