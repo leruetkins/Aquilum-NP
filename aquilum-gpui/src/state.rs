@@ -5199,5 +5199,47 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_column_delete_undo_redo_restores_content_and_marks_dirty() {
+        let temp_dir = std::env::temp_dir().join(format!("test_tbl_col_undo_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let note_path = temp_dir.join("note.md");
+        let initial = "| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |\n\nAfter\n";
+        std::fs::write(&note_path, initial).unwrap();
+
+        let mut state = AppState::new_empty();
+        state.open_note(note_path);
+        let doc_id = state.active_doc_id().unwrap();
+
+        let edit = crate::table::LineEdit {
+            first_line: 0,
+            old_line_count: 3,
+            new_lines: vec![
+                "| a | c |".to_string(),
+                "|---|---|".to_string(),
+                "| 1 | 3 |".to_string(),
+            ],
+        };
+        state.active_apply_table_line_edit(&edit, None);
+        let deleted = "| a | c |\n|---|---|\n| 1 | 3 |\n\nAfter\n";
+        assert_eq!(state.documents.get(&doc_id).unwrap().content(), deleted);
+
+        // Emulate a completed flush, then undo: the document must become dirty
+        // again and get a fresh save deadline.
+        state.documents.get_mut(&doc_id).unwrap().mark_clean();
+        assert!(state.active_undo());
+        {
+            let doc = state.documents.get(&doc_id).unwrap();
+            assert_eq!(doc.content(), initial);
+            assert!(doc.is_dirty);
+            assert!(doc.first_dirty_time.is_some());
+        }
+
+        assert!(state.active_redo());
+        assert_eq!(state.documents.get(&doc_id).unwrap().content(), deleted);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }
 

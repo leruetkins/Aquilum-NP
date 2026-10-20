@@ -695,6 +695,15 @@ impl DocumentBuffer {
                     last_step.cursor_after = cursor_after;
                     last_step.time = now;
                     coalesced = true;
+                } else if last.inserted.is_empty()
+                    && change.inserted.is_empty()
+                    && !change.removed.contains('\n')
+                    && change.at == last.at
+                {
+                    last.removed.push_str(&change.removed);
+                    last_step.cursor_after = cursor_after;
+                    last_step.time = now;
+                    coalesced = true;
                 }
             }
         }
@@ -741,6 +750,7 @@ impl DocumentBuffer {
         let mut note_edits = Vec::new();
         let mut ops = SmallVec::new();
 
+        self.version += 1;
         for change in step.changes.iter().rev() {
             let at = change.at;
             let old_len = change.inserted.len();
@@ -768,12 +778,17 @@ impl DocumentBuffer {
             if !change.removed.is_empty() {
                 ops.push(TextOp::Insert { at, len: change.removed.len() });
             }
+
+            self.table_index
+                .borrow_mut()
+                .apply_edit(self.version, edit_line, line_diff, &self.rope);
         }
 
-        self.version += 1;
         self.is_dirty = true;
+        if self.first_dirty_time.is_none() {
+            self.first_dirty_time = Some(Instant::now());
+        }
         self.stats_cache.set(None);
-        self.table_index.borrow_mut().scan_rope(self.version, &self.rope);
         self.redo_stack.push(step.clone());
 
         let edit_event = EditEvent {
@@ -795,6 +810,7 @@ impl DocumentBuffer {
         let mut note_edits = Vec::new();
         let mut ops = SmallVec::new();
 
+        self.version += 1;
         for change in step.changes.iter() {
             let at = change.at;
             let old_len = change.removed.len();
@@ -822,12 +838,17 @@ impl DocumentBuffer {
             if !change.inserted.is_empty() {
                 ops.push(TextOp::Insert { at, len: change.inserted.len() });
             }
+
+            self.table_index
+                .borrow_mut()
+                .apply_edit(self.version, edit_line, line_diff, &self.rope);
         }
 
-        self.version += 1;
         self.is_dirty = true;
+        if self.first_dirty_time.is_none() {
+            self.first_dirty_time = Some(Instant::now());
+        }
         self.stats_cache.set(None);
-        self.table_index.borrow_mut().scan_rope(self.version, &self.rope);
         self.undo_stack.push(step.clone());
 
         let edit_event = EditEvent {
@@ -1076,6 +1097,87 @@ mod tests {
             _ => panic!("Expected PathChanged event"),
         }
         assert_eq!(buf.path, PathBuf::from("new_name.md"));
+    }
+
+    #[test]
+    fn test_forward_delete_coalesces_into_single_undo_step() {
+        let mut buf = DocumentBuffer::new(
+            DocumentId::new(),
+            PathBuf::from("delete.md"),
+            "delete".to_string(),
+            "abcdef".to_string(),
+            1,
+        );
+
+        buf.record_change(2, "c".to_string(), String::new(), 3, 2, None);
+        buf.record_change(2, "d".to_string(), String::new(), 2, 2, None);
+
+        assert_eq!(buf.undo_stack.len(), 1, "forward deletes must coalesce");
+        assert_eq!(buf.content(), "abef");
+
+        buf.undo_step(None).expect("undo must succeed");
+        assert_eq!(buf.content(), "abcdef");
+    }
+
+    #[test]
+    fn test_selection_delete_undo_restores_text() {
+        let mut buf = DocumentBuffer::new(
+            DocumentId::new(),
+            PathBuf::from("selection.md"),
+            "selection".to_string(),
+            "one **two** three".to_string(),
+            1,
+        );
+
+        let removed = "**two** ".to_string();
+        let at = 4;
+        buf.record_change(at, removed.clone(), String::new(), at + removed.len(), at, None);
+        assert_eq!(buf.content(), "one three");
+
+        buf.undo_step(None).expect("undo must succeed");
+        assert_eq!(buf.content(), "one **two** three");
+    }
+
+    #[test]
+    fn test_undo_redo_updates_table_index_incrementally() {
+        let text = "# T\n\n| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\ntail\n";
+        let mut buf = DocumentBuffer::new(
+            DocumentId::new(),
+            PathBuf::from("table.md"),
+            "table".to_string(),
+            text.to_string(),
+            1,
+        );
+
+        let start = buf.line_start_byte(4);
+        let old_len = buf.line_start_byte(5) - start;
+        buf.apply_edit(start, old_len, "", None, start, start);
+
+        {
+            let idx = buf.ensure_table_index();
+            assert_eq!(
+                (idx.blocks[0].first_line, idx.blocks[0].last_line),
+                (2, 4)
+            );
+        }
+
+        buf.undo_step(None).expect("undo must succeed");
+        {
+            let idx = buf.ensure_table_index();
+            assert_eq!(
+                (idx.blocks[0].first_line, idx.blocks[0].last_line),
+                (2, 5)
+            );
+        }
+
+        buf.redo_step(None).expect("redo must succeed");
+        {
+            let idx = buf.ensure_table_index();
+            assert_eq!(
+                (idx.blocks[0].first_line, idx.blocks[0].last_line),
+                (2, 4)
+            );
+        }
     }
 
     #[test]

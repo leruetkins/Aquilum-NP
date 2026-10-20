@@ -700,6 +700,7 @@ impl AppView {
                         let edit = crate::table::rewrite(&tbl, &model, false, &crate::table::char_width);
                         self.table_layouts.borrow_mut().remove(&tbl.first_line);
                         self.state.active_apply_table_line_edit(&edit, None);
+                        self.schedule_auto_save(cx);
                         cx.notify();
                     }
                 }
@@ -721,6 +722,7 @@ impl AppView {
                             tbl.first_line
                         };
                         self.state.active_apply_table_line_edit(&edit, Some((target_line, 2)));
+                        self.schedule_auto_save(cx);
                         cx.notify();
                     }
                 }
@@ -743,6 +745,7 @@ impl AppView {
                         self.table_layouts.borrow_mut().remove(&tbl.first_line);
                         let cur_line = tbl.line_of_row(row);
                         self.state.active_apply_table_line_edit(&edit, Some((cur_line, 2)));
+                        self.schedule_auto_save(cx);
                         cx.notify();
                     }
                 }
@@ -757,6 +760,7 @@ impl AppView {
                         new_lines: Vec::new(),
                     };
                     self.state.active_apply_table_line_edit(&edit, Some((tbl.first_line, 0)));
+                    self.schedule_auto_save(cx);
                     cx.notify();
                 }
             }

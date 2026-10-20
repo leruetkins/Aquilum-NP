@@ -650,6 +650,11 @@ impl TabSession {
 
     pub fn undo(&mut self, doc: &mut DocumentBuffer) -> Option<(BufferEvent, Vec<NoteEditEvent>, EditEvent)> {
         let (cursor_before, note_edits, edit_event) = doc.undo_step(Some(self.tab_id))?;
+        for edit in &note_edits {
+            if edit.line_diff != 0 {
+                self.shift_raw_tables(edit.edit_line, edit.line_diff);
+            }
+        }
         self.cursor_offset = cursor_before.min(doc.len());
         self.selection_anchor = None;
         self.visual_cache_dirty = true;
@@ -669,6 +674,11 @@ impl TabSession {
 
     pub fn redo(&mut self, doc: &mut DocumentBuffer) -> Option<(BufferEvent, Vec<NoteEditEvent>, EditEvent)> {
         let (cursor_after, note_edits, edit_event) = doc.redo_step(Some(self.tab_id))?;
+        for edit in &note_edits {
+            if edit.line_diff != 0 {
+                self.shift_raw_tables(edit.edit_line, edit.line_diff);
+            }
+        }
         self.cursor_offset = cursor_after.min(doc.len());
         self.selection_anchor = None;
         self.visual_cache_dirty = true;

@@ -7668,6 +7668,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         }
                                         this.table_layouts.borrow_mut().remove(&tbl_clone.first_line);
                                         this.state.active_apply_table_line_edit(&edit, None);
+                                        this.schedule_auto_save(cx);
                                         cx.notify();
                                     }))
                                     .on_mouse_down(MouseButton::Right, |_, _, cx| {
@@ -7734,6 +7735,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         let edit = crate::table::rewrite(&tbl_clone, &model, false, &crate::table::char_width);
                                         this.table_layouts.borrow_mut().remove(&tbl_clone.first_line);
                                         this.state.active_apply_table_line_edit(&edit, None);
+                                        this.schedule_auto_save(cx);
                                         cx.notify();
                                     }))
                                     .on_mouse_down(MouseButton::Right, |_, _, cx| {
