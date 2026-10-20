@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Length of the settle burst that repaints the editor until its scroll handle
 /// has been measured (see `layout_settle_frames`). Three frames is enough: one
@@ -276,10 +276,8 @@ pub struct AppView {
     pub active_plugin_input: Option<crate::plugins::ui::PluginInputFocusState>,
     pub plugin_input_focus_handle: FocusHandle,
     pub plugin_input_blink: BlinkManager,
-    /// Active interactive dropdown select popup in plugin UI (plugin_id, view_id, node_id).
+    /// Active interactive dropdown select popup in plugin UI (plugin_id, view_id, node_id, value, cursor_pos).
     pub active_plugin_select: Option<(String, u64, String)>,
-    /// Pending file deletions for atomic save debounce confirmation.
-    pub pending_file_deletions: HashMap<PathBuf, Instant>,
 }
 
 impl AppView {
@@ -471,7 +469,6 @@ impl AppView {
             plugin_runtimes: Vec::new(),
             code_block_views: HashMap::new(),
             plugin_api_tx: None,
-            pending_file_deletions: HashMap::new(),
             table_layouts: std::cell::RefCell::new(HashMap::new()),
             manual_table_col_widths: HashMap::new(),
             table_col_resize_drag: None,
@@ -847,12 +844,12 @@ impl AppView {
     pub fn flush_document_now(&mut self, doc_id: crate::document_buffer::DocumentId, cx: &mut Context<Self>) {
         let to_save = match self.state.documents.get(&doc_id) {
             Some(doc) if doc.is_dirty => {
-                Some((doc.path.clone(), doc.rope.clone(), doc.title.clone(), doc.version))
+                Some((doc.path.clone(), doc.rope.clone(), doc.title.clone(), doc.version, doc.disk_hash.clone()))
             }
             _ => None,
         };
 
-        let Some((path, rope, title, version)) = to_save else {
+        let Some((path, rope, title, version, expected_hash)) = to_save else {
             return;
         };
 
@@ -864,15 +861,17 @@ impl AppView {
         cx.foreground_executor().spawn(async move {
             let write_path = path.clone();
             let write_res = background.spawn(async move {
-                crate::save_manager::safe_write_rope(&write_path, &rope)
+                crate::save_manager::safe_write_rope_checked(&write_path, &rope, expected_hash.as_deref())
             }).await;
 
             let _ = entity.update(&mut async_cx, |this, cx| {
                 if let Some(doc_id) = this.state.find_document_by_path(&path) {
                     if let Some(doc) = this.state.documents.get_mut(&doc_id) {
                         match write_res {
-                            Ok(()) => {
+                            crate::save_manager::CheckedWrite::Written(hash) => {
                                 if doc.version == version {
+                                    doc.disk_hash = Some(hash);
+                                    doc.disk_stamp = crate::save_manager::file_stamp(&doc.path);
                                     doc.mark_clean();
                                     if let Some(meta) = this.state.doc_meta.get_mut(&doc_id) {
                                         meta.is_dirty = false;
@@ -886,7 +885,22 @@ impl AppView {
                                 this.state.events.emit_vault(&crate::events::VaultEvent::Modify { path: rel_path });
                                 this.state.publish_snapshot();
                             }
-                            Err(err) => {
+                            crate::save_manager::CheckedWrite::Conflict { copy, disk_text } => {
+                                // Two-sided conflict protocol: our version is
+                                // preserved in the copy, the buffer adopts the
+                                // external content — no data loss either way.
+                                doc.reload(disk_text);
+                                for view in this.state.views.values_mut() {
+                                    if view.doc_id == doc_id {
+                                        view.visual_cache_dirty = true;
+                                    }
+                                }
+                                this.state.status_text = format!(
+                                    "Файл изменён извне; ваша версия сохранена в {}",
+                                    copy.file_name().unwrap_or_default().to_string_lossy()
+                                );
+                            }
+                            crate::save_manager::CheckedWrite::Failed(err) => {
                                 this.state.status_text = format!("Save error: {}", err);
                             }
                         }
@@ -1047,7 +1061,7 @@ impl AppView {
         self.state.doc_meta.clear();
         self.state.by_path.clear();
         self.state.views.clear();
-        self.pending_file_deletions.clear();
+        self.state.pending_file_deletions.clear();
     }
 
     /// Polls for external filesystem changes across all open documents.
@@ -1055,7 +1069,7 @@ impl AppView {
     /// Respects the debounce window so temporary unlinks (atomic saves) do not prematurely close tabs.
     pub fn poll_fs_changes(&mut self, cx: &mut Context<Self>) {
         let debounce = Duration::from_millis(350);
-        let changes = self.state.check_fs_changes(&mut self.pending_file_deletions, debounce);
+        let changes = self.state.check_fs_changes(debounce);
 
         if !changes.is_empty() {
             let config = self.state.settings.get_config();
@@ -1080,6 +1094,15 @@ impl AppView {
                         if self.state.handle_file_modified(&path) {
                             any_handled = true;
                         }
+                    }
+                    crate::state::FsChangeEvent::Rescan => {
+                        // Reconcile against the disk: the tree reload and the
+                        // vault cache reset happen inside; deletion of open
+                        // notes is still debounced through the normal path by
+                        // feeding every open path as potentially missing.
+                        self.state.invalidate_markdown_cache_and_tree();
+                        self.state.recheck_open_paths_after_rescan();
+                        any_handled = true;
                     }
                 }
             }

@@ -8,6 +8,7 @@ pub mod commands;
 pub mod commands_builtin;
 pub mod events;
 pub mod editor_window;
+pub mod fs_watcher;
 pub mod fonts;
 pub mod i18n;
 pub mod icons;

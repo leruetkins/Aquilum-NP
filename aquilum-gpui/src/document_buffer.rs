@@ -128,6 +128,14 @@ pub struct DocumentBuffer {
     pub history: History,
     pub stats_cache: std::cell::Cell<Option<(u64, crate::state::TextStats)>>,
     pub table_index: std::cell::RefCell<crate::table::TableIndex>,
+    /// SHA-256 of the on-disk content the buffer was loaded from (and last
+    /// written by us). An incoming `Modified` event compares the file's hash
+    /// against this: a match means the change is our own write echo — no
+    /// reload. `None` for buffers not yet reconciled with a real file.
+    pub disk_hash: Option<String>,
+    /// Cheap pre-hash check: file `(len, mtime)` at load/last-write time.
+    /// Unchanged stamp skips the hashing entirely.
+    pub disk_stamp: Option<(u64, std::time::SystemTime)>,
 }
 
 impl DocumentBuffer {
@@ -151,6 +159,8 @@ impl DocumentBuffer {
             history: History::new(),
             stats_cache: std::cell::Cell::new(None),
             table_index: std::cell::RefCell::new(crate::table::TableIndex::new()),
+            disk_hash: None,
+            disk_stamp: None,
         }
     }
 
@@ -174,11 +184,15 @@ impl DocumentBuffer {
         use std::io::Read;
         let file = std::fs::File::open(&path)?;
         let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let disk_stamp = crate::save_manager::file_stamp(&path);
         if file_len < 2 * 1024 * 1024 {
             let mut s = String::with_capacity(file_len as usize);
             let mut reader = std::io::BufReader::new(file);
             reader.read_to_string(&mut s)?;
-            return Ok(Self::new(id, path, title, s, version));
+            let mut this = Self::new(id, path, title, s, version);
+            this.disk_hash = Some(crate::save_manager::hash_rope(&this.rope));
+            this.disk_stamp = disk_stamp;
+            return Ok(this);
         }
 
         let mut reader = std::io::BufReader::with_capacity(256 * 1024, file);
@@ -224,7 +238,10 @@ impl DocumentBuffer {
             }
         }
         let rope = builder.build();
-        Ok(Self::from_rope(id, path, title, rope, version))
+        let mut this = Self::from_rope(id, path, title, rope, version);
+        this.disk_hash = Some(crate::save_manager::hash_rope(&this.rope));
+        this.disk_stamp = disk_stamp;
+        Ok(this)
     }
 
     #[inline]
@@ -456,6 +473,9 @@ impl DocumentBuffer {
         self.code_checkpoints = CodeCheckpoints::new();
         self.history = History::new();
         self.table_index.borrow_mut().scan_rope(self.version, &self.rope);
+        // The buffer now matches the disk version it was reloaded from.
+        self.disk_hash = Some(crate::save_manager::hash_rope(&self.rope));
+        self.disk_stamp = crate::save_manager::file_stamp(&self.path);
         BufferEvent::Reloaded
     }
 

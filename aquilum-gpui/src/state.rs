@@ -28,6 +28,9 @@ pub enum FsChangeEvent {
     Deleted(PathBuf),
     Renamed { old_path: PathBuf, new_path: PathBuf },
     Modified(PathBuf),
+    /// Watcher error or removed folder: reconcile with the disk (tree reload,
+    /// cache invalidation, open-path check).
+    Rescan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -432,6 +435,17 @@ pub struct AppState {
     pub leaves: HashMap<LeafId, LeafState>,
     /// Editor view states keyed by TabId
     pub views: HashMap<TabId, EditorViewState>,
+    /// Event-driven filesystem watcher for the workspace root. Lives here —
+    /// not in any window — so every split pane and (future) window shares one
+    /// watcher per AppState and cannot see duplicated events.
+    pub fs_watcher: crate::fs_watcher::Watcher,
+    /// Receiving end of coalesced watcher batches. `None` while no watcher is
+    /// attached (no workspace).
+    pub fs_events_rx: Option<std::sync::mpsc::Receiver<crate::fs_watcher::FsBatch>>,
+    /// Documents deleted on disk: first-seen time; a path missing for longer
+    /// than the debounce window is confirmed as deleted (atomic saves of other
+    /// programs make the file disappear briefly and it must be cancelled).
+    pub pending_file_deletions: HashMap<PathBuf, std::time::Instant>,
 }
 
 const DEFAULT_WELCOME_NOTE: &str = "# Welcome to Vibecodium (GPUI Live Preview)\n\nYour fast, distraction-free markdown knowledge base with **true Obsidian Live Preview**!\n\n## Inline Live Preview Demo\n- Click any line or block to edit raw markdown inline\n- Move cursor away (or click another line) to see rendered styling\n- Regular text and code blocks are fully selectable across the entire page with `Ctrl+A`\n\n### Interactive Features\n- [x] Zero Electron / Chromium overhead (~40 MB RAM, 120 FPS)\n- [x] Full document continuous text selection\n- [x] Dedicated Obsidian-style code blocks with syntax styling\n- [ ] Auto-saving and instant search\n\n```rust\nfn main() {\n    println!(\"Hello from Vibecodium GPUI Live Preview!\");\n}\n```\n\n> Regular text and code blocks are cleanly organized with seamless Live Preview transitions.\n";
@@ -498,6 +512,9 @@ impl AppState {
             },
             leaves: HashMap::new(),
             views: HashMap::new(),
+            fs_watcher: crate::fs_watcher::Watcher::new(),
+            fs_events_rx: None,
+            pending_file_deletions: HashMap::new(),
         };
 
         // Initialize active leaf in leaves map
@@ -1570,6 +1587,27 @@ impl AppState {
                 return false;
             }
 
+            // Pull protocol (fs-watcher-plan §3): skip both our own write
+            // echoes and pointless re-reads with two cheap checks before any
+            // read. Unknown hash ("not reconciled yet") must not block a
+            // reload — the on-disk content is authoritative for a clean doc.
+            let known_hash = self.documents.get(&doc_id).and_then(|d| d.disk_hash.clone());
+            let known_stamp = self.documents.get(&doc_id).and_then(|d| d.disk_stamp);
+            if let Some(stamp) = crate::save_manager::file_stamp(path) {
+                if Some(stamp) == known_stamp {
+                    return false;
+                }
+            }
+            if let (Some(known), Some(actual)) = (&known_hash, crate::save_manager::hash_file(path)) {
+                if *known == actual {
+                    // Same content, new stamp: remember it and skip the read.
+                    if let Some(doc) = self.documents.get_mut(&doc_id) {
+                        doc.disk_stamp = crate::save_manager::file_stamp(path);
+                    }
+                    return false;
+                }
+            }
+
             if let Ok(new_content) = std::fs::read_to_string(path) {
                 if let Some(doc) = self.documents.get_mut(&doc_id) {
                     doc.reload(new_content);
@@ -1589,40 +1627,99 @@ impl AppState {
         false
     }
 
-    /// Checks for external filesystem changes on currently open documents.
+    /// Drains coalesced watcher events and applies the deletion debounce.
     ///
-    /// Handles atomic save debounce: if an open file is missing from disk, it is added
-    /// to `pending_deletions`. Only if it remains missing after `debounce_duration` is it
-    /// confirmed as deleted and returned in `FsChangeEvent::Deleted`. If it reappears
-    /// within the debounce window, the pending deletion is cancelled.
+    /// The watcher (or a test, through the same channel) delivers
+    /// `Deleted`-worthy paths; a path absent from disk for longer than
+    /// `debounce_duration` is confirmed deleted. **No filesystem calls are
+    /// made when nothing is pending** — the old per-document `path.exists()`
+    /// polling on the UI thread is gone. The returned events are exactly what
+    /// `poll_fs_changes` handles.
     pub fn check_fs_changes(
         &mut self,
-        pending_deletions: &mut HashMap<PathBuf, Instant>,
         debounce_duration: Duration,
     ) -> Vec<FsChangeEvent> {
         let mut events = Vec::new();
-        let open_paths: Vec<PathBuf> = self.documents.values().map(|d| d.path.clone()).collect();
 
-        for path in open_paths {
-            if path.exists() {
-                if pending_deletions.remove(&path).is_some() {
-                    // Reappeared within debounce window: atomic save / rapid recreation!
+        // 1. Drain every batch already coalesced by the delivery thread.
+        // Deleting and renaming are acted on immediately; writes are fed
+        // through the same missing-on-disk debounce, because an atomic save
+        // (tmp → rename) can transiently make the target look gone.
+        if let Some(rx) = &self.fs_events_rx {
+            let mut deleted: Vec<PathBuf> = Vec::new();
+            let mut renamed: Vec<(PathBuf, PathBuf)> = Vec::new();
+            let mut modified: Vec<PathBuf> = Vec::new();
+            let mut rescan = false;
+            while let Ok(batch) = rx.try_recv() {
+                deleted.extend(batch.deleted);
+                renamed.extend(batch.renamed);
+                modified.extend(batch.modified);
+                rescan |= batch.rescan;
+            }
+            for (from, to) in renamed {
+                events.push(FsChangeEvent::Renamed {
+                    old_path: from,
+                    new_path: to,
+                });
+            }
+            // Deletions confirmed through the debounce below; writes of
+            // existing files go straight to the modified path (the pull
+            // protocol in `handle_file_modified` decides whether a reload is
+            // needed).
+            for path in modified {
+                if path.exists() {
+                    events.push(FsChangeEvent::Modified(path));
                 }
-            } else {
-                if let Some(first_seen) = pending_deletions.get(&path) {
-                    if first_seen.elapsed() >= debounce_duration {
-                        pending_deletions.remove(&path);
-                        events.push(FsChangeEvent::Deleted(path));
-                    }
-                } else {
-                    pending_deletions.insert(path, Instant::now());
+            }
+            let mut seen_missing: Vec<PathBuf> = Vec::new();
+            for path in deleted {
+                if !seen_missing.contains(&path) {
+                    seen_missing.push(path.clone());
+                    self.pending_file_deletions.entry(path).or_insert_with(Instant::now);
                 }
+            }
+            if rescan {
+                events.push(FsChangeEvent::Rescan);
             }
         }
 
-        // Clean up pending deletions for paths that are no longer open
-        pending_deletions.retain(|p, _| self.find_document_by_path(p).is_some());
+        // 2. Apply the deletion debounce to every pending path: a path that
+        // reappeared (atomic save / rapid recreation) is cancelled even
+        // before its debounce expires.
+        let now_expired: Vec<PathBuf> = self
+            .pending_file_deletions
+            .iter()
+            .filter(|(_, first_seen)| first_seen.elapsed() >= debounce_duration)
+            .map(|(path, _)| path.clone())
+            .collect();
+        let still_pending: Vec<PathBuf> = self
+            .pending_file_deletions
+            .keys()
+            .filter(|path| !now_expired.contains(path))
+            .cloned()
+            .collect();
+        for path in still_pending {
+            if path.exists() {
+                self.pending_file_deletions.remove(&path);
+            }
+        }
+        for path in now_expired {
+            if path.exists() {
+                self.pending_file_deletions.remove(&path);
+            } else {
+                self.pending_file_deletions.remove(&path);
+                events.push(FsChangeEvent::Deleted(path));
+            }
+        }
 
+        // 3. Clean up pending deletions for paths that are no longer open.
+        let open_paths: Vec<PathBuf> = self
+            .documents
+            .values()
+            .map(|d| d.path.clone())
+            .chain(self.doc_meta.values().map(|m| m.path.clone()))
+            .collect();
+        self.pending_file_deletions.retain(|p, _| open_paths.contains(p));
         events
     }
 
@@ -1878,6 +1975,7 @@ impl AppState {
         self.workspace_path = Some(path.clone());
         self.session.workspace_path = Some(path.clone());
         self.vault = Some(vault);
+        self.attach_fs_watcher();
         // Remember the vault for the switcher dialog (most recent first).
         self.known_vaults.retain(|p| p != &path);
         self.known_vaults.insert(0, path.clone());
@@ -1902,6 +2000,62 @@ impl AppState {
             self.save_session_state();
         }
         self.publish_snapshot();
+    }
+
+    /// Starts or retargets the filesystem watcher for the current workspace
+    /// root. Called on workspace open/switch; when the open fails or the
+    /// workspace is absent, the watcher is simply left pointing at the old
+    /// root until the next successful open.
+    fn attach_fs_watcher(&mut self) {
+        let Some(root) = self.workspace_path.clone() else {
+            return;
+        };
+        if self.fs_watcher.watched_root().as_deref() == Some(root.as_path()) {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        match self.fs_watcher.watch(&root, tx) {
+            Ok(()) => self.fs_events_rx = Some(rx),
+            Err(error) => {
+                // Without a watcher the app still works; deletion tracking
+                // falls back to nothing instead of the old 150 ms poll.
+                self.fs_events_rx = None;
+                self.status_text = format!("File watching unavailable: {error}");
+            }
+        }
+    }
+
+    /// Stops the filesystem watcher (workspace closed).
+    pub fn detach_fs_watcher(&mut self) {
+        self.fs_watcher.stop();
+        self.fs_events_rx = None;
+    }
+
+    /// Rescan reaction: forget the cached vault file list so the next
+    /// snapshot rebuilds it, and reload the file tree from disk. The tree
+    /// walk stays synchronous here (rare event); moving it off the UI thread
+    /// is tracked in `perf-microfreezes-plan.md` §5.
+    pub fn invalidate_markdown_cache_and_tree(&mut self) {
+        if let Some(vault) = &self.vault {
+            vault.invalidate_markdown_cache();
+        }
+        self.reload_file_tree();
+    }
+
+    /// After a rescan, feeds every open document path into the deletion
+    /// debounce: paths that truly disappeared will confirm as `Deleted` on a
+    /// later tick (after the debounce window), present ones cancel out.
+    pub fn recheck_open_paths_after_rescan(&mut self) {
+        for path in self.documents.values().map(|d| d.path.clone()).collect::<Vec<_>>() {
+            if !path.exists() {
+                self.pending_file_deletions.entry(path).or_insert_with(Instant::now);
+            }
+        }
+        for path in self.doc_meta.values().map(|m| m.path.clone()).collect::<Vec<_>>() {
+            if !self.documents.values().any(|d| d.path == path) && !path.exists() {
+                self.pending_file_deletions.entry(path).or_insert_with(Instant::now);
+            }
+        }
     }
 
     /// Публикует актуальный иммутабельный снимок состояния vault и активного файла
@@ -2447,23 +2601,50 @@ impl AppState {
             if !doc.is_dirty {
                 return true;
             }
-            if let Err(err) = crate::save_manager::safe_write_rope(&doc.path, doc.rope()) {
-                self.status_text = format!("Save error: {}", err);
-                return false;
-            } else {
-                doc.mark_clean();
-                if let Some(meta) = self.doc_meta.get_mut(&doc_id) {
-                    meta.is_dirty = false;
+            let expected_hash = doc.disk_hash.clone();
+            match crate::save_manager::safe_write_rope_checked(&doc.path, doc.rope(), expected_hash.as_deref()) {
+                crate::save_manager::CheckedWrite::Written(hash) => {
+                    doc.disk_hash = Some(hash);
+                    doc.disk_stamp = crate::save_manager::file_stamp(&doc.path);
+                    doc.mark_clean();
+                    if let Some(meta) = self.doc_meta.get_mut(&doc_id) {
+                        meta.is_dirty = false;
+                    }
+                    self.status_text = format!("Saved: {}", doc.title);
                 }
-                self.status_text = format!("Saved: {}", doc.title);
-                let rel_path = self.vault.as_ref()
-                    .and_then(|v| doc.path.strip_prefix(&v.root).ok())
-                    .map(|p| p.to_string_lossy().replace('\\', "/"))
-                    .unwrap_or_else(|| doc.path.to_string_lossy().into_owned());
-                self.events.emit_vault(&crate::events::VaultEvent::Modify { path: rel_path });
-                self.publish_snapshot();
-                return true;
+                crate::save_manager::CheckedWrite::Conflict { copy, disk_text } => {
+                    // Two-sided conflict protocol: our version is preserved in
+                    // `copy`, the buffer adopts the external content. No data
+                    // loss on either side.
+                    doc.reload(disk_text);
+                    for view in self.views.values_mut() {
+                        if view.doc_id == doc_id {
+                            view.visual_cache_dirty = true;
+                        }
+                    }
+                    self.status_text = format!(
+                        "Файл изменён извне; ваша версия сохранена в {}",
+                        copy.file_name().unwrap_or_default().to_string_lossy()
+                    );
+                }
+                crate::save_manager::CheckedWrite::Failed(err) => {
+                    self.status_text = format!("Save error: {}", err);
+                    return false;
+                }
             }
+            let rel_path = self.vault.as_ref()
+                .and_then(|v| {
+                    self.documents.get(&doc_id).map(|d| d.path.strip_prefix(&v.root).ok()).unwrap_or(None)
+                })
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .or_else(|| {
+                    self.documents.get(&doc_id).map(|d| d.path.to_string_lossy().into_owned())
+                });
+            if let Some(rel_path) = rel_path {
+                self.events.emit_vault(&crate::events::VaultEvent::Modify { path: rel_path });
+            }
+            self.publish_snapshot();
+            return true;
         }
         false
     }
@@ -3733,6 +3914,9 @@ mod tests {
             workspace: WorkspaceTree::new_single_leaf(default_leaf_id),
             leaves,
             views,
+            fs_watcher: crate::fs_watcher::Watcher::new(),
+            fs_events_rx: None,
+            pending_file_deletions: HashMap::new(),
         };
 
         state.publish_snapshot();
@@ -4565,6 +4749,87 @@ mod tests {
     }
 
     #[test]
+    fn test_handle_file_modified_pull_protocol() {
+        let ws_path = std::env::temp_dir().join(format!("vibe_test_pull_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&ws_path);
+        let note_path = ws_path.join("pull_doc.md");
+        std::fs::write(&note_path, "disk v1").unwrap();
+
+        let mut state = AppState::new_empty();
+        state.workspace_path = Some(ws_path.clone());
+        state.open_note(note_path.clone());
+        let doc_id = state.find_document_by_path(&note_path).unwrap();
+
+        // Loading filled in the disk hash.
+        assert!(state.documents.get(&doc_id).unwrap().disk_hash.is_some());
+
+        // 1. Unchanged file: no reload, no stamp change.
+        let stamp_before = state.documents.get(&doc_id).unwrap().disk_stamp;
+        assert!(!state.handle_file_modified(&note_path), "unchanged file must not reload");
+        assert_eq!(state.documents.get(&doc_id).unwrap().disk_stamp, stamp_before);
+
+        // 2. External rewrite of a CLEAN doc: reload happens.
+        std::fs::write(&note_path, "disk v2 (external)").unwrap();
+        assert!(state.handle_file_modified(&note_path), "external change must reload");
+        assert_eq!(state.documents.get(&doc_id).unwrap().content(), "disk v2 (external)");
+
+        // 3. Our own write echo (same content as the buffer): no reload.
+        // Simulate a completed own save: hash matches the buffer content.
+        let doc = state.documents.get_mut(&doc_id).unwrap();
+        doc.disk_hash = Some(crate::save_manager::hash_rope(&doc.rope));
+        doc.disk_stamp = crate::save_manager::file_stamp(&note_path);
+        drop(doc);
+        assert!(!state.handle_file_modified(&note_path), "own write echo must not reload");
+
+        // 4. External change to a DIRTY doc: only a status, no reload.
+        let doc = state.documents.get_mut(&doc_id).unwrap();
+        doc.record_change_with_selection(0, String::new(), "typed ".to_string(), crate::workspace::session_core::undo::Selection::cursor_only(0), crate::workspace::session_core::undo::Selection::cursor_only(6), None);
+        drop(doc);
+        std::fs::write(&note_path, "disk v3 (external)").unwrap();
+        assert!(!state.handle_file_modified(&note_path), "dirty buffer must not be reloaded");
+        assert_eq!(state.documents.get(&doc_id).unwrap().content(), "typed disk v2 (external)");
+
+        let _ = std::fs::remove_dir_all(&ws_path);
+    }
+
+    #[test]
+    fn test_save_document_conflicts_instead_of_overwriting() {
+        let ws_path = std::env::temp_dir().join(format!("vibe_test_conflict_save_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&ws_path);
+        let note_path = ws_path.join("conflict_doc.md");
+        std::fs::write(&note_path, "disk v1").unwrap();
+
+        let mut state = AppState::new_empty();
+        state.workspace_path = Some(ws_path.clone());
+        state.open_note(note_path.clone());
+        let doc_id = state.find_document_by_path(&note_path).unwrap();
+
+        // The user types while another program rewrites the file.
+        let doc = state.documents.get_mut(&doc_id).unwrap();
+        doc.record_change_with_selection(0, String::new(), "typed ".to_string(), crate::workspace::session_core::undo::Selection::cursor_only(0), crate::workspace::session_core::undo::Selection::cursor_only(6), None);
+        drop(doc);
+        std::fs::write(&note_path, "disk v2 (external)").unwrap();
+
+        assert!(state.save_document(doc_id));
+
+        // The disk keeps the external version; nothing was lost.
+        assert_eq!(std::fs::read_to_string(&note_path).unwrap(), "disk v2 (external)");
+        // Our version lives in a conflict copy next to the note.
+        let copies: Vec<_> = std::fs::read_dir(&ws_path).unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.to_string_lossy().contains("конфликт"))
+            .collect();
+        assert_eq!(copies.len(), 1, "exactly one conflict copy must be created");
+        assert_eq!(std::fs::read_to_string(&copies[0]).unwrap(), "typed disk v1");
+        // The buffer adopted the external content and is clean again.
+        assert_eq!(state.documents.get(&doc_id).unwrap().content(), "disk v2 (external)");
+        assert!(!state.documents.get(&doc_id).unwrap().is_dirty);
+
+        let _ = std::fs::remove_dir_all(&ws_path);
+    }
+
+    #[test]
     fn test_check_fs_changes_atomic_save_debounce() {
         let mut state = AppState::new_empty();
         let ws_path = std::env::temp_dir().join(format!("vibe_test_atomic_save_{}", uuid::Uuid::new_v4()));
@@ -4575,39 +4840,51 @@ mod tests {
         state.workspace_path = Some(ws_path.clone());
         state.open_note(note_path.clone());
 
-        let mut pending = HashMap::new();
+        // Synthetic watcher channel: the test injects batches exactly as the
+        // delivery thread would.
+        let (tx, rx) = std::sync::mpsc::channel();
+        state.fs_events_rx = Some(rx);
         let debounce = Duration::from_millis(200);
 
-        // 1. Initial check: file exists -> no events
-        let evs = state.check_fs_changes(&mut pending, debounce);
+        // 1. Initial check with no watcher events: nothing pending, no calls.
+        let evs = state.check_fs_changes(debounce);
         assert!(evs.is_empty());
-        assert!(pending.is_empty());
+        assert!(state.pending_file_deletions.is_empty());
 
-        // 2. Simulate unlink (file deleted temporarily)
+        // 2. Simulate unlink (file deleted temporarily): a real watcher
+        //    reports the Remove; the file is gone from disk.
         std::fs::remove_file(&note_path).unwrap();
+        tx.send(crate::fs_watcher::FsBatch {
+            deleted: vec![note_path.clone()],
+            ..Default::default()
+        }).unwrap();
 
         // 3. First check after deletion: queued into pending, no Deleted event yet
-        let evs1 = state.check_fs_changes(&mut pending, debounce);
+        let evs1 = state.check_fs_changes(debounce);
         assert!(evs1.is_empty(), "First tick must not emit Deleted due to debounce");
-        assert!(pending.contains_key(&note_path));
+        assert!(state.pending_file_deletions.contains_key(&note_path));
 
         // 4. Simulate atomic save: file reappears before debounce expires!
         std::fs::write(&note_path, "# Atomic Test Replaced").unwrap();
-        let evs2 = state.check_fs_changes(&mut pending, debounce);
+        let evs2 = state.check_fs_changes(debounce);
         assert!(evs2.is_empty(), "Must not emit Deleted if file reappeared");
-        assert!(!pending.contains_key(&note_path), "Pending deletion must be cancelled");
+        assert!(!state.pending_file_deletions.contains_key(&note_path), "Pending deletion must be cancelled");
 
         // 5. Now delete for real and wait past debounce
         std::fs::remove_file(&note_path).unwrap();
-        let _ = state.check_fs_changes(&mut pending, debounce);
-        assert!(pending.contains_key(&note_path));
+        tx.send(crate::fs_watcher::FsBatch {
+            deleted: vec![note_path.clone()],
+            ..Default::default()
+        }).unwrap();
+        let _ = state.check_fs_changes(debounce);
+        assert!(state.pending_file_deletions.contains_key(&note_path));
 
         // Sleep to exceed debounce window
         std::thread::sleep(Duration::from_millis(250));
 
-        let evs3 = state.check_fs_changes(&mut pending, debounce);
+        let evs3 = state.check_fs_changes(debounce);
         assert_eq!(evs3, vec![FsChangeEvent::Deleted(note_path)]);
-        assert!(pending.is_empty());
+        assert!(state.pending_file_deletions.is_empty());
 
         let _ = std::fs::remove_dir_all(&ws_path);
     }
