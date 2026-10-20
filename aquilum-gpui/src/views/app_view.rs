@@ -1491,6 +1491,25 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         self.scroll_cursor_into_view_with_strategy(ScrollStrategy::Top);
     }
 
+    /// Keeps the visual cache and the scroll position in sync after the cursor
+    /// moved without an edit (e.g. inside a table), so table navigation follows
+    /// the same path as ordinary cursor movement.
+    fn refresh_view_after_cursor_move(&mut self) {
+        if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
+            let (cursor_line, _) = view.line_col(doc);
+            let anchor = if view.window.covers_line(cursor_line) && view.window.covers_line(view.viewport.offset) {
+                view.viewport.offset
+            } else {
+                view.viewport.offset = cursor_line;
+                cursor_line
+            };
+            let word_wrap = self.word_wrap;
+            let wrap_cols = self.last_wrap_cols;
+            view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&self.config.editor.headings), anchor);
+        }
+        self.scroll_cursor_into_view();
+    }
+
     /// Moves the editor to `scroll_y`.
     ///
     /// Any write through here also cancels an in-flight wheel ease: the
@@ -4108,27 +4127,42 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
             if let Some(tbl) = view.grid_table_at(&tables, cursor_line, cursor_line) {
                 let line_str = doc.line_text(cursor_line);
-                let line_strings = Self::table_lines_slice(doc, tbl);
-                let lines_ref: Vec<&str> = line_strings.iter().map(|s| s.as_str()).collect();
                 let cells = crate::table::split_row(&line_str);
+                let current_row_cell = tbl
+                    .row_of_line(cursor_line)
+                    .map(|row| (row, crate::table::cell_index_at(&cells, cursor_col).min(tbl.col_count().saturating_sub(1))));
+                // Only the target row's text is read: navigation must not clone the
+                // whole table on every keypress.
+                let cursor_at = |row: usize, cell: usize| -> TableKeyAction {
+                    let target_l = tbl.line_of_row(row);
+                    let target_text = doc.line_text(target_l);
+                    let target_c = crate::table::split_row(&target_text)
+                        .get(cell)
+                        .map(|c| c.content.start)
+                        .unwrap_or_else(|| target_text.chars().count());
+                    TableKeyAction::SetCursor(target_l, target_c)
+                };
+                // The full table is only materialised when a row is appended.
+                let append_row = |cell: usize| -> TableKeyAction {
+                    let line_strings = Self::table_lines_slice(doc, tbl);
+                    let lines_ref: Vec<&str> = line_strings.iter().map(|s| s.as_str()).collect();
+                    let mut model = crate::table::TableModel::parse(tbl, &lines_ref);
+                    model.insert_row(model.rows.len());
+                    let edit = crate::table::rewrite(tbl, &model, false, &crate::table::char_width);
+                    let target_l = edit.first_line + edit.new_lines.len() - 1;
+                    let new_cells = crate::table::split_row(&edit.new_lines[edit.new_lines.len() - 1]);
+                    let target_c = new_cells.get(cell).map(|c| c.content.start).unwrap_or(2);
+                    TableKeyAction::ApplyEdit(edit, Some((target_l, target_c)))
+                };
 
                 match keystroke.key.as_str() {
                     "tab" => {
-                        if let Some(nav) = crate::table::tab(tbl, &lines_ref, cursor_line, cursor_col, shift) {
-                            match nav {
+                        if let Some((row, cell)) = current_row_cell {
+                            match crate::table::tab_from(tbl, row, cell, shift) {
                                 crate::table::Nav::To { row, cell } => {
-                                    let (target_l, target_c) = crate::table::nav_cursor(tbl, &lines_ref, row, cell, crate::table::Place::Start);
-                                    TableKeyAction::SetCursor(target_l, target_c)
+                                    cursor_at(row, cell)
                                 }
-                                crate::table::Nav::AppendRow { cell } => {
-                                    let mut model = crate::table::TableModel::parse(tbl, &lines_ref);
-                                    model.insert_row(model.rows.len());
-                                    let edit = crate::table::rewrite(tbl, &model, false, &crate::table::char_width);
-                                    let target_l = edit.first_line + edit.new_lines.len() - 1;
-                                    let new_cells = crate::table::split_row(&edit.new_lines[edit.new_lines.len() - 1]);
-                                    let target_c = new_cells.get(cell).map(|c| c.content.start).unwrap_or(2);
-                                    TableKeyAction::ApplyEdit(edit, Some((target_l, target_c)))
-                                }
+                                crate::table::Nav::AppendRow { cell } => append_row(cell),
                                 crate::table::Nav::Exit => {
                                     if tbl.first_line > 0 {
                                         TableKeyAction::SetCursor(tbl.first_line - 1, 0)
@@ -4142,21 +4176,12 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                         }
                     }
                     "enter" => {
-                        if let Some(nav) = crate::table::enter(tbl, &lines_ref, cursor_line, cursor_col, shift) {
-                            match nav {
+                        if let Some((row, cell)) = current_row_cell {
+                            match crate::table::enter_from(tbl, row, cell, shift) {
                                 crate::table::Nav::To { row, cell } => {
-                                    let (target_l, target_c) = crate::table::nav_cursor(tbl, &lines_ref, row, cell, crate::table::Place::Start);
-                                    TableKeyAction::SetCursor(target_l, target_c)
+                                    cursor_at(row, cell)
                                 }
-                                crate::table::Nav::AppendRow { cell } => {
-                                    let mut model = crate::table::TableModel::parse(tbl, &lines_ref);
-                                    model.insert_row(model.rows.len());
-                                    let edit = crate::table::rewrite(tbl, &model, false, &crate::table::char_width);
-                                    let target_l = edit.first_line + edit.new_lines.len() - 1;
-                                    let new_cells = crate::table::split_row(&edit.new_lines[edit.new_lines.len() - 1]);
-                                    let target_c = new_cells.get(cell).map(|c| c.content.start).unwrap_or(2);
-                                    TableKeyAction::ApplyEdit(edit, Some((target_l, target_c)))
-                                }
+                                crate::table::Nav::AppendRow { cell } => append_row(cell),
                                 crate::table::Nav::Exit => {
                                     if tbl.first_line > 0 {
                                         TableKeyAction::SetCursor(tbl.first_line - 1, 0)
@@ -4189,6 +4214,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                 let end_line_byte = doc.line_start_byte(end_line);
                                 let start_col = doc.slice_to_string(start_line_byte..range.start).chars().count();
                                 let end_col = doc.slice_to_string(end_line_byte..range.end).chars().count();
+                                let line_strings = Self::table_lines_slice(doc, tbl);
+                                let lines_ref: Vec<&str> = line_strings.iter().map(|s| s.as_str()).collect();
                                 let r1 = tbl.row_of_line(start_line).unwrap_or(0);
                                 let r2 = tbl.row_of_line(end_line).unwrap_or(tbl.row_count().saturating_sub(1));
                                 let c1 = crate::table::cell_index_at(&crate::table::split_row(crate::table::get_table_line(tbl, &lines_ref, start_line)), start_col);
@@ -4229,6 +4256,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                 let end_line_byte = doc.line_start_byte(end_line);
                                 let start_col = doc.slice_to_string(start_line_byte..range.start).chars().count();
                                 let end_col = doc.slice_to_string(end_line_byte..range.end).chars().count();
+                                let line_strings = Self::table_lines_slice(doc, tbl);
+                                let lines_ref: Vec<&str> = line_strings.iter().map(|s| s.as_str()).collect();
                                 let r1 = tbl.row_of_line(start_line).unwrap_or(0);
                                 let r2 = tbl.row_of_line(end_line).unwrap_or(tbl.row_count().saturating_sub(1));
                                 let c1 = crate::table::cell_index_at(&crate::table::split_row(crate::table::get_table_line(tbl, &lines_ref, start_line)), start_col);
@@ -4304,8 +4333,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             let cell = crate::table::cell_index_at(&cells, cursor_col);
                             if let Some(row) = tbl.row_of_line(cursor_line) {
                                 if row > 0 {
-                                    let (target_l, target_c) = crate::table::nav_cursor(tbl, &lines_ref, row - 1, cell, crate::table::Place::Start);
-                                    TableKeyAction::SetCursor(target_l, target_c)
+                                    cursor_at(row - 1, cell)
                                 } else if tbl.first_line > 0 {
                                     TableKeyAction::SetCursor(tbl.first_line - 1, 0)
                                 } else {
@@ -4323,8 +4351,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             let cell = crate::table::cell_index_at(&cells, cursor_col);
                             if let Some(row) = tbl.row_of_line(cursor_line) {
                                 if row + 1 < tbl.row_count() {
-                                    let (target_l, target_c) = crate::table::nav_cursor(tbl, &lines_ref, row + 1, cell, crate::table::Place::Start);
-                                    TableKeyAction::SetCursor(target_l, target_c)
+                                    cursor_at(row + 1, cell)
                                 } else {
                                     let next_line = tbl.last_line + 1;
                                     if next_line < doc.line_index.lines() {
@@ -4367,6 +4394,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         match table_action {
             TableKeyAction::SetCursor(line, col) => {
                 self.state.active_set_cursor_line_col(line, col);
+                self.refresh_view_after_cursor_move();
                 cx.notify();
                 return;
             }
@@ -4472,19 +4500,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         // cache dirty, and the lookup below must see the new rows already —
         // otherwise a row created at the very bottom (Enter) stays hidden
         // under the status bar until the next frame's rebuild.
-        if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
-            let (cursor_line, _) = view.line_col(doc);
-            let anchor = if view.window.covers_line(cursor_line) && view.window.covers_line(view.viewport.offset) {
-                view.viewport.offset
-            } else {
-                view.viewport.offset = cursor_line;
-                cursor_line
-            };
-            let word_wrap = self.word_wrap;
-            let wrap_cols = self.last_wrap_cols;
-            view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&self.config.editor.headings), anchor);
-        }
-        self.scroll_cursor_into_view();
+        self.refresh_view_after_cursor_move();
         cx.notify();
     }
 
@@ -10796,17 +10812,25 @@ fn render_live_styled_row(
         let is_header = line_idx == tbl.first_line;
         let is_last_row = line_idx == tbl.last_line && line_idx > tbl.sep_line();
         let active_c = cursor_col.map(|cc| crate::table::cell_index_at(&raw_cells, cc));
+        // Cell ranges are in chars; map them to byte offsets once per row instead
+        // of re-walking the line from the start for every cell.
+        let mut char_byte_offsets: Vec<usize> = line.char_indices().map(|(b, _)| b).collect();
+        char_byte_offsets.push(line.len());
         let mut row_div = div().flex().flex_row().items_center()
             .when(is_header, |d| d.h(px(28.0)).mt(px(14.0)))
             .when(is_last_row, |d| d.h(px(28.0)).mb(px(14.0)))
             .when(!is_header && !is_last_row, |d| d.h(px(28.0)));
         for (c_idx, &col_w) in table_layout.col_widths.iter().enumerate() {
-            let cell_text: String = raw_cells
+            let cell_text = raw_cells
                 .get(c_idx)
-                .map(|c| line.chars().skip(c.content.start).take(c.content.end.saturating_sub(c.content.start)).collect())
-                .unwrap_or_default();
+                .and_then(|c| {
+                    let start = *char_byte_offsets.get(c.content.start)?;
+                    let end = *char_byte_offsets.get(c.content.end)?;
+                    line.get(start..end)
+                })
+                .unwrap_or("");
             let is_active_cell = active_c == Some(c_idx);
-            let spans = crate::markdown::parse_inline_syntax_spans(&cell_text);
+            let spans = crate::markdown::parse_inline_syntax_spans(cell_text);
             let align = table_layout.aligns.get(c_idx).copied().unwrap_or_default();
             let font_weight = if is_header { Some(gpui::FontWeight::BOLD) } else { None };
             let is_first_col = c_idx == 0;

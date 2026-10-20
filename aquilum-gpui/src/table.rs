@@ -1049,11 +1049,11 @@ fn current_cell(block: &TableBlock, lines: &[&str], line: usize, col: usize) -> 
     Some((row, cell))
 }
 
-/// Tab / Shift+Tab navigation. Tab in the last cell of the last row appends a row.
-pub fn tab(block: &TableBlock, lines: &[&str], line: usize, col: usize, back: bool) -> Option<Nav> {
-    let (row, cell) = current_cell(block, lines, line, col)?;
+/// Tab / Shift+Tab navigation from an already known `(row, cell)`.
+/// Tab in the last cell of the last row appends a row.
+pub fn tab_from(block: &TableBlock, row: usize, cell: usize, back: bool) -> Nav {
     let cols = block.col_count();
-    Some(if back {
+    if back {
         if cell > 0 {
             Nav::To { row, cell: cell - 1 }
         } else if row > 0 {
@@ -1067,20 +1067,32 @@ pub fn tab(block: &TableBlock, lines: &[&str], line: usize, col: usize, back: bo
         Nav::To { row: row + 1, cell: 0 }
     } else {
         Nav::AppendRow { cell: 0 }
-    })
+    }
+}
+
+/// Tab / Shift+Tab navigation. Tab in the last cell of the last row appends a row.
+pub fn tab(block: &TableBlock, lines: &[&str], line: usize, col: usize, back: bool) -> Option<Nav> {
+    let (row, cell) = current_cell(block, lines, line, col)?;
+    Some(tab_from(block, row, cell, back))
+}
+
+/// Enter navigation from an already known `(row, cell)`.
+/// Appends a row when moving down from the last row.
+pub fn enter_from(block: &TableBlock, row: usize, cell: usize, up: bool) -> Nav {
+    if up {
+        if row > 0 { Nav::To { row: row - 1, cell } } else { Nav::Exit }
+    } else if row + 1 < block.row_count() {
+        Nav::To { row: row + 1, cell }
+    } else {
+        Nav::AppendRow { cell }
+    }
 }
 
 /// Enter navigates to the cell directly below (appends a row if on the last row).
 /// Shift+Enter navigates to the cell directly above.
 pub fn enter(block: &TableBlock, lines: &[&str], line: usize, col: usize, up: bool) -> Option<Nav> {
     let (row, cell) = current_cell(block, lines, line, col)?;
-    Some(if up {
-        if row > 0 { Nav::To { row: row - 1, cell } } else { Nav::Exit }
-    } else if row + 1 < block.row_count() {
-        Nav::To { row: row + 1, cell }
-    } else {
-        Nav::AppendRow { cell }
-    })
+    Some(enter_from(block, row, cell, up))
 }
 
 /// Computes target cursor position `(document_line, char_column)` within the cell.

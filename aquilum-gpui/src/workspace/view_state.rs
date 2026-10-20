@@ -480,13 +480,43 @@ impl TabSession {
             let res = doc.record_change(at, String::new(), text.to_string(), cursor_before, new_cursor, Some(self.tab_id));
             let (_, ref note_edit, _) = res;
             if note_edit.line_diff == 0 && self.window.covers_line(note_edit.edit_line) {
-                let new_line_text = doc.line_text(note_edit.edit_line);
                 let delta = note_edit.new_len as isize - note_edit.old_len as isize;
-                let _ = self.window.update_single_line(note_edit.edit_line, new_line_text, delta, None);
+                self.update_window_line_after_edit(doc, note_edit.edit_line, delta);
             }
             self.visual_cache_dirty = true;
             res
         }
+    }
+
+    /// Refreshes a window line and its geometry after a same-line edit.
+    ///
+    /// Table rows are never wrapped and keep their fixed heights. Heights of the
+    /// rest of the window are recomputed with the table kinds, so editing one
+    /// cell cannot collapse the whole table geometry to ordinary 24 px rows.
+    fn update_window_line_after_edit(&mut self, doc: &DocumentBuffer, edit_line: usize, delta: isize) {
+        let tables = doc.ensure_table_index_for_window(self.window.start_line, self.window.end_line);
+        let (cursor_line, _) = self.line_col(doc);
+        let raw_first = tables
+            .at(cursor_line)
+            .filter(|t| self.raw_tables.contains(&t.first_line))
+            .map(|t| t.first_line);
+        let table_info = |line: usize| {
+            let t = tables.at(line)?;
+            if Some(t.first_line) == raw_first {
+                return None;
+            }
+            Some(if line == t.sep_line() {
+                crate::markdown::TableRowVisualKind::Delimiter
+            } else if line == t.first_line {
+                crate::markdown::TableRowVisualKind::Header
+            } else if line == t.last_line {
+                crate::markdown::TableRowVisualKind::LastRow
+            } else {
+                crate::markdown::TableRowVisualKind::Body
+            })
+        };
+        let new_line_text = doc.line_text(edit_line);
+        let _ = self.window.update_single_line(edit_line, new_line_text, delta, None, table_info);
     }
 
     pub fn insert_text(&mut self, doc: &mut DocumentBuffer, text: &str) -> (BufferEvent, NoteEditEvent, EditEvent) {
@@ -527,9 +557,8 @@ impl TabSession {
         let res = doc.record_change(prev, removed, String::new(), cursor_before, prev, Some(self.tab_id));
         let (_, ref note_edit, _) = res;
         if note_edit.line_diff == 0 && self.window.covers_line(note_edit.edit_line) {
-            let new_line_text = doc.line_text(note_edit.edit_line);
             let delta = note_edit.new_len as isize - note_edit.old_len as isize;
-            let _ = self.window.update_single_line(note_edit.edit_line, new_line_text, delta, None);
+            self.update_window_line_after_edit(doc, note_edit.edit_line, delta);
         }
         self.visual_cache_dirty = true;
         Some(res)
@@ -554,9 +583,8 @@ impl TabSession {
         let res = doc.record_change(offset, removed, String::new(), cursor_before, offset, Some(self.tab_id));
         let (_, ref note_edit, _) = res;
         if note_edit.line_diff == 0 && self.window.covers_line(note_edit.edit_line) {
-            let new_line_text = doc.line_text(note_edit.edit_line);
             let delta = note_edit.new_len as isize - note_edit.old_len as isize;
-            let _ = self.window.update_single_line(note_edit.edit_line, new_line_text, delta, None);
+            self.update_window_line_after_edit(doc, note_edit.edit_line, delta);
         }
         self.visual_cache_dirty = true;
         Some(res)

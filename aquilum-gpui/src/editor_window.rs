@@ -518,20 +518,51 @@ impl EditorWindow {
         new_line_text: String,
         delta: isize,
         headings: Option<&crate::settings::HeadingsSettings>,
+        table_row_info: impl Fn(usize) -> Option<markdown::TableRowVisualKind>,
     ) -> bool {
         if !self.covers_line(line) {
             return false;
         }
         let local_line = line - self.start_line;
-        let lines_mut = Arc::make_mut(&mut self.lines);
-        if local_line >= lines_mut.lines.len() {
+        if local_line >= self.lines.lines.len() {
             return false;
         }
-        lines_mut.lines[local_line] = new_line_text.clone();
 
         self.end_byte = (self.end_byte as isize + delta).max(self.start_byte as isize) as usize;
 
-        let new_rows = markdown::build_visual_rows(&[&new_line_text], self.word_wrap, self.wrap_cols);
+        let table_kind = table_row_info(line);
+
+        // Table rows never wrap and keep their fixed height. If the row is already
+        // a single table row of the expected height, only the text changed: there
+        // is nothing to re-wrap and no height to recompute (R18, N9).
+        if let Some(kind) = table_kind {
+            let expected_h = match kind {
+                markdown::TableRowVisualKind::Delimiter => 1.0,
+                markdown::TableRowVisualKind::Header | markdown::TableRowVisualKind::LastRow => 42.0,
+                markdown::TableRowVisualKind::Body => 28.0,
+            };
+            if let Some(first) = self.first_row_of_line(line) {
+                let last = self.visual_rows.iter().rposition(|r| r.line_idx == line).unwrap_or(first);
+                if first == last && self.height_index.height_of(first) == expected_h {
+                    let char_end = new_line_text.chars().count();
+                    let row = &mut Arc::make_mut(&mut self.visual_rows)[first];
+                    row.sub_idx = 0;
+                    row.is_last_sub = true;
+                    row.char_start = 0;
+                    row.char_end = char_end;
+                    Arc::make_mut(&mut self.lines).lines[local_line] = new_line_text;
+                    return true;
+                }
+            }
+        }
+
+        let new_rows = markdown::build_visual_rows_with_table_filter(
+            &[new_line_text.as_str()],
+            self.word_wrap,
+            self.wrap_cols,
+            |_| table_kind.is_some(),
+        );
+        Arc::make_mut(&mut self.lines).lines[local_line] = new_line_text;
         let vrows_mut = Arc::make_mut(&mut self.visual_rows);
 
         let first_row = vrows_mut.iter().position(|r| r.line_idx == line);
@@ -545,10 +576,11 @@ impl EditorWindow {
             vrows_mut.splice(first..=last, adjusted_new_rows);
         }
 
-        self.height_index = Arc::new(VisualRowHeightIndex::from_rows(
+        self.height_index = Arc::new(VisualRowHeightIndex::from_rows_with_tables(
             &self.lines.lines,
             &self.visual_rows,
             headings,
+            table_row_info,
         ));
         true
     }
@@ -638,6 +670,48 @@ mod tests {
         assert_eq!((line_of(4), line_of(5)), (2, 3));
         let found = crate::markdown::find_visual_row_for_cursor(&w.visual_rows, 1, 7);
         assert_eq!(found, Some((2, 3)));
+    }
+
+    /// Single-line updates must not wrap table rows and must keep their table
+    /// heights when any other line is edited.
+    #[test]
+    fn single_line_update_keeps_table_rows_unwrapped_and_measured() {
+        let text = "intro intro intro\n| a | b |\n|---|---|\n| a very long cell that exceeds the wrap width | b |";
+        let table_kind = |line: usize| match line {
+            1 => Some(crate::markdown::TableRowVisualKind::Header),
+            2 => Some(crate::markdown::TableRowVisualKind::Delimiter),
+            3 => Some(crate::markdown::TableRowVisualKind::LastRow),
+            _ => None,
+        };
+        let mut w = EditorWindow::build_from_slice_with_tables(
+            text,
+            0,
+            4,
+            0,
+            text.len(),
+            true,
+            10,
+            None,
+            crate::markdown::CodeScanState::default(),
+            table_kind,
+        );
+        let rows_of = |w: &EditorWindow, line: usize| w.visual_rows.iter().filter(|r| r.line_idx == line).count();
+        assert_eq!(rows_of(&w, 3), 1, "a table row must never wrap");
+        assert_eq!(w.height_index.height_of(w.first_row_of_line(1).unwrap()), 42.0);
+        assert_eq!(w.height_index.height_of(w.first_row_of_line(2).unwrap()), 1.0);
+        assert_eq!(w.height_index.height_of(w.first_row_of_line(3).unwrap()), 42.0);
+
+        let edited = "| a very long cell that exceeds the wrap width by far | b |".to_string();
+        assert!(w.update_single_line(3, edited.clone(), 0, None, table_kind));
+        assert_eq!(rows_of(&w, 3), 1);
+        let row = w.visual_rows.iter().find(|r| r.line_idx == 3).unwrap();
+        assert_eq!(row.char_end, edited.chars().count());
+
+        // Editing an ordinary line must keep the table rows' exact heights.
+        assert!(w.update_single_line(0, "intro intro intro intro intro".to_string(), 0, None, table_kind));
+        assert_eq!(w.height_index.height_of(w.first_row_of_line(1).unwrap()), 42.0);
+        assert_eq!(w.height_index.height_of(w.first_row_of_line(2).unwrap()), 1.0);
+        assert_eq!(w.height_index.height_of(w.first_row_of_line(3).unwrap()), 42.0);
     }
 
     /// At the document edges the window is one-sided instead of out of range.
