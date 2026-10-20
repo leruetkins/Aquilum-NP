@@ -7534,7 +7534,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                 (row_layout.width() + 18.0, ((row_h - btn_h) / 2.0).max(0.0))
                             } else {
                                 let total_w = table_layout.as_ref().map(|l| l.total_width).unwrap_or(0.0);
-                                (total_w + 24.0, 14.0 + (28.0 - btn_h) / 2.0)
+                                (total_w + 20.0, 14.0 + (28.0 - btn_h) / 2.0)
                             };
                             let tbl_first_line = tbl.first_line;
                             let icon_color = if is_raw { theme.accent } else { theme.text_secondary };
@@ -7575,36 +7575,54 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     None
                 };
 
-                let is_cursor_in_this_table = match (cursor_table, grid_tbl) {
-                    (Some(ct), Some(gt)) => ct.first_line == gt.first_line,
-                    _ => false,
-                };
-
-                let add_col_btn = if is_editing && is_cursor_in_this_table {
+                let add_col_btn = if is_editing {
                     if let Some(tbl) = grid_tbl {
-                        if v_line_idx == tbl.first_line {
+                        if v_line_idx == tbl.last_line {
                             let total_w = table_layout.as_ref().unwrap().total_width;
                             let tbl_clone = tbl.clone();
+                            let group_name = format!("tbl-add-col-grp-{}", tbl.first_line);
+                            let (col_btn_top, table_h) = if tbl.last_line == tbl.sep_line() {
+                                (-28.0, 29.0)
+                            } else {
+                                let n = tbl.row_count();
+                                let dist_up = (n - 1) as f32 * 28.0 + 1.0;
+                                let h = n as f32 * 28.0 + 1.0;
+                                (-dist_up, h)
+                            };
                             Some(
                                 div()
                                     .id(gpui::ElementId::Name(format!("table-add-col-{}", v_idx).into()))
+                                    .group(group_name.clone())
                                     .absolute()
-                                    .left(px(total_w - 13.0))
-                                    .top(px(1.0))
-                                    .w(px(26.0))
-                                    .h(px(26.0))
-                                    .rounded_full()
-                                    .border_1()
-                                    .border_color(theme.border_subtle)
-                                    .bg(theme.bg_editor)
-                                    .hover(|h| h.bg(theme.bg_hover).border_color(theme.accent))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
+                                    .left(px(total_w - 1.0))
+                                    .top(px(col_btn_top))
+                                    .w(px(14.0))
+                                    .h(px(table_h))
                                     .cursor_pointer()
-                                    .text_sm()
-                                    .text_color(theme.text_secondary)
-                                    .child("+")
+                                    .child(
+                                        div()
+                                            .relative()
+                                            .w_full()
+                                            .h_full()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .border_t_1()
+                                            .border_r_1()
+                                            .border_b_1()
+                                            .border_color(theme.border_subtle)
+                                            .rounded_r_sm()
+                                            .opacity(0.0)
+                                            .group_hover(group_name.clone(), |h| {
+                                                h.opacity(1.0).border_color(theme.border_subtle)
+                                            })
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(theme.text_secondary)
+                                                    .child("+")
+                                            )
+                                    )
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         let lines: Vec<String> = this.state.active_document().map(|d| Self::table_lines_slice(d, &tbl_clone)).unwrap_or_default();
                                         let lines_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
@@ -7629,30 +7647,47 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     None
                 };
 
-                let add_row_btn = if is_editing && is_cursor_in_this_table {
+                let add_row_btn = if is_editing {
                     if let Some(tbl) = grid_tbl {
                         if v_line_idx == tbl.last_line {
+                            let total_w = table_layout.as_ref().unwrap().total_width;
                             let tbl_clone = tbl.clone();
+                            let group_name = format!("tbl-add-row-grp-{}", tbl.first_line);
                             Some(
                                 div()
                                     .id(gpui::ElementId::Name(format!("table-add-row-{}", v_idx).into()))
+                                    .group(group_name.clone())
                                     .absolute()
-                                    .left(px(-13.0))
-                                    .top(px(15.0))
-                                    .w(px(26.0))
-                                    .h(px(26.0))
-                                    .rounded_full()
-                                    .border_1()
-                                    .border_color(theme.border_subtle)
-                                    .bg(theme.bg_editor)
-                                    .hover(|h| h.bg(theme.bg_hover).border_color(theme.accent))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
+                                    .left_0()
+                                    .top(px(27.0))
+                                    .w(px(total_w))
+                                    .h(px(13.0))
                                     .cursor_pointer()
-                                    .text_sm()
-                                    .text_color(theme.text_secondary)
-                                    .child("+")
+                                    .child(
+                                        div()
+                                            .relative()
+                                            .w_full()
+                                            .h_full()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .border_l_1()
+                                            .border_r_1()
+                                            .border_b_1()
+                                            .border_color(theme.border_subtle)
+                                            .rounded_b_sm()
+                                            .opacity(0.0)
+                                            .group_hover(group_name.clone(), |h| {
+                                                h.opacity(1.0).border_color(theme.border_subtle)
+                                            })
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .line_height(px(13.0))
+                                                    .text_color(theme.text_secondary)
+                                                    .child("+")
+                                            )
+                                    )
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         let lines: Vec<String> = this.state.active_document().map(|d| Self::table_lines_slice(d, &tbl_clone)).unwrap_or_default();
                                         let lines_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
