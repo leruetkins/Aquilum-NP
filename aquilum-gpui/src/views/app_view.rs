@@ -7560,10 +7560,14 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         d.bg(theme.bg_editor).border_1().border_color(theme.border_subtle).hover(|h| h.bg(theme.bg_hover))
                                     })
                                     .child(icons::icon(icons::ICON_CODE, 11.0, icon_color))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
                                         this.state.active_toggle_raw_table_at(tbl_first_line);
                                         cx.notify();
                                     }))
+                                    .on_mouse_down(MouseButton::Right, |_, _, cx| {
+                                        cx.stop_propagation();
+                                    })
                             )
                         } else {
                             None
@@ -7623,7 +7627,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                                     .child("+")
                                             )
                                     )
-                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
                                         let lines: Vec<String> = this.state.active_document().map(|d| Self::table_lines_slice(d, &tbl_clone)).unwrap_or_default();
                                         let lines_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
                                         let mut model = crate::table::TableModel::parse(&tbl_clone, &lines_refs);
@@ -7636,6 +7641,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         this.state.active_apply_table_line_edit(&edit, None);
                                         cx.notify();
                                     }))
+                                    .on_mouse_down(MouseButton::Right, |_, _, cx| {
+                                        cx.stop_propagation();
+                                    })
                             )
                         } else {
                             None
@@ -7688,18 +7696,20 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                                     .child("+")
                                             )
                                     )
-                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
                                         let lines: Vec<String> = this.state.active_document().map(|d| Self::table_lines_slice(d, &tbl_clone)).unwrap_or_default();
                                         let lines_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
                                         let mut model = crate::table::TableModel::parse(&tbl_clone, &lines_refs);
                                         model.insert_row(model.rows.len());
                                         let edit = crate::table::rewrite(&tbl_clone, &model, false, &crate::table::char_width);
-                                        let new_r = model.rows.len() - 1;
-                                        let new_l = tbl_clone.line_of_row(new_r);
                                         this.table_layouts.borrow_mut().remove(&tbl_clone.first_line);
-                                        this.state.active_apply_table_line_edit(&edit, Some((new_l, 2)));
+                                        this.state.active_apply_table_line_edit(&edit, None);
                                         cx.notify();
                                     }))
+                                    .on_mouse_down(MouseButton::Right, |_, _, cx| {
+                                        cx.stop_propagation();
+                                    })
                             )
                         } else {
                             None

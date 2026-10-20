@@ -825,7 +825,38 @@ impl AppState {
                 start_byte
             }
         } else {
-            start_byte
+            // Preserve existing cursor location
+            let old_cursor = view.cursor_offset;
+            let (cur_line, cur_col) = view.line_col(doc);
+            if cur_line < edit.first_line {
+                // Cursor was before the table: position unchanged
+                old_cursor
+            } else if cur_line >= edit.first_line + edit.old_line_count {
+                // Cursor was after the table: shift by byte delta of replacement
+                let old_table_bytes = end_byte.saturating_sub(start_byte);
+                let new_table_bytes = new_text.len();
+                let delta = new_table_bytes as isize - old_table_bytes as isize;
+                (old_cursor as isize + delta).max(0) as usize
+            } else {
+                // Cursor was inside the table: keep it on the same line and column if possible
+                let rel_line = cur_line - edit.first_line;
+                if rel_line < edit.new_lines.len() {
+                    let mut offset_in_new = 0;
+                    for i in 0..rel_line {
+                        offset_in_new += edit.new_lines[i].len() + 1;
+                    }
+                    let line_char_count = edit.new_lines[rel_line].chars().count();
+                    let target_col = cur_col.min(line_char_count);
+                    let byte_col: usize = edit.new_lines[rel_line]
+                        .chars()
+                        .take(target_col)
+                        .map(|c| c.len_utf8())
+                        .sum();
+                    start_byte + offset_in_new + byte_col
+                } else {
+                    start_byte + new_text.len()
+                }
+            }
         };
 
         let (_, note_edit, edit_event) = view.replace_range(doc, start_byte..end_byte, new_text, target_cursor);
