@@ -1579,7 +1579,27 @@ impl AppState {
         if let Some(doc_id) = opt_doc_id {
             let is_dirty = self.documents.get(&doc_id).map(|d| d.is_dirty).unwrap_or(false);
 
+            // Dirty buffer: an external change normally only gets a status —
+            // but the watcher also fires for our own background save (a plain
+            // in-place write is indistinguishable from a foreign write by the
+            // event alone). When the file content already equals the buffer,
+            // this is our own write echo: reconcile the hash silently.
             if is_dirty {
+                if let Some(actual) = crate::save_manager::hash_file(path) {
+                    let buffer_matches = self.documents.get(&doc_id)
+                        .map(|d| {
+                            d.disk_hash.as_deref() == Some(actual.as_str())
+                                || crate::save_manager::hash_rope(&d.rope) == actual
+                        })
+                        .unwrap_or(false);
+                    if buffer_matches {
+                        if let Some(doc) = self.documents.get_mut(&doc_id) {
+                            doc.disk_hash = Some(actual);
+                            doc.disk_stamp = crate::save_manager::file_stamp(path);
+                        }
+                        return false;
+                    }
+                }
                 self.status_text = format!(
                     "Файл изменён внешним приложением (в редакторе есть несохранённые правки): {}",
                     path.file_name().unwrap_or_default().to_string_lossy()

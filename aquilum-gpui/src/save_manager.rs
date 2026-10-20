@@ -186,7 +186,14 @@ pub fn safe_write_rope_checked(
         };
     }
 
-    // Conflict: preserve our version, read the external one.
+    // Conflict: preserve our version, read the external one — unless the
+    // on-disk content already equals what we are about to write (our own
+    // earlier save won the race; rewriting would be a no-op and a
+    // self-conflict would be pure noise).
+    let ours_text = rope.to_string();
+    if std::fs::read_to_string(path).ok().as_deref() == Some(ours_text.as_str()) {
+        return CheckedWrite::Written(hash_rope(rope));
+    }
     let copy = match conflict_copy_path(path) {
         Some(candidate) => match safe_write_rope(&candidate, rope) {
             Ok(()) => candidate,

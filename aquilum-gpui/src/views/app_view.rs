@@ -869,9 +869,17 @@ impl AppView {
                     if let Some(doc) = this.state.documents.get_mut(&doc_id) {
                         match write_res {
                             crate::save_manager::CheckedWrite::Written(hash) => {
+                                // The hash/stamp update must happen even when
+                                // the user kept typing while the write ran
+                                // (`doc.version != version`): the disk now
+                                // holds exactly `hash`, and a watcher `Modified`
+                                // event for our own write must be recognised
+                                // as an echo instead of triggering a reload —
+                                // `reload` drops the undo stack and the
+                                // caret/selection visibly jump.
+                                doc.disk_hash = Some(hash);
+                                doc.disk_stamp = crate::save_manager::file_stamp(&doc.path);
                                 if doc.version == version {
-                                    doc.disk_hash = Some(hash);
-                                    doc.disk_stamp = crate::save_manager::file_stamp(&doc.path);
                                     doc.mark_clean();
                                     if let Some(meta) = this.state.doc_meta.get_mut(&doc_id) {
                                         meta.is_dirty = false;
