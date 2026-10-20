@@ -195,6 +195,10 @@ pub struct ViewCache {
     pub est_rows_per_line: f64,
     pub est_row_h: f64,
     pub visual_cache_dirty: bool,
+    /// Heading settings the current window heights were built with. Same-line
+    /// edits recompute row heights against this snapshot instead of a rebuild;
+    /// kept in sync by every full rebuild.
+    pub headings_cache: crate::settings::HeadingsSettings,
     pub raw_table: bool,
     pub raw_tables: std::collections::HashSet<usize>,
     pub revealed_selection: Option<(usize, usize, usize)>,
@@ -212,6 +216,7 @@ impl Default for ViewCache {
             est_rows_per_line: 1.0,
             est_row_h: 24.0,
             visual_cache_dirty: true,
+            headings_cache: crate::settings::HeadingsSettings::default(),
             raw_table: false,
             raw_tables: std::collections::HashSet::new(),
             revealed_selection: None,
@@ -537,7 +542,9 @@ impl TabSession {
             let (_, ref note_edit, _) = res;
             if note_edit.line_diff == 0 && self.window.covers_line(note_edit.edit_line) {
                 let delta = note_edit.new_len as isize - note_edit.old_len as isize;
-                self.update_window_line_after_edit(doc, note_edit.edit_line, delta);
+                if self.update_window_line_after_edit(doc, note_edit.edit_line, delta) {
+                    return res;
+                }
             }
             self.visual_cache_dirty = true;
             res
@@ -546,33 +553,52 @@ impl TabSession {
 
     /// Refreshes a window line and its geometry after a same-line edit.
     ///
-    /// Table rows are never wrapped and keep their fixed heights. Heights of the
-    /// rest of the window are recomputed with the table kinds, so editing one
-    /// cell cannot collapse the whole table geometry to ordinary 24 px rows.
-    fn update_window_line_after_edit(&mut self, doc: &DocumentBuffer, edit_line: usize, delta: isize) {
-        let tables = doc.ensure_table_index_for_window(self.window.start_line, self.window.end_line);
+    /// Returns `true` when the line was updated in place. The caller must not
+    /// mark the visual cache dirty in that case: the full rebuild is exactly
+    /// what makes holding a key repaint 6000 window lines per character.
+    ///
+    /// The in-place path is only taken for pipe-free lines: table kinds are
+    /// derived from pipe-bearing runs, so a pipe in the old or new text may
+    /// change the visual kind of *neighbouring* lines, which only a full
+    /// rebuild can recompute. Code fence lines are refused inside
+    /// `update_single_line` (a fence line re-states the code state of every
+    /// following line). Everything else — cursor moves into raw tables, etc. —
+    /// goes through the conservative dirty path.
+    fn update_window_line_after_edit(&mut self, doc: &DocumentBuffer, edit_line: usize, delta: isize) -> bool {
         let (cursor_line, _) = self.line_col(doc);
-        let raw_first = tables
-            .at(cursor_line)
-            .filter(|t| self.table_raw_now(doc, t, cursor_line, false))
-            .map(|t| t.first_line);
-        let table_info = |line: usize| {
-            let t = tables.at(line)?;
-            if Some(t.first_line) == raw_first {
-                return None;
-            }
-            Some(if line == t.sep_line() {
-                crate::markdown::TableRowVisualKind::Delimiter
-            } else if line == t.first_line {
-                crate::markdown::TableRowVisualKind::Header
-            } else if line == t.last_line {
-                crate::markdown::TableRowVisualKind::LastRow
-            } else {
-                crate::markdown::TableRowVisualKind::Body
-            })
-        };
-        let new_line_text = doc.line_text(edit_line);
-        let _ = self.window.update_single_line(edit_line, new_line_text, delta, None, table_info);
+        let tables = doc.ensure_table_index_for_window(self.window.start_line, self.window.end_line);
+        let in_table_block = tables.at(edit_line).is_some_and(|t| t.contains(edit_line));
+
+        let old_has_pipe = self
+            .window
+            .lines
+            .get(edit_line)
+            .is_some_and(|t| t.contains('|'));
+        let new_has_pipe = doc.line_text(edit_line).contains('|');
+
+        if in_table_block || old_has_pipe || new_has_pipe {
+            return false;
+        }
+
+        // The guard above proved the line is in no table block, so its kind is
+        // `None`; `update_single_line` only asks for the edited line. The
+        // closure must not capture `self` (it is passed into a
+        // `&mut self.window` call).
+        let headings = self.headings_cache.clone();
+        let updated = self.window.update_single_line(
+            edit_line,
+            doc.line_text(edit_line),
+            delta,
+            Some(&headings),
+            |_| None,
+        );
+        if !updated {
+            return false;
+        }
+        if cursor_line != self.cursor_line {
+            self.cursor_line = cursor_line;
+        }
+        true
     }
 
     pub fn insert_text(&mut self, doc: &mut DocumentBuffer, text: &str) -> (BufferEvent, NoteEditEvent, EditEvent) {
@@ -614,7 +640,9 @@ impl TabSession {
         let (_, ref note_edit, _) = res;
         if note_edit.line_diff == 0 && self.window.covers_line(note_edit.edit_line) {
             let delta = note_edit.new_len as isize - note_edit.old_len as isize;
-            self.update_window_line_after_edit(doc, note_edit.edit_line, delta);
+            if self.update_window_line_after_edit(doc, note_edit.edit_line, delta) {
+                return Some(res);
+            }
         }
         self.visual_cache_dirty = true;
         Some(res)
@@ -640,7 +668,9 @@ impl TabSession {
         let (_, ref note_edit, _) = res;
         if note_edit.line_diff == 0 && self.window.covers_line(note_edit.edit_line) {
             let delta = note_edit.new_len as isize - note_edit.old_len as isize;
-            self.update_window_line_after_edit(doc, note_edit.edit_line, delta);
+            if self.update_window_line_after_edit(doc, note_edit.edit_line, delta) {
+                return Some(res);
+            }
         }
         self.visual_cache_dirty = true;
         Some(res)
@@ -840,6 +870,9 @@ impl TabSession {
             .saturating_sub(window.end_line);
         self.window = window;
         self.revealed_selection = reveal_state;
+        if let Some(h) = headings {
+            self.headings_cache = h.clone();
+        }
         if basis_stale {
             self.refresh_estimate_basis();
         }
@@ -988,7 +1021,11 @@ impl TabSession {
     /// Handles a concrete `NoteEditEvent` from another active view/panel.
     /// Invariant R5: Visible text does not move when edits occur outside or above the viewport.
     /// Recalculates gutter line numbers, shifts viewport anchor and scroll_top without visible drift.
-    pub fn apply_external_edit_detailed(&mut self, edit: &crate::state::NoteEditEvent) {
+    ///
+    /// A same-line-count edit of a pipe-free line inside this window updates
+    /// the cached line in place — without this, every keystroke in one panel
+    /// fully rebuilt the window of every other panel showing the same note.
+    pub fn apply_external_edit_detailed(&mut self, doc: &DocumentBuffer, edit: &crate::state::NoteEditEvent) {
         let edit_obj = Edit {
             start: edit.at,
             old_len: edit.old_len,
@@ -1049,8 +1086,13 @@ impl TabSession {
                     self.above_lines = self.above_lines.saturating_sub((-line_diff) as usize);
                 }
             }
-            self.window = EditorWindow::default();
-            self.visual_cache_dirty = true;
+            let byte_diff = edit.new_len as isize - edit.old_len as isize;
+            if edit.line_diff == 0 && self.update_window_line_after_edit(doc, edit.edit_line, byte_diff) {
+                // Line updated in place; the window stays valid.
+            } else {
+                self.window = EditorWindow::default();
+                self.visual_cache_dirty = true;
+            }
         } else {
             // Edit occurred strictly below the window:
             if line_diff >= 0 {
@@ -1100,6 +1142,16 @@ impl TabSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch_doc() -> crate::document_buffer::DocumentBuffer {
+        crate::document_buffer::DocumentBuffer::new(
+            DocumentId::new(),
+            std::path::PathBuf::new(),
+            String::new(),
+            String::new(),
+            0,
+        )
+    }
 
     #[test]
     fn test_viewport_stability_when_edit_is_above() {
@@ -1219,7 +1271,7 @@ mod tests {
             line_diff: 10,
         };
 
-        view.apply_external_edit_detailed(&edit_event);
+        view.apply_external_edit_detailed(&scratch_doc(), &edit_event);
 
         // 1. Invariant: local scroll (screen position of visible text) must be 100% UNCHANGED
         let new_local_scroll = view.scroll_top - view.above_h;
@@ -1356,7 +1408,7 @@ mod tests {
             new_len: 10,
             line_diff: 0,
         };
-        view.apply_external_edit_detailed(&edit);
+        view.apply_external_edit_detailed(&scratch_doc(), &edit);
         assert_eq!(view.cursor_offset, 40);
         assert_eq!(view.selection_anchor, Some(30));
 
@@ -1371,7 +1423,7 @@ mod tests {
             new_len: 10,
             line_diff: 0,
         };
-        view.apply_external_edit_detailed(&edit);
+        view.apply_external_edit_detailed(&scratch_doc(), &edit);
         assert_eq!(view.cursor_offset, 30);
         assert_eq!(view.selection_anchor, Some(20));
 
@@ -1386,7 +1438,7 @@ mod tests {
             new_len: 5,
             line_diff: 0,
         };
-        view.apply_external_edit_detailed(&edit);
+        view.apply_external_edit_detailed(&scratch_doc(), &edit);
         // Start (20) unchanged, end (30) expanded to 35
         assert_eq!(view.selection_anchor, Some(20));
         assert_eq!(view.cursor_offset, 35);
@@ -1402,7 +1454,7 @@ mod tests {
             new_len: 5,
             line_diff: 0,
         };
-        view.apply_external_edit_detailed(&edit);
+        view.apply_external_edit_detailed(&scratch_doc(), &edit);
         // Start mapped with Bias::Left stays at 20, end mapped with Bias::Right shifts to 35
         assert_eq!(view.selection_anchor, Some(20));
         assert_eq!(view.cursor_offset, 35);
@@ -1418,7 +1470,7 @@ mod tests {
             new_len: 5,
             line_diff: 0,
         };
-        view.apply_external_edit_detailed(&edit);
+        view.apply_external_edit_detailed(&scratch_doc(), &edit);
         // Single cursor with Bias::Left stays at 20
         assert_eq!(view.cursor_offset, 20);
     }

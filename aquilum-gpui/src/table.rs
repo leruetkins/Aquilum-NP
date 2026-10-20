@@ -1144,6 +1144,41 @@ mod tests {
         s.split('\n').collect()
     }
 
+    // The per-keystroke hot path relies on this: an incremental edit inside the
+    // covered window must not shrink or shift `covered_range`, so the next
+    // `scan_window` for the same window is a guard no-op instead of a rescan.
+    #[test]
+    fn scan_window_is_noop_while_edit_stays_inside_covered_range() {
+        use crop::Rope;
+        let mut text = String::new();
+        for i in 0..6000 {
+            text.push_str(&format!("line {}\n", i));
+        }
+        text.push_str("| a | b |\n|---|---|\n| 1 | 2 |\n");
+        let rope = Rope::from(text);
+        let mut idx = TableIndex::new();
+        idx.scan_window(1, &rope, 1000, 5000);
+        assert_eq!(idx.covered_range, (900, 5100), "coverage extends by the ±100 table-run margin");
+        assert!(!idx.fully_scanned);
+        // The table sits outside this window and must stay unindexed.
+        assert!(idx.at(6000).is_none());
+
+        // An incremental edit inside the covered range: coverage must not move.
+        idx.apply_edit(2, 2000, 0, &rope);
+        assert_eq!(
+            idx.covered_range,
+            (900, 5100),
+            "apply_edit must not shrink or shift coverage for an in-window edit"
+        );
+        // The next keystroke's scan (same window, same rev) hits the guard.
+        idx.scan_window(2, &rope, 1000, 5000);
+        assert_eq!(idx.covered_range, (900, 5100));
+
+        // An edit OUTSIDE the covered range extends coverage towards it.
+        idx.apply_edit(3, 100, 0, &rope);
+        assert_eq!(idx.covered_range.0, 100);
+    }
+
     const T: &str = "intro\n\n| Имя | Qty |\n|:--|--:|\n| яблоко | 3 |\n| *pear* | 10 |\n\nконец";
 
     fn block(lines: &[&str]) -> TableBlock {

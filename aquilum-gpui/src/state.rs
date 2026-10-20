@@ -712,9 +712,13 @@ impl AppState {
                         view.cursor_offset = c;
                         view.selection_anchor = None;
                     }
-                    view.visual_cache_dirty = true;
+                    // The view method that produced this event already manages
+                    // its own cache invalidation; forcing a full rebuild here
+                    // made every keystroke repaint the whole window.
+                } else if let Some(doc) = self.documents.get(&ev.doc) {
+                    view.apply_external_edit_detailed(doc, note_edit);
                 } else {
-                    view.apply_external_edit_detailed(note_edit);
+                    view.visual_cache_dirty = true;
                 }
             }
         }
@@ -1908,7 +1912,7 @@ impl AppState {
                 crate::vault::FileInfo::from_path(&v.root, &doc.path)
             })
         });
-        let files: Vec<crate::vault::FileInfo> = self.vault
+        let files: Arc<[crate::vault::FileInfo]> = self.vault
             .as_ref()
             .map(|v| v.list_markdown_files())
             .unwrap_or_default();
@@ -1919,7 +1923,7 @@ impl AppState {
             version,
             language,
             active_file: active,
-            files: files.into(),
+            files,
         }));
     }
 
@@ -2662,6 +2666,20 @@ impl AppState {
     }
 
     pub fn save_session_state(&mut self) {
+        self.queue_session_state_save(true);
+    }
+
+    /// Serializes the session off the UI thread.
+    ///
+    /// Every save serializes two pretty-JSON files (session + workspace), and
+    /// their size grows with `note_states` — serializing them on the UI thread
+    /// stalled a frame after every typing pause. The mutation of the session
+    /// fields stays synchronous; serialization and the two file writes run on
+    /// the background executor.
+    ///
+    /// `sync` also runs the writes inline — used on the exit path, where the
+    /// process may not outlive a spawned background job.
+    pub fn queue_session_state_save(&mut self, sync: bool) {
         let active_info = self.active_view().and_then(|v| {
             self.active_document().map(|d| (d.path.clone(), v.cursor_offset, v.selection_anchor))
         });
@@ -2680,12 +2698,30 @@ impl AppState {
         self.session.workspace_path = self.workspace_path.clone();
         self.session.expanded_folders = self.expanded_folders.clone();
         self.session.known_vaults = self.known_vaults.clone();
-        let dir = app_data_dir();
-        self.session.save(&dir);
 
+        let dir = app_data_dir();
+        let session = self.session.clone();
         let ws_v2 = self.export_workspace_session_v2();
-        let ws_v2_path = dir.join("workspace-v2.json");
-        let _ = ws_v2.save_atomic(&ws_v2_path);
+
+        let write_all = move || {
+            session.save(&dir);
+            let ws_v2_path = dir.join("workspace-v2.json");
+            let _ = ws_v2.save_atomic(&ws_v2_path);
+        };
+
+        if sync {
+            write_all();
+            return;
+        }
+
+        // The spawned thread owns serialized inputs; nothing here touches
+        // `self` or any GPUI entity, so an OS thread is safe (and cheaper than
+        // routing through a UI context just to write two files). The exit path
+        // uses `sync`, so a torn write from a dying process is not a concern.
+        std::thread::Builder::new()
+            .name("session-save".to_owned())
+            .spawn(write_all)
+            .expect("spawning the session-save thread cannot fail on a sane system");
     }
 
     pub fn rename_note(&mut self, old_path: &Path, new_title: &str) -> Result<PathBuf, String> {
@@ -2928,7 +2964,10 @@ mod tests {
         // Insert text incrementally
         view.insert_text(&mut doc, "awesome ");
         assert_eq!(doc.content(), "# Title\n\nSome awesome paragraph text here.\n");
-        assert!(view.visual_cache_dirty, "Cache must be marked dirty after text insertion");
+        // Same-line, pipe-free insertion updates the window line in place:
+        // no full rebuild is scheduled and the cache stays fresh.
+        assert!(!view.visual_cache_dirty, "in-place edit must keep the cache fresh");
+        assert_eq!(view.window.lines[2], "Some awesome paragraph text here.");
 
         // Rebuilding cache should reflect the new content
         view.ensure_visual_cache(&mut doc, true, 80, 0);
@@ -3414,9 +3453,12 @@ mod tests {
             let mut s = String::new();
             s.push(ch);
             view.insert_text(&mut doc, &s);
-            assert!(view.visual_cache_dirty);
+            // Same-line typing updates the window line in place: the cached
+            // line must already match the document without a rebuild.
+            assert!(!view.visual_cache_dirty);
+            assert_eq!(view.window.lines[1], doc.line_text(1));
 
-            // Crucial: line_col() must not panic while visual_cache_dirty is true
+            // line_col() must stay consistent with the document either way
             let (line, col) = view.line_col(&doc);
             assert_eq!(line, 1);
             // col should match number of characters on line 1

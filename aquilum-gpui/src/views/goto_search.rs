@@ -9,8 +9,11 @@
 
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::time::SystemTime;
 
 use gpui::{
     div, point, prelude::*, px, Context, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
@@ -33,6 +36,69 @@ pub(crate) const MAX_RESULTS: usize = 50;
 /// Snippet context around the first hit (chars).
 const SNIPPET_BEFORE: usize = 60;
 const SNIPPET_AFTER: usize = 140;
+
+/// Cache is dropped wholesale once its contents exceed this; the next query
+/// re-reads from disk. Bounds a long session's memory without any eviction
+/// bookkeeping.
+const CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+/// Per-run cache of file contents for the sidebar search.
+///
+/// Typing a query scans the same files over and over; re-reading every one of
+/// them per keystroke is what makes the search panel stutter. Entries are
+/// reused while the file's `(len, mtime)` stamp is unchanged, so a repeat
+/// keystroke costs only one `metadata` call per file.
+pub(crate) struct SearchContentCache {
+    entries: HashMap<PathBuf, CachedContent>,
+    total_bytes: usize,
+}
+
+struct CachedContent {
+    stamp: Option<(u64, SystemTime)>,
+    /// `None` — unreadable or over [`MAX_FILE_BYTES`]; remembered so oversized
+    /// files are not re-attempted on every keystroke.
+    content: Option<Arc<String>>,
+}
+
+impl SearchContentCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            total_bytes: 0,
+        }
+    }
+
+    pub(crate) fn get_or_load(&mut self, path: &Path) -> Option<Arc<String>> {
+        let stamp = std::fs::metadata(path).ok().and_then(|meta| {
+            meta.modified().ok().map(|modified| (meta.len(), modified))
+        });
+        if let Some(entry) = self.entries.get(path) {
+            if entry.stamp == stamp {
+                return entry.content.clone();
+            }
+        }
+        let content = match stamp {
+            Some((len, _)) if len <= MAX_FILE_BYTES => {
+                std::fs::read_to_string(path).ok().map(Arc::new)
+            }
+            _ => None,
+        };
+        let new_bytes = content.as_ref().map_or(0, |s| s.len());
+        if self.total_bytes + new_bytes > CACHE_MAX_BYTES {
+            self.entries.clear();
+            self.total_bytes = 0;
+        }
+        self.total_bytes += new_bytes;
+        self.entries.insert(
+            path.to_path_buf(),
+            CachedContent {
+                stamp,
+                content: content.clone(),
+            },
+        );
+        content
+    }
+}
 
 /// Right gutter of the results scroll container, in pixels.
 ///
@@ -600,22 +666,30 @@ fn fold<'a>(s: &'a str, case_sensitive: bool) -> Cow<'a, str> {
 
 /// Scores and ranks files for `query`: name hits first, then content hits.
 fn search_goto_files(files: &[PathBuf], query: &str, limit: usize) -> Vec<GotoResult> {
+    let mut cache = SearchContentCache::new();
     search_goto_files_opts(
         files,
         query,
         SearchOp::Any,
         &GotoSearchParams::default(),
         limit,
+        &mut cache,
     )
 }
 
 /// Scores and ranks files for an operator query (see [`SearchOp`]).
+///
+/// Contents are read only for the operators that match against the body
+/// (`Any`, `Tag`, `Line`, `Section`) and for the snippets of files that
+/// already matched by name under `File`; `Path` never reads. Reads go through
+/// `cache`, so repeated calls between keystrokes cost metadata checks only.
 pub(crate) fn search_goto_files_opts(
     files: &[PathBuf],
     raw_query: &str,
     op: SearchOp,
     params: &GotoSearchParams,
     limit: usize,
+    cache: &mut SearchContentCache,
 ) -> Vec<GotoResult> {
     let cs = params.case_sensitive;
     let rest = raw_query.trim();
@@ -653,14 +727,17 @@ pub(crate) fn search_goto_files_opts(
             .unwrap_or_else(|| path.to_string_lossy().into_owned());
         let rel_folded = fold(&rel_string, cs).into_owned();
 
-        // Read contents unless the file is too large (name-only match then).
-        let content: Option<String> = match std::fs::metadata(path) {
-            Ok(meta) if meta.len() <= MAX_FILE_BYTES => std::fs::read_to_string(path).ok(),
-            _ => None,
-        };
+        // Only body-matching operators read contents up front; `File` reads
+        // lazily for a matched name's snippet, `Path` never reads.
+        let content: Option<Arc<String>> =
+            if matches!(op, SearchOp::Any | SearchOp::Tag | SearchOp::Line | SearchOp::Section) {
+                cache.get_or_load(path)
+            } else {
+                None
+            };
 
         let hit: Option<(usize, String, bool)> = match op {
-            SearchOp::Any => match_any(&name_folded, content.as_deref(), &q, &terms, cs),            SearchOp::File => {
+            SearchOp::Any => match_any(&name_folded, content.as_ref().map(|s| s.as_str()), &q, &terms, cs),            SearchOp::File => {
                 if !(name_folded.contains(&q) || terms.iter().all(|t| name_folded.contains(t))) {
                     None
                 } else {
@@ -674,7 +751,8 @@ pub(crate) fn search_goto_files_opts(
                             .sum::<usize>()
                             .max(1)
                     };
-                    let snippet = content
+                    let snippet = cache
+                        .get_or_load(path)
                         .as_deref()
                         .map(|text| first_line(text, SNIPPET_BEFORE + SNIPPET_AFTER))
                         .unwrap_or_default();
@@ -1753,6 +1831,7 @@ mod tests {
         base: Option<&Path>,
     ) -> Vec<GotoResult> {
         let (op, rest) = parse_search_op(raw);
+        let mut cache = SearchContentCache::new();
         search_goto_files_opts(
             files,
             &rest,
@@ -1762,6 +1841,7 @@ mod tests {
                 rel_base: base,
             },
             50,
+            &mut cache,
         )
     }
 

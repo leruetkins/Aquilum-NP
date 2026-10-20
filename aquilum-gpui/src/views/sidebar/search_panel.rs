@@ -174,8 +174,10 @@ impl AppView {
             case_sensitive: self.sidebar_search.case_sensitive,
             rel_base: ws.as_deref(),
         };
-        self.sidebar_search.results =
-            search_goto_files_opts(&files, &rest, op, &params, MAX_RESULTS);
+        self.sidebar_search.results = {
+            let cache = &mut self.search_content_cache;
+            search_goto_files_opts(&files, &rest, op, &params, MAX_RESULTS, cache)
+        };
         // Keep the cursor inside the fresh list, if there is one.
         let len = self.sidebar_search.results.len();
         self.sidebar_search.selected_ix = match (self.sidebar_search.selected_ix, len) {

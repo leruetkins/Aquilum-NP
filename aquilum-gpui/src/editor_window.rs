@@ -512,6 +512,13 @@ impl EditorWindow {
 
     /// Incremental update of a single line inside the window (e.g. typing a character without newline).
     /// Avoids rebuilding all 6000 window lines and re-parsing markdown across the window.
+    ///
+    /// The line text, its visual rows and the height index are updated in place:
+    /// the heights of the replaced rows are recomputed for the new row set only.
+    /// Returns `false` when the caller must fall back to a full rebuild — the
+    /// line is not covered, its rows cannot be located, or the edit touches a
+    /// code fence (a fence line changes the code state of this and every
+    /// following window line, which only a rebuild can recompute).
     pub fn update_single_line(
         &mut self,
         line: usize,
@@ -525,6 +532,12 @@ impl EditorWindow {
         }
         let local_line = line - self.start_line;
         if local_line >= self.lines.lines.len() {
+            return false;
+        }
+
+        let old_is_fence = self.lines.lines[local_line].trim_start().starts_with("```");
+        let new_is_fence = new_line_text.trim_start().starts_with("```");
+        if old_is_fence || new_is_fence {
             return false;
         }
 
@@ -562,26 +575,35 @@ impl EditorWindow {
             self.wrap_cols,
             |_| table_kind.is_some(),
         );
-        Arc::make_mut(&mut self.lines).lines[local_line] = new_line_text;
-        let vrows_mut = Arc::make_mut(&mut self.visual_rows);
 
+        let vrows_mut = Arc::make_mut(&mut self.visual_rows);
         let first_row = vrows_mut.iter().position(|r| r.line_idx == line);
         let last_row = vrows_mut.iter().rposition(|r| r.line_idx == line);
+        let (first_row, last_row) = match (first_row, last_row) {
+            (Some(f), Some(l)) => (f, l),
+            _ => return false,
+        };
 
-        if let (Some(first), Some(last)) = (first_row, last_row) {
-            let mut adjusted_new_rows = new_rows;
-            for r in &mut adjusted_new_rows {
-                r.line_idx = line;
-            }
-            vrows_mut.splice(first..=last, adjusted_new_rows);
+        let mut adjusted_new_rows = new_rows;
+        for r in &mut adjusted_new_rows {
+            r.line_idx = line;
         }
 
-        self.height_index = Arc::new(VisualRowHeightIndex::from_rows_with_tables(
-            &self.lines.lines,
-            &self.visual_rows,
-            headings,
-            table_row_info,
-        ));
+        // Every sub-row of one line carries the same height: it derives from the
+        // line text and the table kind only, exactly as the full rebuild computes
+        // it in `VisualRowHeightIndex::from_rows_with_tables`.
+        let default_headings = crate::settings::HeadingsSettings::default();
+        let h_settings = headings.unwrap_or(&default_headings);
+        let row_h = markdown::visual_row_height(&new_line_text, h_settings, table_kind);
+        let new_heights = vec![row_h; adjusted_new_rows.len()];
+
+        vrows_mut.splice(first_row..=last_row, adjusted_new_rows);
+        Arc::make_mut(&mut self.lines).lines[local_line] = new_line_text;
+        Arc::make_mut(&mut self.height_index).replace_rows(
+            first_row,
+            last_row - first_row + 1,
+            &new_heights,
+        );
         true
     }
 

@@ -184,6 +184,9 @@ pub struct AppView {
     /// event only primes it so the content never jumps on entry.
     pub editor_middle_last_y: Cell<Option<f32>>,
     pub last_editor_h: Cell<f32>,
+    /// Content cache for the sidebar search: typing reuses file bodies read by
+    /// previous keystrokes instead of re-reading up to 2000 files per query.
+    pub(crate) search_content_cache: crate::views::goto_search::SearchContentCache,
     /// Document line at the top of the viewport, refreshed once per frame.
     ///
     pub(crate) table_layouts: std::cell::RefCell<HashMap<usize, (u64, Arc<TableLayout>)>>,
@@ -392,6 +395,7 @@ impl AppView {
             sidebar_smart_bounds: Rc::new(Cell::new(Bounds::default())),
             sidebar_smart_target_y: Cell::new(None),
             sidebar_smart_last_mouse_y: Cell::new(None),
+            search_content_cache: crate::views::goto_search::SearchContentCache::new(),
             sidebar_middle_active: false,
             plugin_modal_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
             plugin_modal_middle_active: false,
@@ -1022,7 +1026,7 @@ impl AppView {
         self.state.session.sidebar_scroll_top = sidebar_offset_y;
         self.state.session.sidebar_width = self.sidebar_width;
         self.state.session.sidebar_mode = self.sidebar_mode.clone();
-        self.state.save_session_state();
+        self.state.queue_session_state_save(true);
     }
 
     /// Completely flushes data, closes child windows, unloads plugins, cancels subscriptions,
@@ -3970,10 +3974,12 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         if ctrl && (keystroke.key.eq_ignore_ascii_case("c") || keystroke.key == "с" || keystroke.key == "С") {
             let copied_tsv = if let Some((view, doc)) = self.state.active_view_and_doc() {
                 let (cursor_line, _) = view.line_col(doc);
-                let tables = doc.ensure_table_index();
                 if let Some(range) = view.selection_range(doc.len()) {
                     let start_line = doc.line_of_byte(range.start);
                     let end_line = doc.line_of_byte(range.end);
+                    // The cursor is one end of the selection, so the windowed
+                    // scan covers it too; a full-document scan is not needed.
+                    let tables = doc.ensure_table_index_for_window(start_line, end_line);
                     if let (Some(t1), Some(t2)) = (tables.at(start_line), tables.at(end_line)) {
                         if t1.first_line == t2.first_line && view.grid_table_at(doc, &tables, cursor_line, cursor_line, self.ctrl_preview_selection || !self.edit_mode).is_some() {
                             let start_line_byte = doc.line_start_byte(start_line);
@@ -4424,10 +4430,12 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         if keystroke.key == "backspace" || keystroke.key == "delete" {
             let edit_opt = if let Some((view, doc)) = self.state.active_view_and_doc() {
-                let tables = doc.ensure_table_index();
                 if let Some(range) = view.selection_range(doc.len()) {
                     let start_line = doc.line_of_byte(range.start);
                     let end_line = doc.line_of_byte(range.end);
+                    // Windowed scan only: a full-document scan here froze the
+                    // first Delete on large notes opened without a full index.
+                    let tables = doc.ensure_table_index_for_window(start_line, end_line);
                     if let (Some(t1), Some(t2)) = (tables.at(start_line), tables.at(end_line)) {
                         if t1.first_line == t2.first_line && start_line != end_line && view.grid_table_at(doc, &tables, start_line, start_line, self.ctrl_preview_selection || !self.edit_mode).is_some() {
                             let start_line_byte = doc.line_start_byte(start_line);
@@ -4879,6 +4887,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 view.below_h = (view.below_lines as f64 * rows_per_line).round() * row_h;
                 let wrap_changed = view.window.wrap_cols != wrap_cols;
                 view.window = new_window;
+                view.headings_cache = headings.clone();
                 view.visual_cache_dirty = false;
                 if wrap_changed {
                     if let Some(first_v_idx) = view.window.first_row_of_line(view.viewport.offset) {
@@ -8503,13 +8512,24 @@ impl Render for AppView {
         // so two consecutive frames agree and the burst ends. The counter alone
         // is not enough: a resize or a rewrap moves the inputs without going
         // through the arm sites.
+        //
+        // Arming is thresholded because a text edit also moves `max_scroll` —
+        // by a row or two per keystroke. Painting the whole scene one more
+        // time for a one-frame-stale thumb on every keystroke is what made
+        // key-repeat burn twice the GPU. Any viewport-height change (resize,
+        // no explicit hook exists) or a large content jump arms the burst;
+        // small deltas do not. `last_scroll_inputs` is always updated so the
+        // comparison stays a single-frame delta and never accumulates.
         if let Some(view) = self.state.active_view() {
             let total = view.total_height();
             let (_, viewport_h, max_scroll, _) = self.editor_scroll_metrics(total, window_h);
             let inputs = (viewport_h.round(), max_scroll.round());
             let settling = self.layout_settle_frames.get();
-            if settling > 0 || self.last_scroll_inputs.get() != inputs {
-                self.last_scroll_inputs.set(inputs);
+            let prev = self.last_scroll_inputs.get();
+            self.last_scroll_inputs.set(inputs);
+            let big_jump = (inputs.0 - prev.0).abs() > f32::EPSILON
+                || (inputs.1 - prev.1).abs() > f64::from(viewport_h.max(1.0)) * 0.25;
+            if settling > 0 || big_jump {
                 self.layout_settle_frames.set(settling.saturating_sub(1));
                 window.request_animation_frame();
             }

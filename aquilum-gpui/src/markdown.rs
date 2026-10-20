@@ -1149,6 +1149,46 @@ pub fn heading_row_height(h_size: f32, base_line_h: f32) -> f32 {
     ((unrounded / 4.0).ceil() * 4.0).max(base_line_h)
 }
 
+/// Height of the visual row(s) of one line: fixed heights for table rows,
+/// otherwise the heading height or the plain 24 px line. Used both when
+/// building a window from scratch and when updating a single line in place.
+pub fn visual_row_height(
+    line_str: &str,
+    h_settings: &crate::settings::HeadingsSettings,
+    table_kind: Option<TableRowVisualKind>,
+) -> f32 {
+    if let Some(kind) = table_kind {
+        return match kind {
+            TableRowVisualKind::Delimiter => 1.0,
+            TableRowVisualKind::Header | TableRowVisualKind::LastRow => 42.0,
+            TableRowVisualKind::Body => 28.0,
+        };
+    }
+    let classified = classify_line(line_str, None);
+    let h_size = match classified {
+        LineKind::Heading1(_) => h_settings.h1.font_size as f32,
+        LineKind::Heading2(_) => h_settings.h2.font_size as f32,
+        LineKind::Heading3(_) => h_settings.h3.font_size as f32,
+        LineKind::Heading4(_) => h_settings.h4.font_size as f32,
+        LineKind::Heading5(_) => h_settings.h5.font_size as f32,
+        LineKind::Heading6(_) => h_settings.h6.font_size as f32,
+        _ => 14.0,
+    };
+    if matches!(
+        classified,
+        LineKind::Heading1(_)
+            | LineKind::Heading2(_)
+            | LineKind::Heading3(_)
+            | LineKind::Heading4(_)
+            | LineKind::Heading5(_)
+            | LineKind::Heading6(_)
+    ) {
+        heading_row_height(h_size, 24.0)
+    } else {
+        24.0
+    }
+}
+
 impl VisualRowHeightIndex {
     pub fn new(heights: Vec<f32>) -> Self {
         let mut bases = Vec::with_capacity(heights.len() / HEIGHT_BLOCK + 1);
@@ -1168,6 +1208,26 @@ impl VisualRowHeightIndex {
         }
     }
 
+    /// Splices the heights of `old_count` rows starting at `first` and rebuilds
+    /// the prefix bases. Pure numeric work — callers pass heights they have
+    /// already computed for the replaced rows only.
+    pub fn replace_rows(&mut self, first: usize, old_count: usize, new_heights: &[f32]) {
+        let end = (first + old_count).min(self.heights.len());
+        if first > end {
+            return;
+        }
+        self.heights.splice(first..end, new_heights.iter().copied());
+        self.bases.clear();
+        let mut running = 0.0f64;
+        for (i, &h) in self.heights.iter().enumerate() {
+            if i % HEIGHT_BLOCK == 0 {
+                self.bases.push(running);
+            }
+            running += h as f64;
+        }
+        self.total = running;
+    }
+
     pub fn from_rows_with_tables(
         lines: &[impl AsRef<str>],
         visual_rows: &[VisualRow],
@@ -1179,41 +1239,8 @@ impl VisualRowHeightIndex {
         let h_settings = headings.unwrap_or(&default_headings);
 
         for v in visual_rows {
-            if let Some(t_kind) = table_row_info(v.line_idx) {
-                let row_h = match t_kind {
-                    TableRowVisualKind::Delimiter => 1.0,
-                    TableRowVisualKind::Header | TableRowVisualKind::LastRow => 42.0,
-                    TableRowVisualKind::Body => 28.0,
-                };
-                heights.push(row_h);
-                continue;
-            }
-
             let line_str = lines.get(v.line_idx).map(|s| s.as_ref()).unwrap_or("");
-            let classified = classify_line(line_str, None);
-            let h_size = match classified {
-                LineKind::Heading1(_) => h_settings.h1.font_size as f32,
-                LineKind::Heading2(_) => h_settings.h2.font_size as f32,
-                LineKind::Heading3(_) => h_settings.h3.font_size as f32,
-                LineKind::Heading4(_) => h_settings.h4.font_size as f32,
-                LineKind::Heading5(_) => h_settings.h5.font_size as f32,
-                LineKind::Heading6(_) => h_settings.h6.font_size as f32,
-                _ => 14.0,
-            };
-            let row_h = if matches!(
-                classified,
-                LineKind::Heading1(_)
-                    | LineKind::Heading2(_)
-                    | LineKind::Heading3(_)
-                    | LineKind::Heading4(_)
-                    | LineKind::Heading5(_)
-                    | LineKind::Heading6(_)
-            ) {
-                heading_row_height(h_size, 24.0)
-            } else {
-                24.0
-            };
-            heights.push(row_h);
+            heights.push(visual_row_height(line_str, h_settings, table_row_info(v.line_idx)));
         }
 
         Self::new(heights)

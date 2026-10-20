@@ -84,7 +84,7 @@ pub struct VaultCore {
     pub root: PathBuf,
     /// Имя vault.
     pub name: String,
-    markdown_files_cache: std::sync::Mutex<Option<Vec<FileInfo>>>,
+    markdown_files_cache: std::sync::Mutex<Option<std::sync::Arc<[FileInfo]>>>,
 }
 
 impl VaultCore {
@@ -278,8 +278,10 @@ impl VaultCore {
         }
     }
 
-    /// Рекурсивный список всех markdown-файлов для Snapshot с кэшированием.
-    pub fn list_markdown_files(&self) -> Vec<FileInfo> {
+    /// Cached list of all markdown files for `Snapshot`, shared by `Arc` so
+    /// publishing a snapshot never copies the whole list (`publish_snapshot`
+    /// runs on every save).
+    pub fn list_markdown_files(&self) -> std::sync::Arc<[FileInfo]> {
         if let Ok(cache) = self.markdown_files_cache.lock() {
             if let Some(ref files) = *cache {
                 return files.clone();
@@ -287,10 +289,11 @@ impl VaultCore {
         }
         let mut result = Vec::new();
         self.walk_dir(&self.root, &mut result);
+        let arc: std::sync::Arc<[FileInfo]> = result.into();
         if let Ok(mut cache) = self.markdown_files_cache.lock() {
-            *cache = Some(result.clone());
+            *cache = Some(std::sync::Arc::clone(&arc));
         }
-        result
+        arc
     }
 
     fn walk_dir(&self, dir: &Path, out: &mut Vec<FileInfo>) {
