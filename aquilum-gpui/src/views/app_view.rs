@@ -7583,6 +7583,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     if let Some(tbl) = grid_tbl {
                         if v_line_idx == tbl.last_line {
                             let total_w = table_layout.as_ref().unwrap().total_width;
+                            let current_widths = table_layout.as_ref().unwrap().col_widths.clone();
                             let tbl_clone = tbl.clone();
                             let group_name = format!("tbl-add-col-grp-{}", tbl.first_line);
                             let (col_btn_top, table_h) = if tbl.last_line == tbl.sep_line() {
@@ -7634,7 +7635,10 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         let mut model = crate::table::TableModel::parse(&tbl_clone, &lines_refs);
                                         model.insert_col(model.col_count());
                                         let edit = crate::table::rewrite(&tbl_clone, &model, false, &crate::table::char_width);
-                                        if let Some(widths) = this.manual_table_col_widths.get_mut(&tbl_clone.first_line) {
+                                        let widths = this.manual_table_col_widths
+                                            .entry(tbl_clone.first_line)
+                                            .or_insert_with(|| current_widths.clone());
+                                        if widths.len() == tbl_clone.col_count() {
                                             widths.push(120.0);
                                         }
                                         this.table_layouts.borrow_mut().remove(&tbl_clone.first_line);
