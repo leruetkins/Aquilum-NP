@@ -5159,5 +5159,45 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_table_edit_preserves_cursor_when_none() {
+        let temp_dir = std::env::temp_dir().join(format!("test_tbl_cursor_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let note_path = temp_dir.join("note.md");
+        let initial_text = "Before text\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nAfter text\n";
+        std::fs::write(&note_path, initial_text).unwrap();
+
+        let mut state = AppState::new_empty();
+        state.open_note(note_path);
+
+        // Put cursor in "After text" (line 6, col 3)
+        let doc_id = state.active_doc_id().unwrap();
+        let tab_id = state.active_tab_id().unwrap();
+        let after_offset = state.documents.get(&doc_id).unwrap().line_start_byte(6) + 3;
+        state.views.get_mut(&tab_id).unwrap().cursor_offset = after_offset;
+
+        // Apply a table edit that inserts a row into the table (lines 2..=4)
+        let edit = crate::table::LineEdit {
+            first_line: 2,
+            old_line_count: 3,
+            new_lines: vec![
+                "| a | b |".to_string(),
+                "|---|---|".to_string(),
+                "| 1 | 2 |".to_string(),
+                "| 3 | 4 |".to_string(),
+            ],
+        };
+
+        state.active_apply_table_line_edit(&edit, None);
+
+        // Verify the cursor is still in "After text" on the correct line and col
+        let (view, doc) = state.active_view_and_doc().unwrap();
+        let (line, col) = view.line_col(doc);
+        assert_eq!(line, 7, "Cursor line should shift from 6 to 7 due to 1 added row");
+        assert_eq!(col, 3, "Cursor column should stay at 3");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }
 
