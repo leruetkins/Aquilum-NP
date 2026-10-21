@@ -4758,6 +4758,11 @@ impl SettingsView {
                     rgba(0xf85149ff),
                     if is_ru { "Не поддерживается".to_string() } else { "Incompatible".to_string() },
                 ),
+                crate::plugins::compat::CompatibilityStatus::Unknown => (
+                    rgba(0x8b949e22),
+                    rgba(0x8b949eff),
+                    if is_ru { "Совместимость неизвестна".to_string() } else { "Compatibility unknown".to_string() },
+                ),
             };
 
             let row_header = div()

@@ -127,6 +127,12 @@ impl PluginHostState {
             | ApiRequest::AddRibbonIcon { .. }
             | ApiRequest::ExecuteCommand { .. }
             | ApiRequest::EditorReplaceSelection { .. }
+            | ApiRequest::EditorGetBuffer
+            | ApiRequest::EditorGetSelection
+            | ApiRequest::EditorSetCursor { .. }
+            | ApiRequest::EditorSetSelection { .. }
+            | ApiRequest::EditorSetBuffer { .. }
+            | ApiRequest::EditorReplaceRange { .. }
             | ApiRequest::Unknown { .. }
             | ApiRequest::LoadData
             | ApiRequest::SaveData { .. } => {
@@ -691,6 +697,95 @@ impl AppView {
                 let _ = self.state.plugin_host.send_event(
                     &plugin_id,
                     HostEvent::response_ok(request_id, serde_json::Value::Bool(replaced)),
+                );
+            }
+            ApiRequest::EditorGetBuffer => {
+                let response = match self.state.active_editor_buffer() {
+                    Some((text, (line, ch), anchor)) => {
+                        let mut cursor = serde_json::json!({ "line": line, "ch": ch });
+                        if let Some((a_line, a_ch)) = anchor {
+                            cursor["anchor"] = serde_json::json!({ "line": a_line, "ch": a_ch });
+                        }
+                        serde_json::json!({ "text": text, "cursor": cursor })
+                    }
+                    None => serde_json::Value::Null,
+                };
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, response),
+                );
+            }
+            ApiRequest::EditorGetSelection => {
+                let selection = self.state.active_selected_text();
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::json!(selection)),
+                );
+            }
+            ApiRequest::EditorSetBuffer { text } => {
+                let changed = self.state.active_set_buffer(&text);
+                if changed {
+                    self.state.save_active_note();
+                    cx.notify();
+                }
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Bool(changed)),
+                );
+            }
+            ApiRequest::EditorReplaceRange { from_line, from_ch, to_line, to_ch, text } => {
+                let changed = self
+                    .state
+                    .with_active_doc_and_view(|doc, view| {
+                        let from = view.offset_for_line_col(doc, from_line as usize, from_ch as usize);
+                        let to = view.offset_for_line_col(doc, to_line as usize, to_ch as usize);
+                        from.min(to)..from.max(to)
+                    })
+                    .map(|range| {
+                        let new_cursor = range.start + text.len();
+                        self.state.active_replace_range(range, text.clone(), new_cursor);
+                        true
+                    })
+                    .unwrap_or(false);
+                if changed {
+                    self.state.save_active_note();
+                    cx.notify();
+                }
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Bool(changed)),
+                );
+            }
+            ApiRequest::EditorSetCursor { line, ch } => {
+                let changed = self
+                    .state
+                    .with_active_doc_and_view(|doc, view| view.offset_for_line_col(doc, line as usize, ch as usize))
+                    .map(|offset| self.state.active_set_cursor_offset(offset))
+                    .unwrap_or(false);
+                if changed {
+                    cx.notify();
+                }
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Bool(changed)),
+                );
+            }
+            ApiRequest::EditorSetSelection { anchor_line, anchor_ch, head_line, head_ch } => {
+                let changed = self
+                    .state
+                    .with_active_doc_and_view(|doc, view| {
+                        let anchor = view.offset_for_line_col(doc, anchor_line as usize, anchor_ch as usize);
+                        let head = view.offset_for_line_col(doc, head_line as usize, head_ch as usize);
+                        (anchor, head)
+                    })
+                    .map(|(anchor, head)| self.state.active_set_selection_range(anchor, head))
+                    .unwrap_or(false);
+                if changed {
+                    cx.notify();
+                }
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Bool(changed)),
                 );
             }
             ApiRequest::Unknown { req_kind } => {

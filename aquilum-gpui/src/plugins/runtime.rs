@@ -336,6 +336,25 @@ fn setup_plugin_environment<'js>(
     })?;
     globals.set("__host_get_language", get_lang_fn)?;
 
+    // 3c. Active editor buffer for synchronous Editor getters, as a JSON string
+    // {"text","cursor":{"line","ch","anchor?":{"line","ch"}}}: cursor/anchor are in
+    // (line, ch) character coordinates. A plugin without vault:read gets an empty
+    // object, mirroring __host_get_active_file.
+    let snap_doc = snapshot.clone();
+    let get_buffer_fn = Function::new(ctx.clone(), move || -> rquickjs::Result<String> {
+        let snap = snap_doc.load();
+        let Some(doc) = snap.active_doc.as_ref() else {
+            return Ok("{}".to_string());
+        };
+        let mut cursor = serde_json::json!({ "line": doc.cursor.0, "ch": doc.cursor.1 });
+        if let Some((a_line, a_ch)) = doc.anchor {
+            cursor["anchor"] = serde_json::json!({ "line": a_line, "ch": a_ch });
+        }
+        let payload = serde_json::json!({ "text": doc.rope.to_string(), "cursor": cursor });
+        Ok(payload.to_string())
+    })?;
+    globals.set("__host_get_active_buffer", get_buffer_fn)?;
+
     // 3b. Static host platform description, consumed by obsidian.Platform and navigator.userAgent.
     // The host is a native desktop application, so mobile flags are always false.
     let platform_os = if cfg!(target_os = "macos") {
@@ -2925,9 +2944,8 @@ fn setup_plugin_environment<'js>(
 
         // The document buffer lives in the host, not in the plugin runtime. A MarkdownView here is a
         // handle on the file the host currently shows, not an owner of its text: `file`, `getMode()`
-        // and `getViewType()` are authoritative, while `editor` only reaches the host through the
-        // existing selection channel. Reading the buffer (editor.getValue and friends) needs a host
-        // request that does not exist yet, so it is deliberately not faked here.
+        // and `getViewType()` are authoritative. The `editor` handle reaches the host buffer through
+        // the editor_* requests (getValue, replaceRange, cursor and friends).
         class MarkdownView extends ItemView {
             constructor(leaf, file) {
                 super(leaf);
@@ -3061,17 +3079,124 @@ fn setup_plugin_environment<'js>(
             close() {}
         }
 
+        // EditorPosition is a plain {line, ch} pair; `ch` counts characters, matching
+        // EditorViewState::line_col. Reads go through the synchronous host snapshot
+        // (__host_get_active_buffer); writes are async host requests.
+        const __editor_sync_buffer = () => {
+            const raw = __host_get_active_buffer();
+            try {
+                const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+                return parsed && typeof parsed.text === "string" ? parsed : null;
+            } catch (e) {
+                return null;
+            }
+        };
+        const __editor_pos = (pos) => {
+            if (pos && typeof pos === "object" && typeof pos.line === "number") {
+                return { line: Math.max(0, pos.line | 0), ch: Math.max(0, pos.ch | 0) };
+            }
+            return { line: 0, ch: 0 };
+        };
+        const __pos_le = (a, b) => a.line < b.line || (a.line === b.line && a.ch <= b.ch);
+
         class Editor {
             constructor(selection = "") {
                 this._selection = String(selection != null ? selection : "");
             }
+            getValue() {
+                const buf = __editor_sync_buffer();
+                return buf ? buf.text : "";
+            }
+            setValue(content) {
+                __invoke_host("editor_set_buffer", { text: String(content != null ? content : "") });
+            }
+            getLine(line) {
+                const buf = __editor_sync_buffer();
+                if (!buf) return "";
+                return buf.text.split("\n")[line | 0] || "";
+            }
+            setLine(line, text) {
+                const buf = __editor_sync_buffer();
+                if (!buf) return;
+                const lines = buf.text.split("\n");
+                const idx = line | 0;
+                if (idx < 0 || idx >= lines.length) return;
+                lines[idx] = String(text != null ? text : "");
+                __invoke_host("editor_set_buffer", { text: lines.join("\n") });
+            }
+            lineCount() {
+                const buf = __editor_sync_buffer();
+                if (!buf) return 0;
+                return buf.text.split("\n").length;
+            }
+            lastLine() {
+                return Math.max(0, this.lineCount() - 1);
+            }
+            getCursor(string) {
+                const buf = __editor_sync_buffer();
+                const cur = buf && buf.cursor ? buf.cursor : { line: 0, ch: 0 };
+                if (string === "anchor" && cur.anchor) {
+                    return { line: cur.anchor.line, ch: cur.anchor.ch };
+                }
+                return { line: cur.line, ch: cur.ch };
+            }
+            setCursor(pos, ch) {
+                if (typeof pos === "number") pos = { line: pos, ch: ch || 0 };
+                const p = __editor_pos(pos);
+                __invoke_host("editor_set_cursor", { line: p.line, ch: p.ch });
+            }
             getSelection() {
-                return this._selection;
+                if (this._selection) return this._selection;
+                const res = __invoke_host("editor_get_selection", {});
+                return res == null ? "" : String(res);
+            }
+            getRange(from, to) {
+                const buf = __editor_sync_buffer();
+                if (!buf) return "";
+                const lines = buf.text.split("\n");
+                const a = __editor_pos(from), b = __editor_pos(to);
+                const [start, end] = __pos_le(a, b) ? [a, b] : [b, a];
+                if (start.line === end.line) {
+                    return (lines[start.line] || "").slice(start.ch, end.ch);
+                }
+                let out = (lines[start.line] || "").slice(start.ch);
+                for (let l = start.line + 1; l < end.line; l++) out += "\n" + (lines[l] || "");
+                out += "\n" + (lines[end.line] || "").slice(0, end.ch);
+                return out;
             }
             replaceSelection(text) {
-                this._selection = String(text != null ? text : "");
-                __invoke_host("editor_replace_selection", { text: this._selection });
+                const replacement = String(text != null ? text : "");
+                __invoke_host("editor_replace_selection", { text: replacement });
+                this._selection = "";
             }
+            replaceRange(replacement, from, to) {
+                const a = __editor_pos(from), b = __editor_pos(to === undefined ? from : to);
+                const [start, end] = __pos_le(a, b) ? [a, b] : [b, a];
+                __invoke_host("editor_replace_range", {
+                    from_line: start.line, from_ch: start.ch,
+                    to_line: end.line, to_ch: end.ch,
+                    text: String(replacement != null ? replacement : "")
+                });
+            }
+            setSelection(anchor, head) {
+                const a = __editor_pos(anchor), h = __editor_pos(head === undefined ? anchor : head);
+                __invoke_host("editor_set_selection", {
+                    anchor_line: a.line, anchor_ch: a.ch,
+                    head_line: h.line, head_ch: h.ch
+                });
+            }
+            listSelections() {
+                const cur = this.getCursor();
+                const anchor = this.getCursor("anchor");
+                return __pos_le(anchor, cur) ? [{ anchor, head: cur }] : [{ anchor: cur, head: anchor }];
+            }
+            somethingSelected() {
+                const cur = this.getCursor(), anchor = this.getCursor("anchor");
+                return !(cur.line === anchor.line && cur.ch === anchor.ch);
+            }
+            hasFocus() { return true; }
+            focus() {}
+            blur() {}
         }
 
         class MenuItem {
@@ -4555,6 +4680,43 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
                 .unwrap_or_default()
                 .to_string();
             ApiRequest::EditorReplaceSelection { text }
+        }
+        "editor_get_buffer" => ApiRequest::EditorGetBuffer,
+        "editor_get_selection" => ApiRequest::EditorGetSelection,
+        "editor_set_buffer" => {
+            let text = payload
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::EditorSetBuffer { text }
+        }
+        "editor_replace_range" => {
+            let num = |key: &str| payload.get(key).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            ApiRequest::EditorReplaceRange {
+                from_line: num("from_line"),
+                from_ch: num("from_ch"),
+                to_line: num("to_line"),
+                to_ch: num("to_ch"),
+                text: payload
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            }
+        }
+        "editor_set_cursor" => {
+            let num = |key: &str| payload.get(key).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            ApiRequest::EditorSetCursor { line: num("line"), ch: num("ch") }
+        }
+        "editor_set_selection" => {
+            let num = |key: &str| payload.get(key).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            ApiRequest::EditorSetSelection {
+                anchor_line: num("anchor_line"),
+                anchor_ch: num("anchor_ch"),
+                head_line: num("head_line"),
+                head_ch: num("head_ch"),
+            }
         }
         "http" => {
             let url = payload.get("url").and_then(|v| v.as_str()).unwrap_or_default().to_string();

@@ -2748,6 +2748,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             view.selection_anchor = Some(offset);
         }
         self.reset_editor_cursor_blink(cx);
+        self.state.publish_snapshot();
         cx.notify();
     }
 
@@ -4809,6 +4810,11 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             || cursor_before != self.state.active_view().map(|v| v.cursor_offset);
         if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
             self.schedule_auto_save(cx);
+        }
+        // Plugins read the buffer synchronously from the snapshot: refresh it
+        // on the single exit point whenever text, cursor or selection moved.
+        if state_changed {
+            self.state.publish_snapshot();
         }
         // Refresh the rows before revealing: every edit above marked the
         // cache dirty, and the lookup below must see the new rows already —
@@ -7858,6 +7864,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                     }
                                     if view.cursor_offset != new_offset {
                                         view.cursor_offset = new_offset;
+                                        this.state.publish_snapshot();
                                         cx.notify();
                                     }
                                 }

@@ -377,6 +377,20 @@ pub struct Snapshot {
     pub language: String,
     pub active_file: Option<crate::vault::FileInfo>,
     pub files: Arc<[crate::vault::FileInfo]>,
+    /// Active editor buffer for the plugins' synchronous `editor.getValue()`
+    /// and friends. Rope clone is O(1); `None` when no document is open.
+    pub active_doc: Option<ActiveDocSnapshot>,
+}
+
+/// Cursor/selection of the active document in (line, ch) character coordinates,
+/// matching Obsidian's `EditorPosition`.
+#[derive(Debug, Clone, Default)]
+pub struct ActiveDocSnapshot {
+    pub rope: crop::Rope,
+    /// Cursor position (head of the selection).
+    pub cursor: (usize, usize),
+    /// Selection anchor, absent for a bare caret.
+    pub anchor: Option<(usize, usize)>,
 }
 
 
@@ -748,6 +762,9 @@ impl AppState {
                 }
             }
         }
+        // The plugin snapshot carries the buffer text: an edit (keyboard, undo,
+        // another plugin) invalidates every synchronous editor getter.
+        self.publish_snapshot();
     }
 
     pub fn active_insert_text(&mut self, text: &str) {
@@ -937,6 +954,55 @@ impl AppState {
         self.dispatch_edit_event(&edit_event, &note_edit);
     }
 
+    /// Full editor buffer state for the plugin protocol: text, cursor and
+    /// selection as (line, ch) pairs with `ch` counted in characters, which is
+    /// what Obsidian's `EditorPosition` uses.
+    pub fn active_editor_buffer(&self) -> Option<(String, (usize, usize), Option<(usize, usize)>)> {
+        let (view, doc) = self.active_view_and_doc()?;
+        let head = view.line_col(doc);
+        let anchor = view.selection_anchor.map(|a| {
+            let anchor_line = doc.line_of_byte(a.min(doc.len()));
+            let anchor_start = doc.line_start_byte(anchor_line).min(a);
+            let anchor_ch = doc.slice_to_string(anchor_start..a).chars().count();
+            (anchor_line, anchor_ch)
+        });
+        Some((doc.content(), head, anchor))
+    }
+
+    /// Replaces the whole document text, keeping the cursor clamped to the new end.
+    pub fn active_set_buffer(&mut self, text: &str) -> bool {
+        let Some(tab_id) = self.active_tab_id() else { return false; };
+        let Some(doc_id) = self.active_doc_id() else { return false; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return false; };
+        let new_cursor = text.len();
+        let (_, note_edit, edit_event) = view.replace_range(doc, 0..doc.len(), text.to_string(), new_cursor);
+        self.dispatch_edit_event(&edit_event, &note_edit);
+        true
+    }
+
+    /// Moves the cursor to a document byte offset, dropping the selection.
+    pub fn active_set_cursor_offset(&mut self, offset: usize) -> bool {
+        let Some(tab_id) = self.active_tab_id() else { return false; };
+        let Some(doc_id) = self.active_doc_id() else { return false; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return false; };
+        let offset = offset.min(doc.len());
+        view.cursor_offset = offset;
+        view.selection_anchor = None;
+        view.visual_cache_dirty = true;
+        true
+    }
+
+    /// Selects the byte range `anchor..head`; the cursor sits at `head`.
+    pub fn active_set_selection_range(&mut self, anchor: usize, head: usize) -> bool {
+        let Some(tab_id) = self.active_tab_id() else { return false; };
+        let Some(doc_id) = self.active_doc_id() else { return false; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return false; };
+        view.cursor_offset = head.min(doc.len());
+        view.selection_anchor = Some(anchor.min(doc.len()));
+        view.visual_cache_dirty = true;
+        true
+    }
+
     pub fn active_undo(&mut self) -> bool {
         let Some(tab_id) = self.active_tab_id() else { return false; };
         let Some(doc_id) = self.active_doc_id() else { return false; };
@@ -970,6 +1036,13 @@ impl AppState {
         let Some(doc_id) = self.active_doc_id() else { return; };
         let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return; };
         view.select_all(doc);
+    }
+
+    /// Read-only access to the active view and document for callers that need
+    /// to compute coordinates (byte offsets from line/col) before mutating.
+    pub fn with_active_doc_and_view<R>(&self, f: impl FnOnce(&DocumentBuffer, &EditorViewState) -> R) -> Option<R> {
+        let (view, doc) = self.active_view_and_doc()?;
+        Some(f(doc, view))
     }
 
     pub fn active_selected_text(&self) -> Option<String> {
@@ -2123,11 +2196,22 @@ impl AppState {
 
         let version = active_doc.as_ref().map(|d| d.version).unwrap_or(0);
         let language = crate::i18n::LocaleInfo::normalize(&self.settings.get_config().ui.language).to_string();
+        let active_doc_snapshot = active_doc.zip(self.active_view()).map(|(doc, view)| {
+            let head = view.line_col(doc);
+            let anchor = view.selection_anchor.map(|a| {
+                let anchor_line = doc.line_of_byte(a.min(doc.len()));
+                let anchor_start = doc.line_start_byte(anchor_line).min(a);
+                let anchor_ch = doc.slice_to_string(anchor_start..a).chars().count();
+                (anchor_line, anchor_ch)
+            });
+            ActiveDocSnapshot { rope: doc.rope().clone(), cursor: head, anchor }
+        });
         self.snapshot.store(Arc::new(Snapshot {
             version,
             language,
             active_file: active,
             files,
+            active_doc: active_doc_snapshot,
         }));
     }
 

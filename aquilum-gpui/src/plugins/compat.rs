@@ -9,6 +9,9 @@ pub enum CompatibilityStatus {
     Partial(f32),
     /// Critical incompatibilities detected (raw DOM, Electron, child_process, private Obsidian internals).
     Incompatible,
+    /// The scan recognized no known API calls at all: the plugin may use newer
+    /// API names the pattern list does not cover, so its compatibility is unknown.
+    Unknown,
 }
 
 /// Detailed compatibility report produced by the static analyzer or runtime audit.
@@ -34,6 +37,7 @@ impl CompatibilityReport {
             CompatibilityStatus::Full => "100% Совместим".to_string(),
             CompatibilityStatus::Partial(pct) => format!("{:.0}% Совместим", pct * 100.0),
             CompatibilityStatus::Incompatible => "Не поддерживается".to_string(),
+            CompatibilityStatus::Unknown => "Совместимость неизвестна".to_string(),
         }
     }
 }
@@ -141,9 +145,16 @@ pub fn analyze_plugin_script(script_source: &str) -> CompatibilityReport {
             warnings,
         }
     } else if missing.is_empty() {
+        let status = if supported.is_empty() {
+            // Nothing recognized at all: the bundle may be built against a newer
+            // API or heavily minified, so "100% compatible" would be a lie.
+            CompatibilityStatus::Unknown
+        } else {
+            CompatibilityStatus::Full
+        };
         CompatibilityReport {
-            status: CompatibilityStatus::Full,
-            score: 1.0,
+            status,
+            score: if supported.is_empty() { 0.0 } else { 1.0 },
             supported_calls: supported,
             missing_calls: missing,
             incompatible_calls: incompatible,
@@ -243,5 +254,25 @@ mod tests {
         assert!(report.incompatible_calls.contains(&"require('electron')".to_string()));
         assert!(report.incompatible_calls.contains(&"document.getElementById()".to_string()));
         assert_eq!(report.badge_label(), "Не поддерживается");
+    }
+
+    #[test]
+    fn test_analyze_unrecognized_bundle_is_not_full() {
+        // No known API call appears in the bundle: compatibility must stay
+        // unknown instead of reporting a fake 100%.
+        let script = r#"
+            module.exports = class WeirdPlugin {
+                async onload() {
+                    someTotallyUnknownApi.doThing();
+                }
+            };
+        "#;
+
+        let report = analyze_plugin_script(script);
+        assert_eq!(report.status, CompatibilityStatus::Unknown);
+        assert_eq!(report.score, 0.0);
+        assert!(report.supported_calls.is_empty());
+        assert!(report.missing_calls.is_empty());
+        assert!(report.incompatible_calls.is_empty());
     }
 }

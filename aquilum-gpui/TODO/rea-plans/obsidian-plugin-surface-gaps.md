@@ -598,6 +598,18 @@ Modal: setTitle(title: string); setContent(content: string); setCloseCallback(cb
 `iterateAllLeaves` и `getMostRecentLeaf`. Эффект на корпусе 500 плагинов: без нехваток API было 52,
 стало 124; `ok` 36 → 88 (`plugin-compat-500.md` §0).
 
+**Статус на 21.10.2026.** Шаг 7 (Editor) закрыт. Чтение буфера синхронное: `Snapshot` несёт
+`active_doc` (rope + курсор/якорь в (line, ch)), публикуется из единого выхода `handle_key`,
+клика по документу, drag-выделения и `dispatch_edit_event`; JS-класс `Editor` читает его через
+`__host_get_active_buffer()` — `getValue`, `getLine`, `setLine`, `lineCount`, `lastLine`,
+`getCursor`/`setCursor` (в т.ч. `"anchor"`), `getRange`, `getSelection`, `replaceSelection`,
+`replaceRange`, `setSelection`, `listSelections`, `somethingSelected` + no-op `focus`/`blur`/
+`hasFocus`. Запись идёт запросами `editor_set_buffer`/`editor_replace_range`/`editor_set_cursor`/
+`editor_set_selection` (api.rs, bridge.rs). Модель `getFirstLinkpathDest`/`getFileCache` из §6.6
+осталась как описано. Ограничения: `getSelection()` использует async-канал; мультикурсорности нет
+(одна выборка); позиции не валидируются после чужих правок между чтением и записью. Харнесс:
+125/125 (16 новых тестов Editor). Коммит: буфер редактора.
+
 ### 7.1 Что проверить на каждом шаге
 
 - **Загрузка → выгрузка → повторная загрузка** одного и того же плагина: реестры, подписки, таймеры,

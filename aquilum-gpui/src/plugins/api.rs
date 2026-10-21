@@ -68,6 +68,34 @@ pub enum ApiRequest {
     EditorReplaceSelection {
         text: String,
     },
+    /// Returns the full text, cursor (line, ch) and selection of the active editor
+    EditorGetBuffer,
+    /// Replaces the full text of the active editor
+    EditorSetBuffer {
+        text: String,
+    },
+    /// Replaces a ch-coordinate range in the active editor (Obsidian EditorPosition uses ch = char index)
+    EditorReplaceRange {
+        from_line: u32,
+        from_ch: u32,
+        to_line: u32,
+        to_ch: u32,
+        text: String,
+    },
+    /// Reads the selected text of the active editor
+    EditorGetSelection,
+    /// Moves the cursor to a position (line, ch) in the active editor
+    EditorSetCursor {
+        line: u32,
+        ch: u32,
+    },
+    /// Selects a range between two positions (line, ch) in the active editor
+    EditorSetSelection {
+        anchor_line: u32,
+        anchor_ch: u32,
+        head_line: u32,
+        head_ch: u32,
+    },
     /// Registers or updates a workspace leaf view (ItemView in sidebar or center)
     SetLeafView {
         leaf_id: String,
