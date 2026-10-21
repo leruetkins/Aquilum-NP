@@ -1546,6 +1546,12 @@ impl AppState {
         }
 
         self.save_session_state();
+        // The file set changed on disk: the plugin snapshot's file list (and the
+        // vault cache behind it) must be rebuilt, or plugins keep seeing the
+        // pre-change list. The rename case is covered by the same publish in
+        // handle_file_renamed.
+        self.invalidate_markdown_cache_and_tree();
+        self.publish_snapshot();
         any_closed
     }
 
@@ -1675,6 +1681,8 @@ impl AppState {
         }
 
         self.save_session_state();
+        self.invalidate_markdown_cache_and_tree();
+        self.publish_snapshot();
         any_renamed
     }
 
@@ -1682,8 +1690,19 @@ impl AppState {
     ///
     /// If the file is open and clean (not dirty), reloads content from disk.
     /// If the file has unsaved edits, keeps the user's edits and warns in status.
+    /// A modified event for a *not open* note is how the watcher reports a
+    /// note created outside the vault API (new-note button, external editor):
+    /// the plugin file list must be rebuilt or plugins keep seeing the old set.
     pub fn handle_file_modified(&mut self, path: &Path) -> bool {
         let opt_doc_id = self.find_document_by_path(path);
+
+        if opt_doc_id.is_none() {
+            // Cheap: the vault cache is just an Option; the publish shares the
+            // rebuilt list through an Arc. A write echo of a deleted-then-recreated
+            // tab also lands here, which is the right moment to resync anyway.
+            self.invalidate_markdown_cache_and_tree();
+            self.publish_snapshot();
+        }
 
         if let Some(doc_id) = opt_doc_id {
             let is_dirty = self.documents.get(&doc_id).map(|d| d.is_dirty).unwrap_or(false);
@@ -1750,6 +1769,8 @@ impl AppState {
                     "Файл обновлён: {}",
                     path.file_name().unwrap_or_default().to_string_lossy()
                 );
+                self.invalidate_markdown_cache_and_tree();
+                self.publish_snapshot();
                 return true;
             }
         }
@@ -2314,9 +2335,16 @@ impl AppState {
             return;
         };
         self.file_tree = Self::build_tree(ws);
+        // Every UI path that mutates the vault (create/rename/delete from the
+        // sidebar, plugin operations) converges here; the plugin file list must
+        // follow or plugins keep seeing the pre-mutation set.
+        if let Some(vault) = &self.vault {
+            vault.invalidate_markdown_cache();
+        }
         self.reload_files();
         self.sync_search_worker_files();
         self.status_text = format!("Vault: {}", self.workspace_name);
+        self.publish_snapshot();
     }
 
     pub fn toggle_folder(&mut self, path: PathBuf) {
