@@ -210,6 +210,16 @@
 **Статус на 19.10.2026.** Пачка 1 закрыта целиком, из пачки 2 — пять пунктов, плюс оба P0.
 Итог по корпусу 500: `ok` 91, `degraded` 187, `blocked` 222 (без жёстких блокеров 266, 53%).
 
+**Статус на 21.10.2026.** Пачка 1 закрыта целиком (YAML-парсер в бутстрапе покрывает
+frontmatter-подмножество: плоские ключи, вложенные карты, списки скаляров и объектов,
+inline-flow, block-скаляры, комментарии; полный YAML — якоря, теги, многодокументность —
+за пределами и честно падает). Закрыты: `parseYaml`, `stringifyYaml`, `getAllTags`,
+`requireApiVersion` (хост = 1.7.5), `parseLinktext`, `getLinkpath`,
+`arrayBufferToBase64`/`base64ToArrayBuffer` (своя base64 — btoa/atob в rquickjs нет),
+`fileManager.processFrontMatter`/`trashFile`/`renameFile`, `vault.getRoot`/`getAllLoadedFiles`/
+`getName`/`getResourcePath`. Итог по корпусу 500: **`ok` 123, `degraded` 155, `blocked` 222**.
+Харнесс 146/146 (21 новый тест: 11 YAML, 7 FileManager/vault, 3 утилиты).
+
 > **P0 закрыты** (проверено по коду приложения, коммит `f94d2a3`): `vault.read` пробрасывает ошибку
 > вместо строки `"non-empty-fallback-on-error"` (`runtime.rs:3152-3163`); `vault.trash` идёт в
 > отдельный `VaultTrash` → `vault.trash_file()`, файл уезжает в `.trash/` с уникальным именем

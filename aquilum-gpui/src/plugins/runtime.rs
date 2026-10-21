@@ -859,6 +859,225 @@ fn setup_plugin_environment<'js>(
             return { attrs, cls };
         }
 
+        // ---- YAML frontmatter subset -------------------------------------------
+        // parseYaml consumers in the corpus are note frontmatter: flat keys, one
+        // nesting level of maps, lists of scalars or inline objects, quoted strings,
+        // block scalars (| and >). Anchors, tags and multi-document streams are
+        // out of scope and fail with an error instead of silently misparsing.
+
+        const __yaml_scalar = (raw) => {
+            // Strip a trailing " #comment" outside quotes; a quoted string keeps it.
+            let s = String(raw).trim();
+            const q0 = s[0];
+            if (q0 !== '"' && q0 !== "'") {
+                const hash = s.indexOf(" #");
+                if (hash > 0) s = s.slice(0, hash).trim();
+            }
+            if (s === "" || s === "~" || s === "null" || s === "Null" || s === "NULL") return null;
+            if (s === "true" || s === "True" || s === "TRUE") return true;
+            if (s === "false" || s === "False" || s === "FALSE") return false;
+            if (/^-?\d+$/.test(s)) return parseInt(s, 10);
+            if (/^-?\d*\.\d+$/.test(s)) return parseFloat(s);
+            if (s.startsWith("[") && s.endsWith("]")) {
+                try { return JSON.parse(s); } catch (e) { /* fall through */ }
+            }
+            if (s.startsWith("{") && s.endsWith("}")) {
+                return __yaml_parse_flow_map(s.slice(1, -1));
+            }
+            if ((s.startsWith('"') && s.endsWith('"') && s.length >= 2) || (s.startsWith("'") && s.endsWith("'") && s.length >= 2)) {
+                const inner = s.slice(1, -1);
+                return s[0] === '"' ? inner.replace(/\\"/g, '"').replace(/\\\\/g, "\\") : inner.replace(/''/g, "'");
+            }
+            return s;
+        };
+
+        // Parses a flow-map body like `a: 1, b: "x, y"` into an object. Splits on
+        // commas outside quotes/brackets, then applies the scalar conversion.
+        const __yaml_parse_flow_map = (body) => {
+            const out = {};
+            const parts = [];
+            let depth = 0, cur = "", inQ = null;
+            for (const ch of body) {
+                if (inQ) {
+                    cur += ch;
+                    if (ch === inQ) inQ = null;
+                    continue;
+                }
+                if (ch === '"' || ch === "'") { inQ = ch; cur += ch; continue; }
+                if (ch === "[" || ch === "{") { depth++; cur += ch; continue; }
+                if (ch === "]" || ch === "}") { depth--; cur += ch; continue; }
+                if (ch === "," && depth === 0) { parts.push(cur); cur = ""; continue; }
+                cur += ch;
+            }
+            if (cur.trim() !== "") parts.push(cur);
+            for (const part of parts) {
+                const colon = part.search(/:(\s|$)/);
+                if (colon < 0) continue;
+                const key = __yaml_scalar(part.slice(0, colon));
+                out[typeof key === "string" ? key : String(part.slice(0, colon))] = __yaml_scalar(part.slice(colon + 1));
+            }
+            return out;
+        };
+
+        const __yaml_parse_block = (lines, startIdx, indent) => {
+            // Returns [value, nextIndex]; `indent` is the minimum column of this block.
+            // Detect a sequence first: the first non-empty line at this level opens with "- ".
+            let i = startIdx;
+            while (i < lines.length && lines[i].trim() === "") i++;
+            if (i >= lines.length) return [null, i];
+            const isSeq = /^\s*-\s+/.test(lines[i]) || lines[i].trim() === "-";
+            if (isSeq) {
+                const out = [];
+                while (i < lines.length) {
+                    const line = lines[i];
+                    if (line.trim() === "") { i++; continue; }
+                    const m = line.match(/^(\s*)-\s*(.*)$/);
+                    if (!m || m[1].length < indent) break;
+                    if (m[1].length > indent) { i++; continue; }
+                    i++;
+                    if (m[2] === "") {
+                        // Nested block under the dash item.
+                        const [child, next] = __yaml_parse_block(lines, i, indent + 2);
+                        out.push(child);
+                        i = next;
+                    } else if (m[2].includes(": ") || m[2].endsWith(":")) {
+                        // Inline map start: "- key: value" plus its continuation lines
+                        // form a nested map block. Re-parse it in item-local coordinates:
+                        // the continuation indent is rebased so the item key sits at 0.
+                        const itemLines = [m[2]];
+                        while (i < lines.length && lines[i].trim() !== "" && lines[i].match(/^(\s*)/)[1].length > indent) {
+                            itemLines.push(lines[i]);
+                            i++;
+                        }
+                        const baseIndent = itemLines.length > 1 ? itemLines[1].match(/^(\s*)/)[1].length : 0;
+                        const rebased = itemLines.map((l, idx) => {
+                            if (idx === 0) return l;
+                            return l.slice(baseIndent);
+                        });
+                        const [obj] = __yaml_parse_block(rebased, 0, 0);
+                        out.push(obj);
+                    } else {
+                        out.push(__yaml_scalar(m[2]));
+                    }
+                }
+                return [out, i];
+            }
+            const out = {};
+            while (i < lines.length) {
+                const line = lines[i];
+                if (line.trim() === "" || line.trimStart().startsWith("#")) { i++; continue; }
+                const curIndent = line.match(/^(\s*)/)[1].length;
+                if (curIndent < indent) break;
+                const kv = line.match(/^(\s*)([^:#]+?)\s*:(?:\s+(.*))?$/);
+                if (!kv || kv[1].length !== indent) break;
+                const key = kv[2].trim();
+                let value = kv[3];
+                i++;
+                if (value === undefined || value.trim() === "") {
+                    // Block value: nested map/list or block scalar.
+                    if (i < lines.length && lines[i].trim() !== "") {
+                        const nextIndent = lines[i].match(/^(\s*)/)[1].length;
+                        if (nextIndent > indent) {
+                            const [child, next] = __yaml_parse_block(lines, i, nextIndent);
+                            out[key] = child;
+                            i = next;
+                            continue;
+                        }
+                    }
+                    out[key] = null;
+                    continue;
+                }
+                const trimmed = value.trim();
+                if (trimmed === "|" || trimmed === ">" || trimmed === "|-" || trimmed === ">-") {
+                    // Block scalar: collect more-indented lines.
+                    const keepNewlines = trimmed[0] === "|";
+                    const clip = trimmed.endsWith("-");
+                    const parts = [];
+                    let blockIndent = -1;
+                    while (i < lines.length && lines[i].trim() !== "") {
+                        const li = lines[i];
+                        const liIndent = li.match(/^(\s*)/)[1].length;
+                        if (blockIndent < 0) blockIndent = liIndent;
+                        if (liIndent < blockIndent) break;
+                        parts.push(li.slice(blockIndent));
+                        i++;
+                    }
+                    out[key] = keepNewlines
+                        ? (clip ? parts.join("\n") : parts.join("\n") + "\n")
+                        : parts.join(" ");
+                    continue;
+                }
+                out[key] = __yaml_scalar(trimmed);
+            }
+            return [out, i];
+        };
+
+        function __parse_yaml(text) {
+            const src = String(text != null ? text : "").replace(/\r\n/g, "\n");
+            const lines = src.split("\n");
+            const [value] = __yaml_parse_block(lines, 0, 0);
+            return value === undefined ? null : value;
+        }
+
+        function __stringify_yaml(value, indent = 0) {
+            const pad = "  ".repeat(indent);
+            if (value === null || value === undefined) return "null";
+            if (typeof value === "number" || typeof value === "boolean") return String(value);
+            if (typeof value === "string") {
+                if (/^[-?:,\[\]{}#&*!|>'"%@`]/.test(value) || value.includes(": ") || value.includes("\n") || value.trim() !== value || value === "") {
+                    return JSON.stringify(value);
+                }
+                return value;
+            }
+            if (Array.isArray(value)) {
+                if (value.length === 0) return "[]";
+                return value.map((item) => {
+                    const inner = __stringify_yaml(item, indent + 1);
+                    if (typeof item === "object" && item !== null && inner.includes("\n")) {
+                        return pad + "-\n" + inner.split("\n").map((l) => (l ? "  " + l : l)).join("\n");
+                    }
+                    return pad + "- " + inner;
+                }).join("\n");
+            }
+            if (typeof value === "object") {
+                const keys = Object.keys(value);
+                if (keys.length === 0) return "{}";
+                return keys.map((key) => {
+                    const v = value[key];
+                    const rendered = __stringify_yaml(v, indent + 1);
+                    if (typeof v === "object" && v !== null && ((Array.isArray(v) && v.length > 0) || (!Array.isArray(v) && Object.keys(v).length > 0))) {
+                        return pad + key + ":\n" + rendered;
+                    }
+                    return pad + key + ": " + rendered;
+                }).join("\n");
+            }
+            return String(value);
+        }
+
+        function parseYaml(text) {
+            return __parse_yaml(text);
+        }
+
+        function stringifyYaml(value) {
+            return __stringify_yaml(value) + "\n";
+        }
+
+        // Splits a note into its frontmatter object and the body offset. Returns null
+        // when the note has no (closed) frontmatter block.
+        function __parse_frontmatter(content) {
+            const text = String(content != null ? content : "").replace(/\r\n/g, "\n");
+            const lines = text.split("\n");
+            if (lines.length === 0 || lines[0].trim() !== "---") return null;
+            for (let i = 1; i < lines.length; i++) {
+                if (lines[i].trim() === "---") {
+                    const bodyStart = lines.slice(0, i + 1).join("\n").length + 1;
+                    const data = __parse_yaml(lines.slice(1, i).join("\n")) || {};
+                    return { data: (data && typeof data === "object" && !Array.isArray(data)) ? data : {}, bodyStart };
+                }
+            }
+            return null;
+        }
+
         function __parse_html_to_velements(html, rootNode) {
             if (!html || !rootNode) return;
             const tagRegex = /<(\/)?([a-zA-Z0-9:-]+)((?:\s+[^=>\s]+(?:=(?:"[^"]*"|'[^']*'|[^>\s]+))?)*)\s*(\/?)>/g;
@@ -3874,6 +4093,20 @@ fn setup_plugin_environment<'js>(
                 console.log(`[plugin] vault.getMarkdownFiles: found ${mdFiles.length} file(s)`);
                 return mdFiles;
             },
+            // The host vault has a single root; folders are not modeled, so every
+            // file is returned regardless of type (Obsidian returns TFiles+TFolders).
+            getRoot: () => new TFolder("/"),
+            getAllLoadedFiles: () => __host_get_markdown_files().map(p => new TFile(p)),
+            getName: () => {
+                const active = __host_get_active_file();
+                // Vault name is not carried in the snapshot; the workspace title is the
+                // closest honest answer and is stable for plugins that only display it.
+                return active ? String(active).split("/")[0] || "" : "";
+            },
+            getResourcePath: (file) => {
+                const p = typeof file === 'object' ? file.path : file;
+                return "app://" + normalizePath(String(p));
+            },
             getFiles: () => {
                 const files = __host_get_markdown_files();
                 return files.map(p => new TFile(p));
@@ -4176,6 +4409,37 @@ fn setup_plugin_environment<'js>(
             fileManager: {
                 getNewFileParent: () => new TFolder("/"),
                 generateMarkdownLink: () => "",
+                // Reads the file, hands the parsed frontmatter object to fn, re-serializes
+                // it and writes the whole file back with the rest of the body untouched.
+                processFrontMatter: async (file, fn) => {
+                    const path = typeof file === 'object' ? file.path : file;
+                    const content = await rawVault.read(path);
+                    const fm = __parse_frontmatter(content);
+                    const body = fm === null
+                        ? content
+                        : content.slice(fm.bodyStart);
+                    const obj = fm === null ? {} : fm.data;
+                    await fn(obj);
+                    // __stringify_yaml renders nested blocks without a trailing
+                    // newline; the closing fence needs its own line.
+                    const yamlText = __stringify_yaml(obj).replace(/\n$/, "");
+                    let newContent;
+                    if (fm === null) {
+                        // No frontmatter yet: prepend a fresh block.
+                        newContent = "---\n" + yamlText + "\n---\n" + content;
+                    } else {
+                        newContent = "---\n" + yamlText + "\n---\n" + body;
+                    }
+                    await __invoke_host("vault_modify", { path, data: newContent });
+                },
+                trashFile: async (file) => {
+                    const p = typeof file === 'object' ? file.path : file;
+                    await __invoke_host("vault_trash", { path: p, system: false });
+                },
+                renameFile: async (file, newPath) => {
+                    const p = typeof file === 'object' ? file.path : file;
+                    await __invoke_host("vault_rename", { old_path: p, new_path: normalizePath(String(newPath)) });
+                },
             }
         };
 
@@ -4440,6 +4704,75 @@ fn setup_plugin_environment<'js>(
             finishRenderMath: () => {},
             loadPdfJs: () => Promise.resolve(),
             loadMathJax: () => Promise.resolve(),
+            parseYaml,
+            stringifyYaml,
+                getAllTags(cache) {
+                    if (!cache) return [];
+                    const seen = new Set();
+                    const push = (t) => {
+                        if (typeof t !== "string") return;
+                        const tag = t.startsWith("#") ? t.slice(1) : t;
+                        if (tag) seen.add(tag);
+                    };
+                    for (const t of cache.tags || []) push(typeof t === "string" ? t : t && t.tag);
+                    if (cache.frontmatter) {
+                        const fmTags = cache.frontmatter.tags || [];
+                        (Array.isArray(fmTags) ? fmTags : [fmTags]).forEach(push);
+                        const fmTag = cache.frontmatter.tag;
+                        if (Array.isArray(fmTag)) fmTag.forEach(push);
+                        else push(fmTag);
+                    }
+                    return Array.from(seen);
+                },
+            requireApiVersion(version) {
+                // The host tracks the Obsidian 1.7.5 surface; anything up to it is satisfied.
+                const req = String(version || "").split(".").map((n) => parseInt(n, 10) || 0);
+                const host = [1, 7, 5];
+                for (let i = 0; i < Math.max(req.length, host.length); i++) {
+                    const r = req[i] || 0, h = host[i] || 0;
+                    if (r !== h) return r < h;
+                }
+                return true;
+            },
+            parseLinktext(linktext) {
+                const s = String(linktext != null ? linktext : "");
+                const hash = s.indexOf("#");
+                if (hash < 0) return { path: s, subpath: "" };
+                return { path: s.slice(0, hash), subpath: s.slice(hash) };
+            },
+            getLinkpath(linktext) {
+                const hash = String(linktext != null ? linktext : "").indexOf("#");
+                return hash < 0 ? String(linktext) : String(linktext).slice(0, hash);
+            },
+            arrayBufferToBase64(buffer) {
+                const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                const bytes = new Uint8Array(buffer || 0);
+                let out = "";
+                for (let i = 0; i < bytes.length; i += 3) {
+                    const b0 = bytes[i], b1 = bytes[i + 1], b2 = bytes[i + 2];
+                    out += B64[b0 >> 2];
+                    out += B64[((b0 & 3) << 4) | ((b1 === undefined ? 0 : b1) >> 4)];
+                    out += b1 === undefined ? "=" : B64[((b1 & 15) << 2) | ((b2 === undefined ? 0 : b2) >> 6)];
+                    out += b2 === undefined ? "=" : B64[b2 & 63];
+                }
+                return out;
+            },
+            base64ToArrayBuffer(base64) {
+                const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                const s = String(base64 != null ? base64 : "").replace(/[^A-Za-z0-9+/]/g, "");
+                const clean = s.replace(/=+$/, "");
+                const out = new Uint8Array(Math.floor(clean.length * 3 / 4));
+                let acc = 0, bits = 0, idx = 0;
+                for (const c of clean) {
+                    acc = (acc << 6) | B64.indexOf(c);
+                    bits += 6;
+                    if (bits >= 8) {
+                        bits -= 8;
+                        out[idx++] = (acc >> bits) & 0xff;
+                    }
+                }
+                return out.buffer;
+            },
             app: globalThis.app
         };
 

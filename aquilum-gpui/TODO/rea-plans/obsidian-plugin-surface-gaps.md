@@ -610,6 +610,17 @@ Modal: setTitle(title: string); setContent(content: string); setCloseCallback(cb
 (одна выборка); позиции не валидируются после чужих правок между чтением и записью. Харнесс:
 125/125 (16 новых тестов Editor). Коммит: буфер редактора.
 
+**Статус на 21.10.2026, этап 2.** Шаг 11 (утилиты P2) закрыт частично: `parseYaml`/`stringifyYaml`
+(YAML-парсер в бутстрапе, frontmatter-подмножество: вложенные карты, списки объектов, inline-flow,
+block-скаляры, комментарии; якоря/теги/многодокументность не поддерживаются и падают), `getAllTags`,
+`requireApiVersion` (хост = 1.7.5), `parseLinktext`, `getLinkpath`,
+`arrayBufferToBase64`/`base64ToArrayBuffer`. Из пачки 1 (`plugin-compat-500.md` §6) закрыт
+`fileManager.processFrontMatter` (чтение → мутация объекта → ре-сериализация YAML → запись файла
+с нетронутым телом), `trashFile` (переиспользует `vault_trash`), `renameFile`; `vault.getRoot`/
+`getAllLoadedFiles`/`getName`/`getResourcePath`. Эффект на корпусе 500: `ok` 91 → **123**,
+`degraded` 187 → 155. Харнесс 146/146. Не закрыты из шага 11: `sanitizeHTMLToDom`,
+`getFrontMatterInfo`, `resolveSubpath`, `prepareFuzzySearch`, `request`.
+
 ### 7.1 Что проверить на каждом шаге
 
 - **Загрузка → выгрузка → повторная загрузка** одного и того же плагина: реестры, подписки, таймеры,
