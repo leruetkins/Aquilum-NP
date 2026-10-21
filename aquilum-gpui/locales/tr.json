@@ -339,7 +339,11 @@
     "op_line_desc": "anahtar kelimeler tek satırda",
     "op_section_desc": "anahtar kelimeler tek başlık altında",
     "history": "Tarih",
-    "found": "Kurmak: {}"
+    "found": "Kurmak: {}",
+    "searching": "aranıyor…",
+    "indexing": "Dizinleniyor",
+    "index_ready": "Dizin hazır",
+    "index_copied": "Dizin yolu kopyalandı: {}"
   },
   "app": {
     "search_placeholder": "Hızlı kasa araması..."

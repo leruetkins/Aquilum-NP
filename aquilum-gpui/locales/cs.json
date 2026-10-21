@@ -339,7 +339,11 @@
     "op_line_desc": "klíčová slova na jednom řádku",
     "op_section_desc": "klíčová slova pod jedním nadpisem",
     "history": "Dějiny",
-    "found": "Nalezeno: {}"
+    "found": "Nalezeno: {}",
+    "searching": "Vyhledávání…",
+    "indexing": "Indexuji",
+    "index_ready": "Index hotov",
+    "index_copied": "Cesta k indexu zkopírována: {}"
   },
   "app": {
     "search_placeholder": "Rychlé hledání trezoru..."

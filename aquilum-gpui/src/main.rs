@@ -20,6 +20,7 @@ pub mod perf;
 pub mod plugins;
 pub mod ribbon;
 pub mod save_manager;
+pub mod search;
 pub mod settings;
 pub mod snap;
 pub mod state;
@@ -140,6 +141,7 @@ fn main() {
                                 if let Some(app) = weak.upgrade() {
                                     let _ = app.update(cx, |this, cx| {
                                         this.poll_fs_changes(cx);
+                                        this.poll_search_replies(cx);
                                     });
                                 }
                             });

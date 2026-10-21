@@ -3,17 +3,17 @@
 //! Opened from the New Tab page or with `Ctrl+P`. Typing filters workspace
 //! notes by file name first and by file contents second, showing match
 //! counts and highlighted snippets like the reference implementation.
-//! The search is a synchronous bounded scan (no background index):
-//! at most [`MAX_SCAN_FILES`] files, files larger than [`MAX_FILE_BYTES`]
-//! contribute name matches only, and at most [`MAX_RESULTS`] hits surface.
+//! The scan itself runs on the search worker thread (`crate::search::worker`)
+//! so typing is never blocked: at most [`MAX_SCAN_FILES`] files are visited,
+//! files over the body-size limit are searched through their first megabyte
+//! (see `search::cache`), and at most [`MAX_RESULTS`] hits surface.
 
-use std::borrow::Cow;
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::Duration;
 
 use gpui::{
     div, point, prelude::*, px, Context, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
@@ -21,6 +21,10 @@ use gpui::{
 };
 
 use crate::blink_manager::BlinkTarget;
+use crate::search::cancel::CANCELLED_SCANS;
+use crate::search::cache::SearchContentCache;
+use crate::search::fold::{self, Fold, Mode};
+use crate::search::worker::{SearchConsumer, SearchRequest};
 use crate::views::scrollbar::{overlay_scrollbar, ScrollbarGeometry, ScrollbarStyle};
 use crate::icons;
 use crate::state::FileNode;
@@ -28,77 +32,12 @@ use crate::theme::Theme;
 use crate::views::app_view::AppView;
 
 /// Upper bound on files inspected per keystroke (keeps typing responsive).
-const MAX_SCAN_FILES: usize = 2000;
-/// Files larger than this only match by name; contents are not read.
-const MAX_FILE_BYTES: u64 = 512 * 1024;
+pub(crate) const MAX_SCAN_FILES: usize = 2000;
 /// Upper bound on surfaced hits.
 pub(crate) const MAX_RESULTS: usize = 50;
 /// Snippet context around the first hit (chars).
 const SNIPPET_BEFORE: usize = 60;
 const SNIPPET_AFTER: usize = 140;
-
-/// Cache is dropped wholesale once its contents exceed this; the next query
-/// re-reads from disk. Bounds a long session's memory without any eviction
-/// bookkeeping.
-const CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
-
-/// Per-run cache of file contents for the sidebar search.
-///
-/// Typing a query scans the same files over and over; re-reading every one of
-/// them per keystroke is what makes the search panel stutter. Entries are
-/// reused while the file's `(len, mtime)` stamp is unchanged, so a repeat
-/// keystroke costs only one `metadata` call per file.
-pub(crate) struct SearchContentCache {
-    entries: HashMap<PathBuf, CachedContent>,
-    total_bytes: usize,
-}
-
-struct CachedContent {
-    stamp: Option<(u64, SystemTime)>,
-    /// `None` — unreadable or over [`MAX_FILE_BYTES`]; remembered so oversized
-    /// files are not re-attempted on every keystroke.
-    content: Option<Arc<String>>,
-}
-
-impl SearchContentCache {
-    pub(crate) fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-            total_bytes: 0,
-        }
-    }
-
-    pub(crate) fn get_or_load(&mut self, path: &Path) -> Option<Arc<String>> {
-        let stamp = std::fs::metadata(path).ok().and_then(|meta| {
-            meta.modified().ok().map(|modified| (meta.len(), modified))
-        });
-        if let Some(entry) = self.entries.get(path) {
-            if entry.stamp == stamp {
-                return entry.content.clone();
-            }
-        }
-        let content = match stamp {
-            Some((len, _)) if len <= MAX_FILE_BYTES => {
-                std::fs::read_to_string(path).ok().map(Arc::new)
-            }
-            _ => None,
-        };
-        let new_bytes = content.as_ref().map_or(0, |s| s.len());
-        if self.total_bytes + new_bytes > CACHE_MAX_BYTES {
-            self.entries.clear();
-            self.total_bytes = 0;
-        }
-        self.total_bytes += new_bytes;
-        self.entries.insert(
-            path.to_path_buf(),
-            CachedContent {
-                stamp,
-                content: content.clone(),
-            },
-        );
-        content
-    }
-}
 
 /// Right gutter of the results scroll container, in pixels.
 ///
@@ -149,6 +88,10 @@ pub struct SearchDialogState {
     pub selection_anchor: Option<usize>,
     pub is_mouse_selecting: bool,
     pub results: Vec<GotoResult>,
+    /// The query the current `results` answer. While a newer query is in
+    /// flight the list (and its highlights) stays on the old one — render
+    /// highlights with THIS query's terms, not the live input's.
+    pub results_query: String,
     pub selected_ix: usize,
     /// Window x of the input text box; measured via canvas for click mapping.
     pub box_origin_x: Rc<Cell<f32>>,
@@ -253,27 +196,60 @@ impl AppView {
         cx.notify();
     }
 
-    /// Recomputes [`SearchDialogState::results`] from the current query.
+    /// Requests a fresh dialog search on the worker (immediate entry points:
+    /// dialog open, clear button, "search selection" command).
+    ///
+    /// The scan runs off the UI thread; results land via
+    /// [`AppView::poll_search_replies`]. Stale replies are dropped by sequence
+    /// number, so calling this repeatedly is always safe. An empty query
+    /// clears synchronously and invalidates any in-flight reply.
     pub fn run_goto_search(&mut self) {
         let query = self.search_dialog.query.trim().to_string();
         if query.is_empty() {
+            self.goto_search_seq += 1;
             self.search_dialog.results.clear();
             self.search_dialog.selected_ix = 0;
             return;
         }
-        let files = collect_goto_files(&self.state.file_tree, MAX_SCAN_FILES);
-        let mut hits = search_goto_files(&files, &query, MAX_RESULTS);
-        // Stable order already applied inside; clamp selection.
-        if hits.len() > MAX_RESULTS {
-            hits.truncate(MAX_RESULTS);
-        }
-        self.search_dialog.results = hits;
-        self.search_dialog.selected_ix = self
-            .search_dialog
-            .selected_ix
-            .min(self.search_dialog.results.len().saturating_sub(1));
-        // A fresh result set always starts at the top.
-        self.set_goto_scroll_top(0.0);
+        self.goto_search_seq += 1;
+        self.state.search_worker.ask(SearchRequest {
+            consumer: SearchConsumer::Dialog,
+            seq: self.goto_search_seq,
+            query,
+            op: SearchOp::Any,
+            case_sensitive: false,
+            limit: MAX_RESULTS,
+        });
+    }
+
+    /// Arms the debounced search for the dialog input.
+    ///
+    /// Called on EVERY keystroke, before the timer: the sequence number
+    /// bumps and the in-flight scan is cancelled right here — a reply for a
+    /// query the user has already moved past is dropped the moment it would
+    /// surface, and stops reading files. Only the newest arm fires a scan
+    /// ([`Self::run_goto_search`], off the UI thread); the text and caret
+    /// were already updated by the caller, so typing is never blocked.
+    pub fn request_goto_search(&mut self, cx: &mut Context<Self>) {
+        self.goto_search_seq += 1;
+        self.state
+            .search_worker
+            .cancel(SearchConsumer::Dialog);
+        self.goto_debounce_epoch += 1;
+        let epoch = self.goto_debounce_epoch;
+        let entity = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let timer_executor = cx.background_executor().clone();
+        cx.foreground_executor()
+            .spawn(async move {
+                timer_executor.timer(Duration::from_millis(70)).await;
+                let _ = entity.update(&mut async_cx, |this, _cx| {
+                    if this.goto_debounce_epoch == epoch {
+                        this.run_goto_search();
+                    }
+                });
+            })
+            .detach();
     }
 
     /// Opens a search hit: an active empty tab is replaced by the file,
@@ -426,7 +402,7 @@ impl AppView {
                 self.search_dialog.query = chars.into_iter().collect();
                 self.search_dialog.cursor_pos = s;
                 self.search_dialog.selection_anchor = None;
-                self.run_goto_search();
+                self.request_goto_search(cx);
                 cx.notify();
             }
             return;
@@ -442,7 +418,7 @@ impl AppView {
                         .collect();
                     if !filtered.is_empty() {
                         self.insert_goto_text(&filtered);
-                        self.run_goto_search();
+                        self.request_goto_search(cx);
                         cx.notify();
                     }
                 }
@@ -478,7 +454,7 @@ impl AppView {
                 }
             }
             self.search_dialog.query = chars.into_iter().collect();
-            self.run_goto_search();
+            self.request_goto_search(cx);
             cx.notify();
             return;
         }
@@ -500,7 +476,7 @@ impl AppView {
                 .collect();
             if !filtered.is_empty() {
                 self.insert_goto_text(&filtered);
-                self.run_goto_search();
+                self.request_goto_search(cx);
                 cx.notify();
             }
         }
@@ -587,8 +563,11 @@ pub(crate) fn collect_goto_files(nodes: &[FileNode], limit: usize) -> Vec<PathBu
 }
 
 /// Obsidian-style search operator: restricts what the query matches against.
+///
+/// `pub` because the worker API (`search::worker`) ships it in requests and
+/// replies, not because new surfaces should construct it directly.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum SearchOp {
+pub enum SearchOp {
     /// File name first, then file contents (default).
     #[default]
     Any,
@@ -644,6 +623,10 @@ pub(crate) struct GotoSearchParams<'a> {
     pub case_sensitive: bool,
     /// Workspace root for vault-relative paths (`path:` operator and snippets).
     pub rel_base: Option<&'a Path>,
+    /// Cancellation token of the enclosing request; the scan checks it
+    /// between files and exits early when a newer request superseded it.
+    /// Detached (default) tokens never cancel.
+    pub cancel: crate::search::cancel::Cancel,
 }
 
 impl Default for GotoSearchParams<'_> {
@@ -651,30 +634,18 @@ impl Default for GotoSearchParams<'_> {
         Self {
             case_sensitive: false,
             rel_base: None,
+            cancel: Default::default(),
         }
     }
 }
 
-/// Case folding shared by every matcher: identity when sensitive.
-fn fold<'a>(s: &'a str, case_sensitive: bool) -> Cow<'a, str> {
+/// Fold setting shared by every matcher: `Exact` when case-sensitive.
+fn fold_mode(case_sensitive: bool) -> Fold {
     if case_sensitive {
-        Cow::Borrowed(s)
+        Fold::Exact
     } else {
-        Cow::Owned(s.to_lowercase())
+        Fold::Lower
     }
-}
-
-/// Scores and ranks files for `query`: name hits first, then content hits.
-fn search_goto_files(files: &[PathBuf], query: &str, limit: usize) -> Vec<GotoResult> {
-    let mut cache = SearchContentCache::new();
-    search_goto_files_opts(
-        files,
-        query,
-        SearchOp::Any,
-        &GotoSearchParams::default(),
-        limit,
-        &mut cache,
-    )
 }
 
 /// Scores and ranks files for an operator query (see [`SearchOp`]).
@@ -692,16 +663,19 @@ pub(crate) fn search_goto_files_opts(
     cache: &mut SearchContentCache,
 ) -> Vec<GotoResult> {
     let cs = params.case_sensitive;
+    let fl = fold_mode(cs);
     let rest = raw_query.trim();
     if rest.is_empty() {
         return Vec::new();
     }
-    let q = fold(rest, cs).into_owned();
+    let q = rest.to_string();
     let terms: Vec<String> = {
         let mut seen = std::collections::HashSet::new();
         q.split_whitespace()
             .filter(|t| !t.is_empty())
-            .filter(|t| seen.insert(t.to_string()))
+            // Dedup on the folded form, like the old folded-query split did:
+            // repeated terms must not inflate match counts.
+            .filter(|t| seen.insert(fold::fold_str(t, fl)))
             .map(|t| t.to_string())
             .collect()
     };
@@ -712,6 +686,12 @@ pub(crate) fn search_goto_files_opts(
     // (rank, match_count desc, title asc, hit)
     let mut ranked: Vec<(u8, usize, String, GotoResult)> = Vec::new();
     for path in files {
+        // A newer request superseded this one: exit early instead of reading
+        // the remaining files for a reply nobody will apply.
+        if params.cancel.is_cancelled() {
+            CANCELLED_SCANS.fetch_add(1, Ordering::Relaxed);
+            return Vec::new();
+        }
         let file_name = path
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
@@ -719,13 +699,11 @@ pub(crate) fn search_goto_files_opts(
         if file_name.is_empty() {
             continue;
         }
-        let name_folded = fold(&file_name, cs).into_owned();
         let rel_string: String = params
             .rel_base
             .and_then(|base| path.strip_prefix(base).ok())
             .map(|rel| rel.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.to_string_lossy().into_owned());
-        let rel_folded = fold(&rel_string, cs).into_owned();
 
         // Only body-matching operators read contents up front; `File` reads
         // lazily for a matched name's snippet, `Path` never reads.
@@ -737,17 +715,24 @@ pub(crate) fn search_goto_files_opts(
             };
 
         let hit: Option<(usize, String, bool)> = match op {
-            SearchOp::Any => match_any(&name_folded, content.as_ref().map(|s| s.as_str()), &q, &terms, cs),            SearchOp::File => {
-                if !(name_folded.contains(&q) || terms.iter().all(|t| name_folded.contains(t))) {
+            SearchOp::Any => {
+                match_any(&file_name, content.as_ref().map(|s| s.as_str()), &q, &terms, fl)
+            }
+            SearchOp::File => {
+                if !(fold::contains(&file_name, &q, fl, Mode::Substring)
+                    || terms
+                        .iter()
+                        .all(|t| fold::contains(&file_name, t, fl, Mode::Substring)))
+                {
                     None
                 } else {
-                    let count = count_occurrences(&name_folded, &q);
+                    let count = fold::count(&file_name, &q, fl);
                     let count = if count > 0 {
                         count
                     } else {
                         terms
                             .iter()
-                            .map(|t| count_occurrences(&name_folded, t))
+                            .map(|t| fold::count(&file_name, t, fl))
                             .sum::<usize>()
                             .max(1)
                     };
@@ -760,87 +745,32 @@ pub(crate) fn search_goto_files_opts(
                 }
             }
             SearchOp::Path => {
-                if !(rel_folded.contains(&q) || terms.iter().all(|t| rel_folded.contains(t))) {
+                if !(fold::contains(&rel_string, &q, fl, Mode::Substring)
+                    || terms
+                        .iter()
+                        .all(|t| fold::contains(&rel_string, t, fl, Mode::Substring)))
+                {
                     None
                 } else {
-                    let count = count_occurrences(&rel_folded, &q).max(1);
+                    let count = fold::count(&rel_string, &q, fl).max(1);
                     // Path matches are name-like: same top rank as file names.
                     Some((count, rel_string.clone(), true))
                 }
             }
             SearchOp::Tag => match content.as_deref() {
                 None => None,
-                Some(text) => {
-                    // `#term` mentions; a leading `#` in the query is tolerated.
-                    let tags: Vec<String> = terms
-                        .iter()
-                        .map(|t| format!("#{}", t.trim_start_matches('#')))
-                        .collect();
-                    let lower = fold(text, cs).into_owned();
-                    if !tags.iter().all(|t| lower.contains(t)) {
-                        None
-                    } else {
-                        let count = tags
-                            .iter()
-                            .map(|t| count_occurrences(&lower, t))
-                            .sum::<usize>()
-                            .max(1);
-                        let snippet = first_line_matching(text, &tags, cs)
-                            .unwrap_or_else(|| first_line(text, SNIPPET_BEFORE + SNIPPET_AFTER));
-                        Some((count, snippet, false))
-                    }
-                }
+                Some(text) => match_tag(text, &terms, fl, cs)
+                    .map(|(count, snippet)| (count, snippet, false)),
             },
             SearchOp::Line => match content.as_deref() {
                 None => None,
-                Some(text) => {
-                    let mut found: Option<(usize, String)> = None;
-                    for line in text.lines() {
-                        let folded = fold(line, cs);
-                        if !terms.iter().all(|t| folded.contains(t)) {
-                            continue;
-                        }
-                        let count = count_occurrences(&folded, &q);
-                        let count = if count > 0 {
-                            count
-                        } else {
-                            terms
-                                .iter()
-                                .map(|t| count_occurrences(&folded, t))
-                                .sum::<usize>()
-                                .max(1)
-                        };
-                        found = Some((count, cap_line(line, SNIPPET_BEFORE + SNIPPET_AFTER)));
-                        break;
-                    }
-                    found.map(|(count, snippet)| (count, snippet, false))
-                }
+                Some(text) => match_line(text, &terms, &q, fl)
+                    .map(|(count, snippet)| (count, snippet, false)),
             },
             SearchOp::Section => match content.as_deref() {
                 None => None,
-                Some(text) => {
-                    let mut found: Option<(usize, String)> = None;
-                    for (heading, chunk) in split_sections(text) {
-                        let folded = fold(&chunk, cs);
-                        if !terms.iter().all(|t| folded.contains(t)) {
-                            continue;
-                        }
-                        let count = count_occurrences(&folded, &q);
-                        let count = if count > 0 {
-                            count
-                        } else {
-                            terms
-                                .iter()
-                                .map(|t| count_occurrences(&folded, t))
-                                .sum::<usize>()
-                                .max(1)
-                        };
-                        let snippet = first_line_matching(&chunk, &terms, cs).unwrap_or(heading);
-                        found = Some((count, snippet));
-                        break;
-                    }
-                    found.map(|(count, snippet)| (count, snippet, false))
-                }
+                Some(text) => match_section(text, &terms, &q, fl, cs)
+                    .map(|(count, snippet)| (count, snippet, false)),
             },
         };
 
@@ -873,51 +803,303 @@ pub(crate) fn search_goto_files_opts(
         .collect()
 }
 
+/// Body-operator search backed by the in-memory index (stage B).
+///
+/// Modeled on the reference: body search ALWAYS goes through the index —
+/// there is no full-vault fallback scan. While the index is incomplete the
+/// results cover the indexed part instantly and the UI shows build progress
+/// (see `SearchReply::index_progress`); a full scan here would read the
+/// whole vault per keystroke — tens of seconds on a big vault, exactly what
+/// the reference avoids.
+///
+/// Same observable result set as [`search_goto_files_opts`] with two recorded
+/// deviations (see `TODO/search-index-plan.md`, B3): a body candidate must
+/// match each term from the start of a word (the index cannot see substrings
+/// inside words), and body-tier ordering is BM25 instead of raw match counts.
+/// The name tier (`Any`) and every `Aa` (case-sensitive) query keep exact
+/// stage-A behavior by routing through the engine.
+///
+/// Name hits first (in-memory name scan, then the engine over just those
+/// files — it reads their bodies through `cache` for counts and snippets),
+/// then index candidates ranked by BM25.
+pub(crate) fn search_with_index(
+    files: &[PathBuf],
+    raw_query: &str,
+    op: SearchOp,
+    params: &GotoSearchParams,
+    limit: usize,
+    cache: &mut SearchContentCache,
+    index: &crate::search::index::Index,
+    pool: usize,
+    max_terms: usize,
+    bm25: crate::search::bm25::Bm25,
+) -> Vec<GotoResult> {
+    let cs = params.case_sensitive;
+    let fl = fold_mode(cs);
+    let rest = raw_query.trim();
+    if rest.is_empty() {
+        return Vec::new();
+    }
+    let q = rest.to_string();
+    let terms: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        q.split_whitespace()
+            .filter(|t| !t.is_empty())
+            .filter(|t| seen.insert(fold::fold_str(t, fl)))
+            .map(|t| t.to_string())
+            .collect()
+    };
+    if terms.is_empty() {
+        return Vec::new();
+    }
+
+    let mut results: Vec<GotoResult> = Vec::new();
+    // A superseded request must stop spending I/O at every stage — its reply
+    // is dropped anyway. Checked between the tiers and between candidates;
+    // `locate::first_page` checks again between streamed pages.
+    let cancelled = |cancel: &crate::search::cancel::Cancel| cancel.is_cancelled();
+
+    // 1) Name tier — only `Any` produces name hits; the engine over the
+    // name-matching subset reproduces stage-A counts and snippets exactly.
+    if op == SearchOp::Any {
+        if cancelled(&params.cancel) {
+            return Vec::new();
+        }
+        let name_matched: Vec<PathBuf> = files
+            .iter()
+            .filter(|p| {
+                let name = p
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                fold::contains(&name, &q, fl, Mode::Substring)
+                    || terms
+                        .iter()
+                        .all(|t| fold::contains(&name, t, fl, Mode::Substring))
+            })
+            .cloned()
+            .collect();
+        if !name_matched.is_empty() {
+            results.extend(search_goto_files_opts(
+                &name_matched, raw_query, op, params, limit, cache,
+            ));
+        }
+        if results.len() >= limit {
+            return results;
+        }
+    }
+
+    // 2) Body tier — index candidates ranked by BM25; the whole file is
+    // covered by page postings (`index` partitions big files into pages).
+    let candidates = crate::search::query::candidates(index, &terms, bm25, pool, max_terms);
+    let folded_terms: Vec<String> = terms
+        .iter()
+        .take(max_terms)
+        .map(|t| fold::fold_str(t, fl))
+        .collect();
+    let mut seen_paths: std::collections::HashSet<PathBuf> =
+        results.iter().map(|r| r.path.clone()).collect();
+    for cand in candidates {
+        if results.len() >= limit || cancelled(&params.cancel) {
+            break;
+        }
+        let path = index.doc_path_for_ix(cand.path_ix).to_path_buf();
+        if seen_paths.contains(&path) {
+            continue;
+        }
+        seen_paths.insert(path.clone());
+        let file_name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        // The whole-file count comes straight from the candidate: it was
+        // summed from postings with a linear path filter — exact and
+        // independent of posting-list order.
+        let match_count = cand.count.max(1);
+        // Verification + snippet: bounded through the cache for regular
+        // files. The cached head answers most files without a disk stream.
+        let head = cache.get_or_load(&path);
+        let mut hit = head.as_deref().and_then(|text| verify_page(text, op, &q, &terms, fl, cs));
+        if hit.is_none() {
+            // The head didn't verify (or the file is oversized and uncached):
+            // the postings know WHICH pages carry the terms — check only
+            // those pages in one sequential pass, instead of streaming the
+            // whole multi-hundred-MB file from its start (that full stream
+            // was the multi-second search on big files).
+            let targets = index.pages_with_all_terms(cand.path_ix, &folded_terms, 4096);
+            hit = crate::search::locate::check_pages(
+                &path,
+                &targets,
+                &params.cancel,
+                &mut |page| verify_page(page, op, &q, &terms, fl, cs),
+            )
+            .unwrap_or(None);
+        }
+        let (match_count, snippet) = match hit {
+            Some((c, s)) => (c.max(match_count), s),
+            None => continue,
+        };
+        results.push(GotoResult {
+            path,
+            title: file_name,
+            snippet,
+            match_count,
+            name_hit: false,
+        });
+    }
+    results
+}
+
+/// Operator verification over one page (the cached head or a streamed page).
+fn verify_page(
+    text: &str,
+    op: SearchOp,
+    q: &str,
+    terms: &[String],
+    fl: Fold,
+    cs: bool,
+) -> Option<(usize, String)> {
+    match op {
+        SearchOp::Any => match_body(text, q, terms, fl),
+        SearchOp::Tag => match_tag(text, terms, fl, cs),
+        SearchOp::Line => match_line(text, terms, q, fl),
+        SearchOp::Section => match_section(text, terms, q, fl, cs),
+        SearchOp::File | SearchOp::Path => None,
+    }
+}
+
 /// The default `Any` branch: name hits outrank content hits.
 fn match_any(
-    name_folded: &str,
+    name: &str,
     content: Option<&str>,
     q: &str,
     terms: &[String],
-    case_sensitive: bool,
+    fl: Fold,
 ) -> Option<(usize, String, bool)> {
-    let name_hit_whole = name_folded.contains(q);
-    let name_hit_terms = terms.iter().all(|t| name_folded.contains(t));
+    let name_hit_whole = fold::contains(name, q, fl, Mode::Substring);
+    let name_hit_terms = terms
+        .iter()
+        .all(|t| fold::contains(name, t, fl, Mode::Substring));
     if name_hit_whole || name_hit_terms {
         let (count, snip) = match content {
             Some(text) => {
-                let lower = fold(text, case_sensitive).into_owned();
-                let count =
-                    count_occurrences(&lower, q) + count_occurrences(name_folded, q);
-                (count.max(1), make_snippet(text, &lower, q, terms))
+                let count = fold::count(text, q, fl) + fold::count(name, q, fl);
+                (count.max(1), make_snippet(text, q, terms, fl))
             }
-            None => (count_occurrences(name_folded, q).max(1), String::new()),
+            None => (fold::count(name, q, fl).max(1), String::new()),
         };
         Some((count, snip, true))
     } else {
         let text = content?;
-        let lower = fold(text, case_sensitive).into_owned();
-        if !terms.iter().all(|t| lower.contains(t)) {
-            return None;
+        match_body(text, q, terms, fl).map(|(c, s)| (c, s, false))
+    }
+}
+
+/// Body branch of `Any`: every term occurs somewhere in the body.
+fn match_body(text: &str, q: &str, terms: &[String], fl: Fold) -> Option<(usize, String)> {
+    if !terms
+        .iter()
+        .all(|t| fold::contains(text, t, fl, Mode::Substring))
+    {
+        return None;
+    }
+    let count = fold::count(text, q, fl);
+    let count = if count > 0 {
+        count
+    } else {
+        terms
+            .iter()
+            .map(|t| fold::count(text, t, fl))
+            .sum::<usize>()
+            .max(1)
+    };
+    Some((count, make_snippet(text, q, terms, fl)))
+}
+
+/// `#term` mentions in the body; a leading `#` in a query term is tolerated.
+fn match_tag(text: &str, terms: &[String], fl: Fold, cs: bool) -> Option<(usize, String)> {
+    let tags: Vec<String> = terms
+        .iter()
+        .map(|t| format!("#{}", t.trim_start_matches('#')))
+        .collect();
+    if !tags
+        .iter()
+        .all(|t| fold::contains(text, t, fl, Mode::Substring))
+    {
+        return None;
+    }
+    let count = tags
+        .iter()
+        .map(|t| fold::count(text, t, fl))
+        .sum::<usize>()
+        .max(1);
+    let snippet = first_line_matching(text, &tags, cs)
+        .unwrap_or_else(|| first_line(text, SNIPPET_BEFORE + SNIPPET_AFTER));
+    Some((count, snippet))
+}
+
+/// First body line that contains every term.
+fn match_line(text: &str, terms: &[String], q: &str, fl: Fold) -> Option<(usize, String)> {
+    for line in text.lines() {
+        if !terms
+            .iter()
+            .all(|t| fold::contains(line, t, fl, Mode::Substring))
+        {
+            continue;
         }
-        let count = count_occurrences(&lower, q);
+        let count = fold::count(line, q, fl);
         let count = if count > 0 {
             count
         } else {
             terms
                 .iter()
-                .map(|t| count_occurrences(&lower, t))
+                .map(|t| fold::count(line, t, fl))
                 .sum::<usize>()
                 .max(1)
         };
-        Some((count, make_snippet(text, &lower, q, terms), false))
+        return Some((count, cap_line(line, SNIPPET_BEFORE + SNIPPET_AFTER)));
     }
+    None
+}
+
+/// First heading-delimited section whose chunk contains every term.
+fn match_section(
+    text: &str,
+    terms: &[String],
+    q: &str,
+    fl: Fold,
+    cs: bool,
+) -> Option<(usize, String)> {
+    for (heading, chunk) in split_sections(text) {
+        if !terms
+            .iter()
+            .all(|t| fold::contains(&chunk, t, fl, Mode::Substring))
+        {
+            continue;
+        }
+        let count = fold::count(&chunk, q, fl);
+        let count = if count > 0 {
+            count
+        } else {
+            terms
+                .iter()
+                .map(|t| fold::count(&chunk, t, fl))
+                .sum::<usize>()
+                .max(1)
+        };
+        return Some((count, first_line_matching(&chunk, terms, cs).unwrap_or(heading)));
+    }
+    None
 }
 
 /// First line whose folded form contains every folded term.
 fn first_line_matching(text: &str, terms: &[String], case_sensitive: bool) -> Option<String> {
+    let fl = fold_mode(case_sensitive);
     for line in text.lines() {
-        if terms.iter().all(|t| fold(line, case_sensitive).contains(t)) {
+        if terms
+            .iter()
+            .all(|t| fold::contains(line, t, fl, Mode::Substring))
+        {
             return Some(cap_line(line, SNIPPET_BEFORE + SNIPPET_AFTER));
         }
     }
@@ -973,44 +1155,34 @@ fn split_sections(text: &str) -> Vec<(String, String)> {
     chunks
 }
 
-/// Non-overlapping occurrences of `needle` in `haystack` (both lowercase).
-fn count_occurrences(haystack: &str, needle: &str) -> usize {
-    if needle.is_empty() {
-        return 0;
-    }
-    let mut count = 0;
-    let mut start = 0;
-    while let Some(ix) = haystack[start..].find(needle) {
-        count += 1;
-        start += ix + needle.len();
-    }
-    count
-}
-
 /// Snippet around the first content hit, whitespace-flattened with "..." cuts.
 ///
-/// `byte_ix` comes from the folded string, whose lengths can theoretically
-/// differ from the original under exotic casings — so the index is mapped
-/// through char counts and clamped instead of slicing bytes directly.
-fn make_snippet(text: &str, lower: &str, query: &str, terms: &[String]) -> String {
-    let hit = lower.find(query).or_else(|| {
+/// The hit is located by the folding matcher, which reports a byte range in
+/// the original text — no mapping back through a folded copy is needed, so
+/// exotic casings that change byte length cannot skew the window.
+fn make_snippet(text: &str, query: &str, terms: &[String], fl: Fold) -> String {
+    let hit = fold::find(text, query, fl, Mode::Substring).or_else(|| {
         terms
             .iter()
-            .filter_map(|t| lower.find(t))
-            .min()
+            .filter_map(|t| fold::find(text, t, fl, Mode::Substring))
+            .min_by_key(|r| r.start)
     });
-    let Some(byte_ix) = hit else {
+    let Some(hit) = hit else {
         // Name-only hit: lead with the file's first line.
         return first_line(text, SNIPPET_BEFORE + SNIPPET_AFTER);
     };
-    let chars: Vec<char> = text.chars().collect();
-    // Char offset of the hit in the folded string; valid there by construction.
-    let folded_chars = lower[..byte_ix].chars().count();
-    let char_ix = folded_chars.min(chars.len());
-    let start = char_ix.saturating_sub(SNIPPET_BEFORE);
-    let end = (char_ix + SNIPPET_AFTER).min(chars.len());
-    let mut snippet: String = chars[start..end].iter().collect();
-    snippet = flatten_whitespace(&snippet);
+    // The window is anchored at the hit's first char: up to SNIPPET_BEFORE
+    // chars before it, SNIPPET_AFTER chars from it — same shape as before.
+    let start = text[..hit.start]
+        .char_indices()
+        .rev()
+        .nth(SNIPPET_BEFORE - 1)
+        .map_or(0, |(i, _)| i);
+    let end = text[hit.start..]
+        .char_indices()
+        .nth(SNIPPET_AFTER)
+        .map_or(text.len(), |(i, _)| hit.start + i);
+    let snippet: String = flatten_whitespace(&text[start..end]);
     if snippet.is_empty() {
         return String::new();
     }
@@ -1019,7 +1191,7 @@ fn make_snippet(text: &str, lower: &str, query: &str, terms: &[String]) -> Strin
         out.push_str("...");
     }
     out.push_str(&snippet);
-    if end < chars.len() {
+    if end < text.len() {
         out.push_str("...");
     }
     out
@@ -1129,55 +1301,19 @@ fn find_term_ranges(text: &str, terms: &[String]) -> Vec<(usize, usize)> {
 }
 
 /// Case-aware [`find_term_ranges`].
+///
+/// The folding matcher reports non-overlapping byte ranges in the original,
+/// longest term winning on overlap.
 fn find_term_ranges_cased(
     text: &str,
     terms: &[String],
     case_sensitive: bool,
 ) -> Vec<(usize, usize)> {
-    let mut ordered: Vec<&str> = terms.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
-    ordered.sort_by(|a, b| b.len().cmp(&a.len()));
-    if ordered.is_empty() || text.is_empty() {
-        return Vec::new();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    // Byte offset of each char for slicing.
-    let mut byte_offsets: Vec<usize> = Vec::with_capacity(chars.len() + 1);
-    let mut acc = 0;
-    for c in &chars {
-        byte_offsets.push(acc);
-        acc += c.len_utf8();
-    }
-    byte_offsets.push(acc);
-
-    let mut ranges = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        let mut hit_len: Option<usize> = None;
-        for term in &ordered {
-            let term_chars: Vec<char> = term.chars().collect();
-            if i + term_chars.len() > chars.len() {
-                continue;
-            }
-            let matches = term_chars.iter().enumerate().all(|(k, tc)| {
-                if case_sensitive {
-                    chars[i + k] == *tc
-                } else {
-                    chars[i + k].to_lowercase().eq(tc.to_lowercase())
-                }
-            });
-            if matches {
-                hit_len = Some(term_chars.len());
-                break;
-            }
-        }
-        if let Some(len) = hit_len {
-            ranges.push((byte_offsets[i], byte_offsets[i + len]));
-            i += len;
-        } else {
-            i += 1;
-        }
-    }
-    ranges
+    let refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
+    fold::ranges(text, &refs, fold_mode(case_sensitive), usize::MAX)
+        .into_iter()
+        .map(|r| (r.start, r.end))
+        .collect()
 }
 
 /// Query terms for highlighting: whole query plus individual words.
@@ -1222,7 +1358,11 @@ impl AppView {
         let card_h = (560.0f32).min(window_h - 120.0).max(360.0);
 
         let query = self.search_dialog.query.clone();
-        let terms = highlight_query_terms(&query);
+        // Highlights follow the RESULTS' query, not the live input: while a
+        // newer query is in flight the displayed list still answers the old
+        // one, and mixing old results with new terms leaves matches
+        // unhighlighted (the "no highlight" look between keystrokes).
+        let terms = highlight_query_terms(&self.search_dialog.results_query);
         let is_query_empty = query.trim().is_empty();
         let has_results = !self.search_dialog.results.is_empty();
         let has_workspace = self.state.workspace_path.is_some();
@@ -1274,6 +1414,17 @@ impl AppView {
         };
         let is_input_focused = self.goto_focus_handle.is_focused(window);
         let caret_visible = is_input_focused && self.goto_blink.visible();
+        // The displayed list answers `results_query`; while the live input
+        // differs, a scan is in flight — say so instead of letting the old
+        // results read as answers to the new query. The percent is the
+        // worker's LIVE build progress (not reply-stale): it moves even when
+        // no reply lands, which is exactly the "is it doing anything" case.
+        let search_pending =
+            !is_query_empty && self.search_dialog.results_query.trim() != query.trim();
+        let pending_label = match self.state.search_worker.build_progress() {
+            Some(pct) => format!("{} {}%", self.t("search.searching"), pct),
+            None => self.t("search.searching").to_string(),
+        };
 
         div()
             .id("goto-overlay")
@@ -1481,6 +1632,16 @@ impl AppView {
                                                 )
                                             }),
                                     )
+                                    .when(search_pending, |h| {
+                                        h.child(
+                                            div()
+                                                .flex_shrink_0()
+                                                .font_family("Segoe UI")
+                                                .text_size(px(12.0))
+                                                .text_color(theme.text_muted)
+                                                .child(pending_label.clone()),
+                                        )
+                                    })
                                     .when(!query.is_empty(), |h| {
                                         h.child(
                                             div()
@@ -1523,7 +1684,23 @@ impl AppView {
                                     self.t("search.title"),
                                     self.t("search.title_hint"),
                                 )
+                            } else if search_pending {
+                                // A newer query is in flight: the displayed
+                                // list still answers the OLD query (with
+                                // highlights tuned to IT). Showing it under a
+                                // new query reads as wrong results — hide it
+                                // behind the searching state until the fresh
+                                // reply lands.
+                                self.render_goto_empty_state(
+                                    theme,
+                                    icons::ICON_SEARCH,
+                                    pending_label.clone(),
+                                    self.t("search.create_hint"),
+                                )
                             } else if !has_results {
+                                // "No results" only means it: the applied
+                                // reply (results_query == query) found
+                                // nothing. (Pending is handled above.)
                                 self.render_goto_empty_state(
                                     theme,
                                     icons::ICON_SEARCH,
@@ -1747,13 +1924,25 @@ mod tests {
         dir
     }
 
+    fn search_plain(files: &[PathBuf], raw: &str, limit: usize) -> Vec<GotoResult> {
+        let mut cache = SearchContentCache::new();
+        search_goto_files_opts(
+            files,
+            raw,
+            SearchOp::Any,
+            &GotoSearchParams::default(),
+            limit,
+            &mut cache,
+        )
+    }
+
     #[test]
     fn name_hits_rank_before_content_hits() {
         let dir = tmp_dir("rank");
         let content_hit = write_tmp(&dir, "unrelated.md", "the query word appears here in body text");
         let name_hit = write_tmp(&dir, "query notes.md", "nothing relevant inside");
         let files = vec![content_hit.clone(), name_hit.clone()];
-        let hits = search_goto_files(&files, "query", 50);
+        let hits = search_plain(&files, "query", 50);
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].path, name_hit);
         assert!(hits[0].name_hit);
@@ -1768,7 +1957,7 @@ mod tests {
         let named = write_tmp(&dir, "query.md", "nothing relevant inside");
         let bodied = write_tmp(&dir, "zzz.md", "query query query");
         let files = vec![bodied.clone(), named.clone()];
-        let hits = search_goto_files(&files, "query", 50);
+        let hits = search_plain(&files, "query", 50);
         assert_eq!(hits.len(), 2);
         assert!(hits[1].match_count > hits[0].match_count);
         assert_eq!(hits[0].path, named);
@@ -1780,7 +1969,7 @@ mod tests {
         let both = write_tmp(&dir, "a.md", "alpha and beta together");
         let single = write_tmp(&dir, "b.md", "only alpha here");
         let files = vec![single.clone(), both.clone()];
-        let hits = search_goto_files(&files, "alpha beta", 50);
+        let hits = search_plain(&files, "alpha beta", 50);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].path, both);
     }
@@ -1788,8 +1977,7 @@ mod tests {
     #[test]
     fn snippet_wraps_first_hit_with_cuts() {
         let text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor. The magic needle hides in this sentence among many other words following after it, and the tail keeps going on and on without end, padding even more words here.";
-        let lower = text.to_lowercase();
-        let snip = make_snippet(text, &lower, "needle", &["needle".to_string()]);
+        let snip = make_snippet(text, "needle", &["needle".to_string()], Fold::Lower);
         assert!(snip.contains("needle"), "snippet: {snip}");
         assert!(snip.starts_with("..."), "snippet: {snip}");
         assert!(snip.ends_with("..."), "snippet: {snip}");
@@ -1802,7 +1990,7 @@ mod tests {
         let big = write_tmp(&dir, "bigmatch.md", "small body");
         // Pretend the file is huge: metadata path is real, so instead verify
         // the counter helper directly for the name-only branch behavior.
-        let hits = search_goto_files(&[big.clone()], "bigmatch", 50);
+        let hits = search_plain(&[big.clone()], "bigmatch", 50);
         assert_eq!(hits.len(), 1);
         assert!(hits[0].name_hit);
         assert!(hits[0].match_count >= 1);
@@ -1820,8 +2008,8 @@ mod tests {
 
     #[test]
     fn empty_query_yields_no_hits() {
-        assert!(search_goto_files(&[], "", 50).is_empty());
-        assert!(search_goto_files(&[PathBuf::from("a.md")], "   ", 50).is_empty());
+        assert!(search_plain(&[], "", 50).is_empty());
+        assert!(search_plain(&[PathBuf::from("a.md")], "   ", 50).is_empty());
     }
 
     fn search_opts(
@@ -1839,6 +2027,7 @@ mod tests {
             &GotoSearchParams {
                 case_sensitive,
                 rel_base: base,
+                cancel: Default::default(),
             },
             50,
             &mut cache,
@@ -1963,5 +2152,29 @@ mod tests {
         let strict = search_opts(&files, "rust", true, None);
         assert_eq!(strict.len(), 1);
         assert_eq!(strict[0].path, lower);
+    }
+
+    #[test]
+    fn cancelled_scan_returns_nothing() {
+        let dir = tmp_dir("cancel");
+        let f = write_tmp(&dir, "alpha.md", "alpha body text");
+        let generation = crate::search::cancel::Generation::default();
+        // A token superseded before the scan starts must produce nothing.
+        let stale = generation.next();
+        let _newer = generation.next();
+        let mut cache = SearchContentCache::new();
+        let hits = search_goto_files_opts(
+            &[f],
+            "alpha",
+            SearchOp::Any,
+            &GotoSearchParams {
+                case_sensitive: false,
+                rel_base: None,
+                cancel: stale,
+            },
+            50,
+            &mut cache,
+        );
+        assert!(hits.is_empty());
     }
 }

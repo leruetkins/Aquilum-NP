@@ -95,6 +95,12 @@ impl AppView {
             .justify_center()
             .gap_2()
             .bg(theme.bg_editor)
+            // Focus carrier for the empty-tab state: the editor container
+            // (which carries `track_focus(&AppView::focus_handle)` when a
+            // note is open) is not rendered here, so without this the window
+            // focus lands on a handle bound to nothing and NO key reaches
+            // any handler — Ctrl+O/Ctrl+P/Ctrl+N appear dead on New Tab.
+            .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 // Ctrl+N stacks another empty tab instead of doing nothing here
                 // (the editor key handler is not mounted without an open note).
@@ -105,6 +111,8 @@ impl AppView {
                 {
                     this.open_empty_tab(window, cx);
                 }
+                // Everything else (Ctrl+O dialog, Ctrl+P palette, …) keeps
+                // bubbling to the root key handler.
             }))
             .child(
                 action(

@@ -339,7 +339,11 @@
     "op_line_desc": "palabras clave en una línea",
     "op_section_desc": "palabras clave bajo un encabezado",
     "history": "Historia",
-    "found": "Encontró: {}"
+    "found": "Encontró: {}",
+    "searching": "buscando…",
+    "indexing": "Indexando",
+    "index_ready": "Índice listo",
+    "index_copied": "Ruta del índice copiada: {}"
   },
   "app": {
     "search_placeholder": "Búsqueda rápida de bóveda..."

@@ -339,7 +339,11 @@
     "op_line_desc": "Schlüsselwörter in einer Zeile",
     "op_section_desc": "Schlüsselwörter unter einer Überschrift",
     "history": "Geschichte",
-    "found": "Gefunden: {}"
+    "found": "Gefunden: {}",
+    "searching": "Suche…",
+    "indexing": "Indexierung",
+    "index_ready": "Index bereit",
+    "index_copied": "Index-Pfad kopiert: {}"
   },
   "app": {
     "search_placeholder": "Schnelle Tresorsuche..."

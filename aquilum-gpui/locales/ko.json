@@ -339,7 +339,11 @@
     "op_line_desc": "한 줄에 키워드",
     "op_section_desc": "하나의 제목 아래에 있는 키워드",
     "history": "역사",
-    "found": "설립하다: {}"
+    "found": "설립하다: {}",
+    "searching": "검색 중…",
+    "indexing": "인덱싱",
+    "index_ready": "인덱스 준비됨",
+    "index_copied": "인덱스 경로 복사됨: {}"
   },
   "app": {
     "search_placeholder": "빠른 금고 검색..."

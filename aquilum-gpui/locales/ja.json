@@ -339,7 +339,11 @@
     "op_line_desc": "キーワードは 1 行で",
     "op_section_desc": "1 つの見出しの下にあるキーワード",
     "history": "歴史",
-    "found": "見つかった： {}"
+    "found": "見つかった： {}",
+    "searching": "検索中…",
+    "indexing": "インデックス中",
+    "index_ready": "インデックス完成",
+    "index_copied": "インデックスのパスをコピーしました: {}"
   },
   "app": {
     "search_placeholder": "クイック保管庫検索..."

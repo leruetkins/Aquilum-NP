@@ -236,9 +236,20 @@ pub struct AppView {
     /// event only primes it so the content never jumps on entry.
     pub editor_middle_last_y: Cell<Option<f32>>,
     pub last_editor_h: Cell<f32>,
-    /// Content cache for the sidebar search: typing reuses file bodies read by
-    /// previous keystrokes instead of re-reading up to 2000 files per query.
-    pub(crate) search_content_cache: crate::views::goto_search::SearchContentCache,
+    /// Sequence number of the last dialog search request; replies with a
+    /// smaller number are stale and dropped (the scan runs on the worker).
+    pub(crate) goto_search_seq: u64,
+    /// Debounce epoch of the dialog input: every keystroke re-arms the timer,
+    /// only the newest arm fires the scan.
+    pub(crate) goto_debounce_epoch: usize,
+    /// Sequence number of the last sidebar search request (same scheme as
+    /// `goto_search_seq`).
+    pub(crate) panel_search_seq: u64,
+    /// Debounce epoch of the sidebar search input.
+    pub(crate) panel_debounce_epoch: usize,
+    /// Last index-build percent shown in the status bar (`None` — idle);
+    /// change detection for the 150 ms poll loop's notify.
+    last_build_progress: Option<u8>,
     /// Document line at the top of the viewport, refreshed once per frame.
     ///
     pub(crate) table_layouts: std::cell::RefCell<HashMap<usize, (u64, Arc<TableLayout>)>>,
@@ -454,7 +465,11 @@ impl AppView {
             sidebar_smart_bounds: Rc::new(Cell::new(Bounds::default())),
             sidebar_smart_target_y: Cell::new(None),
             sidebar_smart_last_mouse_y: Cell::new(None),
-            search_content_cache: crate::views::goto_search::SearchContentCache::new(),
+            goto_search_seq: 0,
+            goto_debounce_epoch: 0,
+            panel_search_seq: 0,
+            panel_debounce_epoch: 0,
+            last_build_progress: None,
             sidebar_middle_active: false,
             plugin_modal_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
             plugin_modal_middle_active: false,
@@ -1187,6 +1202,62 @@ impl AppView {
                 self.reload_file_tree_async(cx);
                 self.state.publish_snapshot();
                 cx.notify();
+            }
+        }
+    }
+
+    /// Polls the search worker for finished replies and applies the newest
+    /// one per consumer.
+    ///
+    /// Called from the 150 ms background loop in `main.rs` (same pattern as
+    /// `poll_fs_changes`). A reply is applied only while its sequence number
+    /// is still the latest issued for its consumer, so a slow disk cannot
+    /// overwrite fresher results; selection is clamped into the new list and
+    /// a fresh dialog result set scrolls back to the top.
+    pub fn poll_search_replies(&mut self, cx: &mut Context<Self>) {
+        // The status bar shows the LIVE build progress; notify when it moves
+        // so the bar repaints even with no replies arriving (a reply-driven
+        // repaint only happens at search time, not during a quiet build).
+        let progress = self.state.search_worker.build_progress();
+        if progress != self.last_build_progress {
+            self.last_build_progress = progress;
+            cx.notify();
+        }
+        while let Some(reply) = self.state.search_worker.try_recv() {
+            match reply.consumer {
+                crate::search::worker::SearchConsumer::Dialog => {
+                    if reply.seq != self.goto_search_seq {
+                        continue;
+                    }
+                    self.search_dialog.results = reply.results;
+                    // Highlights follow the query these results answer.
+                    self.search_dialog.results_query = reply.query;
+                    self.search_dialog.selected_ix = self
+                        .search_dialog
+                        .selected_ix
+                        .min(self.search_dialog.results.len().saturating_sub(1));
+                    // A fresh result set always starts at the top.
+                    self.set_goto_scroll_top(0.0);
+                    cx.notify();
+                }
+                crate::search::worker::SearchConsumer::Panel => {
+                    if reply.seq != self.panel_search_seq {
+                        continue;
+                    }
+                    self.sidebar_search.results = reply.results;
+                    // Highlights follow the query these results answer.
+                    self.sidebar_search.results_query = reply.query;
+                    // Keep the cursor inside the fresh list, if there is one.
+                    let len = self.sidebar_search.results.len();
+                    self.sidebar_search.selected_ix = match (self.sidebar_search.selected_ix, len)
+                    {
+                        (_, 0) => None,
+                        (None, _) => None,
+                        (Some(ix), _) => Some(ix.min(len - 1)),
+                    };
+                    self.set_panel_scroll_top(0.0);
+                    cx.notify();
+                }
             }
         }
     }
@@ -9749,6 +9820,53 @@ impl Render for AppView {
                             .flex()
                             .flex_shrink_0()
                             .gap_4()
+                            // Index status chip, ALWAYS visible with a vault
+                            // open: "Indexing NN%" while the background build
+                            // runs, "Index ready" afterwards — so "is it
+                            // done counting?" has a standing answer, not one
+                            // that disappears with the build. Click copies
+                            // the persisted-index path and prints it in the
+                            // status text (a tooltip would need its own view;
+                            // this is the lightweight route).
+                            .when(self.state.workspace_path.is_some(), |s| {
+                                let chip_label =
+                                    match self.state.search_worker.build_progress() {
+                                        Some(pct) => format!(
+                                            "{} {}",
+                                            self.t("search.indexing"),
+                                            pct
+                                        ),
+                                        None => self.t("search.index_ready").to_string(),
+                                    };
+                                s.child(
+                                    div()
+                                        .id("status-index")
+                                        .cursor_pointer()
+                                        .hover(|h| h.text_color(theme.text_secondary))
+                                        .child(chip_label)
+                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                            cx.stop_propagation();
+                                        })
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            if let Some(path) =
+                                                this.state.search_worker.index_file_path()
+                                            {
+                                                let shown = path.display().to_string();
+                                                cx.write_to_clipboard(
+                                                    gpui::ClipboardItem::new_string(
+                                                        shown.clone(),
+                                                    ),
+                                                );
+                                                this.state.status_text = this
+                                                    .t_fmt(
+                                                        "search.index_copied",
+                                                        &[&shown],
+                                                    );
+                                                cx.notify();
+                                            }
+                                        })),
+                                )
+                            })
                             .when_some(self.state.active_document(), |s, doc| {
                                 use crate::state::TextStats;
                                 let stats_label = match doc.text_stats() {

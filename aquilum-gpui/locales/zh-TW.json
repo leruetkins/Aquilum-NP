@@ -339,7 +339,11 @@
     "op_line_desc": "關鍵字在一行",
     "op_section_desc": "一個標題下的關鍵字",
     "history": "歷史",
-    "found": "成立： {}"
+    "found": "成立： {}",
+    "searching": "搜尋中…",
+    "indexing": "索引中",
+    "index_ready": "索引就緒",
+    "index_copied": "已複製索引路徑: {}"
   },
   "app": {
     "search_placeholder": "快速庫搜尋..."

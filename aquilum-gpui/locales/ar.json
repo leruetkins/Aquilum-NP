@@ -339,7 +339,11 @@
     "op_line_desc": "الكلمات الرئيسية في سطر واحد",
     "op_section_desc": "الكلمات الرئيسية تحت عنوان واحد",
     "history": "تاريخ",
-    "found": "وجد: {}"
+    "found": "وجد: {}",
+    "searching": "جارٍ البحث…",
+    "indexing": "فهرسة",
+    "index_ready": "الفهرس جاهز",
+    "index_copied": "مسار الفهرس المنسوخ: {}"
   },
   "app": {
     "search_placeholder": "بحث سريع في الخزنة..."

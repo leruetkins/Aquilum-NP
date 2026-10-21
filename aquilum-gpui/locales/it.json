@@ -339,7 +339,11 @@
     "op_line_desc": "parole chiave su una riga",
     "op_section_desc": "parole chiave sotto un'unica intestazione",
     "history": "Storia",
-    "found": "Trovato: {}"
+    "found": "Trovato: {}",
+    "searching": "ricerca…",
+    "indexing": "Indicizzazione",
+    "index_ready": "Indice pronto",
+    "index_copied": "Percorso indice copiato: {}"
   },
   "app": {
     "search_placeholder": "Ricerca rapida del caveau..."

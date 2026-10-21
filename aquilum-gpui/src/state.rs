@@ -442,6 +442,11 @@ pub struct AppState {
     /// Receiving end of coalesced watcher batches. `None` while no watcher is
     /// attached (no workspace).
     pub fs_events_rx: Option<std::sync::mpsc::Receiver<crate::fs_watcher::FsBatch>>,
+    /// Background search scanner: owns the body cache and the file list, so
+    /// the UI thread never touches the filesystem during a search. One
+    /// worker per AppState — the "Go to file" dialog and the sidebar panel
+    /// both talk to it (reply ordering is per consumer via sequence numbers).
+    pub search_worker: crate::search::worker::SearchWorker,
     /// Documents deleted on disk: first-seen time; a path missing for longer
     /// than the debounce window is confirmed as deleted (atomic saves of other
     /// programs make the file disappear briefly and it must be cancelled).
@@ -473,7 +478,7 @@ impl AppState {
         let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
 
         let mut state = Self {
-            settings,
+            settings: Arc::clone(&settings),
             workspace_path: None,
             workspace_name: "No Workspace".to_owned(),
             vault: None,
@@ -514,6 +519,10 @@ impl AppState {
             views: HashMap::new(),
             fs_watcher: crate::fs_watcher::Watcher::new(),
             fs_events_rx: None,
+            search_worker: crate::search::worker::SearchWorker::spawn(
+                None,
+                settings.clone(),
+            ),
             pending_file_deletions: HashMap::new(),
         };
 
@@ -1996,6 +2005,8 @@ impl AppState {
         self.session.workspace_path = Some(path.clone());
         self.vault = Some(vault);
         self.attach_fs_watcher();
+        // Search worker follows the vault: relative-path base and body cache.
+        self.search_worker.reset(Some(path.clone()));
         // Remember the vault for the switcher dialog (most recent first).
         self.known_vaults.retain(|p| p != &path);
         self.known_vaults.insert(0, path.clone());
@@ -2056,6 +2067,18 @@ impl AppState {
     pub fn apply_file_tree(&mut self, tree: Vec<FileNode>) {
         self.file_tree = tree;
         self.status_text = format!("Vault: {}", self.workspace_name);
+        self.sync_search_worker_files();
+    }
+
+    /// Pushes the current scan list to the search worker (up to
+    /// [`MAX_SCAN_FILES`] paths, sidebar-tree order). Cheap enough to send
+    /// on every tree application; the worker swaps its list wholesale.
+    fn sync_search_worker_files(&mut self) {
+        let files = crate::views::goto_search::collect_goto_files(
+            &self.file_tree,
+            crate::views::goto_search::MAX_SCAN_FILES,
+        );
+        self.search_worker.set_files(files);
     }
 
     /// Rescan reaction: forget the cached vault file list so the next
@@ -2168,10 +2191,12 @@ impl AppState {
     pub fn reload_file_tree(&mut self) {
         let Some(ws) = &self.workspace_path else {
             self.file_tree.clear();
+            self.sync_search_worker_files();
             return;
         };
         self.file_tree = Self::build_tree(ws);
         self.reload_files();
+        self.sync_search_worker_files();
         self.status_text = format!("Vault: {}", self.workspace_name);
     }
 
@@ -2637,6 +2662,9 @@ impl AppState {
                     if let Some(meta) = self.doc_meta.get_mut(&doc_id) {
                         meta.is_dirty = false;
                     }
+                    // Search index follows the save (stage B5): reindex just
+                    // this file; the worker skips paths not indexed yet.
+                    self.search_worker.update_paths(vec![doc.path.clone()]);
                     self.status_text = format!("Saved: {}", doc.title);
                 }
                 crate::save_manager::CheckedWrite::Conflict { copy, disk_text } => {
@@ -3911,6 +3939,7 @@ mod tests {
         let events = Arc::new(crate::events::EventBus::new());
         let commands = Arc::new(crate::commands::CommandRegistry::new());
         let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
+        let settings = Arc::new(crate::settings::SettingsManager::new(&app_data_dir()));
 
         let doc_id = DocumentId::new();
         let tab_id = TabId::new();
@@ -3975,6 +4004,10 @@ mod tests {
             views,
             fs_watcher: crate::fs_watcher::Watcher::new(),
             fs_events_rx: None,
+            search_worker: crate::search::worker::SearchWorker::spawn(
+                None,
+                settings.clone(),
+            ),
             pending_file_deletions: HashMap::new(),
         };
 

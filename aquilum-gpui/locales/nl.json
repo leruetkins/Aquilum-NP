@@ -339,7 +339,11 @@
     "op_line_desc": "trefwoorden op één regel",
     "op_section_desc": "trefwoorden onder één kopje",
     "history": "Geschiedenis",
-    "found": "Gevonden: {}"
+    "found": "Gevonden: {}",
+    "searching": "zoeken…",
+    "indexing": "Indexeren",
+    "index_ready": "Index gereed",
+    "index_copied": "Indexpad gekopieerd: {}"
   },
   "app": {
     "search_placeholder": "Snel kluis zoeken..."

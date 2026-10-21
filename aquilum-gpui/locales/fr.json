@@ -339,7 +339,11 @@
     "op_line_desc": "mots-clés sur une seule ligne",
     "op_section_desc": "mots-clés sous une seule rubrique",
     "history": "Histoire",
-    "found": "Trouvé: {}"
+    "found": "Trouvé: {}",
+    "searching": "recherche…",
+    "indexing": "Indexation",
+    "index_ready": "Index prêt",
+    "index_copied": "Chemin de l'index copié : {}"
   },
   "app": {
     "search_placeholder": "Recherche rapide dans le coffre-fort..."

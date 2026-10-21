@@ -339,7 +339,11 @@
     "op_line_desc": "palavras-chave em uma linha",
     "op_section_desc": "palavras-chave sob um título",
     "history": "História",
-    "found": "Encontrado: {}"
+    "found": "Encontrado: {}",
+    "searching": "pesquisando…",
+    "indexing": "Indexando",
+    "index_ready": "Índice pronto",
+    "index_copied": "Caminho do índice copiado: {}"
   },
   "app": {
     "search_placeholder": "Pesquisa rápida no cofre..."

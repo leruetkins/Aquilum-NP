@@ -339,7 +339,11 @@
     "op_line_desc": "关键词在一行",
     "op_section_desc": "一个标题下的关键词",
     "history": "历史",
-    "found": "成立： {}"
+    "found": "成立： {}",
+    "searching": "搜索中…",
+    "indexing": "索引中",
+    "index_ready": "索引就绪",
+    "index_copied": "已复制索引路径: {}"
   },
   "app": {
     "search_placeholder": "快速库搜索..."

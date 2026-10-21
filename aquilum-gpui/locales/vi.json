@@ -339,7 +339,11 @@
     "op_line_desc": "từ khóa trên một dòng",
     "op_section_desc": "từ khóa dưới một tiêu đề",
     "history": "Lịch sử",
-    "found": "Thành lập: {}"
+    "found": "Thành lập: {}",
+    "searching": "đang tìm…",
+    "indexing": "Đang lập chỉ mục",
+    "index_ready": "Chỉ mục sẵn sàng",
+    "index_copied": "Đã sao chép đường dẫn chỉ mục: {}"
   },
   "app": {
     "search_placeholder": "Tìm kiếm kho nhanh..."

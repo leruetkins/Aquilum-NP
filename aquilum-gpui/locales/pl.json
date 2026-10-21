@@ -339,7 +339,11 @@
     "op_line_desc": "słowa kluczowe w jednej linii",
     "op_section_desc": "słowa kluczowe pod jednym nagłówkiem",
     "history": "Historia",
-    "found": "Znaleziony: {}"
+    "found": "Znaleziony: {}",
+    "searching": "wyszukiwanie…",
+    "indexing": "Indeksowanie",
+    "index_ready": "Indeks gotowy",
+    "index_copied": "Skopiowano ścieżkę indeksu: {}"
   },
   "app": {
     "search_placeholder": "Szybkie przeszukiwanie skarbca..."

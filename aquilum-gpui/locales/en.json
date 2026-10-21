@@ -339,7 +339,11 @@
     "op_line_desc": "keywords on one line",
     "op_section_desc": "keywords under one heading",
     "history": "History",
-    "found": "Found: {}"
+    "found": "Found: {}",
+    "searching": "searching…",
+    "indexing": "Indexing",
+    "index_ready": "Index ready",
+    "index_copied": "Index path copied: {}"
   },
   "app": {
     "search_placeholder": "Quick vault search..."

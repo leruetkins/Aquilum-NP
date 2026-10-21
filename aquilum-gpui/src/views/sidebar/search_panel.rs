@@ -10,6 +10,7 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui::{
     div, point, prelude::*, px, Context, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
@@ -18,11 +19,11 @@ use gpui::{
 
 use crate::blink_manager::{BlinkManager, BlinkTarget};
 use crate::icons;
+use crate::search::worker::{SearchConsumer, SearchRequest};
 use crate::theme::Theme;
 use crate::views::app_view::AppView;
 use crate::views::goto_search::{
-    collect_goto_files, highlight_query_terms_cased, highlight_terms_cased, parse_search_op,
-    search_goto_files_opts, GotoSearchParams, SearchOp, MAX_RESULTS,
+    highlight_query_terms_cased, highlight_terms_cased, parse_search_op, SearchOp, MAX_RESULTS,
 };
 use crate::views::scrollbar::{
     overlay_scrollbar, ScrollbarGeometry, ScrollbarStyle,
@@ -65,6 +66,9 @@ pub struct SidebarSearchState {
     pub box_origin_x: Rc<Cell<f32>>,
     pub blink: BlinkManager,
     pub results: Vec<crate::views::goto_search::GotoResult>,
+    /// The query the current `results` answer (highlights follow it while a
+    /// newer query is in flight — see `SearchDialogState::results_query`).
+    pub results_query: String,
     /// Keyboard/mouse cursor over the results. `None` until the user moves
     /// with arrows or hovers — unlike the Go to file dialog, a fresh result
     /// list shows no highlight. `Enter` with `None` opens the first hit.
@@ -86,6 +90,7 @@ impl Default for SidebarSearchState {
             box_origin_x: Rc::new(Cell::new(0.0)),
             blink: BlinkManager::new(),
             results: Vec::new(),
+            results_query: String::new(),
             selected_ix: None,
             collapsed: HashSet::new(),
             history: Vec::new(),
@@ -104,8 +109,6 @@ const SEARCH_OPS: &[(&str, SearchOp, &str)] = &[
     ("section:", SearchOp::Section, "search.op_section_desc"),
 ];
 
-/// Upper bound on files inspected per keystroke (matches the dialog).
-const MAX_SCAN_FILES: usize = 2000;
 /// Stored query history entries.
 const MAX_HISTORY: usize = 20;
 
@@ -158,34 +161,59 @@ impl AppView {
         cx.notify();
     }
 
-    /// Recomputes panel results from the current query.
+    /// Requests a fresh panel search on the worker (immediate entry points:
+    /// panel open, tag search, history/operator clicks, the `Aa` toggle).
+    ///
+    /// The scan runs off the UI thread; results land via
+    /// [`AppView::poll_search_replies`]. Stale replies are dropped by
+    /// sequence number. An empty query clears synchronously and invalidates
+    /// any in-flight reply.
     pub fn run_sidebar_search(&mut self) {
         let raw = self.sidebar_search.query.trim().to_string();
         if raw.is_empty() {
+            self.panel_search_seq += 1;
             self.sidebar_search.results.clear();
             self.sidebar_search.selected_ix = None;
             self.set_panel_scroll_top(0.0);
             return;
         }
         let (op, rest) = parse_search_op(&raw);
-        let files = collect_goto_files(&self.state.file_tree, MAX_SCAN_FILES);
-        let ws = self.state.workspace_path.clone();
-        let params = GotoSearchParams {
+        self.panel_search_seq += 1;
+        self.state.search_worker.ask(SearchRequest {
+            consumer: SearchConsumer::Panel,
+            seq: self.panel_search_seq,
+            query: rest,
+            op,
             case_sensitive: self.sidebar_search.case_sensitive,
-            rel_base: ws.as_deref(),
-        };
-        self.sidebar_search.results = {
-            let cache = &mut self.search_content_cache;
-            search_goto_files_opts(&files, &rest, op, &params, MAX_RESULTS, cache)
-        };
-        // Keep the cursor inside the fresh list, if there is one.
-        let len = self.sidebar_search.results.len();
-        self.sidebar_search.selected_ix = match (self.sidebar_search.selected_ix, len) {
-            (_, 0) => None,
-            (None, _) => None,
-            (Some(ix), _) => Some(ix.min(len - 1)),
-        };
-        self.set_panel_scroll_top(0.0);
+            limit: MAX_RESULTS,
+        });
+    }
+
+    /// Arms the debounced search for the panel input.
+    ///
+    /// Called on EVERY keystroke: the sequence bumps and the in-flight scan
+    /// is cancelled right here (a reply for an already-superseded query can
+    /// never surface). Only the newest arm fires a scan
+    /// ([`Self::run_sidebar_search`], off the UI thread); the text and caret
+    /// were already updated by the caller.
+    pub fn request_sidebar_search(&mut self, cx: &mut Context<Self>) {
+        self.panel_search_seq += 1;
+        self.state.search_worker.cancel(SearchConsumer::Panel);
+        self.panel_debounce_epoch += 1;
+        let epoch = self.panel_debounce_epoch;
+        let entity = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let timer_executor = cx.background_executor().clone();
+        cx.foreground_executor()
+            .spawn(async move {
+                timer_executor.timer(Duration::from_millis(70)).await;
+                let _ = entity.update(&mut async_cx, |this, _cx| {
+                    if this.panel_debounce_epoch == epoch {
+                        this.run_sidebar_search();
+                    }
+                });
+            })
+            .detach();
     }
 
     /// Submits the query: records history and opens the selected hit.
@@ -359,7 +387,7 @@ impl AppView {
                 self.sidebar_search.query.clear();
                 self.sidebar_search.cursor_pos = 0;
                 self.sidebar_search.selection_anchor = None;
-                self.run_sidebar_search();
+                self.request_sidebar_search(cx);
             } else {
                 window.focus(&self.focus_handle);
             }
@@ -467,7 +495,7 @@ impl AppView {
                 self.sidebar_search.query = chars.into_iter().collect();
                 self.sidebar_search.cursor_pos = s;
                 self.sidebar_search.selection_anchor = None;
-                self.run_sidebar_search();
+                self.request_sidebar_search(cx);
                 cx.notify();
             }
             return;
@@ -482,7 +510,7 @@ impl AppView {
                         .collect();
                     if !filtered.is_empty() {
                         self.insert_panel_text(&filtered);
-                        self.run_sidebar_search();
+                        self.request_sidebar_search(cx);
                         cx.notify();
                     }
                 }
@@ -517,7 +545,7 @@ impl AppView {
                 }
             }
             self.sidebar_search.query = chars.into_iter().collect();
-            self.run_sidebar_search();
+            self.request_sidebar_search(cx);
             cx.notify();
             return;
         }
@@ -538,7 +566,7 @@ impl AppView {
                 .collect();
             if !filtered.is_empty() {
                 self.insert_panel_text(&filtered);
-                self.run_sidebar_search();
+                self.request_sidebar_search(cx);
                 cx.notify();
             }
         }
@@ -593,8 +621,18 @@ impl AppView {
             || SEARCH_OPS.iter().any(|(prefix, _, _)| {
                 lowered == *prefix || lowered == prefix.trim_end_matches(':')
             });
-        let (_, rest) = parse_search_op(&trimmed);
-        let terms = highlight_query_terms_cased(&rest, cs);
+        // Highlights follow the RESULTS' query (see the Go to file dialog).
+        let (_, results_rest) = parse_search_op(&self.sidebar_search.results_query);
+        let terms = highlight_query_terms_cased(&results_rest, cs);
+        // A newer query is in flight: the displayed list answers the OLD one.
+        // Hide it behind the searching state (with the LIVE index-build
+        // percent, not a reply-frozen one) so it can't read as new results.
+        let search_pending = !trimmed.is_empty()
+            && self.sidebar_search.results_query.trim() != trimmed;
+        let pending_label = match self.state.search_worker.build_progress() {
+            Some(pct) => format!("{} {}%", self.t("search.searching"), pct),
+            None => self.t("search.searching").to_string(),
+        };
         let pixel_scale = window.scale_factor();
 
         // Input caret geometry (Segoe UI 12px = `text_xs`, same shaping as
@@ -968,12 +1006,39 @@ impl AppView {
                             .px_1()
                             .text_xs()
                             .text_color(theme.text_muted)
-                            .child(self.t_fmt(
-                                "search.found",
-                                &[&self.sidebar_search.results.len().to_string()],
-                            )),
+                            .child(if search_pending {
+                                // While a newer query is in flight the count
+                                // belongs to the old query — replace the
+                                // whole line with the searching state.
+                                pending_label.clone()
+                            } else {
+                                self.t_fmt(
+                                    "search.found",
+                                    &[&self.sidebar_search.results.len().to_string()],
+                                )
+                            }),
                     )
-                    .child({
+                    .when(search_pending, |panel| {
+                        // The stale list (with old-query highlights) is
+                        // hidden while the fresh reply is in flight.
+                        panel.child(
+                            div()
+                                .flex_1()
+                                .min_h_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_xs()
+                                .text_color(theme.text_muted)
+                                .child(icons::icon(
+                                    icons::ICON_SEARCH,
+                                    14.0,
+                                    theme.text_muted,
+                                )),
+                        )
+                    })
+                    .when(!search_pending, |panel| {
+                        panel.child({
                         let mut viewport = div()
                             .id("search-panel-viewport")
                             .relative()
@@ -1174,6 +1239,7 @@ impl AppView {
                             ));
                         }
                         viewport
+                    })
                     })
             })
     }

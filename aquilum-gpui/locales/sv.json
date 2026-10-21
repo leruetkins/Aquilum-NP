@@ -339,7 +339,11 @@
     "op_line_desc": "nyckelord på en rad",
     "op_section_desc": "nyckelord under en rubrik",
     "history": "Historia",
-    "found": "Hittade: {}"
+    "found": "Hittade: {}",
+    "searching": "söker…",
+    "indexing": "Indexering",
+    "index_ready": "Index klart",
+    "index_copied": "Indexsökväg kopierad: {}"
   },
   "app": {
     "search_placeholder": "Snabbsökning i valv..."
