@@ -355,6 +355,46 @@ fn setup_plugin_environment<'js>(
     })?;
     globals.set("__host_get_active_buffer", get_buffer_fn)?;
 
+    // 3d. Command palette and plugin registry for app.commands / app.plugins, as JSON
+    // arrays rebuilt from the snapshot on every read (small: tens of entries).
+    let snap_cmds = snapshot.clone();
+    let get_commands_fn = Function::new(ctx.clone(), move || -> rquickjs::Result<String> {
+        let snap = snap_cmds.load();
+        let list: Vec<serde_json::Value> = snap
+            .commands
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.id,
+                    "name": c.name,
+                    "hotkey": c.hotkey,
+                    "owner": c.owner,
+                })
+            })
+            .collect();
+        Ok(serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string()))
+    })?;
+    globals.set("__host_get_commands", get_commands_fn)?;
+
+    let snap_plug = snapshot.clone();
+    let get_plugins_fn = Function::new(ctx.clone(), move || -> rquickjs::Result<String> {
+        let snap = snap_plug.load();
+        let list: Vec<serde_json::Value> = snap
+            .plugins
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "id": p.id,
+                    "name": p.name,
+                    "version": p.version,
+                    "description": p.description,
+                })
+            })
+            .collect();
+        Ok(serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string()))
+    })?;
+    globals.set("__host_get_plugins", get_plugins_fn)?;
+
     // 3b. Static host platform description, consumed by obsidian.Platform and navigator.userAgent.
     // The host is a native desktop application, so mobile flags are always false.
     let platform_os = if cfg!(target_os = "macos") {
@@ -804,7 +844,24 @@ fn setup_plugin_environment<'js>(
 
         class Notice {
             constructor(message, duration = 4000) {
-                __invoke_host("notice", { text: String(message), timeout_ms: duration });
+                this.messageEl = null;
+                this.noticeEl = null;
+                this.containerEl = null;
+                Notice.__seq = (Notice.__seq || 0) + 1;
+                this.__id = "notice-" + Notice.__seq;
+                __invoke_host("notice", { text: String(message == null ? "" : message), timeout_ms: duration, id: this.__id }).catch(() => {});
+            }
+            setMessage(message) {
+                const text = message == null ? "" : String(message);
+                if (this.__id) {
+                    __invoke_host("notice_update", { id: this.__id, text }).catch(() => {});
+                }
+                return this;
+            }
+            hide() {
+                if (this.__id) {
+                    __invoke_host("notice_hide", { id: this.__id }).catch(() => {});
+                }
             }
         }
 
@@ -1060,6 +1117,36 @@ fn setup_plugin_environment<'js>(
 
         function stringifyYaml(value) {
             return __stringify_yaml(value) + "\n";
+        }
+
+        const __B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+        function __array_buffer_to_base64(buffer) {
+            const bytes = new Uint8Array(buffer || 0);
+            let out = "";
+            for (let i = 0; i < bytes.length; i += 3) {
+                const b0 = bytes[i], b1 = bytes[i + 1], b2 = bytes[i + 2];
+                out += __B64_ALPHABET[b0 >> 2];
+                out += __B64_ALPHABET[((b0 & 3) << 4) | ((b1 === undefined ? 0 : b1) >> 4)];
+                out += b1 === undefined ? "=" : __B64_ALPHABET[((b1 & 15) << 2) | ((b2 === undefined ? 0 : b2) >> 6)];
+                out += b2 === undefined ? "=" : __B64_ALPHABET[b2 & 63];
+            }
+            return out;
+        }
+
+        function __base64_to_array_buffer(base64) {
+            const s = String(base64 != null ? base64 : "").replace(/[^A-Za-z0-9+/]/g, "").replace(/=+$/, "");
+            const out = new Uint8Array(Math.floor(s.length * 3 / 4));
+            let acc = 0, bits = 0, idx = 0;
+            for (const c of s) {
+                acc = (acc << 6) | __B64_ALPHABET.indexOf(c);
+                bits += 6;
+                if (bits >= 8) {
+                    bits -= 8;
+                    out[idx++] = (acc >> bits) & 0xff;
+                }
+            }
+            return out.buffer;
         }
 
         // Splits a note into its frontmatter object and the body offset. Returns null
@@ -1351,7 +1438,13 @@ fn setup_plugin_environment<'js>(
                 this.parent = null;
                 this.value = options.value != null ? String(options.value) : "";
                 this.placeholder = options.placeholder || "";
-                this.disabled = !!options.disabled;
+                // DOM reflection seed: the disabled attribute set through `attr` wins unless
+                // the options also state the property explicitly. Plain assignment of the
+                // property here would wipe the attribute the constructor just copied.
+                this._disabled = !!options.disabled;
+                if (this.attributes["disabled"] === undefined && options.disabled === true) {
+                    this.attributes["disabled"] = "true";
+                }
                 this.checked = options.checked !== undefined ? !!options.checked : undefined;
                 this.dataset = new Proxy({}, {
                     get: (t, p) => {
@@ -1403,6 +1496,28 @@ fn setup_plugin_environment<'js>(
                 if (this._id) globalThis.__velement_registry.delete(this._id);
                 this._id = String(val);
                 globalThis.__velement_registry.set(this._id, this);
+            }
+
+            // DOM reflection for `disabled`: the property and the attribute stay in sync,
+            // exactly like a real <button>. Plugins flip the property (`btn.disabled = false`)
+            // or pass `attr: { disabled: bool }`; either way the serializer must see the
+            // final state. A "false" attribute value means enabled.
+            get disabled() {
+                if (this.attributes["disabled"] !== undefined) {
+                    return this.attributes["disabled"] !== "false";
+                }
+                if (this.attributes["aria-disabled"] !== undefined) {
+                    return this.attributes["aria-disabled"] === "true";
+                }
+                return !!this._disabled;
+            }
+            set disabled(val) {
+                this._disabled = !!val;
+                if (val) {
+                    this.attributes["disabled"] = "true";
+                } else {
+                    delete this.attributes["disabled"];
+                }
             }
 
             get text() {
@@ -2026,6 +2141,69 @@ fn setup_plugin_environment<'js>(
             }
         }
 
+        class SearchComponent extends TextComponent {
+            constructor(containerEl) {
+                super(containerEl);
+                if (this.inputEl && this.inputEl.setAttr) this.inputEl.setAttr("type", "search");
+            }
+            getValue() { return this.value; }
+        }
+
+        class MomentFormatComponent extends TextComponent {
+            constructor(containerEl) {
+                super(containerEl);
+                this.defaultFormat = "";
+            }
+            setDefaultFormat(fmt) {
+                this.defaultFormat = String(fmt != null ? fmt : "");
+                return this;
+            }
+            setPlaceholder(p) {
+                super.setPlaceholder(p);
+                return this;
+            }
+        }
+
+        class ColorComponent extends ValueComponent {
+            constructor(containerEl) {
+                super();
+                this.colorEl = containerEl ? containerEl.createEl("input", { attr: { type: "color" } }) : new VElement("input");
+                this.value = "#000000";
+            }
+            setValue(v) {
+                super.setValue(String(v != null ? v : "#000000"));
+                this.colorEl.value = this.value;
+                return this;
+            }
+            onChange(callback) {
+                this.colorEl.addEventListener("change", (e) => {
+                    this.value = e?.value != null ? e.value : this.value;
+                    callback(this.value);
+                });
+                return this;
+            }
+        }
+
+        class ProgressBarComponent extends ValueComponent {
+            constructor(containerEl) {
+                super();
+                this.progressEl = containerEl ? containerEl.createEl("progress") : new VElement("progress");
+                this.value = 0;
+                this.max = 100;
+            }
+            setValue(v) {
+                this.value = Number(v) || 0;
+                if (this.progressEl.setAttr) this.progressEl.setAttr("value", String(this.value));
+                return this;
+            }
+            setMax(max) {
+                this.max = Number(max) || 100;
+                if (this.progressEl.setAttr) this.progressEl.setAttr("max", String(this.max));
+                return this;
+            }
+            getValue() { return this.value; }
+        }
+
         class SliderComponent extends ValueComponent {
             constructor(containerEl) {
                 super();
@@ -2171,6 +2349,50 @@ fn setup_plugin_environment<'js>(
                 if (typeof cb === "function") cb(extra);
                 return this;
             }
+            setDisabled(disabled) {
+                this.__disabled = !!disabled;
+                for (const c of this.controls) {
+                    if (typeof c.setDisabled === "function") c.setDisabled(this.__disabled);
+                }
+                return this;
+            }
+            addSearch(cb) {
+                const search = new SearchComponent(this.controlEl);
+                this.controls.push(search);
+                if (typeof cb === "function") cb(search);
+                return this;
+            }
+            addMomentFormat(cb) {
+                const mf = new MomentFormatComponent(this.controlEl);
+                this.controls.push(mf);
+                if (typeof cb === "function") cb(mf);
+                return this;
+            }
+            addColorPicker(cb) {
+                const color = new ColorComponent(this.controlEl);
+                this.controls.push(color);
+                if (typeof cb === "function") cb(color);
+                return this;
+            }
+            addProgressBar(cb) {
+                const bar = new ProgressBarComponent(this.controlEl);
+                this.controls.push(bar);
+                if (typeof cb === "function") cb(bar);
+                return this;
+            }
+            then(cb) {
+                if (typeof cb === "function") cb(this);
+                return this;
+            }
+            clear() {
+                this.controls = [];
+                this.settingEl.children = [];
+                this.infoEl = this.settingEl.createDiv("setting-item-info");
+                this.nameEl = this.infoEl.createDiv("setting-item-name");
+                this.descEl = this.infoEl.createDiv("setting-item-description");
+                this.controlEl = this.settingEl.createDiv("setting-item-control");
+                return this;
+            }
         }
 
         class PluginSettingTab {
@@ -2243,13 +2465,10 @@ fn setup_plugin_environment<'js>(
                     class: classStr,
                     label: el.text || "Button",
                     variant,
-                    // `disabled` приходит двумя путями: свойством (`btn.disabled = true`)
-                    // и атрибутом в разметке (`attr: { disabled: "true" }`). Читать только
-                    // свойство мало — плагины создают выключенную кнопку атрибутом, и она
-                    // рендерилась активной, со своими (нечитаемыми) цветами.
+                    // `disabled` is a reflected property (see the VElement getter/setter):
+                    // the plugin flips it via the property or the attr, both converge, and
+                    // a "false" attribute value means the button is enabled.
                     disabled: !!el.disabled
-                        || (el.attributes && el.attributes.disabled !== undefined)
-                        || (el.attributes && el.attributes["aria-disabled"] === "true")
                 };
             }
 
@@ -3161,6 +3380,34 @@ fn setup_plugin_environment<'js>(
             async onClose() {}
         }
 
+        // FileView/TextFileView give plugin view classes an instanceof-able base for
+        // file-backed views. TextFileView carries `data` and routes setContent through
+        // onSetData, as the Obsidian contract describes.
+        class FileView extends ItemView {
+            constructor(leaf) {
+                super(leaf);
+                this.file = null;
+                this.allowNoFile = false;
+            }
+            getFile() { return this.file; }
+        }
+
+        class TextFileView extends FileView {
+            constructor(leaf) {
+                super(leaf);
+                this.data = "";
+            }
+            getViewType() { return "text"; }
+            getIcon() { return "document"; }
+            getDoc() { return this.__editor || (this.__editor = new Editor("")); }
+            async onSetData(_data) {}
+            setContent(data, _type) {
+                this.data = String(data != null ? data : "");
+                return Promise.resolve(this.onSetData(this.data));
+            }
+            getData() { return this.data; }
+        }
+
         // The document buffer lives in the host, not in the plugin runtime. A MarkdownView here is a
         // handle on the file the host currently shows, not an owner of its text: `file`, `getMode()`
         // and `getViewType()` are authoritative. The `editor` handle reaches the host buffer through
@@ -3310,6 +3557,16 @@ fn setup_plugin_environment<'js>(
                 return null;
             }
         };
+        const __json_list = (raw) => {
+            try {
+                const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+                return Array.isArray(parsed) ? parsed : [];
+            } catch (e) {
+                return [];
+            }
+        };
+        const __host_commands_list = () => __json_list(__host_get_commands());
+        const __host_plugins_list = () => __json_list(__host_get_plugins());
         const __editor_pos = (pos) => {
             if (pos && typeof pos === "object" && typeof pos.line === "number") {
                 return { line: Math.max(0, pos.line | 0), ch: Math.max(0, pos.ch | 0) };
@@ -3467,6 +3724,7 @@ fn setup_plugin_environment<'js>(
         class Menu {
             constructor() {
                 this.items = [];
+                this.__hide_cb = null;
             }
             addItem(cb) {
                 const item = new MenuItem(this);
@@ -3482,6 +3740,20 @@ fn setup_plugin_environment<'js>(
             }
             showAtPosition(pos) { return this; }
             showAtMouseEvent(evt) { return this; }
+            hide() {
+                if (typeof this.__hide_cb === "function") {
+                    try { this.__hide_cb(); } catch (e) { console.error("Menu onHide error:", e); }
+                }
+                return this;
+            }
+            close() { return this.hide(); }
+            onHide(cb) {
+                this.__hide_cb = cb;
+                return this;
+            }
+            setNoIcon() { return this; }
+            setUseNativeMenu(_native) { return this; }
+            setParentElement(_el) { return this; }
             toJSON() {
                 return this.items.map(it => it.toJSON());
             }
@@ -3521,6 +3793,51 @@ fn setup_plugin_environment<'js>(
             __native_leaf.view = view;
             __native_leaf.viewState = { type: "markdown", state: { file: view.file.path } };
             return __native_leaf;
+        }
+
+        // FileSystemAdapter in Obsidian talks to the real disk; the plugin sandbox has no
+        // absolute-filesystem access, so every call is routed through the vault adapter.
+        class FileSystemAdapter {
+            static getBasePath() { return ""; }
+            static getResourcePath(path) { return "app://" + normalizePath(String(path)); }
+            static async exists(path) {
+                return __host_get_markdown_files().includes(normalizePath(String(path)));
+            }
+            static async read(path) {
+                return rawVault.read(String(path));
+            }
+            static async readBinary(path) {
+                const res = await __invoke_host("vault_read_binary", { path: String(path) });
+                if (typeof res !== "string") throw new Error("FileSystemAdapter.readBinary: host returned no data");
+                return __base64_to_array_buffer(res);
+            }
+            static async write(path, data) {
+                await __invoke_host("vault_modify", { path: String(path), data: String(data) });
+            }
+            static async writeBinary(path, data) {
+                await __invoke_host("vault_modify_binary", { path: String(path), data_base64: __array_buffer_to_base64(data) });
+            }
+            static async append(path, data) {
+                let existing = "";
+                try {
+                    existing = await rawVault.read(String(path));
+                } catch (e) {
+                    existing = "";
+                }
+                await __invoke_host("vault_modify", { path: String(path), data: existing + String(data) });
+            }
+            static async mkdir(path) {
+                await __invoke_host("vault_create_folder", { path: normalizePath(String(path)) });
+            }
+            static async remove(path) {
+                await __invoke_host("vault_delete", { path: String(path) });
+            }
+            static async rename(from, to) {
+                await __invoke_host("vault_rename", { old_path: String(from), new_path: normalizePath(String(to)) });
+            }
+            constructor() {
+                // Instance form mirrors the static one; Obsidian also exposes instance methods.
+            }
         }
 
         function activateLeaf(leaf) {
@@ -3993,6 +4310,48 @@ fn setup_plugin_environment<'js>(
                 el.setAttribute("aria-label", String(title));
                 return el;
             }
+            removeCommand(commandId) {
+                const id = String(commandId);
+                globalThis.__command_handlers.delete(id);
+                // Palette entries carry the "plugin-id:cmd" prefix; try the short form too.
+                for (const key of Array.from(globalThis.__command_handlers.keys())) {
+                    if (key.endsWith(":" + id)) globalThis.__command_handlers.delete(key);
+                }
+                __invoke_host("remove_command", { id }).catch(() => {});
+            }
+            registerObsidianProtocolHandler(action, handler) {
+                if (typeof handler !== "function") return;
+                if (!globalThis.__protocol_handlers) globalThis.__protocol_handlers = new Map();
+                globalThis.__protocol_handlers.set(String(action), handler);
+            }
+            registerEditorSuggest(suggest) {
+                if (!suggest || typeof suggest.onTrigger !== "function") return;
+                if (!globalThis.__editor_suggests) globalThis.__editor_suggests = [];
+                globalThis.__editor_suggests.push(suggest);
+            }
+            registerMarkdownPostProcessor(pp, _sortOrder) {
+                if (typeof pp !== "function") return null;
+                if (!globalThis.__markdown_post_processors) globalThis.__markdown_post_processors = [];
+                globalThis.__markdown_post_processors.push(pp);
+                return pp;
+            }
+            addStatusBarItem() {
+                Notice.__seq = (Notice.__seq || 0) + 1;
+                const id = "sb-" + Notice.__seq;
+                __invoke_host("add_status_bar_item", { id }).catch(() => {});
+                const el = new VElement("div", { cls: "status-bar-item plugin-" + (this.manifest ? this.manifest.id : "unknown") });
+                // setText()/setTextContent on the element pushes text into the host item;
+                // other VElement children of the slot are not rendered by the host slot yet.
+                el.setText = (text) => {
+                    __invoke_host("update_status_bar_item", { id, text: String(text != null ? text : "") }).catch(() => {});
+                    if (typeof VElement.prototype.setText === "function") {
+                        VElement.prototype.setText.call(el, text);
+                    }
+                    return el;
+                };
+                el.setTextContent = el.setText;
+                return el;
+            }
             addSettingTab(tab) {
                 this.settingTab = tab;
                 globalThis.__active_setting_tab = tab;
@@ -4055,6 +4414,20 @@ fn setup_plugin_environment<'js>(
             // cachedRead differs from read only in Obsidian's source: it resolves from the metadata
             // cache when fresh. This host has no cache to serve, so the result is the file content.
             cachedRead: (file) => rawVault.read(file),
+            readBinary: async (file) => {
+                const p = typeof file === 'object' ? file.path : file;
+                const res = await __invoke_host("vault_read_binary", { path: p });
+                if (typeof res !== "string") throw new Error("vault.readBinary: host returned no data");
+                return __base64_to_array_buffer(res);
+            },
+            createBinary: async (path, data) => {
+                await __invoke_host("vault_create_binary", { path, data_base64: __array_buffer_to_base64(data) });
+                return new TFile(path);
+            },
+            modifyBinary: async (file, data) => {
+                const p = typeof file === 'object' ? file.path : file;
+                await __invoke_host("vault_modify_binary", { path: p, data_base64: __array_buffer_to_base64(data) });
+            },
             modify: (path, data) => __invoke_host("vault_modify", { path: typeof path === 'object' ? path.path : path, data }),
             create: (path, data) => __invoke_host("vault_create", { path, data }),
             createFolder: async (path) => {
@@ -4200,8 +4573,15 @@ fn setup_plugin_environment<'js>(
                     if (!__host_get_markdown_files().includes(norm)) return null;
                     return { type: "file", ctime: 0, mtime: 0, size: 0 };
                 },
-                // Derives a directory listing from the flat markdown-file list the host provides.
+                // Real directory listing from the host; falls back to deriving the
+                // same shape from the flat markdown snapshot when the request is absent.
                 list: async (path) => {
+                    try {
+                        const res = await __invoke_host("vault_list_dir", { path: String(path || "") });
+                        if (res && typeof res === "object") {
+                            return { files: res.files || [], folders: res.folders || [] };
+                        }
+                    } catch (e) { /* fall through to the snapshot */ }
                     const norm = normalizePath(String(path)).replace(/\/+$/, "");
                     const prefix = norm ? norm + "/" : "";
                     const files = [];
@@ -4215,11 +4595,20 @@ fn setup_plugin_environment<'js>(
                     }
                     return { files, folders: Array.from(folders) };
                 },
-                readBinary: async () => {
-                    throw new Error("adapter.readBinary is not supported by the Vibecodium host");
+                readBinary: async (path) => {
+                    const res = await __invoke_host("vault_read_binary", { path: String(path) });
+                    if (typeof res !== "string") throw new Error("adapter.readBinary: host returned no data");
+                    return __base64_to_array_buffer(res);
                 },
-                writeBinary: async () => {
-                    throw new Error("adapter.writeBinary is not supported by the Vibecodium host");
+                writeBinary: async (path, data) => {
+                    const p = String(path);
+                    const b64 = __array_buffer_to_base64(data);
+                    try {
+                        await __invoke_host("vault_create_binary", { path: p, data_base64: b64 });
+                    } catch (e) {
+                        // createBinary refuses existing files; adapter.writeBinary overwrites.
+                        await __invoke_host("vault_modify_binary", { path: p, data_base64: b64 });
+                    }
                 }
             }
         };
@@ -4401,6 +4790,51 @@ fn setup_plugin_environment<'js>(
             },
             internalPlugins: {
                 getEnabledPluginById: (_id) => null
+            },
+            // Registry mirrors of the host, rebuilt from the snapshot on each access.
+            // The instance objects are plain handles: app.plugins.getPlugin returns a
+            // manifest-shaped object, not the live plugin instance (cross-thread).
+            plugins: {
+                get manifests() {
+                    const out = {};
+                    for (const p of __host_plugins_list()) out[p.id] = p;
+                    return out;
+                },
+                get plugins() {
+                    const out = {};
+                    for (const p of __host_plugins_list()) out[p.id] = p;
+                    return out;
+                },
+                get enabledPlugins() {
+                    return new Set(__host_plugins_list().map((p) => p.id));
+                },
+                getPlugin(id) {
+                    return __host_plugins_list().find((p) => p.id === String(id)) || undefined;
+                },
+            },
+            commands: {
+                get commands() {
+                    const out = {};
+                    for (const c of __host_commands_list()) out[c.id] = c;
+                    return out;
+                },
+                listCommands() {
+                    return __host_commands_list().slice();
+                },
+                // executeCommandById is shared with the raw block below via this proxy.
+                executeCommandById: (id) => {
+                    const commandId = String(id);
+                    let handler = globalThis.__command_handlers.get(commandId);
+                    if (!handler && commandId.includes(":")) {
+                        handler = globalThis.__command_handlers.get(commandId.split(":").slice(1).join(":"));
+                    }
+                    if (typeof handler === "function") {
+                        try { handler(); } catch (e) { console.error("executeCommandById error:", e); }
+                        return true;
+                    }
+                    __invoke_host("execute_command", { id: commandId });
+                    return true;
+                },
             },
             dragManager: {
                 dragFile: () => ({}),
@@ -4660,6 +5094,8 @@ fn setup_plugin_environment<'js>(
             EditorSuggest,
             View,
             ItemView,
+            FileView,
+            TextFileView,
             MarkdownView,
             MarkdownRenderChild,
             Events,
@@ -4672,6 +5108,10 @@ fn setup_plugin_environment<'js>(
             ToggleComponent,
             TextComponent,
             TextAreaComponent,
+            SearchComponent,
+            MomentFormatComponent,
+            ColorComponent,
+            ProgressBarComponent,
             SliderComponent,
             DropdownComponent,
             Menu,
@@ -4683,6 +5123,7 @@ fn setup_plugin_environment<'js>(
             TAbstractFile,
             normalizePath,
             MarkdownRenderer,
+            FileSystemAdapter,
             requestUrl,
             moment,
             getLanguage,
@@ -4744,35 +5185,88 @@ fn setup_plugin_environment<'js>(
                 const hash = String(linktext != null ? linktext : "").indexOf("#");
                 return hash < 0 ? String(linktext) : String(linktext).slice(0, hash);
             },
-            arrayBufferToBase64(buffer) {
-                const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-                const bytes = new Uint8Array(buffer || 0);
-                let out = "";
-                for (let i = 0; i < bytes.length; i += 3) {
-                    const b0 = bytes[i], b1 = bytes[i + 1], b2 = bytes[i + 2];
-                    out += B64[b0 >> 2];
-                    out += B64[((b0 & 3) << 4) | ((b1 === undefined ? 0 : b1) >> 4)];
-                    out += b1 === undefined ? "=" : B64[((b1 & 15) << 2) | ((b2 === undefined ? 0 : b2) >> 6)];
-                    out += b2 === undefined ? "=" : B64[b2 & 63];
-                }
-                return out;
+            sanitizeHTMLToDom(html) {
+                // Reuses the existing sanitize + parse pipeline: __sanitize_html strips
+                // script/iframe/style blocks, __parse_html_to_velements builds the tree.
+                const clean = __sanitize_html(String(html != null ? html : ""));
+                const root = new VElement("div");
+                __parse_html_to_velements(clean, root);
+                // A minimal DocumentFragment stand-in: children live on .children and
+                // render through the same VElement channel as every other plugin tree.
+                return {
+                    children: root.children,
+                    firstChild: root.children[0] || null,
+                    appendTo(el) {
+                        if (el && typeof el.appendChild === "function") {
+                            for (const c of root.children) el.appendChild(c);
+                        }
+                    },
+                };
             },
-            base64ToArrayBuffer(base64) {
-                const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-                const s = String(base64 != null ? base64 : "").replace(/[^A-Za-z0-9+/]/g, "");
-                const clean = s.replace(/=+$/, "");
-                const out = new Uint8Array(Math.floor(clean.length * 3 / 4));
-                let acc = 0, bits = 0, idx = 0;
-                for (const c of clean) {
-                    acc = (acc << 6) | B64.indexOf(c);
-                    bits += 6;
-                    if (bits >= 8) {
-                        bits -= 8;
-                        out[idx++] = (acc >> bits) & 0xff;
+            getFrontMatterInfo(content) {
+                const text = String(content != null ? content : "");
+                const fm = __parse_frontmatter(text);
+                if (fm === null) {
+                    return { exists: false, from: 0, to: 0, frontmatter: "", frontmatterPos: { start: { line: 0, offset: 0 }, end: { line: 0, offset: 0 } } };
+                }
+                const blockEnd = fm.bodyStart > 0 ? fm.bodyStart - 1 : 0;
+                const block = text.slice(0, blockEnd);
+                const lineCount = block.split("\n").length;
+                return {
+                    exists: true,
+                    from: 0,
+                    to: blockEnd,
+                    frontmatter: block.replace(/^---\n/, "").replace(/\n---\n?$/, ""),
+                    frontmatterPos: {
+                        start: { line: 0, offset: 0 },
+                        end: { line: lineCount - 1, offset: blockEnd },
+                    },
+                };
+            },
+            resolveSubpath(cache, subpath) {
+                if (!cache || !subpath) return null;
+                const s = String(subpath);
+                if (s.startsWith("#^")) {
+                    // Block reference: the host cache has no blocks; only a null result
+                    // is honest here.
+                    return null;
+                }
+                const wanted = s.replace(/^#/, "").toLowerCase();
+                for (const h of cache.headings || []) {
+                    if (String(h.heading || "").toLowerCase() === wanted) {
+                        return { type: "heading", heading: h.heading, start: h.position && h.position.start, end: h.position && h.position.end };
                     }
                 }
-                return out.buffer;
+                return null;
             },
+            prepareFuzzySearch(query) {
+                const q = String(query != null ? query : "").toLowerCase();
+                return (text) => {
+                    const t = String(text != null ? text : "");
+                    const lt = t.toLowerCase();
+                    let ti = 0, qi = 0, score = 0, last = -2;
+                    while (qi < q.length) {
+                        const idx = lt.indexOf(q[qi], ti);
+                        if (idx < 0) return null;
+                        score += idx === last + 1 ? 5 : 1;
+                        if (idx === 0 || /[\s\-_/#]/.test(lt[idx - 1])) score += 3;
+                        last = idx;
+                        ti = idx + 1;
+                        qi++;
+                    }
+                    return { score, matches: null };
+                };
+            },
+            prepareSimpleSearch(query) {
+                const q = String(query != null ? query : "").toLowerCase();
+                return (text) => {
+                    const lt = String(text != null ? text : "").toLowerCase();
+                    const idx = lt.indexOf(q);
+                    return idx < 0 ? null : { score: 1, matches: null };
+                };
+            },
+            arrayBufferToBase64: __array_buffer_to_base64,
+            base64ToArrayBuffer: __base64_to_array_buffer,
             app: globalThis.app
         };
 
@@ -4834,10 +5328,24 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
                 .get("timeout_ms")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(4000) as u32;
+            let id = payload
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             ApiRequest::Notice {
                 text,
                 timeout_ms: timeout,
+                id,
             }
+        }
+        "notice_update" => {
+            let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            ApiRequest::NoticeUpdate { id, text }
+        }
+        "notice_hide" => {
+            let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            ApiRequest::NoticeHide { id }
         }
         "vault_read" => {
             let path = payload
@@ -4846,6 +5354,48 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
                 .unwrap_or_default()
                 .to_string();
             ApiRequest::VaultRead { path }
+        }
+        "vault_read_binary" => {
+            let path = payload
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::VaultReadBinary { path }
+        }
+        "vault_list_dir" => {
+            let path = payload
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::VaultListDir { path }
+        }
+        "vault_modify_binary" => {
+            let path = payload
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let data = payload
+                .get("data_base64")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::VaultModifyBinary { path, data_base64: data }
+        }
+        "vault_create_binary" => {
+            let path = payload
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let data = payload
+                .get("data_base64")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::VaultCreateBinary { path, data_base64: data }
         }
         "vault_modify" => {
             let path = payload
@@ -4964,6 +5514,35 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
             ApiRequest::AddCommand { id, name, hotkey }
+        }
+        "remove_command" => {
+            let id = payload
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::RemoveCommand { id }
+        }
+        "add_status_bar_item" => {
+            let id = payload
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::AddStatusBarItem { id }
+        }
+        "update_status_bar_item" => {
+            let id = payload
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let text = payload
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::UpdateStatusBarItem { id, text }
         }
         "add_ribbon_icon" => {
             let id = payload

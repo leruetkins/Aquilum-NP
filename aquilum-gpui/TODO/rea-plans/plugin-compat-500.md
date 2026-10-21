@@ -210,6 +210,42 @@
 **Статус на 19.10.2026.** Пачка 1 закрыта целиком, из пачки 2 — пять пунктов, плюс оба P0.
 Итог по корпусу 500: `ok` 91, `degraded` 187, `blocked` 222 (без жёстких блокеров 266, 53%).
 
+**Статус на 21.10.2026, этап 5.** Утилиты: `sanitizeHTMLToDom` (переиспользует sanitize+parse
+пайплайн, отдаёт фрагмент с `.children`/`appendTo`), `getFrontMatterInfo` (exists/from/to/
+frontmatter/frontmatterPos), `resolveSubpath` (heading-совпадения, блок-референсы честно null —
+кэша блоков нет), `prepareFuzzySearch`/`prepareSimpleSearch` (подмножество: contiguity и boundary
+бонусы, без `matches`-координат). Классы `FileView`/`TextFileView` (`data`, `setContent` →
+`onSetData`, `getDoc`), экспортированы; `instanceof`-цепочка `TextFileView → FileView → ItemView`
+работает. `app.plugins` (`.manifests`/`.plugins`/`.enabledPlugins`/`getPlugin`) и `app.commands`
+(`.commands`/`listCommands`) — зеркала реестров через snapshot (в `Snapshot` добавлены
+`commands: [CommandInfo]` и `plugins: [PluginInfo]`; плагинный список публикуется при
+загрузке/выгрузке плагинов, командный — из `CommandRegistry` при каждом `publish_snapshot`).
+`adapter.list` ходит в новый запрос `vault_list_dir` (реальный листинг каталога, скрытые
+исключены, отсутствующий каталог → пустой список). **Статус-бар сделан по-настоящему**:
+`addStatusBarItem` регистрирует слот в `StatusBarRegistry` хоста (запрос `add_status_bar_item`),
+`el.setText()` обновляет текст (`update_status_bar_item`); рендер — существующий цикл статус-бара
+(`app_view.rs`). Итог по корпусу 500: **`ok` 170, `degraded` 108, `blocked` 222**.
+Харнесс 189/189 (16 новых тестов). Осталось из хост-слотов этапа 3: вызов
+`registerMarkdownPostProcessor`-ов при рендере и протокольных хендлеров при `obsidian://`-переходе.
+
+**Статус на 21.10.2026, этап 4.** Пачка 2 закрыта: бинарный канал base64-в-JSON —
+`vault.readBinary`/`createBinary`/`modifyBinary` через запросы `vault_read_binary`/
+`vault_create_binary`/`vault_modify_binary` (api.rs; `vault.rs::read_file_binary`/
+`create_file_binary`/`modify_file_binary` с лимитом 50 МБ; бридж кодирует/декодирует base64,
+права vault:read/write сохранены). `adapter.readBinary`/`writeBinary` больше не бросают —
+пишут через create-с-фолбэком-на-modify. `FileSystemAdapter` — статические методы через
+vault-канал (без абсолютных путей диска: песочница). Итог по корпусу 500:
+**`ok` 168, `degraded` 110, `blocked` 222**. Харнесс 173/173 (8 новых тестов).
+
+**Статус на 21.10.2026, этап 3.** Закрыты `addStatusBarItem` (JS-слот, рендер в статус-бар — TODO),
+`registerMarkdownPostProcessor` (регистрация и вызов при рендере — TODO хост-хук), `removeCommand`
+(снимает и prefixed-id в реестре команд хоста), `registerObsidianProtocolHandler`,
+`registerEditorSuggest`, `Notice.setMessage`/`hide` (запросы `notice_update`/`notice_hide`),
+`Menu.hide`/`close`/`onHide`/`setNoIcon`/`setUseNativeMenu`/`setParentElement`, `Setting.setDisabled`
+/`addSearch`/`addMomentFormat`/`addColorPicker`/`addProgressBar`/`then`/`clear` + классы
+`SearchComponent`/`MomentFormatComponent`/`ColorComponent`/`ProgressBarComponent`.
+Итог по корпусу 500: **`ok` 148, `degraded` 130, `blocked` 222**. Харнесс 165/165 (19 новых тестов).
+
 **Статус на 21.10.2026.** Пачка 1 закрыта целиком (YAML-парсер в бутстрапе покрывает
 frontmatter-подмножество: плоские ключи, вложенные карты, списки скаляров и объектов,
 inline-flow, block-скаляры, комментарии; полный YAML — якоря, теги, многодокументность —

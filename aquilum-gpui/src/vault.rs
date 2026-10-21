@@ -225,6 +225,61 @@ impl VaultCore {
         Ok(abs)
     }
 
+    /// Верхняя граница бинарных операций плагинов: транспорт base64-в-JSON
+    /// приемлем для картинок и вложений, но не для гигабайтных файлов.
+    const BINARY_LIMIT: u64 = 50 * 1024 * 1024;
+
+    /// Читает файл как байты (base64-кодирование делает бридж).
+    pub fn read_file_binary(&self, rel_path: &str) -> Result<Vec<u8>, VaultError> {
+        let abs = self.resolve(rel_path)?;
+        if !abs.exists() {
+            return Err(VaultError::NotFound(rel_path.to_string()));
+        }
+        let meta = std::fs::metadata(&abs).map_err(|e| VaultError::Io(e.to_string()))?;
+        if meta.len() > Self::BINARY_LIMIT {
+            return Err(VaultError::Io(format!(
+                "file too large for vault.readBinary ({} bytes, limit 50 MB)",
+                meta.len()
+            )));
+        }
+        std::fs::read(&abs).map_err(|e| VaultError::Io(e.to_string()))
+    }
+
+    /// Перезаписывает или создаёт бинарный файл.
+    pub fn modify_file_binary(&self, rel_path: &str, data: &[u8]) -> Result<(), VaultError> {
+        if data.len() as u64 > Self::BINARY_LIMIT {
+            return Err(VaultError::Io(format!(
+                "payload too large for vault.modifyBinary ({} bytes, limit 50 MB)",
+                data.len()
+            )));
+        }
+        let abs = self.resolve(rel_path)?;
+        if let Some(parent) = abs.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&abs, data).map_err(|e| VaultError::Io(e.to_string()))
+    }
+
+    /// Создаёт новый бинарный файл. Ошибка, если файл уже существует.
+    pub fn create_file_binary(&self, rel_path: &str, data: &[u8]) -> Result<PathBuf, VaultError> {
+        if data.len() as u64 > Self::BINARY_LIMIT {
+            return Err(VaultError::Io(format!(
+                "payload too large for vault.createBinary ({} bytes, limit 50 MB)",
+                data.len()
+            )));
+        }
+        let abs = self.resolve(rel_path)?;
+        if abs.exists() {
+            return Err(VaultError::AlreadyExists(rel_path.to_string()));
+        }
+        if let Some(parent) = abs.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&abs, data).map_err(|e| VaultError::Io(e.to_string()))?;
+        self.invalidate_markdown_cache();
+        Ok(abs)
+    }
+
     /// Удаление файла.
     pub fn delete_file(&self, rel_path: &str) -> Result<(), VaultError> {
         let abs = self.resolve(rel_path)?;

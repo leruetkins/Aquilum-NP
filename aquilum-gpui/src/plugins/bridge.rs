@@ -89,7 +89,7 @@ impl PluginHostState {
         };
 
         match req {
-            ApiRequest::VaultRead { .. } => {
+            ApiRequest::VaultRead { .. } | ApiRequest::VaultReadBinary { .. } | ApiRequest::VaultListDir { .. } => {
                 if plugin.manifest.permissions.vault < VaultAccess::Read {
                     return Err(format!("Plugin '{}' lacks vault:read permission", plugin_id));
                 }
@@ -107,7 +107,9 @@ impl PluginHostState {
             | ApiRequest::VaultCreateFolder { .. }
             | ApiRequest::VaultDelete { .. }
             | ApiRequest::VaultTrash { .. }
-            | ApiRequest::VaultRename { .. } => {
+            | ApiRequest::VaultRename { .. }
+            | ApiRequest::VaultModifyBinary { .. }
+            | ApiRequest::VaultCreateBinary { .. } => {
                 if plugin.manifest.permissions.vault < VaultAccess::Write {
                     return Err(format!("Plugin '{}' lacks vault:write permission", plugin_id));
                 }
@@ -124,6 +126,9 @@ impl PluginHostState {
             | ApiRequest::RegisterCodeBlockProcessor { .. }
             | ApiRequest::SetCodeBlockView { .. }
             | ApiRequest::AddCommand { .. }
+            | ApiRequest::RemoveCommand { .. }
+            | ApiRequest::AddStatusBarItem { .. }
+            | ApiRequest::UpdateStatusBarItem { .. }
             | ApiRequest::AddRibbonIcon { .. }
             | ApiRequest::ExecuteCommand { .. }
             | ApiRequest::EditorReplaceSelection { .. }
@@ -133,6 +138,8 @@ impl PluginHostState {
             | ApiRequest::EditorSetSelection { .. }
             | ApiRequest::EditorSetBuffer { .. }
             | ApiRequest::EditorReplaceRange { .. }
+            | ApiRequest::NoticeUpdate { .. }
+            | ApiRequest::NoticeHide { .. }
             | ApiRequest::Unknown { .. }
             | ApiRequest::LoadData
             | ApiRequest::SaveData { .. } => {
@@ -209,6 +216,52 @@ pub fn validate_network_url(url_str: &str, whitelist: &[String]) -> Result<(), S
     Ok(())
 }
 
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Standard base64 with padding, for the plugin binary transport.
+pub fn base64_encode(data: &[u8]) -> String {
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(BASE64_ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(BASE64_ALPHABET[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { BASE64_ALPHABET[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { BASE64_ALPHABET[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+/// Decodes standard base64 (padding optional); None on invalid input.
+pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    let mut value_of = [255u8; 256];
+    for (i, &c) in BASE64_ALPHABET.iter().enumerate() {
+        value_of[c as usize] = i as u8;
+    }
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    let mut acc = 0u32;
+    let mut bits = 0u32;
+    for &b in text.as_bytes() {
+        if b == b'=' || b == b'\n' || b == b'\r' || b == b' ' {
+            continue;
+        }
+        let v = value_of[b as usize];
+        if v == 255 {
+            return None;
+        }
+        acc = (acc << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
 /// Spawns the background asynchronous bridge loop connecting plugin channels with the GPUI UI thread.
 pub fn start_plugin_bridge(
     weak_app: WeakEntity<AppView>,
@@ -254,13 +307,33 @@ impl AppView {
 
         // 2. Dispatch request
         match call.request {
-            ApiRequest::Notice { text, .. } => {
+            ApiRequest::Notice { text, id, .. } => {
                 self.state.status_text = format!("[{}] {}", plugin_id, text);
                 let _ = self.state.plugin_host.send_event(
                     &plugin_id,
                     HostEvent::response_ok(request_id, serde_json::Value::Null),
                 );
                 cx.notify();
+            }
+            ApiRequest::NoticeUpdate { id, text } => {
+                // Notices render into the shared status line: the latest text of the
+                // same plugin wins, which is what setMessage() means in a single-slot UI.
+                self.state.status_text = format!("[{}] {}", plugin_id, text);
+                let _ = id;
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Null),
+                );
+                cx.notify();
+            }
+            ApiRequest::NoticeHide { id } => {
+                // Nothing to remove from a shared status line; acknowledge so the
+                // plugin's promise settles.
+                let _ = id;
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Null),
+                );
             }
             ApiRequest::OpenUrl { url } => {
                 cx.open_url(&url);
@@ -295,6 +368,100 @@ impl AppView {
                     HostEvent::response_ok(request_id, serde_json::Value::Null),
                 );
                 cx.notify();
+            }
+            ApiRequest::VaultListDir { path } => {
+                let result: Result<serde_json::Value, String> = match &self.state.vault {
+                    Some(vault) => match vault.resolve(&path) {
+                        Err(e) => Err(e.to_string()),
+                        Ok(abs) => {
+                            let mut files = Vec::new();
+                            let mut folders = Vec::new();
+                            match std::fs::read_dir(&abs) {
+                                Ok(entries) => {
+                                    for entry in entries.flatten() {
+                                        let name = entry.file_name().to_string_lossy().into_owned();
+                                        if name.starts_with('.') {
+                                            continue;
+                                        }
+                                        if entry.path().is_dir() {
+                                            folders.push(name);
+                                        } else {
+                                            files.push(name);
+                                        }
+                                    }
+                                    files.sort();
+                                    folders.sort();
+                                    Ok(serde_json::json!({ "files": files, "folders": folders }))
+                                }
+                                Err(e) if abs.exists() => Err(e.to_string()),
+                                // A missing folder is an empty listing, not an error:
+                                // plugins probe paths before creating content.
+                                Err(_) => Ok(serde_json::json!({ "files": [], "folders": [] })),
+                            }
+                        }
+                    },
+                    None => Err(VaultError::NotFound("No vault opened".into()).to_string()),
+                };
+
+                let event = match result {
+                    Ok(val) => HostEvent::response_ok(request_id, val),
+                    Err(e) => HostEvent::response_err(request_id, &e),
+                };
+                let _ = self.state.plugin_host.send_event(&plugin_id, event);
+            }
+            ApiRequest::VaultReadBinary { path } => {
+                let result = match &self.state.vault {
+                    Some(vault) => vault.read_file_binary(&path).map(|bytes| {
+                        serde_json::json!(crate::plugins::bridge::base64_encode(&bytes))
+                    }),
+                    None => Err(VaultError::NotFound("No vault opened".into())),
+                };
+
+                let event = match result {
+                    Ok(val) => HostEvent::response_ok(request_id, val),
+                    Err(e) => HostEvent::response_err(request_id, &e.to_string()),
+                };
+                let _ = self.state.plugin_host.send_event(&plugin_id, event);
+            }
+            ApiRequest::VaultModifyBinary { path, data_base64 } => {
+                let result = match (crate::plugins::bridge::base64_decode(&data_base64), &self.state.vault) {
+                    (Some(bytes), Some(vault)) => vault.modify_file_binary(&path, &bytes),
+                    (None, _) => Err(VaultError::Io("invalid base64 payload".into())),
+                    (_, None) => Err(VaultError::NotFound("No vault opened".into())),
+                };
+
+                let event = match result {
+                    Ok(_) => {
+                        self.state.events.emit_vault(&crate::events::VaultEvent::Modify {
+                            path: path.clone(),
+                        });
+                        self.state.publish_snapshot();
+                        HostEvent::response_ok(request_id, serde_json::Value::Null)
+                    }
+                    Err(e) => HostEvent::response_err(request_id, &e.to_string()),
+                };
+                let _ = self.state.plugin_host.send_event(&plugin_id, event);
+            }
+            ApiRequest::VaultCreateBinary { path, data_base64 } => {
+                let result = match (crate::plugins::bridge::base64_decode(&data_base64), &self.state.vault) {
+                    (Some(bytes), Some(vault)) => vault.create_file_binary(&path, &bytes),
+                    (None, _) => Err(VaultError::Io("invalid base64 payload".into())),
+                    (_, None) => Err(VaultError::NotFound("No vault opened".into())),
+                };
+
+                let event = match result {
+                    Ok(_) => {
+                        self.state.events.emit_vault(&crate::events::VaultEvent::Create {
+                            path: path.clone(),
+                        });
+                        self.state.reload_file_tree();
+                        self.state.publish_snapshot();
+                        cx.notify();
+                        HostEvent::response_ok(request_id, serde_json::Value::Null)
+                    }
+                    Err(e) => HostEvent::response_err(request_id, &e.to_string()),
+                };
+                let _ = self.state.plugin_host.send_event(&plugin_id, event);
             }
             ApiRequest::VaultRead { path } => {
                 println!("[bridge:{}] ApiRequest::VaultRead path: '{}'", plugin_id, path);
@@ -608,8 +775,16 @@ impl AppView {
                 };
                 let _ = self.state.plugin_host.send_event(&plugin_id, event);
             }
-            ApiRequest::AddCommand { id, name, hotkey } => {
-                let p_id = plugin_id.clone();
+            ApiRequest::RemoveCommand { id } => {
+                // Both the bare id and the palette-prefixed "plugin:cmd" id are unregistered.
+                self.state.commands.unregister(&id);
+                self.state.commands.unregister(&format!("{}:{}", plugin_id, id));
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Null),
+                );
+            }
+            ApiRequest::AddCommand { id, name, hotkey } => {                let p_id = plugin_id.clone();
                 let cmd_id = id.clone();
                 let host = self.state.plugin_host.clone();
                 let p_name = host.get_plugin_name(&plugin_id).unwrap_or_else(|| plugin_id.clone());
@@ -664,6 +839,34 @@ impl AppView {
                     }),
                 };
                 self.state.ribbon.register(action);
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Null),
+                );
+                cx.notify();
+            }
+            ApiRequest::AddStatusBarItem { id } => {
+                let full_id = format!("{}:{}", plugin_id, id);
+                self.state.status_bar.set_item(crate::ribbon::StatusBarItem {
+                    id: full_id,
+                    text: String::new(),
+                    owner: Some(plugin_id.clone()),
+                    on_click: None,
+                });
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Null),
+                );
+                cx.notify();
+            }
+            ApiRequest::UpdateStatusBarItem { id, text } => {
+                // Resolve either the prefixed or bare id to the plugin-owned item.
+                let full_id = format!("{}:{}", plugin_id, id);
+                if self.state.status_bar.all().iter().any(|i| i.id == full_id) {
+                    self.state.status_bar.set_text(&full_id, &text);
+                } else if self.state.status_bar.all().iter().any(|i| i.id == id) {
+                    self.state.status_bar.set_text(&id, &text);
+                }
                 let _ = self.state.plugin_host.send_event(
                     &plugin_id,
                     HostEvent::response_ok(request_id, serde_json::Value::Null),

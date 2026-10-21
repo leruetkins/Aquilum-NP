@@ -380,6 +380,28 @@ pub struct Snapshot {
     /// Active editor buffer for the plugins' synchronous `editor.getValue()`
     /// and friends. Rope clone is O(1); `None` when no document is open.
     pub active_doc: Option<ActiveDocSnapshot>,
+    /// Command palette entries for `app.commands` (id, name, hotkey, owner).
+    pub commands: Arc<[CommandInfo]>,
+    /// Registered plugin manifests for `app.plugins` (id, name, version, description).
+    pub plugins: Arc<[PluginInfo]>,
+}
+
+/// Command palette entry exposed through `app.commands` to plugins.
+#[derive(Debug, Clone, Default)]
+pub struct CommandInfo {
+    pub id: String,
+    pub name: String,
+    pub hotkey: Option<String>,
+    pub owner: Option<String>,
+}
+
+/// Registered plugin entry exposed through `app.plugins` to plugins.
+#[derive(Debug, Clone, Default)]
+pub struct PluginInfo {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub description: String,
 }
 
 /// Cursor/selection of the active document in (line, ch) character coordinates,
@@ -420,6 +442,9 @@ pub struct AppState {
     pub code_block_processors: Arc<crate::plugins::code_block::CodeBlockProcessorRegistry>,
     pub plugin_host: Arc<crate::plugins::bridge::PluginHostState>,
     pub snapshot: Arc<arc_swap::ArcSwap<Snapshot>>,
+    /// Registered plugin manifests, updated by the plugin bridge when a plugin
+    /// registers or unregisters; carried into the snapshot for `app.plugins`.
+    pub snapshot_plugins: Arc<arc_swap::ArcSwap<std::sync::Arc<[PluginInfo]>>>,
     pub file_tree: Vec<FileNode>,
     pub expanded_folders: HashSet<PathBuf>,
     pub search_query: String,
@@ -490,6 +515,7 @@ impl AppState {
         let code_block_processors = Arc::new(crate::plugins::code_block::CodeBlockProcessorRegistry::new());
         let plugin_host = Arc::new(crate::plugins::bridge::PluginHostState::new());
         let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
+        let snapshot_plugins = Arc::new(arc_swap::ArcSwap::from_pointee(std::sync::Arc::from(Vec::new())));
 
         let mut state = Self {
             settings: Arc::clone(&settings),
@@ -503,6 +529,7 @@ impl AppState {
             code_block_processors,
             plugin_host,
             snapshot,
+            snapshot_plugins,
             file_tree: Vec::new(),
             expanded_folders: session.expanded_folders.clone(),
             search_query: String::new(),
@@ -2196,6 +2223,12 @@ impl AppState {
 
         let version = active_doc.as_ref().map(|d| d.version).unwrap_or(0);
         let language = crate::i18n::LocaleInfo::normalize(&self.settings.get_config().ui.language).to_string();
+        let commands: std::sync::Arc<[CommandInfo]> = self
+            .commands
+            .all()
+            .into_iter()
+            .map(|c| CommandInfo { id: c.id, name: c.name, hotkey: c.hotkey, owner: c.owner })
+            .collect();
         let active_doc_snapshot = active_doc.zip(self.active_view()).map(|(doc, view)| {
             let head = view.line_col(doc);
             let anchor = view.selection_anchor.map(|a| {
@@ -2212,6 +2245,8 @@ impl AppState {
             active_file: active,
             files,
             active_doc: active_doc_snapshot,
+            commands,
+            plugins: std::sync::Arc::from(self.snapshot_plugins.load().as_ref().to_vec()),
         }));
     }
 
@@ -4067,6 +4102,7 @@ mod tests {
             code_block_processors: Arc::new(crate::plugins::code_block::CodeBlockProcessorRegistry::new()),
             plugin_host: Arc::new(crate::plugins::bridge::PluginHostState::new()),
             snapshot: snapshot.clone(),
+            snapshot_plugins: Arc::new(arc_swap::ArcSwap::from_pointee(std::sync::Arc::from(Vec::new()))),
             file_tree: Vec::new(),
             expanded_folders: HashSet::new(),
             search_query: String::new(),

@@ -8,6 +8,14 @@ pub type RequestId = u64;
 pub enum ApiRequest {
     /// Read file content within vault: app.vault.read(path)
     VaultRead { path: String },
+    /// Read file bytes within vault, base64-encoded in the response: app.vault.readBinary(file)
+    VaultReadBinary { path: String },
+    /// Lists a folder: app.vault.adapter.list(path) -> { files, folders }
+    VaultListDir { path: String },
+    /// Write binary file content (base64 payload): app.vault.modifyBinary(file, data)
+    VaultModifyBinary { path: String, data_base64: String },
+    /// Create a new binary file (base64 payload): app.vault.createBinary(path, data)
+    VaultCreateBinary { path: String, data_base64: String },
     /// Modify file content within vault: app.vault.modify(path, data)
     VaultModify { path: String, data: String },
     /// Create new file within vault: app.vault.create(path, data)
@@ -21,7 +29,17 @@ pub enum ApiRequest {
     /// Rename or move file within vault: app.vault.rename(old_path, new_path)
     VaultRename { old_path: String, new_path: String },
     /// Display notification notice: new Notice(text, timeout)
-    Notice { text: String, timeout_ms: u32 },
+    Notice {
+        text: String,
+        timeout_ms: u32,
+        /// Runtime-assigned notice identity, used by setMessage()/hide().
+        #[serde(default)]
+        id: Option<String>,
+    },
+    /// Updates the text of a previously shown notice: Notice.setMessage()
+    NoticeUpdate { id: String, text: String },
+    /// Dismisses a previously shown notice: Notice.hide()
+    NoticeHide { id: String },
     /// Open note in the active editor workspace
     OpenFile { path: String },
     /// Open external URL in system browser
@@ -54,12 +72,18 @@ pub enum ApiRequest {
         name: String,
         hotkey: Option<String>,
     },
+    /// Unregister a previously added command: plugin.removeCommand(id)
+    RemoveCommand { id: String },
     /// Register ribbon action: plugin.addRibbonIcon(icon, title, callback)
     AddRibbonIcon {
         id: String,
         icon: String,
         title: String,
     },
+    /// Register a status-bar slot: plugin.addStatusBarItem(); text updates follow.
+    AddStatusBarItem { id: String },
+    /// Updates the text of a plugin's status-bar item.
+    UpdateStatusBarItem { id: String, text: String },
     /// Execute a command by id
     ExecuteCommand {
         id: String,

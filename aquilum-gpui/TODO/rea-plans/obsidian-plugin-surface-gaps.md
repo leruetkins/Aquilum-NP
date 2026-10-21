@@ -610,6 +610,51 @@ Modal: setTitle(title: string); setContent(content: string); setCloseCallback(cb
 (одна выборка); позиции не валидируются после чужих правок между чтением и записью. Харнесс:
 125/125 (16 новых тестов Editor). Коммит: буфер редактора.
 
+**Фикс 21.10.2026: кнопки плагинов не нажимались (disabled-reflection).** Плагины создавали кнопку
+с `attr: { disabled: ... }` (часто с булевым значением из состояния) и позже включали её через
+`btn.disabled = false`. В VElement свойство и атрибут были независимы, а сериализатор считал
+кнопку выключенной при **любом** наличии атрибута — `on_click` не вешался (ui.rs: ветка
+`if !is_disabled`), и клик молча умирал при живом, читаемом виде кнопки. Теперь `disabled` —
+отражённое свойство, как в DOM: сеттер свойства пишет/снимает атрибут, геттер учитывает атрибут
+(`"false"` = включена), `aria-disabled`, и запасное `_disabled`; сериализатор читает только
+свойство. Семантика проверена repro'ами на 6 случаях (attr true/false, свойство on/off,
+aria-disabled, ButtonComponent.setDisabled on/off). Харнесс 193/193 (+4 теста).
+
+**Статус на 21.10.2026, этап 5.** Шаг 11 (утилиты P2) закрыт целиком: `sanitizeHTMLToDom`
+(через существующий sanitize+parse пайплайн), `getFrontMatterInfo`, `resolveSubpath` (headings;
+блок-референсы честно null), `prepareFuzzySearch`/`prepareSimpleSearch`. Шаг 2 добит: классы
+`FileView`/`TextFileView` экспортированы, цепочка `instanceof` работает, `TextFileView.data`/
+`setContent`→`onSetData`/`getDoc` по контракту. Шаг 12 закрыт частично: `app.plugins`
+(`manifests`/`plugins`/`enabledPlugins`/`getPlugin`) и `app.commands` (`commands`/`listCommands`)
+— зеркала реестров из snapshot (`Snapshot.commands`/`plugins`, обновление при загрузке/выгрузке
+плагинов и из `CommandRegistry`). `app.keymap`/`app.setting` по-прежнему нет. `adapter.list` —
+реальный листинг каталога через `vault_list_dir`; `adapter.stat` — по-прежнему заглушка
+(csize/mtime = 0). Статус-бар: `addStatusBarItem` регистрирует слот в `StatusBarRegistry`,
+`el.setText()` обновляет текст через `update_status_bar_item` — рендер в существующем цикле
+статус-бара. Эффект на корпусе 500: `ok` 168 → **170**, `degraded` → 108. Харнесс 189/189.
+Остаётся из хост-слотов этапа 3: вызов постпроцессоров и протокольных хендлеров.
+
+**Статус на 21.10.2026, этап 4.** Шаг 6 (`Vault.adapter` целиком) закрыт по бинарной части:
+`readBinary`/`writeBinary` работают через base64-транспорт (запросы `vault_read_binary`/
+`vault_create_binary`/`vault_modify_binary`; лимит 50 МБ на файл; `createBinary` отказывает на
+существующем файле, `adapter.writeBinary` перезаписывает через фолбэк на modify). `FileSystemAdapter`
+добавлен как класс со статическими методами, маршрутизированными через vault-канал — абсолютные
+пути диска в песочнице недоступны. `vault.createBinary`/`readBinary`/`modifyBinary` работают.
+Эффект на корпусе 500: `ok` 148 → **168**, `degraded` → 110. Харнесс 173/173.
+Остаётся из шага 6: `stat`/`list` возвращают заглушку-листинг markdown-файлов, а не реальные
+записи каталога.
+
+**Статус на 21.10.2026, этап 3.** Шаги 9 и 14 закрыты: `Notice.setMessage`/`hide` (плюс поля
+`noticeEl`/`messageEl`/`containerEl`; запросы `notice_update`/`notice_hide` в api.rs/bridge.rs),
+`Menu.hide`/`close`/`onHide`/`setNoIcon`/`setUseNativeMenu`/`setParentElement`, `Setting.setDisabled`/
+`addSearch`/`addMomentFormat`/`addColorPicker`/`addProgressBar`/`then`/`clear` (+ классы
+`SearchComponent`/`MomentFormatComponent`/`ColorComponent`/`ProgressBarComponent` по образцу
+существующих `*Component`), `Plugin.removeCommand` (снимает команду хоста по bare и prefixed id),
+`registerObsidianProtocolHandler`/`registerEditorSuggest`/`registerMarkdownPostProcessor`
+(регистрация в рантайме; вызов протокольных хендлеров и постпроцессоров при событии — TODO),
+`addStatusBarItem` (VElement-слот; рендер в статус-баре — TODO хост-слота). Эффект на корпусе 500:
+`ok` 123 → **148**, `degraded` → 130. Харнесс 165/165.
+
 **Статус на 21.10.2026, этап 2.** Шаг 11 (утилиты P2) закрыт частично: `parseYaml`/`stringifyYaml`
 (YAML-парсер в бутстрапе, frontmatter-подмножество: вложенные карты, списки объектов, inline-flow,
 block-скаляры, комментарии; якоря/теги/многодокументность не поддерживаются и падают), `getAllTags`,

@@ -636,6 +636,25 @@ impl AppView {
         });
     }
 
+    /// Publishes the registered plugin manifests into the snapshot so `app.plugins`
+    /// in every plugin runtime sees the current registry without a protocol call.
+    pub fn refresh_plugin_registry_snapshot(&mut self) {
+        let list: Vec<crate::state::PluginInfo> = self
+            .plugin_runtimes
+            .iter()
+            .map(|h| crate::state::PluginInfo {
+                id: h.manifest.id.clone(),
+                name: h.manifest.name.clone(),
+                version: h.manifest.version.clone(),
+                description: h.manifest.description.clone(),
+            })
+            .collect();
+        self.state
+            .snapshot_plugins
+            .store(std::sync::Arc::new(std::sync::Arc::from(list)));
+        self.state.publish_snapshot();
+    }
+
     /// Discovers and spawns all installed plugins located in `<vault>/.vault/plugins/`.
     pub fn load_installed_plugins_for_vault(&mut self) {
         self.unload_all_plugins();
@@ -660,6 +679,9 @@ impl AppView {
             &self.state.plugin_host,
         );
         self.plugin_runtimes = handles;
+        // app.plugins reads the registry from the snapshot: publish the freshly
+        // loaded manifests before any plugin code runs against it.
+        self.refresh_plugin_registry_snapshot();
 
         // ВРЕМЕННО (снять окно плагина для проверки вёрстки без кликов):
         // AQUILUM_DEBUG_PLUGIN_CMD="<plugin-id>:<command-id>"
@@ -691,6 +713,7 @@ impl AppView {
         self.plugin_runtimes.clear();
         self.plugin_views.clear();
         self.plugin_leaf_views.clear();
+        self.refresh_plugin_registry_snapshot();
         self.active_right_leaf = None;
         self.active_left_leaf = None;
         self.active_center_leaf = None;
