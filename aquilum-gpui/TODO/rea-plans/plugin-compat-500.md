@@ -210,6 +210,58 @@
 **Статус на 19.10.2026.** Пачка 1 закрыта целиком, из пачки 2 — пять пунктов, плюс оба P0.
 Итог по корпусу 500: `ok` 91, `degraded` 187, `blocked` 222 (без жёстких блокеров 266, 53%).
 
+**Динамический прогон 21.10.2026 (probe) — фаза активации.** После добавления фазы активации
+(дёргать до 12 зарегистрированных команд, тикать `__check_timers`, триггерить
+`active-leaf-change`) телеметрия вскрыла ленивые плагины: **265/266 загружаются**, UI-деревьев
+465 (было 191), кнопок 814 (было 111). `appCalls` (через Proxy на `globalThis.app`, т.к. плагины
+берут app из конструктора) дали точную карту вызовов; сверка с хостом закрыла последние методы:
+`vault.getFolderByPath` (реальная проверка префикса), `vault.getConfig` → `null`,
+`app.keymap` (push/pop/getRootScope), `app.hotkeyManager`, `app.secretStorage` (getSecret → null),
+`workspace.rootSplit/leftSplit/rightSplit` → сам workspace (единый лейаут), `request` (promise-of-text
+над `requestUrl`). После фиксов: `ok` 175 → **183**, `degraded` 95. Реальные missing-экспорты на
+корпусе: только `loadMermaid` (2) и `getIconIds` (1) — уже добавлены в экспорты; `__esModule` —
+шум трансляции. Единственный незагруженный — `attachment-uploader` (`node:util.promisify`,
+движковый блокер вне JS-компетенции). Реестр обновлён: `out/ui-pattern-registry.json`.
+
+**Динамический прогон 21.10.2026 (probe) — финал.** Инструмент `plugin-probe` (REA:
+`.workbuddy-ai/tools/plugin-probe/`, данные и реестр: `D:\Naben\zcode-plugin-probe\out\`,
+README внутри) исполняет реальный `main.js` 266 плагинов без движковых блокеров в изолированном
+vm-контексте с настоящим bootstrap'ом. После добавления найденных прогоном пробелов:
+**264/266 загружаются** (единственный оставшийся — `attachment-uploader`, тянет `node:util.promisify`
+— это движковый блокер, который статика не видела). Найденные и закрытые пробником дыры:
+`Buffer`/`global`/`speechSynthesis`/`HTMLElement`/`Image`/`self`/`crypto.getRandomValues`/
+`window.addEventListener`/`document.addEventListener`/`TransformStream`-семейство — стенд-ины
+бутстрапа; `loadMermaid`/`loadPrism` → `null`, `getIconIds` → `[]`, `getIcon` → `null`;
+`parseFrontMatterEntry`/`parseFrontMatterTags`/`parseFrontMatterAliases`/`parseFrontMatterStringArray`
+— настоящие экспорты над frontmatter-объектами. После фиксов: `ok` 170 → **175**.
+
+UI-телеметрия (185 плагинов строят деревья): `setting_item` 1178, `text` 474, `input` 407,
+`column` 378, `toggle` 296, `select` 145, `button` 120, `textarea` 43, `slider` 33 — **90%+ UI
+плагинов — Setting-формы**, все типы поддержаны; inline-стили почти не используются (2 свойства
+на весь корпус) — оформление идёт классами и styles.css. Кнопки: default/cta/warning.
+Реестр паттернов для GPUI-трансляции: `out/ui-pattern-registry.json`. Хост-каналы: `add_command`
+1316, `load_data` 411, `set_view_tree` 362, `add_ribbon_icon` 185, `register_code_block_processor`
+62, `save_data` 52, `create_folder` 34, `add_status_bar_item` 34 (работает), `notice` 22.
+Дальше пробником: интерактивные сценарии (ленивые колбэки 45+ плагинов, пока без вызовов).
+
+**Динамический прогон 21.10.2026 (probe) — первый заход.** Новый инструмент `plugin-probe` (REA:
+`.workbuddy-ai/tools/plugin-probe/`, данные: `D:\Naben\zcode-plugin-probe\out\`) исполняет
+реальный `main.js` 266 плагинов без движковых блокеров в изолированном vm-контексте с настоящим
+bootstrap'ом. Результаты первого прогона: **243/266 загрузились**; не хватает API почти ничего —
+`loadMermaid` (2), `getIconIds` (1), остальное — Node/browser-глобалы (`Buffer`, `global`,
+`Image`, `speechSynthesis.getVoices`, `node:util.promisify`, `window.addEventListener`).
+`Buffer`/`global`/`speechSynthesis` добавлены в бутстрап (минимальные стенд-ины), `loadMermaid`/
+`loadPrism` → `null` (честная ветка «библиотеки нет»), `getIconIds` → `[]`, `getIcon` → `null`.
+После фиксов: `ok` 170 → **175**. UI-телеметрия (165 плагинов строят деревья, 2 869 узлов):
+`setting_item` 1075, `text` 445, `input` 377, `column` 353, `toggle` 262, `select` 138,
+`button` 111, `textarea` 37, `slider` 29 — т.е. **90%+ UI плагинов — это Setting-формы**, все
+типы которых уже поддержаны; inline-стили почти не используются (1 свойство на весь корпус) —
+оформление идёт классами и styles.css. Кнопки: default 84 / cta 25 / warning 2. Реестр паттернов:
+`out/ui-pattern-registry.json`. Хост-каналы: `add_command` 609, `load_data` 196, `set_view_tree` 171,
+`add_ribbon_icon` 89, `register_code_block_processor` 30, `save_data` 24, `create_folder` 17,
+`add_status_bar_item` 16 (уже работает), `notice` 10. 45 плагинов не сделали ни одного вызова —
+их активность ленивая (колбэки, таймеры), для них следующий шаг — интерактивные сценарии пробника.
+
 **Статус на 21.10.2026, этап 5.** Утилиты: `sanitizeHTMLToDom` (переиспользует sanitize+parse
 пайплайн, отдаёт фрагмент с `.children`/`appendTo`), `getFrontMatterInfo` (exists/from/to/
 frontmatter/frontmatterPos), `resolveSubpath` (heading-совпадения, блок-референсы честно null —

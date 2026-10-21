@@ -4014,6 +4014,12 @@ fn setup_plugin_environment<'js>(
         }
         function tryJson(s) { try { return JSON.parse(s); } catch (e) { return null; } }
 
+        // request() is the promise-of-text variant of requestUrl (Obsidian contract).
+        function request(options) {
+            if (typeof options === "string") options = { url: options };
+            return requestUrl(options).then((res) => res.text);
+        }
+
         function moment(date) {
             const d = date ? new Date(date) : new Date();
             return {
@@ -4469,6 +4475,21 @@ fn setup_plugin_environment<'js>(
             // The host vault has a single root; folders are not modeled, so every
             // file is returned regardless of type (Obsidian returns TFiles+TFolders).
             getRoot: () => new TFolder("/"),
+            getFolderByPath: (path) => {
+                // The host does not model folders; a folder path resolves to a TFolder
+                // handle when it is a real prefix of listed files, otherwise null.
+                const p = typeof path === 'object' ? path.path : path;
+                const norm = normalizePath(String(p || "")).replace(/\/+$/, "");
+                if (!norm || norm === "/") return new TFolder("/");
+                const prefix = norm + "/";
+                if (__host_get_markdown_files().some((f) => f.startsWith(prefix))) return new TFolder(norm);
+                return null;
+            },
+            getConfig: (_key) => {
+                // The host does not expose per-key vault config; Obsidian's keys
+                // (alwaysUpdateLinks etc.) have no local equivalent yet.
+                return null;
+            },
             getAllLoadedFiles: () => __host_get_markdown_files().map(p => new TFile(p)),
             getName: () => {
                 const active = __host_get_active_file();
@@ -4618,6 +4639,11 @@ fn setup_plugin_environment<'js>(
                 const p = __host_get_active_file();
                 return p ? new TFile(p) : null;
             },
+            // Split references for plugins that read the layout tree: the host has a single
+            // center layout, so both sides resolve to the root handle.
+            get rootSplit() { return this; },
+            get leftSplit() { return this; },
+            get rightSplit() { return this; },
             get activeLeaf() {
                 return getActiveLeaf();
             },
@@ -4840,6 +4866,24 @@ fn setup_plugin_environment<'js>(
                 dragFile: () => ({}),
                 onDragStart: () => {}
             },
+            // Scope registry with no hotkey conflict resolution yet: push/pop are bookkeeping,
+            // getRootScope returns a stable Scope the plugin can register into.
+            keymap: {
+                pushScope: (_scope) => {},
+                popScope: (_scope) => {},
+                getRootScope: () => globalThis.Scope ? new globalThis.Scope() : { register: () => {}, unregister: () => false },
+            },
+            hotkeyManager: {
+                addDefaultHotkeys: (_id, _hotkeys) => {},
+                getHotkey: (_commandId) => null,
+                removeHotkeys: (_id) => {},
+            },
+            // Secrets stay in the plugin's own data.json (plugin authors do this anyway);
+            // returning stored values would promise OS-level storage that does not exist.
+            secretStorage: {
+                getSecret: (_id) => null,
+                setSecret: (_id, _value) => {},
+            },
             fileManager: {
                 getNewFileParent: () => new TFolder("/"),
                 generateMarkdownLink: () => "",
@@ -4962,6 +5006,80 @@ fn setup_plugin_environment<'js>(
         };
         globalThis.Platform = Platform;
         globalThis.window = globalThis;
+        // Window/document-level event listeners: plugins register them expecting the real
+        // DOM; the host never fires window events, so the registrations are silent no-ops
+        // that keep `typeof window.addEventListener === "function"` true.
+        globalThis.addEventListener = () => {};
+        globalThis.removeEventListener = () => {};
+        globalThis.dispatchEvent = () => true;
+        // Node-flavored globals that desktop plugin bundles reference at module scope
+        // (`typeof Buffer !== "undefined"` guards, `global` aliases). The host runs no
+        // Node, so these are faithful minimal stand-ins; real fs/process stay absent.
+        globalThis.global = globalThis;
+        globalThis.Buffer = {
+            isBuffer: () => false,
+            from: (value) => {
+                if (value == null) return new Uint8Array(0);
+                if (typeof value === "string") return new TextEncoder().encode(String(value));
+                if (value instanceof ArrayBuffer) return new Uint8Array(value);
+                if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+                return new Uint8Array(Array.from(value, (n) => Number(n) & 0xff));
+            },
+            alloc: (len, fill = 0) => new Uint8Array(Number(len) || 0).fill(fill),
+            concat: (list) => {
+                const parts = Array.from(list || []);
+                const total = parts.reduce((n, p) => n + (p ? p.length : 0), 0);
+                const out = new Uint8Array(total);
+                let off = 0;
+                for (const p of parts) {
+                    if (p) { out.set(new Uint8Array(p.buffer || p), off); off += p.length; }
+                }
+                return out;
+            },
+        };
+        // speechSynthesis: empty voice list — the API exists, audio does not play.
+        globalThis.speechSynthesis = {
+            getVoices: () => [],
+            speak: () => {},
+            cancel: () => {},
+            pause: () => {},
+            resume: () => {},
+        };
+        // Web-platform stand-ins referenced by plugin bundles. They exist as inert
+        // constructors: `instanceof` never matches anything meaningful, and plugin
+        // feature detection (`typeof HTMLElement !== "undefined"`) passes.
+        globalThis.HTMLElement = class HTMLElement {};
+        globalThis.HTMLImageElement = class HTMLImageElement {};
+        globalThis.Image = class Image {
+            constructor() { this.src = ""; this.onload = null; this.onerror = null; }
+        };
+        globalThis.self = globalThis;
+        globalThis.crypto = {
+            // Deterministic fill is enough for ids/nonces; not for real secrets, which
+            // plugins must obtain through requestUrl to their own services.
+            getRandomValues: (arr) => {
+                for (let i = 0; i < arr.length; i++) {
+                    arr[i] = (Math.random() * 256) | 0;
+                }
+                return arr;
+            },
+            randomUUID: () => "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+                const r = (Math.random() * 16) | 0;
+                const v = c === "x" ? r : (r & 0x3) | 0x8;
+                return v.toString(16);
+            }),
+        };
+        // Streams API names referenced by fetch-style plugin code; the host has no
+        // streaming transport, so the constructors throw if actually instantiated.
+        globalThis.TransformStream = class TransformStream {
+            constructor() { throw new Error("TransformStream is not supported by the Vibecodium host"); }
+        };
+        globalThis.ReadableStream = class ReadableStream {
+            constructor() { throw new Error("ReadableStream is not supported by the Vibecodium host"); }
+        };
+        globalThis.WritableStream = class WritableStream {
+            constructor() { throw new Error("WritableStream is not supported by the Vibecodium host"); }
+        };
         moment.locale = () => getLanguage();
         globalThis.window.moment = moment;
         globalThis.open = function(url) {
@@ -4987,6 +5105,11 @@ fn setup_plugin_environment<'js>(
         const __doc_head = new VElement("head");
         globalThis.document = {
             documentElement: { lang: "ru" },
+            // Plugins register document-level listeners expecting the real DOM; the host
+            // never fires them. Kept as silent no-ops so registration does not throw.
+            addEventListener: () => {},
+            removeEventListener: () => {},
+            dispatchEvent: () => true,
             createElement: (t, options) => new VElement(t, options),
             createDocumentFragment: () => new VElement("#fragment"),
             body: __doc_body,
@@ -5125,6 +5248,7 @@ fn setup_plugin_environment<'js>(
             MarkdownRenderer,
             FileSystemAdapter,
             requestUrl,
+            request,
             moment,
             getLanguage,
             Platform,
@@ -5145,8 +5269,43 @@ fn setup_plugin_environment<'js>(
             finishRenderMath: () => {},
             loadPdfJs: () => Promise.resolve(),
             loadMathJax: () => Promise.resolve(),
+            // Dynamic loaders have no backing assets in the native host; resolving to
+            // null lets plugins take their "library unavailable" branch instead of crashing.
+            loadMermaid: () => Promise.resolve(null),
+            loadPrism: () => Promise.resolve(null),
+            getIconIds: () => [],
+            getIcon: () => null,
             parseYaml,
             stringifyYaml,
+            // Frontmatter field accessors (Obsidian contract): the plugin calls them on
+            // metadata.frontmatter objects the host does not parse yet, so they degrade to
+            // "field absent" instead of crashing the plugin's callback chain.
+            parseFrontMatterEntry: (fm, key) => {
+                if (!fm || typeof fm !== "object") return null;
+                const v = fm[key];
+                return v === undefined ? null : v;
+            },
+            parseFrontMatterStringArray: (fm, key) => {
+                if (!fm || typeof fm !== "object") return null;
+                const v = fm[key];
+                if (Array.isArray(v)) return v.map(String);
+                if (typeof v === "string") return [v];
+                return null;
+            },
+            parseFrontMatterTags: (fm) => {
+                if (!fm || typeof fm !== "object") return null;
+                const raw = fm.tag !== undefined ? fm.tag : fm.tags;
+                if (Array.isArray(raw)) return raw.map((t) => (typeof t === "string" && t.startsWith("#") ? t.slice(1) : String(t)));
+                if (typeof raw === "string") return raw.split(/[,\s]+/).filter(Boolean);
+                return null;
+            },
+            parseFrontMatterAliases: (fm) => {
+                if (!fm || typeof fm !== "object") return null;
+                const v = fm.aliases;
+                if (Array.isArray(v)) return v.map(String);
+                if (typeof v === "string") return [v];
+                return null;
+            },
                 getAllTags(cache) {
                     if (!cache) return [];
                     const seen = new Set();
