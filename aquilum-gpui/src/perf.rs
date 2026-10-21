@@ -6,6 +6,7 @@ pub struct PerfCounters {
     pub span_rebuilds: AtomicU64,
     pub blocks_invalidated: AtomicU64,
     pub shape_calls: AtomicU64,
+    pub shape_cache_hits: AtomicU64,
     pub layout_cache_hit: AtomicU64,
     pub layout_cache_miss: AtomicU64,
     pub notify_calls: AtomicU64,
@@ -17,6 +18,7 @@ pub static PERF: PerfCounters = PerfCounters {
     span_rebuilds: AtomicU64::new(0),
     blocks_invalidated: AtomicU64::new(0),
     shape_calls: AtomicU64::new(0),
+    shape_cache_hits: AtomicU64::new(0),
     layout_cache_hit: AtomicU64::new(0),
     layout_cache_miss: AtomicU64::new(0),
     notify_calls: AtomicU64::new(0),
@@ -24,12 +26,13 @@ pub static PERF: PerfCounters = PerfCounters {
 };
 
 impl PerfCounters {
-    pub fn snapshot_and_reset(&self) -> [u64; 7] {
+    pub fn snapshot_and_reset(&self) -> [u64; 8] {
         [
             self.parse_calls.swap(0, Relaxed),
             self.span_rebuilds.swap(0, Relaxed),
             self.blocks_invalidated.swap(0, Relaxed),
             self.shape_calls.swap(0, Relaxed),
+            self.shape_cache_hits.swap(0, Relaxed),
             self.layout_cache_hit.swap(0, Relaxed),
             self.layout_cache_miss.swap(0, Relaxed),
             self.notify_calls.swap(0, Relaxed),
@@ -45,8 +48,8 @@ impl PerfCounters {
         let dt = delta_time_str();
         let c = self.snapshot_and_reset();
         eprintln!(
-            "[+{dt}] [{tag}] elapsed={:?} parse={} spans={} inval={} shape={} hit={} miss={} notify={}",
-            elapsed, c[0], c[1], c[2], c[3], c[4], c[5], c[6]
+            "[+{dt}] [{tag}] elapsed={:?} parse={} spans={} inval={} shape={} shape_hits={} lay_hit={} lay_miss={} notify={}",
+            elapsed, c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]
         );
     }
 
@@ -65,7 +68,7 @@ impl PerfCounters {
         let c = self.snapshot_and_reset();
         eprintln!(
             "[+{dt}] [caret_key:{key}] caret_visual=(row:{v_row}, col:{v_col}) doc=(line:{line}, col:{col}, off:{offset}) elapsed={:?} shape={} notify={}",
-            elapsed, c[3], c[6]
+            elapsed, c[3], c[7]
         );
     }
 
@@ -130,6 +133,7 @@ pub fn generate_test_doc(lines: usize) -> String {
 /// Returns (total time, per-character mean). This is the "characters per
 /// second" number to compare against a keyboard's key-repeat rate (~30 cps):
 /// the mean must stay far below 33 ms/char for repeat to feel instant.
+#[cfg(test)]
 fn measure_key_repeat(doc: &mut crate::document_buffer::DocumentBuffer, count: usize, at_eof: bool) -> (std::time::Duration, std::time::Duration) {
     let mut view = crate::workspace::EditorViewState::new(crate::workspace::TabId::new(), doc.id);
     let mut anchor = if at_eof { doc.len() } else { doc.len() / 2 };

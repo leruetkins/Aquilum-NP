@@ -190,6 +190,14 @@ pub struct AppView {
     /// Document line at the top of the viewport, refreshed once per frame.
     ///
     pub(crate) table_layouts: std::cell::RefCell<HashMap<usize, (u64, Arc<TableLayout>)>>,
+    /// Shape cache for ordinary (non-table) editor rows, keyed by a hash of
+    /// everything `shape_row` reads: line text, line kind, row char range,
+    /// active flag, font and cell width. Keying by content instead of line
+    /// index makes invalidation automatic — a keystroke only reshapes the one
+    /// line whose text changed; the other visible rows hit the cache.
+    /// (`table_layouts` is the same pattern for table rows.)
+    pub(crate) row_shape_cache:
+        std::cell::RefCell<HashMap<u64, Arc<RowShapedLayout>>>,
     pub(crate) manual_table_col_widths: HashMap<usize, Vec<f32>>,
     pub(crate) table_col_resize_drag: Option<TableColResizeDrag>,
     pub config: crate::settings::AppConfig,
@@ -470,6 +478,7 @@ impl AppView {
             code_block_views: HashMap::new(),
             plugin_api_tx: None,
             table_layouts: std::cell::RefCell::new(HashMap::new()),
+            row_shape_cache: std::cell::RefCell::new(HashMap::new()),
             manual_table_col_widths: HashMap::new(),
             table_col_resize_drag: None,
         };
@@ -480,6 +489,12 @@ impl AppView {
             match event {
                 crate::settings::SettingsEvent::ConfigChanged => {
                     this.config = model.read(cx).config.clone();
+                    // Font sizes / families changed: every cached shaped row
+                    // is stale; the content-hash key covers sizes, but the
+                    // family is hashed too — a wholesale clear is simplest
+                    // and rare enough not to matter.
+                    this.row_shape_cache.borrow_mut().clear();
+                    this.table_layouts.borrow_mut().clear();
                     for view in this.state.views.values_mut() {
                         view.visual_cache_dirty = true;
                     }
@@ -2377,6 +2392,61 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let layout = Arc::new(compute_table_layout(text_system, get_line, block, font_family, manual_widths));
         if let Ok(mut layouts) = table_layouts.try_borrow_mut() {
             layouts.insert(block.first_line, (content_hash, layout.clone()));
+        }
+        layout
+    }
+
+    /// Cached `shape_row` for ordinary (non-table) editor rows.
+    ///
+    /// The hash covers every input that changes the shaped result: the line
+    /// text, its classification (drives the painted text and the font size),
+    /// the row's char range, the active-line flag (markers are painted only
+    /// on the active line), the font family and the cell width. A change to
+    /// heading sizes invalidates via `clear_row_shape_cache`, called from the
+    /// settings subscription.
+    pub(crate) fn get_or_shape_row(
+        row_cache: &std::cell::RefCell<HashMap<u64, Arc<RowShapedLayout>>>,
+        text_system: &gpui::WindowTextSystem,
+        line: &str,
+        classified: &crate::markdown::LineKind<'_>,
+        v: &crate::markdown::VisualRow,
+        is_active_line: bool,
+        headings: &crate::settings::HeadingsSettings,
+        font_family: &SharedString,
+        cell_w: f32,
+    ) -> Arc<RowShapedLayout> {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        line.hash(&mut hasher);
+        std::mem::discriminant(&LineKindTag::of(classified)).hash(&mut hasher);
+        v.line_idx.hash(&mut hasher);
+        v.sub_idx.hash(&mut hasher);
+        v.char_start.hash(&mut hasher);
+        v.char_end.hash(&mut hasher);
+        is_active_line.hash(&mut hasher);
+        font_family.hash(&mut hasher);
+        cell_w.to_bits().hash(&mut hasher);
+        headings_cache_key(headings).hash(&mut hasher);
+        let key = hasher.finish();
+
+        if let Ok(cache) = row_cache.try_borrow() {
+            if let Some(layout) = cache.get(&key) {
+                crate::perf::PERF
+                    .shape_cache_hits
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return layout.clone();
+            }
+        }
+
+        let layout = Arc::new(shape_row(text_system, line, classified, v, is_active_line, headings, font_family, cell_w));
+        if let Ok(mut cache) = row_cache.try_borrow_mut() {
+            // Bounded the same way a frame is: the visible row set. A large
+            // vault scroll leaves stale entries behind; drop the whole cache
+            // when it grows past a few frames' worth of rows.
+            if cache.len() >= 4096 {
+                cache.clear();
+            }
+            cache.insert(key, layout.clone());
         }
         layout
     }
@@ -4555,14 +4625,20 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         // one notify per keystroke renders the editor at key-repeat rate
         // (~30 fps), and the caret/selection visibly *step* between frames —
         // plus the scroll reveal and the render-side clamp then fight across
-        // frames and the selection looks one event behind the caret. One
-        // settle frame doubles the cadence to ~60 fps while typing and lets
-        // the scroll converge. This deliberately costs a couple of GPU
-        // percent during typing; the expensive part (a full window rebuild
-        // per character) stays fixed.
+        // frames and the selection looks one event behind the caret.
+        //
+        // The settle frame, however, is only worth arming when the keystroke
+        // actually moved the scroll: the reveal below already wrote the final
+        // scroll position into the very frame that paints the edit, so a plain
+        // in-line insert has nothing new for a second frame to paint — and at
+        // key-repeat the doubled cadence (~60 fps vs ~30) is most of the GPU
+        // burn (measured 2026-10-21: ~8% GPU at one frame per char, ~18–20% at
+        // two). Scrolling keystrokes — typing at the viewport edge, cursor
+        // moves that leave the viewport — still get their settle frame.
         let version_before = self.state.active_document().map(|d| d.version);
         let anchor_before = self.state.active_view().and_then(|v| v.selection_anchor);
         let cursor_before = self.state.active_view().map(|v| v.cursor_offset);
+        let scroll_before = self.current_scroll_top_f64();
         match keystroke.key.as_str() {
             "backspace" => self.state.active_delete_backwards(),
             "delete" => self.state.active_delete_forwards(),
@@ -4589,9 +4665,6 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let state_changed = version_before != version_after
             || anchor_before != self.state.active_view().and_then(|v| v.selection_anchor)
             || cursor_before != self.state.active_view().map(|v| v.cursor_offset);
-        if state_changed {
-            self.layout_settle_frames.set(1);
-        }
         if self.state.active_document().map(|d| d.is_dirty).unwrap_or(false) {
             self.schedule_auto_save(cx);
         }
@@ -4600,6 +4673,12 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         // otherwise a row created at the very bottom (Enter) stays hidden
         // under the status bar until the next frame's rebuild.
         self.refresh_view_after_cursor_move();
+        // Decided after the reveal ran: it is the only thing here that moves
+        // the scroll, and it writes the final position directly, so the settle
+        // frame is needed exactly when that write happened.
+        if state_changed && (self.current_scroll_top_f64() - scroll_before).abs() > 0.5 {
+            self.layout_settle_frames.set(1);
+        }
         cx.notify();
     }
 
@@ -6961,8 +7040,6 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 (vr, shift)
             };
 
-            crate::perf::PERF.shape_calls.fetch_add(visible_range.len() as u64, std::sync::atomic::Ordering::Relaxed);
-
             let (slice_first_line, slice_line_starts) = {
                 let lo = visible_range.start.saturating_sub(1);
                 let hi = (visible_range.end + 1).min(visual_rows_arc.len());
@@ -7199,19 +7276,21 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 } else {
                     h_metrics_row_h
                 };
-                let row_layout = if let Some(tbl) = grid_tbl {
+                let row_layout: Arc<RowShapedLayout> = if let Some(tbl) = grid_tbl {
                     let cursor_col = if is_active_line && v.line_idx == cursor_line { Some(active_col_in_row) } else { None };
-                    shape_table_row(window.text_system(), line, tbl, v.line_idx, cursor_col, table_layout.as_ref().unwrap(), headings, &editor_font, row_char_w)
+                    Arc::new(shape_table_row(window.text_system(), line, tbl, v.line_idx, cursor_col, table_layout.as_ref().unwrap(), headings, &editor_font, row_char_w))
                 } else {
-                    shape_row(&text_system, line, &classified, v, is_active_line, headings, &editor_font, row_char_w)
+                    Self::get_or_shape_row(&self.row_shape_cache, &text_system, line, &classified, v, is_active_line, headings, &editor_font, row_char_w)
                 };
                 let row_layout_down = row_layout.clone();
                 let row_layout_move = row_layout.clone();
-                let row_layout_preview = if is_active_line {
+                let row_layout_preview: Arc<RowShapedLayout> = if is_active_line {
                     if let Some(tbl) = grid_tbl {
-                        shape_table_row(window.text_system(), line, tbl, v.line_idx, None, table_layout.as_ref().unwrap(), headings, &editor_font, row_char_w)
+                        Arc::new(shape_table_row(window.text_system(), line, tbl, v.line_idx, None, table_layout.as_ref().unwrap(), headings, &editor_font, row_char_w))
                     } else {
-                        shape_row(&text_system, line, &classified, v, false, headings, &editor_font, row_char_w)
+                        // The preview variant (markers hidden) is hashed under
+                        // `is_active_line = false` — a separate cache entry.
+                        Self::get_or_shape_row(&self.row_shape_cache, &text_system, line, &classified, v, false, headings, &editor_font, row_char_w)
                     }
                 } else {
                     row_layout.clone()
@@ -8365,11 +8444,22 @@ fn log_fps_tick() {
             let frames = FRAME_COUNT.swap(0, std::sync::atomic::Ordering::Relaxed);
             let elapsed = last.elapsed();
             *last = std::time::Instant::now();
+            // PERF counters ride the same one-second tick: `shape` = actual
+            // row-shaping calls (cache misses plus direct calls outside the
+            // cache), `shape_hits` = row-cache hits. While holding a key the
+            // working set is ~57 visible rows, so a working cache shows
+            // shape ≈ number of *changed* rows per second and hits in the
+            // thousands. Render calls themselves are the wake-up metric:
+            // ~2/s idle (caret blink), ~1–2 per keystroke while typing (the
+            // edit frame plus the settle frame).
+            let counters = crate::perf::PERF.snapshot_and_reset();
             eprintln!(
-                "[FPS Monitor] {:?} elapsed, {} render calls (~{:.1} FPS)",
+                "[FPS Monitor] {:?} elapsed, {} render calls (~{:.1} FPS), shape={} shape_hits={}",
                 elapsed,
                 frames,
-                frames as f32 / elapsed.as_secs_f32()
+                frames as f32 / elapsed.as_secs_f32(),
+                counters[3],
+                counters[4],
             );
         }
     }
@@ -10562,6 +10652,9 @@ pub(crate) fn shape_table_row(
     cell_w: f32,
 ) -> RowShapedLayout {
     const PADDING_X: f32 = 8.0;
+    crate::perf::PERF
+        .shape_calls
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if line_idx == block.sep_line() {
         let dummy_text: SharedString = "".into();
         let dummy_layout = text_system.layout_line("", px(14.0), &[], None);
@@ -10577,9 +10670,9 @@ pub(crate) fn shape_table_row(
         return RowShapedLayout {
             layout: dummy_layout,
             text: dummy_text,
-            line_chars: vec![0, line.chars().count()],
-            code_ranges: Vec::new(),
-            tag_ranges: Vec::new(),
+            line_chars: Arc::new(vec![0, line.chars().count()]),
+            code_ranges: Arc::new(Vec::new()),
+            tag_ranges: Arc::new(Vec::new()),
             cell_w,
             table_row: Some(table_row),
         };
@@ -10712,9 +10805,9 @@ pub(crate) fn shape_table_row(
     RowShapedLayout {
         layout: dummy_layout,
         text: "".into(),
-        line_chars: flat_line_chars,
-        code_ranges: flat_code_ranges,
-        tag_ranges: flat_tag_ranges,
+        line_chars: Arc::new(flat_line_chars),
+        code_ranges: Arc::new(flat_code_ranges),
+        tag_ranges: Arc::new(flat_tag_ranges),
         cell_w,
         table_row: Some(table_row),
     }
@@ -10724,9 +10817,9 @@ pub(crate) fn shape_table_row(
 pub(crate) struct RowShapedLayout {
     layout: Arc<gpui::LineLayout>,
     text: SharedString,
-    line_chars: Vec<usize>,
-    code_ranges: Vec<(usize, usize)>,
-    tag_ranges: Vec<(usize, usize, String)>,
+    line_chars: Arc<Vec<usize>>,
+    code_ranges: Arc<Vec<(usize, usize)>>,
+    tag_ranges: Arc<Vec<(usize, usize, String)>>,
     cell_w: f32,
     table_row: Option<Arc<TableRowLayout>>,
 }
@@ -10837,6 +10930,64 @@ impl RowShapedLayout {
     }
 }
 
+/// Discriminant-only tag of a `LineKind` for cache keys. The payloads
+/// (checked/indent/is_opening/lang) are functions of the line text and its
+/// position, which the key hashes separately — the variant identity alone
+/// is enough to separate the shapes.
+enum LineKindTag {
+    Heading1,
+    Heading2,
+    Heading3,
+    Heading4,
+    Heading5,
+    Heading6,
+    Quote,
+    Task,
+    BulletList,
+    NumberedList,
+    HorizontalRule,
+    CodeFence,
+    CodeLine,
+    Paragraph,
+}
+
+impl LineKindTag {
+    fn of(kind: &crate::markdown::LineKind<'_>) -> Self {
+        use crate::markdown::LineKind::*;
+        match kind {
+            Heading1(_) => Self::Heading1,
+            Heading2(_) => Self::Heading2,
+            Heading3(_) => Self::Heading3,
+            Heading4(_) => Self::Heading4,
+            Heading5(_) => Self::Heading5,
+            Heading6(_) => Self::Heading6,
+            Quote(_) => Self::Quote,
+            Task { .. } => Self::Task,
+            BulletList { .. } => Self::BulletList,
+            NumberedList { .. } => Self::NumberedList,
+            HorizontalRule => Self::HorizontalRule,
+            CodeFence { .. } => Self::CodeFence,
+            CodeLine(_) => Self::CodeLine,
+            Paragraph(_) => Self::Paragraph,
+        }
+    }
+}
+
+/// Hash of the heading settings a row's font metrics depend on; a settings
+/// change produces a different cache key, so cached layouts stop hitting.
+fn headings_cache_key(headings: &crate::settings::HeadingsSettings) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for style in [
+        &headings.h1, &headings.h2, &headings.h3, &headings.h4, &headings.h5, &headings.h6,
+    ] {
+        style.font_size.hash(&mut hasher);
+        style.bold.hash(&mut hasher);
+        style.italic.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 pub(crate) fn shape_row(
     text_system: &gpui::WindowTextSystem,
     line: &str,
@@ -10847,6 +10998,12 @@ pub(crate) fn shape_row(
     font_family: &SharedString,
     cell_w: f32,
 ) -> RowShapedLayout {
+    // Counts every real shaping (cache miss or direct call) — not rows per
+    // frame, which used to be counted in the render loop and masked whether
+    // the row cache worked at all.
+    crate::perf::PERF
+        .shape_calls
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let painted = crate::markdown::row_painted_text(line, classified, v, is_active_line, headings);
     let code_ranges = painted.code_ranges();
     let tag_ranges = painted.tag_ranges();
@@ -10885,9 +11042,9 @@ pub(crate) fn shape_row(
     RowShapedLayout {
         layout,
         text,
-        line_chars: painted.line_chars,
-        code_ranges,
-        tag_ranges,
+        line_chars: Arc::new(painted.line_chars),
+        code_ranges: Arc::new(code_ranges),
+        tag_ranges: Arc::new(tag_ranges),
         cell_w,
         table_row: None,
     }
