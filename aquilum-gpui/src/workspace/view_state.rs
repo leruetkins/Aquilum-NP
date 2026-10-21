@@ -806,6 +806,49 @@ impl TabSession {
             || self.window.wrap_cols != wrap_cols;
 
         let lines_total = doc.line_index.lines();
+        // What a pure window move must not disturb, captured before anything
+        // is replaced: the document's total height and the anchor line's
+        // document Y. Both are built from the *measured* window plus
+        // estimate-based margins, and a jump swaps real window content for
+        // estimate-based ones — without anchoring, the total wobbles by the
+        // real-vs-estimate difference of the swapped span, the render-side
+        // re-anchor rewrites the scroll by the residue, and the scrollbar
+        // thumb ticks (visible whenever scrolling is continuous, e.g. a wheel
+        // glide). Same idea as the original's align-on-jump: derive `above_h`
+        // from the preserved anchor Y and pin `below_h` to the preserved
+        // total, so a scroll that does not change the document never changes
+        // its height. Only a pure move pins — a dirty rebuild (edit, reveal,
+        // wrap change) may legitimately change heights.
+        let pure_move = !basis_stale
+            && !self.visual_cache_dirty
+            && !self.window.is_empty()
+            && lines_total > 2 * crate::editor_window::MARGIN_LINES + 1;
+        let old_total = self.total_height();
+        // The row the pin hangs on, read off the OLD window before it is
+        // replaced. It must genuinely represent the anchor line: its first
+        // own row when the line has one (a wrapped line's sub-rows share its
+        // line_idx), or — for a line with no row of its own, like a collapsed
+        // fence's body — the row that contains it. An anchor the old window
+        // does not cover (a jump) has no such row: pinning to the clamped
+        // last row would anchor the wrong line, so those moves fall back to
+        // the plain estimate.
+        let row_of = |window: &crate::editor_window::EditorWindow| -> Option<usize> {
+            if !window.covers_line(anchor_line) || window.visual_rows.is_empty() {
+                return None;
+            }
+            Some(
+                window
+                    .first_row_of_line(anchor_line)
+                    .unwrap_or_else(|| {
+                        window
+                            .visual_rows
+                            .partition_point(|r| r.line_idx <= anchor_line)
+                            .saturating_sub(1)
+                    }),
+            )
+        };
+        let old_row_top = pure_move.then(|| row_of(&self.window)).flatten()
+            .map(|v| self.window.height_index.top_of(v));
         let (start, end) = if lines_total <= 2 * crate::editor_window::MARGIN_LINES + 1 {
             (0, lines_total)
         } else if !self.window.is_empty()
@@ -876,7 +919,57 @@ impl TabSession {
         if basis_stale {
             self.refresh_estimate_basis();
         }
-        self.recompute_estimate();
+        if pure_move {
+            let new_row_top = row_of(&self.window).map(|v| self.window.height_index.top_of(v));
+            match (old_row_top, new_row_top) {
+                // Content: the anchor row keeps its exact document Y, so the
+                // frame that moved the window paints it where the previous
+                // frame did and the render-side re-anchor writes back the
+                // same scroll value — a no-op instead of a residue.
+                // Scrollbar: below absorbs whatever the est-vs-real
+                // difference of the swapped span is, so `total_height` —
+                // and with it `max_scroll` and the thumb geometry — stays
+                // constant across moves. When the window reaches a document
+                // edge the corresponding margin is exactly zero and the
+                // accumulated estimate error resolves into the other side
+                // (one small correction, like the original).
+                (Some(old_top), Some(inner_top))
+                    if self.above_lines > 0 || self.below_lines > 0 =>
+                {
+                    let old_y = self.above_h + old_top;
+                    let above = if self.above_lines == 0 {
+                        0.0
+                    } else {
+                        old_y - inner_top
+                    };
+                    let below = if self.below_lines == 0 {
+                        0.0
+                    } else {
+                        old_total - above - self.window.total_height()
+                    };
+                    // A negative margin means the real heights accumulated
+                    // by the anchor chain have outgrown the estimate-based
+                    // total the chain inherited from the first window (the
+                    // frozen per-line average is only as good as the window
+                    // it was frozen from). Clamping to zero would leave the
+                    // state broken — below stays 0 while lines remain below,
+                    // so every following move clamps again and the total
+                    // creeps. Falling back to the plain estimate rebuilds
+                    // both margins consistently: one small correction
+                    // towards the true height, then the chain pins again
+                    // from there.
+                    if above >= 0.0 && below >= 0.0 {
+                        self.above_h = above;
+                        self.below_h = below;
+                    } else {
+                        self.recompute_estimate();
+                    }
+                }
+                _ => self.recompute_estimate(),
+            }
+        } else {
+            self.recompute_estimate();
+        }
         self.visual_cache_dirty = false;
     }
 
@@ -1123,19 +1216,32 @@ impl TabSession {
             let row_h = self.est_row_h.max(1.0);
             return ((doc_y.max(0.0) / row_h) as usize).min(last_line);
         }
-        let rows_per_line = self.est_rows_per_line.max(f64::MIN_POSITIVE);
-        let row_h = self.est_row_h.max(1.0);
+        let doc_y = doc_y.max(0.0);
         let local = doc_y - self.above_h;
         if local < 0.0 {
-            let rows_above = (-local / row_h).ceil();
-            let lines_above = (rows_above / rows_per_line).round() as usize;
-            return self.window.start_line.saturating_sub(lines_above);
+            // Exact inverse of `doc_y_of_line`'s above-window branch (the
+            // above_h / above_lines ratio). With anchored margins the frozen
+            // per-row estimate no longer describes the region outside the
+            // window, and an inconsistent inverse would resolve the same
+            // scroll Y to a different line every frame — the window would
+            // chase its own anchor.
+            if self.above_lines == 0 || self.above_h <= 0.0 {
+                return 0;
+            }
+            let line = (doc_y / self.above_h * self.above_lines as f64).floor() as usize;
+            return line.min(last_line);
         }
         let window_h = self.window.total_height();
         if local >= window_h {
-            let rows_below = (local - window_h) / row_h;
-            let lines_below = (rows_below / rows_per_line).round() as usize;
-            return self.window.end_line.saturating_add(lines_below).min(last_line);
+            // Mirror of the below-window branch: window_bottom plus
+            // (lines_below / below_lines) × below_h.
+            if self.below_lines == 0 {
+                return last_line;
+            }
+            let window_bottom = self.above_h + window_h;
+            let line = self.window.end_line
+                + ((doc_y - window_bottom) / self.below_h * self.below_lines as f64).floor() as usize;
+            return line.min(last_line);
         }
         let local_v = self.window.height_index.v_idx_at_y(local);
         self.window

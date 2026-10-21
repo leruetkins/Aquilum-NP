@@ -25,26 +25,75 @@ pub(crate) const SCROLL_SETTLE_FRAMES: u8 = 3;
 /// lines on Windows) moves three rows of text.
 const WHEEL_LINE_PX: f32 = 24.0;
 
-/// Duration of the optional wheel ease, seconds. Short on purpose (~90 ms):
-/// the motion hands the eye a direction cue and then lands exactly on a hard
-/// deadline — no exponential tail, no re-settle. Off by default
+/// Duration bounds of the optional wheel glide, seconds. A notch gets
+/// `2 × mean interval of the last three notches`, clamped to this band: a
+/// sustained spin shortens the glide so the next notch keeps the motion
+/// alive, an isolated notch keeps a mid-length one. Off by default
 /// (`editor.wheelSmoothScroll`): with the flag off every notch applies
 /// instantly and the text stops dead.
-const WHEEL_EASE_DURATION: f32 = 0.09;
+const WHEEL_GLIDE_MIN_SECS: f32 = 0.05;
+const WHEEL_GLIDE_MAX_SECS: f32 = 0.20;
 
 /// Fixed thumb height (px) of the Zed-style wide scrollbar lane: a position
 /// marker that never resizes with the document.
 const WIDE_THUMB_H: f64 = 25.0;
 
-/// One in-flight wheel ease: `start` is where the motion began, `target`
-/// where it lands, `t0` when it began. Stepped in `render` against the hard
-/// deadline [`WHEEL_EASE_DURATION`]; a fresh notch re-anchors `start` at the
-/// live position and extends `target`, so fast scrolling never stutters.
+/// One in-flight wheel glide. `start` is the live position when the notch
+/// arrived, `target` where it lands; `curve` is the P1 control point of a
+/// cubic-bezier easing (P2 fixed at `(0.6, 1.0)`) whose initial slope carries
+/// the velocity of the glide the notch interrupted — a notch stream reads as
+/// one continuous motion instead of a series of restarts. Stepped in `render`
+/// against a hard deadline; past it the position lands exactly on `target`.
 #[derive(Clone, Copy)]
 pub struct WheelEase {
     start: f64,
     target: f64,
     t0: std::time::Instant,
+    duration_secs: f32,
+    curve: (f64, f64),
+}
+
+impl WheelEase {
+    /// Builds a glide from `from` to `to` entering with `velocity` (px/s).
+    /// The curve's initial tangent encodes that velocity: slope =
+    /// velocity·duration/span, then both coordinates are divided by
+    /// `(1 + slope²)^½` so a large velocity only tilts the tangent, never
+    /// breaks the time domain. An opposing velocity (reversal) or a zero
+    /// span degrades to the plain ease-out.
+    fn new(from: f64, to: f64, velocity: f64, duration_secs: f32) -> Self {
+        let span = to - from;
+        let slope = if span == 0.0 || velocity * span <= 0.0 {
+            0.0
+        } else {
+            velocity * f64::from(duration_secs) / span
+        };
+        let norm = (1.0 + slope * slope).sqrt();
+        const VELOCITY_WEIGHT: f64 = 0.25;
+        WheelEase {
+            start: from,
+            target: to,
+            t0: std::time::Instant::now(),
+            duration_secs,
+            curve: (VELOCITY_WEIGHT / norm, VELOCITY_WEIGHT * slope / norm),
+        }
+    }
+
+    fn position_at(&self, at: std::time::Instant) -> f64 {
+        let t = (at.duration_since(self.t0).as_secs_f32() / self.duration_secs).clamp(0.0, 1.0);
+        self.start + (self.target - self.start) * cubic_bezier(self.curve.0, self.curve.1, 0.6, 1.0, f64::from(t))
+    }
+
+    /// Current speed (px/s), numerically — what an arriving notch inherits.
+    /// At the very start the backward sample is clamped to `t0`, so the
+    /// interval shrinks with the position difference instead of measuring a
+    /// half-span average against a full interval (which reads as half speed).
+    fn velocity_at(&self, at: std::time::Instant) -> f64 {
+        let h = std::time::Duration::from_millis(1);
+        let before = at.max(self.t0);
+        let after = at + h;
+        let dt = after.duration_since(before).as_secs_f64();
+        (self.position_at(after) - self.position_at(before)) / dt
+    }
 }
 
 /// Rows rendered above and below the viewport.
@@ -72,6 +121,9 @@ pub struct AppView {
     /// Any direct write through `set_editor_scroll_top_f64` cancels it: the
     /// position came from elsewhere, so there is nothing left to ease towards.
     pub wheel_ease: Cell<Option<WheelEase>>,
+    /// Start instants of the last three wheel notches: the glide duration
+    /// adapts to how fast the wheel is spun (their mean × 2, clamped).
+    pub wheel_notch_history: Cell<[Option<std::time::Instant>; 3]>,
     pub sidebar_scroll_handle: ScrollHandle,
     pub settings_scroll_handle: ScrollHandle,
     pub need_scroll_sidebar_to_active: Cell<bool>,
@@ -346,6 +398,7 @@ impl AppView {
             editor_scroll_handle: ScrollHandle::new(),
             editor_scroll: Cell::new(0.0),
             wheel_ease: Cell::new(None),
+            wheel_notch_history: Cell::new([None; 3]),
             sidebar_scroll_handle: ScrollHandle::new(),
             settings_scroll_handle: ScrollHandle::new(),
             need_scroll_sidebar_to_active: Cell::new(false),
@@ -1611,40 +1664,59 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 if l.y == 0.0 {
                     return;
                 }
-                let next = (current - f64::from(l.y) * f64::from(WHEEL_LINE_PX)).clamp(0.0, max_scroll);
+                let delta = -f64::from(l.y) * f64::from(WHEEL_LINE_PX);
                 if !self.config.editor.wheel_smooth_scroll {
+                    let next = (current + delta).clamp(0.0, max_scroll);
                     self.set_editor_scroll_top_f64(next);
-                } else if (next - current).abs() > 0.01 {
-                    // Accumulate onto the in-flight landing so notches arriving
-                    // faster than the frame rate add up, and re-anchor the
-                    // start at the live position so the motion never jumps.
-                    let base = self.wheel_ease.get().map(|a| a.target).unwrap_or(current);
-                    let target = (base - f64::from(l.y) * f64::from(WHEEL_LINE_PX)).clamp(0.0, max_scroll);
-                    self.wheel_ease.set(Some(WheelEase {
-                        start: current,
-                        target,
-                        t0: std::time::Instant::now(),
-                    }));
                 } else {
-                    self.wheel_ease.set(None);
+                    // Glide chain: a notch arriving mid-glide inherits its
+                    // speed and extends the accumulated target when it
+                    // scrolls on in the same direction, so a notch stream
+                    // reads as one continuous motion; a reversal re-anchors
+                    // at the live position and the old motion dies out
+                    // gently instead of jumping. The duration adapts to the
+                    // notch cadence (2 × mean of the last three intervals,
+                    // clamped).
+                    let now = std::time::Instant::now();
+                    let (duration_secs, history) =
+                        wheel_glide_duration_secs(self.wheel_notch_history.get(), now);
+                    self.wheel_notch_history.set(history);
+                    let (base, velocity) = match self.wheel_ease.get() {
+                        Some(glide) => {
+                            let v = glide.velocity_at(now);
+                            if (glide.target - current) * delta > 0.0 {
+                                (glide.target, v)
+                            } else {
+                                (current, v)
+                            }
+                        }
+                        None => (current, 0.0),
+                    };
+                    let target = (base + delta).clamp(0.0, max_scroll);
+                    if (target - current).abs() > 0.01 {
+                        self.wheel_ease
+                            .set(Some(WheelEase::new(current, target, velocity, duration_secs)));
+                    } else {
+                        self.wheel_ease.set(None);
+                    }
                 }
             }
         }
         cx.notify();
     }
 
-    /// Steps the optional wheel ease one frame towards its landing. Called from
+    /// Steps the optional wheel glide one frame towards its landing. Called from
     /// `render` when `editor.wheelSmoothScroll` is on.
     ///
-    /// Unlike an exponential ease this has a hard deadline: past
-    /// [`WHEEL_EASE_DURATION`] the position lands exactly on `target` and the
-    /// animation is over — no sub-pixel creep, no final re-settle.
+    /// The glide has a hard deadline: past `duration` the position lands
+    /// exactly on `target` and the animation is over — no sub-pixel creep, no
+    /// final re-settle.
     fn step_wheel_ease(&self, window: &mut Window) {
         let Some(anim) = self.wheel_ease.get() else {
             return;
         };
-        let t = std::time::Instant::now().duration_since(anim.t0).as_secs_f32() / WHEEL_EASE_DURATION;
-        if t >= 1.0 {
+        let now = std::time::Instant::now();
+        if now.duration_since(anim.t0).as_secs_f32() >= anim.duration_secs {
             self.wheel_ease.set(None);
             // Direct write, not through `set_editor_scroll_top_f64`: that
             // would cancel this very landing.
@@ -1652,9 +1724,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             return;
         }
         window.request_animation_frame();
-        let eased = anim.start + (anim.target - anim.start) * f64::from(wheel_ease_factor(t));
         // Direct write for the same reason as above.
-        self.editor_scroll.set(eased.max(0.0));
+        self.editor_scroll.set(anim.position_at(now).max(0.0));
     }
 
     /// Starts middle-button smart scroll for the editor.
@@ -8437,6 +8508,26 @@ fn log_fps_tick() {
     static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     static LAST_FPS: std::sync::OnceLock<std::sync::Mutex<std::time::Instant>> =
         std::sync::OnceLock::new();
+    static LAST_FRAME_START: std::sync::Mutex<Option<std::time::Instant>> =
+        std::sync::Mutex::new(None);
+    static FRAME_INTERVALS_MS: std::sync::Mutex<Vec<f32>> = std::sync::Mutex::new(Vec::new());
+    let now = std::time::Instant::now();
+    // Interval since the previous render call: the cadence the eye actually
+    // sees. Its percentiles are the hitch detector — a 50 ms outlier is a
+    // visible stall no matter what the average says. Idle blinks (~530 ms) mix
+    // in during idle seconds; while typing they cluster at the frame budget.
+    if let Ok(mut prev) = LAST_FRAME_START.lock() {
+        if let Some(start) = *prev {
+            let interval_ms = now.duration_since(start).as_secs_f32() * 1000.0;
+            if let Ok(mut intervals) = FRAME_INTERVALS_MS.lock() {
+                if intervals.len() >= 4096 {
+                    intervals.clear();
+                }
+                intervals.push(interval_ms);
+            }
+        }
+        *prev = Some(now);
+    }
     let mutex = LAST_FPS.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
     FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut last) = mutex.try_lock() {
@@ -8453,11 +8544,27 @@ fn log_fps_tick() {
             // ~2/s idle (caret blink), ~1–2 per keystroke while typing (the
             // edit frame plus the settle frame).
             let counters = crate::perf::PERF.snapshot_and_reset();
+            let percentiles = {
+                let mut intervals = FRAME_INTERVALS_MS.lock().unwrap();
+                let mut taken = std::mem::take(&mut *intervals);
+                taken.sort_by(f32::total_cmp);
+                let pick = |q: f32| -> f32 {
+                    let n = taken.len();
+                    if n == 0 {
+                        return 0.0;
+                    }
+                    taken[(((n - 1) as f32) * q).round() as usize]
+                };
+                (pick(0.5), pick(0.95), taken.last().copied().unwrap_or(0.0))
+            };
             eprintln!(
-                "[FPS Monitor] {:?} elapsed, {} render calls (~{:.1} FPS), shape={} shape_hits={}",
+                "[FPS Monitor] {:?} elapsed, {} render calls (~{:.1} FPS), frame_ms p50={:.1} p95={:.1} max={:.1}, shape={} shape_hits={}",
                 elapsed,
                 frames,
                 frames as f32 / elapsed.as_secs_f32(),
+                percentiles.0,
+                percentiles.1,
+                percentiles.2,
                 counters[3],
                 counters[4],
             );
@@ -9777,14 +9884,70 @@ impl Render for AppView {
     }
 }
 
-/// Ease-out curve for the optional wheel animation: fast start, soft finish.
-///
-/// Cubic ease-out over the normalized `[0, 1]` lifetime; the animation itself
-/// ends on a hard deadline ([`WHEEL_EASE_DURATION`]), so unlike an exponential
-/// ease this never leaves a sub-pixel tail behind.
-fn wheel_ease_factor(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    1.0 - (1.0 - t).powi(3)
+/// Progress of a CSS-style cubic-bezier easing at the time fraction `t`:
+/// solve the curve parameter `u` from `x(u) = t`, return `y(u)`. The x
+/// coordinates stay inside `[0, 1]`, so `x(u)` is monotonic and the solve is
+/// well-defined; Newton from `u = t` converges in a few steps for these
+/// curves, bisection is the safety net.
+fn cubic_bezier(x1: f64, y1: f64, x2: f64, y2: f64, t: f64) -> f64 {
+    if t <= 0.0 {
+        return 0.0;
+    }
+    if t >= 1.0 {
+        return 1.0;
+    }
+    let x_at = |u: f64| 3.0 * (1.0 - u) * (1.0 - u) * u * x1 + 3.0 * (1.0 - u) * u * u * x2 + u * u * u;
+    let dx_at = |u: f64| 3.0 * (1.0 - u) * (1.0 - u) * x1 + 6.0 * (1.0 - u) * u * (x2 - x1) + 3.0 * u * u * (1.0 - x2);
+    let y_at = |u: f64| 3.0 * (1.0 - u) * (1.0 - u) * u * y1 + 3.0 * (1.0 - u) * u * u * y2 + u * u * u;
+    let mut u = t;
+    for _ in 0..8 {
+        let err = x_at(u) - t;
+        if err.abs() < 1e-7 {
+            break;
+        }
+        let d = dx_at(u);
+        if d.abs() < 1e-9 {
+            break;
+        }
+        u = (u - err / d).clamp(0.0, 1.0);
+    }
+    if (x_at(u) - t).abs() > 1e-5 {
+        let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+        for _ in 0..64 {
+            let mid = (lo + hi) / 2.0;
+            if x_at(mid) < t {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        u = (lo + hi) / 2.0;
+    }
+    y_at(u)
+}
+
+/// Glide duration for the arriving wheel notch plus the shifted history:
+/// twice the mean of the last three notch intervals, clamped to
+/// [`WHEEL_GLIDE_MIN_SECS`]..[`WHEEL_GLIDE_MAX_SECS`]. A spin fresh after an
+/// idle seeds the history a full max interval back, so the first notch gets a
+/// mid-length glide and the duration grows to match a sustained cadence.
+fn wheel_glide_duration_secs(
+    history: [Option<std::time::Instant>; 3],
+    now: std::time::Instant,
+) -> (f32, [Option<std::time::Instant>; 3]) {
+    let stale = history[2].map_or(true, |last| {
+        now.duration_since(last).as_secs_f64() > f64::from(WHEEL_GLIDE_MAX_SECS) * 2.0
+    });
+    let history = if stale {
+        let seeded = now.checked_sub(std::time::Duration::from_secs_f64(f64::from(WHEEL_GLIDE_MAX_SECS)));
+        [seeded, seeded, seeded]
+    } else {
+        history
+    };
+    let oldest = history[0].expect("a non-stale or freshly seeded history carries instants");
+    let interval = now.duration_since(oldest).as_secs_f64() / 3.0;
+    let duration = ((interval * 2.0) as f32).clamp(WHEEL_GLIDE_MIN_SECS, WHEEL_GLIDE_MAX_SECS);
+    (duration, [history[1], history[2], Some(now)])
 }
 
 /// Dead zone at the top/bottom of the editor viewport for middle-button smart
@@ -12387,26 +12550,94 @@ mod tests {
         }
     }
 
-    /// The optional wheel ease covers the distance fast and lands exactly at
-    /// the deadline: 0 at the start, 1 at the end, monotonic in between, and
-    /// over halfway there by the midpoint (ease-out, not linear).
+    /// The wheel glide easing covers the distance and lands exactly at the
+    /// deadline: 0 at the start, 1 at the end, monotonic in between.
     #[test]
-    fn wheel_ease_factor_starts_fast_and_lands_exact() {
-        assert_eq!(wheel_ease_factor(0.0), 0.0);
-        assert_eq!(wheel_ease_factor(1.0), 1.0);
+    fn cubic_bezier_endpoints_and_monotonic_progress() {
+        let (x1, y1) = (0.25, 0.0); // plain ease-out, no entry velocity
+        assert_eq!(cubic_bezier(x1, y1, 0.6, 1.0, 0.0), 0.0);
+        assert_eq!(cubic_bezier(x1, y1, 0.6, 1.0, 1.0), 1.0);
         // Clamped outside the lifetime.
-        assert_eq!(wheel_ease_factor(-0.5), 0.0);
-        assert_eq!(wheel_ease_factor(1.5), 1.0);
-        assert!((wheel_ease_factor(0.5) - 0.875).abs() < 1e-6);
-        let mut prev = 0.0;
-        let mut t = 0.0;
-        while t <= 1.0 {
-            let cur = wheel_ease_factor(t);
-            assert!(cur >= prev, "t {t}: {cur} went backwards from {prev}");
+        assert_eq!(cubic_bezier(x1, y1, 0.6, 1.0, -0.5), 0.0);
+        assert_eq!(cubic_bezier(x1, y1, 0.6, 1.0, 1.5), 1.0);
+        let mut prev = -1.0;
+        for k in 0..=100 {
+            let cur = cubic_bezier(x1, y1, 0.6, 1.0, k as f64 / 100.0);
+            assert!(cur >= prev, "t {}: {cur} went backwards from {prev}", k as f64 / 100.0);
             prev = cur;
-            t += 0.05;
         }
     }
+
+    /// A notch arriving mid-glide keeps the motion alive: the new glide
+    /// enters at (close to) the speed the old one had, instead of collapsing
+    /// to a stop and re-accelerating — that collapse is the "присадка" a
+    /// notch stream must not have. And every glide lands exactly on target.
+    #[test]
+    fn glide_chain_keeps_the_speed_between_notches() {
+        let g1 = WheelEase::new(0.0, 90.0, 0.0, 0.1);
+        let mid = g1.t0 + std::time::Duration::from_millis(50);
+        let speed = g1.velocity_at(mid);
+        assert!(speed > 0.0, "a running glide has forward speed");
+        let cur = g1.position_at(mid);
+        // Same-direction notch: extend the target, inherit the speed.
+        let g2 = WheelEase::new(cur, 180.0, speed, 0.1);
+        let entry = g2.velocity_at(g2.t0);
+        assert!(
+            entry > speed * 0.7,
+            "entry speed {entry} collapsed from {speed}"
+        );
+        // Landing is exact past the deadline.
+        let end = g2.t0 + std::time::Duration::from_secs_f64(0.1);
+        assert_eq!(g2.position_at(end), 180.0);
+    }
+
+    /// A reversing notch re-anchors at the live position and starts gently:
+    /// the inherited velocity points the old way, so it must not carry over
+    /// into the new glide's motion — otherwise the text would step backwards
+    /// before turning around.
+    #[test]
+    fn a_reversing_notch_does_not_move_backwards() {
+        let down = WheelEase::new(0.0, 300.0, 0.0, 0.2);
+        let mid = down.t0 + std::time::Duration::from_millis(100);
+        let speed = down.velocity_at(mid);
+        let cur = down.position_at(mid);
+        // Reversal: new span points opposite the inherited velocity.
+        let up = WheelEase::new(cur, cur - 90.0, speed, 0.1);
+        let mut prev = cur;
+        let mut at = up.t0;
+        for _ in 0..20 {
+            at += std::time::Duration::from_millis(10);
+            let pos = up.position_at(at);
+            assert!(
+                pos <= prev + 1e-6,
+                "reversal glide moved backwards-then-forwards: {pos} after {prev}"
+            );
+            prev = pos;
+        }
+        assert_eq!(up.position_at(at.max(up.t0 + std::time::Duration::from_secs_f64(0.1))), cur - 90.0);
+    }
+
+    /// The glide duration follows the notch cadence: fresh after an idle it
+    /// is seeded from a full max interval, and a sustained fast spin clamps
+    /// to the bounds instead of running away.
+    #[test]
+    fn glide_duration_tracks_the_notch_cadence() {
+        let t0 = std::time::Instant::now();
+        // Fresh spin: seeded history, mid-length glide.
+        let (fresh, history) = wheel_glide_duration_secs([None; 3], t0);
+        assert!(fresh > WHEEL_GLIDE_MIN_SECS && fresh <= WHEEL_GLIDE_MAX_SECS, "fresh {fresh}");
+        // Sustained spin: notches every 30 ms → mean interval 10 ms after the
+        // shift, duration clamps to the minimum.
+        let mut history = history;
+        for _ in 0..3 {
+            let (dur, shifted) = wheel_glide_duration_secs(history, t0 + std::time::Duration::from_millis(30));
+            history = shifted;
+            assert!(dur >= WHEEL_GLIDE_MIN_SECS && dur <= WHEEL_GLIDE_MAX_SECS, "cadence {dur}");
+        }
+        let (last, _) = wheel_glide_duration_secs(history, t0 + std::time::Duration::from_millis(60));
+        assert!((last - WHEEL_GLIDE_MIN_SECS).abs() < 1e-6, "fast spin {last} should sit at the min");
+    }
+
 
     /// Byte offsets resolve to the document Y of their visual row: plain lines
     /// map to the line top, offsets on a wrapped line to the exact sub-row,

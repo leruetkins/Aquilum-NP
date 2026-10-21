@@ -3402,14 +3402,24 @@ mod tests {
         }
     }
 
-    /// A note far larger than one window must not make the scrollbar jump as
-    /// the window travels.
+    /// A note far larger than one window must not make the scrollbar jitter
+    /// as the window travels.
     ///
     /// `total_height` mixes an exact window with an O(1) estimate on either
-    /// side. The estimate basis (rows per line, row height) is frozen for a
-    /// given wrap setting, so the total depends on the *number* of lines
-    /// outside the window, not on which of them the window happens to hold.
-    /// Checked here on a document whose lines genuinely differ in height.
+    /// side. A naive rebuild recomputes the margins from the frozen estimate
+    /// and lets the exact window height leak into the total — the total
+    /// wobbles by the real-vs-estimate difference of whichever span the
+    /// window just swapped, and the scrollbar thumb ticks with it on every
+    /// move. A pure window move therefore *anchors*: mid-document, the total
+    /// is preserved bit-for-bit and the swapped-span difference is absorbed
+    /// into the margin estimate. Two legal exceptions may move the total,
+    /// both one-shot corrections: a document edge (a margin is legitimately
+    /// zero and the total settles onto the true height) and an anchor-chain
+    /// break (the real heights accumulated by the chain outgrew the
+    /// estimate-based total, so both margins fall back to the estimate).
+    /// Checked on a document whose lines genuinely differ in height: between
+    /// corrections the total must not move at all, corrections must be rare
+    /// and bounded, and the total must never wobble back and forth.
     #[test]
     fn total_height_is_stable_while_the_window_travels() {
         let mut text = String::new();
@@ -3432,10 +3442,13 @@ mod tests {
         view.ensure_visual_cache(&mut doc, true, 80, 0);
         assert_eq!(view.above_lines, 0, "the first window sits at the top");
         assert!(view.below_lines > 0, "the note must be windowed");
-        let first = view.total_height();
-        assert!(first > 0.0);
+        let initial = view.total_height();
+        assert!(initial > 0.0);
+        let mut reference = initial;
 
         let mut worst = 0.0f64;
+        let mut corrections = 0usize;
+        let mut prev_total = initial;
         for anchor in (0..doc.line_index.lines()).step_by(997) {
             view.ensure_visual_cache(&mut doc, true, 80, anchor);
             assert!(
@@ -3443,10 +3456,29 @@ mod tests {
                 "the window must hold its anchor {anchor}"
             );
             let total = view.total_height();
-            worst = worst.max((total - first).abs() / first);
+            let at_edge = view.above_lines == 0 || view.below_lines == 0;
+            if total != prev_total {
+                corrections += 1;
+                // A correction must be a bounded step, not a wobble.
+                assert!(
+                    (total - prev_total).abs() / initial < 0.05,
+                    "correction at anchor {anchor} moved the total by {:.2}%",
+                    (total - prev_total).abs() / initial * 100.0
+                );
+                reference = total;
+            }
+            prev_total = total;
+            if !at_edge {
+                assert_eq!(total, reference, "mid-document move at anchor {anchor} moved the total");
+            }
+            worst = worst.max((total - initial).abs() / initial);
         }
         assert!(
-            worst < 0.01,
+            corrections <= 3,
+            "the total was corrected {corrections} times across one traversal"
+        );
+        assert!(
+            worst < 0.05,
             "document height drifted by {:.3}% across window moves",
             worst * 100.0
         );
