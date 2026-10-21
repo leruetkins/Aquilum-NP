@@ -207,6 +207,42 @@
 
 ## 6. Порядок работ, уточнённый
 
+**Корпус 1500, 21.10.2026 — расширение и повтор всех проверок.** Скачано 1497/1500
+(3 репозитория мертвы: manifest 404 — `colecao-livros-quadrinhos`, `hugo-sync`, `magneto`).
+Корпус: `D:\Naben\zcode-plugin-probe\corpus1500` (500 прежних + 997 новых).
+
+Статический doctor: **`ok` 525, `degraded` 292, `blocked` 680** (движки: process 229,
+codemirror 277, canvas 259, node 188, electron 121, worker 100, iframe 76, indexeddb 61,
+webview 45). Без жёстких блокеров — 780. Кривая отдачи: 813 плагинов уже без нехваток API;
+5 функций → 59% покрытия, 30 → 78%, 100 → 92%. Топ отсутствующих членов `app.*`:
+`workspace.containerEl` (54 плагина), `plugins.plugins` (50), `setting.open/openTabById`
+(50/49), `vault.getAllFolders` (49), `vault.rename` (48), `secretStorage` (43/29),
+`workspace.updateOptions` (42), `requestSaveLayout` (40), `vault.append` (26),
+`metadataCache.unresolvedLinks` (16).
+
+Динамический прогон (probe, 780 без блокеров): **777/780 загружаются**; три — честные
+движковые отказы (`node:util.promisify` ×2, `os.homedir` ×1). Закрыты по ходу корпуса:
+краш пробника на зависших плагинах (unref'нутый wall-clock таймер позволял node молча
+выйти с кодом 0 до записи отчёта — убран `.unref()`), глобалы `File`/`Blob`/`AbortController`
+(инертные конструкторы), `DocumentFragment` (класс над VElement с `append`),
+`document.getElementsByTagName` → `[]` (проба KaTeX), `CodeMirror` (CM5-пространство
+регистраций: defineMode/registerHelper/Pos и т.д.), экспорт `htmlToMarkdown` (текстовый
+обход дерева через существующий HTML-парсер). Дыра контракта: `SettingItem.control` может
+прийти `null` (my-spaces: строка с одной иконкой) — теперь и JS (фолбэк на пустой text),
+и serde (`deserialize_with`) прощают это.
+
+UI-телеметрия: **566 плагинов строят деревья, 1546 деревьев** (aggregated: `column` 7511,
+`text` 5142, `setting_item` 4225, `button` 3474, `input` 1902, `row` 1404, `toggle` 960,
+`select` 694, `textarea` 226, `styled` 188, `slider` 93, `checkbox` 84, `separator` 62).
+Inline-стили по-прежнему редки, но не экзотика: `width` 74, `display` 57, `height` 36,
+`borderRadius` 27, `margin*` ~45, `color`/`backgroundColor` 24/24, `padding` 9.
+Реестр: `out1500/ui-pattern-registry.json`.
+
+Golden-бандл расширен: 566 деревьев / 9853 узла / 1.04 МБ (`ui_golden_bundle.json`),
+`--per-plugin=2 --max-bytes=48K`. Пороги в `golden_corpus_translation_coverage` подняты
+под новую базу; новый ассерт: rendered 99.7% узлов (0.3% — осознанный `display:none`).
+cargo test 497/497, харнесс 193/193, зеркало 10/10.
+
 **Golden-пайплайн 21.10.2026 — телеметрия → тесты.** Деревья `set_view_tree` теперь сохраняются
 пробником на диск (`out/trees/<id>.json`, рядом с компактным отчётом) и собираются в golden-бандл
 для Rust-тестов: `node make-fixtures.cjs <probe-out> <fixtures-dir>` (tools/plugin-probe) берёт до

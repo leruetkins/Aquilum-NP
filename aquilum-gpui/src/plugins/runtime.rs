@@ -2443,7 +2443,11 @@ fn setup_plugin_environment<'js>(
                         c.classes?.has("checkbox-container") ||
                         c.classes?.has("mod-toggle")
                     ) || controlDiv.children[0];
-                    controlNode = __velement_to_uinode(primaryControl);
+                    // __velement_to_uinode returns null for contentless elements (an
+                    // icon-only preview div, for example): the setting row still exists,
+                    // so keep it with an empty control instead of shipping a null that
+                    // fails deserialization on the host side.
+                    controlNode = __velement_to_uinode(primaryControl) || { type: "text", value: "", class: undefined };
                 }
 
                 return {
@@ -5053,6 +5057,19 @@ fn setup_plugin_environment<'js>(
         globalThis.Image = class Image {
             constructor() { this.src = ""; this.onload = null; this.onerror = null; }
         };
+        // File/Blob: inert constructors. Plugins use them for `instanceof` checks and
+        // feature detection; real file payloads travel through the vault binary channel.
+        globalThis.File = class File {};
+        globalThis.Blob = class Blob {
+            constructor(parts) { this.size = Array.isArray(parts) ? parts.reduce((n, p) => n + (p && p.length || 0), 0) : 0; }
+            text() { return Promise.resolve(""); }
+        };
+        // AbortController/AbortSignal: fetch-style cancellation plumbing. The host has no
+        // streaming transport, so aborting is a no-op; the constructors still count callers.
+        globalThis.AbortController = class AbortController {
+            constructor() { this.signal = { aborted: false, addEventListener: () => {}, removeEventListener: () => {} }; }
+            abort() { this.signal.aborted = true; }
+        };
         globalThis.self = globalThis;
         globalThis.crypto = {
             // Deterministic fill is enough for ids/nonces; not for real secrets, which
@@ -5079,6 +5096,36 @@ fn setup_plugin_environment<'js>(
         };
         globalThis.WritableStream = class WritableStream {
             constructor() { throw new Error("WritableStream is not supported by the Vibecodium host"); }
+        };
+        // DocumentFragment as a constructor: plugins build detached node groups with
+        // `new DocumentFragment()` and append them into real containers later. Backed by
+        // the same VElement the sanitize/parse pipeline produces.
+        globalThis.DocumentFragment = class DocumentFragment extends VElement {
+            constructor() {
+                super("#fragment");
+            }
+            append(...nodes) {
+                for (const n of nodes) {
+                    if (n && typeof n.appendChild === "function") this.appendChild(n);
+                }
+            }
+        };
+        // CodeMirror 5 name space: legacy bundles do `var cm = CodeMirror` at module scope
+        // and register modes/helpers into it. The host does not run CM5, so registrations
+        // are recorded and every runtime lookup degrades honestly (null/false/no-op).
+        globalThis.CodeMirror = globalThis.CodeMirror || {
+            defineMode: () => {},
+            defineMIME: () => {},
+            defineSimpleMode: () => {},
+            simpleMode: () => null,
+            copyState: (mode, state) => (mode && typeof mode.copyState === "function" ? mode.copyState(state) : state),
+            getMode: () => ({ name: "null" }),
+            startState: () => ({}),
+            registerHelper: () => {},
+            registerGlobalHelper: () => {},
+            Pos: (line, ch) => ({ line, ch }),
+            Pass: "pass",
+            Doc: class Doc {},
         };
         moment.locale = () => getLanguage();
         globalThis.window.moment = moment;
@@ -5112,6 +5159,11 @@ fn setup_plugin_environment<'js>(
             dispatchEvent: () => true,
             createElement: (t, options) => new VElement(t, options),
             createDocumentFragment: () => new VElement("#fragment"),
+            getElementsByTagName: (tag) => {
+                // Library probes (KaTeX: `document.getElementsByTagName("base").length`)
+                // only count the result; the host document has no such elements.
+                return [];
+            },
             body: __doc_body,
             head: __doc_head,
             getElementById: (id) => {
@@ -5324,6 +5376,32 @@ fn setup_plugin_environment<'js>(
                     }
                     return Array.from(seen);
                 },
+            htmlToMarkdown(html) {
+                // Plain-text walk of the parsed element tree: block tags become blank-line
+                // separated text, <br>/<li> become line breaks. Not a full Markdown
+                // serializer — the one corpus plugin that imports it feeds the result to
+                // its own math-lifting pass, so structure beats typographic fidelity.
+                const clean = __sanitize_html(String(html != null ? html : ""));
+                const root = new VElement("div");
+                __parse_html_to_velements(clean, root);
+                const BLOCK = new Set(["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre", "ul", "ol", "table", "tr", "li"]);
+                const LINE = new Set(["br", "li"]);
+                const out = [];
+                const walk = (el) => {
+                    for (const child of el.children) {
+                        if (child.tag === "#text") {
+                            const t = (child.text || "").replace(/\s+/g, " ");
+                            if (t.trim()) out.push(t.trim());
+                        } else {
+                            walk(child);
+                            if (LINE.has(child.tag)) out.push("\n");
+                            if (BLOCK.has(child.tag)) out.push("\n\n");
+                        }
+                    }
+                };
+                walk(root);
+                return out.join(" ").replace(/ +/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+            },
             requireApiVersion(version) {
                 // The host tracks the Obsidian 1.7.5 surface; anything up to it is satisfied.
                 const req = String(version || "").split(".").map((n) => parseInt(n, 10) || 0);

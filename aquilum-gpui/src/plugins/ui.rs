@@ -578,6 +578,21 @@ fn takes_style_directly(node: &UiNode) -> bool {
     )
 }
 
+/// Пустой контрол для setting-строки: подставляется, когда плагин прислал `control: null`
+/// (например, строка с одной иконкой вместо поля ввода).
+fn empty_text_control() -> Box<UiNode> {
+    Box::new(UiNode::Text { value: String::new(), class: None, style: TextStyle::Normal })
+}
+
+/// `control: null` в проводном формате — «контрола нет», а не ошибка разбора.
+fn control_or_empty<'de, D>(deserializer: D) -> Result<Box<UiNode>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v: Option<UiNode> = Option::deserialize(deserializer)?;
+    Ok(v.map(Box::new).unwrap_or_else(empty_text_control))
+}
+
 /// Declarative UI component tree node transmitted from plugin workers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -682,6 +697,10 @@ pub enum UiNode {
         name: String,
         #[serde(default)]
         desc: Option<String>,
+        /// Missing or explicit `null` in the wire format degrades to an empty text node:
+        /// a live plugin shipped `control: null` (icon-only control div), and one bad row
+        /// must not invalidate the whole view.
+        #[serde(default = "empty_text_control", deserialize_with = "control_or_empty")]
         control: Box<UiNode>,
     },
     List {
@@ -3151,7 +3170,7 @@ mod tests {
     #[test]
     fn golden_corpus_parses_and_validates() {
         let bundle = golden_bundle();
-        assert!(bundle.trees.len() >= 150, "golden bundle too small: {}", bundle.trees.len());
+        assert!(bundle.trees.len() >= 500, "golden bundle too small: {}", bundle.trees.len());
 
         for entry in &bundle.trees {
             // Прямая serde-загрузка уже сделана выше; round-trip проверяет, что
@@ -3180,12 +3199,18 @@ mod tests {
         // База покрытия на корпусе 2026-10. Смысл порогов — не «красиво», а «стабильно»:
         // при правках рендера или бутстрапа цифры не должны ползти вниз. Рост — сигнал,
         // что новый узел/свойство транслируются, и базу стоит поднять.
-        assert_eq!(total.rendered, total.nodes, "hidden nodes must not count as rendered");
-        assert!(total.styled > 0, "corpus has no styled nodes");
-        assert!(total.by_kind["setting_item"] > 1000, "setting rows vanished from the corpus");
-        assert!(total.by_kind["input"] > 300);
-        assert!(total.by_kind["button"] > 100);
-        assert!(total.by_kind["toggle"] > 250);
+        // display:none — валидное состояние живого дерева (плагины прячут узлы
+        // программно, ~28 стилей на корпус): rendered считается отдельно от nodes.
+        assert!(total.rendered <= total.nodes);
+        assert!(total.rendered > 9500, "rendered nodes collapsed: {}", total.rendered);
+        assert!(total.styled > 50, "corpus has no styled nodes");
+        assert!(total.by_kind["setting_item"] > 3000, "setting rows vanished from the corpus");
+        assert!(total.by_kind["input"] > 1000);
+        assert!(total.by_kind["button"] > 400);
+        assert!(total.by_kind["toggle"] > 800);
+        assert!(total.by_kind["text"] > 1400);
+        assert!(total.by_kind["column"] > 1100);
+        assert!(total.by_kind["select"] > 400);
         assert!(total.style_props.contains_key("width"), "inline width styles vanished");
 
         println!("golden coverage: {} trees, {} nodes", bundle.trees.len(), total.nodes);
