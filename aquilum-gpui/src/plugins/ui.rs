@@ -924,6 +924,135 @@ pub fn validate_tree(root: &UiNode) -> Result<(), String> {
     walk(root, 0, &mut total_nodes, &mut ids)
 }
 
+/// Сводка трансляции одного дерева в GPUI: что реально отрисуется, что разберётся,
+/// что будет отброшено. Наполняется golden-тестами на живых деревьях плагинов —
+/// численно фиксирует покрытие на каждый коммит.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct TreeStats {
+    pub nodes: usize,
+    /// Узлы, для которых рендер что-то рисует (всё, кроме `hidden`).
+    pub rendered: usize,
+    /// Узлы с inline-стилем, разобранным в `NodeStyle`.
+    pub styled: usize,
+    /// Стили, меняющие геометрию (требуют бокса-обёртки).
+    pub layout_styles: usize,
+    /// Текст/лейблы/описания суммарно, в байтах — прокси стоимости рендера текста.
+    pub text_bytes: usize,
+    pub by_kind: BTreeMap<&'static str, usize>,
+    /// Разобранные значения по ключам стиля (`width` → сколько узлов с шириной).
+    pub style_props: BTreeMap<&'static str, usize>,
+}
+
+impl TreeStats {
+    pub fn add(&mut self, other: &TreeStats) {
+        self.nodes += other.nodes;
+        self.rendered += other.rendered;
+        self.styled += other.styled;
+        self.layout_styles += other.layout_styles;
+        self.text_bytes += other.text_bytes;
+        for (k, v) in &other.by_kind {
+            *self.by_kind.entry(k).or_default() += v;
+        }
+        for (k, v) in &other.style_props {
+            *self.style_props.entry(k).or_default() += v;
+        }
+    }
+}
+
+/// Чистый обход дерева: те же правила, что применяет рендер, но без GPUI-контекста.
+/// Нужен golden-тестам, чтобы мерить реальные деревья плагинов и ловить дрейф
+/// покрытия при правках рендера или бутстрапа.
+pub fn tree_translation_stats(node: &UiNode) -> TreeStats {
+    let mut acc = TreeStats::default();
+    fn walk(node: &UiNode, acc: &mut TreeStats) {
+        acc.nodes += 1;
+        let (kind, style): (&'static str, Option<NodeStyle>) = match node {
+            UiNode::Column { .. } => ("column", None),
+            UiNode::Row { .. } => ("row", None),
+            UiNode::Text { value, .. } => {
+                acc.text_bytes += value.len();
+                ("text", None)
+            }
+            UiNode::Markdown { value } => {
+                acc.text_bytes += value.len();
+                ("markdown", None)
+            }
+            UiNode::Button { label, .. } => {
+                acc.text_bytes += label.len();
+                ("button", None)
+            }
+            UiNode::Input { .. } => ("input", None),
+            UiNode::Textarea { .. } => ("textarea", None),
+            UiNode::Checkbox { label, .. } => {
+                acc.text_bytes += label.len();
+                ("checkbox", None)
+            }
+            UiNode::Toggle { .. } => ("toggle", None),
+            UiNode::Slider { .. } => ("slider", None),
+            UiNode::Select { .. } => ("select", None),
+            UiNode::SettingItem { name, desc, .. } => {
+                acc.text_bytes += name.len() + desc.as_deref().map_or(0, str::len);
+                ("setting_item", None)
+            }
+            UiNode::List { items, .. } => {
+                for it in items {
+                    acc.text_bytes += it.title.len();
+                }
+                ("list", None)
+            }
+            UiNode::Toolbar { .. } => ("toolbar", None),
+            UiNode::Styled { style, .. } => ("styled", Some(style.clone())),
+            UiNode::Separator => ("separator", None),
+        };
+        *acc.by_kind.entry(kind).or_default() += 1;
+
+        // display:none узлы остаются в дереве, но рендер их пропускает.
+        if style.as_ref().map_or(true, |s| !s.hidden) {
+            acc.rendered += 1;
+        }
+        if let Some(style) = style {
+            if !style.is_empty() {
+                acc.styled += 1;
+            }
+            if style.affects_layout() {
+                acc.layout_styles += 1;
+            }
+            let bump = |acc: &mut TreeStats, key: &'static str| {
+                *acc.style_props.entry(key).or_default() += 1;
+            };
+            if style.width.is_some() { bump(acc, "width"); }
+            if style.height.is_some() { bump(acc, "height"); }
+            if style.min_width.is_some() { bump(acc, "minWidth"); }
+            if style.max_width.is_some() { bump(acc, "maxWidth"); }
+            if style.min_height.is_some() { bump(acc, "minHeight"); }
+            if style.max_height.is_some() { bump(acc, "maxHeight"); }
+            if style.padding.is_some() { bump(acc, "padding"); }
+            if style.margin.is_some() { bump(acc, "margin"); }
+            if style.background.is_some() { bump(acc, "background"); }
+            if style.color.is_some() { bump(acc, "color"); }
+            if style.opacity.is_some() { bump(acc, "opacity"); }
+            if style.border_radius.is_some() { bump(acc, "borderRadius"); }
+            if style.font_size.is_some() { bump(acc, "fontSize"); }
+            if style.font_weight.is_some() { bump(acc, "fontWeight"); }
+            if style.text_align.is_some() { bump(acc, "textAlign"); }
+            if style.position.is_some() { bump(acc, "position"); }
+            for (key, v) in [
+                ("top", style.inset.top), ("right", style.inset.right),
+                ("bottom", style.inset.bottom), ("left", style.inset.left),
+            ] {
+                if v.is_some() { bump(acc, key); }
+            }
+            if style.overflow_hidden { bump(acc, "overflow"); }
+        }
+
+        for child in node.children() {
+            walk(child, acc);
+        }
+    }
+    walk(node, &mut acc);
+    acc
+}
+
 /// Trait implemented by views that host declarative plugin UI elements (e.g. `AppView`, `SettingsView`).
 pub trait UiSink: 'static + Sized {
     fn send_plugin_ui_event(
@@ -2988,6 +3117,85 @@ mod tests {
         assert!(json.contains("\"rows\":10"));
         let deserialized: UiNode = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, tree);
+    }
+
+    // ──────────────────────────────────────────────────────── golden: реальные деревья
+
+    /// Golden-бандл: живые UI-деревья из пробника топ-500 плагинов Obsidian
+    /// (probe-one собирает set_view_tree при загрузке + активации; в бандл попадает
+    /// до трёх деревьев на плагин, по одному файлу на плагин). Регенерация:
+    /// `node make-fixtures.cjs <probe-out> <fixtures-dir>` в tools/plugin-probe.
+    const GOLDEN_BUNDLE: &str = include_str!("tests/ui_golden_bundle.json");
+
+    #[derive(serde::Deserialize)]
+    struct GoldenEntry {
+        #[allow(dead_code)]
+        id: String,
+        #[serde(default)]
+        #[allow(dead_code)]
+        view_id: u64,
+        tree: UiNode,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct GoldenBundle {
+        #[allow(dead_code)]
+        count: usize,
+        trees: Vec<GoldenEntry>,
+    }
+
+    fn golden_bundle() -> GoldenBundle {
+        serde_json::from_str(GOLDEN_BUNDLE).expect("golden bundle must deserialize")
+    }
+
+    #[test]
+    fn golden_corpus_parses_and_validates() {
+        let bundle = golden_bundle();
+        assert!(bundle.trees.len() >= 150, "golden bundle too small: {}", bundle.trees.len());
+
+        for entry in &bundle.trees {
+            // Прямая serde-загрузка уже сделана выше; round-trip проверяет, что
+            // Serialize и Deserialize формы UiNode не разъехались (инвариант канала
+            // worker → host: tree передаётся через serde_json обе стороны).
+            let json = serde_json::to_string(&entry.tree).unwrap();
+            let back: UiNode = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, entry.tree, "{}: serde round-trip drifted", entry.id);
+
+            validate_tree(&entry.tree)
+                .unwrap_or_else(|e| panic!("{}: validate_tree rejected a real tree: {e}", entry.id));
+        }
+    }
+
+    #[test]
+    fn golden_corpus_translation_coverage() {
+        let bundle = golden_bundle();
+
+        let mut total = TreeStats::default();
+        for entry in &bundle.trees {
+            total.add(&tree_translation_stats(&entry.tree));
+        }
+
+        let nodes = total.nodes as f32;
+        let pct = |v: usize| format!("{:.1}%", v as f32 / nodes * 100.0);
+        // База покрытия на корпусе 2026-10. Смысл порогов — не «красиво», а «стабильно»:
+        // при правках рендера или бутстрапа цифры не должны ползти вниз. Рост — сигнал,
+        // что новый узел/свойство транслируются, и базу стоит поднять.
+        assert_eq!(total.rendered, total.nodes, "hidden nodes must not count as rendered");
+        assert!(total.styled > 0, "corpus has no styled nodes");
+        assert!(total.by_kind["setting_item"] > 1000, "setting rows vanished from the corpus");
+        assert!(total.by_kind["input"] > 300);
+        assert!(total.by_kind["button"] > 100);
+        assert!(total.by_kind["toggle"] > 250);
+        assert!(total.style_props.contains_key("width"), "inline width styles vanished");
+
+        println!("golden coverage: {} trees, {} nodes", bundle.trees.len(), total.nodes);
+        println!("  rendered {} / styled {} / layout-styles {}",
+            pct(total.rendered), pct(total.styled), pct(total.layout_styles));
+        println!("  text bytes: {}", total.text_bytes);
+        for (kind, n) in &total.by_kind {
+            println!("  {kind}: {n} ({})", pct(*n));
+        }
+        println!("  style props: {:?}", total.style_props);
     }
 }
 

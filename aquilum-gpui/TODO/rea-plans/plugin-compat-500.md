@@ -207,6 +207,21 @@
 
 ## 6. Порядок работ, уточнённый
 
+**Golden-пайплайн 21.10.2026 — телеметрия → тесты.** Деревья `set_view_tree` теперь сохраняются
+пробником на диск (`out/trees/<id>.json`, рядом с компактным отчётом) и собираются в golden-бандл
+для Rust-тестов: `node make-fixtures.cjs <probe-out> <fixtures-dir>` (tools/plugin-probe) берёт до
+3 деревьев на плагин (≤64КБ каждое) и пишет `fixtures/_bundle.json`; бандл хранится в репозитории
+(`aquilum-gpui/src/plugins/tests/ui_golden_bundle.json`, 192 дерева / 3003 узла / 338КБ).
+Тесты в `ui.rs` (`plugins::ui::tests::golden_*`): `golden_corpus_parses_and_validates` — каждое
+живое дерево разбирается serde'ом, переживает round-trip и проходит `validate_tree`;
+`golden_corpus_translation_coverage` — чистая функция `tree_translation_stats` считает покрытие
+трансляции (узлы по видам, разобранные inline-стили, layout-стили, текстовые байты) и утверждает
+пороги базы. База на корпусе 2026-10: `setting_item` 1186 (39.5%), `input` 405, `column` 326,
+`text` 388, `toggle` 298, `select` 148, `button` 116, `textarea` 45, `slider` 33, `row` 17,
+`checkbox` 11, `separator` 29, `styled` 1; inline-стилей почти нет (width ×1) — оформление идёт
+классами и styles.css. Тест падает при регрессии: serde-дрейф (bootstrap ↔ Rust), отказ
+`validate_tree` на живом дереве, потеря видов узлов или стилевых свойств. cargo test 497/497.
+
 **Статус на 19.10.2026.** Пачка 1 закрыта целиком, из пачки 2 — пять пунктов, плюс оба P0.
 Итог по корпусу 500: `ok` 91, `degraded` 187, `blocked` 222 (без жёстких блокеров 266, 53%).
 
