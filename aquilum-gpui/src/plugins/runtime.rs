@@ -4025,26 +4025,136 @@ fn setup_plugin_environment<'js>(
         }
 
         function moment(date) {
-            const d = date ? new Date(date) : new Date();
+            const d = (() => {
+                if (date === undefined || date === null) return new Date();
+                if (typeof date === "number" || typeof date === "string") return new Date(date);
+                if (date instanceof Date) return new Date(date.getTime());
+                // moment-подобные обёртки (наш или чужой) отдают время через valueOf()
+                if (typeof date.valueOf === "function") return new Date(date.valueOf());
+                return new Date(date);
+            })();
+            const wrap = (nd) => moment(nd.getTime());
+            const pad = (n) => String(n).padStart(2, "0");
+            const normUnit = (u) => {
+                const s = String(u == null ? "" : u).toLowerCase().replace(/s$/, "");
+                return s === "date" ? "day" : s;
+            };
+            function addAmount(n, unit) {
+                const nd = new Date(d.getTime());
+                switch (normUnit(unit)) {
+                    case "day": nd.setDate(nd.getDate() + n); break;
+                    case "week": nd.setDate(nd.getDate() + n * 7); break;
+                    case "hour": nd.setTime(nd.getTime() + n * 3600000); break;
+                    case "minute": nd.setTime(nd.getTime() + n * 60000); break;
+                    case "second": nd.setTime(nd.getTime() + n * 1000); break;
+                    case "millisecond": nd.setTime(nd.getTime() + n); break;
+                    case "month": {
+                        const day = nd.getDate();
+                        nd.setMonth(nd.getMonth() + n);
+                        // Клэмп конца месяца (31 января + 1 месяц -> 28/29 февраля).
+                        if (nd.getDate() < day) nd.setDate(0);
+                        break;
+                    }
+                    case "year": nd.setFullYear(nd.getFullYear() + n); break;
+                    default: break;
+                }
+                return wrap(nd);
+            }
+            function startOf(unit) {
+                const nd = new Date(d.getTime());
+                switch (normUnit(unit)) {
+                    case "day": nd.setHours(0, 0, 0, 0); break;
+                    case "week": nd.setDate(nd.getDate() - nd.getDay()); nd.setHours(0, 0, 0, 0); break;
+                    case "month": nd.setDate(1); nd.setHours(0, 0, 0, 0); break;
+                    case "year": nd.setMonth(0, 1); nd.setHours(0, 0, 0, 0); break;
+                    case "hour": nd.setMinutes(0, 0, 0); break;
+                    case "minute": nd.setSeconds(0, 0); break;
+                    case "second": nd.setMilliseconds(0); break;
+                    default: break;
+                }
+                return wrap(nd);
+            }
+            function endOf(unit) {
+                // Конец единицы = начало следующей минус 1 мс.
+                const next = addAmount(1, unit);
+                return wrap(new Date(next.startOf(unit).valueOf() - 1));
+            }
+            const toTime = (other) => {
+                if (other === undefined || other === null) return NaN;
+                if (typeof other === "number") return other;
+                if (typeof other.valueOf === "function") {
+                    const t = other.valueOf();
+                    return typeof t === "number" ? t : new Date(t).getTime();
+                }
+                return new Date(other).getTime();
+            };
+            const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+            const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
             return {
                 format: (fmt = "YYYY-MM-DD") => {
-                    const pad = (n) => String(n).padStart(2, '0');
-                    const y = d.getFullYear();
-                    const m = pad(d.getMonth() + 1);
-                    const day = pad(d.getDate());
-                    const h = pad(d.getHours());
-                    const min = pad(d.getMinutes());
-                    const s = pad(d.getSeconds());
-                    return fmt
-                        .replace("YYYY", y)
-                        .replace("MM", m)
-                        .replace("DD", day)
-                        .replace("HH", h)
-                        .replace("mm", min)
-                        .replace("ss", s);
+                    const h24 = d.getHours();
+                    const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+                    const suffix = (n) => (n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th");
+                    const out = String(fmt).replace(/MMMM|MMM|dddd|ddd|Do|YYYY|YY|MM|DD|HH|hh|h|mm|ss|a|A/g, (tok) => {
+                        switch (tok) {
+                            case "MMMM": return MONTHS[d.getMonth()];
+                            case "MMM": return MONTHS[d.getMonth()].slice(0, 3);
+                            case "dddd": return DAYS[d.getDay()];
+                            case "ddd": return DAYS[d.getDay()].slice(0, 3);
+                            case "Do": return String(d.getDate()) + suffix(d.getDate());
+                            case "YYYY": return String(d.getFullYear());
+                            case "YY": return String(d.getFullYear()).slice(-2);
+                            case "MM": return pad(d.getMonth() + 1);
+                            case "DD": return pad(d.getDate());
+                            case "HH": return pad(h24);
+                            case "hh": return pad(h12);
+                            case "h": return String(h12);
+                            case "mm": return pad(d.getMinutes());
+                            case "ss": return pad(d.getSeconds());
+                            case "a": return h24 < 12 ? "am" : "pm";
+                            case "A": return h24 < 12 ? "AM" : "PM";
+                            default: return tok;
+                        }
+                    });
+                    return out;
                 },
                 valueOf: () => d.getTime(),
-                toDate: () => d
+                toDate: () => new Date(d.getTime()),
+                toString: () => d.toString(),
+                clone: () => moment(d.getTime()),
+                isValid: () => !Number.isNaN(d.getTime()),
+                toISOString: () => d.toISOString(),
+                add: (n, unit) => addAmount(n, unit),
+                subtract: (n, unit) => addAmount(-n, unit),
+                startOf,
+                endOf,
+                isBefore: (other) => d.getTime() < toTime(other),
+                isAfter: (other) => d.getTime() > toTime(other),
+                isSame: (other) => d.getTime() === toTime(other),
+                diff: (other, unit) => {
+                    const delta = d.getTime() - toTime(other);
+                    switch (normUnit(unit)) {
+                        case "day": return Math.trunc(delta / 86400000);
+                        case "week": return Math.trunc(delta / (7 * 86400000));
+                        case "hour": return Math.trunc(delta / 3600000);
+                        case "minute": return Math.trunc(delta / 60000);
+                        case "second": return Math.trunc(delta / 1000);
+                        case "millisecond": return delta;
+                        case "month": return (d.getFullYear() - new Date(toTime(other)).getFullYear()) * 12
+                            + (d.getMonth() - new Date(toTime(other)).getMonth());
+                        case "year": return d.getFullYear() - new Date(toTime(other)).getFullYear();
+                        default: return Math.trunc(delta / 86400000);
+                    }
+                },
+                unix: () => Math.floor(d.getTime() / 1000),
+                year: () => d.getFullYear(),
+                month: () => d.getMonth(),
+                date: () => d.getDate(),
+                day: () => d.getDay(),
+                hour: () => d.getHours(),
+                minute: () => d.getMinutes(),
+                second: () => d.getSeconds(),
+                millisecond: () => d.getMilliseconds(),
             };
         }
 
