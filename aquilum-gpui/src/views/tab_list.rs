@@ -28,9 +28,9 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use gpui::{
-    canvas, div, prelude::*, px, uniform_list, Bounds, Context, DispatchPhase, EventEmitter,
-    FocusHandle, KeyDownEvent, MouseMoveEvent, Pixels, ScrollHandle, ScrollWheelEvent,
-    SharedString, UniformListScrollHandle, Window,
+    canvas, div, prelude::*, px, uniform_list, AnyElement, Bounds, Context, DispatchPhase,
+    EventEmitter, FocusHandle, KeyDownEvent, MouseMoveEvent, Pixels, Rgba, ScrollHandle,
+    ScrollWheelEvent, SharedString, UniformListScrollHandle, Window,
 };
 
 use crate::icons;
@@ -110,6 +110,9 @@ pub struct TabEntry {
     /// Font family the title is previewed in; `None` uses the UI font.
     /// Lets e.g. every font choice render in itself.
     pub font_family: Option<SharedString>,
+    /// Colored leading dot instead of the icon (filter swatches, status
+    /// pickers); `None` renders `icon` as before.
+    pub dot_color: Option<Rgba>,
 }
 
 /// Events emitted by [`TabListPopup`] towards the parent.
@@ -515,6 +518,16 @@ impl TabListPopup {
         let text_muted = self.theme.text_muted;
         let accent = self.theme.accent;
         let icon_color = if is_active { accent } else { text_secondary };
+        let leading: AnyElement = match tab.dot_color {
+            Some(color) => div()
+                .w(px(7.0))
+                .h(px(7.0))
+                .flex_shrink_0()
+                .rounded_full()
+                .bg(color)
+                .into_any_element(),
+            None => icons::icon(icon, ICON_SIZE, icon_color).into_any_element(),
+        };
 
         div()
             .id(("tab-list-row", ix))
@@ -533,7 +546,7 @@ impl TabListPopup {
             // Manual highlight (see `hover_tab_ix`): stock hover lights every
             // hitbox sharing the cursor point, i.e. both rows on a seam.
             .when(hovered, move |row| row.bg(bg_hover))
-            .child(icons::icon(icon, ICON_SIZE, icon_color))
+            .child(leading)
             .child(
                 div()
                     .flex_1()
@@ -853,6 +866,7 @@ impl AppView {
                     subtitle: None,
                     icon,
                     font_family: None,
+                    dot_color: None,
                 }
             })
             .collect();
@@ -938,6 +952,7 @@ impl AppView {
                 subtitle: Some(SharedString::from(loc.english_name)),
                 icon: icons::ICON_GLOBE,
                 font_family: None,
+                dot_color: None,
             })
             .collect();
         let active_ix = SUPPORTED_LOCALES
@@ -1011,6 +1026,7 @@ impl AppView {
                 subtitle: None,
                 icon: icons::ICON_TYPE,
                 font_family: Some(SharedString::from(*name)),
+                dot_color: None,
             })
             .collect();
         let active_ix = crate::fonts::EDITOR_FONT_CHOICES
@@ -1082,6 +1098,7 @@ impl AppView {
                 subtitle: None,
                 icon: icons::ICON_CHEVRON_RIGHT,
                 font_family: None,
+                dot_color: None,
             })
             .collect();
 

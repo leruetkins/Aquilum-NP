@@ -1158,6 +1158,7 @@ impl SettingsView {
                 subtitle: Some(SharedString::from(loc.english_name)),
                 icon: icons::ICON_GLOBE,
                 font_family: None,
+                dot_color: None,
             })
             .collect();
         let active_ix = SUPPORTED_LOCALES
@@ -1226,6 +1227,7 @@ impl SettingsView {
                 subtitle: None,
                 icon: icons::ICON_TYPE,
                 font_family: Some(SharedString::from(*name)),
+                dot_color: None,
             })
             .collect();
         let active_ix = crate::fonts::EDITOR_FONT_CHOICES
@@ -1293,6 +1295,7 @@ impl SettingsView {
                 subtitle: None,
                 icon: icons::ICON_CHEVRON_RIGHT,
                 font_family: None,
+                dot_color: None,
             })
             .collect();
 

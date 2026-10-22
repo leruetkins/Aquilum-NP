@@ -343,6 +343,12 @@ pub struct AppView {
     pub catalog_details_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag,
     pub catalog_blink: BlinkManager,
     pub catalog_window_manager: crate::views::plugin_catalog::CatalogWindowManager,
+    /// Compatibility filter dropdown of the in-settings catalog panel
+    /// (the shared `TabListPopup`; the standalone catalog window keeps its
+    /// own copy on `PluginCatalogView`).
+    pub catalog_compat_popup: Option<gpui::Entity<crate::views::tab_list::TabListPopup>>,
+    /// Keeps the panel compat dropdown's event subscription alive.
+    pub catalog_compat_popup_subscription: Option<Subscription>,
     /// Active interactive text input in plugin UI (plugin_id, view_id, node_id, value, cursor_pos).
     pub active_plugin_input: Option<crate::plugins::ui::PluginInputFocusState>,
     pub plugin_input_focus_handle: FocusHandle,
@@ -533,6 +539,8 @@ impl AppView {
             catalog_details_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
             catalog_blink: BlinkManager::new(),
             catalog_window_manager: crate::views::plugin_catalog::CatalogWindowManager::default(),
+            catalog_compat_popup: None,
+            catalog_compat_popup_subscription: None,
             active_plugin_input: None,
             plugin_input_focus_handle: cx.focus_handle(),
             plugin_input_blink: BlinkManager::new(),

@@ -29,6 +29,50 @@ pub enum CatalogSortOrder {
     RecentlyUpdated,
 }
 
+/// Compatibility filter over the embedded corpus registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogCompatFilter {
+    All,
+    Compatible,
+    Partial,
+    Blocked,
+}
+
+impl CatalogCompatFilter {
+    /// Dropdown label for the current value.
+    pub fn label(self, is_ru: bool) -> String {
+        match self {
+            Self::All => (if is_ru { "Все" } else { "All" }).to_string(),
+            Self::Compatible => (if is_ru { "Совместимые" } else { "Compatible" }).to_string(),
+            Self::Partial => (if is_ru { "Частично" } else { "Partial" }).to_string(),
+            Self::Blocked => (if is_ru { "Блокированные" } else { "Blocked" }).to_string(),
+        }
+    }
+
+    /// Marker dot color for the option row / button.
+    pub fn dot_color(self, theme: &crate::theme::Theme) -> gpui::Rgba {
+        match self {
+            Self::All => theme.text_muted,
+            Self::Compatible => rgba(0x3fb950ff),
+            Self::Partial => rgba(0xd29922ff),
+            Self::Blocked => rgba(0xf85149ff),
+        }
+    }
+
+    /// Theme-independent variant of [`Self::dot_color`] for contexts without a
+    /// `Theme` at hand (the shared popup builds its rows from `TabEntry`).
+    pub fn dot_color_static(self) -> gpui::Rgba {
+        match self {
+            Self::All => rgba(0x8b949eff),
+            Self::Compatible => rgba(0x3fb950ff),
+            Self::Partial => rgba(0xd29922ff),
+            Self::Blocked => rgba(0xf85149ff),
+        }
+    }
+
+    pub const ALL: [Self; 4] = [Self::All, Self::Compatible, Self::Partial, Self::Blocked];
+}
+
 /// State of the Community Plugins Catalog modal dialog.
 #[derive(Debug, Clone)]
 pub struct PluginCatalogState {
@@ -40,6 +84,8 @@ pub struct PluginCatalogState {
     /// Window x of the input text box; measured via canvas for click mapping.
     pub box_origin_x: Rc<Cell<f32>>,
     pub sort_order: CatalogSortOrder,
+    /// Compatibility filter over the embedded corpus registry.
+    pub compat_filter: CatalogCompatFilter,
     pub selected_plugin_id: Option<String>,
     pub entries: Vec<CatalogPluginEntry>,
     pub is_loading: bool,
@@ -64,6 +110,7 @@ impl Default for PluginCatalogState {
             is_mouse_selecting: false,
             box_origin_x: Rc::new(Cell::new(0.0)),
             sort_order: CatalogSortOrder::MostPopular,
+            compat_filter: CatalogCompatFilter::All,
             selected_plugin_id: None,
             entries: initial_entries,
             is_loading: false,
@@ -150,9 +197,38 @@ impl PluginCatalogState {
     /// Returns filtered and sorted list of catalog entries according to current search query,
     /// matching full queries and terms identically to file search (`goto_search.rs`).
     pub fn filtered_entries(&self) -> Vec<CatalogPluginEntry> {
+        // Compatibility filter: the corpus registry decides; plugins outside the
+        // corpus pass only with the "All" filter (they are not verified either way).
+        let matches_compat = |id: &str| match self.compat_filter {
+            CatalogCompatFilter::All => true,
+            CatalogCompatFilter::Compatible => {
+                matches!(
+                    crate::plugins::compat::catalog_compat(id).map(|r| r.status),
+                    Some(crate::plugins::compat::CompatibilityStatus::Full)
+                )
+            }
+            CatalogCompatFilter::Partial => {
+                matches!(
+                    crate::plugins::compat::catalog_compat(id).map(|r| r.status),
+                    Some(crate::plugins::compat::CompatibilityStatus::Partial(_))
+                )
+            }
+            CatalogCompatFilter::Blocked => {
+                matches!(
+                    crate::plugins::compat::catalog_compat(id).map(|r| r.status),
+                    Some(crate::plugins::compat::CompatibilityStatus::Incompatible)
+                )
+            }
+        };
+
         let raw = self.search_query.trim();
         if raw.is_empty() {
-            let mut list = self.entries.clone();
+            let mut list: Vec<CatalogPluginEntry> = self
+                .entries
+                .iter()
+                .filter(|e| matches_compat(&e.id))
+                .cloned()
+                .collect();
             self.sort_catalog_entries(&mut list);
             return list;
         }
@@ -173,6 +249,9 @@ impl PluginCatalogState {
         let mut ranked: Vec<(u8, usize, CatalogPluginEntry)> = Vec::new();
 
         for entry in &self.entries {
+            if !matches_compat(&entry.id) {
+                continue;
+            }
             let name_lower = entry.name.to_lowercase();
             let id_lower = entry.id.to_lowercase();
             let author_lower = entry.author.to_lowercase();
@@ -474,6 +553,31 @@ impl CatalogWindowManager {
     }
 }
 
+/// Options of the compatibility dropdown in `TabEntry` form; the current
+/// filter's row is pre-highlighted via `active_ix`. Shared by the standalone
+/// catalog window and the in-settings panel (`open_*_compat_popup`).
+fn compat_popup_entries(
+    filter: CatalogCompatFilter,
+) -> (Vec<crate::views::tab_list::TabEntry>, usize) {
+    let entries: Vec<crate::views::tab_list::TabEntry> = CatalogCompatFilter::ALL
+        .iter()
+        .enumerate()
+        .map(|(ix, option)| crate::views::tab_list::TabEntry {
+            id: ix,
+            title: SharedString::from(option.label(true)),
+            subtitle: None,
+            icon: icons::ICON_CHEVRON_RIGHT,
+            font_family: None,
+            dot_color: Some(option.dot_color_static()),
+        })
+        .collect();
+    let active_ix = CatalogCompatFilter::ALL
+        .iter()
+        .position(|o| *o == filter)
+        .unwrap_or(0);
+    (entries, active_ix)
+}
+
 /// Independent top-level GPUI view for the Community Plugins Catalog window.
 pub struct PluginCatalogView {
     pub state: PluginCatalogState,
@@ -490,6 +594,10 @@ pub struct PluginCatalogView {
     pub vault_root: Option<PathBuf>,
     pub is_ru: bool,
     pub is_hovering_close: bool,
+    /// Compatibility filter dropdown (the shared `TabListPopup` list).
+    pub compat_popup: Option<gpui::Entity<crate::views::tab_list::TabListPopup>>,
+    /// Keeps the compat dropdown's event subscription alive.
+    pub compat_popup_subscription: Option<gpui::Subscription>,
 }
 
 impl PluginCatalogView {
@@ -521,6 +629,8 @@ impl PluginCatalogView {
             vault_root,
             is_ru,
             is_hovering_close: false,
+            compat_popup: None,
+            compat_popup_subscription: None,
         };
 
         if let Some(sel_id) = this.state.selected_plugin_id.clone() {
@@ -556,14 +666,76 @@ impl PluginCatalogView {
                             } else {
                                 false
                             }
-                        })
-                        .unwrap_or(false);
+                        })                        .unwrap_or(false);
                     if !alive {
                         break;
                     }
                 }
             })
             .detach();
+    }
+
+    /// Options of the compatibility dropdown in `TabEntry` form; the current
+    /// filter's row is pre-highlighted via `active_ix`. Shared by the standalone
+    /// catalog window and the in-settings panel (`open_*_compat_popup`).
+    fn compat_entries(
+        filter: CatalogCompatFilter,
+    ) -> (Vec<crate::views::tab_list::TabEntry>, usize) {
+        compat_popup_entries(filter)
+    }
+
+    /// Opens the compatibility dropdown anchored to the given toggle button.
+    /// The parent owns lifecycle: opening replaces the entity and its
+    /// subscription; `TabListEvent::Dismiss` (click outside) closes it.
+    pub fn open_compat_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (tabs, active_ix) = Self::compat_entries(self.state.compat_filter);
+        let theme = self.theme.clone();
+        let popup = cx.new(|cx| {
+            crate::views::tab_list::TabListPopup::new(
+                tabs,
+                active_ix,
+                theme,
+                None,
+                None,
+                None,
+                cx,
+            )
+        });
+        let subscription = cx.subscribe_in(
+            &popup,
+            window,
+            move |this, _popup, event: &crate::views::tab_list::TabListEvent, _window, cx| {
+                match event {
+                    crate::views::tab_list::TabListEvent::Activate(id) => {
+                        if let Some(option) = CatalogCompatFilter::ALL.get(*id) {
+                            this.state.compat_filter = *option;
+                            this.on_search_query_changed();
+                        }
+                        this.close_compat_popup(cx);
+                    }
+                    crate::views::tab_list::TabListEvent::Dismiss => this.close_compat_popup(cx),
+                    _ => {}
+                }
+            },
+        );
+        window.focus(&popup.read(cx).focus_handle());
+        self.compat_popup = Some(popup);
+        self.compat_popup_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    pub fn close_compat_popup(&mut self, cx: &mut Context<Self>) {
+        if self.compat_popup.take().is_none()
+            && self.compat_popup_subscription.take().is_none()
+        {
+            return;
+        }
+        self.compat_popup_subscription = None;
+        cx.notify();
+    }
+
+    pub fn compat_popup_is_open(&self) -> bool {
+        self.compat_popup.is_some()
     }
 
     pub fn pause_and_show_caret(&mut self, cx: &mut Context<Self>) {
@@ -1708,6 +1880,54 @@ impl PluginCatalogView {
                                         cx.notify();
                                     })),
                             ),
+                    )
+                    // Compatibility dropdown over the embedded corpus registry.
+                    // The shared `TabListPopup` hangs from this button (deferred:
+                    // paints above the details pane and outside the header's
+                    // stacking); a click outside it emits `Dismiss`.
+                    .child(
+                        div()
+                            .relative()
+                            .child(
+                                div()
+                                    .id("compat-dropdown-toggle")
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .px_2p5()
+                                    .py_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .text_xs()
+                                    .bg(theme.bg_card)
+                                    .border_1()
+                                    .border_color(if self.compat_popup_is_open() { theme.accent } else { theme.border_subtle })
+                                    .child(div().w(px(7.0)).h(px(7.0)).rounded_full().bg(self.state.compat_filter.dot_color(theme)))
+                                    .child(self.state.compat_filter.label(is_ru))
+                                    .child(icons::icon(icons::ICON_CHEVRON_DOWN, 12.0, theme.text_muted))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if this.compat_popup_is_open() {
+                                            this.close_compat_popup(cx);
+                                        } else {
+                                            this.open_compat_popup(window, cx);
+                                        }
+                                    })),
+                            )
+                            .when_some(self.compat_popup.clone(), |parent, popup| {
+                                parent.child(
+                                    gpui::deferred(
+                                        div()
+                                            .id("compat-dropdown-popup")
+                                            .absolute()
+                                            .top_full()
+                                            .right_0()
+                                            .mt_1()
+                                            .child(popup),
+                                    )
+                                    .with_priority(999),
+                                )
+                            }),
                     ),
             )
     }
@@ -1761,6 +1981,14 @@ impl PluginCatalogView {
             let entry_id = entry.id.clone();
             let dl_formatted = format_download_count(entry.downloads);
             let author_display = format!("{}: {}", if is_ru { "Автор" } else { "Author" }, entry.author);
+            // Status marker in the row: colored dot + short word, colored by verdict.
+            let compat_row = crate::plugins::compat::catalog_compat(&entry.id);
+            let (compat_dot, compat_word) = match compat_row.as_ref().map(|r| &r.status) {
+                Some(crate::plugins::compat::CompatibilityStatus::Full) => (rgba(0x3fb950ff), if is_ru { "Совместим" } else { "OK" }.to_string()),
+                Some(crate::plugins::compat::CompatibilityStatus::Partial(_)) => (rgba(0xd29922ff), if is_ru { "Частично" } else { "Partial" }.to_string()),
+                Some(crate::plugins::compat::CompatibilityStatus::Incompatible) => (rgba(0xf85149ff), if is_ru { "Блокирован" } else { "Blocked" }.to_string()),
+                Some(crate::plugins::compat::CompatibilityStatus::Unknown) | None => (theme.text_muted, String::new()),
+            };
 
             let item_el = div()
                 .id(ElementId::from(SharedString::from(format!("cat-item-{}", entry.id))))
@@ -1834,6 +2062,27 @@ impl PluginCatalogView {
                                         .child(icons::icon(icons::ICON_DOWNLOAD, 12.0, theme.text_muted))
                                         .child(dl_formatted),
                                 )
+                                // Compatibility marker from the corpus registry: a dot-style
+                                // badge, unobtrusive next to the download counter.
+                                .when(!compat_word.is_empty(), |p| {
+                                    p.child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap_1()
+                                            .text_xs()
+                                            .text_color(theme.text_muted)
+                                            .child(
+                                                div()
+                                                    .w(px(7.0))
+                                                    .h(px(7.0))
+                                                    .rounded_full()
+                                                    .bg(compat_dot),
+                                            )
+                                            .child(compat_word),
+                                    )
+                                })
                                 .when(is_installed, |p| {
                                     p.child(
                                         div()
@@ -1996,6 +2245,67 @@ impl PluginCatalogView {
         let repo_line_prefix = if is_ru { "Репозиторий: " } else { "Repository: " };
         let updated_line_prefix = if is_ru { "Последнее обновление: " } else { "Last updated: " };
         let updated_text = format_updated_date(entry.updated, is_ru);
+
+        // Compatibility from the embedded corpus registry (static doctor scan of the
+        // real top-1500 Obsidian corpus); absent for plugins outside the corpus.
+        let compat = crate::plugins::compat::catalog_compat(&entry.id);
+        let (compat_text, compat_bg, compat_fg, compat_detail) = match &compat {
+            Some(record) => {
+                let (text, bg, fg) = match record.status {
+                    crate::plugins::compat::CompatibilityStatus::Full => (
+                        if is_ru { "Совместим" } else { "Compatible" }.to_string(),
+                        rgba(0x2ea44f22),
+                        rgba(0x3fb950ff),
+                    ),
+                    crate::plugins::compat::CompatibilityStatus::Partial(score) => (
+                        if is_ru {
+                            format!("Совместим {:.0}%", score * 100.0)
+                        } else {
+                            format!("Compatible {:.0}%", score * 100.0)
+                        },
+                        rgba(0xdbab0922),
+                        rgba(0xd29922ff),
+                    ),
+                    crate::plugins::compat::CompatibilityStatus::Incompatible => (
+                        if is_ru { "Не совместим" } else { "Incompatible" }.to_string(),
+                        rgba(0xf8514922),
+                        rgba(0xf85149ff),
+                    ),
+                    crate::plugins::compat::CompatibilityStatus::Unknown => (
+                        if is_ru { "Совместимость неизвестна" } else { "Compatibility unknown" }.to_string(),
+                        rgba(0x8b949e22),
+                        rgba(0x8b949eff),
+                    ),
+                };
+                let mut detail = String::new();
+                if !record.blockers.is_empty() {
+                    detail = if is_ru {
+                        format!("Требует: {}", record.blockers.join(", "))
+                    } else {
+                        format!("Requires: {}", record.blockers.join(", "))
+                    };
+                } else if !record.missing_exports.is_empty() {
+                    detail = if is_ru {
+                        format!("Нет API: {}", record.missing_exports.join(", "))
+                    } else {
+                        format!("Missing API: {}", record.missing_exports.join(", "))
+                    };
+                } else if !record.missing_app.is_empty() {
+                    detail = if is_ru {
+                        format!("Нет: app.{}", record.missing_app.join(", app."))
+                    } else {
+                        format!("Missing: app.{}", record.missing_app.join(", app."))
+                    };
+                }
+                (text, bg, fg, detail)
+            }
+            None => (
+                if is_ru { "Не проверен" } else { "Unverified" }.to_string(),
+                rgba(0x8b949e18),
+                theme.text_muted,
+                String::new(),
+            ),
+        };
 
         // Top actions bar
         let top_actions_bar = div()
@@ -2221,7 +2531,32 @@ impl PluginCatalogView {
                             .gap_1()
                             .child(div().child(updated_line_prefix))
                             .child(div().child(updated_text)),
-                    ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .child(div().child(if is_ru { "Совместимость: " } else { "Compatibility: " }))
+                            .child(
+                                div()
+                                    .px_1p5()
+                                    .py_0p5()
+                                    .rounded_sm()
+                                    .bg(compat_bg)
+                                    .text_color(compat_fg)
+                                    .child(compat_text.clone()),
+                            ),
+                    )
+                    .when(!compat_detail.is_empty(), |parent| {
+                        parent.child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.text_muted)
+                                .child(compat_detail.clone()),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -3055,6 +3390,7 @@ impl AppView {
         self.plugin_catalog.is_open = false;
         self.plugin_catalog.selection_anchor = None;
         self.plugin_catalog.is_mouse_selecting = false;
+        self.close_catalog_compat_popup(cx);
         self.catalog_blink.disable(cx);
         window.focus(&self.focus_handle);
         cx.notify();
@@ -3165,6 +3501,61 @@ impl AppView {
         self.catalog_details_scroll_handle.set_offset(point(px(0.0), px(0.0)));
         self.ensure_catalog_plugin_readme_loaded(plugin_id, cx);
         cx.notify();
+    }
+
+    /// Opens the compatibility dropdown of the in-settings catalog panel.
+    /// Same shared `TabListPopup` as the standalone window version above.
+    pub fn open_catalog_compat_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (tabs, active_ix) = compat_popup_entries(self.plugin_catalog.compat_filter);
+        let theme = self.theme.clone();
+        let popup = cx.new(|cx| {
+            crate::views::tab_list::TabListPopup::new(
+                tabs,
+                active_ix,
+                theme,
+                None,
+                None,
+                None,
+                cx,
+            )
+        });
+        let subscription = cx.subscribe_in(
+            &popup,
+            window,
+            move |this, _popup, event: &crate::views::tab_list::TabListEvent, _window, cx| {
+                match event {
+                    crate::views::tab_list::TabListEvent::Activate(id) => {
+                        if let Some(option) = CatalogCompatFilter::ALL.get(*id) {
+                            this.plugin_catalog.compat_filter = *option;
+                            this.on_catalog_search_query_changed();
+                        }
+                        this.close_catalog_compat_popup(cx);
+                    }
+                    crate::views::tab_list::TabListEvent::Dismiss => {
+                        this.close_catalog_compat_popup(cx)
+                    }
+                    _ => {}
+                }
+            },
+        );
+        window.focus(&popup.read(cx).focus_handle());
+        self.catalog_compat_popup = Some(popup);
+        self.catalog_compat_popup_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    pub fn close_catalog_compat_popup(&mut self, cx: &mut Context<Self>) {
+        if self.catalog_compat_popup.take().is_none()
+            && self.catalog_compat_popup_subscription.take().is_none()
+        {
+            return;
+        }
+        self.catalog_compat_popup_subscription = None;
+        cx.notify();
+    }
+
+    pub fn catalog_compat_popup_is_open(&self) -> bool {
+        self.catalog_compat_popup.is_some()
     }
 
     /// Checks if README.md for the given plugin is available locally or in cache; if not, fetches it asynchronously from GitHub.
@@ -3762,11 +4153,10 @@ impl AppView {
                                     .child(self.render_catalog_list(&entries, cx))
                                     .child(self.render_catalog_details(selected_entry, cx)),
                             ),
-                    ),
+                    )
             )
     }
 
-    /// Renders the title bar, search input, count, and sort toggles of the Catalog modal.
     fn render_catalog_header(&self, window: &Window, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
         let is_ru = self.config.ui.language.starts_with("ru");
@@ -4172,6 +4562,54 @@ impl AppView {
                                         cx.notify();
                                      })),
                             ),
+                    )
+                    // Compatibility dropdown over the embedded corpus registry.
+                    // The shared `TabListPopup` hangs from this button (deferred,
+                    // so it paints above the list/details panes); a click outside
+                    // it emits `Dismiss` and closes the list.
+                    .child(
+                        div()
+                            .relative()
+                            .child(
+                                div()
+                                    .id("compat-dropdown-panel-toggle")
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .text_xs()
+                                    .bg(theme.bg_card)
+                                    .border_1()
+                                    .border_color(if self.catalog_compat_popup_is_open() { theme.accent } else { theme.border_subtle })
+                                    .child(div().w(px(7.0)).h(px(7.0)).rounded_full().bg(self.plugin_catalog.compat_filter.dot_color(theme)))
+                                    .child(self.plugin_catalog.compat_filter.label(is_ru))
+                                    .child(icons::icon(icons::ICON_CHEVRON_DOWN, 12.0, theme.text_muted))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if this.catalog_compat_popup_is_open() {
+                                            this.close_catalog_compat_popup(cx);
+                                        } else {
+                                            this.open_catalog_compat_popup(window, cx);
+                                        }
+                                    })),
+                            )
+                            .when_some(self.catalog_compat_popup.clone(), |parent, popup| {
+                                parent.child(
+                                    gpui::deferred(
+                                        div()
+                                            .id("compat-dropdown-panel-popup")
+                                            .absolute()
+                                            .top_full()
+                                            .right_0()
+                                            .mt_1()
+                                            .child(popup),
+                                    )
+                                    .with_priority(999),
+                                )
+                            }),
                     ),
             )
     }
@@ -4518,6 +4956,67 @@ impl AppView {
         let updated_line_prefix = if is_ru { "Последнее обновление: " } else { "Last updated: " };
         let updated_text = format_updated_date(entry.updated, is_ru);
 
+        // Compatibility from the embedded corpus registry (static doctor scan of the
+        // real top-1500 Obsidian corpus); absent for plugins outside the corpus.
+        let compat = crate::plugins::compat::catalog_compat(&entry.id);
+        let (compat_text, compat_bg, compat_fg, compat_detail) = match &compat {
+            Some(record) => {
+                let (text, bg, fg) = match record.status {
+                    crate::plugins::compat::CompatibilityStatus::Full => (
+                        if is_ru { "Совместим" } else { "Compatible" }.to_string(),
+                        rgba(0x2ea44f22),
+                        rgba(0x3fb950ff),
+                    ),
+                    crate::plugins::compat::CompatibilityStatus::Partial(score) => (
+                        if is_ru {
+                            format!("Совместим {:.0}%", score * 100.0)
+                        } else {
+                            format!("Compatible {:.0}%", score * 100.0)
+                        },
+                        rgba(0xdbab0922),
+                        rgba(0xd29922ff),
+                    ),
+                    crate::plugins::compat::CompatibilityStatus::Incompatible => (
+                        if is_ru { "Не совместим" } else { "Incompatible" }.to_string(),
+                        rgba(0xf8514922),
+                        rgba(0xf85149ff),
+                    ),
+                    crate::plugins::compat::CompatibilityStatus::Unknown => (
+                        if is_ru { "Совместимость неизвестна" } else { "Compatibility unknown" }.to_string(),
+                        rgba(0x8b949e22),
+                        rgba(0x8b949eff),
+                    ),
+                };
+                let mut detail = String::new();
+                if !record.blockers.is_empty() {
+                    detail = if is_ru {
+                        format!("Требует: {}", record.blockers.join(", "))
+                    } else {
+                        format!("Requires: {}", record.blockers.join(", "))
+                    };
+                } else if !record.missing_exports.is_empty() {
+                    detail = if is_ru {
+                        format!("Нет API: {}", record.missing_exports.join(", "))
+                    } else {
+                        format!("Missing API: {}", record.missing_exports.join(", "))
+                    };
+                } else if !record.missing_app.is_empty() {
+                    detail = if is_ru {
+                        format!("Нет: app.{}", record.missing_app.join(", app."))
+                    } else {
+                        format!("Missing: app.{}", record.missing_app.join(", app."))
+                    };
+                }
+                (text, bg, fg, detail)
+            }
+            None => (
+                if is_ru { "Не проверен" } else { "Unverified" }.to_string(),
+                rgba(0x8b949e18),
+                theme.text_muted,
+                String::new(),
+            ),
+        };
+
         // Top actions bar
         let top_actions_bar = div()
             .flex()
@@ -4739,6 +5238,32 @@ impl AppView {
                             .child(updated_text),
                     ),
             )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
+                    .child(div().text_color(theme.text_secondary).child(if is_ru { "Совместимость: " } else { "Compatibility: " }))
+                    .child(
+                        div()
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded_sm()
+                            .bg(compat_bg)
+                            .text_color(compat_fg)
+                            .child(compat_text.clone()),
+                    ),
+            )
+            .when(!compat_detail.is_empty(), |parent| {
+                parent.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.text_muted)
+                        .child(compat_detail.clone()),
+                )
+            })
             // Description
             .child(
                 div()
@@ -5022,6 +5547,28 @@ mod tests {
 
         state.search_query = "non-existent-plugin-query".to_string();
         assert!(state.filtered_entries().is_empty());
+    }
+
+    #[test]
+    fn test_catalog_compat_filter() {
+        let mut state = PluginCatalogState::default();
+        state.entries = PluginCatalogState::default_catalog();
+
+        // The registry marks dataview as engine-blocked; calendar and the rest of the
+        // stub entries are outside the corpus and only pass the "All" filter.
+        state.compat_filter = CatalogCompatFilter::Blocked;
+        let blocked = state.filtered_entries();
+        assert!(blocked.iter().any(|e| e.id == "dataview"));
+
+        state.compat_filter = CatalogCompatFilter::Compatible;
+        assert!(state.filtered_entries().is_empty());
+
+        state.compat_filter = CatalogCompatFilter::Partial;
+        assert!(state.filtered_entries().is_empty());
+
+        // Unverified entries vanish under any specific filter but return with "All".
+        state.compat_filter = CatalogCompatFilter::All;
+        assert!(state.filtered_entries().iter().any(|e| e.id == "calendar"));
     }
 
     #[test]

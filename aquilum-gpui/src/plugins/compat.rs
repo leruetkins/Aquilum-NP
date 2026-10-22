@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 /// High-level compatibility level of an Obsidian plugin with the Aquilum GPUI host.
@@ -184,6 +186,92 @@ pub fn analyze_plugin_script(script_source: &str) -> CompatibilityReport {
     }
 }
 
+// ──────────────────────────────────────────────────────── реестр корпуса
+
+/// Запись реестра совместимости: результат статического скана doctor'а по реальному
+/// корпусу плагинов Obsidian. `catalog_id` — id плагина из community-plugins.json.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatalogCompatRecord {
+    pub status: CompatibilityStatus,
+    /// Доля распознанных поддержанных вызовов от всех распознанных (0..1).
+    pub coverage: f32,
+    /// Экспорты obsidian, которых нет у хоста (API новее 1.7.5 и т.п.).
+    pub missing_exports: Vec<String>,
+    /// Члены app.*, которых нет у хоста.
+    pub missing_app: Vec<String>,
+    /// Движковые блокеры (canvas / codemirror / node / ...).
+    pub blockers: Vec<String>,
+}
+
+/// Компактные формы JSON-реестра.
+#[derive(Deserialize)]
+struct RegistryRecord {
+    s: String,
+    #[serde(default)]
+    c: f32,
+    #[serde(default)]
+    e: Vec<String>,
+    #[serde(default)]
+    a: Vec<String>,
+    #[serde(default)]
+    b: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct RegistryFile {
+    #[serde(default)]
+    generated: String,
+    #[serde(default)]
+    counts: BTreeMap<String, u32>,
+    plugins: BTreeMap<String, RegistryRecord>,
+}
+
+/// Сгенерированный реестр: `node make-compat-registry.cjs <doctor-report> <out>`.
+/// Инструмент живёт в REA `.workbuddy-ai/tools/plugin-probe/`; обновлять файл стоит
+/// после заметных изменений поверхности хоста или нового скана корпуса.
+static COMPAT_REGISTRY_JSON: &str = include_str!("compat_registry.json");
+
+/// Разобранный реестр, один раз на процесс: каталогу нужен lookup на каждую строку
+/// списка, а JSON на ~80КБ не должен парситься в цикле рендера.
+static COMPAT_REGISTRY: OnceLock<RegistryFile> = OnceLock::new();
+
+fn compat_registry() -> &'static RegistryFile {
+    COMPAT_REGISTRY.get_or_init(|| {
+        serde_json::from_str(COMPAT_REGISTRY_JSON).expect("compat_registry.json must deserialize")
+    })
+}
+
+/// Возвращает запись совместимости по id плагина из каталога, если он был в скане корпуса.
+pub fn catalog_compat(plugin_id: &str) -> Option<CatalogCompatRecord> {
+    let file = compat_registry();
+    let record = file.plugins.get(plugin_id)?;
+    let status = match record.s.as_str() {
+        "ok" => CompatibilityStatus::Full,
+        "partial" => CompatibilityStatus::Partial(record.c.clamp(0.0, 1.0)),
+        "blocked" => CompatibilityStatus::Incompatible,
+        _ => CompatibilityStatus::Unknown,
+    };
+    Some(CatalogCompatRecord {
+        status,
+        coverage: record.c,
+        missing_exports: record.e.clone(),
+        missing_app: record.a.clone(),
+        blockers: record.b.clone(),
+    })
+}
+
+/// Число плагинов, покрытых реестром (для подписи в каталоге).
+pub fn catalog_compat_stats() -> (u32, u32, u32, u32) {
+    let file = compat_registry();
+    let total = file.plugins.len() as u32;
+    (
+        total,
+        *file.counts.get("ok").unwrap_or(&0),
+        *file.counts.get("partial").unwrap_or(&0),
+        *file.counts.get("blocked").unwrap_or(&0),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +362,20 @@ mod tests {
         assert!(report.supported_calls.is_empty());
         assert!(report.missing_calls.is_empty());
         assert!(report.incompatible_calls.is_empty());
+    }
+
+    #[test]
+    fn catalog_registry_lookups_work() {
+        let (total, ok, partial, blocked) = catalog_compat_stats();
+        assert!(total >= 1000, "registry too small: {total}");
+        assert!(ok > 500 && partial > 50 && blocked > 500);
+
+        // A known blocked plugin reports its engine blocker; a known ok plugin is Full.
+        let (total2, ok2, _, _) = catalog_compat_stats();
+        assert_eq!(total, total2);
+        assert!(ok == ok2);
+
+        let unknown = catalog_compat("definitely-not-a-real-plugin-id-xyz");
+        assert!(unknown.is_none());
     }
 }
