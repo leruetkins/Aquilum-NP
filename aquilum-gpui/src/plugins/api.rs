@@ -28,6 +28,24 @@ pub enum ApiRequest {
     VaultTrash { path: String, system: bool },
     /// Rename or move file within vault: app.vault.rename(old_path, new_path)
     VaultRename { old_path: String, new_path: String },
+    /// Append text to a file (creates it when missing): app.vault.append(path, data)
+    VaultAppend { path: String, data: String },
+    /// Copy a file within vault: app.vault.copy(source, target)
+    VaultCopy { source: String, target: String },
+    /// File existence probe without reading content: app.vault.exists(path)
+    VaultExists { path: String },
+    /// Vault-wide folder listing: app.vault.getAllFolders() -> folder paths
+    VaultListFolders,
+    /// A safe target path unused in the vault: app.vault.getAvailablePath(prefix, ext)
+    VaultGetAvailablePath { prefix: String, extension: Option<String> },
+    /// Opens the settings window: app.setting.open()/openTabById(id)/openTab(tab)
+    OpenSettings {
+        /// Settings tab key (`community-plugins`, `plugin:obsidian-plugin-id`) or None for the
+        /// currently active tab.
+        tab: Option<String>,
+    },
+    /// Closes the settings window: app.setting.close()
+    CloseSettings,
     /// Display notification notice: new Notice(text, timeout)
     Notice {
         text: String,

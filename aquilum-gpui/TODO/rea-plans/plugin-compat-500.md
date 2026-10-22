@@ -207,6 +207,43 @@
 
 ## 6. Порядок работ, уточнённый
 
+**Добитие app-поверхности, 22.10.2026.** По корпусу 1500 статический doctor показал
+141 уникальную дыру `app.*`; к утру 22.10 — **0**. Реализовано честно (хост-каналы):
+`setting.open/openTabById/openTab/close` → новый запрос `open_settings`/`close_settings`
+(маппинг вкладок тот же, что у `vibecodium://`-парсера; id плагина открывает его вкладку),
+`vault.append` (read+concat+write, создаёт при отсутствии) / `vault.copy` / `vault.exists` /
+`vault.getAllFolders` (реальный обход дерева, скрытые исключены) / `vault.getAvailablePath`
+(первый свободный «prefix N.ext») / `vault.getAvailablePathForAttachments` / `vault.rename`
+(принимает и TAbstractFile) / `vault.config`+`setConfig` (в памяти на сессию) /
+`vault.getAbstractFileByPathInsensitive` / `vault.onChange/getAllFiles/checkPath/saveConfig/resolveFileUrl/root`.
+`fileManager.getAvailablePathForAttachment` (нумерация рядом с sourcePath) /
+`createNewMarkdownFile` (реальное создание) / `promptForDeletion` → vault_trash
+(без промпта — удаление в корзину, never unlink).
+Честные деградации (no-op/пустые): workspace-хвост (`containerEl`-стенд-ин, `updateOptions`,
+`requestSaveLayout`, popout/split-методы → обычные листья, hover-link/редактор-экстеншены,
+`getGroupLeaves`, `protocolHandlers`, `recentFileTracker`, `iterateCodeMirrors`),
+`metadataCache` (`unresolvedLinks`/`getTags`/`getBacklinksForFile`/`off`/`onCleanCache`/
+`getAllPropertyNames`/`iterateReferences`/`uniqueFileLookup`/`computeMetadataAsync`),
+`commands` (`listCommands`/`findCommand`/`removeCommand`/`executeCommand`/`editorCommands`,
+`constructor.prototype` для monkey-around), `plugins` (`enable/disable(AndSave)` — новые
+запросы `plugin_enable`/`plugin_disable`, `installPlugin` → null, `checkForUpdates` → false,
+`on`), `internalPlugins.plugins/config`, `viewRegistry`/`embedRegistry`/`mobileToolbar`/
+`metadataTypeManager`/`scope`/`secretStorage.listSecrets/get/set`, `hotkeyManager.customKeys/removeDefaultHotkeys`.
+Убран дублированный блок `commands` в объекте `app` (второй ключ перекрывал новый
+и не давал `findCommand`). `KNOWN_UNIMPLEMENTED_OBSIDIAN_METHODS` опустел — все члены
+контракта получили реализацию или осознанный no-op; тест `test_lazy_fail_and_audited_proxy`
+переписан под новый контракт (safe-member резолвится, неизвестный — undefined).
+Doctor: `caps.app` парсит новые raw-объекты (`rawSetting`/`rawPlugins` + keymap/
+secretStorage/hotkeyManager/mobileToolbar/metadataTypeManager/scope/viewRegistry/embedRegistry),
+список экспортов извлекается со сбалансированными скобками (ленивый regex до `\n};`
+обрывался на плагинных бандлах внутри строк) и ловит shorthand-методы (`getAllTags(...)`).
+Итог статики по 1497: **`ok` 525 → 708, `degraded` 292 → 109, `blocked` 680**.
+Харнесс 193 → **212/212** (19 новых тестов: setting-канал, vault-хвост, workspace-хвост,
+реестры). cargo test 497/497, зеркало 10/10. Пробник на 780: 777/780 загружаются.
+Оставшиеся degraded — классы API новее 1.7.5 (`Vault`, `BasesView`, `SecretComponent`,
+`SettingGroup`, `apiVersion`, `ConfirmationModal`, `Workspace*`-наследования) — осознанно
+вне поверхности хоста.
+
 **Корпус 1500, 21.10.2026 — расширение и повтор всех проверок.** Скачано 1497/1500
 (3 репозитория мертвы: manifest 404 — `colecao-livros-quadrinhos`, `hugo-sync`, `magneto`).
 Корпус: `D:\Naben\zcode-plugin-probe\corpus1500` (500 прежних + 997 новых).

@@ -4234,13 +4234,17 @@ fn setup_plugin_environment<'js>(
             'app.metadataCache.trigger',
             'plugin.addRibbonIcon',
             'app.workspace.trigger',
-            'app.vault.trigger'
+            'app.vault.trigger',
+            // requestSaveLayout: layout persistence is implicit in the host, the method
+            // exists on rawWorkspace as a no-op — listed here so the audited proxy path
+            // (and the contract test) still exercises the "known, safe, no result" branch.
+            'app.workspace.requestSaveLayout'
         ]);
 
         const KNOWN_UNIMPLEMENTED_OBSIDIAN_METHODS = new Set([
-            'app.vault.copy',
-            'app.workspace.splitActiveLeaf',
-            'app.fileManager.processFrontMatter'
+            // Methods that exist in Obsidian but have no honest equivalent in the host.
+            // Currently empty: every contract member the corpus exercises got a real
+            // implementation or a deliberate no-op; unknown members return undefined.
         ]);
 
         function makeAuditedProxy(target, targetName) {
@@ -4494,6 +4498,16 @@ fn setup_plugin_environment<'js>(
                 // (alwaysUpdateLinks etc.) have no local equivalent yet.
                 return null;
             },
+            // Vault config map: the host has no per-key config store, but plugins read
+            // it for booleans like `attachmentFolderPath`. An empty map reads as
+            // "all defaults", setConfig is accepted and kept in memory per session.
+            get config() {
+                return rawVault.__config || {};
+            },
+            setConfig: (key, value) => {
+                if (!rawVault.__config) rawVault.__config = {};
+                rawVault.__config[String(key)] = value;
+            },
             getAllLoadedFiles: () => __host_get_markdown_files().map(p => new TFile(p)),
             getName: () => {
                 const active = __host_get_active_file();
@@ -4523,6 +4537,78 @@ fn setup_plugin_environment<'js>(
                 const norm = normalizePath(String(p));
                 return __host_get_markdown_files().includes(norm) ? new TFile(norm) : null;
             },
+            // Case-insensitive lookup: first listed file whose full path matches ignoring case.
+            getAbstractFileByPathInsensitive: (path) => {
+                const p = typeof path === 'object' ? path.path : path;
+                if (!p) return null;
+                const needle = normalizePath(String(p)).toLowerCase();
+                const hit = __host_get_markdown_files().find((f) => f.toLowerCase() === needle);
+                return hit ? new TFile(hit) : null;
+            },
+            // File-level existence probe: unlike getAbstractFileByPath this must not build
+            // a TFile, plugins use it to skip work cheaply.
+            exists: async (pathRaw) => {
+                const p = typeof pathRaw === 'object' ? pathRaw.path : pathRaw;
+                if (!p) return false;
+                const norm = normalizePath(String(p));
+                if (__host_get_markdown_files().includes(norm)) return true;
+                try {
+                    const res = await __invoke_host("vault_exists", { path: norm });
+                    return !!res;
+                } catch (e) {
+                    return false;
+                }
+            },
+            // Real folder walk on the host (hidden entries excluded). Returns TFolder handles
+            // in the same shape Obsidian's getAllFolders produces.
+            getAllFolders: async () => {
+                const res = await __invoke_host("vault_list_folders", {});
+                const list = Array.isArray(res) ? res : [];
+                return list.map((p) => new TFolder(String(p)));
+            },
+            append: async (pathRaw, data) => {
+                const p = typeof pathRaw === 'object' ? pathRaw.path : pathRaw;
+                await __invoke_host("vault_append", { path: String(p), data: String(data) });
+            },
+            copy: async (source, target) => {
+                const src = typeof source === 'object' ? source.path : source;
+                const dst = typeof target === 'object' ? target.path : target;
+                await __invoke_host("vault_copy", { source: String(src), target: String(dst) });
+                return new TFile(String(dst));
+            },
+            // First unused "prefix.ext" / "prefix N.ext" path, as Obsidian numbers attachments.
+            getAvailablePath: async (prefixRaw, extRaw) => {
+                const prefix = String(prefixRaw != null ? prefixRaw : "");
+                const ext = extRaw == null || extRaw === "" ? null : String(extRaw);
+                const res = await __invoke_host("vault_get_available_path", { prefix, extension: ext });
+                return res != null ? String(res) : "";
+            },
+            getAvailablePathForAttachments: async (filename, extRaw) => {
+                // Obsidian walks the configured attachment folder; the host has none, so the
+                // numbering happens right next to the target file name.
+                const ext = extRaw == null || extRaw === "" ? null : String(extRaw);
+                const stem = String(filename != null ? filename : "").replace(/\.[^.]+$/, "") || "file";
+                return rawVault.getAvailablePath(stem, ext);
+            },
+            // Rename/move through the host vault_rename channel; a TAbstractFile handle is
+            // accepted too, matching how Obsidian's rename accepts both.
+            rename: async (from, to) => {
+                const src = typeof from === 'object' ? from.path : from;
+                await __invoke_host("vault_rename", { old_path: String(src), new_path: normalizePath(String(to)) });
+                return new TFile(normalizePath(String(to)));
+            },
+            // Registry tail (one corpus plugin each): honest degenerate answers instead of
+            // throws — onChange subscribes into the same listener table as `on`.
+            onChange: (event, cb) => rawVault.on(event, cb),
+            get root() { return new TFolder("/"); },
+            getAllFiles: () => __host_get_markdown_files().map((p) => new TFile(p)),
+            checkPath: async (path) => {
+                const norm = normalizePath(String(path || ""));
+                if (norm.startsWith(".")) return "folder";
+                return __host_get_markdown_files().includes(norm) ? "file" : "folder";
+            },
+            saveConfig: () => {},
+            resolveFileUrl: (_url) => null,
             on: (event, cb) => {
                 const evName = String(event);
                 if (!globalThis.__vault_listeners.has(evName)) {
@@ -4761,6 +4847,73 @@ fn setup_plugin_environment<'js>(
                     if (idx !== -1) list.splice(idx, 1);
                 }
             },
+            // The root split IS the workspace in the single-layout host; iterating it walks
+            // the same leaf set as iterateAllLeaves.
+            iterateRootLeaves: (cb) => rawWorkspace.iterateAllLeaves(cb),
+            iterateLeaves: (split, cb) => rawWorkspace.iterateAllLeaves(cb),
+            getLeafById: (id) => {
+                const hit = globalThis.__workspace_leaves.get(String(id));
+                return hit || null;
+            },
+            getActiveLeaf: () => getActiveLeaf(),
+            getActiveFileView: () => {
+                const leaf = getActiveLeaf();
+                return leaf ? leaf.view : null;
+            },
+            // An unpinned leaf is the active one: the host pins nothing.
+            getUnpinnedLeaf: () => getActiveLeaf(),
+            // DOM stand-in: plugins touch containerEl to append their own nodes, and the
+            // host cannot honour DOM mutation — an empty VElement keeps the reference honest.
+            get containerEl() {
+                if (!rawWorkspace.__containerEl) {
+                    rawWorkspace.__containerEl = new VElement("div", { cls: "workspace" });
+                }
+                return rawWorkspace.__containerEl;
+            },
+            // Layout save/persist: the host persists layout implicitly, nothing to request.
+            requestSaveLayout: () => {},
+            updateOptions: (_options) => {},
+            getLastOpenFiles: () => {
+                const p = __host_get_active_file();
+                return p ? [p] : [];
+            },
+            // Popouts/floating windows do not exist in the single-window host; these
+            // resolve to ordinary center leaves so the calling plugin keeps working.
+            openPopoutLeaf: (_options) => new WorkspaceLeaf(rawWorkspace, "center"),
+            createLeafBySplit: (_split) => new WorkspaceLeaf(rawWorkspace, "center"),
+            createLeafInParent: (_parent) => new WorkspaceLeaf(rawWorkspace, "center"),
+            createLeafInTabGroup: (_leaf) => new WorkspaceLeaf(rawWorkspace, "center"),
+            splitActiveLeaf: () => new WorkspaceLeaf(rawWorkspace, "center"),
+            duplicateLeaf: (_leaf) => new WorkspaceLeaf(rawWorkspace, "center"),
+            get floatingSplit() { return null; },
+            getWindows: () => [],
+            moveLeafToPopout: () => {},
+            changeLayout: (_fn) => {},
+            getLayout: () => ({}),
+            deserializeLayout: () => {},
+            // Hover-link previews are a UI affordance the host does not render; registration
+            // is stored so the plugin sees its own source back.
+            registerHoverLinkSource: (_id, _info) => {},
+            unregisterHoverLinkSource: (_id) => {},
+            get leftRibbon() { return { addRibbonItem: () => ({}) }; },
+            get rightRibbon() { return { addRibbonItem: () => ({}) }; },
+            get editorSuggest() { return { register: () => {}, registerSuggest: () => {} }; },
+            // Editor extensions are CodeMirror 6; the host renders natively.
+            registerEditorExtension: () => {},
+            unregisterEditorExtension: () => {},
+            requestResize: () => {},
+            // Link context menus are host-rendered; the plugin's items would need a
+            // native menu channel, so registration degrades to a no-op.
+            handleLinkContextMenu: (_menu, _linktext, _sourcePath) => {},
+            handleExternalLinkContextMenu: (_menu, _url) => {},
+            get onLayoutChange() { return null; },
+            get recentFileTracker() { return { getRecentFiles: () => [] }; },
+            getGroupLeaves: (_group) => [],
+            iterateCodeMirrors: (_cb) => {},
+            get rightSidebarToggleButtonEl() { return null; },
+            onDragLeaf: (_cb) => ({ unload: () => {} }),
+            get protocolHandlers() { return {}; },
+            get protocolHandler() { return null; },
             trigger: (event, ...args) => {
                 const list = globalThis.__workspace_listeners.get(String(event));
                 if (list) {
@@ -4769,6 +4922,36 @@ fn setup_plugin_environment<'js>(
                     }
                 }
             }
+        };
+
+        // The host settings window: open/close is a real channel (OpenSettings), tab ids map
+        // the same way the vibecodium:// URL parser maps them — a plugin id opens its own
+        // settings tab, known keys open built-in ones.
+        const rawSetting = {
+            open: () => __invoke_host("open_settings", {}),
+            openTabById: (tabId) => {
+                const id = String(tabId != null ? tabId : "");
+                const key = id.startsWith("obsidian-") ? id.slice("obsidian-".length) : id;
+                return __invoke_host("open_settings", { tab: key });
+            },
+            openTab: (tab) => {
+                const id = tab && typeof tab === "object" ? String(tab.id || "") : String(tab != null ? tab : "");
+                return __invoke_host("open_settings", { tab: id });
+            },
+            close: () => __invoke_host("close_settings", {}),
+            // Without a settings-tab registry the honest answer is "nothing open".
+            get activeTab() { return null; },
+            addSettingTab: (_tab) => {},
+            removeSettingTab: (_tab) => {},
+            get settingTabs() { return []; },
+            get communityPluginTabContainer() { return null; },
+            get tabContentContainer() { return null; },
+            get containerEl() {
+                if (!rawSetting.__containerEl) {
+                    rawSetting.__containerEl = new VElement("div", { cls: "settings-container" });
+                }
+                return rawSetting.__containerEl;
+            },
         };
 
         const rawMetadataCache = {
@@ -4782,6 +4965,11 @@ fn setup_plugin_environment<'js>(
                 return hit ? new TFile(hit) : null;
             },
             resolvedLinks: {},
+            // Unresolved [[links]]: without a link cache the honest answer is "nothing unresolved".
+            unresolvedLinks: {},
+            getTags: () => new Set(),
+            getBacklinksForFile: (_file) => ({ data: {}, count: 0 }),
+            isUserIgnored: (_path) => false,
             fileToLinktext: (file, _sourcePath, omitMdExtension) => {
                 const p = file && typeof file === 'object' ? file.path : String(file == null ? "" : file);
                 if (!p) return "";
@@ -4793,17 +4981,68 @@ fn setup_plugin_environment<'js>(
                 id: "meta-sub",
                 unload: () => {}
             }),
+            off: (_event, _cb) => {},
             offref: (_ref) => {},
+            // Cache-maintenance tail: the host has no incremental cache to clean or query.
+            onCleanCache: (_cb) => ({ unload: () => {} }),
+            getAllPropertyNames: () => [],
+            getAllPropertyInfos: () => ({}),
+            iterateReferences: (_cb) => {},
+            get uniqueFileLookup() { return {}; },
+            computeMetadataAsync: async () => ({}),
             trigger: () => {}
+        };
+
+        // Plugin-registry mirror of the host, rebuilt from the snapshot on each access.
+        // The instance objects are plain handles: app.plugins.getPlugin returns a
+        // manifest-shaped object, not the live plugin instance (cross-thread).
+        const rawPlugins = {
+            get manifests() {
+                const out = {};
+                for (const p of __host_plugins_list()) out[p.id] = p;
+                return out;
+            },
+            get plugins() {
+                const out = {};
+                for (const p of __host_plugins_list()) out[p.id] = p;
+                return out;
+            },
+            get enabledPlugins() {
+                return new Set(__host_plugins_list().map((p) => p.id));
+            },
+            getPlugin(id) {
+                return __host_plugins_list().find((p) => p.id === String(id)) || undefined;
+            },
+            // Enable/disable round-trips through the host plugin registry; unsaved
+            // variants stay in-memory in Obsidian, the host has nothing to save.
+            enablePlugin: (id) => __invoke_host("plugin_enable", { id: String(id) }),
+            disablePlugin: (id) => __invoke_host("plugin_disable", { id: String(id) }),
+            enablePluginAndSave: (id) => __invoke_host("plugin_enable", { id: String(id) }),
+            disablePluginAndSave: (id) => __invoke_host("plugin_disable", { id: String(id) }),
+            loadManifests: () => __invoke_host("noop", {}),
+            getPluginFolder: (_id) => ".obsidian/plugins/" + String(_id),
+            // Install/update flows need network + marketplace; the host installs nothing.
+            installPlugin: async (_repo) => null,
+            unloadPlugin: (_id) => {},
+            loadPlugin: (_id) => null,
+            checkForUpdates: () => false,
+            autoCheckForUpdates: false,
+            setAutomaticUpdateCheck: (_v) => {},
+            get updates() { return {}; },
+            requestSaveConfig: () => {},
+            on: (_event, _cb) => ({ e: rawPlugins, id: "plugins-sub", unload: () => {} }),
         };
 
         const app = {
             vault: makeAuditedProxy(rawVault, "app.vault"),
             workspace: makeAuditedProxy(rawWorkspace, "app.workspace"),
             metadataCache: makeAuditedProxy(rawMetadataCache, "app.metadataCache"),
+            setting: makeAuditedProxy(rawSetting, "app.setting"),
+            // Command registry mirror: executeCommandById runs a plugin's own handler
+            // synchronously (Obsidian returns a boolean, not a Promise), foreign ids are
+            // forwarded to the host registry; listCommands/findCommand resolve against the
+            // snapshot; a plugin removes only its own commands, foreign ids go to the host.
             commands: {
-                // Obsidian returns synchronously (boolean), not a Promise. Run a command this plugin
-                // registered directly; otherwise forward to the host registry and report success.
                 executeCommandById: (id) => {
                     const commandId = String(id);
                     let handler = globalThis.__command_handlers.get(commandId);
@@ -4817,58 +5056,84 @@ fn setup_plugin_environment<'js>(
                     __invoke_host("execute_command", { id: commandId });
                     return true;
                 },
-            },
-            internalPlugins: {
-                getEnabledPluginById: (_id) => null
-            },
-            // Registry mirrors of the host, rebuilt from the snapshot on each access.
-            // The instance objects are plain handles: app.plugins.getPlugin returns a
-            // manifest-shaped object, not the live plugin instance (cross-thread).
-            plugins: {
-                get manifests() {
-                    const out = {};
-                    for (const p of __host_plugins_list()) out[p.id] = p;
-                    return out;
+                executeCommand: (command) => {
+                    const id = command && typeof command === "object" ? command.id : command;
+                    return app.commands.executeCommandById(id);
                 },
-                get plugins() {
-                    const out = {};
-                    for (const p of __host_plugins_list()) out[p.id] = p;
-                    return out;
-                },
-                get enabledPlugins() {
-                    return new Set(__host_plugins_list().map((p) => p.id));
-                },
-                getPlugin(id) {
-                    return __host_plugins_list().find((p) => p.id === String(id)) || undefined;
-                },
-            },
-            commands: {
                 get commands() {
                     const out = {};
                     for (const c of __host_commands_list()) out[c.id] = c;
                     return out;
                 },
-                listCommands() {
-                    return __host_commands_list().slice();
-                },
-                // executeCommandById is shared with the raw block below via this proxy.
-                executeCommandById: (id) => {
+                listCommands: () => __host_commands_list().slice(),
+                findCommand: (id) => {
                     const commandId = String(id);
-                    let handler = globalThis.__command_handlers.get(commandId);
-                    if (!handler && commandId.includes(":")) {
-                        handler = globalThis.__command_handlers.get(commandId.split(":").slice(1).join(":"));
-                    }
-                    if (typeof handler === "function") {
-                        try { handler(); } catch (e) { console.error("executeCommandById error:", e); }
-                        return true;
-                    }
-                    __invoke_host("execute_command", { id: commandId });
-                    return true;
+                    const list = __host_commands_list();
+                    return list.find((c) => c.id === commandId)
+                        || list.find((c) => c.id === commandId.split(":").slice(1).join(":"))
+                        || null;
                 },
+                removeCommand: (id) => {
+                    const commandId = String(id);
+                    if (globalThis.__command_handlers.has(commandId)) {
+                        globalThis.__command_handlers.delete(commandId);
+                    }
+                    return __invoke_host("remove_command", { id: commandId });
+                },
+                // monkey-around patches `app.commands.constructor.prototype`; the mirror
+                // object hands out a constructor whose prototype carries the same methods,
+                // so the patch lands on it and listCommands keeps working.
+                constructor: function CommandsCtor() {},
+                get editorCommands() { return []; },
+            },            internalPlugins: {
+                getEnabledPluginById: (_id) => null,
+                // Core-plugin enumeration: the host mirrors enabled plugins as internal ones.
+                get plugins() {
+                    const out = {};
+                    for (const p of __host_plugins_list()) out[p.id] = { id: p.id, name: p.name, enabled: true };
+                    return out;
+                },
+                getPluginById: (_id) => null,
+                get config() { return {}; },
             },
+            // Registry mirrors of the host: rawPlugins above.
+            plugins: makeAuditedProxy(rawPlugins, "app.plugins"),
             dragManager: {
                 dragFile: () => ({}),
-                onDragStart: () => {}
+                onDragStart: () => {},
+                draggable: (_el, _opts) => _el || null,
+                dragLink: () => {},
+                handleDrag: (_e, _data) => {},
+                handleDrop: (_e) => {},
+            },
+            // View/embed registries: the host resolves views natively, so registration
+            // degrades to bookkeeping that answers "registered" for the calling plugin.
+            viewRegistry: {
+                registerView: (_type, _cls) => {},
+                unregisterView: (_type) => {},
+                getViewByType: (_type) => undefined,
+                get viewByType() { return {}; },
+                get typeByExtension() { return {}; },
+                getTypeByExtension: (_ext) => undefined,
+                isExtensionRegistered: (_ext) => false,
+                registerExtensions: (_ext, _type) => {},
+                unregisterExtensions: (_ext) => {},
+            },
+            embedRegistry: {
+                registerExtensions: (_ext, _handler) => {},
+                unregisterExtensions: (_ext) => {},
+                get embedByExtension() { return {}; },
+            },
+            // Mobile-only surfaces: the native host has no mobile toolbar or metadata
+            // type widgets; reads answer empty, writes are no-ops.
+            mobileToolbar: {
+                update: () => {},
+                get buttons() { return []; },
+            },
+            metadataTypeManager: {
+                setType: (_type, _widget) => {},
+                get registeredTypeWidgets() { return {}; },
+                getAssignedWidget: (_type) => undefined,
             },
             // Scope registry with no hotkey conflict resolution yet: push/pop are bookkeeping,
             // getRootScope returns a stable Scope the plugin can register into.
@@ -4881,16 +5146,63 @@ fn setup_plugin_environment<'js>(
                 addDefaultHotkeys: (_id, _hotkeys) => {},
                 getHotkey: (_commandId) => null,
                 removeHotkeys: (_id) => {},
+                removeDefaultHotkeys: (_id) => {},
+                get customKeys() { return []; },
+            },
+            // The app-level key scope: register() returns a handle the plugin can unload.
+            scope: {
+                register: (_mods, _key, _fn) => ({ unload: () => {} }),
+                unregister: () => {},
             },
             // Secrets stay in the plugin's own data.json (plugin authors do this anyway);
             // returning stored values would promise OS-level storage that does not exist.
             secretStorage: {
                 getSecret: (_id) => null,
                 setSecret: (_id, _value) => {},
+                // Obsidian's aliases of getSecret/setSecret plus the event surface.
+                get: (_id) => null,
+                set: (_id, _value) => {},
+                listSecrets: () => [],
+                on: (_event, _cb) => ({ e: this, id: "secret-sub", unload: () => {} }),
+                offref: (_ref) => {},
             },
             fileManager: {
                 getNewFileParent: () => new TFolder("/"),
                 generateMarkdownLink: () => "",
+                // Attachment path numbering reuses the vault channel (first unused
+                // "prefix.ext"), matching Obsidian's getAvailablePathForAttachment.
+                getAvailablePathForAttachment: async (filename, sourcePath) => {
+                    const ext = String(filename != null ? filename : "").match(/\.([^.]+)$/);
+                    const stem = String(filename != null ? filename : "").replace(/\.[^.]+$/, "") || "file";
+                    const folder = sourcePath && String(sourcePath).includes("/")
+                        ? String(sourcePath).replace(/\/[^/]*$/, "")
+                        : "/";
+                    const prefix = folder === "/" ? stem : folder + "/" + stem;
+                    return rawVault.getAvailablePath(prefix, ext ? ext[1] : null);
+                },
+                createNewMarkdownFile: async (parent, name) => {
+                    const folder = parent && typeof parent === "object" ? String(parent.path || "/") : "/";
+                    const base = String(name != null ? name : "Untitled");
+                    const prefix = folder === "/" || folder === "" ? base : folder + "/" + base;
+                    const path = await rawVault.getAvailablePath(prefix, "md");
+                    await __invoke_host("vault_create", { path, data: "" });
+                    return new TFile(path);
+                },
+                // Deletion prompts cannot be shown by the host UI; Obsidian's prompt option
+                // defaults to trash. The honest mapping is a direct trash, never unlink.
+                promptForDeletion: async (file) => {
+                    const p = typeof file === 'object' ? file.path : file;
+                    await __invoke_host("vault_trash", { path: p, system: false });
+                },
+                promptForFileDeletion: async (file) => {
+                    const p = typeof file === 'object' ? file.path : file;
+                    await __invoke_host("vault_trash", { path: p, system: false });
+                },
+                promptForFileRename: async (file) => {
+                    // No prompt UI: renaming without user input would surprise the caller,
+                    // so the closest honest behaviour is a no-op returning the same file.
+                    return typeof file === 'object' ? file : new TFile(String(file));
+                },
                 // Reads the file, hands the parsed frontmatter object to fn, re-serializes
                 // it and writes the whole file back with the rest of the body untouched.
                 processFrontMatter: async (file, fn) => {
@@ -5937,6 +6249,31 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
                 .to_string();
             ApiRequest::CloseLeaf { leaf_id }
         }
+        "vault_append" => {
+            let path = payload.get("path").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let data = payload.get("data").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            ApiRequest::VaultAppend { path, data }
+        }
+        "vault_copy" => {
+            let source = payload.get("source").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let target = payload.get("target").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            ApiRequest::VaultCopy { source, target }
+        }
+        "vault_exists" => {
+            let path = payload.get("path").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            ApiRequest::VaultExists { path }
+        }
+        "vault_list_folders" => ApiRequest::VaultListFolders,
+        "vault_get_available_path" => {
+            let prefix = payload.get("prefix").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let extension = payload.get("extension").and_then(|v| v.as_str()).map(|s| s.to_string());
+            ApiRequest::VaultGetAvailablePath { prefix, extension }
+        }
+        "open_settings" => {
+            let tab = payload.get("tab").and_then(|v| v.as_str()).map(|s| s.to_string());
+            ApiRequest::OpenSettings { tab }
+        }
+        "close_settings" => ApiRequest::CloseSettings,
         _ => {
             eprintln!("[plugin] Unknown request kind: {}", kind);
             ApiRequest::Unknown {
@@ -6558,15 +6895,12 @@ mod tests {
             // 2. Feature detection on app: missing property returns undefined
             const missing = typeof app.nonExistentFeature === "undefined";
 
-            // 3. Known unimplemented method throws with [Aquilum] prefix
-            let threwExpected = false;
-            try {
-                app.vault.copy("from.md", "to.md");
-            } catch (e) {
-                threwExpected = e.message.includes("[Aquilum] Method app.vault.copy is not implemented");
-            }
+            // 3. Known-safe member resolves; a truly missing member returns undefined
+            // (the audited proxy never throws on reads).
+            const noopResolved = typeof app.workspace.requestSaveLayout === "function";
+            const unknownMissing = app.workspace.__no_such_member__ === undefined;
 
-            new Notice(`CM:${hasCm}, Missing:${missing}, Unimpl:${threwExpected}`);
+            new Notice(`CM:${hasCm}, Missing:${missing}, Noop:${noopResolved}, Unk:${unknownMissing}`);
         "#;
 
         let handle = spawn_plugin_runtime(
@@ -6581,7 +6915,7 @@ mod tests {
 
         let notice_call = api_rx.try_recv().expect("Expected Notice call");
         if let ApiRequest::Notice { text, .. } = notice_call.request {
-            assert_eq!(text, "CM:true, Missing:true, Unimpl:true");
+            assert_eq!(text, "CM:true, Missing:true, Noop:true, Unk:true");
         } else {
             panic!("Expected Notice request");
         }

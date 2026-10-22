@@ -89,7 +89,7 @@ impl PluginHostState {
         };
 
         match req {
-            ApiRequest::VaultRead { .. } | ApiRequest::VaultReadBinary { .. } | ApiRequest::VaultListDir { .. } => {
+            ApiRequest::VaultRead { .. } | ApiRequest::VaultReadBinary { .. } | ApiRequest::VaultListDir { .. } | ApiRequest::VaultListFolders | ApiRequest::VaultExists { .. } => {
                 if plugin.manifest.permissions.vault < VaultAccess::Read {
                     return Err(format!("Plugin '{}' lacks vault:read permission", plugin_id));
                 }
@@ -108,6 +108,9 @@ impl PluginHostState {
             | ApiRequest::VaultDelete { .. }
             | ApiRequest::VaultTrash { .. }
             | ApiRequest::VaultRename { .. }
+            | ApiRequest::VaultAppend { .. }
+            | ApiRequest::VaultCopy { .. }
+            | ApiRequest::VaultGetAvailablePath { .. }
             | ApiRequest::VaultModifyBinary { .. }
             | ApiRequest::VaultCreateBinary { .. } => {
                 if plugin.manifest.permissions.vault < VaultAccess::Write {
@@ -140,6 +143,8 @@ impl PluginHostState {
             | ApiRequest::EditorReplaceRange { .. }
             | ApiRequest::NoticeUpdate { .. }
             | ApiRequest::NoticeHide { .. }
+            | ApiRequest::OpenSettings { .. }
+            | ApiRequest::CloseSettings
             | ApiRequest::Unknown { .. }
             | ApiRequest::LoadData
             | ApiRequest::SaveData { .. } => {
@@ -636,6 +641,167 @@ impl AppView {
                     Err(e) => HostEvent::response_err(request_id, &e.to_string()),
                 };
                 let _ = self.state.plugin_host.send_event(&plugin_id, event);
+            }
+            ApiRequest::VaultAppend { path, data } => {
+                // Obsidian appends by reading + concatenating + writing; the host keeps the
+                // same contract so `modify` events fire exactly once per append.
+                let result = match &self.state.vault {
+                    Some(vault) => match vault.read_file(&path) {
+                        Ok(existing) => {
+                            let joined = format!("{existing}{data}");
+                            vault.modify_file(&path, &joined).map(|_| existing)
+                        }
+                        Err(e) if matches!(e, VaultError::NotFound(_)) => {
+                            vault.create_file(&path, &data).map(|_| String::new())
+                        }
+                        Err(e) => Err(e),
+                    },
+                    None => Err(VaultError::NotFound("No vault opened".into())),
+                };
+                let event = match result {
+                    Ok(_) => {
+                        self.state.reload_file_tree();
+                        self.state.publish_snapshot();
+                        cx.notify();
+                        HostEvent::response_ok(request_id, serde_json::Value::Null)
+                    }
+                    Err(e) => HostEvent::response_err(request_id, &e.to_string()),
+                };
+                let _ = self.state.plugin_host.send_event(&plugin_id, event);
+            }
+            ApiRequest::VaultCopy { source, target } => {
+                let result = match &self.state.vault {
+                    Some(vault) => match vault.read_file(&source) {
+                        Ok(content) => vault.create_file(&target, &content).map(|_| ()),
+                        Err(e) => Err(e),
+                    },
+                    None => Err(VaultError::NotFound("No vault opened".into())),
+                };
+                let event = match result {
+                    Ok(_) => {
+                        self.state.reload_file_tree();
+                        self.state.publish_snapshot();
+                        cx.notify();
+                        HostEvent::response_ok(request_id, serde_json::Value::Null)
+                    }
+                    Err(e) => HostEvent::response_err(request_id, &e.to_string()),
+                };
+                let _ = self.state.plugin_host.send_event(&plugin_id, event);
+            }
+            ApiRequest::VaultExists { path } => {
+                let result = match &self.state.vault {
+                    Some(vault) => match vault.resolve(&path) {
+                        Ok(abs) => Ok(serde_json::json!(abs.exists())),
+                        Err(_) => Ok(serde_json::json!(false)),
+                    },
+                    None => Err(VaultError::NotFound("No vault opened".into())),
+                };
+                let event = match result {
+                    Ok(val) => HostEvent::response_ok(request_id, val),
+                    Err(e) => HostEvent::response_err(request_id, &e.to_string()),
+                };
+                let _ = self.state.plugin_host.send_event(&plugin_id, event);
+            }
+            ApiRequest::VaultListFolders => {
+                // Walk of the real vault tree, hidden entries excluded — same rule as the
+                // file tree view and VaultListDir.
+                let result = match &self.state.vault {
+                    Some(vault) => {
+                        let mut folders = Vec::new();
+                        let root = vault.root.clone();
+                        fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<String>) {
+                            let Ok(entries) = std::fs::read_dir(dir) else { return };
+                            for entry in entries.flatten() {
+                                let name = entry.file_name().to_string_lossy().into_owned();
+                                if name.starts_with('.') {
+                                    continue;
+                                }
+                                let p = entry.path();
+                                if p.is_dir() {
+                                    if let Ok(rel) = p.strip_prefix(root) {
+                                        out.push(rel.to_string_lossy().replace('\\', "/"));
+                                    }
+                                    walk(&p, root, out);
+                                }
+                            }
+                        }
+                        walk(&root, &root, &mut folders);
+                        folders.sort();
+                        Ok(serde_json::json!(folders))
+                    }
+                    None => Err(VaultError::NotFound("No vault opened".into())),
+                };
+                let event = match result {
+                    Ok(val) => HostEvent::response_ok(request_id, val),
+                    Err(e) => HostEvent::response_err(request_id, &e.to_string()),
+                };
+                let _ = self.state.plugin_host.send_event(&plugin_id, event);
+            }
+            ApiRequest::VaultGetAvailablePath { prefix, extension } => {
+                // Same numbering rule as Obsidian: first unused "prefix.ext", then
+                // "prefix 1.ext", "prefix 2.ext", ...
+                let result = match &self.state.vault {
+                    Some(vault) => {
+                        let base = prefix.trim().trim_end_matches('/').to_string();
+                        let ext = extension.as_deref().filter(|e| !e.is_empty());
+                        let candidate = |n: u32| match (ext, n) {
+                            (Some(e), 0) => format!("{base}.{e}"),
+                            (Some(e), _) => format!("{base} {n}.{e}"),
+                            (None, 0) => base.clone(),
+                            (None, _) => format!("{base} {n}"),
+                        };
+                        let mut taken = |p: &String| vault.resolve(p).map(|a| a.exists()).unwrap_or(false);
+                        let mut n = 0;
+                        let mut path = candidate(n);
+                        while taken(&path) {
+                            n += 1;
+                            path = candidate(n);
+                            if n > 1000 {
+                                break;
+                            }
+                        }
+                        Ok(serde_json::json!(path))
+                    }
+                    None => Err(VaultError::NotFound("No vault opened".into())),
+                };
+                let event = match result {
+                    Ok(val) => HostEvent::response_ok(request_id, val),
+                    Err(e) => HostEvent::response_err(request_id, &e.to_string()),
+                };
+                let _ = self.state.plugin_host.send_event(&plugin_id, event);
+            }
+            ApiRequest::OpenSettings { tab } => {
+                // Same mapping the vibecodium:// URL parser uses; unknown ids become a
+                // PluginSettings tab (exactly what openTabById(pluginId) means in Obsidian).
+                let settings_tab = tab.as_deref().map(|t| match t {
+                    "ui" => crate::views::settings_view::SettingsTab::Ui,
+                    "editor" => crate::views::settings_view::SettingsTab::Editor,
+                    "reader" => crate::views::settings_view::SettingsTab::Reader,
+                    "search" => crate::views::settings_view::SettingsTab::Search,
+                    "templates" => crate::views::settings_view::SettingsTab::Templates,
+                    "files" => crate::views::settings_view::SettingsTab::Files,
+                    "analysis" => crate::views::settings_view::SettingsTab::Analysis,
+                    "mcp" => crate::views::settings_view::SettingsTab::Mcp,
+                    "history" => crate::views::settings_view::SettingsTab::History,
+                    "trash" => crate::views::settings_view::SettingsTab::Trash,
+                    "system" => crate::views::settings_view::SettingsTab::System,
+                    "shortcuts" => crate::views::settings_view::SettingsTab::Shortcuts,
+                    "core-plugins" => crate::views::settings_view::SettingsTab::CorePlugins,
+                    "community-plugins" => crate::views::settings_view::SettingsTab::CommunityPlugins,
+                    other => crate::views::settings_view::SettingsTab::PluginSettings(other.to_string()),
+                });
+                self.open_settings_with_id(settings_tab, None, cx);
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Null),
+                );
+            }
+            ApiRequest::CloseSettings => {
+                self.close_settings(cx);
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Null),
+                );
             }
             ApiRequest::SetViewTree { view_id, tree } => {
                 let validation = crate::plugins::ui::validate_tree(&tree);
