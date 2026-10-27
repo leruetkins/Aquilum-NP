@@ -925,6 +925,32 @@ pub fn inline_reveal(
     }
 }
 
+/// The part of a byte-range selection that falls inside one line, in line-char
+/// offsets. `None` when the selection does not touch the line or is empty.
+///
+/// Shared by the render loop and the wrap geometry so a selected line is
+/// wrapped for exactly the markers the renderer reveals on it.
+pub fn selection_chars_in_line(
+    line: &str,
+    line_start: usize,
+    selection: Option<&std::ops::Range<usize>>,
+) -> Option<(usize, usize)> {
+    let selection = selection?;
+    let (start, end) = (selection.start, selection.end);
+    if start >= end {
+        return None;
+    }
+    let line_end = line_start + line.len();
+    if end <= line_start || start >= line_end {
+        return None;
+    }
+    let to_line_char = |byte: usize| {
+        let byte = byte.clamp(line_start, line_end);
+        line[..byte - line_start].chars().count()
+    };
+    Some((to_line_char(start), to_line_char(end)))
+}
+
 pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
     let mut spans = Vec::new();
     let mut plain_accum = String::new();
@@ -1246,6 +1272,238 @@ pub fn wrap_line_ranges(line: &str, max_cols: usize) -> Vec<(usize, usize)> {
     ranges
 }
 
+/// How one line is painted right now: whether its markup is in the active
+/// (visible) state and which inline markers the caret/selection reveals.
+///
+/// The wrap is derived from this, so the two callers that need the same answer
+/// — the render loop and the geometry side (`workspace::view_state`) — must
+/// build it the same way. [`line_paint_spec`] is the shared constructor.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct PaintedLineSpec {
+    pub active: bool,
+    pub reveal: InlineReveal,
+}
+
+/// Painted width of every raw char of a line, plus the indent its continuation
+/// rows spend on synthetic padding.
+///
+/// `char_widths[i]` is the number of painted cells raw char `i` occupies: 1 for
+/// a visible char (including a hidden inline-code delimiter, which keeps its
+/// cell), 0 for a collapsed marker. A continuation row adds
+/// `continuation_cols` cells of padding before its content, and those cells do
+/// not belong to any raw char, so they are a per-row constant rather than part
+/// of the array.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PaintedLineMetrics {
+    pub char_widths: Vec<u8>,
+    pub continuation_cols: usize,
+    /// Raw char where the inline content starts (after the block prefix). A
+    /// wrap may break inside the prefix only as a last resort, so this keeps a
+    /// hidden or painted `"# "` from filling a row on its own.
+    pub content_start: usize,
+}
+
+/// Painted state of a line under the caret, the selection or an Alt+click.
+pub fn line_paint_spec(
+    line: &str,
+    classified: &LineKind<'_>,
+    cursor_char: Option<usize>,
+    selection: Option<(usize, usize)>,
+    reveal_all: bool,
+) -> PaintedLineSpec {
+    let has_selection = selection.map_or(false, |(s, e)| s < e);
+    PaintedLineSpec {
+        // A selected line is painted with its block markers, exactly like the
+        // caret line is.
+        active: cursor_char.is_some() || has_selection,
+        reveal: inline_reveal(line, classified, cursor_char, selection, reveal_all),
+    }
+}
+
+/// Columns a wrapped continuation row spends on padding before its content.
+///
+/// Mirrors the continuation branch of [`row_painted_text`] branch for branch.
+pub fn continuation_prefix_cols(line: &str, classified: &LineKind<'_>) -> usize {
+    let indent_chars = line.chars().count() - line.trim_start().chars().count();
+    match classified {
+        LineKind::Quote(_) => 2,
+        LineKind::Task { .. } => {
+            let prefix = row_prefix_offset(line, classified);
+            line.chars().take(prefix).count()
+        }
+        LineKind::BulletList { .. } => indent_chars + 2,
+        LineKind::NumberedList { num, .. } => indent_chars + num.chars().count() + 2,
+        _ => 0,
+    }
+}
+
+/// Measure the painted width of every raw char of `line`.
+///
+/// The measurement comes from [`row_painted_text`] itself — the same function
+/// the renderer's geometry mirrors — so a wrap derived from it can never
+/// disagree with what is painted.
+pub fn painted_line_metrics(
+    line: &str,
+    classified: &LineKind<'_>,
+    is_active_line: bool,
+    reveal: &InlineReveal,
+    headings: &crate::settings::HeadingsSettings,
+) -> PaintedLineMetrics {
+    let char_count = line.chars().count();
+    let mut char_widths = vec![0u8; char_count];
+    if char_count > 0 {
+        let row = VisualRow {
+            line_idx: 0,
+            sub_idx: 0,
+            is_last_sub: true,
+            char_start: 0,
+            char_end: char_count,
+        };
+        let painted = row_painted_text(line, classified, &row, is_active_line, reveal, headings);
+        for &raw in painted.line_chars.iter().take(painted.columns()) {
+            if let Some(w) = char_widths.get_mut(raw) {
+                *w = w.saturating_add(1);
+            }
+        }
+    }
+    PaintedLineMetrics {
+        char_widths,
+        continuation_cols: continuation_prefix_cols(line, classified),
+        content_start: head_char_count(line, row_prefix_offset(line, classified)),
+    }
+}
+
+/// Lines the renderer paints as a whole, whatever sub-row it is given: a rule
+/// draws one horizontal line and a fence prints its raw text on every row.
+/// Wrapping them would paint the text twice, so they always stay one row.
+pub fn line_never_wraps(classified: &LineKind<'_>) -> bool {
+    matches!(
+        classified,
+        LineKind::HorizontalRule | LineKind::CodeFence { .. }
+    )
+}
+
+/// Wrap a line by its **painted** width instead of its raw char count.
+///
+/// A hidden marker costs no column, so a long URL that is not revealed takes no
+/// room and the line wraps where the reader sees the text end — not where the
+/// source ends. Ranges are contiguous raw char ranges, which is what
+/// [`VisualRow`] and the renderer's slicing expect.
+pub fn wrap_line_ranges_painted(
+    line: &str,
+    metrics: &PaintedLineMetrics,
+    max_cols: usize,
+) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = line.chars().collect();
+    let char_count = chars.len();
+    if char_count == 0 {
+        return vec![(0, 0)];
+    }
+    if max_cols == 0 || metrics.char_widths.len() != char_count {
+        return vec![(0, char_count)];
+    }
+
+    // Cumulative painted width, so a range's width is one subtraction.
+    let mut cum = Vec::with_capacity(char_count + 1);
+    cum.push(0usize);
+    for &w in &metrics.char_widths {
+        cum.push(cum[cum.len() - 1] + w as usize);
+    }
+    if cum[char_count] <= max_cols {
+        return vec![(0, char_count)];
+    }
+
+    let mut ranges = Vec::new();
+    let mut start = 0usize;
+    let mut first = true;
+    while start < char_count {
+        // Continuation rows pay for their synthetic indent out of the same
+        // budget; the old raw wrap gave them the full width and let them
+        // overflow the right edge.
+        let prefix = if first { 0 } else { metrics.continuation_cols };
+        let budget = max_cols.saturating_sub(prefix).max(1);
+        let base = cum[start];
+
+        // Largest raw boundary whose painted width still fits. Zero-width
+        // (hidden) chars extend for free, so a boundary never lands on a
+        // marker that paints nothing.
+        let mut end = start + 1;
+        while end < char_count && cum[end + 1] - base <= budget {
+            end += 1;
+        }
+
+        if end >= char_count {
+            ranges.push((start, char_count));
+            break;
+        }
+
+        // Prefer a break after whitespace, but only if the row keeps at least
+        // one painted content cell: the block prefix ("# ", "> ") must not
+        // fill a row by itself while the content is pushed to the next one.
+        let content_base = base.max(cum[metrics.content_start.min(char_count)]);
+        let mut cut = None;
+        for b in (start + 1..=end).rev() {
+            if chars[b - 1].is_whitespace() && cum[b] > content_base {
+                cut = Some(b);
+                break;
+            }
+        }
+        let cut = cut.unwrap_or(end).max(start + 1);
+        ranges.push((start, cut));
+        start = cut;
+        first = false;
+    }
+    ranges
+}
+
+/// Canonical visual rows: every line wrapped as it is painted when no caret,
+/// selection or Alt+click reveals anything.
+///
+/// This is the stable layout preview, Ctrl-selection and idle editing share.
+/// Lines under the caret or inside the selection are re-wrapped on top of it
+/// (see `EditorWindow::rewrap_line`), so only the lines the reader is actually
+/// touching reflow.
+pub fn build_visual_rows_canonical(
+    lines: &[&str],
+    code_states: &[Option<CodeBlockState>],
+    word_wrap: bool,
+    wrap_cols: usize,
+    headings: &crate::settings::HeadingsSettings,
+    is_table_row: impl Fn(usize) -> bool,
+) -> Vec<VisualRow> {
+    let mut visual_rows = Vec::new();
+    for (line_idx, line) in lines.iter().enumerate() {
+        let state = code_states.get(line_idx).and_then(|s| s.as_ref());
+        let classified = classify_line(line, state.map(|s| (s.kind, s.lang.as_deref())));
+        let ranges = if is_table_row(line_idx)
+            || !(word_wrap && wrap_cols > 0)
+            || line_never_wraps(&classified)
+        {
+            vec![(0, line.chars().count())]
+        } else {
+            let metrics = painted_line_metrics(
+                line,
+                &classified,
+                false,
+                &InlineReveal::None,
+                headings,
+            );
+            wrap_line_ranges_painted(line, &metrics, wrap_cols)
+        };
+        let count = ranges.len();
+        for (sub_idx, (char_start, char_end)) in ranges.into_iter().enumerate() {
+            visual_rows.push(VisualRow {
+                line_idx,
+                sub_idx,
+                is_last_sub: sub_idx + 1 == count,
+                char_start,
+                char_end,
+            });
+        }
+    }
+    visual_rows
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableRowVisualKind {
     Header,
@@ -1283,6 +1541,24 @@ pub fn build_visual_rows_with_table_filter(
 
 pub fn build_visual_rows(lines: &[&str], word_wrap: bool, wrap_cols: usize) -> Vec<VisualRow> {
     build_visual_rows_with_table_filter(lines, word_wrap, wrap_cols, |_| false)
+}
+
+/// Painted boundary column of a raw char offset inside one row.
+///
+/// Mirrors `RowShapedLayout::column_for_line_char`: a hidden marker shares the
+/// column of the cell that follows it, so vertical motion can keep the caret's
+/// visual x instead of its raw char offset.
+pub fn painted_column_of_line_char(painted: &PaintedRow, raw_char: usize) -> usize {
+    painted
+        .line_chars
+        .partition_point(|&line_char| line_char < raw_char)
+        .min(painted.columns())
+}
+
+/// Raw line char painted at a boundary column of the row, i.e. the inverse of
+/// [`painted_column_of_line_char`].
+pub fn line_char_at_painted_column(painted: &PaintedRow, column: usize) -> usize {
+    painted.line_chars[column.min(painted.columns())]
 }
 
 pub fn find_visual_row_for_cursor(
@@ -3107,6 +3383,192 @@ mod tests {
 
         let all = row_painted_text(line, &kind, &v, false, &InlineReveal::All, &headings);
         assert_eq!(text_of(&all), "x [a](u) y **b**");
+    }
+
+    /// Wrap `line` by painted width and return what each row actually paints.
+    /// Going through `row_painted_text` is the point: the test would fail if the
+    /// wrap and the renderer's geometry ever disagreed.
+    fn painted_wrap_rows(
+        line: &str,
+        kind: &LineKind<'_>,
+        active: bool,
+        reveal: &InlineReveal,
+        cols: usize,
+    ) -> Vec<(String, usize)> {
+        let headings = crate::settings::HeadingsSettings::default();
+        let metrics = painted_line_metrics(line, kind, active, reveal, &headings);
+        let ranges = wrap_line_ranges_painted(line, &metrics, cols);
+        let count = ranges.len();
+        ranges
+            .iter()
+            .enumerate()
+            .map(|(sub_idx, &(char_start, char_end))| {
+                let v = VisualRow {
+                    line_idx: 0,
+                    sub_idx,
+                    is_last_sub: sub_idx + 1 == count,
+                    char_start,
+                    char_end,
+                };
+                let row = row_painted_text(line, kind, &v, active, reveal, &headings);
+                let text: String = row.segments.iter().map(|s| s.text.as_str()).collect();
+                (text, row.columns())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hidden_url_takes_no_columns_when_wrapping() {
+        let line = "слово [ссылка](https://example.com/очень/длинный/путь) конец";
+        let kind = classify_line(line, None);
+
+        let canonical = painted_wrap_rows(line, &kind, false, &InlineReveal::None, 30);
+        assert_eq!(canonical.len(), 1, "the hidden URL must not force a second row");
+        assert_eq!(canonical[0].0, "слово ссылка конец");
+
+        // The same line with the link revealed pays for the URL and wraps.
+        let revealed = painted_wrap_rows(line, &kind, false, &InlineReveal::All, 30);
+        assert!(revealed.len() > 1);
+    }
+
+    #[test]
+    fn painted_columns_skip_hidden_markers() {
+        let line = "x [abc](https://example.com) y";
+        let kind = classify_line(line, None);
+        let headings = crate::settings::HeadingsSettings::default();
+        let char_count = line.chars().count();
+        let v = VisualRow {
+            line_idx: 0,
+            sub_idx: 0,
+            is_last_sub: true,
+            char_start: 0,
+            char_end: char_count,
+        };
+        let painted = row_painted_text(line, &kind, &v, false, &InlineReveal::None, &headings);
+
+        // "x abc y": the "[" and the whole "(url)" take no cell.
+        assert_eq!(painted.columns(), 7);
+
+        // Raw chars: 0 'x', 1 ' ', 2 '[', 3 'a'.
+        assert_eq!(painted_column_of_line_char(&painted, 3), 2);
+        // A hidden marker shares the painted column of the text after it, so
+        // vertical motion does not drift on the caret line.
+        assert_eq!(painted_column_of_line_char(&painted, 2), 2);
+        // Round trip to the raw char the caret must land on.
+        assert_eq!(line_char_at_painted_column(&painted, 2), 3);
+        assert_eq!(
+            line_char_at_painted_column(&painted, painted.columns()),
+            char_count
+        );
+    }
+
+    #[test]
+    fn heading_marker_is_paid_for_only_when_active() {
+        let line = "# abcdefghij";
+        let kind = classify_line(line, None);
+
+        let canonical = painted_wrap_rows(line, &kind, false, &InlineReveal::None, 10);
+        assert_eq!(canonical.len(), 1, "the hidden \"# \" costs no column");
+        assert_eq!(canonical[0].0, "abcdefghij");
+
+        let active = painted_wrap_rows(line, &kind, true, &InlineReveal::None, 10);
+        assert_eq!(active.len(), 2, "the visible \"# \" takes two columns");
+        assert_eq!(active[0].0, "# abcdefgh");
+    }
+
+    #[test]
+    fn inline_code_keeps_its_cells_and_emphasis_does_not() {
+        let line = "**a** `b` c";
+        let kind = classify_line(line, None);
+        let headings = crate::settings::HeadingsSettings::default();
+        let metrics = painted_line_metrics(line, &kind, false, &InlineReveal::None, &headings);
+
+        let widths = &metrics.char_widths;
+        // `**a** `b` c`: the bold markers collapse, the backticks keep a cell.
+        assert_eq!(&widths[0..2], &[0, 0], "bold opener is collapsed");
+        assert_eq!(widths[2], 1, "'a' is painted");
+        assert_eq!(&widths[3..5], &[0, 0], "bold closer is collapsed");
+        assert_eq!(widths[6], 1, "the inline-code opener keeps its cell");
+        assert_eq!(widths[7], 1, "'b' is painted");
+        assert_eq!(widths[8], 1, "the inline-code closer keeps its cell");
+        assert_eq!(
+            widths.iter().sum::<u8>(),
+            7,
+            "only the four emphasis markers cost nothing"
+        );
+    }
+
+    #[test]
+    fn continuation_rows_pay_for_their_indent() {
+        let line = "- aaaa bbbb cccc dddd eeee";
+        let kind = classify_line(line, None);
+        let rows = painted_wrap_rows(line, &kind, false, &InlineReveal::None, 10);
+        assert!(rows.len() > 1);
+        for (i, (text, columns)) in rows.iter().enumerate() {
+            assert!(
+                *columns <= 10,
+                "row {i} paints {columns} columns ({text:?}), over the 10-column budget"
+            );
+        }
+        assert!(rows[0].0.starts_with("- "), "the first row carries the bullet");
+        assert!(rows[1].0.starts_with("  "), "continuation rows are indented");
+    }
+
+    #[test]
+    fn painted_ranges_cover_the_line_contiguously() {
+        let lines = [
+            "обычный абзац без разметки, который надо перенести",
+            "[ссылка](https://example.com/путь) и **жирный** текст",
+            "# Заголовок с [ссылкой](u)",
+            "- пункт списка с `кодом` и *курсивом*",
+            "> цитата с очень длинной строкой, которая точно не поместится",
+            "```rust",
+            "    отступ и ещё немного текста для переноса",
+        ];
+        let headings = crate::settings::HeadingsSettings::default();
+        for line in lines {
+            let kind = classify_line(line, None);
+            let char_count = line.chars().count();
+            for cols in [1usize, 5, 10, 40] {
+                for (active, reveal) in [
+                    (false, InlineReveal::None),
+                    (true, InlineReveal::All),
+                ] {
+                    let metrics =
+                        painted_line_metrics(line, &kind, active, &reveal, &headings);
+                    let ranges = wrap_line_ranges_painted(line, &metrics, cols);
+                    assert_eq!(ranges[0].0, 0, "{line:?} cols={cols}");
+                    assert_eq!(
+                        ranges.last().unwrap().1,
+                        char_count,
+                        "{line:?} cols={cols}"
+                    );
+                    for pair in ranges.windows(2) {
+                        assert_eq!(
+                            pair[0].1, pair[1].0,
+                            "ranges must be contiguous for {line:?} cols={cols}"
+                        );
+                    }
+                    for &(s, e) in &ranges {
+                        assert!(e > s, "empty range in {line:?} cols={cols}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn paragraph_rows_never_exceed_the_budget() {
+        let line = "раз два три четыре пять шесть семь восемь девять десять";
+        let kind = classify_line(line, None);
+        for cols in [5usize, 9, 14, 27] {
+            for (text, columns) in painted_wrap_rows(line, &kind, false, &InlineReveal::None, cols) {
+                assert!(
+                    columns <= cols,
+                    "row {text:?} paints {columns} columns over budget {cols}"
+                );
+            }
+        }
     }
 }
 

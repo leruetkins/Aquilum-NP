@@ -203,6 +203,11 @@ pub struct ViewCache {
     pub raw_tables: std::collections::HashSet<usize>,
     pub revealed_selection: Option<(usize, usize, usize)>,
     pub cursor_line: usize,
+    /// Painted state each line's rows were wrapped for. Absent means the line
+    /// is in the canonical layout (markup hidden), which is what a window
+    /// build produces. Only the caret line and the lines the selection touches
+    /// ever enter this map, so preview and Ctrl-selection never reflow.
+    pub line_paints: std::collections::HashMap<usize, crate::markdown::PaintedLineSpec>,
 }
 
 impl Default for ViewCache {
@@ -221,6 +226,7 @@ impl Default for ViewCache {
             raw_tables: std::collections::HashSet::new(),
             revealed_selection: None,
             cursor_line: 0,
+            line_paints: std::collections::HashMap::new(),
         }
     }
 }
@@ -414,6 +420,201 @@ impl TabSession {
         self.raw_tables = updated;
     }
 
+    /// Line-number shift for the stored wrap exceptions, so an external edit
+    /// above the window does not leave a painted line wrapped for the wrong
+    /// row. A full rebuild clears the map; this covers the in-place shift.
+    fn shift_line_paints(&mut self, edit_line: usize, line_diff: isize) {
+        if line_diff == 0 || self.line_paints.is_empty() {
+            return;
+        }
+        let mut updated = std::collections::HashMap::with_capacity(self.line_paints.len());
+        for (line, spec) in self.line_paints.drain() {
+            let line = if line >= edit_line {
+                (line as isize + line_diff).max(0) as usize
+            } else {
+                line
+            };
+            updated.insert(line, spec);
+        }
+        self.line_paints = updated;
+    }
+
+    /// Bring the window's per-line wrap exceptions in line with the caret and
+    /// the selection.
+    ///
+    /// The base layout is canonical (markup hidden). Only the caret line and
+    /// the selected lines are re-wrapped for their revealed markup, so the
+    /// caret cannot reflow the whole note and preview/Ctrl-selection keep a
+    /// layout that never moves. `suppress_selection_reveal` (preview mode and
+    /// Ctrl-selection) drops every exception, which is exactly the canonical
+    /// layout.
+    fn sync_line_paints(
+        &mut self,
+        doc: &DocumentBuffer,
+        headings: Option<&crate::settings::HeadingsSettings>,
+        suppress_selection_reveal: bool,
+    ) {
+        if self.window.is_empty() {
+            self.line_paints.clear();
+            return;
+        }
+        let mut desired: std::collections::HashMap<usize, crate::markdown::PaintedLineSpec> =
+            std::collections::HashMap::new();
+        let selection = self.selection_range(doc.len());
+        let reveal_state = self.selection_reveal_state(doc, suppress_selection_reveal);
+        let (cursor_line, cursor_col) = self.line_col(doc);
+        if !suppress_selection_reveal {
+            if self.window.covers_line(cursor_line) {
+                if let Some(spec) = self.paint_spec_for_line(
+                    doc,
+                    cursor_line,
+                    Some(cursor_col),
+                    selection.as_ref(),
+                    self.reveal_all_line == Some(cursor_line),
+                ) {
+                    desired.insert(cursor_line, spec);
+                }
+            }
+            if let (Some(_), Some((_, first, last))) = (selection.as_ref(), reveal_state) {
+                let lo = first.max(self.window.start_line);
+                let hi = last.min(self.window.end_line.saturating_sub(1));
+                for line in lo..=hi {
+                    if line == cursor_line || desired.contains_key(&line) {
+                        continue;
+                    }
+                    if let Some(spec) = self.paint_spec_for_line(
+                        doc,
+                        line,
+                        None,
+                        selection.as_ref(),
+                        false,
+                    ) {
+                        desired.insert(line, spec);
+                    }
+                }
+            }
+        }
+
+        // Lines whose paint did not change keep their rows as they are.
+        let mut changed: Vec<(usize, Option<crate::markdown::PaintedLineSpec>)> = Vec::new();
+        for (&line, spec) in &desired {
+            if self.line_paints.get(&line) != Some(spec) {
+                changed.push((line, Some(spec.clone())));
+            }
+        }
+        for &line in self.line_paints.keys() {
+            if !desired.contains_key(&line) {
+                changed.push((line, None));
+            }
+        }
+        if changed.is_empty() {
+            return;
+        }
+
+        let tables = doc.ensure_table_index_for_window(self.window.start_line, self.window.end_line);
+        let kinds: Vec<Option<crate::markdown::TableRowVisualKind>> = changed
+            .iter()
+            .map(|(line, _)| {
+                Self::table_row_kind_at(
+                    &tables,
+                    &self.raw_tables,
+                    reveal_state,
+                    cursor_line,
+                    *line,
+                )
+            })
+            .collect();
+
+        // Reflowing a line above the viewport anchor moves every row below it,
+        // so the scroll has to follow — the same rule the edit paths use.
+        let anchor = self.viewport.offset;
+        let lines_total = doc.line_index.lines();
+        let anchor_before = self.doc_y_of_line(lines_total, anchor);
+        let canonical = crate::markdown::PaintedLineSpec::default();
+
+        for ((line, spec), kind) in changed.into_iter().zip(kinds) {
+            let paint = spec.as_ref().unwrap_or(&canonical);
+            self.window.rewrap_line(line, paint, headings, |_| kind);
+        }
+        let anchor_after = self.doc_y_of_line(lines_total, anchor);
+        let shift = anchor_after - anchor_before;
+        if shift.abs() > 0.5 {
+            self.scroll_top = (self.scroll_top + shift).max(0.0);
+        }
+        self.line_paints = desired;
+    }
+
+    /// Paint spec for one line, or `None` when its painted state cannot change
+    /// how it wraps (plain prose, code, rules, table rows).
+    fn paint_spec_for_line(
+        &self,
+        doc: &DocumentBuffer,
+        line: usize,
+        cursor_char: Option<usize>,
+        selection: Option<&std::ops::Range<usize>>,
+        reveal_all: bool,
+    ) -> Option<crate::markdown::PaintedLineSpec> {
+        let text = self.window.line(line)?;
+        if text.is_empty() {
+            return None;
+        }
+        let state = self.window.code_state(line);
+        let classified =
+            crate::markdown::classify_line(text, state.map(|s| (s.kind, s.lang.as_deref())));
+        if crate::markdown::line_never_wraps(&classified)
+            || matches!(classified, crate::markdown::LineKind::CodeLine(_))
+        {
+            return None;
+        }
+        // A line with no heading marker and no inline marker paints exactly
+        // like the canonical layout; parsing it would only cost time.
+        let may_change = matches!(
+            classified,
+            crate::markdown::LineKind::Heading1(_)
+                | crate::markdown::LineKind::Heading2(_)
+                | crate::markdown::LineKind::Heading3(_)
+                | crate::markdown::LineKind::Heading4(_)
+                | crate::markdown::LineKind::Heading5(_)
+                | crate::markdown::LineKind::Heading6(_)
+        ) || text.contains(['*', '_', '`', '~', '[', ']', '\\', '<', '=', '#']);
+        if !may_change {
+            return None;
+        }
+        let line_start = doc.line_start_byte(line);
+        let selection = crate::markdown::selection_chars_in_line(text, line_start, selection);
+        Some(crate::markdown::line_paint_spec(
+            text,
+            &classified,
+            cursor_char,
+            selection,
+            reveal_all,
+        ))
+    }
+
+    fn table_row_kind_at(
+        tables: &crate::table::TableIndex,
+        raw_tables: &std::collections::HashSet<usize>,
+        reveal_state: Option<(usize, usize, usize)>,
+        cursor_line: usize,
+        line: usize,
+    ) -> Option<crate::markdown::TableRowVisualKind> {
+        let t = tables.at(line)?;
+        if (raw_tables.contains(&t.first_line) && t.contains(cursor_line))
+            || Self::reveals_table(reveal_state, t)
+        {
+            return None;
+        }
+        Some(if line == t.sep_line() {
+            crate::markdown::TableRowVisualKind::Delimiter
+        } else if line == t.first_line {
+            crate::markdown::TableRowVisualKind::Header
+        } else if line == t.last_line {
+            crate::markdown::TableRowVisualKind::LastRow
+        } else {
+            crate::markdown::TableRowVisualKind::Body
+        })
+    }
+
     pub fn grid_table_at<'a>(
         &self,
         doc: &DocumentBuffer,
@@ -599,6 +800,10 @@ impl TabSession {
         if !updated {
             return false;
         }
+        // The in-place path wrote canonical rows. If this is the caret or a
+        // selected line, the next ensure re-wraps it for the revealed markup;
+        // dropping the stale spec is what makes the diff see it.
+        self.line_paints.remove(&edit_line);
         if cursor_line != self.cursor_line {
             self.cursor_line = cursor_line;
         }
@@ -917,6 +1122,9 @@ impl TabSession {
             .saturating_sub(window.end_line);
         self.window = window;
         self.revealed_selection = reveal_state;
+        // The rebuild wrote canonical rows for every line; the exceptions are
+        // re-applied by `sync_line_paints` on the same call.
+        self.line_paints.clear();
         if let Some(h) = headings {
             self.headings_cache = h.clone();
         }
@@ -1058,6 +1266,9 @@ impl TabSession {
                 suppress_selection_reveal,
             );
         }
+        // Runs on every ensure: the caret may have moved without rebuilding the
+        // window, and only the lines it left or entered need a new wrap.
+        self.sync_line_paints(doc, headings, suppress_selection_reveal);
     }
 
     pub fn rebuild_visual_cache(
@@ -1141,6 +1352,14 @@ impl TabSession {
         let h_diff = (line_diff as f64) * line_h;
         if line_diff != 0 {
             self.shift_raw_tables(edit.edit_line, line_diff);
+            self.shift_line_paints(edit.edit_line, line_diff);
+            if let Some(line) = self.reveal_all_line {
+                self.reveal_all_line = Some(if line >= edit.edit_line {
+                    (line as isize + line_diff).max(0) as usize
+                } else {
+                    line
+                });
+            }
         }
 
         // 1. Transform cursor and selection
@@ -1862,5 +2081,63 @@ mod tests {
         }
         assert!(!sel.contains(0, 2), "row 0 not selected");
         assert!(!sel.contains(7, 2), "row 7 not selected");
+    }
+
+    fn rows_of_line(view: &EditorViewState, line: usize) -> usize {
+        view.window.visual_rows.iter().filter(|r| r.line_idx == line).count()
+    }
+
+    #[test]
+    fn caret_line_rewraps_for_revealed_markup_only_while_it_is_active() {
+        // The link label is short, the URL is long: hidden markup fits one row,
+        // the revealed `[label](url)` needs more.
+        let text = format!(
+            "prefix [label](https://example.com/{}) tail\nsecond line",
+            "a".repeat(24)
+        );
+        let mut doc = DocumentBuffer::new(
+            DocumentId::new(),
+            std::path::PathBuf::from("test.md"),
+            "test".to_string(),
+            text,
+            1,
+        );
+        let mut view = TabSession::new(TabId::new(), doc.id);
+        let wrap_cols = 40;
+
+        // Caret on the next line: canonical wrap, markup hidden.
+        view.cursor_offset = doc.len();
+        view.ensure_visual_cache_with_headings(&mut doc, true, wrap_cols, None, 0, false);
+        let canonical_rows = rows_of_line(&view, 0);
+        assert_eq!(canonical_rows, 1, "hidden link must fit one row");
+        assert!(view.line_paints.is_empty());
+
+        // Caret inside the link label: the element is revealed and the line is
+        // wrapped with its marker cells paid for, so it needs more rows.
+        view.cursor_offset = 10;
+        view.ensure_visual_cache_with_headings(&mut doc, true, wrap_cols, None, 0, false);
+        assert!(
+            rows_of_line(&view, 0) > canonical_rows,
+            "revealed link must take more rows than the hidden one"
+        );
+        assert_eq!(view.line_paints.len(), 1);
+
+        // The caret leaves the line: the exception is dropped and the rows go
+        // back to the canonical (markup hidden) wrap.
+        view.cursor_offset = doc.len();
+        view.ensure_visual_cache_with_headings(&mut doc, true, wrap_cols, None, 0, false);
+        assert_eq!(rows_of_line(&view, 0), canonical_rows);
+        assert!(view.line_paints.is_empty());
+
+        // Preview and Ctrl-selection keep that canonical wrap even with the
+        // caret back on the line.
+        view.cursor_offset = 10;
+        view.ensure_visual_cache_with_headings(&mut doc, true, wrap_cols, None, 0, true);
+        assert_eq!(rows_of_line(&view, 0), canonical_rows);
+        assert!(view.line_paints.is_empty());
+
+        // Editing again restores the revealed wrap.
+        view.ensure_visual_cache_with_headings(&mut doc, true, wrap_cols, None, 0, false);
+        assert!(rows_of_line(&view, 0) > canonical_rows);
     }
 }

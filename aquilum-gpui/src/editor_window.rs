@@ -401,10 +401,22 @@ impl EditorWindow {
             .map(String::from)
             .collect();
         let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
-        let mut visual_rows = markdown::build_visual_rows(&line_refs, word_wrap, wrap_cols);
+        // The fence scan comes first: the canonical wrap needs to know which
+        // lines are code, because a code line paints its markup literally and
+        // therefore wraps by raw width.
         let mut scanner = markdown::CodeScanner::from_state(initial);
         let code_states: Vec<Option<CodeBlockState>> =
             line_refs.iter().map(|line| scanner.step(line)).collect();
+        let default_headings = crate::settings::HeadingsSettings::default();
+        let h_settings = headings.unwrap_or(&default_headings);
+        let mut visual_rows = markdown::build_visual_rows_canonical(
+            &line_refs,
+            &code_states,
+            word_wrap,
+            wrap_cols,
+            h_settings,
+            |_| false,
+        );
         // The height index resolves every row back to its line text, so it has
         // to be built while `line_idx` still counts from the window's first
         // line. It is only after this that rows are lifted to document
@@ -451,15 +463,19 @@ impl EditorWindow {
             .map(String::from)
             .collect();
         let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
-        let mut visual_rows = markdown::build_visual_rows_with_table_filter(
-            &line_refs,
-            word_wrap,
-            wrap_cols,
-            |idx| table_row_info(start_line + idx).is_some(),
-        );
         let mut scanner = markdown::CodeScanner::from_state(initial);
         let code_states: Vec<Option<CodeBlockState>> =
             line_refs.iter().map(|line| scanner.step(line)).collect();
+        let default_headings = crate::settings::HeadingsSettings::default();
+        let h_settings = headings.unwrap_or(&default_headings);
+        let mut visual_rows = markdown::build_visual_rows_canonical(
+            &line_refs,
+            &code_states,
+            word_wrap,
+            wrap_cols,
+            h_settings,
+            |idx| table_row_info(start_line + idx).is_some(),
+        );
         let height_index = VisualRowHeightIndex::from_rows_with_tables(
             &lines,
             &visual_rows,
@@ -569,12 +585,12 @@ impl EditorWindow {
             }
         }
 
-        let new_rows = markdown::build_visual_rows_with_table_filter(
-            &[new_line_text.as_str()],
-            self.word_wrap,
-            self.wrap_cols,
-            |_| table_kind.is_some(),
-        );
+        let new_rows = {
+            let default_headings = crate::settings::HeadingsSettings::default();
+            let h_settings = headings.unwrap_or(&default_headings);
+            let ranges = self.wrap_ranges_for(line, &new_line_text, None, h_settings, table_kind);
+            Self::rows_from_ranges(line, &ranges)
+        };
 
         let vrows_mut = Arc::make_mut(&mut self.visual_rows);
         let first_row = vrows_mut.iter().position(|r| r.line_idx == line);
@@ -605,6 +621,89 @@ impl EditorWindow {
             &new_heights,
         );
         true
+    }
+
+    /// Raw char ranges the line wraps into for one painted state.
+    ///
+    /// The canonical state (`paint == None`) is what a window build produces;
+    /// a spec is passed for a line under the caret, inside the selection or
+    /// revealed by Alt+click.
+    fn wrap_ranges_for(
+        &self,
+        line: usize,
+        text: &str,
+        paint: Option<&markdown::PaintedLineSpec>,
+        headings: &crate::settings::HeadingsSettings,
+        table_kind: Option<markdown::TableRowVisualKind>,
+    ) -> Vec<(usize, usize)> {
+        let char_count = text.chars().count();
+        let state = self.code_states.get(line).and_then(|s| s.as_ref());
+        let classified = markdown::classify_line(text, state.map(|s| (s.kind, s.lang.as_deref())));
+        if table_kind.is_some()
+            || !(self.word_wrap && self.wrap_cols > 0)
+            || markdown::line_never_wraps(&classified)
+        {
+            return vec![(0, char_count)];
+        }
+        let (active, reveal) = match paint {
+            Some(p) => (p.active, p.reveal.clone()),
+            None => (false, markdown::InlineReveal::None),
+        };
+        let metrics =
+            markdown::painted_line_metrics(text, &classified, active, &reveal, headings);
+        markdown::wrap_line_ranges_painted(text, &metrics, self.wrap_cols)
+    }
+
+    fn rows_from_ranges(line: usize, ranges: &[(usize, usize)]) -> Vec<markdown::VisualRow> {
+        let count = ranges.len();
+        ranges
+            .iter()
+            .enumerate()
+            .map(|(sub_idx, &(char_start, char_end))| markdown::VisualRow {
+                line_idx: line,
+                sub_idx,
+                is_last_sub: sub_idx + 1 == count,
+                char_start,
+                char_end,
+            })
+            .collect()
+    }
+
+    /// Re-wrap one line for a new painted state (caret, selection, Alt+click)
+    /// without touching any other line.
+    ///
+    /// Returns the row counts before and after so the caller can compensate the
+    /// scroll when the reflowed line sits above the viewport.
+    pub fn rewrap_line(
+        &mut self,
+        line: usize,
+        paint: &markdown::PaintedLineSpec,
+        headings: Option<&crate::settings::HeadingsSettings>,
+        table_row_info: impl Fn(usize) -> Option<markdown::TableRowVisualKind>,
+    ) -> Option<(usize, usize)> {
+        if !self.covers_line(line) {
+            return None;
+        }
+        let text = self.lines.get(line)?.to_string();
+        let table_kind = table_row_info(line);
+        let default_headings = crate::settings::HeadingsSettings::default();
+        let h_settings = headings.unwrap_or(&default_headings);
+        let ranges = self.wrap_ranges_for(line, &text, Some(paint), h_settings, table_kind);
+        let new_rows = Self::rows_from_ranges(line, &ranges);
+
+        let vrows_mut = Arc::make_mut(&mut self.visual_rows);
+        let first_row = vrows_mut.iter().position(|r| r.line_idx == line)?;
+        let last_row = vrows_mut.iter().rposition(|r| r.line_idx == line)?;
+        let old_count = last_row - first_row + 1;
+        if old_count == new_rows.len() && vrows_mut[first_row..=last_row] == new_rows[..] {
+            return Some((old_count, old_count));
+        }
+        let row_h = markdown::visual_row_height(&text, h_settings, table_kind);
+        let new_count = new_rows.len();
+        vrows_mut.splice(first_row..=last_row, new_rows);
+        let heights = vec![row_h; new_count];
+        Arc::make_mut(&mut self.height_index).replace_rows(first_row, old_count, &heights);
+        Some((old_count, new_count))
     }
 
     /// Bytes held by the window, for the open-path benchmark.

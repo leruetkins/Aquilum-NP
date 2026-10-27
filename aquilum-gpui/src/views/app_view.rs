@@ -1366,6 +1366,26 @@ impl AppView {
         editor_left_x + start_ratio * workspace_w + 32.0 + 8.0 + 40.0
     }
 
+    /// The painted layout of one visual row, in the state its rows were wrapped
+    /// for. Hidden markup occupies no column, so motion that must keep the
+    /// visual x has to work in painted columns, not raw char offsets.
+    fn painted_row_for_visual_row(
+        view: &crate::workspace::EditorViewState,
+        line: &str,
+        v: &crate::markdown::VisualRow,
+        headings: &crate::settings::HeadingsSettings,
+    ) -> crate::markdown::PaintedRow {
+        let code_state = view
+            .window
+            .code_states
+            .get(v.line_idx)
+            .and_then(|s| s.as_ref())
+            .map(|s| (s.kind, s.lang.as_deref()));
+        let classified = crate::markdown::classify_line(line, code_state);
+        let spec = view.line_paints.get(&v.line_idx).cloned().unwrap_or_default();
+        crate::markdown::row_painted_text(line, &classified, v, spec.active, &spec.reveal, headings)
+    }
+
     fn move_cursor_up_visual(&mut self, shift: bool) {
         let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
@@ -1379,6 +1399,13 @@ impl AppView {
         let (cursor_line, cursor_col) = view.line_col(doc);
         let (curr_v_idx, col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col)
             .unwrap_or((0, 0));
+        let headings = &self.config.editor.headings;
+        let painted_col = {
+            let curr_v = &visual_rows[curr_v_idx];
+            let line = &view.window.lines[curr_v.line_idx];
+            let painted = Self::painted_row_for_visual_row(view, line, curr_v, headings);
+            crate::markdown::painted_column_of_line_char(&painted, curr_v.char_start + col_in_row)
+        };
 
         if shift && view.selection_anchor.is_none() {
             view.selection_anchor = Some(view.cursor_offset);
@@ -1402,14 +1429,18 @@ impl AppView {
             }
         }
         let target_v = &visual_rows[target_idx];
-        let target_len = target_v.char_end.saturating_sub(target_v.char_start);
+        let target_line = &view.window.lines[target_v.line_idx];
+        let target_painted = Self::painted_row_for_visual_row(view, target_line, target_v, headings);
+        let target_columns = target_painted.columns();
         let max_col = if target_v.is_last_sub {
-            target_len
+            target_columns
         } else {
-            target_len.saturating_sub(1)
+            target_columns.saturating_sub(1)
         };
-        let target_col = col_in_row.min(max_col);
-        let target_char = target_v.char_start + target_col;
+        let target_char = crate::markdown::line_char_at_painted_column(
+            &target_painted,
+            painted_col.min(max_col),
+        );
         let offset = view.offset_for_line_col(doc, target_v.line_idx, target_char);
         view.cursor_offset = offset;
         if !shift {
@@ -1430,6 +1461,13 @@ impl AppView {
         let (cursor_line, cursor_col) = view.line_col(doc);
         let (curr_v_idx, col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows, cursor_line, cursor_col)
             .unwrap_or((0, 0));
+        let headings = &self.config.editor.headings;
+        let painted_col = {
+            let curr_v = &visual_rows[curr_v_idx];
+            let line = &view.window.lines[curr_v.line_idx];
+            let painted = Self::painted_row_for_visual_row(view, line, curr_v, headings);
+            crate::markdown::painted_column_of_line_char(&painted, curr_v.char_start + col_in_row)
+        };
 
         if shift && view.selection_anchor.is_none() {
             view.selection_anchor = Some(view.cursor_offset);
@@ -1453,14 +1491,18 @@ impl AppView {
             }
         }
         let target_v = &visual_rows[target_idx];
-        let target_len = target_v.char_end.saturating_sub(target_v.char_start);
+        let target_line = &view.window.lines[target_v.line_idx];
+        let target_painted = Self::painted_row_for_visual_row(view, target_line, target_v, headings);
+        let target_columns = target_painted.columns();
         let max_col = if target_v.is_last_sub {
-            target_len
+            target_columns
         } else {
-            target_len.saturating_sub(1)
+            target_columns.saturating_sub(1)
         };
-        let target_col = col_in_row.min(max_col);
-        let target_char = target_v.char_start + target_col;
+        let target_char = crate::markdown::line_char_at_painted_column(
+            &target_painted,
+            painted_col.min(max_col),
+        );
         let offset = view.offset_for_line_col(doc, target_v.line_idx, target_char);
         view.cursor_offset = offset;
         if !shift {
@@ -5214,13 +5256,13 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let word_wrap = self.word_wrap;
 
         let crate::state::AppState {
-            ref documents,
+            ref mut documents,
             ref mut views,
             ..
         } = self.state;
 
         for (_leaf_id, tab_id, doc_id, wrap_cols) in leaf_info {
-            let doc = match documents.get(&doc_id) {
+            let doc = match documents.get_mut(&doc_id) {
                 Some(d) => d,
                 None => continue,
             };
@@ -5279,6 +5321,19 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                         view.scroll_top = view.above_h + line_local_y + view.viewport.px_in_line as f64;
                     }
                 }
+            } else if !view.line_paints.is_empty() {
+                // A background pane is painted with markup hidden, so the
+                // caret/selection reflow it still carries (it was focused when
+                // the rows were wrapped) has to go: its rows must be the
+                // canonical ones the renderer draws.
+                view.ensure_visual_cache_with_headings(
+                    doc,
+                    word_wrap,
+                    wrap_cols,
+                    Some(headings),
+                    view.viewport.offset,
+                    true,
+                );
             }
         }
     }
@@ -5320,6 +5375,17 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             view.viewport.offset = view.line_at_doc_y(lines_total, current_scroll_f64);
             let line_top = view.doc_y_of_line(lines_total, view.viewport.offset);
             view.viewport.px_in_line = ((current_scroll_f64 - line_top) as f32).max(0.0);
+            // The pane turns into a background surface: return it to the
+            // canonical layout so its rows match what a non-editing render
+            // paints, instead of keeping the caret/selection reflow.
+            view.ensure_visual_cache_with_headings(
+                doc,
+                view.word_wrap,
+                view.window.wrap_cols,
+                Some(&self.config.editor.headings),
+                view.viewport.offset,
+                true,
+            );
         }
 
         // 2. Set new active tab index in target leaf and set active leaf
@@ -8890,7 +8956,15 @@ impl Render for AppView {
 
             view.ensure_visual_cache_with_headings(doc, self.word_wrap, wrap_cols, Some(&self.config.editor.headings), anchor_line, self.ctrl_preview_selection || !self.edit_mode);
 
-            if view.window.wrap_cols != old_wrap_cols || (view.above_h - old_above_h).abs() > 0.5 {
+            // A caret or selection line reflow moves every row below it. When
+            // that happens above the anchor line, the anchor's document Y
+            // changes and the scroll has to follow it, exactly like a wrap
+            // change does.
+            let new_line_top = view.doc_y_of_line(doc.line_index.lines(), anchor_line);
+            if view.window.wrap_cols != old_wrap_cols
+                || (view.above_h - old_above_h).abs() > 0.5
+                || (new_line_top - old_line_top).abs() > 0.5
+            {
                 let first_v_idx = view.window.first_row_of_line(anchor_line).unwrap_or(0);
                 let line_local_y = view.window.height_index.top_of(first_v_idx);
                 let new_scroll_y = view.above_h + line_local_y + px_in_line;
@@ -11380,26 +11454,14 @@ fn headings_cache_key(headings: &crate::settings::HeadingsSettings) -> u64 {
 }
 
 /// The part of a byte-range selection that falls inside one line, in line-char offsets.
-/// Returns `None` when the selection does not touch the line or is empty.
+/// The implementation lives in `markdown` because the wrap geometry needs the same
+/// answer as the renderer.
 fn selection_chars_in_line(
     line: &str,
     line_start: usize,
     selection: Option<&std::ops::Range<usize>>,
 ) -> Option<(usize, usize)> {
-    let selection = selection?;
-    let (start, end) = (selection.start, selection.end);
-    if start >= end {
-        return None;
-    }
-    let line_end = line_start + line.len();
-    if end <= line_start || start >= line_end {
-        return None;
-    }
-    let to_line_char = |byte: usize| {
-        let byte = byte.clamp(line_start, line_end);
-        line[..byte - line_start].chars().count()
-    };
-    Some((to_line_char(start), to_line_char(end)))
+    crate::markdown::selection_chars_in_line(line, line_start, selection)
 }
 
 pub(crate) fn shape_row(
