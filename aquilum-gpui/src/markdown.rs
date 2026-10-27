@@ -866,8 +866,9 @@ fn is_revealable_content(span: &SyntaxSpan) -> bool {
 /// Reveal decision for one source line.
 ///
 /// `cursor_char` and `selection` are char offsets *within the line*. A selection reveals
-/// every element it touches, and the caret reveals the element it sits in. `reveal_all`
-/// is the Alt+click escape hatch that shows the whole markup of the line.
+/// every element it touches, and the caret reveals the element it sits in or ends right
+/// after. `reveal_all` is the Alt+click escape hatch that shows the whole markup of the
+/// line.
 pub fn inline_reveal(
     line: &str,
     classified: &LineKind<'_>,
@@ -912,7 +913,12 @@ pub fn inline_reveal(
     if let Some(c) = cursor_char {
         for &(a, b) in &elements {
             let range = (base + a, base + b);
-            if range.0 <= c && c < range.1 && !ranges.contains(&range) {
+            // The end boundary counts as inside. A hidden closing marker has no
+            // cell, so a click right after the visible text (`word|` in
+            // `[word](url)`) lands on the raw char that follows the marker and
+            // would otherwise collapse the element the caret is sitting at the
+            // end of.
+            if range.0 <= c && c <= range.1 && !ranges.contains(&range) {
                 ranges.push(range);
             }
         }
@@ -1561,6 +1567,30 @@ pub fn line_char_at_painted_column(painted: &PaintedRow, column: usize) -> usize
     painted.line_chars[column.min(painted.columns())]
 }
 
+/// Raw line char a click on `column` of a row must put the caret on.
+///
+/// `line_chars` maps painted cells to the raw chars they came from (with the
+/// row's end as the last entry). A hidden marker run leaves a gap between two
+/// painted cells, and taking the next cell's raw char would put the caret past
+/// the markup: clicking the end of `[word](url)` would land after the URL and
+/// collapse the element. The boundary therefore resolves to the char right
+/// after the previous visible one; the row's end stays the row's end so typing
+/// there still appends after the whole line.
+pub fn line_char_for_painted_boundary(line_chars: &[usize], column: usize) -> usize {
+    let Some(&first) = line_chars.first() else {
+        return 0;
+    };
+    let columns = line_chars.len() - 1;
+    let column = column.min(columns);
+    if column == 0 {
+        return first;
+    }
+    if column == columns {
+        return line_chars[columns];
+    }
+    line_chars[column].min(line_chars[column - 1].saturating_add(1))
+}
+
 pub fn find_visual_row_for_cursor(
     visual_rows: &[VisualRow],
     cursor_line: usize,
@@ -2029,6 +2059,73 @@ pub fn row_prefix_offset(line: &str, classified: &LineKind<'_>) -> usize {
     }
 }
 
+/// The dot an idle unordered-list row paints in place of its raw `- `/`* `/`+ `.
+///
+/// It is the same glyph the app's markdown previews draw (`views::settings_view`,
+/// `views::plugin_catalog`), and it advances one cell in every editor font the app
+/// ships or offers, so the substitution costs no column and the wrap geometry is
+/// unchanged. The line under the caret keeps its raw marker instead, exactly like a
+/// heading does, so the source stays editable where the user is working.
+pub const RENDERED_BULLET: &str = "• ";
+
+/// Marker text a bullet row paints: the raw source marker while the line is being
+/// edited, the rendered dot otherwise.
+///
+/// The two must keep the same char count — the dot maps onto the raw marker's chars
+/// cell for cell, which is what makes swapping it free for the caret grid — so an
+/// unexpected marker length falls back to the raw text instead.
+pub fn bullet_paint_text<'a>(raw_marker: &'a str, is_active_line: bool) -> &'a str {
+    if is_active_line || raw_marker.chars().count() != RENDERED_BULLET.chars().count() {
+        raw_marker
+    } else {
+        RENDERED_BULLET
+    }
+}
+
+/// Columns, measured in cells from the start of the row, where a nested list item
+/// draws its vertical indentation guides.
+///
+/// Every guide lines up with the centre of the dot of the list level it hangs
+/// from, so the line runs straight under the dots instead of standing in front of
+/// the next level's dot. `indent_step` is the document's nesting step (see
+/// [`list_indent_step`]); an indent that is not a whole number of steps gets one
+/// guide per completed step.
+pub fn bullet_guide_columns(indent_chars: usize, indent_step: usize) -> Vec<f32> {
+    if indent_step == 0 || indent_chars < indent_step {
+        return Vec::new();
+    }
+    (0..indent_chars / indent_step)
+        .map(|level| (level * indent_step) as f32 + 0.5)
+        .collect()
+}
+
+/// Indent of a bullet-list row, in chars. `None` for everything else.
+pub fn list_item_indent(line: &str) -> Option<usize> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
+        Some(line.chars().count() - trimmed.chars().count())
+    } else {
+        None
+    }
+}
+
+/// Nesting step of the unordered lists in `lines`: the smallest positive indent a
+/// bullet row starts with.
+///
+/// It cannot be read off a single line — four spaces are one level of a four-space
+/// document and two levels of a two-space one — so the renderer measures it across
+/// the window it is about to paint. Indents below two columns cannot nest a list
+/// item (the marker itself is two columns wide) and are ignored. Zero means the
+/// window holds no nested bullets at all.
+pub fn list_indent_step<'a>(lines: impl IntoIterator<Item = &'a str>) -> usize {
+    lines
+        .into_iter()
+        .filter_map(list_item_indent)
+        .filter(|&indent| indent >= 2)
+        .min()
+        .unwrap_or(0)
+}
+
 /// One run of text painted inside a visual row, with the font traits the renderer
 /// ends up using for it (the row's base traits merged with the span's own).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2245,7 +2342,8 @@ pub fn row_painted_text(
         LineKind::BulletList { .. } => {
             let trimmed = line.trim_start();
             let indent = &line[..line.len() - trimmed.len()];
-            let bullet = if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") { &trimmed[..2] } else { "" };
+            let raw_bullet = if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") { &trimmed[..2] } else { "" };
+            let bullet = bullet_paint_text(raw_bullet, is_active_line);
             if v.sub_idx == 0 {
                 push_verbatim(&mut segments, &mut line_chars, indent, 0, false, base_italic, false);
                 push_verbatim(&mut segments, &mut line_chars, bullet, indent.chars().count(), true, base_italic, false);
@@ -3092,19 +3190,105 @@ mod tests {
     }
 
     #[test]
-    fn painted_bullet_keeps_its_marker_on_every_row() {
+    fn painted_bullet_renders_a_dot_and_reveals_its_marker_when_active() {
         let line = "- item";
         let kind = classify_line(line, None);
 
+        // Idle rows paint the rendered dot, the way the previews do.
         let first = painted(line, &kind, 0, 6, 0, false);
-        assert_eq!(text_of(&first), "- item");
+        assert_eq!(text_of(&first), "• item");
         assert_eq!(first.line_chars, vec![0, 1, 2, 3, 4, 5, 6]);
+
+        // The line under the caret keeps its raw marker, so `- ` stays editable.
+        let active = painted(line, &kind, 0, 6, 0, true);
+        assert_eq!(text_of(&active), "- item");
+        assert_eq!(
+            active.line_chars, first.line_chars,
+            "the dot and the marker must map to the same source chars"
+        );
 
         // A wrapped continuation paints an indent of the same width; its padding
         // resolves to the first char of the wrapped content.
         let wrapped = painted(line, &kind, 4, 6, 1, false);
         assert_eq!(text_of(&wrapped), "  em");
         assert_eq!(wrapped.line_chars, vec![4, 4, 4, 5, 6]);
+    }
+
+    #[test]
+    fn nested_bullets_paint_a_dot_at_their_own_indent() {
+        // The user-facing case: 4-space nesting, mixed markers.
+        let cases = [
+            ("- Пункт 1", "• Пункт 1"),
+            ("    - Вложенный пункт", "    • Вложенный пункт"),
+            ("    * Ещё вложенный", "    • Ещё вложенный"),
+        ];
+        for (line, idle_text) in cases {
+            let kind = classify_line(line, None);
+            assert!(matches!(kind, LineKind::BulletList { .. }), "{line:?} must classify as a bullet");
+            let len = line.chars().count();
+            let idle = painted(line, &kind, 0, len, 0, false);
+            assert_eq!(text_of(&idle), idle_text);
+            let active = painted(line, &kind, 0, len, 0, true);
+            assert_eq!(text_of(&active), line, "{line:?} keeps its raw marker when active");
+            assert_eq!(
+                idle.line_chars, active.line_chars,
+                "{line:?}: the dot must not shift the caret grid"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_bullet_continuation_lines_align_with_the_item_text() {
+        let line = "    - Вложенный пункт списка, который надо перенести подальше";
+        let kind = classify_line(line, None);
+        let rows = painted_wrap_rows(line, &kind, false, &InlineReveal::None, 12);
+        assert!(rows.len() > 1, "the sample must wrap at 12 columns");
+        assert!(rows[0].0.starts_with("    • "), "first row: {:?}", rows[0].0);
+        for (text, columns) in rows.iter().skip(1) {
+            assert!(text.starts_with("      "), "continuation row is offset under the item text: {text:?}");
+            assert!(*columns <= 12, "row {text:?} paints {columns} columns");
+        }
+    }
+
+    #[test]
+    fn nested_bullets_get_an_indent_guide_per_level() {
+        assert!(bullet_guide_columns(0, 4).is_empty(), "a top-level item has no guide");
+        assert!(bullet_guide_columns(4, 0).is_empty(), "no step detected, no guides");
+        assert!(bullet_guide_columns(2, 4).is_empty(), "an indent shorter than the step nests nothing");
+
+        // Each guide sits in the centre of the ancestor dot's cell, so the line
+        // hangs straight under the dot it belongs to.
+        assert_eq!(bullet_guide_columns(4, 4), vec![0.5]);
+        assert_eq!(bullet_guide_columns(8, 4), vec![0.5, 4.5]);
+        assert_eq!(bullet_guide_columns(12, 4), vec![0.5, 4.5, 8.5]);
+        // The same document written with a two-space step gets a guide per level.
+        assert_eq!(bullet_guide_columns(2, 2), vec![0.5]);
+        assert_eq!(bullet_guide_columns(4, 2), vec![0.5, 2.5]);
+        assert_eq!(bullet_guide_columns(8, 2), vec![0.5, 2.5, 4.5, 6.5]);
+        // An indent that is not a whole number of steps keeps the completed ones.
+        assert_eq!(bullet_guide_columns(7, 4), vec![0.5]);
+
+        for step in 2..=6usize {
+            for level in 0..8usize {
+                let indent = level * step;
+                let cols = bullet_guide_columns(indent, step);
+                assert_eq!(cols.len(), level, "indent {indent}, step {step}: {cols:?}");
+                assert!(cols.iter().all(|&c| c < indent as f32), "indent {indent}: {cols:?}");
+                assert!(cols.windows(2).all(|w| w[0] < w[1]), "indent {indent}: {cols:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn list_indent_step_follows_the_smallest_nesting_of_the_window() {
+        assert_eq!(list_indent_step([]), 0);
+        assert_eq!(list_indent_step(["- a", "# heading", "text"]), 0);
+        assert_eq!(list_indent_step(["- a", "    - b", "        - c"]), 4);
+        assert_eq!(list_indent_step(["- a", "  - b", "    - c"]), 2);
+        assert_eq!(list_indent_step(["- a", "    - b", "  - sloppy"]), 2);
+        assert_eq!(list_indent_step(["* a", "+ b", "   - c"]), 3);
+        // A one-column indent cannot nest a list item, so it cannot set the step.
+        assert_eq!(list_indent_step(["- a", " - b"]), 0);
     }
 
     #[test]
@@ -3327,6 +3511,28 @@ mod tests {
     }
 
     #[test]
+    fn caret_at_the_visible_end_of_an_element_reveals_it() {
+        // The closing "](url)" is hidden, so a click right after "abc" maps to
+        // the raw char after it: the element's end boundary. It has to count as
+        // inside, or the element collapses under the caret exactly where the
+        // text ends.
+        let line = "x [abc](https://example.com) y";
+        let kind = classify_line(line, None);
+        let element_end = "x [abc](https://example.com)".chars().count();
+
+        assert_eq!(
+            inline_reveal(line, &kind, Some(element_end), None, false),
+            InlineReveal::Ranges(vec![(2, element_end)])
+        );
+
+        // One char further is plain text and hides the markup again.
+        assert_eq!(
+            inline_reveal(line, &kind, Some(element_end + 1), None, false),
+            InlineReveal::None
+        );
+    }
+
+    #[test]
     fn selection_reveals_every_touched_element() {
         let line = "x [a](u) y **b**";
         let kind = classify_line(line, None);
@@ -3463,6 +3669,48 @@ mod tests {
     }
 
     #[test]
+    fn click_at_the_end_of_a_word_lands_inside_the_element() {
+        let line = "x [abc](https://example.com) y";
+        let kind = classify_line(line, None);
+        let headings = crate::settings::HeadingsSettings::default();
+        let v = VisualRow {
+            line_idx: 0,
+            sub_idx: 0,
+            is_last_sub: true,
+            char_start: 0,
+            char_end: line.chars().count(),
+        };
+        let painted = row_painted_text(line, &kind, &v, false, &InlineReveal::None, &headings);
+        // Painted cells: "x abc y".
+        assert_eq!(painted.columns(), 7);
+
+        // The boundary after "abc" must not jump over the hidden "](url)":
+        // the caret has to stay inside the link source, or the element
+        // collapses exactly where its visible text ends.
+        let after_word = line_char_for_painted_boundary(&painted.line_chars, 5);
+        assert_eq!(after_word, 6, "the caret must stay inside the link source");
+        assert!(matches!(
+            inline_reveal(line, &kind, Some(after_word), None, false),
+            InlineReveal::Ranges(_)
+        ));
+
+        // The start of the word is inside the element as well.
+        let before_word = line_char_for_painted_boundary(&painted.line_chars, 2);
+        assert_eq!(before_word, 2);
+        assert!(matches!(
+            inline_reveal(line, &kind, Some(before_word), None, false),
+            InlineReveal::Ranges(_)
+        ));
+
+        // The row's end stays the row's end, so typing there appends after the
+        // whole line instead of inside the markup.
+        assert_eq!(
+            line_char_for_painted_boundary(&painted.line_chars, 7),
+            line.chars().count()
+        );
+    }
+
+    #[test]
     fn heading_marker_is_paid_for_only_when_active() {
         let line = "# abcdefghij";
         let kind = classify_line(line, None);
@@ -3510,7 +3758,7 @@ mod tests {
                 "row {i} paints {columns} columns ({text:?}), over the 10-column budget"
             );
         }
-        assert!(rows[0].0.starts_with("- "), "the first row carries the bullet");
+        assert!(rows[0].0.starts_with("• "), "the first row carries the bullet");
         assert!(rows[1].0.starts_with("  "), "continuation rows are indented");
     }
 

@@ -6729,6 +6729,21 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             let code_states_arc = Arc::clone(&view.window.code_states);
             let height_index_arc = Arc::clone(&view.window.height_index);
 
+            // Nesting step of the window's unordered lists, for the indent guides.
+            // Code rows are skipped so a fenced example cannot change it.
+            let list_indent_step = crate::markdown::list_indent_step(
+                lines_arc
+                    .as_slice()
+                    .iter()
+                    .enumerate()
+                    .filter(|(idx, _)| {
+                        code_states_arc
+                            .get(lines_arc.start() + *idx)
+                            .map_or(true, |state| state.is_none())
+                    })
+                    .map(|(_, line)| line.as_str()),
+            );
+
             let (cursor_line, cursor_col) = view.line_col(doc);
             let (active_v_idx, active_col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows_arc, cursor_line, cursor_col)
                 .unwrap_or((0, 0));
@@ -8343,6 +8358,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         self.hovered_link_id.as_deref(),
                                         window,
                                         cx,
+                                        line_char_width,
+                                        list_indent_step,
                                     )),
                             )
                             .children(tag_overlays)
@@ -11358,7 +11375,7 @@ impl RowShapedLayout {
         if let Some(tr) = &self.table_row {
             return tr.line_char_for_column(col);
         }
-        self.line_chars[col.min(self.columns())]
+        crate::markdown::line_char_for_painted_boundary(&self.line_chars, col)
     }
 
     pub fn column_for_line_char(&self, lc: usize) -> usize {
@@ -11554,6 +11571,12 @@ fn render_live_styled_row(
     hovered_link_id: Option<&str>,
     window: &Window,
     cx: &Context<AppView>,
+    // `cell_w` is the width of one character cell of this row in logical px;
+    // `list_indent_step` is the nesting step of the window's unordered lists
+    // (see `markdown::list_indent_step`). Only the block decorations drawn
+    // outside the text flow — the indent guides of a nested list — need them.
+    cell_w: f32,
+    list_indent_step: usize,
 ) -> gpui::Div {
     if let Some((tbl, table_layout, cursor_col, line_idx)) = table_render {
         if line_idx == tbl.sep_line() {
@@ -12081,17 +12104,43 @@ fn render_live_styled_row(
                 ("", trimmed)
             };
             let prefix_len = indent_len + bullet.len();
+            // Same marker text the wrap geometry measured: the rendered dot for an
+            // idle line, the raw source marker on the line being edited.
+            let bullet_text = crate::markdown::bullet_paint_text(bullet, is_active_line);
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
+            // One guide per nesting level, hanging straight under the dot of the
+            // level it belongs to. Rows are stacked edge to edge, so the 1px
+            // segments join into a continuous line down the group. The left edge is
+            // snapped to the device grid, like the caret and the selection edges, or
+            // a fractional cell width would blur the hairline.
+            let scale = window.scale_factor();
+            let guides = crate::markdown::bullet_guide_columns(
+                indent.chars().count(),
+                list_indent_step,
+            )
+                .into_iter()
+                .map(|col| {
+                    let (left, width) = crate::snap::snapped_span(col * cell_w, col * cell_w + 1.0, scale);
+                    div()
+                        .absolute()
+                        .left(px(left))
+                        .top(px(0.0))
+                        .bottom(px(0.0))
+                        .w(px(width.max(1.0 / scale)))
+                        .bg(theme.border_subtle)
+                });
 
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(prefix_len), prefix_len, reveal);
                 div()
+                    .relative()
                     .flex()
                     .flex_row()
                     .items_center()
                     .h_full()
+                    .children(guides)
                     .child(div().child(indent.to_string()))
-                    .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(bullet.to_string()))
+                    .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(bullet_text.to_string()))
                     .child(render_spans(row_spans, None, None, None))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans_revealed(
@@ -12102,10 +12151,12 @@ fn render_live_styled_row(
                     reveal,
                 );
                 div()
+                    .relative()
                     .flex()
                     .flex_row()
                     .items_center()
                     .h_full()
+                    .children(guides)
                     .child(div().child(format!("{}  ", indent)))
                     .child(render_spans(row_spans, None, None, None))
             }
