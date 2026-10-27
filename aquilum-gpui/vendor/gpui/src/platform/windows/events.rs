@@ -328,14 +328,24 @@ impl WindowsWindowInner {
     }
 
     fn handle_syskeydown_msg(&self, handle: HWND, wparam: WPARAM, lparam: LPARAM) -> Option<isize> {
+        // A bare Alt must never reach `DefWindowProcW`: it opens the window menu
+        // loop, and the left click that follows is consumed by that loop instead
+        // of being delivered as `WM_LBUTTONDOWN`. Alt+click then never arrives.
+        // The modifier change is still dispatched below, and Alt+<key> combos
+        // (Alt+F4, Alt+Space, ...) keep falling through to `DefWindowProcW`.
+        let is_alt_key = wparam.loword() == VK_MENU.0;
         let mut lock = self.state.borrow_mut();
-        let input = handle_key_event(handle, wparam, lparam, &mut lock, |keystroke| {
+        let Some(input) = handle_key_event(handle, wparam, lparam, &mut lock, |keystroke| {
             PlatformInput::KeyDown(KeyDownEvent {
                 keystroke,
                 is_held: lparam.0 & (0x1 << 30) > 0,
             })
-        })?;
-        let mut func = lock.callbacks.input.take()?;
+        }) else {
+            return is_alt_key.then_some(0);
+        };
+        let Some(mut func) = lock.callbacks.input.take() else {
+            return is_alt_key.then_some(0);
+        };
         drop(lock);
 
         let handled = !func(input).propagate;
@@ -345,6 +355,8 @@ impl WindowsWindowInner {
 
         if handled {
             lock.system_key_handled = true;
+            Some(0)
+        } else if is_alt_key {
             Some(0)
         } else {
             // we need to call `DefWindowProcW`, or we will lose the system-wide `Alt+F4`, `Alt+{other keys}`

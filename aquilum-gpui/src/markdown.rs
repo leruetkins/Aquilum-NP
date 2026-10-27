@@ -724,6 +724,207 @@ pub enum SyntaxSpan {
     Tag(String),
 }
 
+/// Which syntax markers of a line are shown right now.
+///
+/// The line layout is computed from the raw source, so revealing markers never changes how
+/// many visual rows a line occupies or how tall the document is. Hidden markers simply
+/// collapse out of the painted text (the one exception is an inline-code delimiter, which
+/// keeps its cell so the code chip does not jump). `Ranges` holds absolute char offsets of
+/// the inline elements (markers included) revealed around the caret or the selection.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub enum InlineReveal {
+    #[default]
+    None,
+    All,
+    Ranges(Vec<(usize, usize)>),
+}
+
+impl InlineReveal {
+    /// Whether a marker at `[start, end)` of the raw line is visible.
+    pub fn shows(&self, start: usize, end: usize) -> bool {
+        match self {
+            InlineReveal::None => false,
+            InlineReveal::All => true,
+            InlineReveal::Ranges(ranges) => ranges.iter().any(|&(a, b)| start < b && a < end),
+        }
+    }
+}
+
+/// A syntax span together with the visibility of the marker it came from.
+/// `marker_visible` is always true for non-marker spans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibleSpan {
+    pub span: SyntaxSpan,
+    pub marker_visible: bool,
+}
+
+fn span_text(span: &SyntaxSpan) -> &str {
+    match span {
+        SyntaxSpan::Marker(t)
+        | SyntaxSpan::Text(t)
+        | SyntaxSpan::Bold(t)
+        | SyntaxSpan::Italic(t)
+        | SyntaxSpan::BoldItalic(t)
+        | SyntaxSpan::InlineCode(t)
+        | SyntaxSpan::Strikethrough(t)
+        | SyntaxSpan::Underline(t)
+        | SyntaxSpan::Highlight(t)
+        | SyntaxSpan::Tag(t) => t,
+        SyntaxSpan::Link { text, .. } => text,
+    }
+}
+
+fn span_char_len(span: &SyntaxSpan) -> usize {
+    span_text(span).chars().count()
+}
+
+/// Character offset (within `line`) where the inline content starts, together with the
+/// spans parsed from that content. The prefix markers (heading hashes, quote caret, list
+/// bullets) are block syntax and stay outside the inline reveal model.
+pub fn line_inline_spans(line: &str, classified: &LineKind<'_>) -> (Vec<SyntaxSpan>, usize) {
+    let (rest, prefix_bytes) = match classified {
+        LineKind::Heading1(_) => (line.strip_prefix("# ").unwrap_or(line), 2),
+        LineKind::Heading2(_) => (line.strip_prefix("## ").unwrap_or(line), 3),
+        LineKind::Heading3(_) => (line.strip_prefix("### ").unwrap_or(line), 4),
+        LineKind::Heading4(_) => (line.strip_prefix("#### ").unwrap_or(line), 5),
+        LineKind::Heading5(_) => (line.strip_prefix("##### ").unwrap_or(line), 6),
+        LineKind::Heading6(_) => (line.strip_prefix("###### ").unwrap_or(line), 7),
+        LineKind::Quote(_) => (line.strip_prefix("> ").unwrap_or(line), 2),
+        LineKind::Task { .. } | LineKind::BulletList { .. } | LineKind::NumberedList { .. } => {
+            let p_len = marker_prefix_len(line, classified);
+            let rest = if line.len() >= p_len {
+                &line[p_len..]
+            } else {
+                ""
+            };
+            (rest, p_len)
+        }
+        _ => (line, 0),
+    };
+    (
+        parse_inline_syntax_spans(rest),
+        head_char_count(line, prefix_bytes),
+    )
+}
+
+/// Ranges of the inline elements (opening marker + content + closing marker) as char
+/// offsets inside the span sequence. Revealing an element makes exactly its own markers
+/// visible, which is the Obsidian live-preview behaviour.
+pub fn inline_element_ranges(spans: &[SyntaxSpan]) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut starts = Vec::with_capacity(spans.len());
+    let mut acc = 0usize;
+    for span in spans {
+        starts.push(acc);
+        acc += span_char_len(span);
+    }
+
+    let mut i = 0usize;
+    while i < spans.len() {
+        if i + 2 < spans.len() {
+            let paired = matches!(spans[i], SyntaxSpan::Marker(_))
+                && matches!(spans[i + 2], SyntaxSpan::Marker(_))
+                && is_revealable_content(&spans[i + 1]);
+            if paired {
+                let end = starts[i] + span_char_len(&spans[i])
+                    + span_char_len(&spans[i + 1])
+                    + span_char_len(&spans[i + 2]);
+                ranges.push((starts[i], end));
+                i += 3;
+                continue;
+            }
+        }
+        if i + 1 < spans.len() {
+            if let (SyntaxSpan::Marker(m), SyntaxSpan::Text(_)) = (&spans[i], &spans[i + 1]) {
+                if m == "\\" {
+                    ranges.push((starts[i], starts[i] + span_char_len(&spans[i]) + span_char_len(&spans[i + 1])));
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    ranges
+}
+
+fn is_revealable_content(span: &SyntaxSpan) -> bool {
+    matches!(
+        span,
+        SyntaxSpan::Link { .. }
+            | SyntaxSpan::Bold(_)
+            | SyntaxSpan::Italic(_)
+            | SyntaxSpan::BoldItalic(_)
+            | SyntaxSpan::InlineCode(_)
+            | SyntaxSpan::Strikethrough(_)
+            | SyntaxSpan::Underline(_)
+            | SyntaxSpan::Highlight(_)
+    )
+}
+
+/// Reveal decision for one source line.
+///
+/// `cursor_char` and `selection` are char offsets *within the line*. A selection reveals
+/// every element it touches, and the caret reveals the element it sits in. `reveal_all`
+/// is the Alt+click escape hatch that shows the whole markup of the line.
+pub fn inline_reveal(
+    line: &str,
+    classified: &LineKind<'_>,
+    cursor_char: Option<usize>,
+    selection: Option<(usize, usize)>,
+    reveal_all: bool,
+) -> InlineReveal {
+    if reveal_all {
+        return InlineReveal::All;
+    }
+    // Nothing to reveal on this line: skip parsing it at all. This is the common case for
+    // every visible row the caret and the selection do not touch.
+    let has_selection = selection.map_or(false, |(s, e)| s < e);
+    if cursor_char.is_none() && !has_selection {
+        return InlineReveal::None;
+    }
+    // Code and rules have no inline markup worth revealing piecewise.
+    if matches!(
+        classified,
+        LineKind::CodeLine(_) | LineKind::CodeFence { .. } | LineKind::HorizontalRule
+    ) {
+        return InlineReveal::None;
+    }
+
+    let (spans, base) = line_inline_spans(line, classified);
+    let elements = inline_element_ranges(&spans);
+    if elements.is_empty() {
+        return InlineReveal::None;
+    }
+
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    if let Some((s, e)) = selection {
+        if s < e {
+            for &(a, b) in &elements {
+                let range = (base + a, base + b);
+                if s < range.1 && range.0 < e {
+                    ranges.push(range);
+                }
+            }
+        }
+    }
+    if let Some(c) = cursor_char {
+        for &(a, b) in &elements {
+            let range = (base + a, base + b);
+            if range.0 <= c && c < range.1 && !ranges.contains(&range) {
+                ranges.push(range);
+            }
+        }
+    }
+
+    if ranges.is_empty() {
+        InlineReveal::None
+    } else {
+        InlineReveal::Ranges(ranges)
+    }
+}
+
 pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
     let mut spans = Vec::new();
     let mut plain_accum = String::new();
@@ -1333,6 +1534,22 @@ pub fn slice_syntax_spans(
     start_char: usize,
     end_char: usize,
 ) -> Vec<SyntaxSpan> {
+    slice_syntax_spans_revealed(spans, start_char, end_char, 0, &InlineReveal::All)
+        .into_iter()
+        .map(|v| v.span)
+        .collect()
+}
+
+/// Slice `[start_char, end_char)` out of the span sequence, recording for every marker
+/// whether `reveal` shows it. `abs_start` is the char offset of the span sequence inside
+/// the raw line, so reveal ranges (which are line-relative) line up with the spans.
+pub fn slice_syntax_spans_revealed(
+    spans: &[SyntaxSpan],
+    start_char: usize,
+    end_char: usize,
+    abs_start: usize,
+    reveal: &InlineReveal,
+) -> Vec<VisibleSpan> {
     if start_char >= end_char {
         return Vec::new();
     }
@@ -1379,7 +1596,14 @@ pub fn slice_syntax_spans(
                     10 => SyntaxSpan::Tag(sliced_str),
                     _ => SyntaxSpan::Text(sliced_str),
                 };
-                result.push(sliced_span);
+                // Only markers ever reach a hidden state; everything else is content.
+                // `abs_start + curr_char + s` is the marker's absolute char position.
+                let marker_visible = kind != 0
+                    || reveal.shows(abs_start + curr_char + s, abs_start + curr_char + e);
+                result.push(VisibleSpan {
+                    span: sliced_span,
+                    marker_visible,
+                });
             }
         }
 
@@ -1529,33 +1753,6 @@ pub fn row_prefix_offset(line: &str, classified: &LineKind<'_>) -> usize {
     }
 }
 
-pub fn row_spans_and_hidden_prefix(
-    line: &str,
-    classified: &LineKind<'_>,
-    v: &VisualRow,
-    is_active_line: bool,
-) -> (Vec<SyntaxSpan>, usize) {
-    let (text_to_parse, prefix_offset, hidden_heading) = match classified {
-        LineKind::Heading1(_) => (line.strip_prefix("# ").unwrap_or(line), 2, if !is_active_line && v.sub_idx == 0 { 2 } else { 0 }),
-        LineKind::Heading2(_) => (line.strip_prefix("## ").unwrap_or(line), 3, if !is_active_line && v.sub_idx == 0 { 3 } else { 0 }),
-        LineKind::Heading3(_) => (line.strip_prefix("### ").unwrap_or(line), 4, if !is_active_line && v.sub_idx == 0 { 4 } else { 0 }),
-        LineKind::Heading4(_) => (line.strip_prefix("#### ").unwrap_or(line), 5, if !is_active_line && v.sub_idx == 0 { 5 } else { 0 }),
-        LineKind::Heading5(_) => (line.strip_prefix("##### ").unwrap_or(line), 6, if !is_active_line && v.sub_idx == 0 { 6 } else { 0 }),
-        LineKind::Heading6(_) => (line.strip_prefix("###### ").unwrap_or(line), 7, if !is_active_line && v.sub_idx == 0 { 7 } else { 0 }),
-        LineKind::Quote(_) => (line.strip_prefix("> ").unwrap_or(line), 2, 0),
-        LineKind::Task { .. } | LineKind::BulletList { .. } | LineKind::NumberedList { .. } => {
-            let p_len = marker_prefix_len(line, classified);
-            (if line.len() >= p_len { &line[p_len..] } else { "" }, p_len, 0)
-        }
-        _ => (line, 0, 0),
-    };
-    let spans = parse_inline_syntax_spans(text_to_parse);
-    let s = v.char_start.saturating_sub(prefix_offset);
-    let e = v.char_end.saturating_sub(prefix_offset);
-    let sliced = slice_syntax_spans(&spans, s, e);
-    (sliced, hidden_heading)
-}
-
 /// One run of text painted inside a visual row, with the font traits the renderer
 /// ends up using for it (the row's base traits merged with the span's own).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1591,8 +1788,8 @@ pub struct PaintedRow {
 /// An inline-code delimiter is a run of one or more backticks — the run length is what
 /// closes the span, so `` `` `` is a delimiter in its own right. It is the one inline
 /// marker that keeps its cell when it is not painted, so that the code chip has a
-/// constant width and the selection rectangle does not jump when the delimiters become
-/// visible on the active line. Both the geometry (`row_painted_text`) and the renderer
+/// constant width and the selection rectangle does not jump when the delimiters are
+/// revealed around the caret. Both the geometry (`row_painted_text`) and the renderer
 /// (`views::app_view::render_syntax_spans`) must agree on this.
 pub fn is_inline_code_delim(text: &str) -> bool {
     !text.is_empty() && text.bytes().all(|b| b == b'`')
@@ -1715,6 +1912,7 @@ pub fn row_painted_text(
     classified: &LineKind<'_>,
     v: &VisualRow,
     is_active_line: bool,
+    reveal: &InlineReveal,
     headings: &crate::settings::HeadingsSettings,
 ) -> PaintedRow {
     let mut segments: Vec<PaintedSegment> = Vec::new();
@@ -1816,35 +2014,37 @@ pub fn row_painted_text(
             push_verbatim(&mut segments, &mut line_chars, &text, v.char_start, base_bold, base_italic, false);
         }
         _ => {
-            let (row_spans, _) = row_spans_and_hidden_prefix(line, classified, v, is_active_line);
-            // The span slice starts at `char_start - prefix_offset` chars into the text
-            // that follows the marker, i.e. at this line char.
-            let mut src = head_char_count(line, prefix_offset) + v.char_start.saturating_sub(prefix_offset);
-            for span in &row_spans {
-                let (text, bold, italic, is_marker, is_code, tag_opt) = match span {
-                    SyntaxSpan::Marker(t) => (t.as_str(), false, false, true, is_inline_code_delim(t), None),
-                    SyntaxSpan::Text(t) => (t.as_str(), base_bold, base_italic, false, false, None),
-                    SyntaxSpan::Bold(t) => (t.as_str(), true, base_italic, false, false, None),
-                    SyntaxSpan::Italic(t) => (t.as_str(), base_bold, true, false, false, None),
-                    SyntaxSpan::BoldItalic(t) => (t.as_str(), true, true, false, false, None),
-                    SyntaxSpan::InlineCode(t) => (t.as_str(), base_bold, base_italic, false, true, None),
+            let (spans, content_offset) = line_inline_spans(line, classified);
+            let s = v.char_start.saturating_sub(content_offset);
+            let e = v.char_end.saturating_sub(content_offset);
+            // The span slice starts at `char_start` chars into the line; skip the block
+            // prefix the renderer paints separately.
+            let mut src = content_offset + s;
+            for visible in slice_syntax_spans_revealed(&spans, s, e, content_offset, reveal) {
+                let (text, bold, italic, is_code, tag_opt) = match &visible.span {
+                    SyntaxSpan::Marker(t) => (t.as_str(), false, false, is_inline_code_delim(t), None),
+                    SyntaxSpan::Text(t) => (t.as_str(), base_bold, base_italic, false, None),
+                    SyntaxSpan::Bold(t) => (t.as_str(), true, base_italic, false, None),
+                    SyntaxSpan::Italic(t) => (t.as_str(), base_bold, true, false, None),
+                    SyntaxSpan::BoldItalic(t) => (t.as_str(), true, true, false, None),
+                    SyntaxSpan::InlineCode(t) => (t.as_str(), base_bold, base_italic, true, None),
                     SyntaxSpan::Strikethrough(t)
                     | SyntaxSpan::Underline(t)
-                    | SyntaxSpan::Highlight(t) => (t.as_str(), base_bold, base_italic, false, false, None),
-                    SyntaxSpan::Tag(t) => (t.as_str(), base_bold, base_italic, false, false, Some(t.clone())),
-                    SyntaxSpan::Link { text, .. } => (text.as_str(), base_bold, base_italic, false, false, None),
+                    | SyntaxSpan::Highlight(t) => (t.as_str(), base_bold, base_italic, false, None),
+                    SyntaxSpan::Tag(t) => (t.as_str(), base_bold, base_italic, false, Some(t.clone())),
+                    SyntaxSpan::Link { text, .. } => (text.as_str(), base_bold, base_italic, false, None),
                 };
                 let n = text.chars().count();
                 if n == 0 {
                     continue;
                 }
-                // An inline-code delimiter keeps its cell on an idle line, so the code
+                // An inline-code delimiter keeps its cell even when hidden, so the code
                 // chip has a constant width and the selection rectangle does not jump
-                // when the delimiters appear on the active line. The renderer paints
-                // that cell with no ink at all, which is what reads as the chip's
-                // left/right padding. Every other hidden marker collapses to nothing
-                // and leaves a gap in the line chars.
-                if is_marker && !is_active_line && !is_inline_code_delim(text) {
+                // when the delimiters are revealed. The renderer paints that cell with
+                // no ink at all, which is what reads as the chip's left/right padding.
+                // Every other hidden marker collapses to nothing and leaves a gap in the
+                // line chars.
+                if !visible.marker_visible && !is_inline_code_delim(text) {
                     src += n;
                     continue;
                 }
@@ -2342,11 +2542,17 @@ mod tests {
             char_start,
             char_end,
         };
+        let reveal = if is_active_line {
+            InlineReveal::All
+        } else {
+            InlineReveal::None
+        };
         row_painted_text(
             line,
             classified,
             &v,
             is_active_line,
+            &reveal,
             &crate::settings::HeadingsSettings::default(),
         )
     }
@@ -2815,6 +3021,92 @@ mod tests {
         let tag1_str: String = chars[s1..e1].iter().collect();
         assert_eq!(tag0_str, "#миша");
         assert_eq!(tag1_str, "#гончаров");
+    }
+
+    #[test]
+    fn inline_element_ranges_cover_markers_and_content() {
+        let spans = parse_inline_syntax_spans("[a](u) **b** `c`");
+        assert_eq!(inline_element_ranges(&spans), vec![(0, 6), (7, 12), (13, 16)]);
+    }
+
+    #[test]
+    fn reveal_only_the_element_under_the_caret() {
+        let line = "x [a](u) y **b**";
+        let kind = classify_line(line, None);
+
+        let caret_in_link = inline_reveal(line, &kind, Some(5), None, false);
+        assert!(caret_in_link.shows(2, 3), "link opener must be visible");
+        assert!(!caret_in_link.shows(11, 13), "bold markers must stay hidden");
+
+        assert_eq!(
+            inline_reveal(line, &kind, Some(1), None, false),
+            InlineReveal::None,
+            "a caret in plain text reveals nothing"
+        );
+        assert_eq!(
+            inline_reveal(line, &kind, Some(5), None, true),
+            InlineReveal::All,
+            "Alt+click reveals the whole line"
+        );
+    }
+
+    #[test]
+    fn selection_reveals_every_touched_element() {
+        let line = "x [a](u) y **b**";
+        let kind = classify_line(line, None);
+        let reveal = inline_reveal(line, &kind, None, Some((7, 12)), false);
+        assert!(reveal.shows(2, 3), "the selection starts inside the link");
+        assert!(reveal.shows(11, 13), "the selection reaches the bold markers");
+    }
+
+    #[test]
+    fn reveal_offsets_include_the_block_prefix() {
+        let line = "# x [a](u)";
+        let kind = classify_line(line, None);
+        let reveal = inline_reveal(line, &kind, Some(5), None, false);
+        // The link's `[` sits at line char 4 (after the "# " block prefix), not 2.
+        assert!(reveal.shows(4, 5));
+
+        let headings = crate::settings::HeadingsSettings::default();
+        let v = VisualRow {
+            line_idx: 0,
+            sub_idx: 0,
+            is_last_sub: true,
+            char_start: 0,
+            char_end: line.chars().count(),
+        };
+        let row = row_painted_text(line, &kind, &v, true, &reveal, &headings);
+        assert_eq!(text_of(&row), "# x [a](u)");
+    }
+
+    #[test]
+    fn reveal_controls_painted_markers() {
+        let line = "x [a](u) y **b**";
+        let kind = classify_line(line, None);
+        let headings = crate::settings::HeadingsSettings::default();
+        let v = VisualRow {
+            line_idx: 0,
+            sub_idx: 0,
+            is_last_sub: true,
+            char_start: 0,
+            char_end: line.chars().count(),
+        };
+
+        let hidden = row_painted_text(line, &kind, &v, false, &InlineReveal::None, &headings);
+        assert_eq!(text_of(&hidden), "x a y b");
+
+        let link = row_painted_text(
+            line,
+            &kind,
+            &v,
+            false,
+            &inline_reveal(line, &kind, Some(5), None, false),
+            &headings,
+        );
+        assert_eq!(text_of(&link), "x [a](u) y b");
+
+        let all = row_painted_text(line, &kind, &v, false, &InlineReveal::All, &headings);
+        assert_eq!(text_of(&all), "x [a](u) y **b**");
     }
 }
 

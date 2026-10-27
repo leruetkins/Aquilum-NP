@@ -2573,10 +2573,10 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
     ///
     /// The hash covers every input that changes the shaped result: the line
     /// text, its classification (drives the painted text and the font size),
-    /// the row's char range, the active-line flag (markers are painted only
-    /// on the active line), the font family and the cell width. A change to
-    /// heading sizes invalidates via `clear_row_shape_cache`, called from the
-    /// settings subscription.
+    /// the row's char range, the active-line flag (block prefixes are painted
+    /// only on the active line), the inline reveal (per-element markup), the
+    /// font family and the cell width. A change to heading sizes invalidates
+    /// via `clear_row_shape_cache`, called from the settings subscription.
     pub(crate) fn get_or_shape_row(
         row_cache: &std::cell::RefCell<HashMap<u64, Arc<RowShapedLayout>>>,
         text_system: &gpui::WindowTextSystem,
@@ -2584,6 +2584,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         classified: &crate::markdown::LineKind<'_>,
         v: &crate::markdown::VisualRow,
         is_active_line: bool,
+        reveal: &crate::markdown::InlineReveal,
         headings: &crate::settings::HeadingsSettings,
         font_family: &SharedString,
         cell_w: f32,
@@ -2597,6 +2598,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         v.char_start.hash(&mut hasher);
         v.char_end.hash(&mut hasher);
         is_active_line.hash(&mut hasher);
+        reveal.hash(&mut hasher);
         font_family.hash(&mut hasher);
         cell_w.to_bits().hash(&mut hasher);
         headings_cache_key(headings).hash(&mut hasher);
@@ -2611,7 +2613,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             }
         }
 
-        let layout = Arc::new(shape_row(text_system, line, classified, v, is_active_line, headings, font_family, cell_w));
+        let layout = Arc::new(shape_row(text_system, line, classified, v, is_active_line, reveal, headings, font_family, cell_w));
         if let Ok(mut cache) = row_cache.try_borrow_mut() {
             // Bounded the same way a frame is: the visible row set. A large
             // vault scroll leaves stale entries behind; drop the whole cache
@@ -2624,7 +2626,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         layout
     }
 
-    fn handle_editor_mouse_down(&mut self, click_x: f32, click_y: f32, shift: bool, click_count: usize, window: &Window, cx: &mut Context<Self>) {
+    fn handle_editor_mouse_down(&mut self, click_x: f32, click_y: f32, shift: bool, alt: bool, click_count: usize, window: &Window, cx: &mut Context<Self>) {
         if self.state.active_doc_id().is_none() {
             return;
         }
@@ -2669,7 +2671,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let v = &visual_rows[target_v_idx];
         let v_len = v.char_end.saturating_sub(v.char_start);
 
-        let (cursor_line, _) = view.line_col(doc);
+        let (cursor_line, cursor_col) = view.line_col(doc);
         let selection_range = view.selection_range(doc.len());
         let line = &view.window.lines[v.line_idx];
         let line_start = doc.line_start_byte(v.line_idx);
@@ -2703,6 +2705,21 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let classified = crate::markdown::classify_line(line, code_state);
         let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &self.config.editor.headings, line_char_width);
         let (_, row_char_w, _, _, _) = Self::heading_typography_metrics_with_widths(&classified, &self.config.editor.headings, 24.0, line_char_width, Some(&heading_widths));
+
+        // Hit-test against the layout that is on screen right now: this row's reveal is
+        // the one the previous frame painted, so the click cannot shift the geometry it
+        // is resolved against.
+        let reveal = if self.edit_mode && !self.ctrl_preview_selection {
+            crate::markdown::inline_reveal(
+                line,
+                &classified,
+                (cursor_line == v.line_idx).then_some(cursor_col),
+                selection_chars_in_line(line, line_start, selection_range.as_ref()),
+                view.reveal_all_line == Some(v.line_idx) && cursor_line == v.line_idx,
+            )
+        } else {
+            crate::markdown::InlineReveal::None
+        };
 
         // Hit-test against the shaped layout of the row rather than a
         // `column * char_width` cell model: wide glyphs (emoji, CJK) do not advance
@@ -2745,6 +2762,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     &classified,
                     v,
                     is_active_line || raw_row,
+                    &reveal,
                     &self.config.editor.headings,
                     &editor_font,
                     row_char_w,
@@ -2778,6 +2796,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             view.cursor_offset = offset;
             view.selection_anchor = Some(offset);
         }
+        // Alt+click is the escape hatch that shows the whole markup of the clicked line.
+        // Any other click drops it, so the line falls back to per-element reveal.
+        view.reveal_all_line = if alt { Some(v.line_idx) } else { None };
         self.reset_editor_cursor_blink(cx);
         self.state.publish_snapshot();
         cx.notify();
@@ -2842,7 +2863,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let v = &visual_rows[target_v_idx];
         let v_len = v.char_end.saturating_sub(v.char_start);
 
-        let (cursor_line, _) = view.line_col(doc);
+        let (cursor_line, cursor_col) = view.line_col(doc);
         let selection_range = view.selection_range(doc.len());
         let line = &view.window.lines[v.line_idx];
         let line_start = doc.line_start_byte(v.line_idx);
@@ -2876,6 +2897,18 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let classified = crate::markdown::classify_line(line, code_state);
         let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &self.config.editor.headings, line_char_width);
         let (_, row_char_w, _, _, _) = Self::heading_typography_metrics_with_widths(&classified, &self.config.editor.headings, 24.0, line_char_width, Some(&heading_widths));
+
+        let reveal = if self.edit_mode && !self.ctrl_preview_selection {
+            crate::markdown::inline_reveal(
+                line,
+                &classified,
+                (cursor_line == v.line_idx).then_some(cursor_col),
+                selection_chars_in_line(line, line_start, selection_range.as_ref()),
+                view.reveal_all_line == Some(v.line_idx) && cursor_line == v.line_idx,
+            )
+        } else {
+            crate::markdown::InlineReveal::None
+        };
 
         let col_in_row = if pos_x > text_start_x {
             let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
@@ -2915,6 +2948,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     &classified,
                     v,
                     is_active_line || raw_row,
+                    &reveal,
                     &self.config.editor.headings,
                     &editor_font,
                     row_char_w,
@@ -4175,6 +4209,10 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         if keystroke.key == "escape" {
             self.ctrl_preview_selection = false;
             if let Some(view) = self.state.active_view_mut() {
+                if view.reveal_all_line.is_some() {
+                    view.reveal_all_line = None;
+                    cx.notify();
+                }
                 if view.selection_anchor.is_some() && view.selection_anchor != Some(view.cursor_offset) {
                     view.selection_anchor = None;
                     cx.notify();
@@ -7052,7 +7090,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                         this.is_mouse_selecting = true;
                         let click_x: f32 = event.position.x.into();
                         let click_y: f32 = event.position.y.into();
-                        this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, window, cx);
+                        this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.modifiers.alt, event.click_count, window, cx);
                     }))
                     .on_mouse_down(MouseButton::Right, cx.listener(|this, event: &MouseDownEvent, window, cx| {
                         if this.is_resizing_any() {
@@ -7067,7 +7105,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             .map(|r| r.start < r.end)
                             .unwrap_or(false);
                         if !has_selection {
-                            this.handle_editor_mouse_down(click_x, click_y, false, 1, window, cx);
+                            this.handle_editor_mouse_down(click_x, click_y, false, false, 1, window, cx);
                             if let Some(view) = this.state.active_view_mut() {
                                 view.selection_anchor = None;
                             }
@@ -7268,6 +7306,17 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 let is_act_line = is_editing && (line_idx == cursor_line || is_line_in_sel || is_in_act_block);
                 let code_state = code_states_arc.get(line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
                 let classified = crate::markdown::classify_line(line, code_state);
+                let reveal = if is_editing {
+                    crate::markdown::inline_reveal(
+                        line,
+                        &classified,
+                        (cursor_line == line_idx).then_some(cursor_col),
+                        selection_chars_in_line(line, line_start, selection_range.as_ref()),
+                        view.reveal_all_line == Some(line_idx) && cursor_line == line_idx,
+                    )
+                } else {
+                    crate::markdown::InlineReveal::None
+                };
                 let (_, row_char_w, _, _, _) =
                     Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths));
                 let row_layout = if let Some(tbl) = view.grid_table_at(doc, &tables, line_idx, cursor_line, self.ctrl_preview_selection || !self.edit_mode) {
@@ -7285,7 +7334,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     let raw_row = tables
                         .at(line_idx)
                         .map_or(false, |t| view.table_raw_now(doc, t, cursor_line, self.ctrl_preview_selection || !self.edit_mode));
-                    shape_row(&text_system, line, &classified, v, is_act_line || raw_row, headings, &editor_font, row_char_w)
+                    shape_row(&text_system, line, &classified, v, is_act_line || raw_row, &reveal, headings, &editor_font, row_char_w)
                 };
 
                 if line.is_empty() {
@@ -7425,6 +7474,17 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 let is_active_line = is_editing && (v.line_idx == cursor_line || is_line_in_selection || is_in_active_block || is_raw_table_line);
                 let code_state = code_states_arc[v.line_idx].as_ref().map(|s| (s.kind, s.lang.as_deref()));
                 let classified = crate::markdown::classify_line(line, code_state);
+                let reveal = if is_editing {
+                    crate::markdown::inline_reveal(
+                        line,
+                        &classified,
+                        (cursor_line == v.line_idx).then_some(cursor_col),
+                        selection_chars_in_line(line, line_start, selection_range.as_ref()),
+                        view.reveal_all_line == Some(v.line_idx) && cursor_line == v.line_idx,
+                    )
+                } else {
+                    crate::markdown::InlineReveal::None
+                };
                 let is_opening_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: true, .. });
                 let is_closing_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: false, .. });
                 let is_code_line = matches!(classified, crate::markdown::LineKind::CodeLine(_));
@@ -7459,7 +7519,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     let cursor_col = if is_active_line && v.line_idx == cursor_line { Some(active_col_in_row) } else { None };
                     Arc::new(shape_table_row(window.text_system(), line, tbl, v.line_idx, cursor_col, table_layout.as_ref().unwrap(), headings, &editor_font, row_char_w))
                 } else {
-                    Self::get_or_shape_row(&self.row_shape_cache, &text_system, line, &classified, v, is_active_line, headings, &editor_font, row_char_w)
+                    Self::get_or_shape_row(&self.row_shape_cache, &text_system, line, &classified, v, is_active_line, &reveal, headings, &editor_font, row_char_w)
                 };
                 let row_layout_down = row_layout.clone();
                 let row_layout_move = row_layout.clone();
@@ -7467,9 +7527,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     if let Some(tbl) = grid_tbl {
                         Arc::new(shape_table_row(window.text_system(), line, tbl, v.line_idx, None, table_layout.as_ref().unwrap(), headings, &editor_font, row_char_w))
                     } else {
-                        // The preview variant (markers hidden) is hashed under
-                        // `is_active_line = false` — a separate cache entry.
-                        Self::get_or_shape_row(&self.row_shape_cache, &text_system, line, &classified, v, false, headings, &editor_font, row_char_w)
+                        // The preview variant (markers hidden) is hashed as a fully
+                        // hidden reveal — a separate cache entry.
+                        Self::get_or_shape_row(&self.row_shape_cache, &text_system, line, &classified, v, false, &crate::markdown::InlineReveal::None, headings, &editor_font, row_char_w)
                     }
                 } else {
                     row_layout.clone()
@@ -7866,6 +7926,10 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                     view.cursor_offset = offset;
                                     view.selection_anchor = Some(offset);
                                 }
+                                // Rows stop propagation, so this handler — not
+                                // `handle_editor_mouse_down` — is the one that sees a click
+                                // on a line. Alt+click must be honoured here or it never is.
+                                view.reveal_all_line = if event.modifiers.alt { Some(v_line_idx) } else { None };
                             }
                             window.focus(&this.focus_handle);
                             this.reset_editor_cursor_blink(cx);
@@ -8195,6 +8259,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         v_line_idx,
                                         v_sub_idx,
                                         is_active_line,
+                                        &reveal,
                                         is_in_active_block,
                                         headings,
                                         theme,
@@ -8331,7 +8396,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                         this.is_mouse_selecting = true;
                         let click_x: f32 = event.position.x.into();
                         let click_y: f32 = event.position.y.into();
-                        this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.click_count, window, cx);
+                        this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.modifiers.alt, event.click_count, window, cx);
                     }))
                     .on_scroll_wheel(cx.listener(move |this, event: &gpui::ScrollWheelEvent, _, cx| {
                         if this.is_resizing_any() {
@@ -10185,33 +10250,30 @@ fn code_chip_inset(row_h: f32) -> f32 {
     (row_h * CODE_CHIP_INSET_RATIO).round().max(1.0)
 }
 
-/// Colour a syntax marker is painted with, or `None` when it is not painted at all on
-/// this line.
+/// Colour a syntax marker is painted with, or `None` when it is not painted at all.
 ///
-/// Every marker except an inline-code delimiter only shows on the active line. A code
-/// delimiter is painted even off the active line so that the code chip keeps a constant
-/// width — and with it the selection rectangle, which otherwise jumps by two cells the
-/// moment the line becomes active. Off the active line the delimiter carries no ink at
-/// all, which is exactly what reads as the chip's left/right padding: the chip itself is
-/// a rectangle the editor paints behind the row's text, not a text-run background, so a
-/// blank delimiter is enough to open the padding. `markdown::row_painted_text`
-/// must agree: it keeps the delimiter's cell on an idle line for the same reason.
-fn marker_paint(m: &str, is_active_line: bool, theme: &Theme) -> Option<gpui::Hsla> {
-    let is_code_delim = crate::markdown::is_inline_code_delim(m);
-    if !is_active_line && !is_code_delim {
-        return None;
-    }
-    if is_active_line {
+/// `visible` is the reveal decision for this marker (`markdown::InlineReveal`): only the
+/// inline element under the caret/selection (or the whole line after Alt+click) shows its
+/// markup. A hidden inline-code delimiter is still painted — with no ink — so that the
+/// code chip keeps a constant width, and with it the selection rectangle. Off the active
+/// line the delimiter's blank cell is exactly what reads as the chip's left/right padding:
+/// the chip itself is a rectangle the editor paints behind the row's text, not a text-run
+/// background, so a blank delimiter is enough to open the padding.
+/// `markdown::row_painted_text` must agree: it keeps the delimiter's cell for the same
+/// reason.
+fn marker_paint(m: &str, visible: bool, theme: &Theme) -> Option<gpui::Hsla> {
+    if visible {
         Some(theme.text_muted.into())
-    } else {
+    } else if crate::markdown::is_inline_code_delim(m) {
         // No ink: the cell is part of the chip, and the chip shows through.
         Some(gpui::rgba(0x00000000).into())
+    } else {
+        None
     }
 }
 
 fn render_syntax_spans(
-    spans: Vec<crate::markdown::SyntaxSpan>,
-    is_active_line: bool,
+    spans: Vec<crate::markdown::VisibleSpan>,
     theme: &Theme,
     text_color_override: Option<gpui::Rgba>,
     base_weight: Option<gpui::FontWeight>,
@@ -10265,16 +10327,19 @@ fn render_syntax_spans(
         fallbacks: None,
     };
 
-    let has_links = spans.iter().any(|s| matches!(s, crate::markdown::SyntaxSpan::Link { .. }));
+    let has_links = spans
+        .iter()
+        .any(|s| matches!(s.span, crate::markdown::SyntaxSpan::Link { .. }));
 
     if !has_links {
         let mut full_text = String::new();
         let mut runs = Vec::new();
 
-        for span in spans {
-            match span {
+        for visible in spans {
+            let marker_visible = visible.marker_visible;
+            match visible.span {
                 crate::markdown::SyntaxSpan::Marker(m) => {
-                    if let Some(color) = marker_paint(&m, is_active_line, theme) {
+                    if let Some(color) = marker_paint(&m, marker_visible, theme) {
                         let len = m.len();
                         let font = if crate::markdown::is_inline_code_delim(&m) { code_font.clone() } else { reg_font.clone() };
                         full_text.push_str(&m);
@@ -10428,10 +10493,11 @@ fn render_syntax_spans(
         let mut runs = Vec::new();
         let mut link_idx = 0;
 
-        for span in spans {
-            match span {
+        for visible in spans {
+            let marker_visible = visible.marker_visible;
+            match visible.span {
                 crate::markdown::SyntaxSpan::Marker(m) => {
-                    if let Some(color) = marker_paint(&m, is_active_line, theme) {
+                    if let Some(color) = marker_paint(&m, marker_visible, theme) {
                         let len = m.len();
                         let font = if crate::markdown::is_inline_code_delim(&m) { code_font.clone() } else { reg_font.clone() };
                         full_text.push_str(&m);
@@ -11017,6 +11083,11 @@ pub(crate) fn shape_table_row(
         };
 
         let is_active_cell = active_cell_idx == Some(c);
+        let reveal = if is_active_cell {
+            crate::markdown::InlineReveal::All
+        } else {
+            crate::markdown::InlineReveal::None
+        };
         let v = crate::markdown::VisualRow {
             line_idx,
             sub_idx: 0,
@@ -11029,6 +11100,7 @@ pub(crate) fn shape_table_row(
             &crate::markdown::LineKind::Paragraph(Default::default()),
             &v,
             is_active_cell,
+            &reveal,
             headings,
         );
 
@@ -11307,12 +11379,36 @@ fn headings_cache_key(headings: &crate::settings::HeadingsSettings) -> u64 {
     hasher.finish()
 }
 
+/// The part of a byte-range selection that falls inside one line, in line-char offsets.
+/// Returns `None` when the selection does not touch the line or is empty.
+fn selection_chars_in_line(
+    line: &str,
+    line_start: usize,
+    selection: Option<&std::ops::Range<usize>>,
+) -> Option<(usize, usize)> {
+    let selection = selection?;
+    let (start, end) = (selection.start, selection.end);
+    if start >= end {
+        return None;
+    }
+    let line_end = line_start + line.len();
+    if end <= line_start || start >= line_end {
+        return None;
+    }
+    let to_line_char = |byte: usize| {
+        let byte = byte.clamp(line_start, line_end);
+        line[..byte - line_start].chars().count()
+    };
+    Some((to_line_char(start), to_line_char(end)))
+}
+
 pub(crate) fn shape_row(
     text_system: &gpui::WindowTextSystem,
     line: &str,
     classified: &crate::markdown::LineKind<'_>,
     v: &crate::markdown::VisualRow,
     is_active_line: bool,
+    reveal: &crate::markdown::InlineReveal,
     headings: &crate::settings::HeadingsSettings,
     font_family: &SharedString,
     cell_w: f32,
@@ -11323,7 +11419,8 @@ pub(crate) fn shape_row(
     crate::perf::PERF
         .shape_calls
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let painted = crate::markdown::row_painted_text(line, classified, v, is_active_line, headings);
+    let painted =
+        crate::markdown::row_painted_text(line, classified, v, is_active_line, reveal, headings);
     let code_ranges = painted.code_ranges();
     let tag_ranges = painted.tag_ranges();
     let (_, _, font_size, _, _) = AppView::heading_typography_metrics_with_widths(classified, headings, 24.0, cell_w, None);
@@ -11377,6 +11474,7 @@ fn render_live_styled_row(
     line_idx: usize,
     sub_idx: usize,
     is_active_line: bool,
+    reveal: &crate::markdown::InlineReveal,
     show_fences: bool,
     headings: &crate::settings::HeadingsSettings,
     theme: &Theme,
@@ -11425,7 +11523,22 @@ fn render_live_styled_row(
                 })
                 .unwrap_or("");
             let is_active_cell = active_c == Some(c_idx);
-            let spans = crate::markdown::parse_inline_syntax_spans(cell_text);
+            // The active table cell reveals its markup as a whole: `shape_table_row`
+            // shapes the same cell from the raw line, and both paths must paint the
+            // same characters or the caret and selection rectangles drift.
+            let cell_reveal = if is_active_cell {
+                crate::markdown::InlineReveal::All
+            } else {
+                crate::markdown::InlineReveal::None
+            };
+            let raw_spans = crate::markdown::parse_inline_syntax_spans(cell_text);
+            let spans = crate::markdown::slice_syntax_spans_revealed(
+                &raw_spans,
+                0,
+                cell_text.chars().count(),
+                0,
+                &cell_reveal,
+            );
             let align = table_layout.aligns.get(c_idx).copied().unwrap_or_default();
             let font_weight = if is_header { Some(gpui::FontWeight::BOLD) } else { None };
             let is_first_col = c_idx == 0;
@@ -11473,7 +11586,7 @@ fn render_live_styled_row(
                 crate::table::Align::Right => { cell_div = cell_div.justify_end(); }
             }
             let cell_key = format!("tbl-cell-{}-{}-{}", line_idx, c_idx, sub_idx);
-            cell_div = cell_div.child(render_syntax_spans(spans, is_active_cell, theme, None, font_weight, None, font_family, &cell_key, ctrl_held, hovered_link_id, cx));
+            cell_div = cell_div.child(render_syntax_spans(spans, theme, None, font_weight, None, font_family, &cell_key, ctrl_held, hovered_link_id, cx));
 
             let col_widths_clone = table_layout.col_widths.clone();
             cell_div = cell_div.child(
@@ -11503,10 +11616,9 @@ fn render_live_styled_row(
     }
 
     let row_key = format!("row-{}-{}", line_idx, sub_idx);
-    let render_spans = |spans: Vec<crate::markdown::SyntaxSpan>, is_active: bool, text_color: Option<gpui::Rgba>, weight: Option<gpui::FontWeight>, style: Option<gpui::FontStyle>| {
+    let render_spans = |spans: Vec<crate::markdown::VisibleSpan>, text_color: Option<gpui::Rgba>, weight: Option<gpui::FontWeight>, style: Option<gpui::FontStyle>| {
         render_syntax_spans(
             spans,
-            is_active,
             theme,
             text_color,
             weight,
@@ -11529,7 +11641,7 @@ fn render_live_styled_row(
             let h_style = if headings.h1.italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal };
 
             if sub_idx == 0 {
-                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(2));
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(2), 2, reveal);
                 let mut row = div()
                     .flex()
                     .flex_row()
@@ -11544,13 +11656,15 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
+                        .child(render_spans(row_spans, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
-                let row_spans = crate::markdown::slice_syntax_spans(
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(
                     &spans,
                     char_start.saturating_sub(2),
                     char_end.saturating_sub(2),
+                    2,
+                    reveal,
                 );
                 div()
                     .flex()
@@ -11563,7 +11677,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
+                            .child(render_spans(row_spans, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -11576,7 +11690,7 @@ fn render_live_styled_row(
             let h_style = if headings.h2.italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal };
 
             if sub_idx == 0 {
-                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(3));
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(3), 3, reveal);
                 let mut row = div()
                     .flex()
                     .flex_row()
@@ -11591,13 +11705,15 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
+                        .child(render_spans(row_spans, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
-                let row_spans = crate::markdown::slice_syntax_spans(
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(
                     &spans,
                     char_start.saturating_sub(3),
                     char_end.saturating_sub(3),
+                    3,
+                    reveal,
                 );
                 div()
                     .flex()
@@ -11610,7 +11726,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
+                            .child(render_spans(row_spans, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -11623,7 +11739,7 @@ fn render_live_styled_row(
             let h_style = if headings.h3.italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal };
 
             if sub_idx == 0 {
-                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(4));
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(4), 4, reveal);
                 let mut row = div()
                     .flex()
                     .flex_row()
@@ -11638,13 +11754,15 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
+                        .child(render_spans(row_spans, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
-                let row_spans = crate::markdown::slice_syntax_spans(
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(
                     &spans,
                     char_start.saturating_sub(4),
                     char_end.saturating_sub(4),
+                    4,
+                    reveal,
                 );
                 div()
                     .flex()
@@ -11657,7 +11775,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
+                            .child(render_spans(row_spans, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -11670,7 +11788,7 @@ fn render_live_styled_row(
             let h_style = if headings.h4.italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal };
 
             if sub_idx == 0 {
-                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(5));
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(5), 5, reveal);
                 let mut row = div()
                     .flex()
                     .flex_row()
@@ -11685,13 +11803,15 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
+                        .child(render_spans(row_spans, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
-                let row_spans = crate::markdown::slice_syntax_spans(
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(
                     &spans,
                     char_start.saturating_sub(5),
                     char_end.saturating_sub(5),
+                    5,
+                    reveal,
                 );
                 div()
                     .flex()
@@ -11704,7 +11824,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
+                            .child(render_spans(row_spans, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -11717,7 +11837,7 @@ fn render_live_styled_row(
             let h_style = if headings.h5.italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal };
 
             if sub_idx == 0 {
-                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(6));
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(6), 6, reveal);
                 let mut row = div()
                     .flex()
                     .flex_row()
@@ -11732,13 +11852,15 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
+                        .child(render_spans(row_spans, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
-                let row_spans = crate::markdown::slice_syntax_spans(
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(
                     &spans,
                     char_start.saturating_sub(6),
                     char_end.saturating_sub(6),
+                    6,
+                    reveal,
                 );
                 div()
                     .flex()
@@ -11751,7 +11873,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
+                            .child(render_spans(row_spans, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -11764,7 +11886,7 @@ fn render_live_styled_row(
             let h_style = if headings.h6.italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal };
 
             if sub_idx == 0 {
-                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(7));
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(7), 7, reveal);
                 let mut row = div()
                     .flex()
                     .flex_row()
@@ -11779,13 +11901,15 @@ fn render_live_styled_row(
                 row.child(
                     div()
                         .text_color(h_color)
-                        .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
+                        .child(render_spans(row_spans, Some(h_color), Some(h_weight), Some(h_style))),
                 )
             } else {
-                let row_spans = crate::markdown::slice_syntax_spans(
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(
                     &spans,
                     char_start.saturating_sub(7),
                     char_end.saturating_sub(7),
+                    7,
+                    reveal,
                 );
                 div()
                     .flex()
@@ -11798,7 +11922,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .text_color(h_color)
-                            .child(render_spans(row_spans, is_active_line, Some(h_color), Some(h_weight), Some(h_style))),
+                            .child(render_spans(row_spans, Some(h_color), Some(h_weight), Some(h_style))),
                     )
             }
         }
@@ -11806,7 +11930,7 @@ fn render_live_styled_row(
             let rest = line.strip_prefix("> ").unwrap_or(line);
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
             if sub_idx == 0 {
-                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(2));
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(2), 2, reveal);
                 div()
                     .flex()
                     .flex_row()
@@ -11814,12 +11938,14 @@ fn render_live_styled_row(
                     .h_full()
                     .italic()
                     .child(div().text_color(theme.accent).child("> "))
-                    .child(div().text_color(theme.text_secondary).child(render_spans(row_spans, is_active_line, Some(theme.text_secondary), None, None)))
+                    .child(div().text_color(theme.text_secondary).child(render_spans(row_spans, Some(theme.text_secondary), None, None)))
             } else {
-                let row_spans = crate::markdown::slice_syntax_spans(
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(
                     &spans,
                     char_start.saturating_sub(2),
                     char_end.saturating_sub(2),
+                    2,
+                    reveal,
                 );
                 div()
                     .flex()
@@ -11828,7 +11954,7 @@ fn render_live_styled_row(
                     .h_full()
                     .italic()
                     .child(div().text_color(theme.border_subtle).child("  "))
-                    .child(div().text_color(theme.text_secondary).child(render_spans(row_spans, is_active_line, Some(theme.text_secondary), None, None)))
+                    .child(div().text_color(theme.text_secondary).child(render_spans(row_spans, Some(theme.text_secondary), None, None)))
             }
         }
         crate::markdown::LineKind::Task { checked, .. } => {
@@ -11850,7 +11976,7 @@ fn render_live_styled_row(
             let task_color = if *checked { Some(theme.text_muted) } else { None };
 
             if sub_idx == 0 {
-                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(prefix_len));
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(prefix_len), prefix_len, reveal);
                 div()
                     .flex()
                     .flex_row()
@@ -11860,13 +11986,15 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .when(*checked, |s| s.text_color(theme.text_muted).line_through())
-                            .child(render_spans(row_spans, is_active_line, task_color, None, None)),
+                            .child(render_spans(row_spans, task_color, None, None)),
                     )
             } else {
-                let row_spans = crate::markdown::slice_syntax_spans(
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(
                     &spans,
                     char_start.saturating_sub(prefix_len),
                     char_end.saturating_sub(prefix_len),
+                    prefix_len,
+                    reveal,
                 );
                 div()
                     .flex()
@@ -11877,7 +12005,7 @@ fn render_live_styled_row(
                     .child(
                         div()
                             .when(*checked, |s| s.text_color(theme.text_muted).line_through())
-                            .child(render_spans(row_spans, is_active_line, task_color, None, None)),
+                            .child(render_spans(row_spans, task_color, None, None)),
                     )
             }
         }
@@ -11894,7 +12022,7 @@ fn render_live_styled_row(
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
 
             if sub_idx == 0 {
-                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(prefix_len));
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(prefix_len), prefix_len, reveal);
                 div()
                     .flex()
                     .flex_row()
@@ -11902,12 +12030,14 @@ fn render_live_styled_row(
                     .h_full()
                     .child(div().child(indent.to_string()))
                     .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(bullet.to_string()))
-                    .child(render_spans(row_spans, is_active_line, None, None, None))
+                    .child(render_spans(row_spans, None, None, None))
             } else {
-                let row_spans = crate::markdown::slice_syntax_spans(
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(
                     &spans,
                     char_start.saturating_sub(prefix_len),
                     char_end.saturating_sub(prefix_len),
+                    prefix_len,
+                    reveal,
                 );
                 div()
                     .flex()
@@ -11915,7 +12045,7 @@ fn render_live_styled_row(
                     .items_center()
                     .h_full()
                     .child(div().child(format!("{}  ", indent)))
-                    .child(render_spans(row_spans, is_active_line, None, None, None))
+                    .child(render_spans(row_spans, None, None, None))
             }
         }
         crate::markdown::LineKind::NumberedList { num, .. } => {
@@ -11932,7 +12062,7 @@ fn render_live_styled_row(
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
 
             if sub_idx == 0 {
-                let row_spans = crate::markdown::slice_syntax_spans(&spans, 0, char_end.saturating_sub(prefix_len));
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(prefix_len), prefix_len, reveal);
                 div()
                     .flex()
                     .flex_row()
@@ -11940,12 +12070,14 @@ fn render_live_styled_row(
                     .h_full()
                     .child(div().child(indent.to_string()))
                     .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(num_part.to_string()))
-                    .child(render_spans(row_spans, is_active_line, None, None, None))
+                    .child(render_spans(row_spans, None, None, None))
             } else {
-                let row_spans = crate::markdown::slice_syntax_spans(
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(
                     &spans,
                     char_start.saturating_sub(prefix_len),
                     char_end.saturating_sub(prefix_len),
+                    prefix_len,
+                    reveal,
                 );
                 let spaces = " ".repeat(prefix_len);
                 div()
@@ -11954,7 +12086,7 @@ fn render_live_styled_row(
                     .items_center()
                     .h_full()
                     .child(div().child(spaces))
-                    .child(render_spans(row_spans, is_active_line, None, None, None))
+                    .child(render_spans(row_spans, None, None, None))
             }
         }
         crate::markdown::LineKind::HorizontalRule => {
@@ -12077,13 +12209,13 @@ fn render_live_styled_row(
         }
         crate::markdown::LineKind::Paragraph(_) => {
             let spans = crate::markdown::parse_inline_syntax_spans(line);
-            let row_spans = crate::markdown::slice_syntax_spans(&spans, char_start, char_end);
+            let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, char_start, char_end, 0, reveal);
             div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .h_full()
-                .child(render_spans(row_spans, is_active_line, None, None, None))
+                .child(render_spans(row_spans, None, None, None))
         }
     }
 }
@@ -12121,7 +12253,7 @@ mod tests {
                         char_end: line.chars().count(),
                     };
                     let kind = classify_line(line, None);
-                    let layout = shape_row(window.text_system(), line, &kind, &v, false, &headings, &font_family, cell_w);
+                    let layout = shape_row(window.text_system(), line, &kind, &v, false, &crate::markdown::InlineReveal::None, &headings, &font_family, cell_w);
                     let columns = layout.columns();
                     let end_x = layout.x_for_column(columns);
 
@@ -12195,11 +12327,11 @@ mod tests {
                         char_end: line.chars().count(),
                     };
                     let kind = classify_line(line, None);
-                    let layout = shape_row(window.text_system(), line, &kind, &v, false, &headings, &font_family, cell_w);
+                    let layout = shape_row(window.text_system(), line, &kind, &v, false, &crate::markdown::InlineReveal::None, &headings, &font_family, cell_w);
 
                     // Independently shape the very same painted text and read the glyph
                     // positions straight out of the layout.
-                    let painted = row_painted_text(line, &kind, &v, false, &headings);
+                    let painted = row_painted_text(line, &kind, &v, false, &crate::markdown::InlineReveal::None, &headings);
                     let text: String = painted.segments.iter().map(|s| s.text.as_str()).collect();
                     let run = gpui::TextRun {
                         len: text.len(),
@@ -12302,7 +12434,7 @@ mod tests {
                         char_end: line.chars().count(),
                     };
                     let kind = classify_line(line, None);
-                    let layout = shape_row(window.text_system(), line, &kind, &v, false, &headings, &font_family, cell_w);
+                    let layout = shape_row(window.text_system(), line, &kind, &v, false, &crate::markdown::InlineReveal::None, &headings, &font_family, cell_w);
                     let columns = layout.columns();
                     let end_x = layout.x_for_column(columns);
 
@@ -12429,7 +12561,7 @@ mod tests {
                 headings.h1.font_size = 40;
                 headings.h1.bold = true;
                 headings.h1.italic = false;
-                let geom = shape_row(window.text_system(), line, &kind, &v, true, &headings, &font_family, 24.0);
+                let geom = shape_row(window.text_system(), line, &kind, &v, true, &crate::markdown::InlineReveal::All, &headings, &font_family, 24.0);
                 // Column 0 is the upright "# " marker, column 3 the first italic char.
                 let up_cell = geom.x_for_column(1) - geom.x_for_column(0);
                 let it_cell = geom.x_for_column(4) - geom.x_for_column(3);

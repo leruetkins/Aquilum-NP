@@ -273,6 +273,9 @@ pub struct TabSession {
     pub edit_mode: bool,
     pub title_input: Option<TitleInput>,
     pub measured_viewport_h: Option<f32>,
+    /// Line whose markdown is fully revealed by Alt+click. Only honoured while the caret
+    /// stays on that line; any normal click or Escape clears it.
+    pub reveal_all_line: Option<usize>,
     pub cache: ViewCache,
 }
 
@@ -309,6 +312,7 @@ impl TabSession {
             edit_mode: false,
             title_input: None,
             measured_viewport_h: None,
+            reveal_all_line: None,
             cache: ViewCache::default(),
         }
     }
