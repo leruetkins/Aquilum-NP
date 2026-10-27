@@ -12047,6 +12047,11 @@ fn render_live_styled_row(
                         .w(px(width))
                         .bg(theme.border)
                 });
+            // The markers are block syntax, not quoted prose: they stay upright and
+            // muted, the way headings reveal their `#`. Inheriting the row's italic
+            // would slant them, which reads as a clipped, oddly narrow glyph — the
+            // `>` ink leans away from the cell and from its own bar.
+            let marker_color = theme.text_muted;
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(prefix_chars), prefix_chars, reveal);
                 div()
@@ -12055,10 +12060,9 @@ fn render_live_styled_row(
                     .flex_row()
                     .items_center()
                     .h_full()
-                    .italic()
                     .children(bars)
-                    .child(div().text_color(theme.accent).child(prefix_text))
-                    .child(div().text_color(theme.text_secondary).child(render_spans(row_spans, Some(theme.text_secondary), None, None)))
+                    .child(div().text_color(marker_color).child(prefix_text))
+                    .child(div().italic().text_color(theme.text_secondary).child(render_spans(row_spans, Some(theme.text_secondary), None, None)))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans_revealed(
                     &spans,
@@ -12073,10 +12077,9 @@ fn render_live_styled_row(
                     .flex_row()
                     .items_center()
                     .h_full()
-                    .italic()
                     .children(bars)
                     .child(div().child(prefix_text))
-                    .child(div().text_color(theme.text_secondary).child(render_spans(row_spans, Some(theme.text_secondary), None, None)))
+                    .child(div().italic().text_color(theme.text_secondary).child(render_spans(row_spans, Some(theme.text_secondary), None, None)))
             }
         }
         crate::markdown::LineKind::Task { checked, .. } => {
