@@ -35,6 +35,22 @@ pub fn snapped_span(x1: f32, x2: f32, scale_factor: f32) -> (f32, f32) {
     (left, (right - left).max(0.0))
 }
 
+/// Snaps the left edge of a thin vertical rule to the physical grid and returns
+/// `(left, width)` with a constant width of `device_width` physical pixels.
+///
+/// [`snapped_span`] rounds both edges, so a 2-logical-pixel rule lands on two or
+/// three device pixels depending on which column it starts in: at 125% a bar in
+/// one quote level is thinner than the bar of the next. A rule that is part of a
+/// group — quote bars, list indent guides — must keep one thickness, so only its
+/// position is snapped and the width is taken from the device grid directly.
+pub fn snapped_rule(x: f32, device_width: f32, scale_factor: f32) -> (f32, f32) {
+    let left = snap_x(x, scale_factor);
+    if !device_width.is_finite() || !scale_factor.is_finite() || scale_factor <= 0.0 {
+        return (left, 0.0);
+    }
+    (left, device_width.max(1.0) / scale_factor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +133,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A group of rules must have one thickness: the same `device_width` in every
+    /// column and at every scale, with only the position snapping. This is what
+    /// `snapped_span` cannot promise — there a 2-logical-pixel bar covers two or
+    /// three device pixels depending on where the column starts, so a deeply
+    /// nested quote would draw levels of visibly different weight.
+    #[test]
+    fn snapped_rule_keeps_one_thickness_in_every_column() {
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            for device_width in [1.0, 2.0, 3.0] {
+                for col in 0..40 {
+                    let (left, width) = snapped_rule(col as f32 * 7.3, device_width, scale);
+                    let device_left = left * scale;
+                    assert!(
+                        (device_left - device_left.round()).abs() < 0.0001,
+                        "left edge off the grid at col={col} scale={scale}"
+                    );
+                    assert!(
+                        (width * scale - device_width).abs() < 0.0001,
+                        "width {} device px instead of {device_width} at col={col} scale={scale}",
+                        width * scale
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn snapped_rule_survives_degenerate_inputs() {
+        let (_, width) = snapped_rule(10.0, 2.0, 0.0);
+        assert_eq!(width, 0.0);
+        // Sub-pixel rules still cover a whole device pixel or they vanish.
+        let (_, hairline) = snapped_rule(3.0, 0.2, 2.0);
+        assert!((hairline * 2.0 - 1.0).abs() < 0.0001);
     }
 }

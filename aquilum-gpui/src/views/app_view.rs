@@ -12012,33 +12012,70 @@ fn render_live_styled_row(
             }
         }
         crate::markdown::LineKind::Quote(_) => {
-            let rest = line.strip_prefix("> ").unwrap_or(line);
+            // Markers hidden by default, revealed on the line being edited — the
+            // same model headings and list bullets follow. Both spellings are
+            // exactly as wide as the markers, so nothing moves when they appear.
+            let prefix = crate::markdown::quote_prefix(line)
+                .map(|q| &line[..q.bytes])
+                .unwrap_or("");
+            let prefix_chars = prefix.chars().count();
+            let rest = &line[prefix.len()..];
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
+            let prefix_text = if is_active_line && sub_idx == 0 {
+                prefix.to_string()
+            } else {
+                " ".repeat(prefix_chars)
+            };
+            // One bar per quote level, drawn where that level's `>` sits in the
+            // source. Rows stack edge to edge, so the segments join into a
+            // continuous bar down the group. The edges are snapped to the device
+            // grid like the caret, and the width is fixed in device pixels: a
+            // 2-logical-pixel bar rounded on both edges comes out thinner in some
+            // columns than in others on a fractional scale, which made deeper
+            // levels look heavier than shallow ones. Three device pixels at every
+            // level is what reads as a quote bar rather than a hairline.
+            let scale = window.scale_factor();
+            let bars = crate::markdown::quote_bar_columns(prefix)
+                .into_iter()
+                .map(|col| {
+                    let (left, width) = crate::snap::snapped_rule(col * cell_w, 3.0, scale);
+                    div()
+                        .absolute()
+                        .left(px(left))
+                        .top(px(0.0))
+                        .bottom(px(0.0))
+                        .w(px(width))
+                        .bg(theme.border)
+                });
             if sub_idx == 0 {
-                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(2), 2, reveal);
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(prefix_chars), prefix_chars, reveal);
                 div()
+                    .relative()
                     .flex()
                     .flex_row()
                     .items_center()
                     .h_full()
                     .italic()
-                    .child(div().text_color(theme.accent).child("> "))
+                    .children(bars)
+                    .child(div().text_color(theme.accent).child(prefix_text))
                     .child(div().text_color(theme.text_secondary).child(render_spans(row_spans, Some(theme.text_secondary), None, None)))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans_revealed(
                     &spans,
-                    char_start.saturating_sub(2),
-                    char_end.saturating_sub(2),
-                    2,
+                    char_start.saturating_sub(prefix_chars),
+                    char_end.saturating_sub(prefix_chars),
+                    prefix_chars,
                     reveal,
                 );
                 div()
+                    .relative()
                     .flex()
                     .flex_row()
                     .items_center()
                     .h_full()
                     .italic()
-                    .child(div().text_color(theme.border_subtle).child("  "))
+                    .children(bars)
+                    .child(div().child(prefix_text))
                     .child(div().text_color(theme.text_secondary).child(render_spans(row_spans, Some(theme.text_secondary), None, None)))
             }
         }
@@ -12109,10 +12146,11 @@ fn render_live_styled_row(
             let bullet_text = crate::markdown::bullet_paint_text(bullet, is_active_line);
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
             // One guide per nesting level, hanging straight under the dot of the
-            // level it belongs to. Rows are stacked edge to edge, so the 1px
-            // segments join into a continuous line down the group. The left edge is
-            // snapped to the device grid, like the caret and the selection edges, or
-            // a fractional cell width would blur the hairline.
+            // level it belongs to. Rows are stacked edge to edge, so the segments
+            // join into a continuous line down the group. Both the position and the
+            // width come from the device grid: the guide has to keep one thickness
+            // at every level, and a single device pixel reads as too faint against
+            // the editor background, so it is drawn two device pixels wide.
             let scale = window.scale_factor();
             let guides = crate::markdown::bullet_guide_columns(
                 indent.chars().count(),
@@ -12120,13 +12158,16 @@ fn render_live_styled_row(
             )
                 .into_iter()
                 .map(|col| {
-                    let (left, width) = crate::snap::snapped_span(col * cell_w, col * cell_w + 1.0, scale);
+                    // `col` is the centre of the ancestor dot's cell; the guide is
+                    // shifted half its own width to the left so it stays centred
+                    // under the dot instead of growing to the right.
+                    let (left, width) = crate::snap::snapped_rule(col * cell_w - 1.0 / scale, 2.0, scale);
                     div()
                         .absolute()
                         .left(px(left))
                         .top(px(0.0))
                         .bottom(px(0.0))
-                        .w(px(width.max(1.0 / scale)))
+                        .w(px(width))
                         .bg(theme.border_subtle)
                 });
 

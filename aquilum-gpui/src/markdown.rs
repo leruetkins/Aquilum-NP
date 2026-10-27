@@ -470,8 +470,8 @@ pub fn classify_line<'a>(
         LineKind::Heading5(rest)
     } else if let Some(rest) = trimmed_start.strip_prefix("###### ") {
         LineKind::Heading6(rest)
-    } else if let Some(rest) = trimmed_start.strip_prefix("> ") {
-        LineKind::Quote(rest)
+    } else if let Some(q) = quote_prefix(trimmed_start) {
+        LineKind::Quote(&trimmed_start[q.bytes..])
     } else if let Some(rest) = trimmed_start.strip_prefix("- [ ] ") {
         LineKind::Task { checked: false, text: rest }
     } else if let Some(rest) = trimmed_start.strip_prefix("* [ ] ") {
@@ -789,7 +789,13 @@ pub fn line_inline_spans(line: &str, classified: &LineKind<'_>) -> (Vec<SyntaxSp
         LineKind::Heading4(_) => (line.strip_prefix("#### ").unwrap_or(line), 5),
         LineKind::Heading5(_) => (line.strip_prefix("##### ").unwrap_or(line), 6),
         LineKind::Heading6(_) => (line.strip_prefix("###### ").unwrap_or(line), 7),
-        LineKind::Quote(_) => (line.strip_prefix("> ").unwrap_or(line), 2),
+        LineKind::Quote(_) => {
+            let prefix_bytes = quote_prefix(line).map_or(0, |q| q.bytes);
+            (
+                &line[prefix_bytes.min(line.len())..],
+                prefix_bytes,
+            )
+        }
         LineKind::Task { .. } | LineKind::BulletList { .. } | LineKind::NumberedList { .. } => {
             let p_len = marker_prefix_len(line, classified);
             let rest = if line.len() >= p_len {
@@ -1332,7 +1338,7 @@ pub fn line_paint_spec(
 pub fn continuation_prefix_cols(line: &str, classified: &LineKind<'_>) -> usize {
     let indent_chars = line.chars().count() - line.trim_start().chars().count();
     match classified {
-        LineKind::Quote(_) => 2,
+        LineKind::Quote(_) => quote_prefix(line).map_or(0, |q| q.chars),
         LineKind::Task { .. } => {
             let prefix = row_prefix_offset(line, classified);
             line.chars().take(prefix).count()
@@ -2044,6 +2050,60 @@ fn marker_prefix_len(line: &str, classified: &LineKind<'_>) -> usize {
     }
 }
 
+/// The leading markers of a block-quote line.
+///
+/// A level is a `>` optionally followed by the space markdown allows after it,
+/// so `> > text` nests two levels and a bare `>` closes a paragraph inside the
+/// quote without leaving the quote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuotePrefix {
+    /// Number of `>` levels, at least one.
+    pub depth: usize,
+    /// Length of the marker prefix in bytes.
+    pub bytes: usize,
+    /// Length of the marker prefix in chars. This is how many cells the row
+    /// spends on the prefix: the markers are hidden but not collapsed, so the
+    /// canonical and the edited layout stay on the same grid.
+    pub chars: usize,
+}
+
+/// The block-quote markers at the head of `line`, or `None` for anything else.
+///
+/// The scan only matches at the start of the line: an indented `>` is left to
+/// the paragraph, exactly like an indented heading marker is.
+pub fn quote_prefix(line: &str) -> Option<QuotePrefix> {
+    let mut rest = line;
+    let mut depth = 0usize;
+    while let Some(after) = rest.strip_prefix('>') {
+        depth += 1;
+        rest = after.strip_prefix(' ').unwrap_or(after);
+    }
+    if depth == 0 {
+        return None;
+    }
+    let bytes = line.len() - rest.len();
+    Some(QuotePrefix {
+        depth,
+        bytes,
+        chars: line[..bytes].chars().count(),
+    })
+}
+
+/// Columns, measured in cells from the start of the row, of the `>` that opens
+/// each quote level — the cell each level's bar hangs in.
+///
+/// `prefix` is the marker prefix of the line (see [`quote_prefix`]). The bars
+/// follow the raw markers rather than a fixed step, so `> > >` and `>>>` both
+/// get a bar per level and none of them lands on the text.
+pub fn quote_bar_columns(prefix: &str) -> Vec<f32> {
+    prefix
+        .chars()
+        .enumerate()
+        .filter(|&(_, c)| c == '>')
+        .map(|(i, _)| i as f32)
+        .collect()
+}
+
 /// Byte offset of the first char of a row's content, i.e. the length of the leading
 /// bytes of `line` that the renderer paints as a marker instead of as span content.
 pub fn row_prefix_offset(line: &str, classified: &LineKind<'_>) -> usize {
@@ -2054,7 +2114,7 @@ pub fn row_prefix_offset(line: &str, classified: &LineKind<'_>) -> usize {
         LineKind::Heading4(_) => 5,
         LineKind::Heading5(_) => 6,
         LineKind::Heading6(_) => 7,
-        LineKind::Quote(_) => 2,
+        LineKind::Quote(_) => quote_prefix(line).map_or(0, |q| q.bytes),
         _ => marker_prefix_len(line, classified),
     }
 }
@@ -2325,10 +2385,21 @@ pub fn row_painted_text(
         LineKind::Heading5(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "##### ", 0, base_bold, base_italic, false),
         LineKind::Heading6(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "###### ", 0, base_bold, base_italic, false),
         LineKind::Quote(_) => {
+            let prefix = quote_prefix(line);
             if v.sub_idx == 0 {
-                push_verbatim(&mut segments, &mut line_chars, "> ", 0, base_bold, base_italic, false);
+                // The markers stay in the grid whether or not they are shown: the
+                // renderer hides them behind one bar per level and reveals the raw
+                // text only on the line being edited. Both spellings are exactly
+                // `prefix.chars` cells wide, so the wrap does not move.
+                let text: String = match prefix {
+                    Some(q) if !is_active_line => " ".repeat(q.chars),
+                    Some(q) => line[..q.bytes].to_string(),
+                    None => String::new(),
+                };
+                push_verbatim(&mut segments, &mut line_chars, &text, 0, base_bold, base_italic, false);
             } else {
-                push_padding(&mut segments, &mut line_chars, "  ", v.char_start, base_bold, base_italic);
+                let pad = " ".repeat(prefix.map_or(0, |q| q.chars));
+                push_padding(&mut segments, &mut line_chars, &pad, v.char_start, base_bold, base_italic);
             }
         }
         LineKind::Task { .. } => {
@@ -2641,10 +2712,8 @@ pub fn strip_markdown_tags(input: &str) -> String {
             work_line = rest;
         } else if let Some(rest) = trimmed_start.strip_prefix("# ") {
             work_line = rest;
-        } else if let Some(rest) = trimmed_start.strip_prefix("> ") {
-            work_line = rest;
-        } else if let Some(rest) = trimmed_start.strip_prefix(">") {
-            work_line = rest;
+        } else if let Some(q) = quote_prefix(trimmed_start) {
+            work_line = &trimmed_start[q.bytes..];
         }
 
         let stripped = strip_inline_markdown(work_line);
@@ -3292,17 +3361,124 @@ mod tests {
     }
 
     #[test]
-    fn painted_quote_keeps_its_marker() {
+    fn painted_quote_hides_its_marker_until_the_line_is_edited() {
         let line = "> hi";
         let kind = classify_line(line, None);
 
+        // Idle rows hide the marker but keep its cells, so the text sits where
+        // the renderer hangs the quote bar.
         let first = painted(line, &kind, 0, 4, 0, false);
-        assert_eq!(text_of(&first), "> hi");
+        assert_eq!(text_of(&first), "  hi");
         assert_eq!(first.line_chars, vec![0, 1, 2, 3, 4]);
+
+        // The caret line shows the marker again, in exactly the same cells.
+        let active = painted(line, &kind, 0, 4, 0, true);
+        assert_eq!(text_of(&active), "> hi");
+        assert_eq!(active.line_chars, first.line_chars);
 
         let wrapped = painted(line, &kind, 3, 4, 1, false);
         assert_eq!(text_of(&wrapped), "  i");
         assert_eq!(wrapped.line_chars, vec![3, 3, 3, 4]);
+    }
+
+    #[test]
+    fn quote_prefix_counts_every_nesting_level() {
+        assert_eq!(quote_prefix("> a").map(|q| (q.depth, q.chars)), Some((1, 2)));
+        assert_eq!(quote_prefix("> > a").map(|q| (q.depth, q.chars)), Some((2, 4)));
+        assert_eq!(quote_prefix("> > > a").map(|q| (q.depth, q.chars)), Some((3, 6)));
+        // Bare `>` closes a paragraph inside the quote; it is still a level.
+        assert_eq!(quote_prefix(">").map(|q| (q.depth, q.chars)), Some((1, 1)));
+        assert_eq!(quote_prefix("> >").map(|q| (q.depth, q.chars)), Some((2, 3)));
+        // `>` opens a level with or without the space markdown allows after it.
+        assert_eq!(quote_prefix(">a").map(|q| (q.depth, q.chars)), Some((1, 1)));
+        assert_eq!(quote_prefix(""), None);
+        assert_eq!(quote_prefix("plain"), None);
+        // An indented marker is not a quote at line start.
+        assert_eq!(quote_prefix("  > a"), None);
+    }
+
+    #[test]
+    fn nested_quote_paints_one_marker_pair_per_level() {
+        let line = "> > > deep";
+        let kind = classify_line(line, None);
+        assert_eq!(kind, LineKind::Quote("deep"));
+
+        let idle = painted(line, &kind, 0, 10, 0, false);
+        assert_eq!(text_of(&idle), "      deep");
+        assert_eq!(idle.line_chars, (0..=10).collect::<Vec<_>>());
+
+        let active = painted(line, &kind, 0, 10, 0, true);
+        assert_eq!(text_of(&active), "> > > deep");
+        assert_eq!(active.line_chars, idle.line_chars);
+    }
+
+    #[test]
+    fn a_bare_quote_marker_keeps_its_own_row() {
+        assert_eq!(classify_line(">", None), LineKind::Quote(""));
+        assert_eq!(classify_line("> >", None), LineKind::Quote(""));
+
+        let line = ">";
+        let kind = classify_line(line, None);
+        let row = painted(line, &kind, 0, 1, 0, false);
+        assert_eq!(text_of(&row), " ");
+        assert_eq!(row.line_chars, vec![0, 1]);
+    }
+
+    #[test]
+    fn quote_bars_sit_on_the_level_markers() {
+        assert_eq!(quote_bar_columns("> "), vec![0.0]);
+        assert_eq!(quote_bar_columns("> > "), vec![0.0, 2.0]);
+        assert_eq!(quote_bar_columns("> > > "), vec![0.0, 2.0, 4.0]);
+        // Markers written without their spaces stay off the text.
+        assert_eq!(quote_bar_columns(">>> "), vec![0.0, 1.0, 2.0]);
+        assert_eq!(quote_bar_columns(""), Vec::<f32>::new());
+    }
+
+    #[test]
+    fn quote_prefix_costs_the_same_whether_hidden_or_revealed() {
+        for line in ["> hi", "> > hi", "> > > hi", ">", "> >", "> > >"] {
+            let kind = classify_line(line, None);
+            let len = line.chars().count();
+            let idle = painted(line, &kind, 0, len, 0, false);
+            let active = painted(line, &kind, 0, len, 0, true);
+            assert_eq!(idle.columns(), active.columns(), "{line:?}");
+            assert_eq!(idle.line_chars, active.line_chars, "{line:?}");
+            assert_eq!(idle.columns(), len, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn quote_continuation_rows_keep_the_nesting_indent() {
+        let line = "> > hi";
+        let kind = classify_line(line, None);
+        let wrapped = painted(line, &kind, 5, 6, 1, false);
+        assert_eq!(text_of(&wrapped), "    i");
+        assert_eq!(wrapped.line_chars, vec![5, 5, 5, 5, 5, 6]);
+    }
+
+    #[test]
+    fn the_quotes_section_nests_level_by_level() {
+        // One bar per level at the marker it replaces, and the text one marker
+        // past the last bar — the shape the sample in the task asks for.
+        let cases: &[(&str, &str, &[f32])] = &[
+            ("> Обычная цитата.", "  Обычная цитата.", &[0.0]),
+            (">", " ", &[0.0]),
+            ("> > Вложенная цитата.", "    Вложенная цитата.", &[0.0, 2.0]),
+            ("> >", "   ", &[0.0, 2.0]),
+            (
+                "> > > Ещё более вложенная цитата.",
+                "      Ещё более вложенная цитата.",
+                &[0.0, 2.0, 4.0],
+            ),
+        ];
+        for &(line, painted_text, bars) in cases {
+            let kind = classify_line(line, None);
+            let len = line.chars().count();
+            let row = painted(line, &kind, 0, len, 0, false);
+            assert_eq!(text_of(&row), painted_text, "{line:?}");
+            let prefix = quote_prefix(line).unwrap();
+            assert_eq!(quote_bar_columns(&line[..prefix.bytes]), bars.to_vec(), "{line:?}");
+        }
     }
 
     #[test]
@@ -3402,6 +3578,8 @@ mod tests {
         assert_eq!(strip_markdown_tags("Link: [Click](https://example.com) and ==highlight=="), "Link: Click and highlight");
         assert_eq!(strip_markdown_tags("<u>Underlined</u> text"), "Underlined text");
         assert_eq!(strip_markdown_tags("> Quote line"), "Quote line");
+        assert_eq!(strip_markdown_tags("> > Nested quote line"), "Nested quote line");
+        assert_eq!(strip_markdown_tags("> > > Deep quote line"), "Deep quote line");
 
         let code = "```rust\nlet x = 10;\nprintln!(\"{x}\");\n```";
         assert_eq!(strip_markdown_tags(code), "let x = 10;\nprintln!(\"{x}\");");
