@@ -45,10 +45,21 @@ pub fn snapped_span(x1: f32, x2: f32, scale_factor: f32) -> (f32, f32) {
 /// position is snapped and the width is taken from the device grid directly.
 pub fn snapped_rule(x: f32, device_width: f32, scale_factor: f32) -> (f32, f32) {
     let left = snap_x(x, scale_factor);
+    (left, device_thickness(device_width, scale_factor))
+}
+
+/// Logical thickness of a rule that has to cover `device_width` physical pixels.
+///
+/// A rule drawn with a logical size lands on a whole number of device pixels only
+/// at 100% and 200%. At 125% or 150% a 1-logical-pixel line is 1.25 or 1.5 device
+/// pixels, so the quad is blended across two pixels at partial alpha and fades
+/// into the background. Taking the thickness from the device grid keeps it solid.
+/// Degenerate factors yield zero, like [`snapped_rule`].
+pub fn device_thickness(device_width: f32, scale_factor: f32) -> f32 {
     if !device_width.is_finite() || !scale_factor.is_finite() || scale_factor <= 0.0 {
-        return (left, 0.0);
+        return 0.0;
     }
-    (left, device_width.max(1.0) / scale_factor)
+    device_width.max(1.0) / scale_factor
 }
 
 #[cfg(test)]
@@ -168,5 +179,26 @@ mod tests {
         // Sub-pixel rules still cover a whole device pixel or they vanish.
         let (_, hairline) = snapped_rule(3.0, 0.2, 2.0);
         assert!((hairline * 2.0 - 1.0).abs() < 0.0001);
+    }
+
+    /// A horizontal rule has no column to snap to, so its thickness is the only
+    /// thing that keeps it solid: whatever the scale, the drawn line has to cover
+    /// a whole number of device pixels instead of a fractional one blended into
+    /// the background.
+    #[test]
+    fn device_thickness_covers_whole_device_pixels() {
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            for device_width in [1.0, 2.0, 3.0] {
+                let logical = device_thickness(device_width, scale);
+                assert!(
+                    (logical * scale - device_width).abs() < 0.0001,
+                    "{device_width} device px at {scale}x came out as {}",
+                    logical * scale
+                );
+            }
+        }
+        assert_eq!(device_thickness(2.0, 0.0), 0.0);
+        // Never thinner than one device pixel.
+        assert!((device_thickness(0.2, 2.0) * 2.0 - 1.0).abs() < 0.0001);
     }
 }

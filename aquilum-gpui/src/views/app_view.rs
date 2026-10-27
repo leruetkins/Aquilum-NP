@@ -8325,7 +8325,13 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             .when(is_raw_table_last, |s| s.rounded_b_md())
                             .children(backdrop_rects)
                             .child(
+                                // The row content is full-width on purpose. An
+                                // auto-width wrapper inside the line box makes a
+                                // `w_full()` child resolve against an indefinite
+                                // width — a horizontal rule has no text to give the
+                                // wrapper its size, so it collapsed to nothing.
                                 div()
+                                    .w_full()
                                     .h_full()
                                     .flex()
                                     .flex_row()
@@ -12256,6 +12262,16 @@ fn render_live_styled_row(
                     .text_color(theme.text_muted)
                     .child(line.to_string())
             } else {
+                // A rule is the thinnest thing the document draws, so it is the one
+                // most easily lost: a hairline of `border` over the editor
+                // background is a colour difference of a few percent, and a
+                // row-height split that falls between device pixels spreads it over
+                // two of them at partial alpha until it reads as not drawn at all.
+                // Two whole device pixels of the muted foreground give the weight a
+                // rule has in the rest of the markdown world and read the same in
+                // both themes. The width comes from the row content wrapper, which
+                // the caller gives a definite width for exactly this reason: a rule
+                // has no text of its own to size a shrink-to-fit box with.
                 div()
                     .w_full()
                     .h_full()
@@ -12264,9 +12280,9 @@ fn render_live_styled_row(
                     .items_center()
                     .child(
                         div()
-                            .h(px(1.0))
                             .w_full()
-                            .bg(theme.border_subtle),
+                            .h(px(crate::snap::device_thickness(2.0, window.scale_factor())))
+                            .bg(theme.text_muted),
                     )
             }
         }
