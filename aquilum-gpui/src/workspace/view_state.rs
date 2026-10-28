@@ -201,6 +201,11 @@ pub struct ViewCache {
     pub headings_cache: crate::settings::HeadingsSettings,
     pub raw_table: bool,
     pub raw_tables: std::collections::HashSet<usize>,
+    /// Tables (first lines) a mouse selection has already revealed as source
+    /// during the ongoing drag. Revealing a table changes its row heights, so
+    /// the line under a fixed pointer can then fall outside the table and the
+    /// reveal decision would flip back and forth. Held until the drag ends.
+    pub drag_revealed_tables: std::collections::HashSet<usize>,
     pub revealed_selection: Option<(usize, usize, usize)>,
     pub cursor_line: usize,
     /// Painted state each line's rows were wrapped for. Absent means the line
@@ -224,6 +229,7 @@ impl Default for ViewCache {
             headings_cache: crate::settings::HeadingsSettings::default(),
             raw_table: false,
             raw_tables: std::collections::HashSet::new(),
+            drag_revealed_tables: std::collections::HashSet::new(),
             revealed_selection: None,
             cursor_line: 0,
             line_paints: std::collections::HashMap::new(),
@@ -376,7 +382,8 @@ impl TabSession {
     }
 
     /// A table is shown as source while the cursor is inside an explicitly
-    /// toggled table, or while an edit-mode selection started outside of it.
+    /// toggled table, or while an edit-mode selection started outside of it,
+    /// or while the ongoing drag already revealed it.
     pub fn table_raw_now(
         &self,
         doc: &DocumentBuffer,
@@ -385,10 +392,37 @@ impl TabSession {
         suppress_selection_reveal: bool,
     ) -> bool {
         (self.raw_tables.contains(&tbl.first_line) && tbl.contains(cursor_line))
+            || self.drag_revealed_tables.contains(&tbl.first_line)
             || Self::reveals_table(
                 self.selection_reveal_state(doc, suppress_selection_reveal),
                 tbl,
             )
+    }
+
+    /// Remembers every table the ongoing drag reveals as source, so the drag
+    /// keeps its layout once it has reached a table. Without this the raw rows
+    /// are shorter than the grid and the line under the pointer drops below
+    /// the table on the next frame, which flips the reveal back on and off.
+    pub fn hold_drag_revealed_tables(
+        &mut self,
+        doc: &DocumentBuffer,
+        suppress_selection_reveal: bool,
+    ) {
+        if suppress_selection_reveal {
+            return;
+        }
+        if self.window.is_empty() {
+            return;
+        }
+        let Some(state) = self.selection_reveal_state(doc, false) else {
+            return;
+        };
+        let tables = doc.ensure_table_index_for_window(self.window.start_line, self.window.end_line);
+        for t in &tables.blocks {
+            if Self::reveals_table(Some(state), t) {
+                self.drag_revealed_tables.insert(t.first_line);
+            }
+        }
     }
 
     pub fn toggle_raw_table_at(&mut self, first_line: usize) -> bool {
@@ -518,6 +552,7 @@ impl TabSession {
                 Self::table_row_kind_at(
                     &tables,
                     &self.raw_tables,
+                    &self.drag_revealed_tables,
                     reveal_state,
                     cursor_line,
                     *line,
@@ -594,12 +629,14 @@ impl TabSession {
     fn table_row_kind_at(
         tables: &crate::table::TableIndex,
         raw_tables: &std::collections::HashSet<usize>,
+        drag_revealed_tables: &std::collections::HashSet<usize>,
         reveal_state: Option<(usize, usize, usize)>,
         cursor_line: usize,
         line: usize,
     ) -> Option<crate::markdown::TableRowVisualKind> {
         let t = tables.at(line)?;
         if (raw_tables.contains(&t.first_line) && t.contains(cursor_line))
+            || drag_revealed_tables.contains(&t.first_line)
             || Self::reveals_table(reveal_state, t)
         {
             return None;
@@ -1097,6 +1134,7 @@ impl TabSession {
             |line| {
                 if let Some(t) = tables.at(line) {
                     if (self.raw_tables.contains(&t.first_line) && t.contains(cursor_line))
+                        || self.drag_revealed_tables.contains(&t.first_line)
                         || Self::reveals_table(reveal_state, t)
                     {
                         None
@@ -1219,6 +1257,10 @@ impl TabSession {
         suppress_selection_reveal: bool,
     ) {
         let reveal_state = self.selection_reveal_state(doc, suppress_selection_reveal);
+        if suppress_selection_reveal && !self.drag_revealed_tables.is_empty() {
+            self.drag_revealed_tables.clear();
+            self.visual_cache_dirty = true;
+        }
         if reveal_state != self.revealed_selection {
             let prev_state = self.revealed_selection;
             self.revealed_selection = reveal_state;
@@ -2031,6 +2073,47 @@ mod tests {
         {
             let tables = doc.ensure_table_index();
             assert!(view.grid_table_at(&doc, &tables, 8, 6, false).is_some());
+        }
+    }
+
+    #[test]
+    fn an_upward_drag_holds_a_revealed_table_against_the_reflow() {
+        let text = "Intro\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nMiddle";
+        let mut doc = DocumentBuffer::new(
+            DocumentId::new(),
+            std::path::PathBuf::from("test.md"),
+            "test".to_string(),
+            text.to_string(),
+            1,
+        );
+        let mut view = TabSession::new(TabId::new(), doc.id);
+        view.cursor_offset = doc.line_start_byte(6);
+        view.ensure_visual_cache_with_headings(&mut doc, false, 80, None, 0, false);
+
+        // Drag from "Middle" up into the table's last row.
+        view.selection_anchor = Some(doc.line_start_byte(6));
+        view.cursor_offset = doc.line_start_byte(4);
+        view.hold_drag_revealed_tables(&doc, false);
+        view.ensure_visual_cache_with_headings(&mut doc, false, 80, None, 0, false);
+
+        // The raw rows are shorter than the grid, so the same pointer now
+        // resolves to the blank line above the anchor. The table must stay
+        // source instead of flipping back to the grid at its edge.
+        view.cursor_offset = doc.line_start_byte(5);
+        view.ensure_visual_cache_with_headings(&mut doc, false, 80, None, 0, false);
+        {
+            let tables = doc.ensure_table_index();
+            assert!(view.grid_table_at(&doc, &tables, 2, 5, false).is_none());
+        }
+
+        // Releasing the drag drops the hold: with no selection over it the
+        // table returns to the grid.
+        view.drag_revealed_tables.clear();
+        view.visual_cache_dirty = true;
+        view.ensure_visual_cache_with_headings(&mut doc, false, 80, None, 0, false);
+        {
+            let tables = doc.ensure_table_index();
+            assert!(view.grid_table_at(&doc, &tables, 2, 5, false).is_some());
         }
     }
 

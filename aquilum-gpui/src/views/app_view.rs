@@ -3004,8 +3004,12 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
         let target_char = v.char_start + col_in_row;
         let offset = view.offset_for_line_col(doc, v.line_idx, target_char);
-        if view.cursor_offset != offset {
+        let moved = view.cursor_offset != offset;
+        if moved {
             view.cursor_offset = offset;
+        }
+        view.hold_drag_revealed_tables(doc, self.ctrl_preview_selection || !self.edit_mode);
+        if moved {
             cx.notify();
         } else if scroll_moved {
             // Same character under the pointer, but the content scrolled:
@@ -8055,6 +8059,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                     }
                                     if view.cursor_offset != new_offset {
                                         view.cursor_offset = new_offset;
+                                        view.hold_drag_revealed_tables(doc, this.ctrl_preview_selection || !this.edit_mode);
                                         this.state.publish_snapshot();
                                         cx.notify();
                                     }
@@ -8201,7 +8206,12 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     None
                 };
 
-                let add_row_btn = if is_editing {
+                // The strip hangs past the table's last row, right over the line
+                // below it. While a mouse selection is being dragged from that
+                // line upwards the pointer sweeps this zone on the way into the
+                // table, so the strip would pop up under the selection: it stays
+                // out of the way until the drag ends.
+                let add_row_btn = if is_editing && !self.is_mouse_selecting {
                     if let Some(tbl) = grid_tbl {
                         if v_line_idx == tbl.last_line {
                             let total_w = table_layout.as_ref().unwrap().total_width;
@@ -9289,6 +9299,10 @@ impl Render for AppView {
                 this.sidebar_scrollbar_drag.end();
                 this.plugin_modal_scrollbar_drag.end();
                 if let Some(view) = this.state.active_view_mut() {
+                    if !view.drag_revealed_tables.is_empty() {
+                        view.drag_revealed_tables.clear();
+                        view.visual_cache_dirty = true;
+                    }
                     if view.selection_anchor == Some(view.cursor_offset) {
                         view.selection_anchor = None;
                     }
@@ -9323,6 +9337,10 @@ impl Render for AppView {
                 this.sidebar_scrollbar_drag.end();
                 this.plugin_modal_scrollbar_drag.end();
                 if let Some(view) = this.state.active_view_mut() {
+                    if !view.drag_revealed_tables.is_empty() {
+                        view.drag_revealed_tables.clear();
+                        view.visual_cache_dirty = true;
+                    }
                     if view.selection_anchor == Some(view.cursor_offset) {
                         view.selection_anchor = None;
                         this.ctrl_preview_selection = false;
