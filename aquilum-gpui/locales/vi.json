@@ -316,7 +316,22 @@
   "editor": {
     "create_note": "Tạo ghi chú",
     "open_file": "Đi đến tập tin",
-    "close": "Đóng"
+    "close": "Đóng",
+    "callout": {
+      "note": "Ghi chú",
+      "abstract": "Tóm tắt",
+      "info": "Thông tin",
+      "todo": "Việc cần làm",
+      "tip": "Mẹo",
+      "success": "Thành công",
+      "question": "Câu hỏi",
+      "warning": "Cảnh báo",
+      "failure": "Thất bại",
+      "danger": "Nguy hiểm",
+      "bug": "Lỗi",
+      "example": "Ví dụ",
+      "quote": "Trích dẫn"
+    }
   },
   "search": {
     "title": "Tìm kiếm cơ sở kiến ​​thức",

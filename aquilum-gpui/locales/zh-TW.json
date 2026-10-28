@@ -316,7 +316,22 @@
   "editor": {
     "create_note": "建立註釋",
     "open_file": "轉到文件",
-    "close": "關閉"
+    "close": "關閉",
+    "callout": {
+      "note": "筆記",
+      "abstract": "摘要",
+      "info": "資訊",
+      "todo": "待辦",
+      "tip": "提示",
+      "success": "成功",
+      "question": "問題",
+      "warning": "警告",
+      "failure": "失敗",
+      "danger": "危險",
+      "bug": "缺陷",
+      "example": "範例",
+      "quote": "引用"
+    }
   },
   "search": {
     "title": "搜尋知識庫",

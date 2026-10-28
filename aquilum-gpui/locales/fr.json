@@ -316,7 +316,22 @@
   "editor": {
     "create_note": "Créer une note",
     "open_file": "Accédez au fichier",
-    "close": "Fermer"
+    "close": "Fermer",
+    "callout": {
+      "note": "Note",
+      "abstract": "Résumé",
+      "info": "Info",
+      "todo": "À faire",
+      "tip": "Astuce",
+      "success": "Succès",
+      "question": "Question",
+      "warning": "Avertissement",
+      "failure": "Échec",
+      "danger": "Danger",
+      "bug": "Bug",
+      "example": "Exemple",
+      "quote": "Citation"
+    }
   },
   "search": {
     "title": "Rechercher dans la base de connaissances",

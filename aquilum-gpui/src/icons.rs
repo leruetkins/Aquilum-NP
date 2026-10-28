@@ -42,6 +42,10 @@ pub const RESTORE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 pub const WINDOW_CLOSE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><path fill="currentColor" fill-rule="evenodd" d="M10.052 10.968 1.03 1.93l.849-.848 9.023 9.037-.849.848Z"/><path fill="currentColor" fill-rule="evenodd" d="M1.023 10.112 10.06 1.09l.848.85-9.037 9.023-.848-.85Z"/></svg>"#;
 pub const NOTE_CREATE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>"#;
 pub const CALENDAR: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></svg>"#;
+pub const INFO: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>"#;
+pub const TRIANGLE_ALERT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>"#;
+pub const CIRCLE_ALERT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>"#;
+pub const QUOTE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z"/><path d="M5 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z"/></svg>"#;
 pub const TERMINAL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>"#;
 pub const ARROW_LEFT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>"#;
 pub const ARROW_RIGHT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>"#;
@@ -141,6 +145,10 @@ pub const ICON_MAXIMIZE: &str = "icons/maximize.svg";
 pub const ICON_RESTORE: &str = "icons/restore.svg";
 pub const ICON_NOTE_CREATE: &str = "icons/note_create.svg";
 pub const ICON_CALENDAR: &str = "icons/calendar.svg";
+pub const ICON_INFO: &str = "icons/info.svg";
+pub const ICON_TRIANGLE_ALERT: &str = "icons/triangle_alert.svg";
+pub const ICON_CIRCLE_ALERT: &str = "icons/circle_alert.svg";
+pub const ICON_QUOTE: &str = "icons/quote.svg";
 pub const ICON_TERMINAL: &str = "icons/terminal.svg";
 pub const ICON_WINDOW_CLOSE: &str = "icons/window_close.svg";
 
@@ -188,6 +196,10 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_RESTORE => Some(RESTORE),
             ICON_NOTE_CREATE => Some(NOTE_CREATE),
             ICON_CALENDAR => Some(CALENDAR),
+            ICON_INFO => Some(INFO),
+            ICON_TRIANGLE_ALERT => Some(TRIANGLE_ALERT),
+            ICON_CIRCLE_ALERT => Some(CIRCLE_ALERT),
+            ICON_QUOTE => Some(QUOTE),
             ICON_TERMINAL => Some(TERMINAL),
             ICON_ARROW_LEFT => Some(ARROW_LEFT),
             ICON_ARROW_RIGHT => Some(ARROW_RIGHT),
@@ -264,6 +276,10 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_RESTORE.into(),
             ICON_NOTE_CREATE.into(),
             ICON_CALENDAR.into(),
+            ICON_INFO.into(),
+            ICON_TRIANGLE_ALERT.into(),
+            ICON_CIRCLE_ALERT.into(),
+            ICON_QUOTE.into(),
             ICON_TERMINAL.into(),
             ICON_ARROW_LEFT.into(),
             ICON_ARROW_RIGHT.into(),

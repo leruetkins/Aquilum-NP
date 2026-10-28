@@ -316,7 +316,22 @@
   "editor": {
     "create_note": "قم بإنشاء ملاحظة",
     "open_file": "اذهب إلى الملف",
-    "close": "يغلق"
+    "close": "يغلق",
+    "callout": {
+      "note": "ملاحظة",
+      "abstract": "ملخص",
+      "info": "معلومات",
+      "todo": "مهام",
+      "tip": "نصيحة",
+      "success": "نجاح",
+      "question": "سؤال",
+      "warning": "تحذير",
+      "failure": "فشل",
+      "danger": "خطر",
+      "bug": "خطأ برمجي",
+      "example": "مثال",
+      "quote": "اقتباس"
+    }
   },
   "search": {
     "title": "ابحث في قاعدة المعرفة",

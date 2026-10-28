@@ -316,7 +316,22 @@
   "editor": {
     "create_note": "एक नोट बनाएं",
     "open_file": "फ़ाइल पर जाएँ",
-    "close": "बंद करना"
+    "close": "बंद करना",
+    "callout": {
+      "note": "नोट",
+      "abstract": "सारांश",
+      "info": "जानकारी",
+      "todo": "कार्य",
+      "tip": "सुझाव",
+      "success": "सफलता",
+      "question": "प्रश्न",
+      "warning": "चेतावनी",
+      "failure": "विफलता",
+      "danger": "खतरा",
+      "bug": "बग",
+      "example": "उदाहरण",
+      "quote": "उद्धरण"
+    }
   },
   "search": {
     "title": "ज्ञानकोष में खोज",

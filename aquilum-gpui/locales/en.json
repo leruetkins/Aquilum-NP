@@ -316,7 +316,22 @@
   "editor": {
     "create_note": "Create a note",
     "open_file": "Go to the file",
-    "close": "Close"
+    "close": "Close",
+    "callout": {
+      "note": "Note",
+      "abstract": "Abstract",
+      "info": "Info",
+      "todo": "To-do",
+      "tip": "Tip",
+      "success": "Success",
+      "question": "Question",
+      "warning": "Warning",
+      "failure": "Failure",
+      "danger": "Danger",
+      "bug": "Bug",
+      "example": "Example",
+      "quote": "Quote"
+    }
   },
   "search": {
     "title": "Search the knowledge base",

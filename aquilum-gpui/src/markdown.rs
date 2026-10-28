@@ -790,7 +790,10 @@ pub fn line_inline_spans(line: &str, classified: &LineKind<'_>) -> (Vec<SyntaxSp
         LineKind::Heading5(_) => (line.strip_prefix("##### ").unwrap_or(line), 6),
         LineKind::Heading6(_) => (line.strip_prefix("###### ").unwrap_or(line), 7),
         LineKind::Quote(_) => {
-            let prefix_bytes = quote_prefix(line).map_or(0, |q| q.bytes);
+            let prefix_bytes = callout_prefix(line)
+                .map(|c| c.bytes)
+                .or_else(|| quote_prefix(line).map(|q| q.bytes))
+                .unwrap_or(0);
             (
                 &line[prefix_bytes.min(line.len())..],
                 prefix_bytes,
@@ -1338,7 +1341,14 @@ pub fn line_paint_spec(
 pub fn continuation_prefix_cols(line: &str, classified: &LineKind<'_>) -> usize {
     let indent_chars = line.chars().count() - line.trim_start().chars().count();
     match classified {
-        LineKind::Quote(_) => quote_prefix(line).map_or(0, |q| q.chars),
+        LineKind::Quote(_) => {
+            let base = quote_prefix(line).map_or(0, |q| q.chars);
+            if callout_prefix(line).is_some() {
+                base + CALLOUT_ICON_CELLS
+            } else {
+                base
+            }
+        }
         LineKind::Task { .. } => {
             let prefix = row_prefix_offset(line, classified);
             line.chars().take(prefix).count()
@@ -2104,6 +2114,235 @@ pub fn quote_bar_columns(prefix: &str) -> Vec<f32> {
         .collect()
 }
 
+/// The family a callout belongs to, which is what its label is coloured by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalloutKind {
+    Note,
+    Info,
+    Tip,
+    Warning,
+    Danger,
+    Quote,
+}
+
+/// The name a callout type is filed under, or `None` for a quote that only looks
+/// like one.
+///
+/// The aliases are the ones Obsidian accepts, so a note written for it keeps its
+/// colour here. An unknown type is not a callout: the marker then stays ordinary
+/// quoted text, visible, instead of turning a typo into a styled badge.
+fn callout_kind(tag: &str) -> Option<CalloutKind> {
+    match tag.to_ascii_lowercase().as_str() {
+        "note" | "abstract" | "summary" | "tldr" | "example" => Some(CalloutKind::Note),
+        "info" | "todo" | "question" | "help" | "faq" => Some(CalloutKind::Info),
+        "tip" | "hint" | "important" | "success" | "check" | "done" => Some(CalloutKind::Tip),
+        "warning" | "caution" | "attention" => Some(CalloutKind::Warning),
+        "danger" | "error" | "bug" | "failure" | "fail" | "missing" => Some(CalloutKind::Danger),
+        "quote" | "cite" => Some(CalloutKind::Quote),
+        _ => None,
+    }
+}
+
+/// A callout header: `> [!type] title`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CalloutPrefix<'a> {
+    pub kind: CalloutKind,
+    /// The type exactly as the source spells it, e.g. `note`.
+    pub label: &'a str,
+    /// Length of the marker region in bytes: the quote prefix, `[!type]` and the
+    /// single space markdown allows after it, when present.
+    pub bytes: usize,
+    /// Length of the marker region in chars — the cells the source spends on the
+    /// type and its padding. An untitled header uses them for its type label.
+    pub chars: usize,
+    /// Everything after the marker region, i.e. the title (empty when there is
+    /// none, so an untitled header shows its type instead).
+    pub title: &'a str,
+}
+
+/// The callout marker at the head of a block quote, or `None` for a plain quote.
+///
+/// Only a quote at the top level carries a callout. Several `>` are a nested
+/// quote first of all: what follows them is quoted text, so a `[!type]` there
+/// stays in the source's own form instead of becoming a styled block.
+pub fn callout_prefix(line: &str) -> Option<CalloutPrefix<'_>> {
+    let quote = quote_prefix(line)?;
+    if quote.depth > 1 {
+        return None;
+    }
+    let inner = line[quote.bytes..].strip_prefix("[!")?;
+    let close = inner.find(']')?;
+    let tag = &inner[..close];
+    if tag.is_empty() || !tag.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return None;
+    }
+    let kind = callout_kind(tag)?;
+    // Past `]`, and past the one space markdown allows between marker and title.
+    let marker = quote.bytes + 2 + close + 1;
+    let bytes = if line[marker..].starts_with(' ') { marker + 1 } else { marker };
+    Some(CalloutPrefix {
+        kind,
+        label: tag,
+        bytes,
+        chars: line[..bytes].chars().count(),
+        title: &line[bytes..],
+    })
+}
+
+/// What an idle untitled callout header paints in place of `[!type] `: the type
+/// in title case, padded to the cells the marker has left after `leading_cells` —
+/// the quote prefix and the icon.
+///
+/// A titled header hides the type name, so this padding only has to keep the
+/// placeholder row as wide as the source marker it replaces.
+pub fn callout_label_padded(callout: &CalloutPrefix<'_>, leading_cells: usize) -> String {
+    let region = callout.chars.saturating_sub(leading_cells);
+    let mut rest = callout.label.chars();
+    let label: String = match rest.next() {
+        Some(first) => first.to_uppercase().chain(rest).collect(),
+        None => String::new(),
+    };
+    let used = label.chars().count().min(region);
+    label
+        .chars()
+        .take(used)
+        .chain(std::iter::repeat(' ').take(region - used))
+        .collect()
+}
+
+/// The name a callout type is translated under, with Obsidian's aliases folded
+/// into the type they stand for.
+fn callout_name(tag: &str) -> &'static str {
+    match tag.to_ascii_lowercase().as_str() {
+        "abstract" | "summary" | "tldr" => "abstract",
+        "info" => "info",
+        "todo" => "todo",
+        "tip" | "hint" | "important" => "tip",
+        "success" | "check" | "done" => "success",
+        "question" | "help" | "faq" => "question",
+        "warning" | "caution" | "attention" => "warning",
+        "failure" | "fail" | "missing" => "failure",
+        "danger" | "error" => "danger",
+        "bug" => "bug",
+        "example" => "example",
+        "quote" | "cite" => "quote",
+        _ => "note",
+    }
+}
+
+/// The localized name an idle untitled callout header shows, e.g. `Совет` for
+/// `[!tip]` in Russian.
+///
+/// An unknown translation falls back to the source type in title case, so a
+/// missing locale key never hides the header's text.
+pub fn callout_label(callout: &CalloutPrefix<'_>, lang: &str) -> String {
+    let key = format!("editor.callout.{}", callout_name(callout.label));
+    let translated = crate::i18n::t(&key, lang);
+    if translated != key {
+        return translated;
+    }
+    let mut rest = callout.label.chars();
+    match rest.next() {
+        Some(first) => first.to_uppercase().chain(rest).collect(),
+        None => String::new(),
+    }
+}
+
+
+/// Cells an idle callout header spends before its label: the type's icon and the
+/// gap that separates it from the text. Measured from the start of the marker
+/// region, so the label and the title keep their columns.
+pub const CALLOUT_ICON_CELLS: usize = 3;
+
+/// Width of a callout's left bar in logical px.
+///
+/// It matches the block's corner radius (`rounded_*_md`, 6px): at the block's end
+/// the bar's rounded corner then follows the block's own arc across its whole
+/// width, where a narrow bar would show a step between its rounded and square
+/// halves. A plain quote keeps its thin hairline bar.
+pub const CALLOUT_BAR_WIDTH: f32 = 6.0;
+
+/// Colour of a callout's label and title.
+///
+/// The palette is the Catppuccin set `theme.rs` is built from; `Theme` carries no
+/// warning or danger role, and a callout is markdown content rather than chrome,
+/// so the colour is resolved here the way tag colours already are.
+pub fn callout_color(kind: CalloutKind, is_dark: bool) -> gpui::Rgba {
+    gpui::rgb(callout_hex(kind, is_dark))
+}
+
+/// Wash behind a callout block: the family colour at a fraction of its opacity,
+/// so the block reads as one rectangle while its prose keeps the text colours it
+/// already has.
+pub fn callout_bg(kind: CalloutKind, is_dark: bool) -> gpui::Rgba {
+    let alpha = if is_dark { 0x24 } else { 0x1a };
+    gpui::rgba((callout_hex(kind, is_dark) << 8) | alpha)
+}
+
+fn callout_hex(kind: CalloutKind, is_dark: bool) -> u32 {
+    match (kind, is_dark) {
+        (CalloutKind::Note | CalloutKind::Info, true) => 0x89b4fa,
+        (CalloutKind::Note | CalloutKind::Info, false) => 0x1e66f5,
+        (CalloutKind::Tip, true) => 0xa6e3a1,
+        (CalloutKind::Tip, false) => 0x40a02b,
+        (CalloutKind::Warning, true) => 0xf9e2af,
+        (CalloutKind::Warning, false) => 0xdf8e1d,
+        (CalloutKind::Danger, true) => 0xf38ba8,
+        (CalloutKind::Danger, false) => 0xd20f39,
+        (CalloutKind::Quote, true) => 0x6c7086,
+        (CalloutKind::Quote, false) => 0x8c8fa1,
+    }
+}
+
+/// The callout block a line belongs to, so every row of it can be tinted and
+/// only its two ends rounded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CalloutBlock {
+    pub kind: CalloutKind,
+    /// First row of the block: the header.
+    pub first: bool,
+    /// Last row of the block.
+    pub last: bool,
+}
+
+/// One entry per line: the callout block covering it, if any.
+///
+/// A block starts at a header and runs over the block quote under it — the extent
+/// Obsidian draws. A second header ends the first block rather than joining it,
+/// and `code_states` keeps a `> [!note]` inside a fence from opening one.
+pub fn callout_blocks(
+    lines: &[String],
+    code_states: &[Option<CodeBlockState>],
+) -> Vec<Option<CalloutBlock>> {
+    let in_code = |idx: usize| code_states.get(idx).map_or(false, |s| s.is_some());
+    let mut blocks = vec![None; lines.len()];
+    let mut idx = 0;
+    while idx < lines.len() {
+        let header = if in_code(idx) { None } else { callout_prefix(&lines[idx]) };
+        let Some(header) = header else {
+            idx += 1;
+            continue;
+        };
+        let mut end = idx;
+        while end + 1 < lines.len()
+            && !in_code(end + 1)
+            && quote_prefix(&lines[end + 1]).is_some()
+            && callout_prefix(&lines[end + 1]).is_none()
+        {
+            end += 1;
+        }
+        for row in idx..=end {
+            blocks[row] = Some(CalloutBlock {
+                kind: header.kind,
+                first: row == idx,
+                last: row == end,
+            });
+        }
+        idx = end + 1;
+    }
+    blocks
+}
+
 /// Byte offset of the first char of a row's content, i.e. the length of the leading
 /// bytes of `line` that the renderer paints as a marker instead of as span content.
 pub fn row_prefix_offset(line: &str, classified: &LineKind<'_>) -> usize {
@@ -2114,7 +2353,10 @@ pub fn row_prefix_offset(line: &str, classified: &LineKind<'_>) -> usize {
         LineKind::Heading4(_) => 5,
         LineKind::Heading5(_) => 6,
         LineKind::Heading6(_) => 7,
-        LineKind::Quote(_) => quote_prefix(line).map_or(0, |q| q.bytes),
+        LineKind::Quote(_) => callout_prefix(line)
+            .map(|c| c.bytes)
+            .or_else(|| quote_prefix(line).map(|q| q.bytes))
+            .unwrap_or(0),
         _ => marker_prefix_len(line, classified),
     }
 }
@@ -2369,7 +2611,13 @@ pub fn row_painted_text(
         LineKind::Heading4(_) => (headings.h4.bold, headings.h4.italic),
         LineKind::Heading5(_) => (headings.h5.bold, headings.h5.italic),
         LineKind::Heading6(_) => (headings.h6.bold, headings.h6.italic),
-        LineKind::Quote(_) => (false, true),
+        // A callout header is a label, not quoted prose: the renderer sets it bold and
+        // upright, so its cells are measured upright too.
+        LineKind::Quote(_) if callout_prefix(line).is_some() => (true, false),
+        // Quoted prose is painted upright (`render_live_styled_row` gives its runs
+        // the normal face). An italic base here would measure different advances
+        // and shift the glyphs, the chip and the caret off their columns.
+        LineKind::Quote(_) => (false, false),
         _ => (false, false),
     };
 
@@ -2386,20 +2634,43 @@ pub fn row_painted_text(
         LineKind::Heading6(_) if is_active_line && v.sub_idx == 0 => push_verbatim(&mut segments, &mut line_chars, "###### ", 0, base_bold, base_italic, false),
         LineKind::Quote(_) => {
             let prefix = quote_prefix(line);
+            let callout = callout_prefix(line);
             if v.sub_idx == 0 {
                 // The markers stay in the grid whether or not they are shown: the
                 // renderer hides them behind one bar per level and reveals the raw
                 // text only on the line being edited. Both spellings are exactly
                 // `prefix.chars` cells wide, so the wrap does not move.
-                let text: String = match prefix {
-                    Some(q) if !is_active_line => " ".repeat(q.chars),
-                    Some(q) => line[..q.bytes].to_string(),
-                    None => String::new(),
-                };
-                push_verbatim(&mut segments, &mut line_chars, &text, 0, base_bold, base_italic, false);
+                match (callout, prefix) {
+                    // A callout spends its marker cells on its icon and, when it has
+                    // no title of its own, on its type. A titled header is its own
+                    // heading: the type name is not repeated, and the title follows
+                    // the icon, like any other hidden inline marker.
+                    (Some(c), Some(q)) if !is_active_line => {
+                        push_verbatim(&mut segments, &mut line_chars, &" ".repeat(q.chars), 0, false, false, false);
+                        push_padding(&mut segments, &mut line_chars, &" ".repeat(CALLOUT_ICON_CELLS), q.chars, false, false);
+                        if c.title.is_empty() {
+                            let label = callout_label_padded(&c, q.chars + CALLOUT_ICON_CELLS);
+                            push_verbatim(&mut segments, &mut line_chars, &label, q.chars + CALLOUT_ICON_CELLS, true, false, false);
+                        }
+                    }
+                    // Editing it: the raw marker, muted and upright like a heading's.
+                    (Some(c), _) => push_verbatim(&mut segments, &mut line_chars, &line[..c.bytes], 0, false, false, false),
+                    // The marker region is painted by its own upright div in the
+                    // renderer, outside the italic prose wrapper, so it is measured
+                    // upright here too — italic advances differ, and the content after
+                    // it would otherwise start a fraction of a cell off the glyphs.
+                    (None, Some(q)) if !is_active_line => {
+                        push_verbatim(&mut segments, &mut line_chars, &" ".repeat(q.chars), 0, base_bold, false, false)
+                    }
+                    (None, Some(q)) => push_verbatim(&mut segments, &mut line_chars, &line[..q.bytes], 0, base_bold, false, false),
+                    (None, None) => {}
+                }
             } else {
-                let pad = " ".repeat(prefix.map_or(0, |q| q.chars));
-                push_padding(&mut segments, &mut line_chars, &pad, v.char_start, base_bold, base_italic);
+                // A wrapped callout header continues under its title, i.e. past the
+                // icon column, not under the quote bar alone.
+                let icon_cells = if callout.is_some() { CALLOUT_ICON_CELLS } else { 0 };
+                let pad = " ".repeat(prefix.map_or(0, |q| q.chars) + icon_cells);
+                push_padding(&mut segments, &mut line_chars, &pad, v.char_start, base_bold, false);
             }
         }
         LineKind::Task { .. } => {
@@ -2467,7 +2738,11 @@ pub fn row_painted_text(
             let mut src = content_offset + s;
             for visible in slice_syntax_spans_revealed(&spans, s, e, content_offset, reveal) {
                 let (text, bold, italic, is_code, tag_opt) = match &visible.span {
-                    SyntaxSpan::Marker(t) => (t.as_str(), false, false, is_inline_code_delim(t), None),
+                    // A marker is painted by the row's own font (or the code font for a
+                    // delimiter), so it has to carry the row's base traits — italic
+                    // advances differ from upright ones, and a revealed marker would
+                    // otherwise shift the glyphs after it off their measured columns.
+                    SyntaxSpan::Marker(t) => (t.as_str(), base_bold, base_italic, is_inline_code_delim(t), None),
                     SyntaxSpan::Text(t) => (t.as_str(), base_bold, base_italic, false, None),
                     SyntaxSpan::Bold(t) => (t.as_str(), true, base_italic, false, None),
                     SyntaxSpan::Italic(t) => (t.as_str(), base_bold, true, false, None),
@@ -2712,6 +2987,9 @@ pub fn strip_markdown_tags(input: &str) -> String {
             work_line = rest;
         } else if let Some(rest) = trimmed_start.strip_prefix("# ") {
             work_line = rest;
+        } else if let Some(c) = callout_prefix(trimmed_start) {
+            // A callout header previews as its title, never as its marker.
+            work_line = c.title;
         } else if let Some(q) = quote_prefix(trimmed_start) {
             work_line = &trimmed_start[q.bytes..];
         }
@@ -3482,6 +3760,287 @@ mod tests {
     }
 
     #[test]
+    fn a_callout_marker_inside_a_nested_quote_stays_quote_text() {
+        // Several `>` make a nested quote first of all: what follows the markers
+        // is quoted text, even when it looks like a callout header, and it is
+        // painted exactly as the source spells it.
+        let line = "> >[!tip] Познавательная заметка";
+        let kind = classify_line(line, None);
+        assert_eq!(kind, LineKind::Quote("[!tip] Познавательная заметка"));
+        assert_eq!(callout_prefix(line), None);
+        let quote = quote_prefix(line).expect("a nested quote");
+        assert_eq!(quote.depth, 2);
+        assert_eq!(quote.chars, 3);
+        assert_eq!(quote_bar_columns(&line[..quote.bytes]), vec![0.0, 2.0]);
+
+        let len = line.chars().count();
+        let idle = painted(line, &kind, 0, len, 0, false);
+        assert_eq!(text_of(&idle), "   [!tip] Познавательная заметка");
+        assert_eq!(idle.columns(), len);
+        assert_eq!(continuation_prefix_cols(line, &kind), quote.chars);
+
+        // A body line is an ordinary nested quote as well.
+        let body = "> > Тело выноски";
+        let body_kind = classify_line(body, None);
+        assert_eq!(callout_prefix(body), None);
+        let body_idle = painted(body, &body_kind, 0, body.chars().count(), 0, false);
+        assert_eq!(text_of(&body_idle), "    Тело выноски");
+        assert_eq!(quote_prefix(body).map(|q| q.chars), Some(4));
+    }
+
+    #[test]
+    fn callout_prefix_reads_the_type_and_the_title() {
+        let untitled = callout_prefix("> [!note]").expect("a note callout");
+        assert_eq!(untitled.kind, CalloutKind::Note);
+        assert_eq!(untitled.label, "note");
+        assert_eq!(untitled.chars, 9);
+        assert_eq!(untitled.title, "");
+
+        let titled = callout_prefix("> [!info] Заголовок выноски").expect("an info callout");
+        assert_eq!(titled.kind, CalloutKind::Info);
+        assert_eq!(titled.title, "Заголовок выноски");
+        // The marker region takes the one space markdown allows after it, so the
+        // title starts in the column the source gives it.
+        assert_eq!(&"> [!info] Заголовок выноски"[..titled.bytes], "> [!info] ");
+        assert_eq!(titled.chars, 10);
+
+        // Obsidian's aliases keep their family.
+        assert_eq!(callout_prefix("> [!warning]").unwrap().kind, CalloutKind::Warning);
+        assert_eq!(callout_prefix("> [!NOTE]").unwrap().kind, CalloutKind::Note);
+        assert_eq!(callout_prefix("> [!danger]").unwrap().kind, CalloutKind::Danger);
+        assert_eq!(callout_prefix("> [!tip]").unwrap().kind, CalloutKind::Tip);
+        assert_eq!(callout_prefix("> [!quote]").unwrap().kind, CalloutKind::Quote);
+
+        // Not callouts: a plain quote, an unknown type, an empty one, a marker that
+        // is not in a quote.
+        assert_eq!(callout_prefix("> plain"), None);
+        assert_eq!(callout_prefix("> [!nope] title"), None);
+        assert_eq!(callout_prefix("> []"), None);
+        assert_eq!(callout_prefix("[!note]"), None);
+    }
+
+    #[test]
+    fn painted_callout_header_shows_its_type_where_the_marker_was() {
+        // An untitled callout takes its label as its title: the marker cells become
+        // the type's icon, `Note` and padding, exactly as wide as the source marker.
+        let line = "> [!note]";
+        let kind = classify_line(line, None);
+        assert_eq!(kind, LineKind::Quote("[!note]"));
+
+        let idle = painted(line, &kind, 0, 9, 0, false);
+        assert_eq!(text_of(&idle), "     Note");
+        assert_eq!(idle.line_chars, vec![0, 1, 2, 2, 2, 5, 6, 7, 8, 9]);
+        assert_eq!(idle.columns(), line.chars().count());
+
+        let active = painted(line, &kind, 0, 9, 0, true);
+        assert_eq!(text_of(&active), "> [!note]");
+        // The icon spends two cells on the source's `[!`, so the cell-to-char map
+        // differs; only the column count has to survive the reveal.
+        assert_eq!(active.columns(), idle.columns());
+    }
+
+    #[test]
+    fn a_titled_callout_hides_the_type_and_starts_the_title_after_the_icon() {
+        let line = "> [!info] Заголовок выноски";
+        let kind = classify_line(line, None);
+        let len = line.chars().count();
+
+        // The marker word is gone: only the quote indent and the icon column
+        // stand between the bar and the title.
+        let idle = painted(line, &kind, 0, len, 0, false);
+        let title_chars = callout_prefix(line).expect("an info callout").title.chars().count();
+        assert_eq!(text_of(&idle), "     Заголовок выноски");
+        assert_eq!(idle.columns(), 2 + CALLOUT_ICON_CELLS + title_chars);
+
+        // Editing the line reveals the source marker, as it does around any other
+        // hidden inline marker.
+        let active = painted(line, &kind, 0, len, 0, true);
+        assert_eq!(text_of(&active), line);
+        assert_eq!(active.columns(), len);
+
+        // A wrapped header continues under the title, past the icon column.
+        assert_eq!(continuation_prefix_cols(line, &kind), 2 + CALLOUT_ICON_CELLS);
+        let wrapped = painted(line, &kind, 10, len, 1, false);
+        assert_eq!(text_of(&wrapped), "     Заголовок выноски");
+        assert_eq!(wrapped.columns(), 2 + CALLOUT_ICON_CELLS + len - 10);
+    }
+
+    #[test]
+    fn an_untitled_callout_shows_its_localized_type() {
+        let line = "> [!tip]";
+        let kind = classify_line(line, None);
+        let callout = callout_prefix(line).expect("a tip callout");
+
+        // The painted placeholder is language-independent; the renderer's label
+        // comes from the locale.
+        let len = line.chars().count();
+        assert_eq!(text_of(&painted(line, &kind, 0, len, 0, false)), "     Tip");
+
+        assert_eq!(callout_label(&callout, "ru"), "Совет");
+        assert_eq!(callout_label(&callout, "en"), "Tip");
+        // Obsidian's aliases are translated under the type they stand for.
+        let abstract_callout = callout_prefix("> [!summary]").expect("an abstract alias");
+        assert_eq!(callout_label(&abstract_callout, "ru"), "Аннотация");
+        // An unrecognised code falls back to the app's default locale.
+        assert_eq!(callout_label(&callout, "xx"), "Совет");
+    }
+
+    #[test]
+    fn a_callout_header_hands_the_title_to_the_inline_spans() {
+        // The label is block syntax; the title is content, so inline formatting in
+        // it parses as usual.
+        let line = "> [!info] **Заголовок**";
+        let (spans, offset) = line_inline_spans(line, &classify_line(line, None));
+        assert_eq!(offset, 10);
+        assert!(spans.iter().any(|s| matches!(s, SyntaxSpan::Bold(_))));
+
+        let (_, offset) = line_inline_spans("> hi", &classify_line("> hi", None));
+        assert_eq!(offset, 2);
+    }
+
+    #[test]
+    fn callout_label_is_the_type_in_title_case() {
+        let leading = 2 + CALLOUT_ICON_CELLS;
+        let untitled = callout_prefix("> [!note]").unwrap();
+        // What the marker has left after the quote and the icon column: `[!note]`
+        // leaves four cells, and `Note` takes exactly those.
+        assert_eq!(callout_label_padded(&untitled, leading), "Note");
+
+        let titled = callout_prefix("> [!info] Заголовок выноски").unwrap();
+        // The region includes the space after the marker, so five cells remain.
+        assert_eq!(callout_label_padded(&titled, leading), "Info ");
+    }
+
+    #[test]
+    fn callout_colours_separate_the_families_in_both_themes() {
+        let kinds = [
+            CalloutKind::Note,
+            CalloutKind::Tip,
+            CalloutKind::Warning,
+            CalloutKind::Danger,
+        ];
+        for &is_dark in &[true, false] {
+            for (i, a) in kinds.iter().enumerate() {
+                for b in &kinds[i + 1..] {
+                    assert_ne!(
+                        callout_color(*a, is_dark),
+                        callout_color(*b, is_dark),
+                        "{a:?} and {b:?} share a colour (dark: {is_dark})"
+                    );
+                }
+            }
+        }
+        assert_ne!(
+            callout_color(CalloutKind::Note, true),
+            callout_color(CalloutKind::Note, false)
+        );
+    }
+
+    #[test]
+    fn a_callout_block_covers_its_quote_and_marks_both_ends() {
+        let lines: Vec<String> = [
+            "> [!note] Title",
+            "> first body line",
+            ">",
+            "> last body line",
+            "",
+            "after",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let states = vec![None; lines.len()];
+        let blocks = callout_blocks(&lines, &states);
+
+        let first = blocks[0].expect("the header opens a block");
+        assert_eq!(first.kind, CalloutKind::Note);
+        assert!(first.first);
+        assert!(!first.last);
+        assert_eq!(blocks[1], Some(CalloutBlock { kind: CalloutKind::Note, first: false, last: false }));
+        assert_eq!(blocks[2], Some(CalloutBlock { kind: CalloutKind::Note, first: false, last: false }));
+        let last = blocks[3].expect("the last quoted row closes the block");
+        assert_eq!(last.kind, CalloutKind::Note);
+        assert!(!last.first);
+        assert!(last.last);
+        assert_eq!(blocks[4], None, "a blank line ends the quote");
+        assert_eq!(blocks[5], None);
+    }
+
+    #[test]
+    fn a_single_row_callout_is_both_ends() {
+        let lines = vec!["> [!tip]".to_string()];
+        let blocks = callout_blocks(&lines, &[None]);
+        assert_eq!(blocks[0], Some(CalloutBlock { kind: CalloutKind::Tip, first: true, last: true }));
+    }
+
+    #[test]
+    fn a_second_header_opens_its_own_block() {
+        let lines: Vec<String> = [
+            "> [!note] one",
+            "> body",
+            "> [!warning] two",
+            "> body",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let blocks = callout_blocks(&lines, &vec![None; lines.len()]);
+        assert_eq!(blocks[0].unwrap().kind, CalloutKind::Note);
+        assert!(blocks[1].unwrap().last, "the next header ends the first block");
+        assert_eq!(blocks[2].unwrap().kind, CalloutKind::Warning);
+        assert!(blocks[2].unwrap().first);
+        assert!(blocks[3].unwrap().last);
+    }
+
+    #[test]
+    fn a_nested_quote_opens_no_callout_block() {
+        let lines: Vec<String> = [
+            "> >[!tip] Познавательная заметка",
+            "> > тело цитаты",
+            "> [!note] верхняя выноска",
+            "> тело выноски",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let blocks = callout_blocks(&lines, &vec![None; lines.len()]);
+
+        assert_eq!(blocks[0], None, "several `>` are a nested quote, not a callout");
+        assert_eq!(blocks[1], None);
+        assert_eq!(blocks[2].unwrap().kind, CalloutKind::Note);
+        assert!(blocks[2].unwrap().first);
+        assert!(blocks[3].unwrap().last);
+
+        // Deeper rows stay in an enclosing top-level callout's block.
+        let nested_inside: Vec<String> = [
+            "> [!tip]",
+            "> > вложенная цитата внутри выноски",
+            "> обычное тело",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let blocks = callout_blocks(&nested_inside, &vec![None; nested_inside.len()]);
+        assert!(blocks.iter().all(Option::is_some));
+    }
+
+    #[test]
+    fn a_fenced_callout_marker_opens_no_block() {
+        let lines: Vec<String> = [
+            "```",
+            "> [!note]",
+            "```",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let states = analyze_code_blocks(&lines.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+        assert!(states.iter().all(|s| s.is_some()));
+        let blocks = callout_blocks(&lines, &states);
+        assert!(blocks.iter().all(Option::is_none));
+    }
+
+    #[test]
     fn painted_code_line_keeps_raw_markers() {
         // Code rows paint the raw slice, so `**` stays visible even on an idle line.
         let line = "**x**";
@@ -3580,6 +4139,8 @@ mod tests {
         assert_eq!(strip_markdown_tags("> Quote line"), "Quote line");
         assert_eq!(strip_markdown_tags("> > Nested quote line"), "Nested quote line");
         assert_eq!(strip_markdown_tags("> > > Deep quote line"), "Deep quote line");
+        // A callout header previews as its title, not as its marker.
+        assert_eq!(strip_markdown_tags("> [!info] **Title**"), "Title");
 
         let code = "```rust\nlet x = 10;\nprintln!(\"{x}\");\n```";
         assert_eq!(strip_markdown_tags(code), "let x = 10;\nprintln!(\"{x}\");");

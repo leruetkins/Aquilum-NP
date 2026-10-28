@@ -316,7 +316,22 @@
   "editor": {
     "create_note": "Skapa en anteckning",
     "open_file": "Gå till filen",
-    "close": "Nära"
+    "close": "Nära",
+    "callout": {
+      "note": "Anteckning",
+      "abstract": "Sammanfattning",
+      "info": "Information",
+      "todo": "Att göra",
+      "tip": "Tips",
+      "success": "Framgång",
+      "question": "Fråga",
+      "warning": "Varning",
+      "failure": "Misslyckande",
+      "danger": "Fara",
+      "bug": "Bug",
+      "example": "Exempel",
+      "quote": "Citat"
+    }
   },
   "search": {
     "title": "Sök i kunskapsbasen",

@@ -316,7 +316,22 @@
   "editor": {
     "create_note": "Not oluştur",
     "open_file": "Dosyaya git",
-    "close": "Kapalı"
+    "close": "Kapalı",
+    "callout": {
+      "note": "Not",
+      "abstract": "Özet",
+      "info": "Bilgi",
+      "todo": "Yapılacak",
+      "tip": "İpucu",
+      "success": "Başarı",
+      "question": "Soru",
+      "warning": "Uyarı",
+      "failure": "Hata",
+      "danger": "Tehlike",
+      "bug": "Hata",
+      "example": "Örnek",
+      "quote": "Alıntı"
+    }
   },
   "search": {
     "title": "Bilgi tabanında arama yapın",

@@ -316,7 +316,22 @@
   "editor": {
     "create_note": "Erstellen Sie eine Notiz",
     "open_file": "Gehen Sie zur Datei",
-    "close": "Schließen"
+    "close": "Schließen",
+    "callout": {
+      "note": "Notiz",
+      "abstract": "Zusammenfassung",
+      "info": "Info",
+      "todo": "Aufgabe",
+      "tip": "Tipp",
+      "success": "Erfolg",
+      "question": "Frage",
+      "warning": "Warnung",
+      "failure": "Fehler",
+      "danger": "Gefahr",
+      "bug": "Bug",
+      "example": "Beispiel",
+      "quote": "Zitat"
+    }
   },
   "search": {
     "title": "Durchsuchen Sie die Wissensdatenbank",

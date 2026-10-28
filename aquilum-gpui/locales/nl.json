@@ -316,7 +316,22 @@
   "editor": {
     "create_note": "Maak een notitie",
     "open_file": "Ga naar het bestand",
-    "close": "Dichtbij"
+    "close": "Dichtbij",
+    "callout": {
+      "note": "Notitie",
+      "abstract": "Samenvatting",
+      "info": "Info",
+      "todo": "Te doen",
+      "tip": "Tip",
+      "success": "Succes",
+      "question": "Vraag",
+      "warning": "Waarschuwing",
+      "failure": "Mislukking",
+      "danger": "Gevaar",
+      "bug": "Bug",
+      "example": "Voorbeeld",
+      "quote": "Citaat"
+    }
   },
   "search": {
     "title": "Zoek in de kennisbank",

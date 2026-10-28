@@ -6744,6 +6744,13 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     .map(|(_, line)| line.as_str()),
             );
 
+            // Callout extents for the window, so every row of a block is tinted and
+            // only the two ends are rounded. The two windows share a start line.
+            let callout_blocks = crate::markdown::callout_blocks(
+                lines_arc.as_slice(),
+                code_states_arc.as_slice(),
+            );
+
             let (cursor_line, cursor_col) = view.line_col(doc);
             let (active_v_idx, active_col_in_row) = crate::markdown::find_visual_row_for_cursor(&visual_rows_arc, cursor_line, cursor_col)
                 .unwrap_or((0, 0));
@@ -7569,6 +7576,14 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 let is_opening_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: true, .. });
                 let is_closing_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: false, .. });
                 let is_code_line = matches!(classified, crate::markdown::LineKind::CodeLine(_));
+                let callout = callout_blocks
+                    .get(v.line_idx.wrapping_sub(lines_arc.start()))
+                    .copied()
+                    .flatten();
+                // The block is rounded at its two ends only, and a wrapped row is not
+                // an end even when its source line is.
+                let callout_first = callout.map_or(false, |block| block.first) && v.sub_idx == 0;
+                let callout_last = callout.map_or(false, |block| block.last) && v.is_last_sub;
                 let row_len = v.char_end.saturating_sub(v.char_start);
 
                 let (h_metrics_row_h, row_char_w, _row_font_size, _cursor_h, _cursor_top) =
@@ -8314,9 +8329,20 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             .text_sm()
                             .line_height(px(row_h))
                             .cursor(gpui::CursorStyle::IBeam)
-                            .when(is_opening_fence, |s| s.bg(theme.code_bg).rounded_t_md())
-                            .when(is_closing_fence, |s| s.bg(theme.code_bg).rounded_b_md())
-                            .when(is_code_line, |s| s.bg(theme.code_bg))
+                            // The current-line highlight is a child of the row, so a
+                            // block wash over the content box would paint on top of
+                            // it and swallow it. A highlighted row keeps no wash:
+                            // its own highlight is the background above the block.
+                            .when(is_opening_fence && !show_current_line_highlight, |s| s.bg(theme.code_bg).rounded_t_md())
+                            .when(is_closing_fence && !show_current_line_highlight, |s| s.bg(theme.code_bg).rounded_b_md())
+                            .when(is_code_line && !show_current_line_highlight, |s| s.bg(theme.code_bg))
+                            // A callout is a block, drawn the way a code block is:
+                            // one wash over every row, rounded where the block ends.
+                            .when_some(callout, |s, block| {
+                                s.bg(crate::markdown::callout_bg(block.kind, theme.is_dark))
+                                    .when(callout_first, |s| s.rounded_t_md())
+                                    .when(callout_last, |s| s.rounded_b_md())
+                            })
                             .when(is_raw_table_line, |s| {
                                 let bg = if theme.is_dark { gpui::rgba(0x9333ea24) } else { gpui::rgba(0x7c3aed18) };
                                 s.bg(bg)
@@ -8345,6 +8371,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         v_char_end,
                                         v_line_idx,
                                         v_sub_idx,
+                                        v.is_last_sub,
                                         is_active_line,
                                         &reveal,
                                         is_in_active_block,
@@ -8366,6 +8393,8 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                         cx,
                                         line_char_width,
                                         list_indent_step,
+                                        callout,
+                                        self.config.ui.language.as_str(),
                                     )),
                             )
                             .children(tag_overlays)
@@ -11551,6 +11580,19 @@ pub(crate) fn shape_row(
     }
 }
 
+/// The icon a callout header shows for its family, matching Obsidian's set where
+/// the app already ships a glyph for it.
+fn callout_icon(kind: crate::markdown::CalloutKind) -> &'static str {
+    match kind {
+        crate::markdown::CalloutKind::Note => icons::ICON_NOTE_CREATE,
+        crate::markdown::CalloutKind::Info => icons::ICON_INFO,
+        crate::markdown::CalloutKind::Tip => icons::ICON_BOLT,
+        crate::markdown::CalloutKind::Warning => icons::ICON_TRIANGLE_ALERT,
+        crate::markdown::CalloutKind::Danger => icons::ICON_CIRCLE_ALERT,
+        crate::markdown::CalloutKind::Quote => icons::ICON_QUOTE,
+    }
+}
+
 fn render_live_styled_row(
     line: &str,
     classified: &crate::markdown::LineKind<'_>,
@@ -11558,6 +11600,7 @@ fn render_live_styled_row(
     char_end: usize,
     line_idx: usize,
     sub_idx: usize,
+    is_last_sub: bool,
     is_active_line: bool,
     reveal: &crate::markdown::InlineReveal,
     show_fences: bool,
@@ -11580,9 +11623,15 @@ fn render_live_styled_row(
     // `cell_w` is the width of one character cell of this row in logical px;
     // `list_indent_step` is the nesting step of the window's unordered lists
     // (see `markdown::list_indent_step`). Only the block decorations drawn
-    // outside the text flow — the indent guides of a nested list — need them.
+    // outside the text flow — the indent guides of a nested list, the icon of a
+    // callout header — need them.
     cell_w: f32,
     list_indent_step: usize,
+    // The callout block this row belongs to, body rows included; the header row
+    // itself keeps its own marker.
+    callout_block: Option<crate::markdown::CalloutBlock>,
+    // Interface language for the callout type names a header shows.
+    lang: &str,
 ) -> gpui::Div {
     if let Some((tbl, table_layout, cursor_col, line_idx)) = table_render {
         if line_idx == tbl.sep_line() {
@@ -12021,14 +12070,27 @@ fn render_live_styled_row(
             // Markers hidden by default, revealed on the line being edited — the
             // same model headings and list bullets follow. Both spellings are
             // exactly as wide as the markers, so nothing moves when they appear.
+            let callout = crate::markdown::callout_prefix(line);
+            // A callout claims the whole marker region — the quote prefix plus
+            // `[!type] ` — and paints its type there instead; what follows it is the
+            // title rather than quoted prose. The region keeps its source width, so
+            // the title stays in its column and the header does not shift when the
+            // caret reveals the raw marker.
             let prefix = crate::markdown::quote_prefix(line)
                 .map(|q| &line[..q.bytes])
                 .unwrap_or("");
             let prefix_chars = prefix.chars().count();
-            let rest = &line[prefix.len()..];
+            let marker = callout.map_or(prefix, |c| &line[..c.bytes]);
+            let marker_chars = callout.map_or(prefix_chars, |c| c.chars);
+            let rest = callout.map_or(&line[marker.len()..], |c| c.title);
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
             let prefix_text = if is_active_line && sub_idx == 0 {
-                prefix.to_string()
+                marker.to_string()
+            } else if callout.is_some() && sub_idx > 0 {
+                // A wrapped header continues under its title, past the icon column.
+                // The header's first row draws that column itself below, so only a
+                // wrapped row adds it to the indent.
+                " ".repeat(prefix_chars + crate::markdown::CALLOUT_ICON_CELLS)
             } else {
                 " ".repeat(prefix_chars)
             };
@@ -12041,40 +12103,128 @@ fn render_live_styled_row(
             // levels look heavier than shallow ones. Three device pixels at every
             // level is what reads as a quote bar rather than a hairline.
             let scale = window.scale_factor();
-            let bars = crate::markdown::quote_bar_columns(prefix)
-                .into_iter()
-                .map(|col| {
-                    let (left, width) = crate::snap::snapped_rule(col * cell_w, 3.0, scale);
-                    div()
-                        .absolute()
-                        .left(px(left))
-                        .top(px(0.0))
-                        .bottom(px(0.0))
-                        .w(px(width))
-                        .bg(theme.border)
-                });
+            // A top-level callout paints its bar in the family colour and tints the
+            // rows around it, so the bar reads as the block's edge. Its bar is as
+            // wide as the block's corner radius, so at the block's ends the corner
+            // it takes follows the block's own arc exactly instead of showing a
+            // step where a narrower stripe would.
+            let bar_color = callout_block
+                .map_or(theme.border, |block| crate::markdown::callout_color(block.kind, theme.is_dark));
+            let bar_device_w = if callout_block.is_some() {
+                (crate::markdown::CALLOUT_BAR_WIDTH * scale).round().max(3.0)
+            } else {
+                3.0
+            };
+            let bar_cols = crate::markdown::quote_bar_columns(prefix);
+            // A callout's bar is the outermost quote level it opens; any deeper
+            // level on the same row is a nested quote inside it and keeps an
+            // ordinary stroke.
+            let callout_col = callout_block.and_then(|_| bar_cols.first().copied());
+            let bar_top_rounded = callout_block.map_or(false, |block| block.first) && sub_idx == 0;
+            let bar_bottom_rounded = callout_block.map_or(false, |block| block.last) && is_last_sub;
+            // The line being edited reveals its raw `>` markers; the wide callout
+            // bar would sit on top of them and hide them, so it steps aside while
+            // that line is active and comes back when the caret leaves.
+            let bars = if callout_block.is_some() && is_active_line {
+                Vec::new()
+            } else {
+                bar_cols
+                    .into_iter()
+                    .map(|col| {
+                        let edge = callout_col == Some(col);
+                        let width = if edge { bar_device_w } else { 3.0 };
+                        let (left, width) = crate::snap::snapped_rule(col * cell_w, width, scale);
+                        let mut bar = div()
+                            .absolute()
+                            .left(px(left))
+                            .top(px(0.0))
+                            .bottom(px(0.0))
+                            .w(px(width))
+                            .bg(if edge { bar_color } else { theme.border });
+                        if edge {
+                            if bar_top_rounded {
+                                bar = bar.rounded_tl_md();
+                            }
+                            if bar_bottom_rounded {
+                                bar = bar.rounded_bl_md();
+                            }
+                        }
+                        bar
+                    })
+                    .collect()
+            };
             // The markers are block syntax, not quoted prose: they stay upright and
             // muted, the way headings reveal their `#`. Inheriting the row's italic
             // would slant them, which reads as a clipped, oddly narrow glyph — the
             // `>` ink leans away from the cell and from its own bar.
             let marker_color = theme.text_muted;
+            let content = |row_spans: Vec<crate::markdown::VisibleSpan>| match callout {
+                Some(c) => {
+                    let color = crate::markdown::callout_color(c.kind, theme.is_dark);
+                    div()
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(color)
+                        .child(render_spans(row_spans, Some(color), Some(gpui::FontWeight::BOLD), Some(gpui::FontStyle::Normal)))
+                }
+                None => div()
+                    .text_color(theme.text_secondary)
+                    // Quoted prose is upright; only the spans that are italic in the
+                    // source lean. `markdown::row_painted_text` measures the row the
+                    // same way, so the chip, the caret and the selection stay on the
+                    // glyphs.
+                    .child(render_spans(row_spans, Some(theme.text_secondary), None, None)),
+            };
             if sub_idx == 0 {
-                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(prefix_chars), prefix_chars, reveal);
-                div()
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(marker_chars), marker_chars, reveal);
+                let mut row = div()
                     .relative()
                     .flex()
                     .flex_row()
                     .items_center()
                     .h_full()
                     .children(bars)
-                    .child(div().text_color(marker_color).child(prefix_text))
-                    .child(div().italic().text_color(theme.text_secondary).child(render_spans(row_spans, Some(theme.text_secondary), None, None)))
+                    .child(div().text_color(marker_color).child(prefix_text));
+                if let (Some(c), false) = (callout, is_active_line) {
+                    let color = crate::markdown::callout_color(c.kind, theme.is_dark);
+                    // The column is wider than the glyph, and the spare cell is the
+                    // gap before the text; the glyph keeps the size it had.
+                    let column_w = cell_w * crate::markdown::CALLOUT_ICON_CELLS as f32;
+                    let glyph_w = cell_w * 1.6;
+                    row = row.child(
+                        div()
+                            .w(px(column_w))
+                            .h_full()
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .child(icons::icon(callout_icon(c.kind), glyph_w, color)),
+                    );
+                    // A titled callout is its own heading: the type name is not
+                    // repeated, the title follows the icon. Only an untitled header
+                    // shows the localized type in place of the marker.
+                    if rest.is_empty() {
+                        row = row.child(
+                            div()
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .text_color(color)
+                                .child(crate::markdown::callout_label(&c, lang)),
+                        );
+                    }
+                }
+                // An untitled header has nothing to paint after the label; letting
+                // `render_syntax_spans` see an empty span list would add its blank
+                // cell and put the row a cell past its painted width.
+                if rest.is_empty() {
+                    row
+                } else {
+                    row.child(content(row_spans))
+                }
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans_revealed(
                     &spans,
-                    char_start.saturating_sub(prefix_chars),
-                    char_end.saturating_sub(prefix_chars),
-                    prefix_chars,
+                    char_start.saturating_sub(marker_chars),
+                    char_end.saturating_sub(marker_chars),
+                    marker_chars,
                     reveal,
                 );
                 div()
@@ -12085,7 +12235,7 @@ fn render_live_styled_row(
                     .h_full()
                     .children(bars)
                     .child(div().child(prefix_text))
-                    .child(div().italic().text_color(theme.text_secondary).child(render_spans(row_spans, Some(theme.text_secondary), None, None)))
+                    .child(content(row_spans))
             }
         }
         crate::markdown::LineKind::Task { checked, .. } => {
@@ -13384,5 +13534,219 @@ mod tests {
         assert!(!is_sep_line(2));
         assert!(!is_sep_line(3));
     }
-}
 
+    /// Inline code inside a quote or a callout header has to put its chip exactly on
+    /// the glyphs the row paints, and the painted columns have to land on those
+    /// glyphs too. Quoted prose is measured with the italic faces while the marker
+    /// region stays upright; italic advances are not the upright ones, so a run
+    /// shaped without the row's style drifts the chip and the selection a cell away.
+    #[test]
+    fn inline_code_chip_in_a_quote_lands_on_the_rendered_glyphs() {
+        gpui::Application::new().run(|cx: &mut gpui::App| {
+            crate::fonts::register_embedded_fonts(cx);
+            let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                let font_family: SharedString = "Roboto Mono".into();
+                let headings = crate::settings::HeadingsSettings::default();
+                let font_id = window.text_system().resolve_font(&gpui::font(font_family.clone()));
+                let cell_w = window
+                    .text_system()
+                    .advance(font_id, px(14.0), 'x')
+                    .map(|s| f32::from(s.width))
+                    .unwrap_or(7.7);
+                let shape = |text: &str, weight: gpui::FontWeight, style: gpui::FontStyle| {
+                    let run = gpui::TextRun {
+                        len: text.len(),
+                        font: gpui::Font {
+                            family: font_family.clone(),
+                            weight,
+                            style,
+                            features: Default::default(),
+                            fallbacks: None,
+                        },
+                        color: Default::default(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    window.text_system().layout_line(text, px(14.0), &[run], None)
+                };
+
+                fn push_run(
+                    text: &mut String,
+                    runs: &mut Vec<gpui::TextRun>,
+                    family: &gpui::SharedString,
+                    s: &str,
+                    weight: gpui::FontWeight,
+                    style: gpui::FontStyle,
+                ) {
+                    if s.is_empty() {
+                        return;
+                    }
+                    text.push_str(s);
+                    runs.push(gpui::TextRun {
+                        len: s.len(),
+                        font: gpui::Font {
+                            family: family.clone(),
+                            weight,
+                            style,
+                            features: Default::default(),
+                            fallbacks: None,
+                        },
+                        color: Default::default(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
+                }
+
+                for line in [
+                    "> Информационная выноска с **форматированием** и `кодом`.",
+                    "> [!info] Заголовок выноски с `кодом`",
+                    "> >[!tip] Познавательная заметка с `кодом`",
+                    "> > вложенная цитата с **жирным** и `кодом`.",
+                ] {
+                    for active in [false, true] {
+                        let total = line.chars().count();
+                        let kind = classify_line(line, None);
+                        let reveal = if active {
+                            crate::markdown::InlineReveal::All
+                        } else {
+                            crate::markdown::InlineReveal::None
+                        };
+                        let v = VisualRow {
+                            line_idx: 0,
+                            sub_idx: 0,
+                            is_last_sub: true,
+                            char_start: 0,
+                            char_end: total,
+                        };
+                        let layout = shape_row(
+                            window.text_system(),
+                            line,
+                            &kind,
+                            &v,
+                            active,
+                            &reveal,
+                            &headings,
+                            &font_family,
+                            cell_w,
+                        );
+                        let callout = crate::markdown::callout_prefix(line);
+                        let quote = crate::markdown::quote_prefix(line).expect("a quote line");
+                        let prefix = &line[..quote.bytes];
+                        let prefix_chars = prefix.chars().count();
+
+                        // The marker region is the renderer's own upright block:
+                        // the quote prefix, then the icon — and the type name only
+                        // when the callout has no title.
+                        let prefix_w = if let Some(c) = callout {
+                            if active {
+                                f32::from(shape(&line[..c.bytes], gpui::FontWeight::NORMAL, gpui::FontStyle::Normal).width)
+                            } else {
+                                let spaces = f32::from(shape(&" ".repeat(prefix_chars), gpui::FontWeight::NORMAL, gpui::FontStyle::Normal).width);
+                                let label = if c.title.is_empty() {
+                                    f32::from(shape(
+                                        &crate::markdown::callout_label_padded(&c, prefix_chars + crate::markdown::CALLOUT_ICON_CELLS),
+                                        gpui::FontWeight::BOLD,
+                                        gpui::FontStyle::Normal,
+                                    ).width)
+                                } else {
+                                    0.0
+                                };
+                                spaces + cell_w * crate::markdown::CALLOUT_ICON_CELLS as f32 + label
+                            }
+                        } else if active {
+                            f32::from(shape(prefix, gpui::FontWeight::NORMAL, gpui::FontStyle::Normal).width)
+                        } else {
+                            f32::from(shape(&" ".repeat(prefix_chars), gpui::FontWeight::NORMAL, gpui::FontStyle::Normal).width)
+                        };
+
+                        // A callout header is a bold upright label; quoted prose is
+                        // upright too. Both are passed to `render_syntax_spans` as its
+                        // base, and the painted row measures the same faces.
+                        let (base_weight, base_style, content, content_offset, marker_chars) = match callout {
+                            Some(c) => (gpui::FontWeight::BOLD, gpui::FontStyle::Normal, c.title, c.chars, c.chars),
+                            None => (gpui::FontWeight::NORMAL, gpui::FontStyle::Normal, &line[quote.bytes..], prefix_chars, prefix_chars),
+                        };
+                        let spans = crate::markdown::parse_inline_syntax_spans(content);
+                        let visible = crate::markdown::slice_syntax_spans_revealed(
+                            &spans,
+                            0,
+                            total - marker_chars,
+                            content_offset,
+                            &reveal,
+                        );
+
+                        let mut text = String::new();
+                        let mut runs = Vec::new();
+                        let mut code_start = None;
+                        let mut code_end = None;
+                        let mut delimiters = 0usize;
+                        for span in &visible {
+                            match &span.span {
+                                crate::markdown::SyntaxSpan::Marker(m) => {
+                                    let delim = crate::markdown::is_inline_code_delim(m);
+                                    if !span.marker_visible && !delim {
+                                        continue;
+                                    }
+                                    if delim && delimiters == 0 {
+                                        code_start = Some(text.len());
+                                    }
+                                    let (weight, style) = if delim {
+                                        (inline_code_weight(base_weight), base_style)
+                                    } else {
+                                        (base_weight, base_style)
+                                    };
+                                    push_run(&mut text, &mut runs, &font_family, m, weight, style);
+                                    if delim {
+                                        delimiters += 1;
+                                        if delimiters == 2 {
+                                            code_end = Some(text.len());
+                                        }
+                                    }
+                                }
+                                crate::markdown::SyntaxSpan::Text(t) => push_run(&mut text, &mut runs, &font_family, t, base_weight, base_style),
+                                crate::markdown::SyntaxSpan::Bold(t) => push_run(&mut text, &mut runs, &font_family, t, gpui::FontWeight::BOLD, base_style),
+                                crate::markdown::SyntaxSpan::Italic(t) => push_run(&mut text, &mut runs, &font_family, t, base_weight, gpui::FontStyle::Italic),
+                                crate::markdown::SyntaxSpan::BoldItalic(t) => push_run(&mut text, &mut runs, &font_family, t, gpui::FontWeight::BOLD, gpui::FontStyle::Italic),
+                                crate::markdown::SyntaxSpan::InlineCode(t) => push_run(&mut text, &mut runs, &font_family, t, inline_code_weight(base_weight), base_style),
+                                _ => {}
+                            }
+                        }
+                        let shaped = window.text_system().layout_line(text.as_str(), px(14.0), &runs, None);
+                        let code_start = code_start.expect("no inline code in the case");
+                        let code_end = code_end.expect("no closing inline-code delimiter");
+                        let ranges = layout.code_ranges();
+                        assert_eq!(ranges.len(), 1, "{line:?}: expected one chip, got {ranges:?}");
+                        let (cs, ce) = ranges[0];
+
+                        let rendered_start = prefix_w + f32::from(shaped.x_for_index(code_start));
+                        let rendered_end = prefix_w + f32::from(shaped.x_for_index(code_end));
+                        let painted_start = layout.x_for_column(cs);
+                        let painted_end = layout.x_for_column(ce);
+                        assert!(
+                            (rendered_start - painted_start).abs() < 0.02,
+                            "{line:?} (active={active}): chip starts at {painted_start:.3} but the glyphs start at {rendered_start:.3} ({:+.3}px)",
+                            rendered_start - painted_start
+                        );
+                        assert!(
+                            (rendered_end - painted_end).abs() < 0.02,
+                            "{line:?} (active={active}): chip ends at {painted_end:.3} but the glyphs end at {rendered_end:.3} ({:+.3}px)",
+                            rendered_end - painted_end
+                        );
+                    }
+                }
+
+                cx.quit();
+                use gpui::AppContext;
+                struct DummyView;
+                impl gpui::Render for DummyView {
+                    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+                        gpui::div()
+                    }
+                }
+                cx.new(|_| DummyView)
+            });
+        });
+    }
+}

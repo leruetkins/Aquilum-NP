@@ -316,7 +316,22 @@
   "editor": {
     "create_note": "メモを作成する",
     "open_file": "ファイルに移動",
-    "close": "近い"
+    "close": "近い",
+    "callout": {
+      "note": "ノート",
+      "abstract": "概要",
+      "info": "情報",
+      "todo": "ToDo",
+      "tip": "ヒント",
+      "success": "成功",
+      "question": "質問",
+      "warning": "警告",
+      "failure": "失敗",
+      "danger": "危険",
+      "bug": "バグ",
+      "example": "例",
+      "quote": "引用"
+    }
   },
   "search": {
     "title": "ナレッジベースを検索する",

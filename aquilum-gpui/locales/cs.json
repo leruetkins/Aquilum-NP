@@ -316,7 +316,22 @@
   "editor": {
     "create_note": "Vytvořte poznámku",
     "open_file": "Přejděte do souboru",
-    "close": "Blízko"
+    "close": "Blízko",
+    "callout": {
+      "note": "Poznámka",
+      "abstract": "Shrnutí",
+      "info": "Informace",
+      "todo": "Úkol",
+      "tip": "Tip",
+      "success": "Úspěch",
+      "question": "Otázka",
+      "warning": "Varování",
+      "failure": "Selhání",
+      "danger": "Nebezpečí",
+      "bug": "Chyba",
+      "example": "Příklad",
+      "quote": "Citace"
+    }
   },
   "search": {
     "title": "Prohledejte znalostní bázi",
