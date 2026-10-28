@@ -233,6 +233,9 @@ pub struct SessionState {
     /// Open sidebar panel (file tree vs search). Defaults to files.
     #[serde(default)]
     pub sidebar_mode: crate::views::sidebar::SidebarMode,
+    /// Whether the find bar's replace row was expanded when the app closed.
+    #[serde(default)]
+    pub find_replace_open: bool,
     /// Known vaults for the switcher dialog, most recent first.
     #[serde(default)]
     pub known_vaults: Vec<PathBuf>,
@@ -259,6 +262,7 @@ impl Default for SessionState {
             sidebar_scroll_top: 0.0,
             sidebar_width: 0.0,
             sidebar_mode: crate::views::sidebar::SidebarMode::default(),
+            find_replace_open: false,
             known_vaults: Vec::new(),
             ribbon_hidden: default_ribbon_hidden(),
             ribbon_order: Vec::new(),
@@ -3247,6 +3251,7 @@ mod tests {
         let mut saved = SessionState::default();
         saved.sidebar_width = 320.0;
         saved.sidebar_mode = crate::views::sidebar::SidebarMode::Search;
+        saved.find_replace_open = true;
         saved.known_vaults = vec![PathBuf::from("D:/vault-a"), PathBuf::from("D:/vault-b")];
         saved.save(&dir);
 
@@ -3256,6 +3261,7 @@ mod tests {
             loaded.sidebar_mode,
             crate::views::sidebar::SidebarMode::Search
         );
+        assert!(loaded.find_replace_open);
         assert_eq!(
             loaded.known_vaults,
             vec![PathBuf::from("D:/vault-a"), PathBuf::from("D:/vault-b")]
@@ -3265,6 +3271,7 @@ mod tests {
         std::fs::write(dir.join("session-state.json"), "{}").unwrap();
         let legacy = SessionState::load(&dir);
         assert_eq!(legacy.sidebar_width, 0.0);
+        assert!(!legacy.find_replace_open);
         assert_eq!(
             legacy.sidebar_mode,
             crate::views::sidebar::SidebarMode::Files

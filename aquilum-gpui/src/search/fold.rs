@@ -441,6 +441,18 @@ pub fn count(hay: &str, needle: &str, fold: Fold) -> usize {
 /// Non-overlapping byte ranges in the original for every occurrence of any
 /// needle, longest needle winning at each position, capped at `limit`.
 pub fn ranges(hay: &str, needles: &[&str], fold: Fold, limit: usize) -> Vec<Range<usize>> {
+    ranges_mode(hay, needles, fold, Mode::Substring, limit)
+}
+
+/// [`ranges`] with explicit anchoring: `Mode::WholeWord` reports only
+/// occurrences that start and end on word boundaries.
+pub fn ranges_mode(
+    hay: &str,
+    needles: &[&str],
+    fold: Fold,
+    mode: Mode,
+    limit: usize,
+) -> Vec<Range<usize>> {
     let mut folded: Vec<Vec<char>> = needles
         .iter()
         .filter(|s| !s.is_empty())
@@ -449,7 +461,7 @@ pub fn ranges(hay: &str, needles: &[&str], fold: Fold, limit: usize) -> Vec<Rang
     folded.sort_by(|a, b| b.len().cmp(&a.len()));
     let mut out = Vec::new();
     if limit > 0 {
-        scan_matches(hay, &folded, fold, Mode::Substring, |r| {
+        scan_matches(hay, &folded, fold, mode, |r| {
             out.push(r);
             out.len() < limit
         });
@@ -519,6 +531,43 @@ mod tests {
         assert!(!contains("a cat scattered", "at", Fold::Lower, Mode::WholeWord));
         assert!(!contains("a cat scattered", "atte", Fold::Lower, Mode::WholeWord));
         assert!(!contains("a cat scattered", "scat", Fold::Lower, Mode::WholeWord));
+    }
+
+    #[test]
+    fn ranges_mode_applies_case_and_word_rules() {
+        let hay = "Cat cat CAT";
+        assert_eq!(ranges(hay, &["cat"], Fold::Lower, usize::MAX).len(), 3);
+        assert_eq!(
+            ranges_mode(hay, &["cat"], Fold::Exact, Mode::Substring, usize::MAX).len(),
+            1,
+            "only the lowercase word survives a case-sensitive scan"
+        );
+        let words = ranges_mode(hay, &["cat"], Fold::Lower, Mode::WholeWord, usize::MAX);
+        assert_eq!(words, vec![0..3, 4..7, 8..11]);
+        let exact_words = ranges_mode(hay, &["cat"], Fold::Exact, Mode::WholeWord, usize::MAX);
+        assert_eq!(exact_words, vec![4..7]);
+
+        // Word-start mode drops a hit that begins inside another word, and
+        // whole-word mode additionally demands the end boundary.
+        let hay = "cat scattered cat";
+        assert_eq!(
+            ranges_mode(hay, &["cat"], Fold::Lower, Mode::WordPrefix, usize::MAX),
+            vec![0..3, 14..17]
+        );
+        assert_eq!(
+            ranges_mode(hay, &["sca"], Fold::Lower, Mode::WordPrefix, usize::MAX),
+            vec![4..7]
+        );
+        assert_eq!(
+            ranges_mode(hay, &["cat"], Fold::Lower, Mode::WholeWord, usize::MAX),
+            vec![0..3, 14..17]
+        );
+
+        // A limit still truncates the word-mode list.
+        assert_eq!(
+            ranges_mode(hay, &["cat"], Fold::Lower, Mode::WholeWord, 1).len(),
+            1
+        );
     }
 
     #[test]

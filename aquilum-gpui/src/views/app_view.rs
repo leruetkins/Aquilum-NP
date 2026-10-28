@@ -415,6 +415,9 @@ impl AppView {
         // otherwise focus and keystrokes go to a handle nobody is bound to.
         let find_query_focus_handle = cx.focus_handle();
         let find_replace_focus_handle = cx.focus_handle();
+        // The replace row comes back exactly as it was left when the app
+        // closed, so the expander's choice survives a restart.
+        let find_replace_open = state.session.find_replace_open;
 
         let mut this = Self {
             state,
@@ -505,10 +508,14 @@ impl AppView {
             title_focus_handle: cx.focus_handle(),
             was_title_focused: false,
             title_blink: BlinkManager::new(),
-            find_bar: crate::views::find_bar::FindBarState::new(
-                find_query_focus_handle.clone(),
-                find_replace_focus_handle.clone(),
-            ),
+            find_bar: {
+                let mut find_bar = crate::views::find_bar::FindBarState::new(
+                    find_query_focus_handle.clone(),
+                    find_replace_focus_handle.clone(),
+                );
+                find_bar.replace_open = find_replace_open;
+                find_bar
+            },
             find_query_focus_handle,
             find_replace_focus_handle,
             auto_save_epoch: 0,
@@ -1177,6 +1184,8 @@ impl AppView {
         self.state.session.sidebar_scroll_top = sidebar_offset_y;
         self.state.session.sidebar_width = self.sidebar_width;
         self.state.session.sidebar_mode = self.sidebar_mode.clone();
+        // Restored on the next launch by `AppView::new`.
+        self.state.session.find_replace_open = self.find_bar.replace_open;
         self.state.queue_session_state_save(true);
     }
 
@@ -2398,6 +2407,15 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 self.request_find_search(cx);
             }
         } else {
+            // A word (or a part of one) selected in the editor becomes the
+            // query: Ctrl+F right after selecting should search for it. A
+            // selection spanning lines is not a query, so the old one stays.
+            if let Some(selected) = self.state.active_selected_text() {
+                let selected = selected.trim();
+                if !selected.is_empty() && !selected.contains(['\n', '\r']) {
+                    self.find_bar.query.set_text(selected);
+                }
+            }
             self.request_find_search(cx);
         }
         self.find_bar.replace.blink.disable(cx);
@@ -2412,7 +2430,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             return;
         }
         self.find_bar.is_open = false;
-        self.find_bar.replace_open = false;
+        // The expander's state is a preference, not a per-pass value: the next
+        // Ctrl+F opens the bar the way the user left it.
         self.find_bar.matches.clear();
         self.find_bar.matches_query.clear();
         self.find_bar.matches_version = 0;
@@ -2456,6 +2475,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             .cancel
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.find_bar.search_query = self.find_bar.query.text().to_string();
+        self.find_bar.search_options = self.find_bar.options();
         self.find_bar.search_version = self
             .state
             .active_document()
@@ -2464,6 +2484,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         if self.find_bar.query.is_empty() {
             self.find_bar.matches.clear();
             self.find_bar.matches_query.clear();
+            self.find_bar.matches_options = self.find_bar.options();
             self.find_bar.matches_version = 0;
             self.find_bar.active = 0;
             self.find_bar.truncated = false;
@@ -2485,6 +2506,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             return;
         }
         let query = self.find_bar.query.text().to_string();
+        let options = self.find_bar.options();
         let Some(doc) = self.state.active_document() else { return; };
         let version = doc.version;
         let rope = doc.rope().clone();
@@ -2497,7 +2519,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         let background = cx.background_executor().clone();
         cx.foreground_executor()
             .spawn(async move {
-                let (query, matches) = background
+                let (query, options, matches) = background
                     .spawn(async move {
                         // The rope is immutable while the scan runs (the
                         // version guard in `finish_find_scan` rejects results
@@ -2507,14 +2529,15 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         let matches = crate::views::find_bar::scan_rope(
                             &rope,
                             &query,
+                            options,
                             crate::views::find_bar::MAX_FIND_MATCHES,
                             &|| cancel.load(std::sync::atomic::Ordering::Relaxed),
                         );
-                        (query, matches)
+                        (query, options, matches)
                     })
                     .await;
                 let _ = entity.update(&mut async_cx, |this, cx| {
-                    this.finish_find_scan(seq, version, query, matches, cx);
+                    this.finish_find_scan(seq, version, query, options, matches, cx);
                 });
             })
             .detach();
@@ -2526,6 +2549,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         seq: u64,
         version: u64,
         query: String,
+        options: crate::views::find_bar::FindOptions,
         matches: Vec<std::ops::Range<usize>>,
         cx: &mut Context<Self>,
     ) {
@@ -2543,6 +2567,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 matches.len() >= crate::views::find_bar::MAX_FIND_MATCHES;
             self.find_bar.matches = matches;
             self.find_bar.matches_query = query;
+            self.find_bar.matches_options = options;
             self.find_bar.matches_version = version;
             self.find_bar.active = 0;
             let step = self.find_bar.pending_step.take();
@@ -2602,16 +2627,23 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         if self.find_bar.matches_query != self.find_bar.query.text() {
             return true;
         }
+        // Flipping `Aa` or whole-word changes what the ranges mean, even
+        // though the query text and the document are the same.
+        if self.find_bar.matches_options != self.find_bar.options() {
+            return true;
+        }
         self.state
             .active_document()
             .map(|doc| doc.version != self.find_bar.matches_version)
             .unwrap_or(true)
     }
 
-    /// Whether a scan for the current query and document version is already
-    /// on its way (or installed), so a repeated action should not restart it.
+    /// Whether a scan for the current query, toggles and document version is
+    /// already on its way (or installed), so a repeated action should not
+    /// restart it.
     fn find_request_is_current(&self) -> bool {
         self.find_bar.search_query == self.find_bar.query.text()
+            && self.find_bar.search_options == self.find_bar.options()
             && self
                 .state
                 .active_document()
@@ -2671,6 +2703,42 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             (current + total - 1) % total
         };
         self.find_activate(next, true, cx);
+    }
+
+    /// Flips case sensitivity of the find bar and re-runs the scan.
+    fn toggle_find_case(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.find_bar.case_sensitive = !self.find_bar.case_sensitive;
+        self.rescan_after_find_option(window, cx);
+    }
+
+    /// Flips whole-word matching of the find bar and re-runs the scan.
+    fn toggle_find_whole_word(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.find_bar.whole_word = !self.find_bar.whole_word;
+        self.rescan_after_find_option(window, cx);
+    }
+
+    /// Re-runs the find scan after a matching switch changed.
+    ///
+    /// The ranges and every pending action were computed under the old rules,
+    /// so they are dropped first: a queued step must not land on a list that no
+    /// longer matches what the user asked for, and a running Replace All is
+    /// cancelled because it would rewrite text by the old rule.
+    fn rescan_after_find_option(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The ranges were found under the old rules: drop them now so the
+        // counter never pairs new rules with an old count, and the buttons
+        // stay disabled until the new pass lands.
+        self.find_bar.matches.clear();
+        self.find_bar.matches_query.clear();
+        self.find_bar.matches_version = 0;
+        self.find_bar.active = 0;
+        self.find_bar.truncated = false;
+        self.find_bar.pending_step = None;
+        self.find_bar.pending_after = None;
+        self.find_bar.pending_replace = false;
+        self.find_bar.cancel_replace_all();
+        self.find_bar.query.focus(window);
+        self.find_bar.query.blink.pause_and_show(BlinkTarget::FindQuery, cx);
+        self.request_find_search(cx);
     }
 
     /// Replaces the active match with the replace field and moves to the next.
@@ -2760,11 +2828,12 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         }
         // The window and the current version, read together so the ranges and
         // the text they describe cannot come from different revisions.
-        let Some((version, scan_start, owned_end, window)) =
+        let Some((version, scan_start, owned_end, left_char, window)) =
             self.find_patch_window(&replaced, inserted_len, margin)
         else {
             return false;
         };
+        let options = self.find_bar.options();
         let old = std::mem::take(&mut self.find_bar.matches);
         let mut patched = crate::views::find_bar::patch_matches(
             &old,
@@ -2774,6 +2843,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             owned_end,
             &window,
             &query,
+            options,
+            left_char,
             crate::views::find_bar::MAX_FIND_MATCHES,
         );
         if patched.len() > crate::views::find_bar::MAX_FIND_MATCHES {
@@ -2782,6 +2853,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         }
         self.find_bar.matches = patched;
         self.find_bar.matches_query = query;
+        self.find_bar.matches_options = options;
         self.find_bar.matches_version = version;
         if self.find_bar.matches.is_empty() {
             // The replacement removed the last match: the highlight has to go
@@ -2804,13 +2876,14 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
     /// Slice around a replacement: one match length of context on each side,
     /// plus the same context again on the right for a match that starts just
     /// inside and ends outside. All bounds are snapped to character
-    /// boundaries. Returns the document version the slice belongs to.
+    /// boundaries. Returns the document version the slice belongs to and the
+    /// character just before it, which whole-word matching needs.
     fn find_patch_window(
         &self,
         replaced: &std::ops::Range<usize>,
         inserted_len: usize,
         margin: usize,
-    ) -> Option<(u64, usize, usize, String)> {
+    ) -> Option<(u64, usize, usize, Option<char>, String)> {
         let doc = self.state.active_document()?;
         let version = doc.version;
         let doc_len = doc.len();
@@ -2830,7 +2903,22 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         while scan_end < doc_len && !doc.is_char_boundary(scan_end) {
             scan_end += 1;
         }
-        Some((version, scan_start, owned_end, doc.slice_to_string(scan_start..scan_end)))
+        let left_char = if scan_start == 0 {
+            None
+        } else {
+            let mut from = scan_start.saturating_sub(4);
+            while from < scan_start && !doc.is_char_boundary(from) {
+                from += 1;
+            }
+            doc.slice_to_string(from..scan_start).chars().next_back()
+        };
+        Some((
+            version,
+            scan_start,
+            owned_end,
+            left_char,
+            doc.slice_to_string(scan_start..scan_end),
+        ))
     }
 
     /// Replaces every match in one edit, so undo treats it as a single step.
@@ -2869,6 +2957,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         let version = doc.version;
         let path = doc.path.clone();
         let rope = doc.rope().clone();
+        let options = self.find_bar.options();
 
         // An abandoned pass (the query changed while it ran) is stopped here
         // instead of being watched.
@@ -2929,6 +3018,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             &rope,
                             &query,
                             &replacement,
+                            options,
                             &|| cancel.load(std::sync::atomic::Ordering::Relaxed),
                             &|done| progress.store(done, std::sync::atomic::Ordering::Relaxed),
                         )
@@ -7386,6 +7476,49 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         // document; the pass wins and the button waits for it.
         let replace_one_ready = has_matches && self.find_bar.replace_all.is_none();
 
+        // Matching switches at the right of the query: `Aa` for case and an
+        // underlined `ab` for whole words, the same pair the editor's own find
+        // popup shows. They are text, not new icons, so they keep the app's
+        // icon set unchanged.
+        let option_button = |id: &'static str, label: &'static str, active: bool, underline: bool| {
+            div()
+                .id(id)
+                .h(px(20.0))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .px_1()
+                .rounded_xs()
+                .cursor_pointer()
+                .when(active, |d| d.bg(theme.bg_hover))
+                .when(!active, |d| d.hover(|h| h.bg(theme.bg_hover)))
+                .child(
+                    div()
+                        .font_family("Segoe UI")
+                        .text_xs()
+                        .text_color(if active { theme.accent } else { theme.text_muted })
+                        .when(underline, |d| d.underline())
+                        .child(label),
+                )
+        };
+        let case_toggle = option_button(
+            "find-match-case",
+            "Aa",
+            self.find_bar.case_sensitive,
+            false,
+        )
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(|this, _, window, cx| this.toggle_find_case(window, cx)));
+        let word_toggle = option_button(
+            "find-whole-word",
+            "ab",
+            self.find_bar.whole_word,
+            true,
+        )
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(|this, _, window, cx| this.toggle_find_whole_word(window, cx)));
+
         let query_box = div()
             .id("find-query-box")
             .track_focus(&self.find_query_focus_handle)
@@ -7441,6 +7574,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     .text_color(theme.text_muted)
                     .child(self.find_bar.counter()),
             )
+            .child(case_toggle)
+            .child(word_toggle)
             // Clear button inside the field, after the count, like the other
             // in-field clear buttons of the app.
             .when(!self.find_bar.query.is_empty(), |d| {
@@ -7504,6 +7639,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(cx.listener(|this, _, _, cx| {
             this.find_bar.replace_open = !this.find_bar.replace_open;
+            // Kept in the session as it changes, so any save on the way out
+            // (or before it) records the state the user last chose.
+            this.state.session.find_replace_open = this.find_bar.replace_open;
             cx.notify();
         }));
         let close = nav_button("find-close", icons::ICON_CLOSE, true)
@@ -7515,24 +7653,120 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             .flex()
             .flex_col()
             .gap_1p5()
-            .pl(px(48.0))
-            .pr(px(16.0))
+            // Symmetric padding keeps the centred block truly centred in the
+            // window; the block itself is narrower than the editor.
+            .px(px(16.0))
             .pb(px(12.0))
-            .bg(theme.bg_editor)
+            .bg(theme.bg_editor);
+
+        // The expander sits left of the fields, so the query and replace
+        // fields start on the same x. Both fields live in one column and both
+        // groups of buttons in another, which keeps the two fields exactly the
+        // same length whatever the buttons next to them measure.
+        let mut fields = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_1p5()
             .child(
                 div()
                     .w_full()
-                    .max_w(px(620.0))
+                    .h(px(28.0))
+                    .flex()
+                    .items_center()
+                    .child(query_box),
+            );
+        let mut actions = div()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            // The row gap only exists while both rows are drawn; the collapsed
+            // measuring row has no height, so no gap may separate it.
+            .when(self.find_bar.replace_open, |d| d.gap_1p5())
+            .child(
+                div()
+                    .h(px(28.0))
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap_1p5()
-                    .child(query_box)
                     .child(prev)
                     .child(next)
-                    .child(toggle)
                     .child(close),
             );
+
+        // The replace buttons keep their place even while the second row is
+        // collapsed: the actions column is as wide as this row whatever the
+        // panel shows, so opening the replace field never shortens either
+        // field. The buttons follow the fields instead of being pushed to the
+        // right edge.
+        let action_label = |text: String| {
+            div()
+                .font_family("Segoe UI")
+                .text_xs()
+                .text_color(theme.text_primary)
+                .child(text)
+        };
+        let action_button = |id: &'static str, text: String| {
+            div()
+                .id(id)
+                .h(px(24.0))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .px_2()
+                .bg(theme.bg_card)
+                .border_1()
+                .border_color(theme.border)
+                .rounded_sm()
+                .child(action_label(text))
+        };
+        // Nothing found means nothing to replace: the whole-document pass
+        // waits for a non-empty list instead of rewriting a document the
+        // search just found no matches in.
+        let replace_all_busy = self.find_bar.replace_all.is_some();
+        let replace_all_ready = has_matches && !replace_all_busy;
+        let replace_live = self.find_bar.replace_open;
+        let mut replace_one = action_button("find-replace-one", self.t("editor.replace"));
+        let mut replace_all = action_button("find-replace-all", self.t("editor.replace_all"));
+        if replace_live {
+            replace_one = replace_one
+                .cursor_pointer()
+                .when(!replace_one_ready, |d| d.opacity(0.45).cursor_not_allowed())
+                .when(replace_one_ready, |d| d.hover(|h| h.bg(theme.bg_hover)))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|this, _, _, cx| this.find_replace_current(cx)));
+            replace_all = replace_all
+                .cursor_pointer()
+                // A running pass is not dimmed: the replace field beside it
+                // is showing its progress.
+                .when(!replace_all_ready && !replace_all_busy, |d| {
+                    d.opacity(0.45).cursor_not_allowed()
+                })
+                .when(replace_all_busy, |d| d.cursor_not_allowed())
+                .when(replace_all_ready, |d| d.hover(|h| h.bg(theme.bg_hover)))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|this, _, _, cx| this.find_replace_all(cx)));
+        }
+
+        let mut replace_actions = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1p5()
+            .child(replace_one)
+            .child(replace_all);
+        if replace_live {
+            replace_actions = replace_actions.h(px(28.0));
+        } else {
+            // Collapsed: this row only measures the buttons so the actions
+            // column keeps the width it has when the field is open. It takes
+            // no height, has no listeners and no hitboxes, so nothing can be
+            // clicked where nothing is drawn.
+            replace_actions = replace_actions.h(px(0.0)).invisible();
+        }
+        actions = actions.child(replace_actions);
 
         if self.find_bar.replace_open {
             let replace_box = div()
@@ -7615,71 +7849,37 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     )
                 });
 
-            let action_label = |text: String| {
-                div()
-                    .font_family("Segoe UI")
-                    .text_xs()
-                    .text_color(theme.text_primary)
-                    .child(text)
-            };
-            let replace_one = div()
-                .id("find-replace-one")
-                .h(px(24.0))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .px_2()
-                .bg(theme.bg_card)
-                .border_1()
-                .border_color(theme.border)
-                .rounded_sm()
-                .cursor_pointer()
-                .when(!replace_one_ready, |d| d.opacity(0.45).cursor_not_allowed())
-                .when(replace_one_ready, |d| d.hover(|h| h.bg(theme.bg_hover)))
-                .child(action_label(self.t("editor.replace")))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(|this, _, _, cx| this.find_replace_current(cx)));
-            // Nothing found means nothing to replace: the whole-document pass
-            // waits for a non-empty list instead of rewriting a document the
-            // search just found no matches in.
-            let replace_all_busy = self.find_bar.replace_all.is_some();
-            let replace_all_ready = has_matches && !replace_all_busy;
-            let replace_all = div()
-                .id("find-replace-all")
-                .h(px(24.0))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .px_2()
-                .bg(theme.bg_card)
-                .border_1()
-                .border_color(theme.border)
-                .rounded_sm()
-                .cursor_pointer()
-                // A running pass is not dimmed: the replace field beside it is
-                // showing its progress.
-                .when(!replace_all_ready && !replace_all_busy, |d| {
-                    d.opacity(0.45).cursor_not_allowed()
-                })
-                .when(replace_all_busy, |d| d.cursor_not_allowed())
-                .when(replace_all_ready, |d| d.hover(|h| h.bg(theme.bg_hover)))
-                .child(action_label(self.t("editor.replace_all")))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(|this, _, _, cx| this.find_replace_all(cx)));
-
-            root = root.child(
+            fields = fields.child(
                 div()
                     .w_full()
-                    .max_w(px(620.0))
+                    .h(px(28.0))
                     .flex()
-                    .flex_row()
                     .items_center()
-                    .gap_1p5()
-                    .child(replace_box)
-                    .child(replace_one)
-                    .child(replace_all),
+                    .child(replace_box),
             );
         }
+
+        root = root.child(
+            div()
+                .w_full()
+                .max_w(px(620.0))
+                // Centred in the editor width instead of pinned to the left.
+                .mx_auto()
+                .flex()
+                .flex_row()
+                .items_start()
+                .gap_1p5()
+                .child(
+                    div()
+                        .h(px(28.0))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .child(toggle),
+                )
+                .child(fields)
+                .child(actions),
+        );
 
         root
     }

@@ -21,12 +21,43 @@ pub const MAX_FIND_MATCHES: usize = 19_999;
 /// within a frame, large enough that the per-slice fixed cost disappears.
 const SCAN_CHUNK: usize = 256 * 1024;
 
+/// Matching rules of the find bar beyond the query text: the `Aa` toggle and
+/// the whole-word toggle. Kept as one value so a result can remember the exact
+/// rules it was computed with.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub struct FindOptions {
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+}
+
+impl FindOptions {
+    fn fold(self) -> crate::search::fold::Fold {
+        if self.case_sensitive {
+            crate::search::fold::Fold::Exact
+        } else {
+            crate::search::fold::Fold::Lower
+        }
+    }
+
+    fn mode(self) -> crate::search::fold::Mode {
+        if self.whole_word {
+            crate::search::fold::Mode::WholeWord
+        } else {
+            crate::search::fold::Mode::Substring
+        }
+    }
+}
+
 pub struct FindBarState {
     pub is_open: bool,
     pub query: TextInput,
     pub replace: TextInput,
     /// Whether the second (replace) row is expanded.
     pub replace_open: bool,
+    /// Query matching is case-sensitive (`Aa` toggle).
+    pub case_sensitive: bool,
+    /// Query matches only whole words.
+    pub whole_word: bool,
     /// Non-overlapping byte ranges of the active document's current query.
     pub matches: Vec<Range<usize>>,
     /// Index of the selected match in `matches`; `0` when there is none.
@@ -34,6 +65,8 @@ pub struct FindBarState {
     /// Query `matches` were computed from, so navigation can notice an edit
     /// to the query field.
     pub matches_query: String,
+    /// Toggles `matches` were computed with, so flipping one rescans.
+    pub matches_options: FindOptions,
     /// Document version `matches` were computed from, so edits in the editor
     /// invalidate the list instead of making Replace write to a stale range.
     pub matches_version: u64,
@@ -53,6 +86,8 @@ pub struct FindBarState {
     pub search_query: String,
     /// Document version of the newest request, paired with `search_query`.
     pub search_version: u64,
+    /// Toggles of the newest request, paired with `search_query`.
+    pub search_options: FindOptions,
     /// Navigation asked for while the list was stale; applied on the reply.
     pub pending_step: Option<isize>,
     /// Replacement just happened at this offset; the reply activates the
@@ -80,9 +115,12 @@ impl FindBarState {
             query: TextInput::new(query_handle),
             replace: TextInput::new(replace_handle),
             replace_open: false,
+            case_sensitive: false,
+            whole_word: false,
             matches: Vec::new(),
             active: 0,
             matches_query: String::new(),
+            matches_options: FindOptions::default(),
             matches_version: 0,
             truncated: false,
             search_seq: 0,
@@ -91,6 +129,7 @@ impl FindBarState {
             cancel: Arc::new(AtomicBool::new(false)),
             search_query: String::new(),
             search_version: 0,
+            search_options: FindOptions::default(),
             pending_step: None,
             pending_after: None,
             pending_replace: false,
@@ -107,6 +146,15 @@ impl FindBarState {
         self.replace_cancel
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.replace_all = None;
+    }
+
+    /// The `Aa` and whole-word toggles as one value, for comparing a result
+    /// with the rules it was computed under.
+    pub fn options(&self) -> FindOptions {
+        FindOptions {
+            case_sensitive: self.case_sensitive,
+            whole_word: self.whole_word,
+        }
     }
 
     /// Counter label next to the query: `current/total`, `0/0` when empty.
@@ -166,6 +214,7 @@ struct WindowPass<'a> {
 fn stream_rope(
     rope: &crop::Rope,
     query: &str,
+    options: FindOptions,
     limit: usize,
     cancelled: &dyn Fn() -> bool,
     mut on_pass: impl FnMut(WindowPass<'_>) -> bool,
@@ -179,6 +228,8 @@ fn stream_rope(
         .saturating_mul(12)
         .saturating_add(8)
         .min(SCAN_CHUNK);
+    let fold = options.fold();
+    let mode = options.mode();
 
     // Window starting at absolute `base`; everything before `cut` is settled
     // by this pass, everything after it is the context a crossing match needs.
@@ -186,6 +237,9 @@ fn stream_rope(
     let mut base = 0usize;
     let mut chunks = rope.chunks();
     let mut exhausted = false;
+    // Last character before `window`, so a whole-word match on its first byte
+    // still sees the left neighbour the pass boundary cut away.
+    let mut left_char: Option<char> = None;
     let mut accepted: Vec<Range<usize>> = Vec::new();
     loop {
         while window.len() < SCAN_CHUNK + overlap {
@@ -208,12 +262,7 @@ fn stream_rope(
         } else {
             floor_boundary(&window, SCAN_CHUNK)
         };
-        let hits = crate::search::fold::ranges(
-            &window,
-            &[query],
-            crate::search::fold::Fold::Lower,
-            limit,
-        );
+        let hits = crate::search::fold::ranges_mode(&window, &[query], fold, mode, limit);
         accepted.clear();
         let mut owned = cut;
         for hit in hits {
@@ -221,8 +270,17 @@ fn stream_rope(
             if hit.start >= cut {
                 break;
             }
+            // The window has no character before its first byte, so the
+            // matcher took it for a word boundary; restore the real neighbour.
+            let left_blocks = options.whole_word
+                && hit.start == 0
+                && left_char.is_some_and(|c| c.is_alphanumeric());
+            // A rejected hit still ends the greedy sequence: resuming inside
+            // it would report overlapping matches the full text scan does not.
             owned = owned.max(hit.end);
-            accepted.push(hit);
+            if !left_blocks {
+                accepted.push(hit);
+            }
         }
         if !on_pass(WindowPass {
             base,
@@ -236,6 +294,7 @@ fn stream_rope(
             return true;
         }
         let drain = owned.min(window.len());
+        left_char = window[..drain].chars().next_back();
         window.drain(..drain);
         base += drain;
     }
@@ -252,11 +311,12 @@ fn stream_rope(
 pub fn scan_rope(
     rope: &crop::Rope,
     query: &str,
+    options: FindOptions,
     limit: usize,
     cancelled: &dyn Fn() -> bool,
 ) -> Vec<Range<usize>> {
     let mut found = Vec::new();
-    stream_rope(rope, query, limit, cancelled, |pass| {
+    stream_rope(rope, query, options, limit, cancelled, |pass| {
         for hit in pass.hits {
             found.push(pass.base + hit.start..pass.base + hit.end);
             if found.len() >= limit {
@@ -290,6 +350,7 @@ pub fn replace_rope(
     rope: &crop::Rope,
     query: &str,
     replacement: &str,
+    options: FindOptions,
     cancelled: &dyn Fn() -> bool,
     on_progress: &dyn Fn(usize),
 ) -> Option<ReplaceAllText> {
@@ -302,7 +363,7 @@ pub fn replace_rope(
     // Start of the not-yet-emitted part of the current window; each pass
     // begins at the byte the previous one settled.
     let mut last = 0usize;
-    let completed = stream_rope(rope, query, usize::MAX, cancelled, |pass| {
+    let completed = stream_rope(rope, query, options, usize::MAX, cancelled, |pass| {
         for hit in pass.hits {
             out.push_str(&pass.window[last..hit.start]);
             out.push_str(replacement);
@@ -345,14 +406,24 @@ pub fn patch_matches(
     owned_end: usize,
     window: &str,
     query: &str,
+    options: FindOptions,
+    left_char: Option<char>,
     limit: usize,
 ) -> Vec<Range<usize>> {
-    let hits = crate::search::fold::ranges(
+    let mut hits = crate::search::fold::ranges_mode(
         window,
         &[query],
-        crate::search::fold::Fold::Lower,
+        options.fold(),
+        options.mode(),
         limit,
     );
+    // The slice starts mid-text, so the first byte has no left neighbour for
+    // the word-boundary check; the character before `scan_start` is that
+    // neighbour.
+    let left_blocks = options.whole_word && left_char.is_some_and(|c| c.is_alphanumeric());
+    if left_blocks && hits.first().is_some_and(|hit| hit.start == 0) {
+        hits.remove(0);
+    }
     let owned_len = owned_end.saturating_sub(scan_start);
     let delta = inserted_len as isize - (replaced.end - replaced.start) as isize;
     let mut patched = Vec::with_capacity(old.len());
@@ -407,10 +478,24 @@ mod tests {
         fold::ranges(hay, &[query], Fold::Lower, MAX_FIND_MATCHES)
     }
 
+    fn whole_scan_opts(hay: &str, query: &str, options: FindOptions) -> Vec<Range<usize>> {
+        fold::ranges_mode(
+            hay,
+            &[query],
+            options.fold(),
+            options.mode(),
+            MAX_FIND_MATCHES,
+        )
+    }
+
     /// The production scan, over a rope built from `text`.
     fn rope_scan(text: &str, query: &str) -> Vec<Range<usize>> {
+        rope_scan_opts(text, query, FindOptions::default())
+    }
+
+    fn rope_scan_opts(text: &str, query: &str, options: FindOptions) -> Vec<Range<usize>> {
         let rope = crop::Rope::from(text);
-        scan_rope(&rope, query, MAX_FIND_MATCHES, &|| false)
+        scan_rope(&rope, query, options, MAX_FIND_MATCHES, &|| false)
     }
 
     #[test]
@@ -443,10 +528,11 @@ mod tests {
     fn chunked_scan_respects_limit_and_cancellation() {
         let text = "ab ".repeat(SCAN_CHUNK);
         let rope = crop::Rope::from(text);
-        let limited = scan_rope(&rope, "ab", 5, &|| false);
+        let limited = scan_rope(&rope, "ab", FindOptions::default(), 5, &|| false);
         assert_eq!(limited.len(), 5);
 
-        let cancelled = scan_rope(&rope, "ab", MAX_FIND_MATCHES, &|| true);
+        let cancelled =
+            scan_rope(&rope, "ab", FindOptions::default(), MAX_FIND_MATCHES, &|| true);
         assert!(cancelled.is_empty());
     }
 
@@ -462,6 +548,157 @@ mod tests {
         let got = rope_scan(&text, "п");
         assert_eq!(got, expected);
         assert_eq!(got.len(), 1);
+    }
+
+    #[test]
+    fn rope_scan_honours_case_sensitivity() {
+        let text = "Needle needle NEEDLE needle";
+        let exact = FindOptions {
+            case_sensitive: true,
+            ..Default::default()
+        };
+        let hits = rope_scan_opts(text, "needle", exact);
+        assert_eq!(hits.len(), 2);
+        for range in &hits {
+            assert_eq!(&text[range.clone()], "needle");
+        }
+        assert_eq!(
+            rope_scan_opts(text, "needle", FindOptions::default()).len(),
+            4
+        );
+
+        // The rule holds across a chunk boundary too: only the lowercase hit
+        // of the second half survives.
+        let mut long = "x".repeat(SCAN_CHUNK / 2);
+        long.push_str("NEEDLE");
+        long.push_str(&"y".repeat(SCAN_CHUNK));
+        long.push_str("needle");
+        let hits = rope_scan_opts(&long, "needle", exact);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(&long[hits[0].clone()], "needle");
+    }
+
+    #[test]
+    fn rope_scan_honours_whole_words_across_the_window_cut() {
+        let words = FindOptions {
+            whole_word: true,
+            ..Default::default()
+        };
+        // The second window starts exactly with "cat", which the window alone
+        // reads as a word start; the real neighbour before the cut is an `a`,
+        // so a whole-text scan reports nothing and the stream must agree.
+        let mut text = "a".repeat(SCAN_CHUNK);
+        text.push_str("cat");
+        text.push_str(" cat");
+        text.push_str(&"z".repeat(64));
+        let got = rope_scan_opts(&text, "cat", words);
+        assert!(got.is_empty());
+        assert_eq!(got, whole_scan_opts(&text, "cat", words));
+        // Substring mode has no boundary rule, so the same text has two hits.
+        assert_eq!(
+            rope_scan_opts(&text, "cat", FindOptions::default()).len(),
+            2
+        );
+
+        // A real word one byte into the second window is still found: the
+        // left-context check must not swallow the rest of the window.
+        let mut text = "a".repeat(SCAN_CHUNK);
+        text.push_str(" cat ");
+        text.push_str(&"z".repeat(64));
+        assert_eq!(
+            rope_scan_opts(&text, "cat", words),
+            whole_scan_opts(&text, "cat", words)
+        );
+        assert_eq!(rope_scan_opts(&text, "cat", words).len(), 1);
+    }
+
+    #[test]
+    fn streaming_replace_uses_the_matching_options() {
+        let text = "Cat cat CAT scattered cat";
+        let rope = crop::Rope::from(text);
+        let options = FindOptions {
+            case_sensitive: true,
+            whole_word: true,
+        };
+        let got = replace_rope(&rope, "cat", "dog", options, &|| false, &|_| {})
+            .expect("scan is not cancelled");
+        assert_eq!(got.text, "Cat dog CAT scattered dog");
+        assert_eq!(got.replacements, 2);
+    }
+
+    #[test]
+    fn patch_after_replace_keeps_the_matching_options() {
+        // The patch must look for the same thing the list was built with: with
+        // whole words on, "cat" inside "scattered" is not a match.
+        let text = "cat scattered cat";
+        let rope = crop::Rope::from(text);
+        let options = FindOptions {
+            whole_word: true,
+            ..Default::default()
+        };
+        let old = scan_rope(&rope, "cat", options, MAX_FIND_MATCHES, &|| false);
+        assert_eq!(old.len(), 2);
+        let replaced = old[0].clone();
+        let new_text = "dog scattered cat".to_string();
+        let patched = patch_matches(
+            &old,
+            &replaced,
+            3,
+            0,
+            new_text.len(),
+            &new_text,
+            "cat",
+            options,
+            None,
+            MAX_FIND_MATCHES,
+        );
+        assert_eq!(
+            patched,
+            scan_rope(
+                &crop::Rope::from(new_text),
+                "cat",
+                options,
+                MAX_FIND_MATCHES,
+                &|| false
+            )
+        );
+        assert_eq!(patched.len(), 1);
+    }
+
+    #[test]
+    fn patched_slice_uses_the_character_before_it() {
+        // The rescanned slice starts at "cat" inside "acat". On its own the
+        // slice reads as a word start; the document says otherwise.
+        let options = FindOptions {
+            whole_word: true,
+            ..Default::default()
+        };
+        let inside_a_word = patch_matches(
+            &[],
+            &(0..0),
+            0,
+            1,
+            4,
+            "cat",
+            "cat",
+            options,
+            Some('a'),
+            MAX_FIND_MATCHES,
+        );
+        assert!(inside_a_word.is_empty());
+        let after_a_gap = patch_matches(
+            &[],
+            &(0..0),
+            0,
+            1,
+            4,
+            "cat",
+            "cat",
+            options,
+            Some(' '),
+            MAX_FIND_MATCHES,
+        );
+        assert_eq!(after_a_gap, vec![1..4]);
     }
 
     #[test]
@@ -490,7 +727,7 @@ mod tests {
         let rope = crop::Rope::from(text.clone());
         for query in ["needle", "п", "日", "aЖ"] {
             let expected = whole_scan(&text, query);
-            let got = scan_rope(&rope, query, MAX_FIND_MATCHES, &|| false);
+            let got = scan_rope(&rope, query, FindOptions::default(), MAX_FIND_MATCHES, &|| false);
             assert_eq!(got, expected, "query {query:?}");
         }
     }
@@ -551,8 +788,15 @@ mod tests {
             ("日", "z"),
             ("nothing-here", "y"),
         ] {
-            let got = replace_rope(&rope, query, replacement, &|| false, &|_| {})
-                .expect("scan is not cancelled");
+            let got = replace_rope(
+                &rope,
+                query,
+                replacement,
+                FindOptions::default(),
+                &|| false,
+                &|_| {},
+            )
+            .expect("scan is not cancelled");
             assert_eq!(
                 got.text,
                 naive_replace(&text, query, replacement),
@@ -571,9 +815,14 @@ mod tests {
         let text = format!("prefix {} suffix", "needle ".repeat(SCAN_CHUNK / 4));
         let rope = crop::Rope::from(text.clone());
         let progress = std::cell::RefCell::new(Vec::new());
-        let got = replace_rope(&rope, "needle", "thread", &|| false, &|done| {
-            progress.borrow_mut().push(done)
-        })
+        let got = replace_rope(
+            &rope,
+            "needle",
+            "thread",
+            FindOptions::default(),
+            &|| false,
+            &|done| progress.borrow_mut().push(done),
+        )
         .expect("scan is not cancelled");
         let progress = progress.into_inner();
         assert_eq!(got.replacements, whole_scan_all(&text, "needle").len());
@@ -586,13 +835,29 @@ mod tests {
     #[test]
     fn streaming_replace_stops_when_cancelled() {
         let rope = crop::Rope::from("needle ".repeat(SCAN_CHUNK));
-        assert!(replace_rope(&rope, "needle", "x", &|| true, &|_| {}).is_none());
+        assert!(replace_rope(
+            &rope,
+            "needle",
+            "x",
+            FindOptions::default(),
+            &|| true,
+            &|_| {}
+        )
+        .is_none());
     }
 
     #[test]
     fn streaming_replace_never_empties_the_document_for_an_empty_query() {
         let rope = crop::Rope::from("text");
-        assert!(replace_rope(&rope, "", "x", &|| false, &|_| {}).is_none());
+        assert!(replace_rope(
+            &rope,
+            "",
+            "x",
+            FindOptions::default(),
+            &|| false,
+            &|_| {}
+        )
+        .is_none());
     }
 
     #[test]
@@ -642,6 +907,7 @@ mod tests {
             (replaced.start + replacement.len() + margin).min(new_text.len()),
         );
         let scan_end = ceil_char(&new_text, (owned_end + margin).min(new_text.len()));
+        let left_char = new_text[..scan_start].chars().next_back();
         let patched = patch_matches(
             &old,
             &replaced,
@@ -650,6 +916,8 @@ mod tests {
             owned_end,
             &new_text[scan_start..scan_end],
             query,
+            FindOptions::default(),
+            left_char,
             MAX_FIND_MATCHES,
         );
         (new_text, patched)

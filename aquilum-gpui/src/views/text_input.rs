@@ -504,66 +504,83 @@ impl TextInput {
         let box_cell = self.box_origin_x.clone();
         let caret_visible = is_focused && self.cursor_visible();
 
+        // One fixed line box centered in the field, the way the sidebar quick
+        // filter draws its text: a bare text node would stick to the top of
+        // the taller find field, and a caret measured from that same line
+        // would look shorter than the text it belongs to.
+        let line_height = font_size + 4.0;
+
         div()
             .relative()
             .flex_1()
             .min_w_0()
             .h_full()
             .overflow_hidden()
+            .flex()
+            .flex_col()
+            .justify_center()
             .child(
-                gpui::canvas(
-                    move |bounds, _, _| {
-                        box_cell.set(f32::from(bounds.origin.x));
-                    },
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .size_full(),
-            )
-            // 1. Selection background
-            .when(selection_range.is_some() && sel_w > 0.0, |s| {
-                s.child(
-                    div()
+                div()
+                    .relative()
+                    .w_full()
+                    .h(px(line_height))
+                    .child(
+                        gpui::canvas(
+                            move |bounds, _, _| {
+                                box_cell.set(f32::from(bounds.origin.x));
+                            },
+                            |_, _, _, _| {},
+                        )
                         .absolute()
-                        .left(px(sel_x1))
-                        .top(px(2.0))
-                        .w(px(sel_w))
-                        .h(px(font_size + 4.0))
-                        .bg(theme.selection_bg)
-                        .rounded_xs(),
-                )
-            })
-            // 2. Text or placeholder
-            .child(
-                if query.is_empty() {
-                    div()
-                        .font_family(SharedString::from(font_family.to_string()))
-                        .text_size(px(font_size))
-                        .text_color(theme.text_muted)
-                        .whitespace_nowrap()
-                        .child(placeholder.to_string())
-                } else {
-                    div()
-                        .font_family(SharedString::from(font_family.to_string()))
-                        .text_size(px(font_size))
-                        .text_color(theme.text_primary)
-                        .whitespace_nowrap()
-                        .child(query.clone())
-                }
+                        .size_full(),
+                    )
+                    // 1. Selection background
+                    .when(selection_range.is_some() && sel_w > 0.0, |s| {
+                        s.child(
+                            div()
+                                .absolute()
+                                .left(px(sel_x1))
+                                .top(px(0.0))
+                                .w(px(sel_w))
+                                .h(px(line_height))
+                                .bg(theme.selection_bg)
+                                .rounded_xs(),
+                        )
+                    })
+                    // 2. Text or placeholder
+                    .child(
+                        if query.is_empty() {
+                            div()
+                                .font_family(SharedString::from(font_family.to_string()))
+                                .text_size(px(font_size))
+                                .line_height(px(line_height))
+                                .text_color(theme.text_muted)
+                                .whitespace_nowrap()
+                                .child(placeholder.to_string())
+                        } else {
+                            div()
+                                .font_family(SharedString::from(font_family.to_string()))
+                                .text_size(px(font_size))
+                                .line_height(px(line_height))
+                                .text_color(theme.text_primary)
+                                .whitespace_nowrap()
+                                .child(query.clone())
+                        }
+                    )
+                    // 3. Crisp Caret
+                    .when(caret_visible, |s| {
+                        s.child(
+                            div()
+                                .absolute()
+                                .left(px(cursor_x))
+                                .top(px(0.0))
+                                .w(px(1.5))
+                                .h(px(line_height))
+                                .bg(theme.accent)
+                                .rounded_xs(),
+                        )
+                    }),
             )
-            // 3. Crisp Caret
-            .when(caret_visible, |s| {
-                s.child(
-                    div()
-                        .absolute()
-                        .left(px(cursor_x))
-                        .top(px(2.0))
-                        .w(px(1.5))
-                        .h(px(font_size + 2.0))
-                        .bg(theme.accent)
-                        .rounded_xs(),
-                )
-            })
     }
 }
 
