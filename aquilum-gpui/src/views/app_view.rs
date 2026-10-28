@@ -13858,6 +13858,9 @@ fn render_live_styled_row(
             let bullet_text = crate::markdown::bullet_paint_text(bullet, is_active_line);
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
             let guides = indent_guides(indent.chars().count());
+            // An idle row draws the dot itself, sized in cells so it stays centred
+            // in its marker cell; the line being edited shows the raw source marker.
+            let shows_dot = bullet_text != bullet;
 
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(prefix_len), prefix_len, reveal);
@@ -13868,8 +13871,43 @@ fn render_live_styled_row(
                     .items_center()
                     .h_full()
                     .children(guides)
-                    .child(div().child(indent.to_string()))
-                    .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(bullet_text.to_string()))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .w(px(indent.chars().count() as f32 * cell_w))
+                            .child(indent.to_string()),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .w(px(2.0 * cell_w))
+                            .when(shows_dot, |d| {
+                                d.child(
+                                    div()
+                                        .w(px(cell_w))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            div()
+                                                .w(px(cell_w * 0.6))
+                                                .h(px(cell_w * 0.6))
+                                                .rounded_full()
+                                                .bg(theme.accent),
+                                        ),
+                                )
+                                .child(div().w(px(cell_w)))
+                            })
+                            .when(!shows_dot, |d| {
+                                d.whitespace_nowrap()
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .text_color(theme.accent)
+                                    .child(bullet_text.to_string())
+                            }),
+                    )
                     .child(render_spans(row_spans, None, None, None))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans_revealed(
@@ -14275,14 +14313,14 @@ mod tests {
         });
     }
 
-    /// The numbered marker is painted by its own box, which rounds the text width
-    /// up to whole pixels, while the caret geometry comes from the shaped line,
-    /// which does not: at 14px `"1. "` measures 25.2041 but its box gets 26.
-    /// The renderer therefore gives the indent and marker boxes explicit cell
-    /// widths; this pins the other half of that contract — the shaped prefix sits
-    /// on whole cells, so `chars * cell_w` is exactly where the caret expects it.
+    /// A list marker is painted by its own box, which rounds the text width up to
+    /// whole pixels, while the caret geometry comes from the shaped line, which
+    /// does not: at 14px `"1. "` measures 25.2041 but its box gets 26. The
+    /// renderer therefore gives the indent and marker boxes explicit cell widths;
+    /// this pins the other half of that contract — the shaped prefix sits on whole
+    /// cells, so `chars * cell_w` is exactly where the caret expects it.
     #[test]
-    fn numbered_marker_prefix_sits_on_whole_cells() {
+    fn list_marker_prefix_sits_on_whole_cells() {
         gpui::Application::new().run(|cx: &mut gpui::App| {
             crate::fonts::register_embedded_fonts(cx);
             let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
@@ -14295,7 +14333,9 @@ mod tests {
                     .map(|s| f32::from(s.width))
                     .unwrap_or(7.7);
 
-                for line in ["1. one", "  2. two", "    10. ten"] {
+                for line in [
+                    "1. one", "  2. two", "    10. ten", "- one", "  - two", "    - three",
+                ] {
                     let v = VisualRow {
                         line_idx: 0,
                         sub_idx: 0,
@@ -14305,7 +14345,7 @@ mod tests {
                     };
                     let kind = classify_line(line, None);
                     let prefix_cols = crate::markdown::continuation_prefix_cols(line, &kind);
-                    assert!(prefix_cols > 0, "{line:?} is not a numbered row");
+                    assert!(prefix_cols > 0, "{line:?} is not a list row");
                     let layout = shape_row(
                         window.text_system(),
                         line,
