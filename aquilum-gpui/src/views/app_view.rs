@@ -2063,6 +2063,27 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         cx.notify();
     }
 
+    /// Top of the editor's text rows in window coordinates.
+    ///
+    /// Measured rather than assumed: the note title panel sits above the rows
+    /// and the find bar can be inserted between them, so a fixed header height
+    /// resolves a click to a row two or three lines below the pointer whenever
+    /// the bar is open. The handle is tracked by the active leaf's row list
+    /// only, which is also the only leaf whose rows accept clicks. Before the
+    /// first frame the handle has no bounds yet, so the old header heights are
+    /// the fallback.
+    fn editor_rows_top_y(&self) -> f32 {
+        let measured = f32::from(self.editor_scroll_handle.bounds().origin.y);
+        if measured > 0.0 {
+            return measured;
+        }
+        if self.state.workspace.is_leaf_in_titlebar(self.state.workspace.active_leaf) {
+            90.0
+        } else {
+            126.0
+        }
+    }
+
     /// Viewport geometry for editor middle-button smart scroll.
     ///
     /// Returns `(viewport_top, viewport_h, max_scroll)` in window coordinates.
@@ -3574,8 +3595,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             return;
         }
 
-        let in_titlebar = self.state.workspace.is_leaf_in_titlebar(self.state.workspace.active_leaf);
-        let editor_rows_top_y = if in_titlebar { 90.0 } else { 126.0 };
+        let editor_rows_top_y = self.editor_rows_top_y();
         if click_y < editor_rows_top_y {
             return;
         }
@@ -3762,8 +3782,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             return;
         }
 
-        // Top of rows area: Titlebar (38px) + Nav bar (40px) + note-title-panel (54px) = 132px
-        let editor_rows_top_y = 132.0;
+        // Same top the click mapping uses: measured, so an open find bar does
+        // not make the drag start two or three rows off.
+        let editor_rows_top_y = self.editor_rows_top_y();
         let editor_bottom_y = (viewport_h - 28.0).max(editor_rows_top_y + 100.0);
         let scroll_before = self.current_scroll_top_f64();
 
