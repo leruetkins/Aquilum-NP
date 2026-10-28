@@ -292,6 +292,10 @@ pub struct AppView {
     pub title_focus_handle: FocusHandle,
     pub was_title_focused: bool,
     pub title_blink: BlinkManager,
+    /// In-editor find/replace bar shown under the note title (Ctrl+F).
+    pub find_bar: crate::views::find_bar::FindBarState,
+    pub find_query_focus_handle: FocusHandle,
+    pub find_replace_focus_handle: FocusHandle,
     pub auto_save_epoch: usize,
     pub active_color_picker: Option<&'static str>,
     pub custom_hex_input: String,
@@ -407,6 +411,11 @@ impl AppView {
             crate::settings::SettingsModel::new(state.settings.clone())
         });
 
+        // The find fields must own the same handles the rendered boxes track,
+        // otherwise focus and keystrokes go to a handle nobody is bound to.
+        let find_query_focus_handle = cx.focus_handle();
+        let find_replace_focus_handle = cx.focus_handle();
+
         let mut this = Self {
             state,
             theme,
@@ -496,6 +505,12 @@ impl AppView {
             title_focus_handle: cx.focus_handle(),
             was_title_focused: false,
             title_blink: BlinkManager::new(),
+            find_bar: crate::views::find_bar::FindBarState::new(
+                find_query_focus_handle.clone(),
+                find_replace_focus_handle.clone(),
+            ),
+            find_query_focus_handle,
+            find_replace_focus_handle,
             auto_save_epoch: 0,
             active_color_picker: None,
             custom_hex_input: String::new(),
@@ -1648,14 +1663,27 @@ impl AppView {
 
     
 /// Scrolls the viewport the least amount that brings the caret into view.
-///
-/// The caret can be anywhere — `Ctrl+End`, a search hit, a note restored
-/// mid-file — while the window follows the viewport. Revealing it needs its row,
-/// so the window is placed on the caret first; after the reveal the viewport
-/// shows the caret, so that anchor is the right one for the next frame too.
 pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrategy) {
     // handle_key обновляет визуальный кеш после изменения текста
     // и перемещения курсора.
+    let target = self
+        .state
+        .active_view_and_doc()
+        .map(|(view, doc)| view.line_col(doc));
+    if let Some((line, col)) = target {
+        self.scroll_visual_row_into_view(line, col);
+    }
+}
+
+/// Scrolls the viewport the least amount that brings the row of `line` at
+/// `col` into view.
+///
+/// The row can be anywhere — the caret after `Ctrl+End`, a search hit, a note
+/// restored mid-file — while the window follows the viewport. Revealing it
+/// needs its row, so the window is placed on `line` first; after the reveal
+/// the viewport shows it, so that anchor is the right one for the next frame
+/// too. Find uses it to reveal a match without moving the document caret.
+fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
     let measured_h = f32::from(self.editor_scroll_handle.bounds().size.height);
 
     let viewport_h = if measured_h > 50.0 {
@@ -1664,8 +1692,9 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         self.last_editor_h.get().max(100.0)
     };
 
-    // Row geometry of the caret, in document coordinates. Scoped so the note
-    // borrow ends before the scroll position is read and written through `self`.
+    // Row geometry of the target row, in document coordinates. Scoped so the
+    // note borrow ends before the scroll position is read and written through
+    // `self`.
     let geometry = {
         let word_wrap = self.word_wrap;
         let wrap_cols = self.last_wrap_cols;
@@ -1673,12 +1702,11 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             Some(p) => p,
             None => return,
         };
-        let (cursor_line, cursor_col) = view.line_col(doc);
-        let anchor = if view.window.covers_line(cursor_line) && view.window.covers_line(view.viewport.offset) {
+        let anchor = if view.window.covers_line(line) && view.window.covers_line(view.viewport.offset) {
             view.viewport.offset
         } else {
-            view.viewport.offset = cursor_line;
-            cursor_line
+            view.viewport.offset = line;
+            line
         };
         view.ensure_visual_cache_with_headings(
             doc,
@@ -1688,11 +1716,7 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             anchor,
             self.ctrl_preview_selection || !self.edit_mode,
         );
-        crate::markdown::find_visual_row_for_cursor(
-            &view.window.visual_rows,
-            cursor_line,
-            cursor_col,
-        )
+        crate::markdown::find_visual_row_for_cursor(&view.window.visual_rows, line, col)
         .map(|(v_idx, _)| {
             let top = view.doc_y_of_local_v_idx(v_idx);
             (
@@ -2321,6 +2345,10 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
     }
 
     pub(crate) fn select_note(&mut self, path: PathBuf, center_in_sidebar: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // A match list belongs to the note it was scanned from.
+        if self.find_bar.is_open {
+            self.close_find_bar(window, cx);
+        }
         // Empty-tab sentinels carry no file: activate the New Tab page instead.
         if crate::state::is_empty_tab_path(&path) {
             self.select_empty_tab(path, center_in_sidebar, window, cx);
@@ -2352,6 +2380,406 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         window.focus(&self.focus_handle);
         self.reset_editor_cursor_blink(cx);
         cx.notify();
+    }
+
+    /// Opens the in-editor find bar and focuses the query field.
+    ///
+    /// Calling it again while the bar is open only refocuses the field and
+    /// selects the existing query, like pressing Ctrl+F twice.
+    pub(crate) fn open_find_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.active_document().is_none() {
+            return;
+        }
+        let already_open = self.find_bar.is_open;
+        self.find_bar.is_open = true;
+        if already_open {
+            self.find_bar.query.select_all();
+            if self.find_is_stale() && !self.find_request_is_current() {
+                self.request_find_search(cx);
+            }
+        } else {
+            self.request_find_search(cx);
+        }
+        self.find_bar.replace.blink.disable(cx);
+        self.find_bar.query.focus(window);
+        self.find_bar.query.blink.pause_and_show(BlinkTarget::FindQuery, cx);
+        cx.notify();
+    }
+
+    /// Closes the find bar, clears both fields and returns focus to the editor.
+    pub(crate) fn close_find_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.find_bar.is_open {
+            return;
+        }
+        self.find_bar.is_open = false;
+        self.find_bar.replace_open = false;
+        self.find_bar.matches.clear();
+        self.find_bar.matches_query.clear();
+        self.find_bar.matches_version = 0;
+        self.find_bar.active = 0;
+        self.find_bar.truncated = false;
+        // A reply from the scan still running must not repopulate the list.
+        self.find_bar.search_seq = self.find_bar.search_seq.wrapping_add(1);
+        self.find_bar
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.find_bar.search_queued = false;
+        self.find_bar.search_query.clear();
+        self.find_bar.search_version = 0;
+        self.find_bar.pending_step = None;
+        self.find_bar.pending_after = None;
+        self.find_bar.query.clear();
+        self.find_bar.replace.clear();
+        self.find_bar.query.blink.disable(cx);
+        self.find_bar.replace.blink.disable(cx);
+        window.focus(&self.focus_handle);
+        self.reset_editor_cursor_blink(cx);
+        cx.notify();
+    }
+
+    /// Asks for a fresh match list without blocking the UI thread.
+    ///
+    /// The scan starts immediately; the next keystroke cancels it, and only one
+    /// scan is ever in flight (a newer request is queued behind the running
+    /// one). A debounce would add a fixed pause before any work at all, which
+    /// is exactly what makes typing in a large document feel laggy. The
+    /// previous list stays on screen until the reply arrives, so highlights do
+    /// not blink on every keystroke.
+    fn request_find_search(&mut self, cx: &mut Context<Self>) {
+        self.find_bar.search_seq = self.find_bar.search_seq.wrapping_add(1);
+        let seq = self.find_bar.search_seq;
+        self.find_bar
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.find_bar.search_query = self.find_bar.query.text().to_string();
+        self.find_bar.search_version = self
+            .state
+            .active_document()
+            .map(|doc| doc.version)
+            .unwrap_or(0);
+        if self.find_bar.query.is_empty() {
+            self.find_bar.matches.clear();
+            self.find_bar.matches_query.clear();
+            self.find_bar.matches_version = 0;
+            self.find_bar.active = 0;
+            self.find_bar.truncated = false;
+            self.find_bar.pending_step = None;
+            self.find_bar.pending_after = None;
+            cx.notify();
+            return;
+        }
+        self.start_find_scan(seq, cx);
+        cx.notify();
+    }
+
+    /// Starts the background scan for `seq`, or queues it behind the one
+    /// already running so only one full-document pass is in flight.
+    fn start_find_scan(&mut self, seq: u64, cx: &mut Context<Self>) {
+        if self.find_bar.search_running {
+            self.find_bar.search_queued = true;
+            return;
+        }
+        let query = self.find_bar.query.text().to_string();
+        let Some(doc) = self.state.active_document() else { return; };
+        let version = doc.version;
+        let rope = doc.rope().clone();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.find_bar.cancel = std::sync::Arc::clone(&cancel);
+        self.find_bar.search_running = true;
+
+        let entity = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let background = cx.background_executor().clone();
+        cx.foreground_executor()
+            .spawn(async move {
+                let (query, matches) = background
+                    .spawn(async move {
+                        // The rope is immutable while the scan runs (the
+                        // version guard in `finish_find_scan` rejects results
+                        // from a document edited meanwhile), so it is scanned
+                        // chunk by chunk instead of being copied into one big
+                        // String.
+                        let matches = crate::views::find_bar::scan_rope(
+                            &rope,
+                            &query,
+                            crate::views::find_bar::MAX_FIND_MATCHES,
+                            &|| cancel.load(std::sync::atomic::Ordering::Relaxed),
+                        );
+                        (query, matches)
+                    })
+                    .await;
+                let _ = entity.update(&mut async_cx, |this, cx| {
+                    this.finish_find_scan(seq, version, query, matches, cx);
+                });
+            })
+            .detach();
+    }
+
+    /// Installs a background result, then runs the newest queued request.
+    fn finish_find_scan(
+        &mut self,
+        seq: u64,
+        version: u64,
+        query: String,
+        matches: Vec<std::ops::Range<usize>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.find_bar.search_running = false;
+        // Ranges are only meaningful for the exact document revision the
+        // scan read; an edit during the scan throws this reply away.
+        let document_unchanged = self
+            .state
+            .active_document()
+            .map(|doc| doc.version == version)
+            .unwrap_or(false);
+        if seq == self.find_bar.search_seq && self.find_bar.is_open && document_unchanged {
+            self.find_bar.truncated =
+                matches.len() >= crate::views::find_bar::MAX_FIND_MATCHES;
+            self.find_bar.matches = matches;
+            self.find_bar.matches_query = query;
+            self.find_bar.matches_version = version;
+            self.find_bar.active = 0;
+            let step = self.find_bar.pending_step.take();
+            let after = self.find_bar.pending_after.take();
+            // A query-only refresh shows the match without moving the view;
+            // Enter or a replacement asked for the position explicitly.
+            let reveal = step.is_some() || after.is_some();
+            if !self.find_bar.matches.is_empty() {
+                let index = if let Some(delta) = step {
+                    // The list is brand new: "next" is its first match and
+                    // "previous" its last, exactly like a fresh search.
+                    if delta >= 0 {
+                        0
+                    } else {
+                        self.find_bar.matches.len() - 1
+                    }
+                } else if let Some(offset) = after {
+                    self.find_bar
+                        .matches
+                        .iter()
+                        .position(|m| m.start >= offset)
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                self.find_activate(index, reveal, cx);
+            } else {
+                cx.notify();
+            }
+        }
+        if self.find_bar.search_queued {
+            self.find_bar.search_queued = false;
+            let seq = self.find_bar.search_seq;
+            if self.find_bar.is_open {
+                self.start_find_scan(seq, cx);
+            }
+        }
+    }
+
+    /// Whether the match list no longer reflects the query or the document.
+    fn find_is_stale(&self) -> bool {
+        if self.find_bar.matches_query != self.find_bar.query.text() {
+            return true;
+        }
+        self.state
+            .active_document()
+            .map(|doc| doc.version != self.find_bar.matches_version)
+            .unwrap_or(true)
+    }
+
+    /// Whether a scan for the current query and document version is already
+    /// on its way (or installed), so a repeated action should not restart it.
+    fn find_request_is_current(&self) -> bool {
+        self.find_bar.search_query == self.find_bar.query.text()
+            && self
+                .state
+                .active_document()
+                .map(|doc| doc.version == self.find_bar.search_version)
+                .unwrap_or(false)
+    }
+
+    /// Makes match `index` the active one and, when `reveal` is set, scrolls
+    /// it into view.
+    ///
+    /// The document caret and selection are left alone: the only active caret
+    /// belongs to the find field, so the editor keeps its own cursor the way an
+    /// unfocused split pane does. Typing a query must not move the view either,
+    /// which is why automatic matches arrive with `reveal == false`.
+    fn find_activate(&mut self, index: usize, reveal: bool, cx: &mut Context<Self>) {
+        let Some(range) = self.find_bar.matches.get(index).cloned() else { return; };
+        self.find_bar.active = index;
+        if reveal {
+            let target = self.state.active_document().map(|doc| {
+                let line = doc.line_of_byte(range.start);
+                let line_start = doc.line_start_byte(line);
+                let col = doc
+                    .slice_to_string(line_start..range.start.min(doc.len()))
+                    .chars()
+                    .count();
+                (line, col)
+            });
+            if let Some((line, col)) = target {
+                self.scroll_visual_row_into_view(line, col);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Moves to the next (`delta > 0`) or previous match, wrapping around.
+    fn find_step(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.find_bar.query.is_empty() {
+            return;
+        }
+        if self.find_is_stale() {
+            // Wait for the background list; the reply activates first/last.
+            self.find_bar.pending_step = Some(delta);
+            if !self.find_request_is_current() {
+                self.request_find_search(cx);
+            }
+            return;
+        }
+        let total = self.find_bar.matches.len();
+        if total == 0 {
+            cx.notify();
+            return;
+        }
+        let current = self.find_bar.active.min(total - 1);
+        let next = if delta >= 0 {
+            (current + 1) % total
+        } else {
+            (current + total - 1) % total
+        };
+        self.find_activate(next, true, cx);
+    }
+
+    /// Replaces the active match with the replace field and moves to the next.
+    fn find_replace_current(&mut self, cx: &mut Context<Self>) {
+        let query = self.find_bar.query.text().to_string();
+        if query.is_empty() {
+            return;
+        }
+        if self.find_is_stale() {
+            // A stale byte range must never be written to; the reply will
+            // provide the ranges for the current document.
+            if !self.find_request_is_current() {
+                self.request_find_search(cx);
+            }
+            return;
+        }
+        let Some(range) = self
+            .find_bar
+            .matches
+            .get(self.find_bar.active)
+            .cloned()
+        else {
+            return;
+        };
+        let replacement = self.find_bar.replace.text().to_string();
+        if replacement == query {
+            // Replacing text with itself would only add an undo step.
+            self.find_step(1, cx);
+            return;
+        }
+        let new_cursor = range.start + replacement.len();
+        self.state.active_replace_range(range, replacement, new_cursor);
+        self.state.save_active_note();
+        self.refresh_view_after_cursor_move();
+        // The replacement changed the document version; scan again and land
+        // on the first match after the inserted text.
+        self.find_bar.pending_after = Some(new_cursor);
+        self.request_find_search(cx);
+    }
+
+    /// Replaces every match in one edit, so undo treats it as a single step.
+    fn find_replace_all(&mut self, cx: &mut Context<Self>) {
+        let query = self.find_bar.query.text().to_string();
+        if query.is_empty() {
+            return;
+        }
+        let Some(doc) = self.state.active_document() else { return; };
+        let hay = doc.content();
+        let matches = crate::search::fold::ranges(
+            &hay,
+            &[query.as_str()],
+            crate::search::fold::Fold::Lower,
+            usize::MAX,
+        );
+        if matches.is_empty() {
+            self.request_find_search(cx);
+            return;
+        }
+        let replacement = self.find_bar.replace.text().to_string();
+        if replacement == query {
+            // Replacing text with itself would only add an undo step.
+            self.request_find_search(cx);
+            return;
+        }
+        let first_start = matches[0].start;
+        let mut out = String::with_capacity(hay.len());
+        let mut last = 0;
+        for range in &matches {
+            out.push_str(&hay[last..range.start]);
+            out.push_str(&replacement);
+            last = range.end;
+        }
+        out.push_str(&hay[last..]);
+        let new_cursor = (first_start + replacement.len()).min(out.len());
+        self.state.active_replace_range(0..hay.len(), out, new_cursor);
+        self.state.save_active_note();
+        self.refresh_view_after_cursor_move();
+        self.find_bar.pending_after = Some(new_cursor);
+        self.request_find_search(cx);
+    }
+
+    /// Key handling for the find bar's two fields.
+    fn handle_find_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        let ctrl = event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
+        let shift = event.keystroke.modifiers.shift;
+
+        if key == "escape" {
+            self.close_find_bar(window, cx);
+            return;
+        }
+        if ctrl && (key.eq_ignore_ascii_case("f") || key == "а" || key == "А") {
+            self.find_bar.replace.blink.disable(cx);
+            self.find_bar.query.focus(window);
+            self.find_bar.query.select_all();
+            self.find_bar.query.blink.pause_and_show(BlinkTarget::FindQuery, cx);
+            cx.notify();
+            return;
+        }
+        if key == "enter" {
+            self.find_step(if shift { -1 } else { 1 }, cx);
+            return;
+        }
+
+        let query_focused = self.find_bar.query.is_focused(window);
+        if !query_focused && !self.find_bar.replace.is_focused(window) {
+            return;
+        }
+        let changed = if query_focused {
+            self.find_bar.query.handle_key_down(event, cx)
+        } else {
+            self.find_bar.replace.handle_key_down(event, cx)
+        };
+        if query_focused {
+            if changed {
+                // The field already shows the new text; the scan runs in the
+                // background so holding a key never stalls on a large file.
+                self.find_bar.pending_step = None;
+                self.find_bar.pending_after = None;
+                self.request_find_search(cx);
+            }
+            self.find_bar.query.blink.pause_and_show(BlinkTarget::FindQuery, cx);
+        } else {
+            self.find_bar.replace.blink.pause_and_show(BlinkTarget::FindReplace, cx);
+        }
     }
 
     pub(crate) fn handle_link_click(&mut self, raw_url: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -4228,6 +4656,12 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             return;
         }
 
+        // Escape closes the in-editor find bar when focus is back in the editor
+        if keystroke.key == "escape" && self.find_bar.is_open {
+            self.close_find_bar(_window, cx);
+            return;
+        }
+
         // Escape closes folder context menu if open
         if keystroke.key == "escape" && self.folder_context_menu.is_open {
             self.close_folder_context_menu(cx);
@@ -4335,11 +4769,10 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             return;
         }
 
-        // Ctrl + F (Поиск / фильтр). Shift excluded: Ctrl+Shift+F opens
-        // the sidebar search panel via the root listener below.
+        // Ctrl + F (Поиск и замена по заметке). Shift excluded:
+        // Ctrl+Shift+F opens the sidebar search panel via the root listener.
         if ctrl && !shift && (keystroke.key.eq_ignore_ascii_case("f") || keystroke.key == "а" || keystroke.key == "А") {
-            _window.focus(&self.search_focus_handle);
-            self.quick_filter.focus_and_select_all(&self.state.search_query, cx);
+            self.open_find_bar(_window, cx);
             return;
         }
 
@@ -5371,6 +5804,11 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         let same_tab = is_same_leaf && self.state.leaves.get(&leaf_id).map(|l| l.active_tab_index) == Some(tab_index);
         if same_tab {
             return;
+        }
+
+        // The match list belongs to the outgoing note.
+        if self.find_bar.is_open {
+            self.close_find_bar(window, cx);
         }
 
         self.commit_title_rename_internal();
@@ -6663,6 +7101,243 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
         }
     }
 
+    /// Paints the in-editor find/replace bar shown between the note title and
+    /// the editor body.
+    fn render_find_bar(&self, theme: &Theme, window: &mut Window, cx: &Context<Self>) -> Div {
+        let pixel_scale = window.scale_factor();
+        let font_size = 13.0;
+        let font_family = "Segoe UI";
+        let query_focused = self.find_bar.query.is_focused(window);
+        let replace_focused = self.find_bar.replace.is_focused(window);
+        let has_matches = !self.find_bar.matches.is_empty();
+
+        let query_box = div()
+            .id("find-query-box")
+            .track_focus(&self.find_query_focus_handle)
+            .flex()
+            .flex_1()
+            .min_w(px(180.0))
+            .flex_row()
+            .items_center()
+            .gap_1p5()
+            .h(px(28.0))
+            .px_2()
+            .bg(theme.bg_card)
+            .border_1()
+            .border_color(if query_focused { theme.accent } else { theme.border })
+            .rounded_md()
+            .cursor(gpui::CursorStyle::IBeam)
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                this.find_bar.replace.blink.disable(cx);
+                this.find_bar.query.focus(window);
+                this.find_bar.query.handle_mouse_down(event, window, 13.0, "Segoe UI");
+                this.find_bar.query.blink.pause_and_show(BlinkTarget::FindQuery, cx);
+                cx.notify();
+            }))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                if this.find_bar.query.is_mouse_selecting {
+                    this.find_bar.query.handle_mouse_move(event, window, 13.0, "Segoe UI");
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                this.find_bar.query.handle_mouse_up();
+                cx.notify();
+            }))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                cx.stop_propagation();
+                this.handle_find_key(event, window, cx);
+            }))
+            .child(icons::icon(icons::ICON_SEARCH, 14.0, theme.text_muted))
+            .child(self.find_bar.query.render(
+                &self.t("editor.find"),
+                theme,
+                window,
+                pixel_scale,
+                font_size,
+                font_family,
+            ))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .font_family("Segoe UI")
+                    .text_xs()
+                    .text_color(theme.text_muted)
+                    .child(self.find_bar.counter()),
+            );
+
+        let nav_button = |id: &'static str, icon: &'static str, active: bool| {
+            div()
+                .id(id)
+                .w(px(24.0))
+                .h(px(24.0))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_sm()
+                .cursor_pointer()
+                .when(!active, |d| d.opacity(0.4))
+                .when(active, |d| d.hover(|h| h.bg(theme.bg_hover)))
+                .child(icons::icon(icon, 14.0, theme.text_secondary))
+        };
+
+        let prev = nav_button("find-prev", icons::ICON_ARROW_LEFT, has_matches)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|this, _, _, cx| this.find_step(-1, cx)));
+        let next = nav_button("find-next", icons::ICON_ARROW_RIGHT, has_matches)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|this, _, _, cx| this.find_step(1, cx)));
+        let toggle = nav_button(
+            "find-toggle-replace",
+            if self.find_bar.replace_open {
+                icons::ICON_CHEVRON_DOWN
+            } else {
+                icons::ICON_CHEVRON_RIGHT
+            },
+            true,
+        )
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.find_bar.replace_open = !this.find_bar.replace_open;
+            cx.notify();
+        }));
+        let close = nav_button("find-close", icons::ICON_CLOSE, true)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|this, _, window, cx| this.close_find_bar(window, cx)));
+
+        let mut root = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_1p5()
+            .pl(px(48.0))
+            .pr(px(16.0))
+            .pb(px(12.0))
+            .bg(theme.bg_editor)
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(620.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1p5()
+                    .child(query_box)
+                    .child(prev)
+                    .child(next)
+                    .child(toggle)
+                    .child(close),
+            );
+
+        if self.find_bar.replace_open {
+            let replace_box = div()
+                .id("find-replace-box")
+                .track_focus(&self.find_replace_focus_handle)
+                .flex()
+                .flex_1()
+                .min_w(px(180.0))
+                .flex_row()
+                .items_center()
+                .gap_1p5()
+                .h(px(28.0))
+                .px_2()
+                .bg(theme.bg_card)
+                .border_1()
+                .border_color(if replace_focused { theme.accent } else { theme.border })
+                .rounded_md()
+                .cursor(gpui::CursorStyle::IBeam)
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.find_bar.query.blink.disable(cx);
+                    this.find_bar.replace.focus(window);
+                    this.find_bar.replace.handle_mouse_down(event, window, 13.0, "Segoe UI");
+                    this.find_bar.replace.blink.pause_and_show(BlinkTarget::FindReplace, cx);
+                    cx.notify();
+                }))
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                    if this.find_bar.replace.is_mouse_selecting {
+                        this.find_bar.replace.handle_mouse_move(event, window, 13.0, "Segoe UI");
+                        cx.notify();
+                    }
+                }))
+                .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                    this.find_bar.replace.handle_mouse_up();
+                    cx.notify();
+                }))
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.handle_find_key(event, window, cx);
+                }))
+                .child(icons::icon(icons::ICON_REFRESH, 13.0, theme.text_muted))
+                .child(self.find_bar.replace.render(
+                    &self.t("editor.replace_placeholder"),
+                    theme,
+                    window,
+                    pixel_scale,
+                    font_size,
+                    font_family,
+                ));
+
+            let action_label = |text: String| {
+                div()
+                    .font_family("Segoe UI")
+                    .text_xs()
+                    .text_color(theme.text_primary)
+                    .child(text)
+            };
+            let replace_one = div()
+                .id("find-replace-one")
+                .h(px(24.0))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .px_2()
+                .bg(theme.bg_card)
+                .border_1()
+                .border_color(theme.border)
+                .rounded_sm()
+                .cursor_pointer()
+                .when(!has_matches, |d| d.opacity(0.45).cursor_not_allowed())
+                .when(has_matches, |d| d.hover(|h| h.bg(theme.bg_hover)))
+                .child(action_label(self.t("editor.replace")))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|this, _, _, cx| this.find_replace_current(cx)));
+            let replace_all = div()
+                .id("find-replace-all")
+                .h(px(24.0))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .px_2()
+                .bg(theme.bg_card)
+                .border_1()
+                .border_color(theme.border)
+                .rounded_sm()
+                .cursor_pointer()
+                .when(!has_matches, |d| d.opacity(0.45).cursor_not_allowed())
+                .when(has_matches, |d| d.hover(|h| h.bg(theme.bg_hover)))
+                .child(action_label(self.t("editor.replace_all")))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|this, _, _, cx| this.find_replace_all(cx)));
+
+            root = root.child(
+                div()
+                    .w_full()
+                    .max_w(px(620.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1p5()
+                    .child(replace_box)
+                    .child(replace_one)
+                    .child(replace_all),
+            );
+        }
+
+        root
+    }
     pub(crate) fn render_central_editor(
         &self,
         override_view: Option<&crate::workspace::EditorViewState>,
@@ -6768,6 +7443,13 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 
             let selection_range = view.selection_range(doc.len());
             let is_editing = is_leaf_active && self.edit_mode && !self.ctrl_preview_selection;
+            // While a find field owns the keyboard the editor is not the focus
+            // target, so the active leaf draws its caret the way an unfocused
+            // split pane does: thin, muted and static.
+            let find_field_focused = self.find_bar.is_open
+                && (self.find_bar.query.is_focused(window)
+                    || self.find_bar.replace.is_focused(window));
+            let caret_is_inactive = !is_leaf_active || find_field_focused;
             let mut active_block_ids: std::collections::HashSet<usize> = std::collections::HashSet::new();
             if is_editing {
                 if let Some(s) = code_states_arc.get(cursor_line).and_then(|s| s.as_ref()) {
@@ -7537,6 +8219,19 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 }
             };
 
+            // Highlighting is only valid while the match list belongs to the
+            // document version currently on screen. The list may still answer
+            // an older query: it stays visible until the newer scan replies,
+            // which keeps highlights from blinking on every keystroke. The
+            // per-frame budget keeps a pathological query (one letter in a huge
+            // wrapped line) from building tens of thousands of rectangles.
+            let find_highlight = is_leaf_active
+                && override_view.is_none()
+                && self.find_bar.is_open
+                && !self.find_bar.matches.is_empty()
+                && self.find_bar.matches_version == doc.version;
+            let mut find_highlight_budget = 2000usize;
+
             for v_idx in visible_range {
                 let v = &visual_rows_arc[v_idx];
                 let line = &lines_arc[v.line_idx];
@@ -7873,6 +8568,59 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                     }
 
                     backdrop_rects.push(sel_rect);
+                }
+
+                // Find matches sit above the selection so the active match is
+                // still distinguishable when the selection is not on it.
+                if find_highlight && !line.is_empty() && find_highlight_budget > 0 {
+                    let matches = &self.find_bar.matches;
+                    let first = matches.partition_point(|m| m.end <= line_start);
+                    for (offset, m) in matches[first..].iter().enumerate() {
+                        if m.start >= line_end || find_highlight_budget == 0 {
+                            break;
+                        }
+                        let match_s = m.start.max(line_start) - line_start;
+                        let match_e = m.end.min(line_end) - line_start;
+                        let char_s = line[..match_s].chars().count();
+                        let char_e = char_s + line[match_s..match_e].chars().count();
+                        let intersect_s = char_s.max(v.char_start);
+                        let intersect_e = char_e.min(v.char_end);
+                        if intersect_s >= intersect_e {
+                            continue;
+                        }
+                        let vis_s = row_layout.column_for_line_char(intersect_s);
+                        let vis_e = row_layout.column_for_line_char(intersect_e);
+                        if vis_s >= vis_e {
+                            continue;
+                        }
+                        let (match_x, match_w) = row_layout.selection_rect(vis_s, vis_e, pixel_scale);
+                        let match_top = if let Some(tbl) = grid_tbl {
+                            if v.line_idx == tbl.first_line { 14.0 } else { 0.0 }
+                        } else {
+                            0.0
+                        };
+                        let match_h = if grid_tbl.is_some() && !is_tbl_sep {
+                            28.0
+                        } else {
+                            row_h
+                        };
+                        let is_active = first + offset == self.find_bar.active;
+                        find_highlight_budget -= 1;
+                        backdrop_rects.push(
+                            div()
+                                .absolute()
+                                .left(px(match_x))
+                                .top(px(match_top))
+                                .h(px(match_h))
+                                .w(px(match_w))
+                                .bg(if is_active {
+                                    theme.find_match_active_bg()
+                                } else {
+                                    theme.find_match_bg()
+                                })
+                                .rounded_xs(),
+                        );
+                    }
                 }
 
                 let v_char_start = v.char_start;
@@ -8426,18 +9174,18 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                             .when(raw_btn.is_some(), |s| s.child(raw_btn.unwrap()))
                             .when(add_col_btn.is_some(), |s| s.child(add_col_btn.unwrap()))
                             .when(add_row_btn.is_some(), |s| s.child(add_row_btn.unwrap()))
-                            .when(is_current && ((is_leaf_active && is_editor_focused && self.editor_blink.visible()) || !is_leaf_active), |s| {
+                            .when(is_current && ((!caret_is_inactive && is_editor_focused && self.editor_blink.visible()) || caret_is_inactive), |s| {
                                 let cursor_col = row_layout.column_for_line_char(v_char_start + active_col_in_row);
                                 let cursor_x = crate::snap::snap_x(
                                     row_layout.x_for_column(cursor_col),
                                     pixel_scale,
                                 );
-                                let (caret_w, caret_bg) = if is_leaf_active {
-                                    (2.0, theme.accent)
-                                } else {
+                                let (caret_w, caret_bg) = if caret_is_inactive {
                                     let mut c = theme.text_muted;
                                     c.a = 0.6;
                                     (1.5, c)
+                                } else {
+                                    (2.0, theme.accent)
                                 };
                                 let (caret_top, caret_h) = if let Some(tbl) = grid_tbl {
                                     let top = if v_line_idx == tbl.first_line { 14.0 } else { 0.0 };
@@ -8745,7 +9493,13 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                 editor_container = editor_container.child(scrollbar_track);
             }
 
-            editor_root = editor_root.child(title_box).child(editor_container);
+            editor_root = editor_root.child(title_box);
+            // The find bar belongs directly under the note title panel and
+            // above the editor body, so it never floats over the text.
+            if is_leaf_active && self.find_bar.is_open {
+                editor_root = editor_root.child(self.render_find_bar(theme, window, cx));
+            }
+            editor_root = editor_root.child(editor_container);
         } else if leaf_id
             .and_then(|lid| self.state.leaves.get(&lid))
             .and_then(|l| l.active_tab())
@@ -8992,10 +9746,16 @@ impl Render for AppView {
         let is_search_focused = self.search_focus_handle.is_focused(window);
         self.quick_filter.sync_focus(is_search_focused, cx);
 
+        // While a find field holds focus the editor is not the focus target,
+        // so its caret must not blink next to the field's own caret.
+        let is_find_field_focused = self.find_bar.is_open
+            && (self.find_bar.query.is_focused(window)
+                || self.find_bar.replace.is_focused(window));
         let is_editor_focused_now = self.focus_handle.is_focused(window)
             || (!is_title_focused
                 && !is_search_focused
                 && !is_custom_hex_focused
+                && !is_find_field_focused
                 && !self.folder_modal_focus_handle.is_focused(window)
                 && !self.folder_context_menu.is_open
                 && self.folder_modal == crate::views::sidebar::FolderModal::None);
