@@ -2435,6 +2435,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         self.find_bar.matches.clear();
         self.find_bar.matches_query.clear();
         self.find_bar.matches_version = 0;
+        self.find_bar.clear_marks();
         self.find_bar.active = 0;
         self.find_bar.truncated = false;
         // A reply from the scan still running must not repopulate the list.
@@ -2448,6 +2449,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         self.find_bar.pending_step = None;
         self.find_bar.pending_after = None;
         self.find_bar.pending_replace = false;
+        self.find_bar.pending_mark_all = false;
         // A Replace All pass still building text must not land after the bar
         // is closed.
         self.find_bar.cancel_replace_all();
@@ -2474,6 +2476,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         self.find_bar
             .cancel
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        // The arrows describe the lines of the previous result; a new search
+        // means a new question, so they go away with it.
+        self.find_bar.clear_marks();
         self.find_bar.search_query = self.find_bar.query.text().to_string();
         self.find_bar.search_options = self.find_bar.options();
         self.find_bar.search_version = self
@@ -2491,6 +2496,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             self.find_bar.pending_step = None;
             self.find_bar.pending_after = None;
             self.find_bar.pending_replace = false;
+            self.find_bar.pending_mark_all = false;
             cx.notify();
             return;
         }
@@ -2576,6 +2582,10 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             // fresh ranges instead of being dropped.
             let pending_replace = self.find_bar.pending_replace;
             self.find_bar.pending_replace = false;
+            // "Mark all" pressed on a stale list marks these ranges instead of
+            // the ones the old list described.
+            let pending_mark_all = self.find_bar.pending_mark_all;
+            self.find_bar.pending_mark_all = false;
             // A query-only refresh shows the match without moving the view;
             // Enter or a replacement asked for the position explicitly.
             let reveal = step.is_some() || after.is_some();
@@ -2598,6 +2608,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     0
                 };
                 self.find_activate(index, reveal, cx);
+                if pending_mark_all {
+                    self.find_mark_all(cx);
+                }
                 if pending_replace {
                     self.find_replace_current(cx);
                 }
@@ -2606,12 +2619,13 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             }
         } else if newest {
             // Offsets and ranges from that revision no longer describe the
-            // current text, so a queued navigation or replacement is dropped
-            // instead of being applied later to something it was not meant
-            // for.
+            // current text, so a queued navigation, marking or replacement is
+            // dropped instead of being applied later to something it was not
+            // meant for.
             self.find_bar.pending_step = None;
             self.find_bar.pending_after = None;
             self.find_bar.pending_replace = false;
+            self.find_bar.pending_mark_all = false;
         }
         if self.find_bar.search_queued {
             self.find_bar.search_queued = false;
@@ -2735,6 +2749,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         self.find_bar.pending_step = None;
         self.find_bar.pending_after = None;
         self.find_bar.pending_replace = false;
+        self.find_bar.pending_mark_all = false;
         self.find_bar.cancel_replace_all();
         self.find_bar.query.focus(window);
         self.find_bar.query.blink.pause_and_show(BlinkTarget::FindQuery, cx);
@@ -3083,8 +3098,103 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         self.find_bar.matches.clear();
         self.find_bar.matches_query.clear();
         self.find_bar.matches_version = 0;
+        self.find_bar.clear_marks();
         self.find_bar.active = 0;
         self.find_bar.truncated = false;
+        cx.notify();
+    }
+
+    /// Marks every line that holds a match of the current query ("Mark all").
+    ///
+    /// Pressing it again with the same result clears the marks; changing the
+    /// query, closing the bar or editing the document clears them as well,
+    /// because a line number stops meaning the same line after an edit.
+    fn find_mark_all(&mut self, cx: &mut Context<Self>) {
+        if self.find_bar.query.is_empty() {
+            self.find_bar.clear_marks();
+            cx.notify();
+            return;
+        }
+        if let Some(doc) = self.state.active_document() {
+            if self.find_bar.marks_valid_for(doc.id, doc.version) {
+                self.find_bar.clear_marks();
+                cx.notify();
+                return;
+            }
+        }
+        if self.find_is_stale() {
+            // The ranges on screen belong to another revision or query; the
+            // reply marks its own fresh list instead of these lines.
+            self.find_bar.pending_mark_all = true;
+            if !self.find_request_is_current() {
+                self.request_find_search(cx);
+            }
+            return;
+        }
+        self.find_bar.pending_mark_all = false;
+        let Some(doc) = self.state.active_document() else { return; };
+        let mut lines: Vec<usize> = self
+            .find_bar
+            .matches
+            .iter()
+            .map(|range| doc.line_of_byte(range.start))
+            .collect();
+        lines.sort_unstable();
+        lines.dedup();
+        let doc_id = doc.id;
+        let version = doc.version;
+        self.find_bar.marked_lines = lines;
+        self.find_bar.marked_doc = Some(doc_id);
+        self.find_bar.marked_version = version;
+        cx.notify();
+    }
+
+    /// Removes every line marked by "Mark all" from the document in one edit,
+    /// so a single undo brings all of them back.
+    pub(crate) fn delete_marked_lines(&mut self, cx: &mut Context<Self>) {
+        let Some(doc) = self.state.active_document() else { return; };
+        if !self.find_bar.marks_valid_for(doc.id, doc.version) {
+            return;
+        }
+        let lines = self.find_bar.marked_lines.clone();
+        let (Some(first), Some(last)) = (lines.first().copied(), lines.last().copied()) else {
+            return;
+        };
+        let total_lines = doc.line_index.lines();
+        let span_start = doc.line_start_byte(first);
+        let ends_document = last + 1 >= total_lines;
+        let span_end = if ends_document {
+            doc.len()
+        } else {
+            doc.line_start_byte(last + 1)
+        };
+        let (replacement, any_kept) = crate::views::find_bar::delete_marked_lines_replacement(
+            &doc.slice_to_string(span_start..span_end),
+            first,
+            &lines,
+            ends_document,
+        );
+        // Nothing of the tail survived: the newline that ended the previous
+        // line goes too, or the document would keep an empty last line.
+        let mut start = span_start;
+        if !any_kept && ends_document && first > 0 {
+            let crlf = start >= 2 && doc.rope().byte(start - 2) == b'\r';
+            start -= if crlf { 2 } else { 1 };
+        }
+        if start >= span_end {
+            self.find_bar.clear_marks();
+            cx.notify();
+            return;
+        }
+        self.state
+            .active_replace_range(start..span_end, replacement, start);
+        self.schedule_auto_save(cx);
+        self.refresh_view_after_cursor_move();
+        self.find_bar.clear_marks();
+        if self.find_bar.is_open {
+            // The highlights and the counter describe lines that are gone.
+            self.request_find_search(cx);
+        }
         cx.notify();
     }
 
@@ -3134,6 +3244,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 // The replacement that was waiting for ranges was meant for
                 // the old query; applying it to a new one would be a surprise.
                 self.find_bar.pending_replace = false;
+                self.find_bar.pending_mark_all = false;
                 // Same for a Replace All pass already rewriting the document.
                 self.find_bar.cancel_replace_all();
                 self.request_find_search(cx);
@@ -7683,18 +7794,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             .flex_col()
             // The row gap only exists while both rows are drawn; the collapsed
             // measuring row has no height, so no gap may separate it.
-            .when(self.find_bar.replace_open, |d| d.gap_1p5())
-            .child(
-                div()
-                    .h(px(28.0))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1p5()
-                    .child(prev)
-                    .child(next)
-                    .child(close),
-            );
+            .when(self.find_bar.replace_open, |d| d.gap_1p5());
 
         // The replace buttons keep their place even while the second row is
         // collapsed: the actions column is as wide as this row whatever the
@@ -7722,6 +7822,42 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 .rounded_sm()
                 .child(action_label(text))
         };
+
+        // "Mark all" sits right after the prev/next arrows: it belongs to the
+        // query row, not to the replace row. Its own state is visible (accent
+        // border while lines are marked), and a second press clears the marks.
+        let marks_active = self
+            .state
+            .active_document()
+            .map(|doc| self.find_bar.marks_valid_for(doc.id, doc.version))
+            .unwrap_or(false);
+        let mark_all_ready = has_matches || marks_active;
+        let mut mark_all = action_button("find-mark-all", self.t("editor.mark_all"));
+        if marks_active {
+            mark_all = mark_all.bg(theme.bg_hover).border_color(theme.accent);
+        }
+        if mark_all_ready {
+            mark_all = mark_all
+                .cursor_pointer()
+                .hover(|h| h.bg(theme.bg_hover))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|this, _, _, cx| this.find_mark_all(cx)));
+        } else {
+            mark_all = mark_all.opacity(0.45).cursor_not_allowed();
+        }
+
+        actions = actions.child(
+            div()
+                .h(px(28.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1p5()
+                .child(prev)
+                .child(next)
+                .child(mark_all)
+                .child(close),
+        );
         // Nothing found means nothing to replace: the whole-document pass
         // waits for a non-empty list instead of rewriting a document the
         // search just found no matches in.
@@ -7988,6 +8124,11 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
             let selection_range = view.selection_range(doc.len());
             let is_editing = is_leaf_active && self.edit_mode && !self.ctrl_preview_selection;
+            // Lines marked by the find bar's "Mark all" keep a narrow column
+            // free at the right edge of the gutter, between the number and the
+            // text, for the red arrow.
+            const FIND_MARKER_W: f32 = 10.0;
+            let markers_active = self.find_bar.marks_valid_for(doc.id, doc.version);
             // While a find field owns the keyboard the editor is not the focus
             // target, so the active leaf draws its caret the way an unfocused
             // split pane does: thin, muted and static.
@@ -9608,7 +9749,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                 d.child(
                                     div()
                                         .absolute()
-                                        .right_0()
+                                        .right(px(if markers_active { FIND_MARKER_W } else { 0.0 }))
                                         .top(px(line_num_top))
                                         .w(px(line_number_width))
                                         .h(px(line_num_h))
@@ -9629,6 +9770,33 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                         .child(line_number_text),
                                 )
                             })
+                            // The marker of a line selected by "Mark all": a red
+                            // arrow in the reserved column, left of the text and
+                            // right of the number.
+                            .when(
+                                markers_active
+                                    && v.sub_idx == 0
+                                    && !is_tbl_sep
+                                    && self.find_bar.line_is_marked(doc.id, doc.version, v.line_idx),
+                                |d| {
+                                    d.child(
+                                        div()
+                                            .absolute()
+                                            .right_0()
+                                            .top(px(line_num_top))
+                                            .w(px(FIND_MARKER_W))
+                                            .h(px(line_num_h))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icons::icon(
+                                                icons::ICON_ARROW_RIGHT,
+                                                9.0,
+                                                theme.marked_line_red(),
+                                            )),
+                                    )
+                                },
+                            )
                     )
                     .child(
                         div()

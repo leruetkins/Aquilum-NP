@@ -321,6 +321,8 @@
     "replace_placeholder": "替换为",
     "replace": "替换",
     "replace_all": "全部替换",
+    "mark_all": "Mark all",
+    "delete_marked_lines": "Delete marked lines",
     "prev_match": "上一个匹配项",
     "next_match": "下一个匹配项",
     "close_search": "关闭搜索",

@@ -72,6 +72,15 @@ impl Theme {
         }
     }
 
+    /// Red of the gutter marker beside a line selected by "Mark all".
+    pub fn marked_line_red(&self) -> Rgba {
+        if self.is_dark {
+            rgb(0xf38ba8)
+        } else {
+            rgb(0xd20f39)
+        }
+    }
+
     /// Returns the default dark theme (Catppuccin Mocha palette).
     pub fn dark() -> Self {
         Self {

@@ -321,6 +321,8 @@
     "replace_placeholder": "Ersätt med",
     "replace": "Ersätt",
     "replace_all": "Ersätt alla",
+    "mark_all": "Mark all",
+    "delete_marked_lines": "Delete marked lines",
     "prev_match": "Föregående träff",
     "next_match": "Nästa träff",
     "close_search": "Stäng sökning",

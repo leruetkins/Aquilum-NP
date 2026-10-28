@@ -321,6 +321,8 @@
     "replace_placeholder": "取代為",
     "replace": "取代",
     "replace_all": "全部取代",
+    "mark_all": "Mark all",
+    "delete_marked_lines": "Delete marked lines",
     "prev_match": "上一個相符項",
     "next_match": "下一個相符項",
     "close_search": "關閉搜尋",

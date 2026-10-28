@@ -321,6 +321,8 @@
     "replace_placeholder": "置換後の文字列",
     "replace": "置換",
     "replace_all": "すべて置換",
+    "mark_all": "Mark all",
+    "delete_marked_lines": "Delete marked lines",
     "prev_match": "前の一致",
     "next_match": "次の一致",
     "close_search": "検索を閉じる",

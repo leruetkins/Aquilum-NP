@@ -181,6 +181,20 @@ impl AppView {
             "note",
             !has_selection,
         ));
+        // Lines marked by the find bar are deleted from here. The item stays in
+        // place and is disabled while there is nothing marked, so the menu does
+        // not change shape between right-clicks.
+        let marks_ready = self
+            .state
+            .active_document()
+            .map(|doc| self.find_bar.marks_valid_for(doc.id, doc.version))
+            .unwrap_or(false);
+        items.push(item(
+            "editor-delete-marked-lines",
+            crate::i18n::t("editor.delete_marked_lines", &self.config.ui.language),
+            "trash",
+            !marks_ready,
+        ));
 
         // Submenu: Formatting
         let formatting_items = vec![
@@ -583,6 +597,9 @@ impl AppView {
                         cx.notify();
                     }
                 }
+            }
+            "editor-delete-marked-lines" => {
+                self.delete_marked_lines(cx);
             }
             "editor-format-bold" => {
                 self.wrap_editor_selection("**", "**", cx);

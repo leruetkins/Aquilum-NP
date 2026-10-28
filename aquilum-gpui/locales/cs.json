@@ -321,6 +321,8 @@
     "replace_placeholder": "Nahradit čím",
     "replace": "Nahradit",
     "replace_all": "Nahradit vše",
+    "mark_all": "Mark all",
+    "delete_marked_lines": "Delete marked lines",
     "prev_match": "Předchozí výskyt",
     "next_match": "Další výskyt",
     "close_search": "Zavřít hledání",

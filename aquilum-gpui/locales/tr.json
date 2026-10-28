@@ -321,6 +321,8 @@
     "replace_placeholder": "Şununla değiştir",
     "replace": "Değiştir",
     "replace_all": "Tümünü değiştir",
+    "mark_all": "Mark all",
+    "delete_marked_lines": "Delete marked lines",
     "prev_match": "Önceki eşleşme",
     "next_match": "Sonraki eşleşme",
     "close_search": "Aramayı kapat",

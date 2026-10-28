@@ -321,6 +321,8 @@
     "replace_placeholder": "Vervangen door",
     "replace": "Vervangen",
     "replace_all": "Alles vervangen",
+    "mark_all": "Mark all",
+    "delete_marked_lines": "Delete marked lines",
     "prev_match": "Vorige overeenkomst",
     "next_match": "Volgende overeenkomst",
     "close_search": "Zoeken sluiten",

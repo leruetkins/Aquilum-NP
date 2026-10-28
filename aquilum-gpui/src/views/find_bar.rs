@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use gpui::FocusHandle;
 
+use crate::document_buffer::DocumentId;
 use crate::views::text_input::TextInput;
 
 /// Hard cap on reported matches, matching the original Aquilum find bar.
@@ -106,6 +107,17 @@ pub struct FindBarState {
     /// Cancels the running Replace All pass between slices when the query
     /// changes or the bar closes.
     pub replace_cancel: Arc<AtomicBool>,
+    /// Document lines marked by "Mark all", sorted and without duplicates.
+    /// They only describe `marked_doc` at `marked_version`; any edit or another
+    /// document makes them stale instead of silently pointing at other lines.
+    pub marked_lines: Vec<usize>,
+    /// Document the marked lines belong to.
+    pub marked_doc: Option<DocumentId>,
+    /// Revision the marked lines were computed from.
+    pub marked_version: u64,
+    /// "Mark all" was pressed while the match list was stale; the reply marks
+    /// the fresh list instead of dropping the click.
+    pub pending_mark_all: bool,
 }
 
 impl FindBarState {
@@ -136,7 +148,32 @@ impl FindBarState {
             replace_all: None,
             replace_all_seq: 0,
             replace_cancel: Arc::new(AtomicBool::new(false)),
+            marked_lines: Vec::new(),
+            marked_doc: None,
+            marked_version: 0,
+            pending_mark_all: false,
         }
+    }
+
+    /// Drops the marked lines. They describe a text revision that no longer
+    /// exists (or a query that is no longer asked), so keeping them would put
+    /// arrows next to unrelated lines.
+    pub fn clear_marks(&mut self) {
+        self.marked_lines.clear();
+        self.marked_doc = None;
+        self.marked_version = 0;
+    }
+
+    /// Whether there are marked lines to draw for `doc` at `version`.
+    pub fn marks_valid_for(&self, doc: DocumentId, version: u64) -> bool {
+        !self.marked_lines.is_empty()
+            && self.marked_doc == Some(doc)
+            && self.marked_version == version
+    }
+
+    /// Whether `line` of `doc` at `version` carries a "Mark all" marker.
+    pub fn line_is_marked(&self, doc: DocumentId, version: u64, line: usize) -> bool {
+        self.marks_valid_for(doc, version) && self.marked_lines.binary_search(&line).is_ok()
     }
 
     /// Stops a Replace All pass, if one is running: nothing of it will be
@@ -457,6 +494,39 @@ pub fn patch_matches(
         }
     }
     patched
+}
+
+/// Replacement text for "Delete marked lines": the kept lines of `span`.
+///
+/// `span` starts exactly at the first marked line and ends exactly where the
+/// line after the last marked line starts (or at the end of the document).
+/// `first_line` is the absolute index of its first line, and `marked` holds
+/// sorted absolute line indices. The second return value tells whether any
+/// line survived; when none did and the span reaches the end of the document,
+/// the caller also removes the newline that ended the previous line, so the
+/// document does not keep a dangling empty last line.
+pub fn delete_marked_lines_replacement(
+    span: &str,
+    first_line: usize,
+    marked: &[usize],
+    ends_document: bool,
+) -> (String, bool) {
+    let mut kept: Vec<&str> = Vec::new();
+    for (offset, chunk) in span.split_inclusive('\n').enumerate() {
+        let line = first_line + offset;
+        if marked.binary_search(&line).is_err() {
+            kept.push(chunk.strip_suffix('\n').unwrap_or(chunk));
+        }
+    }
+    let any_kept = !kept.is_empty();
+    let mut replacement = kept.join("\n");
+    // The span ended just after the last removed line's newline, so the line
+    // that followed it starts immediately: a newline must separate the kept
+    // tail from it. At the end of the document there is nothing to separate.
+    if any_kept && !ends_document {
+        replacement.push('\n');
+    }
+    (replacement, any_kept)
 }
 
 fn floor_boundary(text: &str, mut index: usize) -> usize {
@@ -971,6 +1041,8 @@ mod tests {
 
     #[test]
     fn patch_after_replace_keeps_ranges_disjoint_and_real() {
+        // A mixed text is replaced and patched repeatedly; every reported range
+        // must be real, cut on character boundaries and in ascending order.
         let text = "aXbXcXdXeXfXg".repeat(50);
         let (new_text, patched) = patched_after_replace(&text, "x", "yy", 10);
         assert!(patched.windows(2).all(|w| w[0].end <= w[1].start));
@@ -979,5 +1051,87 @@ mod tests {
             assert!(new_text.is_char_boundary(range.end));
             assert_eq!(&new_text[range.clone()].to_lowercase(), "x");
         }
+    }
+
+    /// Applies the production "Delete marked lines" edit to `text` so the
+    /// results can be checked against plain strings.
+    fn deleted(text: &str, marked: &[usize]) -> String {
+        let index = crate::line_index::LineIndex::new(text);
+        let total = index.lines();
+        let first = *marked.first().expect("at least one marked line");
+        let last = *marked.last().expect("at least one marked line");
+        let span_start = index.start(text, first);
+        let ends_document = last + 1 >= total;
+        let span_end = if ends_document {
+            text.len()
+        } else {
+            index.start(text, last + 1)
+        };
+        let (replacement, any_kept) = delete_marked_lines_replacement(
+            &text[span_start..span_end],
+            first,
+            marked,
+            ends_document,
+        );
+        // Nothing survived at the end of the document: the newline of the
+        // previous line goes as well, or an empty last line would remain.
+        let mut start = span_start;
+        if !any_kept && ends_document && first > 0 {
+            start -= 1;
+        }
+        let mut out = text.to_string();
+        out.replace_range(start..span_end, &replacement);
+        out
+    }
+
+    #[test]
+    fn marked_lines_delete_a_single_middle_line() {
+        assert_eq!(
+            deleted("alpha\nbeta\ngamma\ndelta", &[1]),
+            "alpha\ngamma\ndelta"
+        );
+    }
+
+    #[test]
+    fn marked_lines_delete_the_first_and_the_last_line() {
+        assert_eq!(deleted("alpha\nbeta\ngamma", &[0]), "beta\ngamma");
+        assert_eq!(deleted("alpha\nbeta\ngamma", &[2]), "alpha\nbeta");
+        assert_eq!(deleted("alpha\nbeta\ngamma", &[0, 2]), "beta");
+    }
+
+    #[test]
+    fn marked_lines_keep_unmarked_lines_between_them() {
+        assert_eq!(
+            deleted("a\nb\nc\nd\ne", &[0, 2, 4]),
+            "b\nd",
+        );
+        // The kept tail is separated from the next line by exactly one newline.
+        assert_eq!(deleted("a\nb\nc\nd", &[0, 2]), "b\nd");
+    }
+
+    #[test]
+    fn marked_lines_delete_the_whole_document() {
+        assert_eq!(deleted("a\nb\nc", &[0, 1, 2]), "");
+        assert_eq!(deleted("only", &[0]), "");
+    }
+
+    #[test]
+    fn marked_lines_keep_empty_lines_between_them() {
+        // The blank line survives; the gap after it must not swallow the
+        // previous line's newline when the span reaches the document end.
+        assert_eq!(deleted("p\nq\n\nr", &[1, 3]), "p\n");
+        assert_eq!(deleted("p\nq\n\nr", &[0, 2]), "q\nr");
+    }
+
+    #[test]
+    fn marked_lines_delete_a_line_that_ends_with_a_newline() {
+        // A document ending in a newline has an extra empty last line, so the
+        // removed line is not the last one and keeps its trailing newline.
+        assert_eq!(deleted("a\nb\nc\n", &[2]), "a\nb\n");
+    }
+
+    #[test]
+    fn marked_lines_keep_windows_line_endings() {
+        assert_eq!(deleted("a\r\nb\r\nc", &[1]), "a\r\nc");
     }
 }

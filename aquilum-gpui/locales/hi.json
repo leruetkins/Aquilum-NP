@@ -321,6 +321,8 @@
     "replace_placeholder": "इससे बदलें",
     "replace": "बदलें",
     "replace_all": "सभी बदलें",
+    "mark_all": "Mark all",
+    "delete_marked_lines": "Delete marked lines",
     "prev_match": "पिछला मेल",
     "next_match": "अगला मेल",
     "close_search": "खोज बंद करें",

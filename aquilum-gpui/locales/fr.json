@@ -321,6 +321,8 @@
     "replace_placeholder": "Remplacer par",
     "replace": "Remplacer",
     "replace_all": "Tout remplacer",
+    "mark_all": "Mark all",
+    "delete_marked_lines": "Delete marked lines",
     "prev_match": "Occurrence précédente",
     "next_match": "Occurrence suivante",
     "close_search": "Fermer la recherche",

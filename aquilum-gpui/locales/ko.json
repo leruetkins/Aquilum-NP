@@ -321,6 +321,8 @@
     "replace_placeholder": "바꿀 내용",
     "replace": "바꾸기",
     "replace_all": "모두 바꾸기",
+    "mark_all": "Mark all",
+    "delete_marked_lines": "Delete marked lines",
     "prev_match": "이전 일치",
     "next_match": "다음 일치",
     "close_search": "검색 닫기",

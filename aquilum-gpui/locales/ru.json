@@ -321,6 +321,8 @@
     "replace_placeholder": "Заменить на",
     "replace": "Заменить",
     "replace_all": "Заменить всё",
+    "mark_all": "Отметить все",
+    "delete_marked_lines": "Удалить выделенные линии",
     "prev_match": "Предыдущее совпадение",
     "next_match": "Следующее совпадение",
     "close_search": "Закрыть поиск",
