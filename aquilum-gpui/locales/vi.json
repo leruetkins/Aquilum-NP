@@ -317,6 +317,13 @@
     "create_note": "Tạo ghi chú",
     "open_file": "Đi đến tập tin",
     "close": "Đóng",
+    "find": "Tìm trong ghi chú",
+    "replace_placeholder": "Thay bằng",
+    "replace": "Thay thế",
+    "replace_all": "Thay thế tất cả",
+    "prev_match": "Kết quả trước",
+    "next_match": "Kết quả tiếp theo",
+    "close_search": "Đóng tìm kiếm",
     "callout": {
       "note": "Ghi chú",
       "abstract": "Tóm tắt",

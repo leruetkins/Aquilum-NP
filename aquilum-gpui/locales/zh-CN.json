@@ -317,6 +317,13 @@
     "create_note": "创建注释",
     "open_file": "转到文件",
     "close": "关闭",
+    "find": "在笔记中查找",
+    "replace_placeholder": "替换为",
+    "replace": "替换",
+    "replace_all": "全部替换",
+    "prev_match": "上一个匹配项",
+    "next_match": "下一个匹配项",
+    "close_search": "关闭搜索",
     "callout": {
       "note": "笔记",
       "abstract": "摘要",

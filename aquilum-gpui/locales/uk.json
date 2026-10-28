@@ -317,6 +317,13 @@
     "create_note": "Створіть нотатку",
     "open_file": "Перейдіть до файлу",
     "close": "Закрити",
+    "find": "Знайти в нотатці",
+    "replace_placeholder": "Замінити на",
+    "replace": "Замінити",
+    "replace_all": "Замінити все",
+    "prev_match": "Попередній збіг",
+    "next_match": "Наступний збіг",
+    "close_search": "Закрити пошук",
     "callout": {
       "note": "Нотатка",
       "abstract": "Анотація",

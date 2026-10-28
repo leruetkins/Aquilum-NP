@@ -41,46 +41,62 @@ const TABLE_CP: usize = 0x800;
 /// headroom and writes are guarded anyway.
 const MAX_EXPANSION: usize = 8;
 
-fn fold_table() -> &'static Vec<Box<[char]>> {
-    static TABLE: OnceLock<Vec<Box<[char]>>> = OnceLock::new();
+/// Placeholder for a table slot whose lowercase mapping is longer than one
+/// char; the expansion is computed on demand. A NUL folds to itself and would
+/// hit this marker too, which only costs it the slow path.
+const EXPANDS: char = '\0';
+
+fn fold_table() -> &'static [char] {
+    static TABLE: OnceLock<Vec<char>> = OnceLock::new();
     TABLE.get_or_init(|| {
         (0..TABLE_CP)
             .map(|cp| {
                 let c = char::from_u32(cp as u32).expect("code points below 0x800 are scalars");
-                c.to_lowercase().collect::<Vec<_>>().into_boxed_slice()
+                let mut lower = c.to_lowercase();
+                match (lower.next(), lower.next()) {
+                    (Some(one), None) => one,
+                    _ => EXPANDS,
+                }
             })
             .collect()
     })
 }
 
+/// Lowercase mapping of `c` when it is exactly one char.
+///
+/// This is the per-character fast path of the matcher: ASCII and the fold
+/// table answer with a single load instead of walking `to_lowercase()`.
+fn lower_single(c: char) -> Option<char> {
+    if c.is_ascii() {
+        return Some(c.to_ascii_lowercase());
+    }
+    let cached = *fold_table().get(c as usize)?;
+    (cached != EXPANDS).then_some(cached)
+}
+
+/// Folds one char into a single char when possible (`Exact` always can).
+fn fold_single(c: char, fold: Fold) -> Option<char> {
+    match fold {
+        Fold::Exact => Some(c),
+        Fold::Lower => lower_single(c),
+    }
+}
+
 /// Folds one char into at most [`MAX_EXPANSION`] chars. Returns the filled
 /// prefix length of `out`.
 fn expand(c: char, fold: Fold, out: &mut [char; MAX_EXPANSION]) -> usize {
-    match fold {
-        Fold::Exact => {
-            out[0] = c;
-            1
-        }
-        Fold::Lower => {
-            let mut n = 0;
-            let push = |out: &mut [char; MAX_EXPANSION], n: &mut usize, ch: char| {
-                if *n < MAX_EXPANSION {
-                    out[*n] = ch;
-                    *n += 1;
-                }
-            };
-            if (c as u32) < TABLE_CP as u32 {
-                for &fc in fold_table()[c as usize].iter() {
-                    push(out, &mut n, fc);
-                }
-            } else {
-                for fc in c.to_lowercase() {
-                    push(out, &mut n, fc);
-                }
-            }
-            n
+    if let Some(one) = fold_single(c, fold) {
+        out[0] = one;
+        return 1;
+    }
+    let mut n = 0;
+    for fc in c.to_lowercase() {
+        if n < MAX_EXPANSION {
+            out[n] = fc;
+            n += 1;
         }
     }
+    n
 }
 
 /// One folded character of the text with its provenance in the original.
@@ -99,8 +115,12 @@ struct Item {
 }
 
 /// Streams the folded form of `text`, char by char, without allocating.
+#[derive(Clone)]
 struct Cursor<'a> {
     text: &'a str,
+    /// Cached fold table: reaching it through the `OnceLock` costs an atomic
+    /// load plus a branch on every character of the document.
+    table: &'static [char],
     byte: usize,
     fold: Fold,
     /// Original char before the current one (`None` at the text start).
@@ -120,6 +140,7 @@ impl<'a> Cursor<'a> {
     fn new(text: &'a str, fold: Fold) -> Self {
         Self {
             text,
+            table: fold_table(),
             byte: 0,
             fold,
             prev: None,
@@ -161,6 +182,50 @@ impl<'a> Cursor<'a> {
                     .next()
                     .map_or(true, |c| !c.is_alphanumeric()),
         })
+    }
+
+    /// Folds one char to a single char, or `None` when it expands to several.
+    /// Same mapping as [`fold_single`], with the table already at hand.
+    #[inline]
+    fn fold_char(&self, c: char) -> Option<char> {
+        match self.fold {
+            Fold::Exact => Some(c),
+            Fold::Lower => {
+                if c.is_ascii() {
+                    Some(c.to_ascii_lowercase())
+                } else {
+                    let cached = *self.table.get(c as usize)?;
+                    (cached != EXPANDS).then_some(cached)
+                }
+            }
+        }
+    }
+
+    /// Next folded char with its byte range and no word-boundary bookkeeping.
+    ///
+    /// Word flags cost two Unicode case lookups and an extra decode per
+    /// character; substring search never reads them, so it walks the text
+    /// with this instead of [`Cursor::next`].
+    fn next_flat(&mut self) -> Option<(char, usize, usize)> {
+        if self.exp_ix < self.exp_len {
+            let ix = self.exp_ix;
+            self.exp_ix += 1;
+            return Some((self.exp[ix], self.start, self.end));
+        }
+        let c = self.text[self.byte..].chars().next()?;
+        let start = self.byte;
+        let end = start + c.len_utf8();
+        self.start = start;
+        self.end = end;
+        self.byte = end;
+        if let Some(folded) = self.fold_char(c) {
+            self.exp_len = 0;
+            self.exp_ix = 0;
+            return Some((folded, start, end));
+        }
+        self.exp_len = expand(c, self.fold, &mut self.exp);
+        self.exp_ix = 1;
+        Some((self.exp[0], start, end))
     }
 }
 
@@ -208,6 +273,58 @@ fn fold_needle(needle: &str, fold: Fold) -> Vec<char> {
     out
 }
 
+/// Substring scan that probes each needle by cloning the cursor.
+///
+/// The windowed scan below buffers the longest needle horizon for every
+/// character; here the common case is one comparison against the first needle
+/// char, and the cursor clone is paid only where a match can actually start.
+/// That is what keeps a plain word search on a large file responsive.
+fn scan_substring(
+    hay: &str,
+    needles: &[Vec<char>],
+    fold: Fold,
+    mut on_match: impl FnMut(Range<usize>) -> bool,
+) {
+    let mut cursor = Cursor::new(hay, fold);
+    while let Some((first, start, end)) = cursor.next_flat() {
+        let mut hit_end = None;
+        for needle in needles {
+            let Some(&needle_first) = needle.first() else {
+                continue;
+            };
+            if needle_first != first {
+                continue;
+            }
+            if needle.len() == 1 {
+                hit_end = Some(end);
+                break;
+            }
+            let mut probe = cursor.clone();
+            let mut probe_end = end;
+            let mut matched = true;
+            for &want in &needle[1..] {
+                match probe.next_flat() {
+                    Some((ch, _, e)) if ch == want => probe_end = e,
+                    _ => {
+                        matched = false;
+                        break;
+                    }
+                }
+            }
+            if matched {
+                hit_end = Some(probe_end);
+                cursor = probe;
+                break;
+            }
+        }
+        if let Some(end) = hit_end {
+            if !on_match(start..end) {
+                return;
+            }
+        }
+    }
+}
+
 /// Non-overlapping matches of `needles` in `hay`, longest-first at each start
 /// position. `needles` must be pre-folded and sorted by folded length
 /// descending. Calls `on_match` with byte ranges into the original; stops
@@ -224,6 +341,10 @@ fn scan_matches(
     }
     let max_len = needles.iter().map(|n| n.len()).max().unwrap_or(0);
     if max_len == 0 {
+        return;
+    }
+    if mode == Mode::Substring {
+        scan_substring(hay, needles, fold, on_match);
         return;
     }
     let mut cursor = Cursor::new(hay, fold);

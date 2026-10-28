@@ -317,6 +317,13 @@
     "create_note": "एक नोट बनाएं",
     "open_file": "फ़ाइल पर जाएँ",
     "close": "बंद करना",
+    "find": "नोट में खोजें",
+    "replace_placeholder": "इससे बदलें",
+    "replace": "बदलें",
+    "replace_all": "सभी बदलें",
+    "prev_match": "पिछला मेल",
+    "next_match": "अगला मेल",
+    "close_search": "खोज बंद करें",
     "callout": {
       "note": "नोट",
       "abstract": "सारांश",

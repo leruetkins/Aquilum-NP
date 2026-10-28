@@ -317,6 +317,13 @@
     "create_note": "메모 만들기",
     "open_file": "파일로 이동",
     "close": "닫다",
+    "find": "노트에서 찾기",
+    "replace_placeholder": "바꿀 내용",
+    "replace": "바꾸기",
+    "replace_all": "모두 바꾸기",
+    "prev_match": "이전 일치",
+    "next_match": "다음 일치",
+    "close_search": "검색 닫기",
     "callout": {
       "note": "노트",
       "abstract": "요약",

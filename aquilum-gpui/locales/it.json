@@ -317,6 +317,13 @@
     "create_note": "Crea una nota",
     "open_file": "Vai al dossier",
     "close": "Vicino",
+    "find": "Cerca nella nota",
+    "replace_placeholder": "Sostituisci con",
+    "replace": "Sostituisci",
+    "replace_all": "Sostituisci tutto",
+    "prev_match": "Corrispondenza precedente",
+    "next_match": "Corrispondenza successiva",
+    "close_search": "Chiudi ricerca",
     "callout": {
       "note": "Nota",
       "abstract": "Riepilogo",

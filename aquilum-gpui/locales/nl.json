@@ -317,6 +317,13 @@
     "create_note": "Maak een notitie",
     "open_file": "Ga naar het bestand",
     "close": "Dichtbij",
+    "find": "Zoeken in notitie",
+    "replace_placeholder": "Vervangen door",
+    "replace": "Vervangen",
+    "replace_all": "Alles vervangen",
+    "prev_match": "Vorige overeenkomst",
+    "next_match": "Volgende overeenkomst",
+    "close_search": "Zoeken sluiten",
     "callout": {
       "note": "Notitie",
       "abstract": "Samenvatting",

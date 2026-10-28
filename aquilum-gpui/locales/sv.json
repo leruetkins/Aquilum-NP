@@ -317,6 +317,13 @@
     "create_note": "Skapa en anteckning",
     "open_file": "Gå till filen",
     "close": "Nära",
+    "find": "Sök i anteckningen",
+    "replace_placeholder": "Ersätt med",
+    "replace": "Ersätt",
+    "replace_all": "Ersätt alla",
+    "prev_match": "Föregående träff",
+    "next_match": "Nästa träff",
+    "close_search": "Stäng sökning",
     "callout": {
       "note": "Anteckning",
       "abstract": "Sammanfattning",

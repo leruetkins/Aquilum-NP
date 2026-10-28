@@ -317,6 +317,13 @@
     "create_note": "Utwórz notatkę",
     "open_file": "Przejdź do pliku",
     "close": "Zamknąć",
+    "find": "Szukaj w notatce",
+    "replace_placeholder": "Zamień na",
+    "replace": "Zamień",
+    "replace_all": "Zamień wszystko",
+    "prev_match": "Poprzednie wystąpienie",
+    "next_match": "Następne wystąpienie",
+    "close_search": "Zamknij wyszukiwanie",
     "callout": {
       "note": "Notatka",
       "abstract": "Streszczenie",

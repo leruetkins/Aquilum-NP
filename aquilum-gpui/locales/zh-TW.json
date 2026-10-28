@@ -317,6 +317,13 @@
     "create_note": "建立註釋",
     "open_file": "轉到文件",
     "close": "關閉",
+    "find": "在筆記中尋找",
+    "replace_placeholder": "取代為",
+    "replace": "取代",
+    "replace_all": "全部取代",
+    "prev_match": "上一個相符項",
+    "next_match": "下一個相符項",
+    "close_search": "關閉搜尋",
     "callout": {
       "note": "筆記",
       "abstract": "摘要",

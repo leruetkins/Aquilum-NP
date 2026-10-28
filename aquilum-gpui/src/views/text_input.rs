@@ -212,13 +212,24 @@ impl TextInput {
 
     pub fn handle_mouse_up(&mut self) {
         self.is_mouse_selecting = false;
+        // A click without a drag leaves a collapsed selection; keeping the
+        // anchor set would make the next caret move select one character.
+        if self.selection_anchor == Some(self.cursor_pos) {
+            self.selection_anchor = None;
+        }
     }
 
     /// Inserts text at the current cursor or replaces the active selection.
     pub fn insert_text(&mut self, text_to_insert: &str) {
         let mut chars: Vec<char> = self.text.chars().collect();
         let pos = if let Some((s, e)) = self.selection_range() {
-            chars.drain(s..e);
+            // Caret and anchor can lag behind the text after an edit made while
+            // the selection was collapsed; never index past the buffer.
+            let s = s.min(chars.len());
+            let e = e.min(chars.len());
+            if s < e {
+                chars.drain(s..e);
+            }
             self.selection_anchor = None;
             s
         } else {
@@ -233,19 +244,18 @@ impl TextInput {
     }
 
     /// Handles keystroke in the input field. Returns `true` if text changed.
+    ///
+    /// Blinking is the caller's concern: the caller owns the blink manager and
+    /// can reset it without this method borrowing the whole view.
     pub fn handle_key_down<V: 'static>(
         &mut self,
         event: &KeyDownEvent,
-        get_bm: fn(&mut V) -> &mut BlinkManager,
         cx: &mut Context<V>,
     ) -> bool {
         let key = event.keystroke.key.as_str();
         let ctrl = event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
         let shift = event.keystroke.modifiers.shift;
         let alt = event.keystroke.modifiers.alt;
-
-        // Reset blink on any key press
-        self.pause_and_show(get_bm, cx);
 
         // Ctrl + A (Select All)
         if ctrl && (key.eq_ignore_ascii_case("a") || key == "ф" || key == "Ф") {
@@ -309,6 +319,7 @@ impl TextInput {
                 self.selection_anchor = None;
             } else if self.cursor_pos > 0 {
                 self.cursor_pos -= 1;
+                self.selection_anchor = None;
             }
             cx.notify();
             return false;
@@ -329,6 +340,7 @@ impl TextInput {
                 self.selection_anchor = None;
             } else if self.cursor_pos < total_chars {
                 self.cursor_pos += 1;
+                self.selection_anchor = None;
             }
             cx.notify();
             return false;
@@ -375,6 +387,9 @@ impl TextInput {
             if pos > 0 {
                 chars.remove(pos - 1);
                 self.cursor_pos = pos - 1;
+                // A collapsed selection still carries an anchor from the last
+                // click; drop it so it cannot point past the shortened text.
+                self.selection_anchor = None;
                 self.text = chars.into_iter().collect();
                 cx.notify();
                 return true;
@@ -393,6 +408,7 @@ impl TextInput {
             let pos = self.cursor_pos.min(chars.len());
             if pos < chars.len() {
                 chars.remove(pos);
+                self.selection_anchor = None;
                 self.text = chars.into_iter().collect();
                 cx.notify();
                 return true;
@@ -493,6 +509,7 @@ impl TextInput {
             .flex_1()
             .min_w_0()
             .h_full()
+            .overflow_hidden()
             .child(
                 gpui::canvas(
                     move |bounds, _, _| {
@@ -523,12 +540,14 @@ impl TextInput {
                         .font_family(SharedString::from(font_family.to_string()))
                         .text_size(px(font_size))
                         .text_color(theme.text_muted)
+                        .whitespace_nowrap()
                         .child(placeholder.to_string())
                 } else {
                     div()
                         .font_family(SharedString::from(font_family.to_string()))
                         .text_size(px(font_size))
                         .text_color(theme.text_primary)
+                        .whitespace_nowrap()
                         .child(query.clone())
                 }
             )
@@ -582,5 +601,25 @@ mod tests {
         input.insert_text("a");
         assert_eq!(input.text(), "hao");
         assert_eq!(input.cursor_pos, 2);
+    }
+
+    #[test]
+    fn test_text_input_tolerates_stale_caret_past_text_end() {
+        let mut input = TextInput::for_testing();
+        input.set_text("hello");
+        // A collapsed selection (anchor == caret) left over after the text
+        // shrank by one character: inserting must not index past the buffer.
+        input.cursor_pos = 6;
+        input.selection_anchor = Some(6);
+        input.insert_text("x");
+        assert_eq!(input.text(), "hellox");
+        assert_eq!(input.cursor_pos, 6);
+
+        input.set_text("hello");
+        input.cursor_pos = 7;
+        input.selection_anchor = Some(5);
+        input.insert_text("y");
+        assert_eq!(input.text(), "helloy");
+        assert_eq!(input.cursor_pos, 6);
     }
 }

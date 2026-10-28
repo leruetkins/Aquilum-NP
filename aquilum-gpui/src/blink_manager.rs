@@ -276,6 +276,8 @@ pub enum BlinkTarget {
     CommandPalette,
     PluginCatalog,
     PluginInput,
+    FindQuery,
+    FindReplace,
 }
 
 impl BlinkTarget {
@@ -290,6 +292,8 @@ impl BlinkTarget {
             BlinkTarget::CommandPalette => &mut view.command_palette_blink,
             BlinkTarget::PluginCatalog => &mut view.catalog_blink,
             BlinkTarget::PluginInput => &mut view.plugin_input_blink,
+            BlinkTarget::FindQuery => &mut view.find_bar.query.blink,
+            BlinkTarget::FindReplace => &mut view.find_bar.replace.blink,
         }
     }
 }

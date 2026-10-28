@@ -317,6 +317,13 @@
     "create_note": "メモを作成する",
     "open_file": "ファイルに移動",
     "close": "近い",
+    "find": "ノート内を検索",
+    "replace_placeholder": "置換後の文字列",
+    "replace": "置換",
+    "replace_all": "すべて置換",
+    "prev_match": "前の一致",
+    "next_match": "次の一致",
+    "close_search": "検索を閉じる",
     "callout": {
       "note": "ノート",
       "abstract": "概要",

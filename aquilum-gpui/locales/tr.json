@@ -317,6 +317,13 @@
     "create_note": "Not oluştur",
     "open_file": "Dosyaya git",
     "close": "Kapalı",
+    "find": "Notta ara",
+    "replace_placeholder": "Şununla değiştir",
+    "replace": "Değiştir",
+    "replace_all": "Tümünü değiştir",
+    "prev_match": "Önceki eşleşme",
+    "next_match": "Sonraki eşleşme",
+    "close_search": "Aramayı kapat",
     "callout": {
       "note": "Not",
       "abstract": "Özet",

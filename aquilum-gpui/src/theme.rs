@@ -54,6 +54,24 @@ impl Theme {
         }
     }
 
+    /// Background tint behind every in-editor find match.
+    pub fn find_match_bg(&self) -> Rgba {
+        if self.is_dark {
+            rgba(0xf9e2af55)
+        } else {
+            rgba(0xdf8e1d33)
+        }
+    }
+
+    /// Stronger tint for the match the find bar currently points at.
+    pub fn find_match_active_bg(&self) -> Rgba {
+        if self.is_dark {
+            rgba(0xf9e2af99)
+        } else {
+            rgba(0xdf8e1d66)
+        }
+    }
+
     /// Returns the default dark theme (Catppuccin Mocha palette).
     pub fn dark() -> Self {
         Self {

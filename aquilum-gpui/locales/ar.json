@@ -317,6 +317,13 @@
     "create_note": "قم بإنشاء ملاحظة",
     "open_file": "اذهب إلى الملف",
     "close": "يغلق",
+    "find": "بحث في الملاحظة",
+    "replace_placeholder": "استبدال بـ",
+    "replace": "استبدال",
+    "replace_all": "استبدال الكل",
+    "prev_match": "التطابق السابق",
+    "next_match": "التطابق التالي",
+    "close_search": "إغلاق البحث",
     "callout": {
       "note": "ملاحظة",
       "abstract": "ملخص",

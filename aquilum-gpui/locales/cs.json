@@ -317,6 +317,13 @@
     "create_note": "Vytvořte poznámku",
     "open_file": "Přejděte do souboru",
     "close": "Blízko",
+    "find": "Hledat v poznámce",
+    "replace_placeholder": "Nahradit čím",
+    "replace": "Nahradit",
+    "replace_all": "Nahradit vše",
+    "prev_match": "Předchozí výskyt",
+    "next_match": "Další výskyt",
+    "close_search": "Zavřít hledání",
     "callout": {
       "note": "Poznámka",
       "abstract": "Shrnutí",

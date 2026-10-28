@@ -317,6 +317,13 @@
     "create_note": "Создать заметку",
     "open_file": "Перейти к файлу",
     "close": "Закрыть",
+    "find": "Найти в заметке",
+    "replace_placeholder": "Заменить на",
+    "replace": "Заменить",
+    "replace_all": "Заменить всё",
+    "prev_match": "Предыдущее совпадение",
+    "next_match": "Следующее совпадение",
+    "close_search": "Закрыть поиск",
     "callout": {
       "note": "Заметка",
       "abstract": "Аннотация",
