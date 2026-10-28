@@ -63,7 +63,7 @@ pub struct FindBarState {
     /// click.
     pub pending_replace: bool,
     /// Replace All pass in progress: bytes decided so far and the document
-    /// length, so the counter can show a percentage instead of a match count.
+    /// length, so the replace field can show a percentage instead of nothing.
     pub replace_all: Option<(usize, usize)>,
     /// Sequence of the latest Replace All request; a reply with an older
     /// number is dropped instead of being applied to the document.
@@ -109,32 +109,30 @@ impl FindBarState {
         self.replace_all = None;
     }
 
-    /// Counter label next to the query: `current/total`, `0/0` when empty, or
-    /// the progress percentage while Replace All is rewriting the document.
+    /// Counter label next to the query: `current/total`, `0/0` when empty.
     pub fn counter(&self) -> String {
-        counter_label(
-            self.active,
-            self.matches.len(),
-            self.truncated,
-            self.replace_all,
-        )
+        counter_label(self.active, self.matches.len(), self.truncated)
+    }
+
+    /// Progress of the running Replace All pass, shown at the right edge of
+    /// the replace field. `None` when no pass is running, so the field keeps
+    /// its normal look.
+    pub fn replace_all_percent(&self) -> Option<String> {
+        percent_label(self.replace_all)
     }
 }
 
-fn counter_label(
-    active: usize,
-    total: usize,
-    truncated: bool,
-    replace_all: Option<(usize, usize)>,
-) -> String {
-    if let Some((done, total_bytes)) = replace_all {
-        let percent = if total_bytes == 0 {
-            100
-        } else {
-            done.saturating_mul(100) / total_bytes
-        };
-        return format!("{percent}%");
-    }
+fn percent_label(replace_all: Option<(usize, usize)>) -> Option<String> {
+    let (done, total) = replace_all?;
+    let percent = if total == 0 {
+        100
+    } else {
+        done.saturating_mul(100) / total
+    };
+    Some(format!("{percent}%"))
+}
+
+fn counter_label(active: usize, total: usize, truncated: bool) -> String {
     if total == 0 {
         return "0/0".to_string();
     }
@@ -598,12 +596,14 @@ mod tests {
     }
 
     #[test]
-    fn counter_shows_replace_all_progress() {
-        assert_eq!(counter_label(0, 2, false, None), "1/2");
-        assert_eq!(counter_label(0, 0, false, None), "0/0");
-        assert_eq!(counter_label(0, MAX_FIND_MATCHES, true, None), "1/19999+");
-        assert_eq!(counter_label(0, 2, false, Some((25, 100))), "25%");
-        assert_eq!(counter_label(0, 2, false, Some((100, 100))), "100%");
+    fn counter_and_replace_all_percent() {
+        assert_eq!(counter_label(0, 2, false), "1/2");
+        assert_eq!(counter_label(0, 0, false), "0/0");
+        assert_eq!(counter_label(0, MAX_FIND_MATCHES, true), "1/19999+");
+        // The percentage belongs to the replace field, not to the counter.
+        assert_eq!(percent_label(None), None);
+        assert_eq!(percent_label(Some((25, 100))).as_deref(), Some("25%"));
+        assert_eq!(percent_label(Some((100, 100))).as_deref(), Some("100%"));
     }
 
     fn floor_char(text: &str, mut index: usize) -> usize {

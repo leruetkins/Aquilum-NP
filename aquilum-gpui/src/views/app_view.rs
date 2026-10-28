@@ -2841,13 +2841,21 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
     /// on a large file froze the window for seconds.
     fn find_replace_all(&mut self, cx: &mut Context<Self>) {
         let query = self.find_bar.query.text().to_string();
-        if query.is_empty() || self.find_bar.replace_all.is_some() {
+        // `0/0` means the search found nothing, so there is nothing to
+        // replace; the document is not even scanned again.
+        if query.is_empty()
+            || self.find_bar.matches.is_empty()
+            || self.find_bar.replace_all.is_some()
+        {
             return;
         }
         let replacement = self.find_bar.replace.text().to_string();
         if replacement == query {
-            // Replacing text with itself would only add an undo step.
-            self.request_find_search(cx);
+            // Replacing text with itself would only add an undo step. The
+            // installed list still stands, so there is nothing to rescan.
+            if self.find_is_stale() {
+                self.request_find_search(cx);
+            }
             return;
         }
         let Some(doc) = self.state.active_document() else {
@@ -2875,9 +2883,10 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         let mut async_cx = cx.to_async();
         let background = cx.background_executor().clone();
 
-        // The counter shows the percentage. Repainting once per slice would
-        // flood the frame queue on a large file, so a ticker samples the shared
-        // byte counter instead and stops as soon as the pass is gone.
+        // The replace field shows the percentage at its right edge. Repainting
+        // once per slice would flood the frame queue on a large file, so a
+        // ticker samples the shared byte counter instead and stops as soon as
+        // the pass is gone.
         let ticker_entity = entity.clone();
         let mut ticker_cx = cx.to_async();
         let ticker_executor = cx.background_executor().clone();
@@ -2958,8 +2967,14 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             .active_document()
             .map(|doc| doc.path == path && doc.version == version && doc.len() == old_len)
             .unwrap_or(false);
-        if !same_document || result.replacements == 0 {
+        if !same_document {
             self.request_find_search(cx);
+            return;
+        }
+        if result.replacements == 0 {
+            // The document did not change, so the installed list is still
+            // correct; only the progress label has to come back.
+            cx.notify();
             return;
         }
         let new_cursor = result.first_end.unwrap_or(0).min(result.text.len());
@@ -2969,8 +2984,18 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         // replace action itself.
         self.schedule_auto_save(cx);
         self.refresh_view_after_cursor_move();
-        self.find_bar.pending_after = Some(new_cursor);
-        self.request_find_search(cx);
+        // Everything the query matched was just replaced, so the old list is
+        // not only stale but meaningless: scanning the document again would
+        // find nothing and only make the counter flash the previous numbers.
+        // The list is dropped and marked stale instead — Enter, Replace or
+        // reopening the bar rescans on demand (and if the replacement itself
+        // recreates matches, that rescan brings them back).
+        self.find_bar.matches.clear();
+        self.find_bar.matches_query.clear();
+        self.find_bar.matches_version = 0;
+        self.find_bar.active = 0;
+        self.find_bar.truncated = false;
+        cx.notify();
     }
 
     /// Key handling for the find bar's two fields.
@@ -7415,7 +7440,35 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     .text_xs()
                     .text_color(theme.text_muted)
                     .child(self.find_bar.counter()),
-            );
+            )
+            // Clear button inside the field, after the count, like the other
+            // in-field clear buttons of the app.
+            .when(!self.find_bar.query.is_empty(), |d| {
+                d.child(
+                    div()
+                        .id("find-query-clear")
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .cursor_pointer()
+                        .rounded_sm()
+                        .hover(|h| h.bg(theme.bg_hover))
+                        .child(icons::icon(icons::ICON_CLOSE, 12.0, theme.text_muted))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            // Same as erasing the query by hand: the old ranges
+                            // and any pending action belong to the old text.
+                            this.find_bar.query.clear();
+                            this.find_bar.pending_step = None;
+                            this.find_bar.pending_after = None;
+                            this.find_bar.pending_replace = false;
+                            this.find_bar.cancel_replace_all();
+                            this.find_bar.query.focus(window);
+                            this.find_bar.query.blink.pause_and_show(BlinkTarget::FindQuery, cx);
+                            this.request_find_search(cx);
+                        })),
+                )
+            });
 
         let nav_button = |id: &'static str, icon: &'static str, active: bool| {
             div()
@@ -7528,7 +7581,39 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     pixel_scale,
                     font_size,
                     font_family,
-                ));
+                ))
+                // Progress of the whole-document pass lives at the right edge
+                // of the field it rewrites, leaving the buttons to their names.
+                .when_some(self.find_bar.replace_all_percent(), |d, percent| {
+                    d.child(
+                        div()
+                            .flex_shrink_0()
+                            .font_family("Segoe UI")
+                            .text_xs()
+                            .text_color(theme.text_secondary)
+                            .child(percent),
+                    )
+                })
+                .when(!self.find_bar.replace.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .id("find-replace-clear")
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .cursor_pointer()
+                            .rounded_sm()
+                            .hover(|h| h.bg(theme.bg_hover))
+                            .child(icons::icon(icons::ICON_CLOSE, 12.0, theme.text_muted))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.find_bar.replace.clear();
+                                this.find_bar.replace.focus(window);
+                                this.find_bar.replace.blink.pause_and_show(BlinkTarget::FindReplace, cx);
+                                cx.notify();
+                            })),
+                    )
+                });
 
             let action_label = |text: String| {
                 div()
@@ -7554,11 +7639,11 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 .child(action_label(self.t("editor.replace")))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(|this, _, _, cx| this.find_replace_current(cx)));
-            // Replace All scans the document itself, so an empty list left over
-            // from the previous query does not mean there is nothing to
-            // replace; only an empty query or a pass already running does.
-            let replace_all_ready =
-                !self.find_bar.query.text().is_empty() && self.find_bar.replace_all.is_none();
+            // Nothing found means nothing to replace: the whole-document pass
+            // waits for a non-empty list instead of rewriting a document the
+            // search just found no matches in.
+            let replace_all_busy = self.find_bar.replace_all.is_some();
+            let replace_all_ready = has_matches && !replace_all_busy;
             let replace_all = div()
                 .id("find-replace-all")
                 .h(px(24.0))
@@ -7571,7 +7656,12 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 .border_color(theme.border)
                 .rounded_sm()
                 .cursor_pointer()
-                .when(!replace_all_ready, |d| d.opacity(0.45).cursor_not_allowed())
+                // A running pass is not dimmed: the replace field beside it is
+                // showing its progress.
+                .when(!replace_all_ready && !replace_all_busy, |d| {
+                    d.opacity(0.45).cursor_not_allowed()
+                })
+                .when(replace_all_busy, |d| d.cursor_not_allowed())
                 .when(replace_all_ready, |d| d.hover(|h| h.bg(theme.bg_hover)))
                 .child(action_label(self.t("editor.replace_all")))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
