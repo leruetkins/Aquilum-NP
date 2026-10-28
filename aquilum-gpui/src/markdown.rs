@@ -2387,11 +2387,11 @@ pub fn bullet_paint_text<'a>(raw_marker: &'a str, is_active_line: bool) -> &'a s
 /// Columns, measured in cells from the start of the row, where a nested list item
 /// draws its vertical indentation guides.
 ///
-/// Every guide lines up with the centre of the dot of the list level it hangs
-/// from, so the line runs straight under the dots instead of standing in front of
-/// the next level's dot. `indent_step` is the document's nesting step (see
-/// [`list_indent_step`]); an indent that is not a whole number of steps gets one
-/// guide per completed step.
+/// Every guide lines up with the centre of the marker cell of the list level it
+/// hangs from, so the line runs straight under the markers instead of standing in
+/// front of the next level's marker. `indent_step` is the document's nesting step
+/// (see [`list_indent_step`]); an indent that is not a whole number of steps gets
+/// one guide per completed step.
 pub fn bullet_guide_columns(indent_chars: usize, indent_step: usize) -> Vec<f32> {
     if indent_step == 0 || indent_chars < indent_step {
         return Vec::new();
@@ -2401,18 +2401,22 @@ pub fn bullet_guide_columns(indent_chars: usize, indent_step: usize) -> Vec<f32>
         .collect()
 }
 
-/// Indent of a bullet-list row, in chars. `None` for everything else.
+/// Indent of a bullet or numbered list row, in chars. `None` for everything else.
 pub fn list_item_indent(line: &str) -> Option<usize> {
     let trimmed = line.trim_start();
     if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
+        return Some(line.chars().count() - trimmed.chars().count());
+    }
+    let digits_len = trimmed.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits_len > 0 && trimmed[digits_len..].starts_with(". ") {
         Some(line.chars().count() - trimmed.chars().count())
     } else {
         None
     }
 }
 
-/// Nesting step of the unordered lists in `lines`: the smallest positive indent a
-/// bullet row starts with.
+/// Nesting step of the lists in `lines`: the smallest positive indent a bullet or
+/// numbered row starts with.
 ///
 /// It cannot be read off a single line — four spaces are one level of a four-space
 /// document and two levels of a two-space one — so the renderer measures it across
@@ -3634,6 +3638,9 @@ mod tests {
         assert_eq!(list_indent_step(["- a", "  - b", "    - c"]), 2);
         assert_eq!(list_indent_step(["- a", "    - b", "  - sloppy"]), 2);
         assert_eq!(list_indent_step(["* a", "+ b", "   - c"]), 3);
+        // Numbered rows nest the same way and set the step too.
+        assert_eq!(list_indent_step(["1. a", "    2. b"]), 4);
+        assert_eq!(list_indent_step(["- a", "  1. b", "    2. c"]), 2);
         // A one-column indent cannot nest a list item, so it cannot set the step.
         assert_eq!(list_indent_step(["- a", " - b"]), 0);
     }

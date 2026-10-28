@@ -8117,7 +8117,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             let code_states_arc = Arc::clone(&view.window.code_states);
             let height_index_arc = Arc::clone(&view.window.height_index);
 
-            // Nesting step of the window's unordered lists, for the indent guides.
+            // Nesting step of the window's lists, for the indent guides.
             // Code rows are skipped so a fenced example cannot change it.
             let list_indent_step = crate::markdown::list_indent_step(
                 lines_arc
@@ -13148,7 +13148,7 @@ fn render_live_styled_row(
     window: &Window,
     cx: &Context<AppView>,
     // `cell_w` is the width of one character cell of this row in logical px;
-    // `list_indent_step` is the nesting step of the window's unordered lists
+    // `list_indent_step` is the nesting step of the window's lists
     // (see `markdown::list_indent_step`). Only the block decorations drawn
     // outside the text flow — the indent guides of a nested list, the icon of a
     // callout header — need them.
@@ -13296,6 +13296,32 @@ fn render_live_styled_row(
             hovered_link_id,
             cx,
         )
+    };
+
+    // One vertical guide per nesting level of a list row, hanging straight under
+    // the marker cell of the level it belongs to. Rows are stacked edge to edge,
+    // so the segments join into a continuous line down the group. Both the
+    // position and the width come from the device grid: the guide has to keep
+    // one thickness at every level, and a single device pixel reads as too faint
+    // against the editor background, so it is drawn two device pixels wide.
+    let indent_guides = |indent_chars: usize| -> Vec<gpui::Div> {
+        let scale = window.scale_factor();
+        crate::markdown::bullet_guide_columns(indent_chars, list_indent_step)
+            .into_iter()
+            .map(|col| {
+                // `col` is the centre of the ancestor marker's cell; the guide is
+                // shifted half its own width to the left so it stays centred
+                // under the marker instead of growing to the right.
+                let (left, width) = crate::snap::snapped_rule(col * cell_w - 1.0 / scale, 2.0, scale);
+                div()
+                    .absolute()
+                    .left(px(left))
+                    .top(px(0.0))
+                    .bottom(px(0.0))
+                    .w(px(width))
+                    .bg(theme.border_subtle)
+            })
+            .collect()
     };
 
     match classified {
@@ -13831,31 +13857,7 @@ fn render_live_styled_row(
             // idle line, the raw source marker on the line being edited.
             let bullet_text = crate::markdown::bullet_paint_text(bullet, is_active_line);
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
-            // One guide per nesting level, hanging straight under the dot of the
-            // level it belongs to. Rows are stacked edge to edge, so the segments
-            // join into a continuous line down the group. Both the position and the
-            // width come from the device grid: the guide has to keep one thickness
-            // at every level, and a single device pixel reads as too faint against
-            // the editor background, so it is drawn two device pixels wide.
-            let scale = window.scale_factor();
-            let guides = crate::markdown::bullet_guide_columns(
-                indent.chars().count(),
-                list_indent_step,
-            )
-                .into_iter()
-                .map(|col| {
-                    // `col` is the centre of the ancestor dot's cell; the guide is
-                    // shifted half its own width to the left so it stays centred
-                    // under the dot instead of growing to the right.
-                    let (left, width) = crate::snap::snapped_rule(col * cell_w - 1.0 / scale, 2.0, scale);
-                    div()
-                        .absolute()
-                        .left(px(left))
-                        .top(px(0.0))
-                        .bottom(px(0.0))
-                        .w(px(width))
-                        .bg(theme.border_subtle)
-                });
+            let guides = indent_guides(indent.chars().count());
 
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(prefix_len), prefix_len, reveal);
@@ -13892,40 +13894,61 @@ fn render_live_styled_row(
             let trimmed = line.trim_start();
             let indent_len = line.len() - trimmed.len();
             let indent = &line[..indent_len];
+            let indent_chars = indent.chars().count();
             let num_prefix_len = num.len() + 2;
             let (num_part, rest) = if trimmed.len() >= num_prefix_len {
                 (&trimmed[..num_prefix_len], &trimmed[num_prefix_len..])
             } else {
                 ("", trimmed)
             };
-            let prefix_len = indent_len + num_part.len();
+            let num_chars = num_part.chars().count();
+            let prefix_chars = indent_chars + num_chars;
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
+            let guides = indent_guides(indent_chars);
 
             if sub_idx == 0 {
-                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(prefix_len), prefix_len, reveal);
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(prefix_chars), prefix_chars, reveal);
                 div()
+                    .relative()
                     .flex()
                     .flex_row()
                     .items_center()
                     .h_full()
-                    .child(div().child(indent.to_string()))
-                    .child(div().font_weight(gpui::FontWeight::BOLD).text_color(theme.accent).child(num_part.to_string()))
+                    .children(guides)
+                    .child(div().flex_shrink_0().w(px(indent_chars as f32 * cell_w)).child(indent.to_string()))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .w(px(num_chars as f32 * cell_w))
+                            .whitespace_nowrap()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(theme.accent)
+                            .child(num_part.to_string()),
+                    )
                     .child(render_spans(row_spans, None, None, None))
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans_revealed(
                     &spans,
-                    char_start.saturating_sub(prefix_len),
-                    char_end.saturating_sub(prefix_len),
-                    prefix_len,
+                    char_start.saturating_sub(prefix_chars),
+                    char_end.saturating_sub(prefix_chars),
+                    prefix_chars,
                     reveal,
                 );
-                let spaces = " ".repeat(prefix_len);
+                let spaces = " ".repeat(prefix_chars);
                 div()
+                    .relative()
                     .flex()
                     .flex_row()
                     .items_center()
                     .h_full()
-                    .child(div().child(spaces))
+                    .children(guides)
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .w(px(prefix_chars as f32 * cell_w))
+                            .whitespace_nowrap()
+                            .child(spaces),
+                    )
                     .child(render_spans(row_spans, None, None, None))
             }
         }
@@ -14236,6 +14259,69 @@ mod tests {
                     assert!(
                         shaped_error <= 0.01,
                         "shaped geometry drifted {shaped_error}px for {line:?}"
+                    );
+                }
+
+                cx.quit();
+                use gpui::AppContext;
+                struct DummyView;
+                impl gpui::Render for DummyView {
+                    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+                        gpui::div()
+                    }
+                }
+                cx.new(|_| DummyView)
+            });
+        });
+    }
+
+    /// The numbered marker is painted by its own box, which rounds the text width
+    /// up to whole pixels, while the caret geometry comes from the shaped line,
+    /// which does not: at 14px `"1. "` measures 25.2041 but its box gets 26.
+    /// The renderer therefore gives the indent and marker boxes explicit cell
+    /// widths; this pins the other half of that contract — the shaped prefix sits
+    /// on whole cells, so `chars * cell_w` is exactly where the caret expects it.
+    #[test]
+    fn numbered_marker_prefix_sits_on_whole_cells() {
+        gpui::Application::new().run(|cx: &mut gpui::App| {
+            crate::fonts::register_embedded_fonts(cx);
+            let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                let font_family: SharedString = "Droid Sans Mono".into();
+                let headings = crate::settings::HeadingsSettings::default();
+                let font_id = window.text_system().resolve_font(&gpui::font(font_family.clone()));
+                let cell_w = window
+                    .text_system()
+                    .advance(font_id, px(14.0), 'x')
+                    .map(|s| f32::from(s.width))
+                    .unwrap_or(7.7);
+
+                for line in ["1. one", "  2. two", "    10. ten"] {
+                    let v = VisualRow {
+                        line_idx: 0,
+                        sub_idx: 0,
+                        is_last_sub: true,
+                        char_start: 0,
+                        char_end: line.chars().count(),
+                    };
+                    let kind = classify_line(line, None);
+                    let prefix_cols = crate::markdown::continuation_prefix_cols(line, &kind);
+                    assert!(prefix_cols > 0, "{line:?} is not a numbered row");
+                    let layout = shape_row(
+                        window.text_system(),
+                        line,
+                        &kind,
+                        &v,
+                        false,
+                        &crate::markdown::InlineReveal::None,
+                        &headings,
+                        &font_family,
+                        cell_w,
+                    );
+                    let expected = prefix_cols as f32 * cell_w;
+                    let actual = layout.x_for_column(prefix_cols);
+                    assert!(
+                        (actual - expected).abs() < 0.01,
+                        "{line:?}: the prefix ends at {actual:.4} but its {prefix_cols} cells end at {expected:.4}"
                     );
                 }
 
