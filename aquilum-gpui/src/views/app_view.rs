@@ -2428,6 +2428,10 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         self.find_bar.search_version = 0;
         self.find_bar.pending_step = None;
         self.find_bar.pending_after = None;
+        self.find_bar.pending_replace = false;
+        // A Replace All pass still building text must not land after the bar
+        // is closed.
+        self.find_bar.cancel_replace_all();
         self.find_bar.query.clear();
         self.find_bar.replace.clear();
         self.find_bar.query.blink.disable(cx);
@@ -2465,6 +2469,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             self.find_bar.truncated = false;
             self.find_bar.pending_step = None;
             self.find_bar.pending_after = None;
+            self.find_bar.pending_replace = false;
             cx.notify();
             return;
         }
@@ -2532,7 +2537,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             .active_document()
             .map(|doc| doc.version == version)
             .unwrap_or(false);
-        if seq == self.find_bar.search_seq && self.find_bar.is_open && document_unchanged {
+        let newest = seq == self.find_bar.search_seq && self.find_bar.is_open;
+        if newest && document_unchanged {
             self.find_bar.truncated =
                 matches.len() >= crate::views::find_bar::MAX_FIND_MATCHES;
             self.find_bar.matches = matches;
@@ -2541,6 +2547,10 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             self.find_bar.active = 0;
             let step = self.find_bar.pending_step.take();
             let after = self.find_bar.pending_after.take();
+            // A replace pressed while the list was stale waits here for the
+            // fresh ranges instead of being dropped.
+            let pending_replace = self.find_bar.pending_replace;
+            self.find_bar.pending_replace = false;
             // A query-only refresh shows the match without moving the view;
             // Enter or a replacement asked for the position explicitly.
             let reveal = step.is_some() || after.is_some();
@@ -2563,9 +2573,20 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     0
                 };
                 self.find_activate(index, reveal, cx);
+                if pending_replace {
+                    self.find_replace_current(cx);
+                }
             } else {
                 cx.notify();
             }
+        } else if newest {
+            // Offsets and ranges from that revision no longer describe the
+            // current text, so a queued navigation or replacement is dropped
+            // instead of being applied later to something it was not meant
+            // for.
+            self.find_bar.pending_step = None;
+            self.find_bar.pending_after = None;
+            self.find_bar.pending_replace = false;
         }
         if self.find_bar.search_queued {
             self.find_bar.search_queued = false;
@@ -2654,18 +2675,24 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
     /// Replaces the active match with the replace field and moves to the next.
     fn find_replace_current(&mut self, cx: &mut Context<Self>) {
+        if self.find_bar.replace_all.is_some() {
+            return;
+        }
         let query = self.find_bar.query.text().to_string();
         if query.is_empty() {
             return;
         }
         if self.find_is_stale() {
             // A stale byte range must never be written to; the reply will
-            // provide the ranges for the current document.
+            // provide the ranges for the current document and then run this
+            // replacement, so the click is not lost.
+            self.find_bar.pending_replace = true;
             if !self.find_request_is_current() {
                 self.request_find_search(cx);
             }
             return;
         }
+        self.find_bar.pending_replace = false;
         let Some(range) = self
             .find_bar
             .matches
@@ -2680,32 +2707,141 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             self.find_step(1, cx);
             return;
         }
-        let new_cursor = range.start + replacement.len();
+        let inserted_len = replacement.len();
+        let new_cursor = range.start + inserted_len;
+        let replaced = range.clone();
         self.state.active_replace_range(range, replacement, new_cursor);
-        self.state.save_active_note();
+        // Typing schedules the save the same way; a synchronous write here
+        // would block the UI for a whole large file on every replacement.
+        self.schedule_auto_save(cx);
         self.refresh_view_after_cursor_move();
-        // The replacement changed the document version; scan again and land
-        // on the first match after the inserted text.
-        self.find_bar.pending_after = Some(new_cursor);
-        self.request_find_search(cx);
+        // Only the neighbourhood of the edit can differ from the previous list,
+        // so it is patched in place: the highlight stays on screen instead of
+        // waiting for a full rescan of the document.
+        if !self.find_patch_after_replace(replaced, inserted_len, new_cursor, cx) {
+            self.find_bar.pending_after = Some(new_cursor);
+            self.request_find_search(cx);
+        }
+    }
+
+    /// Recomputes the match list after one replacement, without a full scan.
+    ///
+    /// Matches ending before the rescanned window stay as they are, matches
+    /// starting after it shift by the length difference, and the window around
+    /// the edit is scanned again for matches the replacement created or
+    /// destroyed. Returns `false` when the numbers make a full scan the better
+    /// option (a large query or a large inserted text).
+    fn find_patch_after_replace(
+        &mut self,
+        replaced: std::ops::Range<usize>,
+        inserted_len: usize,
+        new_cursor: usize,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // A query this long, or an insertion this large, would make the
+        // window as expensive as the scan it is meant to save.
+        const MARGIN_LIMIT: usize = 64 * 1024;
+        const INSERTED_LIMIT: usize = 256 * 1024;
+        if inserted_len > INSERTED_LIMIT {
+            return false;
+        }
+        let query = self.find_bar.query.text().to_string();
+        if query.is_empty() {
+            return false;
+        }
+        // Context wide enough for a whole match on either side of the edit.
+        let margin = query
+            .chars()
+            .count()
+            .saturating_mul(12)
+            .saturating_add(8);
+        if margin > MARGIN_LIMIT {
+            return false;
+        }
+        // The window and the current version, read together so the ranges and
+        // the text they describe cannot come from different revisions.
+        let Some((version, scan_start, owned_end, window)) =
+            self.find_patch_window(&replaced, inserted_len, margin)
+        else {
+            return false;
+        };
+        let old = std::mem::take(&mut self.find_bar.matches);
+        let mut patched = crate::views::find_bar::patch_matches(
+            &old,
+            &replaced,
+            inserted_len,
+            scan_start,
+            owned_end,
+            &window,
+            &query,
+            crate::views::find_bar::MAX_FIND_MATCHES,
+        );
+        if patched.len() > crate::views::find_bar::MAX_FIND_MATCHES {
+            patched.truncate(crate::views::find_bar::MAX_FIND_MATCHES);
+            self.find_bar.truncated = true;
+        }
+        self.find_bar.matches = patched;
+        self.find_bar.matches_query = query;
+        self.find_bar.matches_version = version;
+        if self.find_bar.matches.is_empty() {
+            // The replacement removed the last match: the highlight has to go
+            // away even though there is nothing to activate.
+            self.find_bar.active = 0;
+            self.find_bar.truncated = false;
+            cx.notify();
+            return true;
+        }
+        let index = self
+            .find_bar
+            .matches
+            .iter()
+            .position(|m| m.start >= new_cursor)
+            .unwrap_or(0);
+        self.find_activate(index, true, cx);
+        true
+    }
+
+    /// Slice around a replacement: one match length of context on each side,
+    /// plus the same context again on the right for a match that starts just
+    /// inside and ends outside. All bounds are snapped to character
+    /// boundaries. Returns the document version the slice belongs to.
+    fn find_patch_window(
+        &self,
+        replaced: &std::ops::Range<usize>,
+        inserted_len: usize,
+        margin: usize,
+    ) -> Option<(u64, usize, usize, String)> {
+        let doc = self.state.active_document()?;
+        let version = doc.version;
+        let doc_len = doc.len();
+        let mut scan_start = replaced.start.saturating_sub(margin);
+        while scan_start > 0 && !doc.is_char_boundary(scan_start) {
+            scan_start -= 1;
+        }
+        let mut owned_end = replaced
+            .start
+            .saturating_add(inserted_len)
+            .saturating_add(margin)
+            .min(doc_len);
+        while owned_end < doc_len && !doc.is_char_boundary(owned_end) {
+            owned_end += 1;
+        }
+        let mut scan_end = owned_end.saturating_add(margin).min(doc_len);
+        while scan_end < doc_len && !doc.is_char_boundary(scan_end) {
+            scan_end += 1;
+        }
+        Some((version, scan_start, owned_end, doc.slice_to_string(scan_start..scan_end)))
     }
 
     /// Replaces every match in one edit, so undo treats it as a single step.
+    ///
+    /// The scan and the new text are built on a background thread: doing it in
+    /// the click handler meant copying the whole document, scanning it without
+    /// a limit and assembling a second copy while the UI thread waited, which
+    /// on a large file froze the window for seconds.
     fn find_replace_all(&mut self, cx: &mut Context<Self>) {
         let query = self.find_bar.query.text().to_string();
-        if query.is_empty() {
-            return;
-        }
-        let Some(doc) = self.state.active_document() else { return; };
-        let hay = doc.content();
-        let matches = crate::search::fold::ranges(
-            &hay,
-            &[query.as_str()],
-            crate::search::fold::Fold::Lower,
-            usize::MAX,
-        );
-        if matches.is_empty() {
-            self.request_find_search(cx);
+        if query.is_empty() || self.find_bar.replace_all.is_some() {
             return;
         }
         let replacement = self.find_bar.replace.text().to_string();
@@ -2714,18 +2850,124 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             self.request_find_search(cx);
             return;
         }
-        let first_start = matches[0].start;
-        let mut out = String::with_capacity(hay.len());
-        let mut last = 0;
-        for range in &matches {
-            out.push_str(&hay[last..range.start]);
-            out.push_str(&replacement);
-            last = range.end;
+        let Some(doc) = self.state.active_document() else {
+            return;
+        };
+        let old_len = doc.len();
+        if old_len == 0 {
+            self.request_find_search(cx);
+            return;
         }
-        out.push_str(&hay[last..]);
-        let new_cursor = (first_start + replacement.len()).min(out.len());
-        self.state.active_replace_range(0..hay.len(), out, new_cursor);
-        self.state.save_active_note();
+        let version = doc.version;
+        let path = doc.path.clone();
+        let rope = doc.rope().clone();
+
+        // An abandoned pass (the query changed while it ran) is stopped here
+        // instead of being watched.
+        self.find_bar.cancel_replace_all();
+        let seq = self.find_bar.replace_all_seq;
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.find_bar.replace_cancel = std::sync::Arc::clone(&cancel);
+        let progress = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        self.find_bar.replace_all = Some((0, old_len));
+
+        let entity = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let background = cx.background_executor().clone();
+
+        // The counter shows the percentage. Repainting once per slice would
+        // flood the frame queue on a large file, so a ticker samples the shared
+        // byte counter instead and stops as soon as the pass is gone.
+        let ticker_entity = entity.clone();
+        let mut ticker_cx = cx.to_async();
+        let ticker_executor = cx.background_executor().clone();
+        let ticker_progress = std::sync::Arc::clone(&progress);
+        cx.foreground_executor()
+            .spawn(async move {
+                loop {
+                    ticker_executor
+                        .timer(std::time::Duration::from_millis(100))
+                        .await;
+                    let alive = ticker_entity
+                        .update(&mut ticker_cx, |this, cx| {
+                            // A newer pass (or a cancelled one) owns the counter
+                            // now; this ticker must not report stale numbers.
+                            if this.find_bar.replace_all_seq != seq
+                                || this.find_bar.replace_all.is_none()
+                            {
+                                return false;
+                            }
+                            let done = ticker_progress
+                                .load(std::sync::atomic::Ordering::Relaxed);
+                            this.find_bar.replace_all = Some((done, old_len));
+                            cx.notify();
+                            true
+                        })
+                        .unwrap_or(false);
+                    if !alive {
+                        break;
+                    }
+                }
+            })
+            .detach();
+
+        cx.foreground_executor()
+            .spawn(async move {
+                let result = background
+                    .spawn(async move {
+                        let progress = progress;
+                        crate::views::find_bar::replace_rope(
+                            &rope,
+                            &query,
+                            &replacement,
+                            &|| cancel.load(std::sync::atomic::Ordering::Relaxed),
+                            &|done| progress.store(done, std::sync::atomic::Ordering::Relaxed),
+                        )
+                    })
+                    .await;
+                let _ = entity.update(&mut async_cx, |this, cx| {
+                    this.finish_find_replace_all(seq, version, path, old_len, result, cx);
+                });
+            })
+            .detach();
+        cx.notify();
+    }
+
+    /// Applies a finished Replace All pass, unless the document moved on.
+    fn finish_find_replace_all(
+        &mut self,
+        seq: u64,
+        version: u64,
+        path: std::path::PathBuf,
+        old_len: usize,
+        result: Option<crate::views::find_bar::ReplaceAllText>,
+        cx: &mut Context<Self>,
+    ) {
+        if seq != self.find_bar.replace_all_seq || self.find_bar.replace_all.is_none() {
+            return;
+        }
+        self.find_bar.replace_all = None;
+        let Some(result) = result else {
+            cx.notify();
+            return;
+        };
+        // The replacement is built from a snapshot; applying it to a document
+        // that was edited or switched meanwhile would destroy those edits.
+        let same_document = self
+            .state
+            .active_document()
+            .map(|doc| doc.path == path && doc.version == version && doc.len() == old_len)
+            .unwrap_or(false);
+        if !same_document || result.replacements == 0 {
+            self.request_find_search(cx);
+            return;
+        }
+        let new_cursor = result.first_end.unwrap_or(0).min(result.text.len());
+        self.state
+            .active_replace_range(0..old_len, result.text, new_cursor);
+        // Same debounced save as typing: writing the file is not part of the
+        // replace action itself.
+        self.schedule_auto_save(cx);
         self.refresh_view_after_cursor_move();
         self.find_bar.pending_after = Some(new_cursor);
         self.request_find_search(cx);
@@ -2774,6 +3016,11 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 // background so holding a key never stalls on a large file.
                 self.find_bar.pending_step = None;
                 self.find_bar.pending_after = None;
+                // The replacement that was waiting for ranges was meant for
+                // the old query; applying it to a new one would be a surprise.
+                self.find_bar.pending_replace = false;
+                // Same for a Replace All pass already rewriting the document.
+                self.find_bar.cancel_replace_all();
                 self.request_find_search(cx);
             }
             self.find_bar.query.blink.pause_and_show(BlinkTarget::FindQuery, cx);
@@ -7110,6 +7357,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         let query_focused = self.find_bar.query.is_focused(window);
         let replace_focused = self.find_bar.replace.is_focused(window);
         let has_matches = !self.find_bar.matches.is_empty();
+        // A single replacement and a whole-document pass cannot both own the
+        // document; the pass wins and the button waits for it.
+        let replace_one_ready = has_matches && self.find_bar.replace_all.is_none();
 
         let query_box = div()
             .id("find-query-box")
@@ -7299,11 +7549,16 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 .border_color(theme.border)
                 .rounded_sm()
                 .cursor_pointer()
-                .when(!has_matches, |d| d.opacity(0.45).cursor_not_allowed())
-                .when(has_matches, |d| d.hover(|h| h.bg(theme.bg_hover)))
+                .when(!replace_one_ready, |d| d.opacity(0.45).cursor_not_allowed())
+                .when(replace_one_ready, |d| d.hover(|h| h.bg(theme.bg_hover)))
                 .child(action_label(self.t("editor.replace")))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(|this, _, _, cx| this.find_replace_current(cx)));
+            // Replace All scans the document itself, so an empty list left over
+            // from the previous query does not mean there is nothing to
+            // replace; only an empty query or a pass already running does.
+            let replace_all_ready =
+                !self.find_bar.query.text().is_empty() && self.find_bar.replace_all.is_none();
             let replace_all = div()
                 .id("find-replace-all")
                 .h(px(24.0))
@@ -7316,8 +7571,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 .border_color(theme.border)
                 .rounded_sm()
                 .cursor_pointer()
-                .when(!has_matches, |d| d.opacity(0.45).cursor_not_allowed())
-                .when(has_matches, |d| d.hover(|h| h.bg(theme.bg_hover)))
+                .when(!replace_all_ready, |d| d.opacity(0.45).cursor_not_allowed())
+                .when(replace_all_ready, |d| d.hover(|h| h.bg(theme.bg_hover)))
                 .child(action_label(self.t("editor.replace_all")))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(|this, _, _, cx| this.find_replace_all(cx)));
