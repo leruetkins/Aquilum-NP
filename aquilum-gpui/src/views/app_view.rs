@@ -9168,6 +9168,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 let chip_cell_h = if grid_tbl.is_some() { 28.0 } else { row_h };
                 let chip_inset = code_chip_inset(chip_cell_h);
                 let mut backdrop_rects = Vec::new();
+                let mut grammar_layer: Option<gpui::AnyElement> = None;
                 for &(code_start, code_end) in row_layout.code_ranges() {
                     let (chip_x, chip_w) = row_layout.selection_rect(code_start, code_end, pixel_scale);
                     let chip_top = if let Some(tbl) = grid_tbl {
@@ -9226,6 +9227,73 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                         this.open_tag_search(&t, window, cx);
                                     }
                                 })),
+                        );
+                    }
+                }
+                // Grammar lines under the text. Solid and wavy lines are native
+                // text underlines; the other styles have to be drawn by hand. The
+                // default colour is the row's own text colour, so an unset colour
+                // inherits it. One canvas per row keeps a dotted line from turning
+                // into hundreds of elements.
+                if grid_tbl.is_none() && !row_layout.grammar_ranges().is_empty() {
+                    let base_color = match &classified {
+                        crate::markdown::LineKind::Heading1(_) => crate::markdown::heading_color_to_rgb(&headings.h1.color_name),
+                        crate::markdown::LineKind::Heading2(_) => crate::markdown::heading_color_to_rgb(&headings.h2.color_name),
+                        crate::markdown::LineKind::Heading3(_) => crate::markdown::heading_color_to_rgb(&headings.h3.color_name),
+                        crate::markdown::LineKind::Heading4(_) => crate::markdown::heading_color_to_rgb(&headings.h4.color_name),
+                        crate::markdown::LineKind::Heading5(_) => crate::markdown::heading_color_to_rgb(&headings.h5.color_name),
+                        crate::markdown::LineKind::Heading6(_) => crate::markdown::heading_color_to_rgb(&headings.h6.color_name),
+                        crate::markdown::LineKind::Quote(_) => match crate::markdown::callout_prefix(line) {
+                            Some(c) => crate::markdown::callout_color(c.kind, theme.is_dark),
+                            None => theme.text_secondary,
+                        },
+                        crate::markdown::LineKind::Task { checked: true, .. } => theme.text_muted,
+                        _ => theme.text_primary,
+                    };
+                    let mut quads = Vec::new();
+                    for (start, end, style) in row_layout.grammar_ranges().iter().copied() {
+                        if style.line == crate::markdown::GrammarLine::None {
+                            continue;
+                        }
+                        let (line_x, line_w) = row_layout.selection_rect(start, end, pixel_scale);
+                        let color = style.line_rgba(base_color);
+                        quads.extend(
+                            grammar_line_segments(
+                                line_x,
+                                line_w,
+                                style.line,
+                                f32::from(row_layout.layout.ascent),
+                                f32::from(row_layout.layout.descent),
+                                row_h,
+                                pixel_scale,
+                            )
+                            .into_iter()
+                            .map(|segment| (segment, color)),
+                        );
+                    }
+                    if !quads.is_empty() {
+                        let thickness = crate::snap::device_thickness(1.0, pixel_scale);
+                        grammar_layer = Some(
+                            gpui::canvas(
+                                |_, _, _| {},
+                                move |bounds, _, window, _| {
+                                    for ((x, y, w), color) in quads {
+                                        window.paint_quad(gpui::fill(
+                                            gpui::Bounds::new(
+                                                bounds.origin + gpui::point(px(x), px(y)),
+                                                gpui::size(px(w), px(thickness)),
+                                            ),
+                                            color,
+                                        ));
+                                    }
+                                },
+                            )
+                            .absolute()
+                            .left(px(0.0))
+                            .top(px(0.0))
+                            .w_full()
+                            .h_full()
+                            .into_any_element(),
                         );
                     }
                 }
@@ -9857,6 +9925,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             .when(is_raw_table_first, |s| s.rounded_t_md())
                             .when(is_raw_table_last, |s| s.rounded_b_md())
                             .children(backdrop_rects)
+                            .children(grammar_layer)
                             .child(
                                 // The row content is full-width on purpose. An
                                 // auto-width wrapper inside the line box makes a
@@ -11925,6 +11994,63 @@ fn marker_paint(m: &str, visible: bool, theme: &Theme) -> Option<gpui::Hsla> {
     }
 }
 
+/// Segments of the line under one grammar member, as `(x, y, width)` in row
+/// logical px.
+///
+/// Solid and wavy lines are native text underlines. GPUI has no double, dotted or
+/// dash-dot underline, so the rest are painted by the row backdrop. `y` matches the
+/// native underline position in `vendor/gpui/src/text_system/line.rs`.
+fn grammar_line_segments(
+    x: f32,
+    width: f32,
+    style: crate::markdown::GrammarLine,
+    ascent: f32,
+    descent: f32,
+    line_height: f32,
+    scale: f32,
+) -> Vec<(f32, f32, f32)> {
+    let mut segments = Vec::new();
+    let y = (line_height - ascent - descent) / 2.0 + ascent + descent * 0.618;
+    let device = |n: f32| crate::snap::device_thickness(n, scale);
+    let mut push = |segments: &mut Vec<(f32, f32, f32)>, left: f32, w: f32, top: f32| {
+        if w > 0.0 {
+            segments.push((left, top, w));
+        }
+    };
+    match style {
+        crate::markdown::GrammarLine::None
+        | crate::markdown::GrammarLine::Solid
+        | crate::markdown::GrammarLine::Wavy => {}
+        crate::markdown::GrammarLine::Double => {
+            push(&mut segments, x, width, y);
+            push(&mut segments, x, width, y + device(3.0));
+        }
+        crate::markdown::GrammarLine::Dotted => {
+            let mut off = 0.0;
+            while off < width {
+                push(&mut segments, x + off, device(1.0).min(width - off), y);
+                off += device(3.0);
+            }
+        }
+        crate::markdown::GrammarLine::DashDot => {
+            let dash = device(4.0);
+            let dot = device(1.0);
+            let gap = device(2.0);
+            let mut off = 0.0;
+            while off < width {
+                push(&mut segments, x + off, dash.min(width - off), y);
+                off += dash + gap;
+                if off >= width {
+                    break;
+                }
+                push(&mut segments, x + off, dot.min(width - off), y);
+                off += dot + gap;
+            }
+        }
+    }
+    segments
+}
+
 fn render_syntax_spans(
     spans: Vec<crate::markdown::VisibleSpan>,
     theme: &Theme,
@@ -11983,6 +12109,46 @@ fn render_syntax_spans(
     let has_links = spans
         .iter()
         .any(|s| matches!(s.span, crate::markdown::SyntaxSpan::Link { .. }));
+
+    // A grammar member's solid and wavy lines are native text underlines; the other
+    // line styles have no native equivalent and are painted by the row backdrop
+    // (`grammar_line_segments`), which reads the same style from `RowShapedLayout`.
+    let grammar_run = |kind: crate::markdown::GrammarKind,
+                       line_color: Option<crate::markdown::GrammarColor>,
+                       text_color: Option<crate::markdown::GrammarColor>,
+                       raw: &str|
+     -> (String, gpui::TextRun) {
+        let painted = crate::markdown::grammar_paint_text(raw);
+        let style = crate::markdown::GrammarSpanStyle {
+            line: kind.line(),
+            line_color,
+            text_color,
+        };
+        let text_rgba = style.text_rgba(main_color);
+        let line_rgba = style.line_rgba(main_color);
+        let underline = match style.line {
+            crate::markdown::GrammarLine::Solid => Some(gpui::UnderlineStyle {
+                thickness: px(1.0),
+                color: Some(line_rgba.into()),
+                wavy: false,
+            }),
+            crate::markdown::GrammarLine::Wavy => Some(gpui::UnderlineStyle {
+                thickness: px(1.0),
+                color: Some(line_rgba.into()),
+                wavy: true,
+            }),
+            _ => None,
+        };
+        let run = gpui::TextRun {
+            len: painted.len(),
+            font: reg_font.clone(),
+            color: text_rgba.into(),
+            background_color: None,
+            underline,
+            strikethrough: None,
+        };
+        (painted, run)
+    };
 
     if !has_links {
         let mut full_text = String::new();
@@ -12080,6 +12246,11 @@ fn render_syntax_spans(
                             color: Some(theme.text_muted.into()),
                         }),
                     });
+                }
+                crate::markdown::SyntaxSpan::Grammar { kind, line_color, text_color, text } => {
+                    let (painted, run) = grammar_run(kind, line_color, text_color, &text);
+                    full_text.push_str(&painted);
+                    runs.push(run);
                 }
                 crate::markdown::SyntaxSpan::Link { .. } => unreachable!(),
                 crate::markdown::SyntaxSpan::Underline(u) => {
@@ -12238,6 +12409,11 @@ fn render_syntax_spans(
                             color: Some(theme.text_muted.into()),
                         }),
                     });
+                }
+                crate::markdown::SyntaxSpan::Grammar { kind, line_color, text_color, text } => {
+                    let (painted, run) = grammar_run(kind, line_color, text_color, &text);
+                    full_text.push_str(&painted);
+                    runs.push(run);
                 }
                 crate::markdown::SyntaxSpan::Link { text, url } => {
                     // Flush preceding text runs
@@ -12711,6 +12887,7 @@ pub(crate) fn shape_table_row(
             line_chars: Arc::new(vec![0, line.chars().count()]),
             code_ranges: Arc::new(Vec::new()),
             tag_ranges: Arc::new(Vec::new()),
+            grammar_ranges: Arc::new(Vec::new()),
             cell_w,
             table_row: Some(table_row),
         };
@@ -12852,6 +13029,7 @@ pub(crate) fn shape_table_row(
         line_chars: Arc::new(flat_line_chars),
         code_ranges: Arc::new(flat_code_ranges),
         tag_ranges: Arc::new(flat_tag_ranges),
+        grammar_ranges: Arc::new(Vec::new()),
         cell_w,
         table_row: Some(table_row),
     }
@@ -12864,6 +13042,7 @@ pub(crate) struct RowShapedLayout {
     line_chars: Arc<Vec<usize>>,
     code_ranges: Arc<Vec<(usize, usize)>>,
     tag_ranges: Arc<Vec<(usize, usize, String)>>,
+    grammar_ranges: Arc<Vec<(usize, usize, crate::markdown::GrammarSpanStyle)>>,
     cell_w: f32,
     table_row: Option<Arc<TableRowLayout>>,
 }
@@ -12962,6 +13141,16 @@ impl RowShapedLayout {
             &tr.tag_ranges
         } else {
             &self.tag_ranges
+        }
+    }
+
+    /// Grammar members of this row. Table rows are shaped cell by cell, so their
+    /// members only get text colour there and no line.
+    pub fn grammar_ranges(&self) -> &[(usize, usize, crate::markdown::GrammarSpanStyle)] {
+        if self.table_row.is_some() {
+            &[]
+        } else {
+            &self.grammar_ranges
         }
     }
 
@@ -13064,6 +13253,7 @@ pub(crate) fn shape_row(
         crate::markdown::row_painted_text(line, classified, v, is_active_line, reveal, headings);
     let code_ranges = painted.code_ranges();
     let tag_ranges = painted.tag_ranges();
+    let grammar_ranges = painted.grammar_ranges();
     let (_, _, font_size, _, _) = AppView::heading_typography_metrics_with_widths(classified, headings, 24.0, cell_w, None);
 
     let mut text = String::new();
@@ -13102,6 +13292,7 @@ pub(crate) fn shape_row(
         line_chars: Arc::new(painted.line_chars),
         code_ranges: Arc::new(code_ranges),
         tag_ranges: Arc::new(tag_ranges),
+        grammar_ranges: Arc::new(grammar_ranges),
         cell_w,
         table_row: None,
     }
