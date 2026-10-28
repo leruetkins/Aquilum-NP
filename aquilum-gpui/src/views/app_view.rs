@@ -2839,8 +2839,15 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
             view.selection_anchor = Some(offset);
         }
         // Alt+click is the escape hatch that shows the whole markup of the clicked line.
-        // Any other click drops it, so the line falls back to per-element reveal.
-        view.reveal_all_line = if alt { Some(v.line_idx) } else { None };
+        // A plain click on that same line keeps it revealed, so placing the caret does
+        // not fold the markup back; a click on any other line drops it.
+        view.reveal_all_line = if alt {
+            Some(v.line_idx)
+        } else if view.reveal_all_line == Some(v.line_idx) {
+            view.reveal_all_line
+        } else {
+            None
+        };
         self.reset_editor_cursor_blink(cx);
         self.state.publish_snapshot();
         cx.notify();
@@ -8029,7 +8036,15 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
                                 // Rows stop propagation, so this handler — not
                                 // `handle_editor_mouse_down` — is the one that sees a click
                                 // on a line. Alt+click must be honoured here or it never is.
-                                view.reveal_all_line = if event.modifiers.alt { Some(v_line_idx) } else { None };
+                                // A plain click on the revealed line keeps it open; a click
+                                // on another line closes the markup again.
+                                view.reveal_all_line = if event.modifiers.alt {
+                                    Some(v_line_idx)
+                                } else if view.reveal_all_line == Some(v_line_idx) {
+                                    view.reveal_all_line
+                                } else {
+                                    None
+                                };
                             }
                             window.focus(&this.focus_handle);
                             this.reset_editor_cursor_blink(cx);
