@@ -2673,6 +2673,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             dialog = dialog.set_directory(ws);
         }
 
+        let headings_config = self.config.editor.headings.clone();
         let bg = cx.background_executor().clone();
         cx.foreground_executor().spawn(async move {
             println!("[PDF Export] Native file save dialog opened...");
@@ -2693,8 +2694,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 }
 
                 let title_clone = title.clone();
+                let headings_clone = headings_config.clone();
                 let pdf_res = bg.spawn(async move {
-                    crate::pdf_export::export_markdown_to_pdf(&title_clone, &content)
+                    crate::pdf_export::export_markdown_to_pdf(&title_clone, &content, Some(&headings_clone))
                 }).await;
 
                 let _ = entity.update(&mut async_cx, |this, cx| {

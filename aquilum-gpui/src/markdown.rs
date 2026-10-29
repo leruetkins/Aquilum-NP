@@ -1070,23 +1070,23 @@ fn parse_grammar_colors(
 }
 
 /// One scanned grammar construct, still borrowing the source.
-struct GrammarTagScan<'a> {
-    kind: GrammarKind,
-    line_color: Option<GrammarColor>,
-    text_color: Option<GrammarColor>,
+pub(crate) struct GrammarTagScan<'a> {
+    pub(crate) kind: GrammarKind,
+    pub(crate) line_color: Option<GrammarColor>,
+    pub(crate) text_color: Option<GrammarColor>,
     /// `::type{colors}[` — the opening marker, `[` included.
-    marker: &'a str,
+    pub(crate) marker: &'a str,
     /// Raw content with `\]` still escaped.
-    content: &'a str,
+    pub(crate) content: &'a str,
     /// Bytes consumed through the closing `]`.
-    consumed: usize,
+    pub(crate) consumed: usize,
 }
 
 /// Scans `::type{colors}[text]` at the start of `s`.
 ///
 /// The fragment ends at the first unescaped `]`; there is no closing `::`. Anything
 /// malformed or unknown is `None`, which leaves it to the caller as plain text.
-fn scan_grammar_tag(s: &str) -> Option<GrammarTagScan<'_>> {
+pub(crate) fn scan_grammar_tag(s: &str) -> Option<GrammarTagScan<'_>> {
     let rest = s.strip_prefix("::")?;
     let type_end = rest.find(|c: char| c == '{' || c == '[')?;
     let kind = GrammarKind::from_tag(&rest[..type_end])?;
@@ -1162,7 +1162,7 @@ pub fn grammar_paint_text(raw: &str) -> String {
 /// inside a member looks exactly as it did before nested markup existed. Adding a
 /// kind later means widening the `formatted` match below and teaching the two
 /// painters (`push_grammar_runs`, `render_syntax_spans`) the same kind.
-fn parse_grammar_content(raw: &str) -> Vec<VisibleSpan> {
+pub(crate) fn parse_grammar_content(raw: &str) -> Vec<VisibleSpan> {
     let spans = parse_inline_syntax_spans(raw);
     let mut out: Vec<VisibleSpan> = Vec::new();
     let mut i = 0;

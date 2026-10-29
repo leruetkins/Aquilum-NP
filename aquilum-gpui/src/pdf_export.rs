@@ -137,45 +137,206 @@ pub fn escape_typst_text(text: &str) -> String {
     out
 }
 
-/// Preprocesses Obsidian wikilinks `[[Target|Alias]]` and `[[Target]]` into standard markdown links.
-pub fn preprocess_markdown(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
+/// Resolves a heading preset name (or hex color) to a valid `#RRGGBB` hex string.
+pub fn resolve_heading_color_hex(color_spec: &str) -> String {
+    let trimmed = color_spec.trim();
+    if trimmed.starts_with('#') {
+        if trimmed.len() == 4 {
+            let mut full = String::from("#");
+            for c in trimmed[1..].chars() {
+                full.push(c);
+                full.push(c);
+            }
+            return full;
+        }
+        return trimmed.to_string();
+    }
+    crate::markdown::find_heading_preset(trimmed).hex.to_string()
+}
 
-    while let Some(ch) = chars.next() {
-        if ch == '[' && chars.peek() == Some(&'[') {
-            chars.next(); // consume second '['
-            let mut inner = String::new();
-            let mut closed = false;
-            while let Some(c) = chars.next() {
-                if c == ']' && chars.peek() == Some(&']') {
-                    chars.next(); // consume second ']'
-                    closed = true;
-                    break;
-                }
-                inner.push(c);
+/// Formats an optional grammar RGB color as Typst syntax, e.g. `rgb(255, 0, 0)` or `none`.
+fn format_typst_color(c: Option<crate::markdown::GrammarColor>) -> String {
+    match c {
+        Some((r, g, b)) => format!("rgb({}, {}, {})", r, g, b),
+        None => "none".to_string(),
+    }
+}
+
+/// Converts inline grammar content into escaped Typst formatting.
+pub fn grammar_content_to_typst(content: &str) -> String {
+    let mut out = String::new();
+    let spans = crate::markdown::parse_grammar_content(content);
+    for vis in spans {
+        match vis.span {
+            crate::markdown::SyntaxSpan::Bold(t) => {
+                out.push('*');
+                out.push_str(&escape_typst_text(&t));
+                out.push('*');
             }
-            if closed {
-                if let Some((target, alias)) = inner.split_once('|') {
-                    result.push_str(&format!("[{}]({})", alias.trim(), target.trim()));
-                } else {
-                    let note = inner.trim();
-                    result.push_str(&format!("[{}]({})", note, note));
-                }
-            } else {
-                result.push_str("[[");
-                result.push_str(&inner);
+            crate::markdown::SyntaxSpan::Italic(t) => {
+                out.push('_');
+                out.push_str(&escape_typst_text(&t));
+                out.push('_');
             }
-        } else {
-            result.push(ch);
+            crate::markdown::SyntaxSpan::BoldItalic(t) => {
+                out.push('*');
+                out.push('_');
+                out.push_str(&escape_typst_text(&t));
+                out.push('_');
+                out.push('*');
+            }
+            crate::markdown::SyntaxSpan::InlineCode(t) => {
+                out.push('`');
+                out.push_str(&t);
+                out.push('`');
+            }
+            crate::markdown::SyntaxSpan::Strikethrough(t) => {
+                out.push_str("#strike[");
+                out.push_str(&escape_typst_text(&t));
+                out.push(']');
+            }
+            crate::markdown::SyntaxSpan::Text(t) => {
+                out.push_str(&escape_typst_text(&t));
+            }
+            _ => {
+                out.push_str(&escape_typst_text(crate::markdown::span_text(&vis.span)));
+            }
         }
     }
-    result
+    out
+}
+
+/// Converts a scanned grammar tag into a call to its corresponding Typst helper function.
+pub(crate) fn grammar_tag_to_typst(scan: &crate::markdown::GrammarTagScan<'_>) -> String {
+    let fn_name = match scan.kind.line() {
+        crate::markdown::GrammarLine::Solid => "grammar-solid",
+        crate::markdown::GrammarLine::Double => "grammar-double",
+        crate::markdown::GrammarLine::Wavy => "grammar-wavy",
+        crate::markdown::GrammarLine::Dotted => "grammar-dotted",
+        crate::markdown::GrammarLine::DashDot => "grammar-dashdot",
+        crate::markdown::GrammarLine::None => "grammar-none",
+    };
+    let l_col = format_typst_color(scan.line_color);
+    let t_col = format_typst_color(scan.text_color);
+    let body = grammar_content_to_typst(scan.content);
+    format!("#{fn_name}({l_col}, {t_col})[{body}]")
+}
+
+/// Preprocesses Markdown text:
+/// 1. Preserves fenced code blocks (``` and ~~~) and inline code without altering custom markup.
+/// 2. Converts Obsidian wikilinks `[[Target|Alias]]` and `[[Target]]` into standard markdown links.
+/// 3. Extracts school-grammar tags `::type{colors}[content]` and replaces them with safe unique tokens.
+pub fn preprocess_markdown(input: &str) -> (String, Vec<String>) {
+    let mut replacements = Vec::new();
+    let mut out = String::with_capacity(input.len());
+    let mut in_code_block = false;
+
+    for line in input.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_code_block = !in_code_block;
+            out.push_str(line);
+            continue;
+        }
+
+        if in_code_block {
+            out.push_str(line);
+            continue;
+        }
+
+        // Process line outside code fences
+        let mut cur = line;
+        while !cur.is_empty() {
+            // Inline code span: keep raw without replacing grammar tags
+            if cur.starts_with('`') {
+                let fence_len = cur.chars().take_while(|&c| c == '`').count();
+                let fence = &cur[..fence_len];
+                let rest = &cur[fence_len..];
+                if let Some(end_idx) = rest.find(fence) {
+                    let total_code_len = fence_len + end_idx + fence_len;
+                    out.push_str(&cur[..total_code_len]);
+                    cur = &cur[total_code_len..];
+                    continue;
+                } else {
+                    out.push('`');
+                    cur = &cur[1..];
+                    continue;
+                }
+            }
+
+            // Wikilink: [[Target|Alias]] or [[Target]]
+            if cur.starts_with("[[") {
+                if let Some(close_idx) = cur[2..].find("]]") {
+                    let inner = &cur[2..2 + close_idx];
+                    let total_consumed = 2 + close_idx + 2;
+                    if let Some((target, alias)) = inner.split_once('|') {
+                        out.push_str(&format!("[{}]({})", alias.trim(), target.trim()));
+                    } else {
+                        let note = inner.trim();
+                        out.push_str(&format!("[{}]({})", note, note));
+                    }
+                    cur = &cur[total_consumed..];
+                    continue;
+                }
+            }
+
+            // School grammar tag: ::type{colors}[content]
+            if cur.starts_with("::") {
+                if let Some(scan) = crate::markdown::scan_grammar_tag(cur) {
+                    let typst_repr = grammar_tag_to_typst(&scan);
+                    let placeholder = format!("QQQGRAMMARTAG{}QQQ", replacements.len());
+                    replacements.push(typst_repr);
+                    out.push_str(&placeholder);
+                    cur = &cur[scan.consumed..];
+                    continue;
+                }
+            }
+
+            // Ordinary char
+            let mut chars = cur.chars();
+            let c = chars.next().unwrap();
+            out.push(c);
+            cur = chars.as_str();
+        }
+    }
+
+    (out, replacements)
+}
+
+/// Appends escaped Typst text, substituting any `QQQGRAMMARTAG{n}QQQ` placeholders with their Typst code.
+fn push_typst_text(out: &mut String, text: &str, replacements: &[String]) {
+    let escaped = escape_typst_text(text);
+    if replacements.is_empty() || !escaped.contains("QQQGRAMMARTAG") {
+        out.push_str(&escaped);
+        return;
+    }
+    let mut cur = escaped.as_str();
+    while let Some(pos) = cur.find("QQQGRAMMARTAG") {
+        out.push_str(&cur[..pos]);
+        let rest = &cur[pos + "QQQGRAMMARTAG".len()..];
+        if let Some(end_pos) = rest.find("QQQ") {
+            let idx_str = &rest[..end_pos];
+            if let Ok(idx) = idx_str.parse::<usize>() {
+                if let Some(repl) = replacements.get(idx) {
+                    out.push_str(repl);
+                    cur = &rest[end_pos + 3..];
+                    continue;
+                }
+            }
+        }
+        out.push_str("QQQGRAMMARTAG");
+        cur = rest;
+    }
+    out.push_str(cur);
 }
 
 /// Converts Markdown text into a fully styled Typst document markup.
-pub fn markdown_to_typst(title: &str, markdown: &str) -> String {
-    let preprocessed = preprocess_markdown(markdown);
+pub fn markdown_to_typst(
+    title: &str,
+    markdown: &str,
+    headings: Option<&crate::settings::HeadingsSettings>,
+) -> String {
+    let (preprocessed, replacements) = preprocess_markdown(markdown);
 
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
@@ -188,11 +349,42 @@ pub fn markdown_to_typst(title: &str, markdown: &str) -> String {
 
     let safe_title = escape_typst_text(title);
 
+    let default_headings = crate::settings::HeadingsSettings::default();
+    let h = headings.unwrap_or(&default_headings);
+
+    let h1_color = resolve_heading_color_hex(&h.h1.color_name);
+    let h2_color = resolve_heading_color_hex(&h.h2.color_name);
+    let h3_color = resolve_heading_color_hex(&h.h3.color_name);
+    let h4_color = resolve_heading_color_hex(&h.h4.color_name);
+    let h5_color = resolve_heading_color_hex(&h.h5.color_name);
+    let h6_color = resolve_heading_color_hex(&h.h6.color_name);
+
+    let h1_weight = if h.h1.bold { "bold" } else { "regular" };
+    let h2_weight = if h.h2.bold { "bold" } else { "regular" };
+    let h3_weight = if h.h3.bold { "bold" } else { "regular" };
+    let h4_weight = if h.h4.bold { "bold" } else { "regular" };
+    let h5_weight = if h.h5.bold { "bold" } else { "regular" };
+    let h6_weight = if h.h6.bold { "bold" } else { "regular" };
+
+    let h1_style = if h.h1.italic { "italic" } else { "normal" };
+    let h2_style = if h.h2.italic { "italic" } else { "normal" };
+    let h3_style = if h.h3.italic { "italic" } else { "normal" };
+    let h4_style = if h.h4.italic { "italic" } else { "normal" };
+    let h5_style = if h.h5.italic { "italic" } else { "normal" };
+    let h6_style = if h.h6.italic { "italic" } else { "normal" };
+
+    let h1_size = ((h.h1.font_size as f32) * 0.9).clamp(14.0, 32.0);
+    let h2_size = ((h.h2.font_size as f32) * 0.88).clamp(12.0, 26.0);
+    let h3_size = ((h.h3.font_size as f32) * 0.85).clamp(11.0, 22.0);
+    let h4_size = ((h.h4.font_size as f32) * 0.83).clamp(10.5, 18.0);
+    let h5_size = ((h.h5.font_size as f32) * 0.82).clamp(10.0, 16.0);
+    let h6_size = ((h.h6.font_size as f32) * 0.80).clamp(9.5, 14.0);
+
     let mut out = String::new();
 
     // Typst document configuration & styling
     out.push_str(&format!(
-        r#"
+        r##"
 #set page(
   paper: "a4",
   margin: (top: 2.5cm, bottom: 2.5cm, left: 2.2cm, right: 2.2cm),
@@ -214,18 +406,30 @@ pub fn markdown_to_typst(title: &str, markdown: &str) -> String {
 
 #set par(justify: false, leading: 0.7em)
 
-// Headings
+// Headings styled according to current theme/settings
 #show heading.where(level: 1): it => block(
   above: 1.6em, below: 0.8em,
-  text(size: 18pt, weight: "bold", fill: rgb("1a202c"))[#it.body]
+  text(size: {h1_size:.1}pt, weight: "{h1_weight}", style: "{h1_style}", fill: rgb("{h1_color}"))[#it.body]
 )
 #show heading.where(level: 2): it => block(
   above: 1.4em, below: 0.7em,
-  text(size: 14pt, weight: "bold", fill: rgb("2d3748"))[#it.body]
+  text(size: {h2_size:.1}pt, weight: "{h2_weight}", style: "{h2_style}", fill: rgb("{h2_color}"))[#it.body]
 )
 #show heading.where(level: 3): it => block(
   above: 1.2em, below: 0.6em,
-  text(size: 12pt, weight: "bold", fill: rgb("4a5568"))[#it.body]
+  text(size: {h3_size:.1}pt, weight: "{h3_weight}", style: "{h3_style}", fill: rgb("{h3_color}"))[#it.body]
+)
+#show heading.where(level: 4): it => block(
+  above: 1.1em, below: 0.5em,
+  text(size: {h4_size:.1}pt, weight: "{h4_weight}", style: "{h4_style}", fill: rgb("{h4_color}"))[#it.body]
+)
+#show heading.where(level: 5): it => block(
+  above: 1.0em, below: 0.5em,
+  text(size: {h5_size:.1}pt, weight: "{h5_weight}", style: "{h5_style}", fill: rgb("{h5_color}"))[#it.body]
+)
+#show heading.where(level: 6): it => block(
+  above: 1.0em, below: 0.5em,
+  text(size: {h6_size:.1}pt, weight: "{h6_weight}", style: "{h6_style}", fill: rgb("{h6_color}"))[#it.body]
 )
 
 // Code blocks & inline code
@@ -253,21 +457,83 @@ pub fn markdown_to_typst(title: &str, markdown: &str) -> String {
   pad(x: 4pt, text(style: "italic", fill: rgb("475569"))[#it.body])
 )
 
-// Tables
+// Tables with full vertical and horizontal grid lines
 #set table(
-  stroke: (x, y) => if y == 0 {{ (bottom: 1.2pt + rgb("a0aec0")) }} else {{ (bottom: 0.5pt + rgb("e2e8f0")) }},
-  fill: (col, row) => if row == 0 {{ rgb("f7fafc") }} else if calc.even(row) {{ rgb("f8fafc") }} else {{ none }},
-  inset: (x: 8pt, y: 6pt),
+  stroke: (x, y) => (
+    left: 0.6pt + rgb("cbd5e1"),
+    right: 0.6pt + rgb("cbd5e1"),
+    top: 0.6pt + rgb("cbd5e1"),
+    bottom: if y == 0 {{ 1.4pt + rgb("94a3b8") }} else {{ 0.6pt + rgb("cbd5e1") }},
+  ),
+  fill: (col, row) => if row == 0 {{ rgb("f1f5f9") }} else if calc.even(row) {{ rgb("f8fafc") }} else {{ none }},
+  inset: (x: 9pt, y: 7pt),
 )
 
-"#
+// School grammar helper functions
+#let grammar-solid(l_col, t_col, body) = {{
+  let c_line = if l_col != none {{ l_col }} else if t_col != none {{ t_col }} else {{ black }}
+  let content = if t_col != none {{ text(fill: t_col)[#body] }} else {{ body }}
+  underline(stroke: (paint: c_line, thickness: 1.0pt), offset: 2.5pt)[#content]
+}}
+
+#let grammar-double(l_col, t_col, body) = context {{
+  let size = measure(body)
+  let w = size.width
+  let c_line = if l_col != none {{ l_col }} else if t_col != none {{ t_col }} else {{ black }}
+  let content = if t_col != none {{ text(fill: t_col)[#body] }} else {{ body }}
+  box[#content#place(bottom + left, dy: 1.8pt)[#line(length: w, stroke: 0.85pt + c_line)]#place(bottom + left, dy: 3.6pt)[#line(length: w, stroke: 0.85pt + c_line)]]
+}}
+
+#let grammar-dotted(l_col, t_col, body) = {{
+  let c_line = if l_col != none {{ l_col }} else if t_col != none {{ t_col }} else {{ black }}
+  let content = if t_col != none {{ text(fill: t_col)[#body] }} else {{ body }}
+  underline(stroke: (paint: c_line, thickness: 1.0pt, dash: (array: (3pt, 2.5pt))), offset: 2.5pt)[#content]
+}}
+
+#let grammar-dashdot(l_col, t_col, body) = {{
+  let c_line = if l_col != none {{ l_col }} else if t_col != none {{ t_col }} else {{ black }}
+  let content = if t_col != none {{ text(fill: t_col)[#body] }} else {{ body }}
+  underline(stroke: (paint: c_line, thickness: 1.0pt, dash: (array: (4pt, 2pt, "dot", 2pt))), offset: 2.5pt)[#content]
+}}
+
+#let grammar-wavy(l_col, t_col, body) = context {{
+  let size = measure(body)
+  let w = size.width
+  let count = calc.max(1, int(calc.round(w / 5.5pt)))
+  let step = w / count
+  let elements = ()
+  for i in range(count) {{
+    let x0 = i * step
+    let x_half = x0 + step * 0.5
+    let x_end = x0 + step
+    elements.push(curve.cubic(
+      (x_half, 0pt),
+      (x0 + step * 0.18, -1.35pt),
+      (x0 + step * 0.32, -1.35pt),
+    ))
+    elements.push(curve.cubic(
+      (x_end, 0pt),
+      (x0 + step * 0.68, 1.35pt),
+      (x0 + step * 0.82, 1.35pt),
+    ))
+  }}
+  let c_line = if l_col != none {{ l_col }} else if t_col != none {{ t_col }} else {{ rgb("#008000") }}
+  let content = if t_col != none {{ text(fill: t_col)[#body] }} else {{ body }}
+  box[#content#place(bottom + left, dy: 3.0pt)[#curve(stroke: 0.95pt + c_line, curve.move((0pt, 0pt)), ..elements)]]
+}}
+
+#let grammar-none(l_col, t_col, body) = {{
+  let content = if t_col != none {{ text(fill: t_col)[#body] }} else {{ body }}
+  content
+}}
+
+"##
     ));
 
     // If title is non-empty, render main title banner
     if !title.is_empty() {
         out.push_str(&format!(
-            "= {}\n\n#v(0.5em)\n\n",
-            safe_title
+            "#align(left)[#text(size: 22pt, weight: \"bold\", fill: rgb(\"{h1_color}\"))[{safe_title}]]\n\n#v(0.6em)\n\n"
         ));
     }
 
@@ -282,6 +548,7 @@ pub fn markdown_to_typst(title: &str, markdown: &str) -> String {
     let mut in_code_block = false;
     let mut code_block_lang = String::new();
     let mut code_block_content = String::new();
+    let mut list_stack: Vec<bool> = Vec::new(); // true = ordered (numbered), false = unordered (bullet)
 
     for event in parser {
         match event {
@@ -336,15 +603,25 @@ pub fn markdown_to_typst(title: &str, markdown: &str) -> String {
                 ));
             }
             Event::Start(Tag::List(first_num)) => {
-                // Lists in typst format naturally with `- ` or `+ `
-                let _ = first_num;
+                let is_ordered = first_num.is_some();
+                list_stack.push(is_ordered);
                 out.push('\n');
             }
             Event::End(TagEnd::List(_)) => {
+                list_stack.pop();
                 out.push('\n');
             }
             Event::Start(Tag::Item) => {
-                out.push_str("- ");
+                let indent_levels = list_stack.len().saturating_sub(1);
+                for _ in 0..indent_levels {
+                    out.push_str("  ");
+                }
+                let is_ordered = list_stack.last().copied().unwrap_or(false);
+                if is_ordered {
+                    out.push_str("+ ");
+                } else {
+                    out.push_str("- ");
+                }
             }
             Event::End(TagEnd::Item) => {
                 out.push('\n');
@@ -418,7 +695,6 @@ pub fn markdown_to_typst(title: &str, markdown: &str) -> String {
                     let col_count = ts.alignments.len().max(1);
                     out.push_str(&format!("#table(\n  columns: {col_count},\n"));
                     
-                    // Alignments
                     let align_strs: Vec<&str> = ts.alignments.iter().map(|a| match a {
                         Alignment::Left => "left",
                         Alignment::Center => "center",
@@ -473,9 +749,9 @@ pub fn markdown_to_typst(title: &str, markdown: &str) -> String {
                 if in_code_block {
                     code_block_content.push_str(&txt);
                 } else if let Some(ref mut ts) = table_state {
-                    ts.current_cell.push_str(&escape_typst_text(&txt));
+                    push_typst_text(&mut ts.current_cell, &txt, &replacements);
                 } else {
-                    out.push_str(&escape_typst_text(&txt));
+                    push_typst_text(&mut out, &txt, &replacements);
                 }
             }
             Event::Code(txt) => {
@@ -549,9 +825,13 @@ pub fn compile_typst_to_pdf(typst_source: &str) -> Result<Vec<u8>, String> {
     })
 }
 
-/// High-level function: converts Markdown to PDF bytes.
-pub fn export_markdown_to_pdf(title: &str, markdown: &str) -> Result<Vec<u8>, String> {
-    let typst_markup = markdown_to_typst(title, markdown);
+/// High-level function: converts Markdown to PDF bytes with optional Heading styles.
+pub fn export_markdown_to_pdf(
+    title: &str,
+    markdown: &str,
+    headings: Option<&crate::settings::HeadingsSettings>,
+) -> Result<Vec<u8>, String> {
+    let typst_markup = markdown_to_typst(title, markdown, headings);
     match compile_typst_to_pdf(&typst_markup) {
         Ok(bytes) => {
             println!("[Typst Engine] Successfully compiled PDF ({} bytes)", bytes.len());
@@ -568,6 +848,91 @@ pub fn export_markdown_to_pdf(title: &str, markdown: &str) -> Result<Vec<u8>, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_cubic_check() {
+        let code = r#"
+#curve(
+  stroke: 1pt + green,
+  curve.move((0pt, 0pt)),
+  curve.quad(foo: 1),
+)
+"#;
+        let res = compile_typst_to_pdf(code);
+        assert!(res.is_ok(), "Err: {:?}", res.err());
+    }
+
+    #[test]
+    fn test_all_grammar_types_compilation() {
+        let typst_markup = r##"
+#set text(font: "Roboto Mono", size: 11pt, lang: "ru")
+
+#let grammar-solid(l_col, t_col, body) = {
+  let c_line = if l_col != none { l_col } else if t_col != none { t_col } else { black }
+  let content = if t_col != none { text(fill: t_col)[#body] } else { body }
+  underline(stroke: (paint: c_line, thickness: 1.0pt), offset: 2.5pt)[#content]
+}
+
+#let grammar-double(l_col, t_col, body) = context {
+  let size = measure(body)
+  let w = size.width
+  let c_line = if l_col != none { l_col } else if t_col != none { t_col } else { black }
+  let content = if t_col != none { text(fill: t_col)[#body] } else { body }
+  box[#content#place(bottom + left, dy: 1.8pt)[#line(length: w, stroke: 0.85pt + c_line)]#place(bottom + left, dy: 3.6pt)[#line(length: w, stroke: 0.85pt + c_line)]]
+}
+
+#let grammar-dotted(l_col, t_col, body) = {
+  let c_line = if l_col != none { l_col } else if t_col != none { t_col } else { black }
+  let content = if t_col != none { text(fill: t_col)[#body] } else { body }
+  underline(stroke: (paint: c_line, thickness: 1.0pt, dash: (array: (3pt, 2.5pt))), offset: 2.5pt)[#content]
+}
+
+#let grammar-dashdot(l_col, t_col, body) = {
+  let c_line = if l_col != none { l_col } else if t_col != none { t_col } else { black }
+  let content = if t_col != none { text(fill: t_col)[#body] } else { body }
+  underline(stroke: (paint: c_line, thickness: 1.0pt, dash: (array: (4pt, 2pt, "dot", 2pt))), offset: 2.5pt)[#content]
+}
+
+#let grammar-wavy(l_col, t_col, body) = context {
+  let size = measure(body)
+  let w = size.width
+  let count = calc.max(1, int(calc.round(w / 5.5pt)))
+  let step = w / count
+  let elements = ()
+  for i in range(count) {
+    let x0 = i * step
+    let x_half = x0 + step * 0.5
+    let x_end = x0 + step
+    elements.push(curve.cubic(
+      (x_half, 0pt),
+      (x0 + step * 0.18, -1.35pt),
+      (x0 + step * 0.32, -1.35pt),
+    ))
+    elements.push(curve.cubic(
+      (x_end, 0pt),
+      (x0 + step * 0.68, 1.35pt),
+      (x0 + step * 0.82, 1.35pt),
+    ))
+  }
+  let c_line = if l_col != none { l_col } else if t_col != none { t_col } else { rgb("#008000") }
+  let content = if t_col != none { text(fill: t_col)[#body] } else { body }
+  box[#content#place(bottom + left, dy: 3.0pt)[#curve(stroke: 0.95pt + c_line, curve.move((0pt, 0pt)), ..elements)]]
+}
+
+#let grammar-none(l_col, t_col, body) = {
+  let content = if t_col != none { text(fill: t_col)[#body] } else { body }
+  content
+}
+
+#grammar-wavy(rgb(0, 128, 0), none)[Маленькая]
+#grammar-solid(rgb(255, 0, 0), rgb(0, 0, 255))[кошка]
+#grammar-dashdot(none, none)[тихо]
+#grammar-double(rgb(34, 170, 119), none)[спала]
+#grammar-dashdot(rgb(255, 165, 0), none)[на подоконнике].
+"##;
+        let res = compile_typst_to_pdf(typst_markup);
+        assert!(res.is_ok(), "Typst compile failed: {:?}", res.err());
+    }
 
     #[test]
     fn test_compile_typst_to_pdf_smoke() {
@@ -620,10 +985,76 @@ def hello_aquilum():
 
 > Typst — это современная, быстрая и расширяемая система вёрстки документов.
 "#;
-        let result = export_markdown_to_pdf("Тестовая Заметка", md);
+        let result = export_markdown_to_pdf("Тестовая Заметка", md, None);
         assert!(result.is_ok(), "Markdown to PDF export failed: {:?}", result.err());
         let bytes = result.unwrap();
         assert!(bytes.starts_with(b"%PDF-"));
         assert!(bytes.len() > 2000);
+    }
+
+    #[test]
+    fn test_user_grammar_and_headings_export() {
+        let md = r#"## Пример входа
+
+```markdown
+::d{green}[Маленькая] ::s{red/blue}[кошка] ::a[тихо] ::p{#2a7}[спала] ::a{orange}[на подоконнике].
+```
+
+::d{green}[Маленькая] ::s{red/blue}[кошка] ::a[тихо] ::p{#2a7}[спала] ::a{orange}[на подоконнике].
+"#;
+        let headings = crate::settings::HeadingsSettings::default();
+        let typst = markdown_to_typst("Пример разбора", md, Some(&headings));
+
+        // Verify heading 2 style contains sky_blue hex (#56B4E9)
+        assert!(typst.contains("#56B4E9"), "Expected H2 color in typst show rule");
+
+        // Verify raw code block preserved
+        assert!(typst.contains("::d{green}[Маленькая]"), "Raw code block must preserve original syntax");
+
+        // Verify paragraph converted to typst grammar calls
+        assert!(typst.contains("#grammar-wavy(rgb(0, 128, 0), none)[Маленькая]"), "Expected grammar-wavy");
+        assert!(typst.contains("#grammar-solid(rgb(255, 0, 0), rgb(0, 0, 255))[кошка]"), "Expected grammar-solid with red/blue");
+        assert!(typst.contains("#grammar-dashdot(none, none)[тихо]"), "Expected grammar-dashdot");
+        assert!(typst.contains("#grammar-double(rgb(34, 170, 119), none)[спала]"), "Expected grammar-double with #2a7 teal");
+        assert!(typst.contains("#grammar-dashdot(rgb(255, 165, 0), none)[на подоконнике]"), "Expected grammar-dashdot with orange");
+
+        // Verify compilation to PDF
+        let result = export_markdown_to_pdf("Пример разбора", md, Some(&headings));
+        assert!(result.is_ok(), "PDF compilation failed: {:?}", result.err());
+        let bytes = result.unwrap();
+        assert!(bytes.starts_with(b"%PDF-"));
+    }
+    #[test]
+    fn test_ordered_list_and_table_vertical_lines() {
+        let md = r#"
+## Правила цветов
+
+1. Без блока цветов: ::s[Кошка] - стандартная линия.
+2. Один цвет: ::s{#2a7}[Кошка] - цвет текста.
+3. Два цвета: ::s{red/blue}[Кошка] - первый цвет для линии, второй для текста.
+
+| Тег | Член предложения | Линия |
+| :--- | :--- | :--- |
+| `::s[...]` | подлежащее | одна сплошная |
+| `::p[...]` | сказуемое | двойная сплошная |
+| `::d[...]` | определение | волнистая |
+"#;
+        let typst = markdown_to_typst("Правила", md, None);
+
+        // Verify numbered list uses `+ ` for ordered items
+        assert!(typst.contains("+ Без блока цветов"), "Ordered list must use `+ ` for numbering in Typst");
+        assert!(typst.contains("+ Один цвет"), "Ordered list item 2 must use `+ `");
+        assert!(typst.contains("+ Два цвета"), "Ordered list item 3 must use `+ `");
+
+        // Verify table has vertical borders
+        assert!(typst.contains("left: 0.6pt + rgb(\"cbd5e1\")"), "Table must include vertical borders");
+        assert!(typst.contains("right: 0.6pt + rgb(\"cbd5e1\")"), "Table must include vertical borders");
+
+        // Verify double line uses place + line with measured width
+        assert!(typst.contains("#line(length: w"), "Double underline must use equal line lengths");
+
+        // Verify compilation succeeds
+        let res = export_markdown_to_pdf("Правила", md, None);
+        assert!(res.is_ok(), "Export failed: {:?}", res.err());
     }
 }
