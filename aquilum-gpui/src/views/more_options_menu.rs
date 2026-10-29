@@ -527,19 +527,8 @@ impl AppView {
                         {
                             let p = target_path.clone();
                             Box::new(move |this, _, cx| {
-                                let name = p
-                                    .as_ref()
-                                    .and_then(|p| p.file_stem())
-                                    .map(|s| s.to_string_lossy().to_string())
-                                    .unwrap_or_else(|| "Note".to_string());
-                                let is_ru = this.config.ui.language.starts_with("ru");
-                                this.state.status_text = if is_ru {
-                                    format!("Экспорт \"{}\" в PDF готов", name)
-                                } else {
-                                    format!("Export \"{}\" to PDF ready", name)
-                                };
                                 this.close_more_options_menu(cx);
-                                cx.notify();
+                                this.export_note_to_pdf(p.clone(), cx);
                             })
                         },
                         theme,

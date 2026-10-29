@@ -2635,6 +2635,99 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         self.open_folder_dialog(window, cx);
     }
 
+    /// Asynchronously exports the active note (or note at target_path) to PDF using Typst.
+    pub(crate) fn export_note_to_pdf(&mut self, target_path: Option<PathBuf>, cx: &mut Context<Self>) {
+        let (title, content, initial_dir) = if let Some(ref path) = target_path {
+            let title = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Note".to_string());
+            let content = if let Some(doc) = self.state.active_document().filter(|d| &d.path == path) {
+                doc.content().to_string()
+            } else if let Some(id) = self.state.find_document_by_path(path) {
+                self.state.documents.get(&id).map(|d| d.content().to_string()).unwrap_or_else(|| {
+                    std::fs::read_to_string(path).unwrap_or_default()
+                })
+            } else {
+                std::fs::read_to_string(path).unwrap_or_default()
+            };
+            let dir = path.parent().map(|p| p.to_path_buf());
+            (title, content, dir)
+        } else if let Some(doc) = self.state.active_document() {
+            let title = doc.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Note".to_string());
+            let content = doc.content().to_string();
+            let dir = doc.path.parent().map(|p| p.to_path_buf());
+            (title, content, dir)
+        } else {
+            eprintln!("[PDF Export] ERROR: No active document or target path found to export.");
+            return;
+        };
+
+        println!("[PDF Export] Starting export for note '{}' (content length: {} bytes)", title, content.len());
+
+        let entity = cx.weak_entity();
+        let mut async_cx = cx.to_async();
+        let mut dialog = rfd::AsyncFileDialog::new()
+            .add_filter("PDF Document (*.pdf)", &["pdf"])
+            .set_file_name(&format!("{}.pdf", title));
+        if let Some(ref dir) = initial_dir {
+            dialog = dialog.set_directory(dir);
+        } else if let Some(ref ws) = self.state.workspace_path {
+            dialog = dialog.set_directory(ws);
+        }
+
+        let bg = cx.background_executor().clone();
+        cx.foreground_executor().spawn(async move {
+            println!("[PDF Export] Native file save dialog opened...");
+            let file_handle_opt = dialog.save_file().await;
+            if let Some(file_handle) = file_handle_opt {
+                let raw_path = file_handle.path().to_path_buf();
+                println!("[PDF Export] Dialog returned selection: {:?}", raw_path);
+
+                let mut out_path = raw_path;
+                if out_path.is_dir() {
+                    let default_filename = format!("{}.pdf", title);
+                    out_path = out_path.join(&default_filename);
+                    println!("[PDF Export] Selected path is a directory; appended default filename -> {:?}", out_path);
+                }
+                if out_path.extension().map(|ext| ext.to_string_lossy().to_lowercase() != "pdf").unwrap_or(true) {
+                    out_path.set_extension("pdf");
+                    println!("[PDF Export] Appended .pdf extension -> {:?}", out_path);
+                }
+
+                let title_clone = title.clone();
+                let pdf_res = bg.spawn(async move {
+                    crate::pdf_export::export_markdown_to_pdf(&title_clone, &content)
+                }).await;
+
+                let _ = entity.update(&mut async_cx, |this, cx| {
+                    match pdf_res {
+                        Ok(bytes) => {
+                            match std::fs::write(&out_path, &bytes) {
+                                Ok(()) => {
+                                    println!("[PDF Export] SUCCESS: Wrote {} bytes to {:?}", bytes.len(), out_path);
+                                    let is_ru = this.config.ui.language.starts_with("ru");
+                                    let fname = out_path.file_name().unwrap_or_default().to_string_lossy();
+                                    this.state.status_text = if is_ru {
+                                        format!("PDF сохранён: {}", fname)
+                                    } else {
+                                        format!("PDF saved: {}", fname)
+                                    };
+                                }
+                                Err(err) => {
+                                    eprintln!("[PDF Export] ERROR: Failed to write PDF to {:?}: {}", out_path, err);
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("[PDF Export] ERROR: Typst compilation failed: {}", err);
+                        }
+                    }
+                    cx.notify();
+                });
+            } else {
+                println!("[PDF Export] Save cancelled by user (dialog closed without selection).");
+            }
+        }).detach();
+    }
+
     pub(crate) fn create_new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.create_new_note_placed(window, cx, false);
     }

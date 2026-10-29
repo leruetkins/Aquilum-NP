@@ -17,6 +17,7 @@ pub mod line_index;
 pub mod markdown;
 pub mod markdown_doc;
 pub mod perf;
+pub mod pdf_export;
 pub mod plugins;
 pub mod ribbon;
 pub mod save_manager;

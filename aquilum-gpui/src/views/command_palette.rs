@@ -135,6 +135,9 @@ impl AppView {
 
         // 2. Execute built-in host actions
         match cmd_id {
+            "app:export-pdf" | "editor:export-pdf" => {
+                self.export_note_to_pdf(None, cx);
+            }
             "editor:save" => {
                 self.flush_active_note_now(cx);
             }

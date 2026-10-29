@@ -110,6 +110,15 @@ pub fn register_builtin_commands(registry: &CommandRegistry) {
         hotkey: Some("Ctrl+Shift+\\".into()),
         callback: Arc::new(|| {}),
     });
+
+    // 12. Экспорт в PDF
+    registry.register(Command {
+        id: "app:export-pdf".into(),
+        name: "Export to PDF".into(),
+        owner: None,
+        hotkey: None,
+        callback: Arc::new(|| {}),
+    });
 }
 
 #[cfg(test)]
@@ -131,5 +140,6 @@ mod tests {
         assert!(registry.search("new tab").iter().any(|c| c.id == "workspace:new-tab"));
         assert!(registry.search("palette").iter().any(|c| c.id == "app:open-command-palette"));
         assert!(registry.search("switcher").iter().any(|c| c.id == "app:open-search-dialog"));
+        assert!(registry.search("pdf").iter().any(|c| c.id == "app:export-pdf"));
     }
 }
