@@ -819,6 +819,40 @@ impl AppState {
         self.dispatch_edit_event(&edit_event, &note_edit);
     }
 
+    /// Flips the mark of a task checkbox on `line`, without moving the caret or
+    /// dropping the selection.
+    ///
+    /// `mark` is the byte range of the single character between the brackets,
+    /// relative to the line. Replacing one character with one character keeps
+    /// every offset valid, so the click only has to repaint the edited row. The
+    /// step lands in the document history like any other edit.
+    pub fn active_toggle_task_mark(&mut self, line: usize, mark: std::ops::Range<usize>) -> bool {
+        let Some(tab_id) = self.active_tab_id() else { return false; };
+        let Some(doc_id) = self.active_doc_id() else { return false; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return false; };
+
+        let line_start = doc.line_start_byte(line);
+        let range = line_start + mark.start..line_start + mark.end;
+        if range.end > doc.len() {
+            return false;
+        }
+        let removed = doc.slice_to_string(range.clone());
+        let inserted = if removed.trim().is_empty() { "x" } else { " " };
+        let selection = view.selection();
+        let (_, note_edit, edit_event) = doc.record_change_with_selection(
+            range.start,
+            removed,
+            inserted.to_string(),
+            selection,
+            selection,
+            // An external edit (`None`) is transformed by every view instead of
+            // overwriting its caret: the click must not move the cursor.
+            None,
+        );
+        self.dispatch_edit_event(&edit_event, &note_edit);
+        true
+    }
+
     pub fn active_toggle_raw_table(&mut self) -> bool {
         let Some(tab_id) = self.active_tab_id() else { return false; };
         let Some(doc_id) = self.active_doc_id() else { return false; };
@@ -5866,6 +5900,41 @@ mod tests {
 
         assert!(state.active_redo());
         assert_eq!(state.documents.get(&doc_id).unwrap().content(), deleted);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn toggling_a_task_mark_keeps_the_caret_and_is_undoable() {
+        let temp_dir = std::env::temp_dir().join(format!("test_task_toggle_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let note_path = temp_dir.join("tasks.md");
+        std::fs::write(&note_path, "- [ ] first\n- [x] second\n").unwrap();
+
+        let mut state = AppState::new_empty();
+        state.open_note(note_path);
+        let doc_id = state.active_doc_id().unwrap();
+        let tab_id = state.active_tab_id().unwrap();
+        let line2 = state.documents.get(&doc_id).unwrap().line_start_byte(1);
+        {
+            let view = state.views.get_mut(&tab_id).unwrap();
+            view.cursor_offset = line2 + 8;
+            view.selection_anchor = None;
+        }
+
+        // The click knows only the mark's place in the line, as the renderer saw it.
+        let mark = crate::markdown::task_prefix("- [x] second").unwrap().mark;
+        assert!(state.active_toggle_task_mark(1, mark));
+        assert_eq!(state.documents.get(&doc_id).unwrap().line_text(1), "- [ ] second");
+        {
+            let view = state.views.get(&tab_id).unwrap();
+            assert_eq!(view.cursor_offset, line2 + 8, "the click must not move the caret");
+            assert_eq!(view.selection_anchor, None);
+        }
+
+        // The toggle is one ordinary undo step.
+        assert!(state.active_undo());
+        assert_eq!(state.documents.get(&doc_id).unwrap().line_text(1), "- [x] second");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

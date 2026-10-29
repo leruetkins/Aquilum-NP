@@ -745,7 +745,7 @@ impl TabSession {
     }
 
     /// Current text selection as an undo-step selection.
-    fn selection(&self) -> Selection {
+    pub(crate) fn selection(&self) -> Selection {
         Selection { cursor: self.cursor_offset, anchor: self.selection_anchor }
     }
 

@@ -472,18 +472,8 @@ pub fn classify_line<'a>(
         LineKind::Heading6(rest)
     } else if let Some(q) = quote_prefix(trimmed_start) {
         LineKind::Quote(&trimmed_start[q.bytes..])
-    } else if let Some(rest) = trimmed_start.strip_prefix("- [ ] ") {
-        LineKind::Task { checked: false, text: rest }
-    } else if let Some(rest) = trimmed_start.strip_prefix("* [ ] ") {
-        LineKind::Task { checked: false, text: rest }
-    } else if let Some(rest) = trimmed_start.strip_prefix("- [x] ") {
-        LineKind::Task { checked: true, text: rest }
-    } else if let Some(rest) = trimmed_start.strip_prefix("- [X] ") {
-        LineKind::Task { checked: true, text: rest }
-    } else if let Some(rest) = trimmed_start.strip_prefix("* [x] ") {
-        LineKind::Task { checked: true, text: rest }
-    } else if let Some(rest) = trimmed_start.strip_prefix("* [X] ") {
-        LineKind::Task { checked: true, text: rest }
+    } else if let Some(task) = task_prefix(line) {
+        LineKind::Task { checked: task.checked, text: &line[task.bytes..] }
     } else if let Some(rest) = trimmed_start.strip_prefix("- ") {
         LineKind::BulletList { indent, text: rest }
     } else if let Some(rest) = trimmed_start.strip_prefix("* ") {
@@ -503,6 +493,127 @@ pub fn classify_line<'a>(
             LineKind::Paragraph(line)
         }
     }
+}
+
+/// The leading marker of a GFM task item: indent, list marker and checkbox,
+/// e.g. `  - [x] ` or `12. [ ] `.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskPrefix<'a> {
+    /// Leading whitespace before the list marker, in chars.
+    pub indent_chars: usize,
+    /// Byte length of the leading whitespace.
+    pub indent_bytes: usize,
+    /// The list marker with its trailing space, starting right after the
+    /// indent: `- `, `* ` or `12. `.
+    pub list_marker: &'a str,
+    /// Whether the list marker is a number. An unordered marker is not painted
+    /// on an idle task row: the checkbox takes its place.
+    pub ordered: bool,
+    /// The checkbox with its brackets: `[ ]`, `[x]`, `[✓]`.
+    pub checkbox: &'a str,
+    pub checked: bool,
+    /// Byte range of the mark between the brackets, relative to the line.
+    pub mark: std::ops::Range<usize>,
+    /// Whether a space separates the checkbox from the content.
+    pub space_after: bool,
+    /// Byte length of the whole prefix, indent included.
+    pub bytes: usize,
+    /// Char length of the whole prefix, indent included.
+    pub chars: usize,
+}
+
+impl TaskPrefix<'_> {
+    /// Cell width of the list marker.
+    pub fn list_chars(&self) -> usize {
+        self.list_marker.chars().count()
+    }
+}
+
+/// The task marker at the head of `line`, or `None` when the line is not a task.
+///
+/// GFM accepts any list marker before the checkbox (`-`, `*`, `+` or `1.`).
+/// Any single mark counts — `[ ]` is open, anything else (`[x]`, `[X]`, `[✓]`)
+/// is done — and the mark may be followed by a space, a tab or the end of the
+/// line. The indent is part of the prefix, so a nested task keeps its columns
+/// like a nested bullet does.
+pub fn task_prefix(line: &str) -> Option<TaskPrefix<'_>> {
+    let trimmed = line.trim_start();
+    let indent_bytes = line.len() - trimmed.len();
+    let indent_chars = line[..indent_bytes].chars().count();
+    let (list_len, ordered) = if trimmed.starts_with("- ")
+        || trimmed.starts_with("* ")
+        || trimmed.starts_with("+ ")
+    {
+        (2, false)
+    } else {
+        let digits_len = trimmed.chars().take_while(|c| c.is_ascii_digit()).count();
+        if digits_len == 0 || !trimmed[digits_len..].starts_with(". ") {
+            return None;
+        }
+        (digits_len + 2, true)
+    };
+    let rest = &trimmed[list_len..];
+    let inner = rest.strip_prefix('[')?;
+    let mark_char = inner.chars().next()?;
+    let closed = inner[mark_char.len_utf8()..].strip_prefix(']')?;
+    if !closed.is_empty() && !closed.starts_with([' ', '\t']) {
+        return None;
+    }
+    let mark_len = mark_char.len_utf8();
+    let checkbox_len = 2 + mark_len;
+    let space_after = !closed.is_empty();
+    let list_marker = &trimmed[..list_len];
+    let checkbox = &rest[..checkbox_len];
+    let mark_start = indent_bytes + list_len + 1;
+    Some(TaskPrefix {
+        indent_chars,
+        indent_bytes,
+        list_marker,
+        ordered,
+        checkbox,
+        checked: !mark_char.is_whitespace(),
+        mark: mark_start..mark_start + mark_len,
+        space_after,
+        bytes: indent_bytes + list_len + checkbox_len + usize::from(space_after),
+        chars: indent_chars
+            + list_marker.chars().count()
+            + checkbox.chars().count()
+            + usize::from(space_after),
+    })
+}
+
+/// Byte range of the mark and the text that flips it: `x` when the task is
+/// open, a space when it is done.
+pub fn task_toggle(line: &str) -> Option<(std::ops::Range<usize>, &'static str)> {
+    let task = task_prefix(line)?;
+    Some((task.mark, if task.checked { " " } else { "x" }))
+}
+
+/// Marker text a task row measures before its content.
+///
+/// An idle row hides the raw bracket marker — the renderer draws a checkbox in
+/// those three cells — and keeps the bullet dot an unordered list paints in
+/// place of its raw marker. The line being edited shows its raw source. Both
+/// spellings are exactly [`TaskPrefix::chars`] cells wide, so the wrap does not
+/// move.
+pub fn task_paint_prefix(line: &str, task: &TaskPrefix<'_>, is_active_line: bool) -> String {
+    if is_active_line {
+        return line[..task.bytes].to_string();
+    }
+    let mut text = String::with_capacity(task.bytes);
+    text.push_str(&line[..task.indent_bytes]);
+    if task.ordered {
+        text.push_str(task.list_marker);
+    } else if task.list_chars() == RENDERED_BULLET.chars().count() {
+        text.push_str(RENDERED_BULLET);
+    } else {
+        text.push_str(&" ".repeat(task.list_chars()));
+    }
+    text.push_str(&" ".repeat(task.checkbox.chars().count()));
+    if task.space_after {
+        text.push(' ');
+    }
+    text
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1241,13 +1352,24 @@ pub fn inline_reveal(
 
     let (spans, base) = line_inline_spans(line, classified);
     let elements = inline_element_ranges(&spans);
-    if elements.is_empty() {
+    // A task checkbox is a marker as well: it gives way to the raw `[x]` while
+    // the caret or the selection touches it, exactly like an inline marker.
+    let task_range = match classified {
+        LineKind::Task { .. } => task_prefix(line).map(|task| (0, task.chars)),
+        _ => None,
+    };
+    if elements.is_empty() && task_range.is_none() {
         return InlineReveal::None;
     }
 
     let mut ranges: Vec<(usize, usize)> = Vec::new();
     if let Some((s, e)) = selection {
         if s < e {
+            if let Some(range) = task_range {
+                if s < range.1 && range.0 < e {
+                    ranges.push(range);
+                }
+            }
             for &(a, b) in &elements {
                 let range = (base + a, base + b);
                 if s < range.1 && range.0 < e {
@@ -1257,6 +1379,14 @@ pub fn inline_reveal(
         }
     }
     if let Some(c) = cursor_char {
+        if let Some(range) = task_range {
+            // Unlike an inline marker, the end of a task prefix is where the
+            // content starts: a caret sitting just after the checkbox must not
+            // hide it, or the box could never be clicked from the line it edits.
+            if range.0 <= c && c < range.1 && !ranges.contains(&range) {
+                ranges.push(range);
+            }
+        }
         for &(a, b) in &elements {
             let range = (base + a, base + b);
             // The end boundary counts as inside. A hidden closing marker has no
@@ -1709,10 +1839,7 @@ pub fn continuation_prefix_cols(line: &str, classified: &LineKind<'_>) -> usize 
                 base
             }
         }
-        LineKind::Task { .. } => {
-            let prefix = row_prefix_offset(line, classified);
-            line.chars().take(prefix).count()
-        }
+        LineKind::Task { .. } => task_prefix(line).map_or(0, |task| task.chars),
         LineKind::BulletList { .. } => indent_chars + 2,
         LineKind::NumberedList { num, .. } => indent_chars + num.chars().count() + 2,
         _ => 0,
@@ -2445,19 +2572,7 @@ pub fn row_char_to_visual_col(
 /// kinds (task box, bullet, number). Zero for everything else.
 fn marker_prefix_len(line: &str, classified: &LineKind<'_>) -> usize {
     match classified {
-        LineKind::Task { .. } => {
-            if line.starts_with("- [ ] ")
-                || line.starts_with("* [ ] ")
-                || line.starts_with("- [x] ")
-                || line.starts_with("- [X] ")
-                || line.starts_with("* [x] ")
-                || line.starts_with("* [X] ")
-            {
-                6
-            } else {
-                0
-            }
-        }
+        LineKind::Task { .. } => task_prefix(line).map_or(0, |task| task.bytes),
         LineKind::BulletList { .. } => {
             let trimmed = line.trim_start();
             let indent_len = line.len() - trimmed.len();
@@ -3151,8 +3266,6 @@ pub fn row_painted_text(
         return PaintedRow { segments, line_chars };
     }
 
-    let prefix_offset = row_prefix_offset(line, classified);
-
     // Base font traits of the row body: `render_syntax_spans` receives these as the
     // default weight/style for every span it flattens.
     let (base_bold, base_italic) = match classified {
@@ -3225,11 +3338,14 @@ pub fn row_painted_text(
             }
         }
         LineKind::Task { .. } => {
-            if v.sub_idx == 0 {
-                let head: String = line.chars().take(prefix_offset).collect();
-                push_verbatim(&mut segments, &mut line_chars, &head, 0, true, base_italic, false);
-            } else {
-                push_padding(&mut segments, &mut line_chars, "      ", v.char_start, true, base_italic);
+            if let Some(task) = task_prefix(line) {
+                if v.sub_idx == 0 {
+                    let show_raw = reveal.shows(0, task.chars);
+                    let prefix = task_paint_prefix(line, &task, show_raw);
+                    push_verbatim(&mut segments, &mut line_chars, &prefix, 0, true, base_italic, false);
+                } else {
+                    push_padding(&mut segments, &mut line_chars, &" ".repeat(task.chars), v.char_start, true, base_italic);
+                }
             }
         }
         LineKind::BulletList { .. } => {
@@ -3605,6 +3721,96 @@ mod tests {
         assert_eq!(classify_line("##### H5", None), LineKind::Heading5("H5"));
         assert_eq!(classify_line("###### H6", None), LineKind::Heading6("H6"));
         assert_eq!(classify_line("---", None), LineKind::HorizontalRule);
+    }
+
+    #[test]
+    fn gfm_task_markers_classify_as_tasks() {
+        let unchecked = LineKind::Task { checked: false, text: "a" };
+        let checked = LineKind::Task { checked: true, text: "a" };
+        assert_eq!(classify_line("- [ ] a", None), unchecked);
+        assert_eq!(classify_line("* [ ] a", None), unchecked);
+        assert_eq!(classify_line("+ [ ] a", None), unchecked);
+        assert_eq!(classify_line("1. [ ] a", None), unchecked);
+        assert_eq!(classify_line("12. [ ] a", None), unchecked);
+        assert_eq!(classify_line("- [x] a", None), checked);
+        assert_eq!(classify_line("- [X] a", None), checked);
+        assert_eq!(classify_line("+ [X] a", None), checked);
+        assert_eq!(classify_line("2. [x] a", None), checked);
+        // A nested task keeps its indent in the marker, which the classification
+        // itself does not carry.
+        assert_eq!(classify_line("  - [ ] a", None), unchecked);
+        // A checkbox needs the space after the bracket, and the list marker needs
+        // its own space, otherwise the line is an ordinary list item.
+        assert_eq!(
+            classify_line("- [ ]a", None),
+            LineKind::BulletList { indent: 0, text: "[ ]a" },
+        );
+        assert_eq!(
+            classify_line("1. [x]a", None),
+            LineKind::NumberedList { num: "1", text: "[x]a" },
+        );
+    }
+
+    #[test]
+    fn task_prefix_spans_indent_and_marker() {
+        let task = task_prefix("  - [X] done").unwrap();
+        assert_eq!(task.indent_chars, 2);
+        assert_eq!(task.indent_bytes, 2);
+        assert_eq!(task.list_marker, "- ");
+        assert!(!task.ordered);
+        assert_eq!(task.checkbox, "[X]");
+        assert!(task.checked);
+        assert_eq!(task.mark, 5..6);
+        assert!(task.space_after);
+        assert_eq!(task.chars, 8);
+        assert_eq!(task.bytes, 8);
+
+        let task = task_prefix("12. [ ] x").unwrap();
+        assert_eq!(task.indent_chars, 0);
+        assert_eq!(task.list_marker, "12. ");
+        assert!(task.ordered);
+        assert_eq!(task.checkbox, "[ ]");
+        assert!(!task.checked);
+        assert_eq!(task.chars, 8);
+
+        // Any single mark counts, a line may end right after the checkbox, and a
+        // bullet that merely starts with a link is not a task.
+        assert!(task_prefix("- [✓] done").unwrap().checked);
+        let end = task_prefix("- [ ]").unwrap();
+        assert!(!end.checked);
+        assert!(!end.space_after);
+        assert_eq!(end.chars, 5);
+        assert!(task_prefix("- [link](https://example.com)").is_none());
+
+        assert!(task_prefix("- [ ]x").is_none());
+        assert!(task_prefix("- [ab] two").is_none());
+        assert!(task_prefix("1.[ ] x").is_none());
+        assert!(task_prefix("- just a bullet").is_none());
+    }
+
+    #[test]
+    fn task_toggle_flips_only_the_mark() {
+        assert_eq!(task_toggle("- [ ] x"), Some((3..4, "x")));
+        assert_eq!(task_toggle("  - [✓] x"), Some((5..8, " ")));
+        assert_eq!(task_toggle("1. [x] x"), Some((4..5, " ")));
+        assert_eq!(task_toggle("- [x]x"), None);
+        assert_eq!(task_toggle("plain text"), None);
+    }
+
+    #[test]
+    fn painted_task_prefix_is_as_wide_as_the_source() {
+        let line = "  - [x] done";
+        let task = task_prefix(line).unwrap();
+        let idle = task_paint_prefix(line, &task, false);
+        // The bullet keeps its dot and the bracket marker becomes blank box cells.
+        assert_eq!(idle, format!("  {}    ", RENDERED_BULLET));
+        assert_eq!(idle.chars().count(), task.chars);
+        assert_eq!(task_paint_prefix(line, &task, true), "  - [x] ");
+
+        let ordered = "1. [ ] done";
+        let task = task_prefix(ordered).unwrap();
+        assert_eq!(task_paint_prefix(ordered, &task, false), "1.     ");
+        assert_eq!(task_paint_prefix(ordered, &task, false).chars().count(), task.chars);
     }
 
     #[test]
@@ -4280,6 +4486,18 @@ mod tests {
     }
 
     #[test]
+    fn task_rows_take_part_in_list_blocks() {
+        let guides = list_block_guide_columns([
+            Some("- [ ] one"),
+            Some("  - [x] nested"),
+            Some("    1. [ ] deep"),
+        ]);
+        assert!(guides[0].is_empty(), "a top-level task has no guide");
+        assert_eq!(guides[1], vec![0.5], "a nested task keeps the parent guide");
+        assert_eq!(guides[2], vec![0.5, 2.5], "a numbered task nests like a number");
+    }
+
+    #[test]
     fn painted_quote_hides_its_marker_until_the_line_is_edited() {
         let line = "> hi";
         let kind = classify_line(line, None);
@@ -4709,6 +4927,40 @@ mod tests {
     }
 
     #[test]
+    fn task_checkbox_reveals_only_while_the_caret_touches_it() {
+        let line = "- [ ] buy milk";
+        let kind = classify_line(line, None);
+        // The prefix is six cells: "- [ ] ".
+        assert!(!inline_reveal(line, &kind, Some(8), None, false).shows(0, 6));
+        assert!(!inline_reveal(line, &kind, Some(6), None, false).shows(0, 6));
+        assert!(inline_reveal(line, &kind, Some(3), None, false).shows(0, 6));
+        assert!(inline_reveal(line, &kind, Some(0), None, false).shows(0, 6));
+        assert!(inline_reveal(line, &kind, None, Some((0, 4)), false).shows(0, 6));
+        assert!(!inline_reveal(line, &kind, None, Some((7, 10)), false).shows(0, 6));
+        assert!(inline_reveal(line, &kind, None, None, true).shows(0, 6));
+    }
+
+    #[test]
+    fn painted_task_hides_the_box_but_keeps_its_indent_and_number() {
+        // An idle row draws the checkbox itself: the bracket marker is blank,
+        // while the numbered marker stays. The line being edited paints its raw
+        // source.
+        let line = "   12. [X] done";
+        let kind = classify_line(line, None);
+        let chars = line.chars().count();
+        let row = painted(line, &kind, 0, chars, 0, false);
+        assert_eq!(text_of(&row), "   12.     done");
+        assert_eq!(row.line_chars, (0..=chars).collect::<Vec<_>>());
+
+        let row = painted(line, &kind, 0, chars, 0, true);
+        assert_eq!(text_of(&row), line);
+
+        // A continuation row pads the whole prefix, indentation included.
+        let row = painted(line, &kind, 11, chars, 1, false);
+        assert_eq!(text_of(&row), format!("{}done", " ".repeat(11)));
+    }
+
+    #[test]
     fn painted_row_columns_always_match_line_chars() {
         let cases: &[(&str, bool)] = &[
             ("plain text", false),
@@ -4720,6 +4972,9 @@ mod tests {
             ("- bullet with 🚀 emoji", false),
             ("> quote with ⚠️ emoji", false),
             ("- [ ] task with 🏳️‍🌈 flag", false),
+            ("  - [x] nested task", false),
+            ("1. [ ] numbered task", false),
+            ("12. [X] numbered task", true),
             ("1. numbered", false),
         ];
         for &(line, active) in cases {

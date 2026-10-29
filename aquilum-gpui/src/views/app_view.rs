@@ -1108,6 +1108,28 @@ impl AppView {
         self.current_scroll_top_f64() as f32
     }
 
+    /// Flips the checkbox of a task row in the active document.
+    ///
+    /// The replacement is a single mark character, so the caret and the
+    /// selection stay where they were: clicking a checkbox must not steal the
+    /// cursor from the text being edited. The change is recorded in the
+    /// document history like any other edit and saved by the usual debounce.
+    fn toggle_task_mark(
+        &mut self,
+        line_idx: usize,
+        mark: std::ops::Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.state.active_toggle_task_mark(line_idx, mark) {
+            return;
+        }
+        window.focus(&self.focus_handle);
+        self.reset_editor_cursor_blink(cx);
+        self.schedule_auto_save(cx);
+        cx.notify();
+    }
+
     /// Full-precision scroll position. Geometry must use this one: at the tail of
     /// a huge note the f32 grid is 16 px wide, i.e. coarser than a 24 px row, so
     /// rounding here would snap the slice to the wrong row.
@@ -9525,6 +9547,18 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     }
                 }
 
+                // A task checkbox is a click target of its own: the marker cells
+                // draw it unless the caret or the selection reveals the raw
+                // source there, and clicking it flips the mark instead of
+                // placing the caret.
+                let task_box = if is_leaf_active && v.sub_idx == 0 {
+                    crate::markdown::task_prefix(line)
+                        .filter(|task| !reveal.shows(0, task.chars))
+                        .map(|task| (task.indent_chars + task.list_chars(), task.mark.clone()))
+                } else {
+                    None
+                };
+
                 if is_leaf_active {
                     row_div = row_div
                         .cursor(gpui::CursorStyle::IBeam)
@@ -9553,6 +9587,16 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                 0
                             };
                             let target_char = v_char_start + col_in_row;
+                            if let Some((box_start, mark)) = task_box.as_ref() {
+                                if event.click_count == 1
+                                    && target_char >= *box_start
+                                    && target_char < *box_start + 3
+                                {
+                                    this.toggle_task_mark(v_line_idx, mark.clone(), window, cx);
+                                    this.is_mouse_selecting = false;
+                                    return;
+                                }
+                            }
                             if let Some((view, doc)) = this.state.active_view_and_doc_mut() {
                                 let offset = view.offset_for_line_col(doc, v_line_idx, target_char);
                                 if event.click_count == 2 {
@@ -14136,31 +14180,116 @@ fn render_live_styled_row(
             }
         }
         crate::markdown::LineKind::Task { checked, .. } => {
-            let prefix_len = if line.starts_with("- [ ] ")
-                || line.starts_with("* [ ] ")
-                || line.starts_with("- [x] ")
-                || line.starts_with("- [X] ")
-                || line.starts_with("* [x] ")
-                || line.starts_with("* [X] ")
-            {
-                6
-            } else {
-                0
-            };
-            let rest = if line.len() >= prefix_len { &line[prefix_len..] } else { "" };
+            let task = crate::markdown::task_prefix(line);
+            let prefix_bytes = task.as_ref().map_or(0, |task| task.bytes);
+            let prefix_chars = task.as_ref().map_or(0, |task| task.chars);
+            let indent_bytes = task.as_ref().map_or(0, |task| task.indent_bytes);
+            let indent_chars = task.as_ref().map_or(0, |task| task.indent_chars);
+            let list_marker = task.as_ref().map_or("", |task| task.list_marker);
+            let list_chars = task.as_ref().map_or(0, |task| task.list_chars());
+            let box_chars = task.as_ref().map_or(0, |task| task.checkbox.chars().count());
+            let ordered = task.as_ref().map_or(false, |task| task.ordered);
+            let space_after = task.as_ref().map_or(false, |task| task.space_after);
+            let indent = &line[..indent_bytes];
+            let rest = if line.len() >= prefix_bytes { &line[prefix_bytes..] } else { "" };
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
-            let prefix_color = if *checked { theme.success } else { theme.text_muted };
-            let prefix_str = if line.len() >= prefix_len { &line[..prefix_len] } else { "" };
             let task_color = if *checked { Some(theme.text_muted) } else { None };
+            let guides = indent_guides();
 
             if sub_idx == 0 {
-                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(prefix_len), prefix_len, reveal);
+                let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(prefix_chars), prefix_chars, reveal);
+                // The caret or the selection sitting on the marker reveals its
+                // raw source, the way a heading does. Every other row spends the
+                // same cells on a real checkbox: the raw `[x]` would only be
+                // text.
+                let marker = if reveal.shows(0, prefix_chars) {
+                    div()
+                        .flex_shrink_0()
+                        .w(px((prefix_chars - indent_chars) as f32 * cell_w))
+                        .whitespace_nowrap()
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(if *checked { theme.success } else { theme.text_muted })
+                        .child(line[indent_bytes.min(prefix_bytes)..prefix_bytes].to_string())
+                } else {
+                    let box_size = (cell_w * 2.0).clamp(12.0, 18.0);
+                    div()
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .w(px((prefix_chars - indent_chars) as f32 * cell_w))
+                        .whitespace_nowrap()
+                        // An unordered item keeps the dot the list paints in
+                        // place of its raw marker; a numbered one is still the
+                        // row's marker.
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .w(px(list_chars as f32 * cell_w))
+                                .when(ordered, |d| {
+                                    d.font_weight(gpui::FontWeight::BOLD)
+                                        .text_color(theme.accent)
+                                        .child(list_marker.to_string())
+                                })
+                                .when(!ordered, |d| {
+                                    d.child(
+                                        div()
+                                            .w(px(cell_w))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(
+                                                div()
+                                                    .w(px(cell_w * 0.6))
+                                                    .h(px(cell_w * 0.6))
+                                                    .rounded_full()
+                                                    .bg(theme.accent),
+                                            ),
+                                    )
+                                    .when(list_chars > 1, |d| {
+                                        d.child(div().w(px((list_chars as f32 - 1.0) * cell_w)))
+                                    })
+                                }),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .w(px(box_chars as f32 * cell_w))
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .child(
+                                    div()
+                                        .w(px(box_size))
+                                        .h(px(box_size))
+                                        .rounded_sm()
+                                        .border_1()
+                                        .border_color(if *checked { theme.accent } else { theme.border })
+                                        .bg(if *checked { theme.accent } else { theme.bg_hover })
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .when(*checked, |d| {
+                                            d.child(icons::icon(icons::ICON_CHECK, box_size * 0.62, theme.text_on_accent))
+                                        }),
+                                ),
+                        )
+                        .when(space_after, |d| d.child(div().flex_shrink_0().w(px(cell_w))))
+                };
                 div()
+                    .relative()
                     .flex()
                     .flex_row()
                     .items_center()
                     .h_full()
-                    .child(div().font_weight(gpui::FontWeight::BOLD).text_color(prefix_color).child(prefix_str.to_string()))
+                    .children(guides)
+                    .child(div().flex_shrink_0().w(px(indent_chars as f32 * cell_w)).child(indent.to_string()))
+                    .child(marker)
                     .child(
                         div()
                             .when(*checked, |s| s.text_color(theme.text_muted).line_through())
@@ -14169,17 +14298,25 @@ fn render_live_styled_row(
             } else {
                 let row_spans = crate::markdown::slice_syntax_spans_revealed(
                     &spans,
-                    char_start.saturating_sub(prefix_len),
-                    char_end.saturating_sub(prefix_len),
-                    prefix_len,
+                    char_start.saturating_sub(prefix_chars),
+                    char_end.saturating_sub(prefix_chars),
+                    prefix_chars,
                     reveal,
                 );
                 div()
+                    .relative()
                     .flex()
                     .flex_row()
                     .items_center()
                     .h_full()
-                    .child(div().child("      "))
+                    .children(guides)
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .w(px(prefix_chars as f32 * cell_w))
+                            .whitespace_nowrap()
+                            .child(" ".repeat(prefix_chars)),
+                    )
                     .child(
                         div()
                             .when(*checked, |s| s.text_color(theme.text_muted).line_through())
