@@ -129,7 +129,9 @@
       "title_align_window": "Pozice názvu (šířka okna)",
       "title_align_window_desc": "Zarovnání názvu dokumentu vůči oknu: vlevo nebo na střed",
       "title_align_editor": "Pozice názvu (šířka editoru)",
-      "title_align_editor_desc": "Zarovnání názvu dokumentu vůči sloupci poznámky: vlevo nebo na střed"
+      "title_align_editor_desc": "Zarovnání názvu dokumentu vůči sloupci poznámky: vlevo nebo na střed",
+      "exact_reveal_cursor": "Exact Cursor Positioning on Reveal",
+      "exact_reveal_cursor_desc": "Keep the cursor at the clicked column when expanding collapsed tags and headings"
     },
     "reader": {
       "title": "Režim čtečky",

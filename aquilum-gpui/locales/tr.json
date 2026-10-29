@@ -129,7 +129,9 @@
       "title_align_window": "Başlık Konumu (Pencere Genişliği)",
       "title_align_window_desc": "Belge başlığını pencereye göre hizala: solda veya ortada",
       "title_align_editor": "Başlık Konumu (Düzenleyici Genişliği)",
-      "title_align_editor_desc": "Belge başlığını not sütununa göre hizala: solda veya ortada"
+      "title_align_editor_desc": "Belge başlığını not sütununa göre hizala: solda veya ortada",
+      "exact_reveal_cursor": "Exact Cursor Positioning on Reveal",
+      "exact_reveal_cursor_desc": "Keep the cursor at the clicked column when expanding collapsed tags and headings"
     },
     "reader": {
       "title": "Okuyucu Modu",

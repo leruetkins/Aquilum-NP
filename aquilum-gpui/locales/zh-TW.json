@@ -129,7 +129,9 @@
       "title_align_window": "標題位置 (依視窗寬度)",
       "title_align_window_desc": "依視窗寬度對齊檔案標題：靠左或置中",
       "title_align_editor": "標題位置 (依編輯器寬度)",
-      "title_align_editor_desc": "依筆記欄寬度對齊檔案標題：靠左或置中"
+      "title_align_editor_desc": "依筆記欄寬度對齊檔案標題：靠左或置中",
+      "exact_reveal_cursor": "Exact Cursor Positioning on Reveal",
+      "exact_reveal_cursor_desc": "Keep the cursor at the clicked column when expanding collapsed tags and headings"
     },
     "reader": {
       "title": "閱讀器模式",

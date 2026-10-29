@@ -129,7 +129,9 @@
       "title_align_window": "Titelausrichtung (Fensterbreite)",
       "title_align_window_desc": "Ausrichtung des Dateititels relativ zum Fenster: links oder zentriert",
       "title_align_editor": "Titelausrichtung (Editorbreite)",
-      "title_align_editor_desc": "Ausrichtung des Dateititels relativ zur Notizspalte: linksbündig oder zentriert"
+      "title_align_editor_desc": "Ausrichtung des Dateititels relativ zur Notizspalte: linksbündig oder zentriert",
+      "exact_reveal_cursor": "Exact Cursor Positioning on Reveal",
+      "exact_reveal_cursor_desc": "Keep the cursor at the clicked column when expanding collapsed tags and headings"
     },
     "reader": {
       "title": "Lesemodus",

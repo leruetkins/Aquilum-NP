@@ -4274,6 +4274,19 @@ impl SettingsView {
                     })),
                 cx,
             ),
+            self.render_setting_row_with_id(
+                Some("editor.exactRevealCursor"),
+                &self.t("settings.editor.exact_reveal_cursor"),
+                Some(&self.t("settings.editor.exact_reveal_cursor_desc")),
+                div()
+                    .id("row-exact-reveal-cursor")
+                    .child(self.render_toggle_switch(config.editor.exact_reveal_cursor))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.config.editor.exact_reveal_cursor = !this.config.editor.exact_reveal_cursor;
+                        this.save_settings(cx);
+                    })),
+                cx,
+            ),
         ];
 
         let debounce_display = self.t_fmt("settings.editor.debounce_unit", &[&config.editor.save_debounce_ms.to_string()]);

@@ -115,6 +115,8 @@
       "scrollbar_ruler_desc": "Thin cursor line and selection span over the editor scrollbar thumb",
       "wide_scrollbar": "Wide Scrollbar (Zed-style)",
       "wide_scrollbar_desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
+      "exact_reveal_cursor": "Exact Cursor Positioning on Reveal",
+      "exact_reveal_cursor_desc": "Keep the cursor at the clicked column when expanding collapsed tags and headings",
       "debounce": "Autosave Debounce Delay",
       "debounce_desc": "Timeout after typing before saving to disk",
       "debounce_unit": "{} ms",

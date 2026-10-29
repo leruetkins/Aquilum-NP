@@ -129,7 +129,9 @@
       "title_align_window": "Vị trí tiêu đề (theo chiều rộng cửa sổ)",
       "title_align_window_desc": "Căn chỉnh tiêu đề tài liệu theo cửa sổ: sang trái hoặc căn giữa",
       "title_align_editor": "Vị trí tiêu đề (theo chiều rộng trình soạn thảo)",
-      "title_align_editor_desc": "Căn chỉnh tiêu đề tài liệu theo cột ghi chú: sang trái hoặc căn giữa"
+      "title_align_editor_desc": "Căn chỉnh tiêu đề tài liệu theo cột ghi chú: sang trái hoặc căn giữa",
+      "exact_reveal_cursor": "Exact Cursor Positioning on Reveal",
+      "exact_reveal_cursor_desc": "Keep the cursor at the clicked column when expanding collapsed tags and headings"
     },
     "reader": {
       "title": "Chế độ đọc",

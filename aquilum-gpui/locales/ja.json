@@ -129,7 +129,9 @@
       "title_align_window": "タイトル配置 (ウィンドウ幅基準)",
       "title_align_window_desc": "ウィンドウ幅を基準としたファイル名の配置: 左揃えまたは中央揃え",
       "title_align_editor": "タイトル配置 (エディタ幅基準)",
-      "title_align_editor_desc": "ノート列の幅を基準としたファイル名の配置: 左揃えまたは中央揃え"
+      "title_align_editor_desc": "ノート列の幅を基準としたファイル名の配置: 左揃えまたは中央揃え",
+      "exact_reveal_cursor": "Exact Cursor Positioning on Reveal",
+      "exact_reveal_cursor_desc": "Keep the cursor at the clicked column when expanding collapsed tags and headings"
     },
     "reader": {
       "title": "リーダーモード",

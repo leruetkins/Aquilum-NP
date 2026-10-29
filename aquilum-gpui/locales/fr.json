@@ -129,7 +129,9 @@
       "title_align_window": "Position du titre (largeur de la fenêtre)",
       "title_align_window_desc": "Aligner le titre du document par rapport à la fenêtre : à gauche ou centré",
       "title_align_editor": "Position du titre (largeur de l'éditeur)",
-      "title_align_editor_desc": "Aligner le titre du document par rapport à la colonne de note : à gauche ou centré"
+      "title_align_editor_desc": "Aligner le titre du document par rapport à la colonne de note : à gauche ou centré",
+      "exact_reveal_cursor": "Exact Cursor Positioning on Reveal",
+      "exact_reveal_cursor_desc": "Keep the cursor at the clicked column when expanding collapsed tags and headings"
     },
     "reader": {
       "title": "Mode lecteur",

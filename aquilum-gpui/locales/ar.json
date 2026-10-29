@@ -129,7 +129,9 @@
       "title_align_window": "موضع العنوان (عرض النافذة)",
       "title_align_window_desc": "محاذاة عنوان المستند بالنسبة للنافذة: إلى اليسار أو في المنتصف",
       "title_align_editor": "موضع العنوان (عرض المحرر)",
-      "title_align_editor_desc": "محاذاة عنوان المستند بالنسبة لعمود الملاحظة: إلى اليسار أو في المنتصف"
+      "title_align_editor_desc": "محاذاة عنوان المستند بالنسبة لعمود الملاحظة: إلى اليسار أو في المنتصف",
+      "exact_reveal_cursor": "Exact Cursor Positioning on Reveal",
+      "exact_reveal_cursor_desc": "Keep the cursor at the clicked column when expanding collapsed tags and headings"
     },
     "reader": {
       "title": "وضع القارئ",

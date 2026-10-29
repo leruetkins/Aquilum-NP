@@ -129,7 +129,9 @@
       "title_align_window": "Titelpositie (vensterbreedte)",
       "title_align_window_desc": "Documenttitel uitlijnen ten opzichte van het venster: links of gecentreerd",
       "title_align_editor": "Titelpositie (editorbreedte)",
-      "title_align_editor_desc": "Documenttitel uitlijnen ten opzichte van de notitiekolom: links of gecentreerd"
+      "title_align_editor_desc": "Documenttitel uitlijnen ten opzichte van de notitiekolom: links of gecentreerd",
+      "exact_reveal_cursor": "Exact Cursor Positioning on Reveal",
+      "exact_reveal_cursor_desc": "Keep the cursor at the clicked column when expanding collapsed tags and headings"
     },
     "reader": {
       "title": "Lezermodus",

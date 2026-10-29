@@ -129,7 +129,9 @@
       "title_align_window": "Titelposition (fönsterbredd)",
       "title_align_window_desc": "Justera dokumenttiteln i förhållande till fönstret: vänster eller centrerad",
       "title_align_editor": "Titelposition (redigerarbredd)",
-      "title_align_editor_desc": "Justera dokumenttiteln i förhållande till anteckningskolumnen: vänster eller centrerad"
+      "title_align_editor_desc": "Justera dokumenttiteln i förhållande till anteckningskolumnen: vänster eller centrerad",
+      "exact_reveal_cursor": "Exact Cursor Positioning on Reveal",
+      "exact_reveal_cursor_desc": "Keep the cursor at the clicked column when expanding collapsed tags and headings"
     },
     "reader": {
       "title": "Läsarläge",

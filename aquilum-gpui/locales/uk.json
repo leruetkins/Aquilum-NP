@@ -129,7 +129,9 @@
       "title_align_window": "Положення заголовка (по вікну)",
       "title_align_window_desc": "Вирівнювання імені файлу за шириною вікна: ліворуч або по центру",
       "title_align_editor": "Положення заголовка (по редактору)",
-      "title_align_editor_desc": "Вирівнювання імені файлу за шириною нотатки: по лівому краю або по середині"
+      "title_align_editor_desc": "Вирівнювання імені файлу за шириною нотатки: по лівому краю або по середині",
+      "exact_reveal_cursor": "Exact Cursor Positioning on Reveal",
+      "exact_reveal_cursor_desc": "Keep the cursor at the clicked column when expanding collapsed tags and headings"
     },
     "reader": {
       "title": "Режим читання",

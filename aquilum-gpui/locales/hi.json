@@ -129,7 +129,9 @@
       "title_align_window": "शीर्षक स्थिति (विंडो की चौड़ाई)",
       "title_align_window_desc": "विंडो के सापेक्ष फ़ाइल शीर्षक संरेखित करें: बाएँ या केंद्र",
       "title_align_editor": "शीर्षक स्थिति (संपादक की चौड़ाई)",
-      "title_align_editor_desc": "नोट कॉलम के सापेक्ष फ़ाइल शीर्षक संरेखित करें: बाएँ या केंद्र"
+      "title_align_editor_desc": "नोट कॉलम के सापेक्ष फ़ाइल शीर्षक संरेखित करें: बाएँ या केंद्र",
+      "exact_reveal_cursor": "Exact Cursor Positioning on Reveal",
+      "exact_reveal_cursor_desc": "Keep the cursor at the clicked column when expanding collapsed tags and headings"
     },
     "reader": {
       "title": "रीडर मोड",

@@ -231,6 +231,10 @@ pub struct EditorSettings {
     /// Wide Zed-style editor scrollbar: a 16 px lane with a visible track and
     /// a full-width square thumb instead of the floating pill. Off by default.
     pub wide_scrollbar: bool,
+    /// Whether to keep cursor column stable when clicking on collapsed markdown tags or headings.
+    /// Default is true.
+    #[serde(default = "default_true")]
+    pub exact_reveal_cursor: bool,
     /// Whether to use adaptive debouncing and deadline based on document size.
     /// On by default.
     pub adaptive_save: bool,
@@ -266,6 +270,7 @@ impl Default for EditorSettings {
             wheel_smooth_scroll: false,
             scrollbar_ruler: true,
             wide_scrollbar: false,
+            exact_reveal_cursor: true,
             adaptive_save: true,
             save_on_blur: true,
             editor_width_pct: 100,
@@ -1016,6 +1021,20 @@ mod tests {
         // Multi-keyword search
         let res_font = search_settings("шрифт размер");
         assert!(res_font.iter().any(|s| s.id == "editor.fontSizeBase"));
+    }
+
+    #[test]
+    fn test_exact_reveal_cursor_default_and_serde() {
+        let default_settings = EditorSettings::default();
+        assert!(default_settings.exact_reveal_cursor);
+
+        let json_empty = "{}";
+        let parsed: EditorSettings = serde_json::from_str(json_empty).unwrap();
+        assert!(parsed.exact_reveal_cursor);
+
+        let json_false = r#"{"exactRevealCursor": false}"#;
+        let parsed_false: EditorSettings = serde_json::from_str(json_false).unwrap();
+        assert!(!parsed_false.exact_reveal_cursor);
     }
 
     #[test]

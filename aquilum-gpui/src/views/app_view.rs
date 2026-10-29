@@ -136,6 +136,8 @@ pub struct AppView {
     /// the app went to the background and stop blinking there.
     pub window_was_active: bool,
     pub is_mouse_selecting: bool,
+    pub mouse_drag_started: bool,
+    pub mouse_down_pos: Option<(f32, f32)>,
     pub ctrl_preview_selection: bool,
     pub ctrl_held: bool,
     pub hovered_link_id: Option<String>,
@@ -441,6 +443,8 @@ impl AppView {
             editor_is_focused: true,
             window_was_active: true,
             is_mouse_selecting: false,
+            mouse_drag_started: false,
+            mouse_down_pos: None,
             ctrl_preview_selection: false,
             ctrl_held: false,
             hovered_link_id: None,
@@ -4068,6 +4072,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
     }
 
     fn handle_editor_mouse_down(&mut self, click_x: f32, click_y: f32, shift: bool, alt: bool, click_count: usize, window: &Window, cx: &mut Context<Self>) {
+        self.mouse_down_pos = Some((click_x, click_y));
+        self.mouse_drag_started = false;
         if self.state.active_doc_id().is_none() {
             return;
         }
@@ -4214,7 +4220,47 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             0
         };
 
-        let target_char = v.char_start + col_in_row;
+        let mut target_char = v.char_start + col_in_row;
+        if self.config.editor.exact_reveal_cursor && self.edit_mode && !self.ctrl_preview_selection && click_count == 1 {
+            let new_reveal = crate::markdown::inline_reveal(
+                line,
+                &classified,
+                Some(target_char),
+                None,
+                alt || view.reveal_all_line == Some(v.line_idx),
+            );
+            let reveal_changed = new_reveal != reveal && !matches!(new_reveal, crate::markdown::InlineReveal::None);
+            let heading_activated = !is_active_line && v.sub_idx == 0 && matches!(
+                classified,
+                crate::markdown::LineKind::Heading1(_)
+                    | crate::markdown::LineKind::Heading2(_)
+                    | crate::markdown::LineKind::Heading3(_)
+                    | crate::markdown::LineKind::Heading4(_)
+                    | crate::markdown::LineKind::Heading5(_)
+                    | crate::markdown::LineKind::Heading6(_)
+            );
+            if reveal_changed || heading_activated {
+                let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
+                if view.grid_table_at(doc, &tables, v.line_idx, cursor_line, false).is_none() {
+                    let rev_layout = shape_row(
+                        window.text_system(),
+                        line,
+                        &classified,
+                        v,
+                        true,
+                        &new_reveal,
+                        &self.config.editor.headings,
+                        &editor_font,
+                        row_char_w,
+                    );
+                    if click_x > text_start_x {
+                        let rev_column = rev_layout.column_for_x(click_x - text_start_x);
+                        let rev_col_in_row = rev_layout.line_char_for_column(rev_column).saturating_sub(v.char_start).min(v_len);
+                        target_char = v.char_start + rev_col_in_row;
+                    }
+                }
+            }
+        }
         let offset = view.offset_for_line_col(doc, v.line_idx, target_char);
 
         if click_count == 2 {
@@ -4222,11 +4268,15 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             view.selection_anchor = Some(w_start);
             view.cursor_offset = w_end;
             self.is_mouse_selecting = false;
+            self.mouse_drag_started = false;
+            self.mouse_down_pos = None;
         } else if click_count >= 3 {
             let (l_start, l_end) = doc.line_range_at(offset);
             view.selection_anchor = Some(l_start);
             view.cursor_offset = l_end;
             self.is_mouse_selecting = false;
+            self.mouse_drag_started = false;
+            self.mouse_down_pos = None;
         } else if shift {
             if view.selection_anchor.is_none() {
                 view.selection_anchor = Some(view.cursor_offset);
@@ -4254,6 +4304,19 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
     fn update_mouse_selection(&mut self, pos_x: f32, pos_y: f32, viewport_h: f32, window: &Window, cx: &mut Context<Self>) {
         if !self.is_mouse_selecting {
             return;
+        }
+        if !self.mouse_drag_started {
+            if let Some((down_x, down_y)) = self.mouse_down_pos {
+                let dx = pos_x - down_x;
+                let dy = pos_y - down_y;
+                if dx * dx + dy * dy >= 16.0 {
+                    self.mouse_drag_started = true;
+                } else {
+                    return;
+                }
+            } else {
+                self.mouse_drag_started = true;
+            }
         }
         if self.state.active_doc_id().is_none() {
             return;
@@ -9387,6 +9450,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         this.is_mouse_selecting = true;
                         let click_x: f32 = event.position.x.into();
                         let click_y: f32 = event.position.y.into();
+                        this.mouse_down_pos = Some((click_x, click_y));
+                        this.mouse_drag_started = false;
                         this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.modifiers.alt, event.click_count, window, cx);
                     }))
                     .on_mouse_down(MouseButton::Right, cx.listener(|this, event: &MouseDownEvent, window, cx| {
@@ -9485,6 +9550,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         this.sidebar_scrollbar_drag.end();
                         this.plugin_modal_scrollbar_drag.end();
                         this.is_mouse_selecting = false;
+                        this.mouse_drag_started = false;
+                        this.mouse_down_pos = None;
                         if this.is_dragging_note_width_slider {
                             this.is_dragging_note_width_slider = false;
                             this.save_settings(cx);
@@ -9506,6 +9573,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         this.sidebar_scrollbar_drag.end();
                         this.plugin_modal_scrollbar_drag.end();
                         this.is_mouse_selecting = false;
+                        this.mouse_drag_started = false;
+                        this.mouse_down_pos = None;
                         if this.is_dragging_note_width_slider {
                             this.is_dragging_note_width_slider = false;
                             this.save_settings(cx);
@@ -9855,6 +9924,13 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 };
                 let row_layout_down = row_layout.clone();
                 let row_layout_move = row_layout.clone();
+                let v_down = v.clone();
+                let reveal_down = reveal.clone();
+                let headings_down = headings.clone();
+                let editor_font_down = editor_font.clone();
+                let edit_mode_down = self.edit_mode;
+                let is_active_down = is_active_line;
+                let exact_cursor_down = self.config.editor.exact_reveal_cursor;
                 let row_layout_preview: Arc<RowShapedLayout> = if is_active_line {
                     if let Some(tbl) = grid_tbl {
                         Arc::new(shape_table_row(window.text_system(), line, tbl, v.line_idx, None, table_layout.as_ref().unwrap(), headings, &editor_font, row_char_w))
@@ -10422,6 +10498,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             this.ctrl_preview_selection = ctrl_held;
                             this.is_mouse_selecting = true;
                             let click_x: f32 = event.position.x.into();
+                            let click_y: f32 = event.position.y.into();
+                            this.mouse_down_pos = Some((click_x, click_y));
+                            this.mouse_drag_started = false;
 
                             let col_in_row = if click_x > text_start_x {
                                 let layout = if ctrl_held { &row_layout_preview_down } else { &row_layout_down };
@@ -10430,6 +10509,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                     if let Some((_, _, tag_name)) = layout.tag_ranges().iter().find(|(s, e, _)| column >= *s && column < *e) {
                                         this.open_tag_search(tag_name, window, cx);
                                         this.is_mouse_selecting = false;
+                                        this.mouse_drag_started = false;
+                                        this.mouse_down_pos = None;
                                         return;
                                     }
                                 }
@@ -10445,21 +10526,72 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                 {
                                     this.toggle_task_mark(v_line_idx, mark.clone(), window, cx);
                                     this.is_mouse_selecting = false;
+                                    this.mouse_drag_started = false;
+                                    this.mouse_down_pos = None;
                                     return;
                                 }
                             }
                             if let Some((view, doc)) = this.state.active_view_and_doc_mut() {
+                                let mut target_char = target_char;
+                                if exact_cursor_down && edit_mode_down && !ctrl_held && event.click_count == 1 {
+                                    let line = &view.window.lines[v_line_idx];
+                                    let code_state = view.window.code_states.get(v_line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
+                                    let classified = crate::markdown::classify_line(line, code_state);
+                                    let new_reveal = crate::markdown::inline_reveal(
+                                        line,
+                                        &classified,
+                                        Some(target_char),
+                                        None,
+                                        event.modifiers.alt || view.reveal_all_line == Some(v_line_idx),
+                                    );
+                                    let reveal_changed = new_reveal != reveal_down && !matches!(new_reveal, crate::markdown::InlineReveal::None);
+                                    let heading_activated = !is_active_down && v_down.sub_idx == 0 && matches!(
+                                        classified,
+                                        crate::markdown::LineKind::Heading1(_)
+                                            | crate::markdown::LineKind::Heading2(_)
+                                            | crate::markdown::LineKind::Heading3(_)
+                                            | crate::markdown::LineKind::Heading4(_)
+                                            | crate::markdown::LineKind::Heading5(_)
+                                            | crate::markdown::LineKind::Heading6(_)
+                                    );
+                                    if reveal_changed || heading_activated {
+                                        let (cursor_line, _) = view.line_col(doc);
+                                        let tables = doc.ensure_table_index_for_window(view.window.start_line, view.window.end_line);
+                                        if view.grid_table_at(doc, &tables, v_line_idx, cursor_line, false).is_none() {
+                                            let rev_layout = shape_row(
+                                                window.text_system(),
+                                                line,
+                                                &classified,
+                                                &v_down,
+                                                true,
+                                                &new_reveal,
+                                                &headings_down,
+                                                &editor_font_down,
+                                                row_char_w,
+                                            );
+                                            if click_x > text_start_x {
+                                                let rev_col = rev_layout.column_for_x(click_x - text_start_x);
+                                                let rev_col_in_row = rev_layout.line_char_for_column(rev_col).saturating_sub(v_char_start).min(row_len);
+                                                target_char = v_char_start + rev_col_in_row;
+                                            }
+                                        }
+                                    }
+                                }
                                 let offset = view.offset_for_line_col(doc, v_line_idx, target_char);
                                 if event.click_count == 2 {
                                     let (w_start, w_end) = doc.word_range_at(offset);
                                     view.selection_anchor = Some(w_start);
                                     view.cursor_offset = w_end;
                                     this.is_mouse_selecting = false;
+                                    this.mouse_drag_started = false;
+                                    this.mouse_down_pos = None;
                                 } else if event.click_count >= 3 {
                                     let (l_start, l_end) = doc.line_range_at(offset);
                                     view.selection_anchor = Some(l_start);
                                     view.cursor_offset = l_end;
                                     this.is_mouse_selecting = false;
+                                    this.mouse_drag_started = false;
+                                    this.mouse_down_pos = None;
                                 } else if event.modifiers.shift {
                                     if view.selection_anchor.is_none() {
                                         view.selection_anchor = Some(view.cursor_offset);
@@ -10493,6 +10625,21 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                 cx.notify();
                             }
                             if this.is_mouse_selecting {
+                                let click_x: f32 = event.position.x.into();
+                                let click_y: f32 = event.position.y.into();
+                                if !this.mouse_drag_started {
+                                    if let Some((down_x, down_y)) = this.mouse_down_pos {
+                                        let dx = click_x - down_x;
+                                        let dy = click_y - down_y;
+                                        if dx * dx + dy * dy >= 16.0 {
+                                            this.mouse_drag_started = true;
+                                        } else {
+                                            return;
+                                        }
+                                    } else {
+                                        this.mouse_drag_started = true;
+                                    }
+                                }
                                 cx.stop_propagation();
                                 let click_x: f32 = event.position.x.into();
                                 let col_in_row = if click_x > text_start_x {
@@ -11014,6 +11161,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         this.is_mouse_selecting = true;
                         let click_x: f32 = event.position.x.into();
                         let click_y: f32 = event.position.y.into();
+                        this.mouse_down_pos = Some((click_x, click_y));
+                        this.mouse_drag_started = false;
                         this.handle_editor_mouse_down(click_x, click_y, event.modifiers.shift, event.modifiers.alt, event.click_count, window, cx);
                     }))
                     .on_scroll_wheel(cx.listener(move |this, event: &gpui::ScrollWheelEvent, _, cx| {
@@ -11827,6 +11976,8 @@ impl Render for AppView {
                 this.split_drag_state = None;
                 this.hovered_split_divider = None;
                 this.is_mouse_selecting = false;
+                this.mouse_drag_started = false;
+                this.mouse_down_pos = None;
                 this.is_dragging_scrollbar = false;
                 if this.is_dragging_note_width_slider {
                     this.is_dragging_note_width_slider = false;
@@ -11869,6 +12020,8 @@ impl Render for AppView {
                 this.is_hovering_resizer = false;
                 this.is_hovering_right_resizer = false;
                 this.is_mouse_selecting = false;
+                this.mouse_drag_started = false;
+                this.mouse_down_pos = None;
                 this.is_dragging_scrollbar = false;
                 if this.is_dragging_note_width_slider {
                     this.is_dragging_note_width_slider = false;
@@ -17145,6 +17298,106 @@ mod tests {
         assert_eq!(whitespace_dot_ranges("a  b "), vec![1..3, 4..5]);
         assert_eq!(whitespace_dot_ranges(" "), vec![0..1]);
         assert_eq!(whitespace_dot_ranges("hello world "), vec![11..12]);
+    }
 
+    #[test]
+    fn test_mouse_drag_threshold() {
+        let is_drag = |dx: f32, dy: f32| dx * dx + dy * dy >= 16.0;
+        assert!(!is_drag(0.0, 0.0));
+        assert!(!is_drag(2.0, 2.0));
+        assert!(!is_drag(3.5, 0.0));
+        assert!(is_drag(4.0, 0.0));
+        assert!(is_drag(0.0, 4.0));
+        assert!(is_drag(3.0, 3.0));
+    }
+
+    #[test]
+    fn test_collapsed_tag_reveal_column_stability() {
+        let line = "Check out [[TargetName|alias]] for more";
+        let classified = crate::markdown::classify_line(line, None);
+        let headings = crate::settings::HeadingsSettings::default();
+        let v = crate::markdown::VisualRow {
+            line_idx: 0,
+            sub_idx: 0,
+            is_last_sub: true,
+            char_start: 0,
+            char_end: line.chars().count(),
+        };
+
+        // Collapsed painted row displays "Check out alias for more"
+        let collapsed_painted = crate::markdown::row_painted_text(
+            line,
+            &classified,
+            &v,
+            true,
+            &crate::markdown::InlineReveal::None,
+            &headings,
+        );
+        let click_col = 12;
+        let collapsed_char = crate::markdown::line_char_for_painted_boundary(&collapsed_painted.line_chars, click_col);
+        assert!(collapsed_char > 20);
+
+        // When placing the caret at that character, the tag reveals
+        let reveal = crate::markdown::inline_reveal(
+            line,
+            &classified,
+            Some(collapsed_char),
+            None,
+            false,
+        );
+        assert!(!matches!(reveal, crate::markdown::InlineReveal::None));
+
+        // Re-evaluating the click against the revealed row keeps the caret at the same column
+        let revealed_painted = crate::markdown::row_painted_text(
+            line,
+            &classified,
+            &v,
+            true,
+            &reveal,
+            &headings,
+        );
+        let rev_char = crate::markdown::line_char_for_painted_boundary(&revealed_painted.line_chars, click_col);
+        assert_eq!(rev_char, click_col);
+    }
+
+    #[test]
+    fn test_collapsed_heading_reveal_column_stability() {
+        let line = "###### H6";
+        let classified = crate::markdown::classify_line(line, None);
+        let headings = crate::settings::HeadingsSettings::default();
+        let v = crate::markdown::VisualRow {
+            line_idx: 0,
+            sub_idx: 0,
+            is_last_sub: true,
+            char_start: 0,
+            char_end: line.chars().count(),
+        };
+
+        // Inactive painted row hides "###### " and displays only "H6"
+        let inactive_painted = crate::markdown::row_painted_text(
+            line,
+            &classified,
+            &v,
+            false,
+            &crate::markdown::InlineReveal::None,
+            &headings,
+        );
+        let click_col = 0;
+        let inactive_char = crate::markdown::line_char_for_painted_boundary(&inactive_painted.line_chars, click_col);
+        // In the raw string, 'H' is at index 7 (after "###### ")
+        assert_eq!(inactive_char, 7);
+
+        // When the heading activates, it is reshaped with is_active_line = true
+        let active_painted = crate::markdown::row_painted_text(
+            line,
+            &classified,
+            &v,
+            true,
+            &crate::markdown::InlineReveal::None,
+            &headings,
+        );
+        let active_char = crate::markdown::line_char_for_painted_boundary(&active_painted.line_chars, click_col);
+        // In the active row, column 0 maps to char 0 (the first '#'), staying at column 0!
+        assert_eq!(active_char, 0);
     }
 }

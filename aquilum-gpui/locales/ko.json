@@ -129,7 +129,9 @@
       "title_align_window": "제목 위치 (창 너비 기준)",
       "title_align_window_desc": "창 너비를 기준으로 파일 제목 정렬: 왼쪽 또는 가운데",
       "title_align_editor": "제목 위치 (편집기 너비 기준)",
-      "title_align_editor_desc": "노트 열 너비를 기준으로 파일 제목 정렬: 왼쪽 또는 가운데"
+      "title_align_editor_desc": "노트 열 너비를 기준으로 파일 제목 정렬: 왼쪽 또는 가운데",
+      "exact_reveal_cursor": "Exact Cursor Positioning on Reveal",
+      "exact_reveal_cursor_desc": "Keep the cursor at the clicked column when expanding collapsed tags and headings"
     },
     "reader": {
       "title": "리더 모드",
