@@ -406,6 +406,14 @@ pub fn markdown_to_typst(
 
 #set par(justify: false, leading: 0.7em)
 
+// Lists with accent color markers
+#set list(marker: (
+  text(fill: rgb("{h1_color}"))[•],
+  text(fill: rgb("{h1_color}"))[‣],
+  text(fill: rgb("{h1_color}"))[–],
+))
+#set enum(numbering: n => text(fill: rgb("{h1_color}"), weight: "bold")[#n.])
+
 // Headings styled according to current theme/settings
 #show heading.where(level: 1): it => block(
   above: 1.6em, below: 0.8em,
@@ -499,27 +507,28 @@ pub fn markdown_to_typst(
 #let grammar-wavy(l_col, t_col, body) = context {{
   let size = measure(body)
   let w = size.width
-  let count = calc.max(1, int(calc.round(w / 5.5pt)))
+  let count = calc.max(1, int(calc.round(w / 6.0pt)))
   let step = w / count
   let elements = ()
   for i in range(count) {{
     let x0 = i * step
     let x_half = x0 + step * 0.5
     let x_end = x0 + step
+    // Typst curve.cubic argument order: (control-start, control-end, end)
     elements.push(curve.cubic(
+      (x0 + step * 0.15, -1.25pt),
+      (x0 + step * 0.35, -1.25pt),
       (x_half, 0pt),
-      (x0 + step * 0.18, -1.35pt),
-      (x0 + step * 0.32, -1.35pt),
     ))
     elements.push(curve.cubic(
+      (x0 + step * 0.65, 1.25pt),
+      (x0 + step * 0.85, 1.25pt),
       (x_end, 0pt),
-      (x0 + step * 0.68, 1.35pt),
-      (x0 + step * 0.82, 1.35pt),
     ))
   }}
   let c_line = if l_col != none {{ l_col }} else if t_col != none {{ t_col }} else {{ rgb("#008000") }}
   let content = if t_col != none {{ text(fill: t_col)[#body] }} else {{ body }}
-  box[#content#place(bottom + left, dy: 3.0pt)[#curve(stroke: 0.95pt + c_line, curve.move((0pt, 0pt)), ..elements)]]
+  box[#content#place(bottom + left, dy: 2.8pt)[#curve(stroke: 0.95pt + c_line, curve.move((0pt, 0pt)), ..elements)]]
 }}
 
 #let grammar-none(l_col, t_col, body) = {{
@@ -850,13 +859,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_cubic_check() {
+    fn test_list_and_enum_styling() {
         let code = r#"
-#curve(
-  stroke: 1pt + green,
-  curve.move((0pt, 0pt)),
-  curve.quad(foo: 1),
-)
+#set list(marker: text(fill: rgb("4c78dd"))[•])
+#set enum(numbering: n => text(fill: rgb("4c78dd"), weight: "bold")[#n.])
+
+- Маркер 1
+- Маркер 2
+
++ Номер 1
++ Номер 2
 "#;
         let res = compile_typst_to_pdf(code);
         assert!(res.is_ok(), "Err: {:?}", res.err());
@@ -896,7 +908,7 @@ mod tests {
 #let grammar-wavy(l_col, t_col, body) = context {
   let size = measure(body)
   let w = size.width
-  let count = calc.max(1, int(calc.round(w / 5.5pt)))
+  let count = calc.max(1, int(calc.round(w / 6.0pt)))
   let step = w / count
   let elements = ()
   for i in range(count) {
@@ -904,19 +916,19 @@ mod tests {
     let x_half = x0 + step * 0.5
     let x_end = x0 + step
     elements.push(curve.cubic(
+      (x0 + step * 0.15, -1.25pt),
+      (x0 + step * 0.35, -1.25pt),
       (x_half, 0pt),
-      (x0 + step * 0.18, -1.35pt),
-      (x0 + step * 0.32, -1.35pt),
     ))
     elements.push(curve.cubic(
+      (x0 + step * 0.65, 1.25pt),
+      (x0 + step * 0.85, 1.25pt),
       (x_end, 0pt),
-      (x0 + step * 0.68, 1.35pt),
-      (x0 + step * 0.82, 1.35pt),
     ))
   }
   let c_line = if l_col != none { l_col } else if t_col != none { t_col } else { rgb("#008000") }
   let content = if t_col != none { text(fill: t_col)[#body] } else { body }
-  box[#content#place(bottom + left, dy: 3.0pt)[#curve(stroke: 0.95pt + c_line, curve.move((0pt, 0pt)), ..elements)]]
+  box[#content#place(bottom + left, dy: 2.8pt)[#curve(stroke: 0.95pt + c_line, curve.move((0pt, 0pt)), ..elements)]]
 }
 
 #let grammar-none(l_col, t_col, body) = {
