@@ -2457,6 +2457,61 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         cx.notify();
     }
 
+    /// Recursively collects all folder paths from a slice of FileNodes.
+    pub(crate) fn collect_all_folder_paths(nodes: &[crate::state::FileNode], out: &mut Vec<PathBuf>) {
+        for node in nodes {
+            if let crate::state::FileNode::Folder { path, children, .. } = node {
+                out.push(path.clone());
+                Self::collect_all_folder_paths(children, out);
+            }
+        }
+    }
+
+    /// Creates a new folder in the currently selected directory (or active document parent / workspace root).
+    pub(crate) fn create_new_folder(&mut self, cx: &mut Context<Self>) {
+        let Some(ws) = self.state.workspace_path.clone() else { return; };
+        let target_dir = if let Some(ref sel) = self.selected_sidebar_folder {
+            if sel.is_dir() {
+                sel.clone()
+            } else {
+                sel.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| ws.clone())
+            }
+        } else if let Some(doc) = self.state.active_document() {
+            doc.path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| ws.clone())
+        } else {
+            ws.clone()
+        };
+
+        let target_dir = if target_dir.starts_with(&ws) && target_dir.is_dir() {
+            target_dir
+        } else {
+            ws.clone()
+        };
+
+        if let Ok(new_folder) = crate::views::sidebar::folder_actions::create_folder_in_folder(&target_dir) {
+            self.state.reveal_path_in_tree(&new_folder);
+            self.state.expanded_folders.insert(target_dir);
+            self.state.expanded_folders.insert(new_folder.clone());
+            self.state.reload_file_tree();
+            self.select_sidebar_folder(new_folder, cx);
+        }
+    }
+
+    /// Toggles expanding all folders vs collapsing all folders in the sidebar file tree.
+    pub(crate) fn toggle_expand_all_folders(&mut self, cx: &mut Context<Self>) {
+        if self.state.expanded_folders.is_empty() {
+            let mut all = Vec::new();
+            Self::collect_all_folder_paths(&self.state.file_tree, &mut all);
+            for p in all {
+                self.state.expanded_folders.insert(p);
+            }
+        } else {
+            self.state.expanded_folders.clear();
+        }
+        self.state.save_session_state();
+        cx.notify();
+    }
+
     /// Opens the in-editor find bar and focuses the query field.
     ///
     /// Calling it again while the bar is open only refocuses the field and
@@ -11654,27 +11709,35 @@ impl Render for AppView {
                                                     .gap_1()
                                                     .child(
                                                         div()
-                                                            .id("btn-new-note")
+                                                            .id("btn-new-folder")
                                                             .p_1()
                                                             .rounded_md()
                                                             .cursor_pointer()
                                                             .hover(|h| h.bg(theme.bg_hover))
-                                                            .child(icons::icon(icons::ICON_PLUS, 13.0, theme.text_primary))
-                                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                                this.create_new_note(window, cx);
+                                                            .child(icons::icon(icons::ICON_FOLDER_PLUS, 14.0, theme.text_primary))
+                                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                                this.create_new_folder(cx);
                                                             })),
                                                     )
                                                     .child(
                                                         div()
-                                                            .id("btn-open-vault")
+                                                            .id("btn-toggle-expand-all")
                                                             .p_1()
                                                             .rounded_md()
                                                             .cursor_pointer()
                                                             .hover(|h| h.bg(theme.bg_hover))
-                                                            .child(icons::icon(icons::ICON_FOLDER_OPEN, 13.0, theme.text_primary))
-                                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                                this.open_folder_dialog_deferred(window, cx);
-                                                            })),
+                                                            .child({
+                                                                let is_any_expanded = !self.state.expanded_folders.is_empty();
+                                                                let expand_icon = if is_any_expanded {
+                                                                    icons::ICON_CHEVRONS_DOWN_UP
+                                                                } else {
+                                                                    icons::ICON_CHEVRONS_UP_DOWN
+                                                                };
+                                                                icons::icon(expand_icon, 14.0, theme.text_primary)
+                                                            })
+                                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                                this.toggle_expand_all_folders(cx);
+                                                             })),
                                                     ),
                                             ),
                                     )

@@ -6,7 +6,9 @@ use gpui::{px, Hsla, Result, SharedString, Styled, Svg};
 pub const CHEVRON_RIGHT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>"#;
 pub const CHEVRON_DOWN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>"#;
 pub const CHEVRONS_UP_DOWN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg>"#;
+pub const CHEVRONS_DOWN_UP: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 4 5 5 5-5"/><path d="m7 20 5-5 5 5"/></svg>"#;
 pub const FOLDER: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 8 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>"#;
+pub const FOLDER_PLUS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 8 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>"#;
 pub const FOLDER_OPEN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.5 6A2 2 0 0 1 18.5 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.69.9H18a2 2 0 0 1 2 2v2"/></svg>"#;
 pub const FILE_TEXT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>"#;
 pub const PLUS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>"#;
@@ -110,8 +112,10 @@ pub const ICON_TABLE_DELETE_COL: &str = "icons/table_delete_col.svg";
 pub const ICON_CHEVRON_RIGHT: &str = "icons/chevron_right.svg";
 pub const ICON_CHEVRON_DOWN: &str = "icons/chevron_down.svg";
 pub const ICON_CHEVRONS_UP_DOWN: &str = "icons/chevrons_up_down.svg";
+pub const ICON_CHEVRONS_DOWN_UP: &str = "icons/chevrons_down_up.svg";
 pub const ICON_FOLDER: &str = "icons/folder.svg";
 pub const ICON_FOLDER_OPEN: &str = "icons/folder_open.svg";
+pub const ICON_FOLDER_PLUS: &str = "icons/folder_plus.svg";
 pub const ICON_FILE_TEXT: &str = "icons/file_text.svg";
 pub const ICON_PLUS: &str = "icons/plus.svg";
 pub const ICON_SAVE: &str = "icons/save.svg";
@@ -161,8 +165,10 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_CHEVRON_RIGHT => Some(CHEVRON_RIGHT),
             ICON_CHEVRON_DOWN => Some(CHEVRON_DOWN),
             ICON_CHEVRONS_UP_DOWN => Some(CHEVRONS_UP_DOWN),
+            ICON_CHEVRONS_DOWN_UP => Some(CHEVRONS_DOWN_UP),
             ICON_FOLDER => Some(FOLDER),
             ICON_FOLDER_OPEN => Some(FOLDER_OPEN),
+            ICON_FOLDER_PLUS => Some(FOLDER_PLUS),
             ICON_FILE_TEXT => Some(FILE_TEXT),
             ICON_PLUS => Some(PLUS),
             ICON_SAVE => Some(SAVE),
@@ -242,8 +248,10 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_CHEVRON_RIGHT.into(),
             ICON_CHEVRON_DOWN.into(),
             ICON_CHEVRONS_UP_DOWN.into(),
+            ICON_CHEVRONS_DOWN_UP.into(),
             ICON_FOLDER.into(),
             ICON_FOLDER_OPEN.into(),
+            ICON_FOLDER_PLUS.into(),
             ICON_FILE_TEXT.into(),
             ICON_PLUS.into(),
             ICON_SAVE.into(),
@@ -343,6 +351,9 @@ pub fn map_obsidian_icon(name: &str) -> &'static str {
         "search" | "magnifying-glass" => ICON_SEARCH,
         "document" | "file" | "file-text" => ICON_FILE_TEXT,
         "folder" | "folder-open" => ICON_FOLDER,
+        "folder-plus" => ICON_FOLDER_PLUS,
+        "chevrons-up-down" | "unfold" => ICON_CHEVRONS_UP_DOWN,
+        "chevrons-down-up" | "fold" => ICON_CHEVRONS_DOWN_UP,
         "calendar" => ICON_CALENDAR,
         "code" | "terminal" => ICON_CODE,
         "history" | "clock" => ICON_HISTORY,
