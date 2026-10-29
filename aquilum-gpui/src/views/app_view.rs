@@ -10138,8 +10138,19 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         );
                     }
                 }
-                if grid_tbl.is_none() {
-                    let ws_quads = whitespace_dot_quads(line, &row_layout, row_h, pixel_scale);
+                let guide_columns = v.line_idx
+                    .checked_sub(lines_arc.start())
+                    .and_then(|offset| list_guide_columns.get(offset))
+                    .map(|columns| columns.as_slice())
+                    .unwrap_or(&[]);
+
+                if self.edit_mode && grid_tbl.is_none() {
+                    let preview_sel = if self.ctrl_preview_selection || self.ctrl_held {
+                        row_sel_rect
+                    } else {
+                        None
+                    };
+                    let ws_quads = whitespace_dot_quads(line, &row_layout, row_h, pixel_scale, guide_columns, preview_sel);
                     if !ws_quads.is_empty() {
                         let dot_color = theme.whitespace_dot();
                         whitespace_layer = Some(
@@ -10194,7 +10205,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     };
                     let sel_h = if grid_tbl.is_some() { 28.0 } else { row_h };
 
-                    let is_preview_selection = self.ctrl_preview_selection || !self.edit_mode;
+                    let is_preview_selection = self.ctrl_preview_selection || (self.ctrl_held && row_sel_rect.is_some()) || !self.edit_mode;
                     let sel_color = if is_preview_selection {
                         theme.preview_selection_bg()
                     } else {
@@ -11175,7 +11186,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                     .w(px(ruler_pill_w))
                                     .rounded_full()
                             })
-                            .bg(if self.ctrl_preview_selection || !self.edit_mode {
+                            .bg(if self.ctrl_preview_selection || self.ctrl_held || !self.edit_mode {
                                 theme_scrollbar.preview_selection_bg()
                             } else {
                                 theme_scrollbar.selection_bg
@@ -13120,8 +13131,10 @@ fn grammar_line_segments(
     segments
 }
 
-/// Returns char-index ranges `[start, end)` of consecutive spaces (run length >= 2) in `line`.
-fn consecutive_space_ranges(line: &str) -> Vec<std::ops::Range<usize>> {
+/// Returns char-index ranges `[start, end)` of spaces that show whitespace dots in `line`:
+/// 1. Any run of 2 or more consecutive spaces anywhere in the line.
+/// 2. Any trailing space at the end of the line (even a single space).
+fn whitespace_dot_ranges(line: &str) -> Vec<std::ops::Range<usize>> {
     let mut ranges = Vec::new();
     let mut run_start: Option<usize> = None;
     let mut count = 0;
@@ -13141,7 +13154,8 @@ fn consecutive_space_ranges(line: &str) -> Vec<std::ops::Range<usize>> {
             count = 0;
         }
     }
-    if count >= 2 {
+    // Trailing spaces at the end of the line are visible even if count == 1.
+    if count >= 1 {
         if let Some(start) = run_start {
             ranges.push(start..start + count);
         }
@@ -13150,14 +13164,20 @@ fn consecutive_space_ranges(line: &str) -> Vec<std::ops::Range<usize>> {
 }
 
 /// Computes quads `(x, y, width, height, corner_radius)` for faint dots
-/// centered in each space of consecutive space runs (>= 2 spaces in a row).
+/// centered in each space of consecutive space runs (>= 2 spaces in a row)
+/// or trailing spaces at the end of the line.
+///
+/// If `preview_selection` is `Some((sel_x, sel_w))`, dots that fall inside
+/// that horizontal selection range are omitted.
 fn whitespace_dot_quads(
     line: &str,
     row_layout: &RowShapedLayout,
     row_h: f32,
     scale: f32,
+    guide_columns: &[f32],
+    preview_selection: Option<(f32, f32)>,
 ) -> Vec<(f32, f32, f32, f32, f32)> {
-    let ranges = consecutive_space_ranges(line);
+    let ranges = whitespace_dot_ranges(line);
     if ranges.is_empty() {
         return Vec::new();
     }
@@ -13171,7 +13191,7 @@ fn whitespace_dot_quads(
         row_h / 2.0
     };
 
-    let dot_device_px = if scale >= 2.0 { 3.0 } else { 2.0 };
+    let dot_device_px = (2.0 * scale).round().max(2.0);
     let dot_size = if scale > 0.0 { dot_device_px / scale } else { 2.0 };
     let radius = dot_size / 2.0;
 
@@ -13203,6 +13223,11 @@ fn whitespace_dot_quads(
             continue;
         }
 
+        // Skip spaces that fall under list indent guide lines.
+        if guide_columns.iter().any(|&g| g >= 0.0 && (g.floor() as usize) == col) {
+            continue;
+        }
+
         if !ranges.iter().any(|r| r.contains(&lc)) {
             continue;
         }
@@ -13214,6 +13239,16 @@ fn whitespace_dot_quads(
         }
 
         let center_x = (x0 + x1) / 2.0;
+
+        // Skip dots that fall inside an active preview selection rectangle.
+        if let Some((sel_x, sel_w)) = preview_selection {
+            if sel_w > 0.0 {
+                let sel_right = sel_x + sel_w;
+                if center_x >= sel_x - 0.5 && center_x <= sel_right + 0.5 {
+                    continue;
+                }
+            }
+        }
         let left = snap(center_x - radius);
         let top = snap(center_y - radius);
         quads.push((left, top, dot_size, dot_size, radius));
@@ -17103,14 +17138,20 @@ mod tests {
     }
 
     #[test]
-    fn test_consecutive_space_ranges() {
-        assert_eq!(consecutive_space_ranges(""), Vec::<std::ops::Range<usize>>::new());
-        assert_eq!(consecutive_space_ranges("a"), Vec::<std::ops::Range<usize>>::new());
-        assert_eq!(consecutive_space_ranges("a b"), Vec::<std::ops::Range<usize>>::new());
-        assert_eq!(consecutive_space_ranges("a  b"), vec![1..3]);
-        assert_eq!(consecutive_space_ranges("   "), vec![0..3]);
-        assert_eq!(consecutive_space_ranges("  hello   world  "), vec![0..2, 7..10, 15..17]);
-        assert_eq!(consecutive_space_ranges("    fn main() {"), vec![0..4]);
-        assert_eq!(consecutive_space_ranges("привет  мир"), vec![6..8]);
+    fn test_whitespace_dot_ranges() {
+        assert_eq!(whitespace_dot_ranges(""), Vec::<std::ops::Range<usize>>::new());
+        assert_eq!(whitespace_dot_ranges("a"), Vec::<std::ops::Range<usize>>::new());
+        assert_eq!(whitespace_dot_ranges("a b"), Vec::<std::ops::Range<usize>>::new());
+        assert_eq!(whitespace_dot_ranges("a  b"), vec![1..3]);
+        assert_eq!(whitespace_dot_ranges("   "), vec![0..3]);
+        assert_eq!(whitespace_dot_ranges("  hello   world  "), vec![0..2, 7..10, 15..17]);
+        assert_eq!(whitespace_dot_ranges("    fn main() {"), vec![0..4]);
+        assert_eq!(whitespace_dot_ranges("привет  мир"), vec![6..8]);
+        // Trailing spaces: even 1 space at the end of a line is visible
+        assert_eq!(whitespace_dot_ranges("a "), vec![1..2]);
+        assert_eq!(whitespace_dot_ranges("a  b "), vec![1..3, 4..5]);
+        assert_eq!(whitespace_dot_ranges(" "), vec![0..1]);
+        assert_eq!(whitespace_dot_ranges("hello world "), vec![11..12]);
+
     }
 }
