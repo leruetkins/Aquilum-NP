@@ -36,9 +36,9 @@ fn looks_like_folder(path: &Path) -> bool {
 }
 
 /// Recognises the atomic-save temporary file written by this very process
-/// (`save_manager.rs` template: `.{file_name}.{pid}.tmp`). A rename from such
-/// a file is our own completed save, not a user rename.
-fn is_our_atomic_tmp(path: &Path) -> bool {
+/// (`save_manager.rs` template: `.{file_name}.{sequence}.{pid}.tmp`). A rename
+/// from such a file is our own completed save, not a user rename.
+pub(crate) fn is_our_atomic_tmp(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };

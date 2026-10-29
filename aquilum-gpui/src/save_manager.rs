@@ -4,10 +4,17 @@
 //! preventing excessive disk writes for large documents while keeping small
 //! notes instantly saved and safe.
 //!
-//! For files >= 10 MB, writes are made to a temporary file with `sync_all` before
-//! replacing the target file, ensuring atomicity and preventing data truncation.
+//! For files >= 10 MB, writes are made to a unique temporary file with `sync_all`
+//! before replacing the target file, ensuring atomicity and preventing data
+//! truncation. Writes to one path are serialized: two save tasks for the same
+//! note can be dispatched before the first one finishes, and without the lock
+//! they would share the temporary file and interleave their chunks.
 
+use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 /// Threshold above which files are written atomically through a temporary file.
@@ -74,9 +81,93 @@ pub fn adaptive_delays(content_len: usize) -> (Duration, Duration) {
     )
 }
 
+/// Lock guarding the writes to one path. Saves for the same note may be
+/// dispatched before the previous one finished, and the executor runs them on a
+/// pool, so without this lock two writers could pass the hash check together and
+/// interleave their chunks in the temporary file.
+fn path_lock(path: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    let mut locks = lock_unpoisoned(LOCKS.get_or_init(|| Mutex::new(HashMap::new())));
+    locks.entry(path.to_path_buf()).or_default().clone()
+}
+
+/// What this process last wrote to a path.
+///
+/// `version` is the buffer version the written snapshot came from (monotonic per
+/// document). A save task that reaches the disk after a newer snapshot must not
+/// roll it back, and a hash that matches our own previous write must not be
+/// mistaken for a foreign edit.
+#[derive(Clone)]
+struct Written {
+    version: u64,
+    hash: String,
+}
+
+fn written_saves() -> &'static Mutex<HashMap<PathBuf, Written>> {
+    static WRITTEN: OnceLock<Mutex<HashMap<PathBuf, Written>>> = OnceLock::new();
+    WRITTEN.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+fn recorded_save(path: &Path) -> Option<Written> {
+    lock_unpoisoned(written_saves()).get(path).cloned()
+}
+
+fn remember_save(path: &Path, version: u64, hash: &str) {
+    lock_unpoisoned(written_saves()).insert(
+        path.to_path_buf(),
+        Written {
+            version,
+            hash: hash.to_string(),
+        },
+    );
+}
+
+/// A temporary file next to `path` that no other write can share.
+///
+/// The per-write counter goes before the pid on purpose: the fs watcher
+/// (`fs_watcher::classify::is_our_atomic_tmp`) reads the last dot-separated part
+/// as the process id to tell our own atomic save from a user rename.
+fn temp_sibling(path: &Path) -> PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("note");
+    let name = format!(
+        ".{file_name}.{}.{}.tmp",
+        SEQ.fetch_add(1, Ordering::Relaxed),
+        std::process::id()
+    );
+    match path.parent() {
+        Some(parent) => parent.join(name),
+        None => PathBuf::from(name),
+    }
+}
+
+fn write_and_remember(path: &Path, rope: &crop::Rope, version: u64) -> CheckedWrite {
+    match write_rope(path, rope) {
+        Ok(()) => {
+            let hash = hash_rope(rope);
+            remember_save(path, version, &hash);
+            CheckedWrite::Written(hash)
+        }
+        Err(error) => CheckedWrite::Failed(error),
+    }
+}
+
 /// Safely writes `rope` to `path` chunk-by-chunk without loading into a contiguous string.
 pub fn safe_write_rope(path: &Path, rope: &crop::Rope) -> std::io::Result<()> {
-    use std::io::Write;
+    let lock = path_lock(path);
+    let _guard = lock_unpoisoned(&lock);
+    write_rope(path, rope)
+}
+
+/// The write itself, for callers that already hold the path lock.
+fn write_rope(path: &Path, rope: &crop::Rope) -> std::io::Result<()> {
     if rope.byte_len() < ATOMIC_WRITE_THRESHOLD_BYTES {
         let mut file = std::fs::File::create(path)?;
         for chunk in rope.chunks() {
@@ -85,17 +176,7 @@ pub fn safe_write_rope(path: &Path, rope: &crop::Rope) -> std::io::Result<()> {
         return file.flush();
     }
 
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("note");
-    let pid = std::process::id();
-    let tmp_name = format!(".{file_name}.{pid}.tmp");
-    let tmp_path = match path.parent() {
-        Some(parent) => parent.join(tmp_name),
-        None => std::path::PathBuf::from(tmp_name),
-    };
-
+    let tmp_path = temp_sibling(path);
     let write_res = (|| -> std::io::Result<()> {
         let mut file = std::fs::File::create(&tmp_path)?;
         for chunk in rope.chunks() {
@@ -143,47 +224,56 @@ pub enum CheckedWrite {
 /// content is returned for the buffer to adopt — the two-sided protocol of
 /// the original Aquilum, reduced to its data-loss-free core.
 ///
+/// `version` is the buffer version `rope` was captured from. Save tasks run on
+/// a pool and can reach the disk out of dispatch order, so the check, the write
+/// and the bookkeeping happen under one per-path lock, and a task whose snapshot
+/// is older than what this process already wrote is a no-op.
+///
 /// Runs on a background thread in every call site; the reads and the hash
 /// computations are IO work, not UI work.
 pub fn safe_write_rope_checked(
     path: &Path,
     rope: &crop::Rope,
     expected_hash: Option<&str>,
+    version: u64,
 ) -> CheckedWrite {
+    let lock = path_lock(path);
+    let _guard = lock_unpoisoned(&lock);
+
+    let recorded = recorded_save(path);
+    let actual = if path.exists() {
+        hash_file(path)
+    } else {
+        None
+    };
+
+    // A newer snapshot from this process already reached the disk. Letting an
+    // older one overwrite it would roll the file back.
+    if let (Some(recorded), Some(actual)) = (&recorded, &actual) {
+        if recorded.version > version && recorded.hash == *actual {
+            return CheckedWrite::Written(recorded.hash.clone());
+        }
+    }
+
     // An unknown expected hash means the buffer was never reconciled with the
     // file (in-memory note, tests); writing without a check is the historical
     // behaviour for that case.
     let Some(expected) = expected_hash else {
-        return match safe_write_rope(path, rope) {
-            Ok(()) => CheckedWrite::Written(hash_rope(rope)),
-            Err(error) => CheckedWrite::Failed(error),
-        };
+        return write_and_remember(path, rope, version);
     };
 
-    if !path.exists() {
-        // Deleted externally while we were editing: writing recreates the
-        // file with our content — that is the correct resolution (the
-        // deletion path already handled the tab-close decision).
-        return match safe_write_rope(path, rope) {
-            Ok(()) => CheckedWrite::Written(hash_rope(rope)),
-            Err(error) => CheckedWrite::Failed(error),
-        };
-    }
-
-    let actual = match hash_file(path) {
-        Some(hash) => hash,
-        None => {
-            return match safe_write_rope(path, rope) {
-                Ok(()) => CheckedWrite::Written(hash_rope(rope)),
-                Err(error) => CheckedWrite::Failed(error),
-            }
-        }
+    // Deleted externally while we were editing: writing recreates the file with
+    // our content — that is the correct resolution (the deletion path already
+    // handled the tab-close decision). An unreadable file takes the same route.
+    let Some(actual) = actual else {
+        return write_and_remember(path, rope, version);
     };
-    if actual == expected {
-        return match safe_write_rope(path, rope) {
-            Ok(()) => CheckedWrite::Written(hash_rope(rope)),
-            Err(error) => CheckedWrite::Failed(error),
-        };
+
+    // A queued save still carries the hash from before another save of this
+    // process completed. That is not an external edit, so it is not a conflict.
+    let ours_already = recorded.as_ref().is_some_and(|r| r.hash == actual);
+    if actual == expected || ours_already {
+        return write_and_remember(path, rope, version);
     }
 
     // Conflict: preserve our version, read the external one — unless the
@@ -192,7 +282,8 @@ pub fn safe_write_rope_checked(
     // self-conflict would be pure noise).
     let ours_text = rope.to_string();
     if std::fs::read_to_string(path).ok().as_deref() == Some(ours_text.as_str()) {
-        return CheckedWrite::Written(hash_rope(rope));
+        remember_save(path, version, &actual);
+        return CheckedWrite::Written(actual);
     }
     let copy = match conflict_copy_path(path) {
         Some(candidate) => match safe_write_rope(&candidate, rope) {
@@ -257,23 +348,14 @@ fn format_utc_label(t: std::time::SystemTime) -> String {
 
 /// Safely writes `content` to `path`.
 pub fn safe_write(path: &Path, content: &str) -> std::io::Result<()> {
+    let lock = path_lock(path);
+    let _guard = lock_unpoisoned(&lock);
     if content.len() < ATOMIC_WRITE_THRESHOLD_BYTES {
         return std::fs::write(path, content.as_bytes());
     }
 
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("note");
-    let pid = std::process::id();
-    let tmp_name = format!(".{file_name}.{pid}.tmp");
-    let tmp_path = match path.parent() {
-        Some(parent) => parent.join(tmp_name),
-        None => std::path::PathBuf::from(tmp_name),
-    };
-
+    let tmp_path = temp_sibling(path);
     let write_res = (|| -> std::io::Result<()> {
-        use std::io::Write;
         let mut file = std::fs::File::create(&tmp_path)?;
         file.write_all(content.as_bytes())?;
         file.flush()?;
@@ -317,7 +399,7 @@ mod tests {
         std::fs::write(&path, "внешняя версия").unwrap();
 
         let ours = crop::Rope::from("наша версия".to_string());
-        let outcome = safe_write_rope_checked(&path, &ours, Some(&loaded_hash));
+        let outcome = safe_write_rope_checked(&path, &ours, Some(&loaded_hash), 1);
 
         match outcome {
             CheckedWrite::Conflict { copy, disk_text } => {
@@ -342,7 +424,7 @@ mod tests {
         let loaded_hash = hash_file(&path).unwrap();
 
         let next = crop::Rope::from("новая версия".to_string());
-        match safe_write_rope_checked(&path, &next, Some(&loaded_hash)) {
+        match safe_write_rope_checked(&path, &next, Some(&loaded_hash), 1) {
             CheckedWrite::Written(hash) => {
                 assert_eq!(hash, hash_rope(&next));
                 assert_eq!(std::fs::read_to_string(&path).unwrap(), "новая версия");
@@ -356,7 +438,7 @@ mod tests {
     fn checked_write_with_unknown_hash_writes_directly() {
         let (path, _rope) = temp_file("unknown", "исходная версия");
         let next = crop::Rope::from("новая версия".to_string());
-        match safe_write_rope_checked(&path, &next, None) {
+        match safe_write_rope_checked(&path, &next, None, 1) {
             CheckedWrite::Written(_) => {
                 assert_eq!(std::fs::read_to_string(&path).unwrap(), "новая версия");
             }
@@ -372,12 +454,108 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
 
         let next = crop::Rope::from("наша версия".to_string());
-        match safe_write_rope_checked(&path, &next, Some(&loaded_hash)) {
+        match safe_write_rope_checked(&path, &next, Some(&loaded_hash), 1) {
             CheckedWrite::Written(_) => {
                 assert_eq!(std::fs::read_to_string(&path).unwrap(), "наша версия");
             }
             other => panic!("expected a plain write, got {other:?}"),
         }
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Two save tasks for one path can reach the disk in either order. The older
+    /// buffer version must not overwrite the newer one.
+    #[test]
+    fn a_late_older_save_does_not_roll_back_a_newer_one() {
+        let (path, _rope) = temp_file("order", "исходная версия");
+        let loaded_hash = hash_file(&path).unwrap();
+
+        let newer = crop::Rope::from("новая версия".to_string());
+        match safe_write_rope_checked(&path, &newer, Some(&loaded_hash), 2) {
+            CheckedWrite::Written(hash) => assert_eq!(hash, hash_rope(&newer)),
+            other => panic!("expected a plain write, got {other:?}"),
+        }
+
+        let older = crop::Rope::from("старая версия".to_string());
+        match safe_write_rope_checked(&path, &older, Some(&loaded_hash), 1) {
+            CheckedWrite::Written(hash) => assert_eq!(hash, hash_rope(&newer)),
+            other => panic!("expected the newer save to stand, got {other:?}"),
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "новая версия");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A queued save still carries the hash from before another save of this
+    /// process completed. That is not an external edit: no conflict copy.
+    #[test]
+    fn a_queued_save_recognises_our_own_write() {
+        let (path, _rope) = temp_file("queued", "исходная версия");
+        let loaded_hash = hash_file(&path).unwrap();
+
+        let first = crop::Rope::from("первая версия".to_string());
+        assert!(matches!(
+            safe_write_rope_checked(&path, &first, Some(&loaded_hash), 1),
+            CheckedWrite::Written(_)
+        ));
+
+        let second = crop::Rope::from("вторая версия".to_string());
+        match safe_write_rope_checked(&path, &second, Some(&loaded_hash), 2) {
+            CheckedWrite::Written(hash) => assert_eq!(hash, hash_rope(&second)),
+            other => panic!("expected a plain write, got {other:?}"),
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "вторая версия");
+        let conflicts = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains("конфликт"))
+            .count();
+        assert_eq!(conflicts, 0, "our own write must not produce a conflict copy");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn atomic_temp_names_are_unique_and_keep_the_process_id_last() {
+        let (path, _rope) = temp_file("tmpname", "x");
+        let first = temp_sibling(&path);
+        let second = temp_sibling(&path);
+        assert_ne!(first, second, "two writes must not share a temporary file");
+        let expected_suffix = format!(".{}.tmp", std::process::id());
+        for tmp in [first, second] {
+            let name = tmp.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(name.starts_with(".note.md."), "unexpected tmp name: {name}");
+            assert!(name.ends_with(&expected_suffix), "unexpected tmp name: {name}");
+            assert!(crate::fs_watcher::classify::is_our_atomic_tmp(&tmp));
+        }
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// The reported corruption: two overlapping saves of a big note shared one
+    /// temporary file and interleaved their chunks, leaving bytes that are not
+    /// valid UTF-8. Serialized writes always leave one whole version.
+    #[test]
+    fn overlapping_big_writes_never_interleave() {
+        const LEN: usize = ATOMIC_WRITE_THRESHOLD_BYTES + 64 * 1024;
+        let (path, _rope) = temp_file("overlap", "старт");
+
+        let a = crop::Rope::from("a".repeat(LEN));
+        let b = crop::Rope::from("b".repeat(LEN));
+        std::thread::scope(|scope| {
+            let (path_a, rope_a) = (&path, a.clone());
+            scope.spawn(move || {
+                let _ = safe_write_rope_checked(path_a, &rope_a, None, 1);
+            });
+            let (path_b, rope_b) = (&path, b.clone());
+            scope.spawn(move || {
+                let _ = safe_write_rope_checked(path_b, &rope_b, None, 2);
+            });
+        });
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes.len(), LEN);
+        // Version 2 is the newest snapshot, so it must be the one on disk —
+        // whichever task got the lock first.
+        let text = String::from_utf8(bytes).expect("a mixed write would not be valid UTF-8");
+        assert!(text.bytes().all(|c| c == b'b'), "the newest version must win");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

@@ -997,7 +997,7 @@ impl AppView {
         cx.foreground_executor().spawn(async move {
             let write_path = path.clone();
             let write_res = background.spawn(async move {
-                crate::save_manager::safe_write_rope_checked(&write_path, &rope, expected_hash.as_deref())
+                crate::save_manager::safe_write_rope_checked(&write_path, &rope, expected_hash.as_deref(), version)
             }).await;
 
             let _ = entity.update(&mut async_cx, |this, cx| {

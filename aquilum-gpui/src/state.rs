@@ -2805,7 +2805,8 @@ impl AppState {
                 return true;
             }
             let expected_hash = doc.disk_hash.clone();
-            match crate::save_manager::safe_write_rope_checked(&doc.path, doc.rope(), expected_hash.as_deref()) {
+            let version = doc.version;
+            match crate::save_manager::safe_write_rope_checked(&doc.path, doc.rope(), expected_hash.as_deref(), version) {
                 crate::save_manager::CheckedWrite::Written(hash) => {
                     doc.disk_hash = Some(hash);
                     doc.disk_stamp = crate::save_manager::file_stamp(&doc.path);
