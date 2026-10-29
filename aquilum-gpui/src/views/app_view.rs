@@ -9992,6 +9992,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 let chip_inset = code_chip_inset(chip_cell_h);
                 let mut backdrop_rects = Vec::new();
                 let mut grammar_layer: Option<gpui::AnyElement> = None;
+                let mut whitespace_layer: Option<gpui::AnyElement> = None;
                 for &(code_start, code_end) in row_layout.code_ranges() {
                     let (chip_x, chip_w) = row_layout.selection_rect(code_start, code_end, pixel_scale);
                     let chip_top = if let Some(tbl) = grid_tbl {
@@ -10124,6 +10125,45 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                         if radius > 0.0 {
                                             quad = quad.corner_radii(px(radius));
                                         }
+                                        window.paint_quad(quad);
+                                    }
+                                },
+                            )
+                            .absolute()
+                            .left(px(0.0))
+                            .top(px(0.0))
+                            .w_full()
+                            .h_full()
+                            .into_any_element(),
+                        );
+                    }
+                }
+                if grid_tbl.is_none() {
+                    let ws_quads = whitespace_dot_quads(line, &row_layout, row_h, pixel_scale);
+                    if !ws_quads.is_empty() {
+                        let dot_color = theme.whitespace_dot();
+                        whitespace_layer = Some(
+                            gpui::canvas(
+                                |_, _, _| {},
+                                move |bounds, _, window, _| {
+                                    let scale = window.scale_factor();
+                                    let snap = |v: gpui::Pixels| {
+                                        if scale > 0.0 {
+                                            px((f32::from(v) * scale).round() / scale)
+                                        } else {
+                                            v
+                                        }
+                                    };
+                                    for (x, y, w, h, radius) in ws_quads {
+                                        let origin = bounds.origin + gpui::point(px(x), px(y));
+                                        let quad = gpui::fill(
+                                            gpui::Bounds::new(
+                                                gpui::point(snap(origin.x), snap(origin.y)),
+                                                gpui::size(px(w), px(h)),
+                                            ),
+                                            dot_color,
+                                        )
+                                        .corner_radii(px(radius));
                                         window.paint_quad(quad);
                                     }
                                 },
@@ -10794,6 +10834,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             .when(is_raw_table_last, |s| s.rounded_b_md())
                             .children(backdrop_rects)
                             .children(grammar_layer)
+                            .children(whitespace_layer)
                             .child(
                                 // The row content is full-width on purpose. An
                                 // auto-width wrapper inside the line box makes a
@@ -13077,6 +13118,108 @@ fn grammar_line_segments(
         }
     }
     segments
+}
+
+/// Returns char-index ranges `[start, end)` of consecutive spaces (run length >= 2) in `line`.
+fn consecutive_space_ranges(line: &str) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut run_start: Option<usize> = None;
+    let mut count = 0;
+    for (i, ch) in line.chars().enumerate() {
+        if ch == ' ' {
+            if run_start.is_none() {
+                run_start = Some(i);
+            }
+            count += 1;
+        } else {
+            if count >= 2 {
+                if let Some(start) = run_start {
+                    ranges.push(start..i);
+                }
+            }
+            run_start = None;
+            count = 0;
+        }
+    }
+    if count >= 2 {
+        if let Some(start) = run_start {
+            ranges.push(start..start + count);
+        }
+    }
+    ranges
+}
+
+/// Computes quads `(x, y, width, height, corner_radius)` for faint dots
+/// centered in each space of consecutive space runs (>= 2 spaces in a row).
+fn whitespace_dot_quads(
+    line: &str,
+    row_layout: &RowShapedLayout,
+    row_h: f32,
+    scale: f32,
+) -> Vec<(f32, f32, f32, f32, f32)> {
+    let ranges = consecutive_space_ranges(line);
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+
+    let ascent = f32::from(row_layout.layout.ascent);
+    let descent = f32::from(row_layout.layout.descent);
+    let center_y = if ascent > 0.0 {
+        let baseline = (row_h - ascent - descent) / 2.0 + ascent;
+        baseline - ascent * 0.28
+    } else {
+        row_h / 2.0
+    };
+
+    let dot_device_px = if scale >= 2.0 { 3.0 } else { 2.0 };
+    let dot_size = if scale > 0.0 { dot_device_px / scale } else { 2.0 };
+    let radius = dot_size / 2.0;
+
+    let snap = |v: f32| {
+        if scale > 0.0 {
+            (v * scale).round() / scale
+        } else {
+            v
+        }
+    };
+
+    let mut quads = Vec::new();
+    let columns = row_layout.columns();
+    let line_chars = &row_layout.line_chars;
+
+    for (col, ch) in row_layout.text.chars().enumerate().take(columns) {
+        if ch != ' ' {
+            continue;
+        }
+        if col >= line_chars.len() {
+            break;
+        }
+        let lc = line_chars[col];
+
+        // Skip synthetic continuation padding where line_chars repeats the same source index.
+        let is_synthetic = (col + 1 < line_chars.len() && line_chars[col + 1] == lc)
+            || (col > 0 && line_chars[col - 1] == lc);
+        if is_synthetic {
+            continue;
+        }
+
+        if !ranges.iter().any(|r| r.contains(&lc)) {
+            continue;
+        }
+
+        let x0 = row_layout.x_for_column(col);
+        let x1 = row_layout.x_for_column(col + 1);
+        if x1 <= x0 {
+            continue;
+        }
+
+        let center_x = (x0 + x1) / 2.0;
+        let left = snap(center_x - radius);
+        let top = snap(center_y - radius);
+        quads.push((left, top, dot_size, dot_size, radius));
+    }
+
+    quads
 }
 
 fn render_syntax_spans(
@@ -16957,5 +17100,17 @@ mod tests {
         let find_bar_left_left = (note_center_left - bar_w / 2.0).clamp(16.0, max_w - 16.0 - bar_w).round();
         // 380 - 310 = 70.0
         assert_eq!(find_bar_left_left, 70.0);
+    }
+
+    #[test]
+    fn test_consecutive_space_ranges() {
+        assert_eq!(consecutive_space_ranges(""), Vec::<std::ops::Range<usize>>::new());
+        assert_eq!(consecutive_space_ranges("a"), Vec::<std::ops::Range<usize>>::new());
+        assert_eq!(consecutive_space_ranges("a b"), Vec::<std::ops::Range<usize>>::new());
+        assert_eq!(consecutive_space_ranges("a  b"), vec![1..3]);
+        assert_eq!(consecutive_space_ranges("   "), vec![0..3]);
+        assert_eq!(consecutive_space_ranges("  hello   world  "), vec![0..2, 7..10, 15..17]);
+        assert_eq!(consecutive_space_ranges("    fn main() {"), vec![0..4]);
+        assert_eq!(consecutive_space_ranges("привет  мир"), vec![6..8]);
     }
 }

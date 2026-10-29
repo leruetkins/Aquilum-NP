@@ -94,6 +94,13 @@ impl Theme {
         }
     }
 
+    /// Color for whitespace indicator dots (barely visible muted gray).
+    pub fn whitespace_dot(&self) -> Rgba {
+        let mut c = self.text_muted;
+        c.a = if self.is_dark { 0.40 } else { 0.45 };
+        c
+    }
+
     /// Returns the default dark theme (Catppuccin Mocha palette).
     pub fn dark() -> Self {
         Self {
