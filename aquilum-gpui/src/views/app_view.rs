@@ -6788,10 +6788,14 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 }
             }));
 
+        let snap = |v: f32| if scale > 0.0 { (v * scale).round() / scale } else { v };
+        let div_w = snap(1.0);
+        let leading_sep_right = snap(-(effective_tab_gap / 2.0).floor());
+        let sep_right = snap(-(effective_tab_gap / 2.0).floor());
+
         let first_tab_active = active_tab_index == 0;
         let show_leading_divider = num_tabs > 0 && !first_tab_active && hovered_tab != Some(0);
-        let leading_sep_right = -(effective_tab_gap / 2.0).floor();
-        let leading_divider_color = if theme.is_dark {
+        let divider_color = if theme.is_dark {
             gpui::rgba(0xcdd6f440)
         } else {
             gpui::rgba(0x1e203030)
@@ -6839,10 +6843,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             .absolute()
                             .top(px(sep_top))
                             .h(px(16.0))
-                            .w(px(1.0))
+                            .w(px(div_w))
                             .right(px(leading_sep_right))
-                            .rounded_full()
-                            .bg(leading_divider_color),
+                            .bg(divider_color),
                     )
                 })
                 .child(
@@ -6890,10 +6893,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             .absolute()
                             .top(px(sep_top))
                             .h(px(16.0))
-                            .w(px(1.0))
+                            .w(px(div_w))
                             .right(px(leading_sep_right))
-                            .rounded_full()
-                            .bg(leading_divider_color),
+                            .bg(divider_color),
                     )
                 })
                 .child(
@@ -6917,11 +6919,15 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             for (tab_idx, tab) in leaf.tabs.iter().enumerate() {
                 let is_active = tab_idx == active_tab_index;
                 let is_next_active = active_tab_index == tab_idx + 1;
-                let show_divider = !is_active
-                    && (tab_idx + 1 < num_tabs)
-                    && !is_next_active
-                    && hovered_tab != Some(tab_idx)
-                    && hovered_tab != Some(tab_idx + 1);
+                let is_last_tab = tab_idx + 1 == num_tabs;
+                let show_divider = if is_last_tab {
+                    !is_active && hovered_tab != Some(tab_idx)
+                } else {
+                    !is_active
+                        && !is_next_active
+                        && hovered_tab != Some(tab_idx)
+                        && hovered_tab != Some(tab_idx + 1)
+                };
 
                 let (title, is_dirty, tab_path) = match &tab.content {
                     crate::workspace::TabContent::Document { id } => {
@@ -7001,21 +7007,14 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 });
 
                 if show_divider {
-                    let sep_right = -(effective_tab_gap / 2.0).floor();
-                    let divider_color = if theme.is_dark {
-                        gpui::rgba(0xcdd6f440)
-                    } else {
-                        gpui::rgba(0x1e203030)
-                    };
                     tab_item = tab_item.child(
                         div()
                             .id(gpui::ElementId::Name(format!("leaf-tab-separator-{}-{}", leaf_id.0, tab_idx).into()))
                             .absolute()
                             .top(px(sep_top))
                             .h(px(16.0))
-                            .w(px(1.0))
+                            .w(px(div_w))
                             .right(px(sep_right))
-                            .rounded_full()
                             .bg(divider_color),
                     );
                 }
