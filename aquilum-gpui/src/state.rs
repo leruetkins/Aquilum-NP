@@ -1498,8 +1498,12 @@ impl AppState {
                     if matches {
                         let tab = leaf.tabs.remove(i);
                         self.views.remove(&tab.id);
-                        if leaf.active_tab_index >= leaf.tabs.len() && !leaf.tabs.is_empty() {
-                            leaf.active_tab_index = leaf.tabs.len() - 1;
+                        if !leaf.tabs.is_empty() {
+                            if i < leaf.active_tab_index {
+                                leaf.active_tab_index = leaf.active_tab_index.saturating_sub(1);
+                            } else if leaf.active_tab_index >= leaf.tabs.len() {
+                                leaf.active_tab_index = leaf.tabs.len() - 1;
+                            }
                         }
                     } else {
                         i += 1;
@@ -2081,8 +2085,12 @@ impl AppState {
                 let tab = leaf.tabs.remove(tab_index);
                 self.views.remove(&tab.id);
                 let empty = leaf.tabs.is_empty();
-                if !empty && leaf.active_tab_index >= leaf.tabs.len() {
-                    leaf.active_tab_index = leaf.tabs.len() - 1;
+                if !empty {
+                    if tab_index < leaf.active_tab_index {
+                        leaf.active_tab_index -= 1;
+                    } else if leaf.active_tab_index >= leaf.tabs.len() {
+                        leaf.active_tab_index = leaf.tabs.len() - 1;
+                    }
                 }
                 (Some(tab), empty)
             } else {
@@ -5819,6 +5827,84 @@ mod tests {
             crate::workspace::TabContent::Document { id } => assert_eq!(*id, doc_id),
             _ => panic!("Expected document tab"),
         }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_closing_multiple_tabs_with_lru_eviction_and_order() {
+        let temp_dir = std::env::temp_dir().join(format!("aquilum_close_lru_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let mut paths = Vec::new();
+        for i in 1..=7 {
+            let p = temp_dir.join(format!("Note_{}.md", i));
+            std::fs::write(&p, format!("Content of Note {}", i)).unwrap();
+            paths.push(p);
+        }
+
+        let mut state = AppState::new();
+        state.max_inactive_docs = 4;
+        state.documents.clear();
+        state.doc_meta.clear();
+        state.by_path.clear();
+        if let Some(leaf) = state.leaves.get_mut(&state.workspace.active_leaf) {
+            leaf.tabs.clear();
+        }
+
+        // Open 7 notes in order
+        let mut doc_ids = Vec::new();
+        for p in &paths {
+            state.open_note_internal_at(p.clone(), false);
+            let doc_id = state.find_document_by_path(p).unwrap();
+            doc_ids.push(doc_id);
+            state.touch_document_accessed(doc_id);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let leaf_id = state.workspace.active_leaf;
+        assert_eq!(state.leaves.get(&leaf_id).unwrap().tabs.len(), 7);
+        assert_eq!(state.leaves.get(&leaf_id).unwrap().active_tab_index, 6); // Note 7 is active
+
+        // Notes 1 and 2 should have been evicted by LRU (max 4 inactive docs: notes 3, 4, 5, 6)
+        assert!(!state.is_document_loaded(doc_ids[0]));
+        assert!(!state.is_document_loaded(doc_ids[1]));
+
+        // Close active tab 6 (Note 7) -> active tab index should become 5 (Note 6)
+        state.close_leaf_tab(leaf_id, 6);
+        assert_eq!(state.leaves.get(&leaf_id).unwrap().active_tab_index, 5);
+
+        // Close active tab 5 (Note 6) -> active tab index should become 4 (Note 5)
+        state.close_leaf_tab(leaf_id, 5);
+        assert_eq!(state.leaves.get(&leaf_id).unwrap().active_tab_index, 4);
+
+        // Close active tab 4 (Note 5) -> active tab index should become 3 (Note 4)
+        state.close_leaf_tab(leaf_id, 4);
+        assert_eq!(state.leaves.get(&leaf_id).unwrap().active_tab_index, 3);
+
+        // Close active tab 3 (Note 4) -> active tab index should become 2 (Note 3)
+        state.close_leaf_tab(leaf_id, 3);
+        assert_eq!(state.leaves.get(&leaf_id).unwrap().active_tab_index, 2);
+
+        // Close active tab 2 (Note 3) -> active tab index should become 1 (Note 2)
+        state.close_leaf_tab(leaf_id, 2);
+        assert_eq!(state.leaves.get(&leaf_id).unwrap().active_tab_index, 1);
+
+        // Now active tab is Note 2, which was evicted.
+        let active_doc = state.active_doc_id().unwrap();
+        assert_eq!(active_doc, doc_ids[1]);
+        assert!(!state.is_document_loaded(active_doc));
+
+        // When ensure_document_loaded is called (as select_leaf_tab does), it loads it cleanly!
+        assert!(state.ensure_document_loaded(active_doc));
+        assert!(state.is_document_loaded(active_doc));
+        assert_eq!(state.active_document().unwrap().content(), "Content of Note 2");
+
+        // Now test closing inactive tab to the left: close tab 0 (Note 1) while tab 1 (Note 2) is active
+        state.close_leaf_tab(leaf_id, 0);
+        // Active tab must shift left from index 1 to index 0, still pointing to Note 2!
+        assert_eq!(state.leaves.get(&leaf_id).unwrap().active_tab_index, 0);
+        assert_eq!(state.active_doc_id().unwrap(), doc_ids[1]);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

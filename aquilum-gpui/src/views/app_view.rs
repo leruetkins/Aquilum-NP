@@ -6003,12 +6003,13 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 .and_then(|l| l.active_tab())
                 .and_then(|t| match &t.content {
                     crate::workspace::TabContent::Document { id } => {
-                        self.state.documents.get(id).map(|d| d.path.clone())
+                        self.state.document_path(*id).map(|p| p.to_path_buf())
                     }
                     _ => None,
                 })
         } else {
             self.state.active_document().map(|d| d.path.clone())
+                .or_else(|| self.state.active_doc_id().and_then(|id| self.state.document_path(id).map(|p| p.to_path_buf())))
         };
         struct NavBreadcrumb {
             name: String,
@@ -6065,6 +6066,17 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 } else {
                     let title = doc_override
                         .map(|d| d.title.clone())
+                        .or_else(|| {
+                            leaf_id
+                                .and_then(|lid| self.state.leaves.get(&lid))
+                                .and_then(|l| l.active_tab())
+                                .and_then(|t| match &t.content {
+                                    crate::workspace::TabContent::Document { id } => {
+                                        self.state.document_title(*id).map(|s| s.to_string())
+                                    }
+                                    _ => None,
+                                })
+                        })
                         .or_else(|| self.state.active_document().map(|d| d.title.clone()))
                         .unwrap_or_else(|| self.t("tabs.newTab"));
                     vec![NavBreadcrumb {
@@ -6076,6 +6088,17 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             } else {
                 let title = doc_override
                     .map(|d| d.title.clone())
+                    .or_else(|| {
+                        leaf_id
+                            .and_then(|lid| self.state.leaves.get(&lid))
+                            .and_then(|l| l.active_tab())
+                            .and_then(|t| match &t.content {
+                                crate::workspace::TabContent::Document { id } => {
+                                    self.state.document_title(*id).map(|s| s.to_string())
+                                }
+                                _ => None,
+                            })
+                    })
                     .or_else(|| self.state.active_document().map(|d| d.title.clone()))
                     .unwrap_or_else(|| self.t("tabs.newTab"));
                 vec![NavBreadcrumb {
@@ -6517,10 +6540,48 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.select_leaf_tab_internal(leaf_id, tab_index, false, window, cx);
+    }
+
+    pub fn select_leaf_tab_forced(
+        &mut self,
+        leaf_id: crate::workspace::LeafId,
+        tab_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_leaf_tab_internal(leaf_id, tab_index, true, window, cx);
+    }
+
+    fn select_leaf_tab_internal(
+        &mut self,
+        leaf_id: crate::workspace::LeafId,
+        tab_index: usize,
+        forced: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let current_leaf_id = self.state.workspace.active_leaf;
         let is_same_leaf = current_leaf_id == leaf_id;
         let same_tab = is_same_leaf && self.state.leaves.get(&leaf_id).map(|l| l.active_tab_index) == Some(tab_index);
-        if same_tab {
+
+        let active_doc_missing = if let Some(leaf) = self.state.leaves.get(&leaf_id) {
+            if let Some(tab) = leaf.tabs.get(tab_index) {
+                match &tab.content {
+                    crate::workspace::TabContent::Document { id } => {
+                        !self.state.documents.contains_key(id) || !self.state.views.contains_key(&tab.id)
+                    }
+                    crate::workspace::TabContent::Empty => false,
+                    crate::workspace::TabContent::Plugin { .. } => false,
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if same_tab && !forced && !active_doc_missing {
             return;
         }
 
@@ -6534,27 +6595,29 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         self.commit_title_rename_internal();
         self.flush_active_note_now(cx);
 
-        // 1. Snapshot outgoing note settings & view state
-        let current_scroll = self.current_scroll_top();
-        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
-        let current_scroll_f64 = self.current_scroll_top_f64();
-        if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
-            let lines_total = doc.line_index.lines();
-            view.scroll_top = current_scroll_f64;
-            view.viewport.offset = view.line_at_doc_y(lines_total, current_scroll_f64);
-            let line_top = view.doc_y_of_line(lines_total, view.viewport.offset);
-            view.viewport.px_in_line = ((current_scroll_f64 - line_top) as f32).max(0.0);
-            // The pane turns into a background surface: return it to the
-            // canonical layout so its rows match what a non-editing render
-            // paints, instead of keeping the caret/selection reflow.
-            view.ensure_visual_cache_with_headings(
-                doc,
-                view.word_wrap,
-                view.window.wrap_cols,
-                Some(&self.config.editor.headings),
-                view.viewport.offset,
-                true,
-            );
+        // 1. Snapshot outgoing note settings & view state ONLY if switching away from a different tab
+        if !same_tab {
+            let current_scroll = self.current_scroll_top();
+            self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+            let current_scroll_f64 = self.current_scroll_top_f64();
+            if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
+                let lines_total = doc.line_index.lines();
+                view.scroll_top = current_scroll_f64;
+                view.viewport.offset = view.line_at_doc_y(lines_total, current_scroll_f64);
+                let line_top = view.doc_y_of_line(lines_total, view.viewport.offset);
+                view.viewport.px_in_line = ((current_scroll_f64 - line_top) as f32).max(0.0);
+                // The pane turns into a background surface: return it to the
+                // canonical layout so its rows match what a non-editing render
+                // paints, instead of keeping the caret/selection reflow.
+                view.ensure_visual_cache_with_headings(
+                    doc,
+                    view.word_wrap,
+                    view.window.wrap_cols,
+                    Some(&self.config.editor.headings),
+                    view.viewport.offset,
+                    true,
+                );
+            }
         }
 
         // 2. Set new active tab index in target leaf and set active leaf
@@ -6686,13 +6749,19 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             }
         }
 
+        let was_active_tab = self.state.leaves.get(&leaf_id).map(|l| l.active_tab_index == tab_index).unwrap_or(false);
+
         if self.state.finish_close_leaf_tab(leaf_id, tab_index).is_err() {
             return;
         }
 
         let active = self.state.workspace.active_leaf;
         let active_idx = self.state.leaves.get(&active).map(|l| l.active_tab_index).unwrap_or(0);
-        self.select_leaf_tab(active, active_idx, window, cx);
+        if was_active_tab || leaf_id != active {
+            self.select_leaf_tab_forced(active, active_idx, window, cx);
+        } else {
+            self.select_leaf_tab(active, active_idx, window, cx);
+        }
         self.layout_settle_frames.set(SCROLL_SETTLE_FRAMES);
         cx.notify();
     }

@@ -91,7 +91,7 @@ impl AppView {
             }
             self.state.save_dirty_documents();
             self.state.cleanup_orphaned_documents_and_views();
-            self.select_leaf_tab(active_leaf_id, 0, window, cx);
+            self.select_leaf_tab_forced(active_leaf_id, 0, window, cx);
             cx.notify();
             return;
         }
@@ -396,7 +396,7 @@ impl AppView {
                                             leaf.active_tab_index = 0;
                                             this.state.save_dirty_documents();
                                             this.state.cleanup_orphaned_documents_and_views();
-                                            this.select_leaf_tab(lid, 0, window, cx);
+                                            this.select_leaf_tab_forced(lid, 0, window, cx);
                                             this.close_tab_context_menu(cx);
                                             return;
                                         }
@@ -435,7 +435,7 @@ impl AppView {
                                     this.state.save_dirty_documents();
                                     this.state.cleanup_orphaned_documents_and_views();
                                     if let Some(target_idx) = active_to_select {
-                                        this.select_leaf_tab(lid, target_idx, window, cx);
+                                        this.select_leaf_tab_forced(lid, target_idx, window, cx);
                                         this.close_tab_context_menu(cx);
                                         return;
                                     }
