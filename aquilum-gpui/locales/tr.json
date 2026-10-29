@@ -117,7 +117,19 @@
       "wide_scrollbar_desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
       "debounce": "Otomatik Kaydetme Gecikmesi",
       "debounce_desc": "Yazdıktan sonra diske kaydedilmeden önceki bekleme süresi",
-      "debounce_unit": "{} ms"
+      "debounce_unit": "{} ms",
+      "note_width": "Not Genişliği",
+      "note_width_desc": "Pencere genişliğinin yüzdesi olarak not sütunu genişliği (%0-100)",
+      "note_align": "Not Hizalama",
+      "note_align_desc": "Not sütununun yatay hizalaması: ortalı veya sola hizalı",
+      "align_center": "Ortala",
+      "align_left": "Sola",
+      "title_align": "Başlık Hizalama",
+      "title_align_desc": "Düzenleyicinin üzerindeki dosya başlığının konumu: solda veya ortada",
+      "title_align_window": "Başlık Konumu (Pencere Genişliği)",
+      "title_align_window_desc": "Belge başlığını pencereye göre hizala: solda veya ortada",
+      "title_align_editor": "Başlık Konumu (Düzenleyici Genişliği)",
+      "title_align_editor_desc": "Belge başlığını not sütununa göre hizala: solda veya ortada"
     },
     "reader": {
       "title": "Okuyucu Modu",
@@ -342,7 +354,9 @@
       "bug": "Hata",
       "example": "Örnek",
       "quote": "Alıntı"
-    }
+    },
+    "note_width": "Not genişliği: %{}",
+    "note_width_reset": "Not genişliğini sıfırla (%100)"
   },
   "search": {
     "title": "Bilgi tabanında arama yapın",

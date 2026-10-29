@@ -117,7 +117,19 @@
       "wide_scrollbar_desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
       "debounce": "Fördröjning för automatisk sparning",
       "debounce_desc": "Tidsgräns efter inmatning innan skrivning till disk",
-      "debounce_unit": "{} ms"
+      "debounce_unit": "{} ms",
+      "note_width": "Anteckningsbredd",
+      "note_width_desc": "Anteckningskolumnens bredd som en procentandel av fönstret (0–100 %)",
+      "note_align": "Anteckningsjustering",
+      "note_align_desc": "Horisontell justering av anteckningskolumnen: centrerad eller vänsterställd",
+      "align_center": "Centrerad",
+      "align_left": "Vänster",
+      "title_align": "Titeljustering",
+      "title_align_desc": "Placering av dokumenttiteln ovanför redigeraren: vänster eller centrerad",
+      "title_align_window": "Titelposition (fönsterbredd)",
+      "title_align_window_desc": "Justera dokumenttiteln i förhållande till fönstret: vänster eller centrerad",
+      "title_align_editor": "Titelposition (redigerarbredd)",
+      "title_align_editor_desc": "Justera dokumenttiteln i förhållande till anteckningskolumnen: vänster eller centrerad"
     },
     "reader": {
       "title": "Läsarläge",
@@ -342,7 +354,9 @@
       "bug": "Bug",
       "example": "Exempel",
       "quote": "Citat"
-    }
+    },
+    "note_width": "Anteckningsbredd: {}%",
+    "note_width_reset": "Återställ anteckningsbredd (100%)"
   },
   "search": {
     "title": "Sök i kunskapsbasen",

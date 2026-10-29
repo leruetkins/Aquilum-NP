@@ -3430,6 +3430,176 @@ impl SettingsView {
                     })),
                 cx,
             ),
+            self.render_setting_row_with_id(
+                Some("editor.noteWidth"),
+                &self.t("settings.editor.note_width"),
+                Some(&self.t("settings.editor.note_width_desc")),
+                self.render_stepper(
+                    "ui-note-width",
+                    &format!("{}%", config.editor.editor_width_pct),
+                    |this: &mut SettingsView, cx| {
+                        if this.config.editor.editor_width_pct > 0 {
+                            this.config.editor.editor_width_pct = this.config.editor.editor_width_pct.saturating_sub(5);
+                            this.save_settings(cx);
+                        }
+                    },
+                    |this: &mut SettingsView, cx| {
+                        if this.config.editor.editor_width_pct < 100 {
+                            this.config.editor.editor_width_pct = (this.config.editor.editor_width_pct + 5).min(100);
+                            this.save_settings(cx);
+                        }
+                    },
+                    cx,
+                ),
+                cx,
+            ),
+            self.render_setting_row_with_id(
+                Some("editor.noteAlign"),
+                &self.t("settings.editor.note_align"),
+                Some(&self.t("settings.editor.note_align_desc")),
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .bg(theme.bg_sidebar)
+                    .p_0p5()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .id("btn-align-left-ui")
+                            .px_2p5()
+                            .py_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .when(config.editor.note_align == crate::settings::NoteAlignment::Left, |s| s.bg(theme.accent).text_color(theme.text_on_accent))
+                            .when(config.editor.note_align != crate::settings::NoteAlignment::Left, |s| s.text_color(theme.text_muted).hover(|h| h.bg(theme.bg_hover)))
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(self.t("settings.editor.align_left"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.config.editor.note_align = crate::settings::NoteAlignment::Left;
+                                this.save_settings(cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("btn-align-center-ui")
+                            .px_2p5()
+                            .py_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .when(config.editor.note_align == crate::settings::NoteAlignment::Center, |s| s.bg(theme.accent).text_color(theme.text_on_accent))
+                            .when(config.editor.note_align != crate::settings::NoteAlignment::Center, |s| s.text_color(theme.text_muted).hover(|h| h.bg(theme.bg_hover)))
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(self.t("settings.editor.align_center"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.config.editor.note_align = crate::settings::NoteAlignment::Center;
+                                this.save_settings(cx);
+                            })),
+                    ),
+                cx,
+            ),
+            self.render_setting_row_with_id(
+                Some("editor.titleAlign"),
+                &self.t("settings.editor.title_align_window"),
+                Some(&self.t("settings.editor.title_align_window_desc")),
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .bg(theme.bg_sidebar)
+                    .p_0p5()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .id("btn-title-align-left-ui")
+                            .px_2p5()
+                            .py_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .when(config.editor.title_align == crate::settings::TitleAlignment::WindowLeft, |s| s.bg(theme.accent).text_color(theme.text_on_accent))
+                            .when(config.editor.title_align != crate::settings::TitleAlignment::WindowLeft, |s| s.text_color(theme.text_muted).hover(|h| h.bg(theme.bg_hover)))
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(self.t("settings.editor.align_left"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.config.editor.title_align = crate::settings::TitleAlignment::WindowLeft;
+                                this.save_settings(cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("btn-title-align-center-ui")
+                            .px_2p5()
+                            .py_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .when(config.editor.title_align == crate::settings::TitleAlignment::WindowCenter, |s| s.bg(theme.accent).text_color(theme.text_on_accent))
+                            .when(config.editor.title_align != crate::settings::TitleAlignment::WindowCenter, |s| s.text_color(theme.text_muted).hover(|h| h.bg(theme.bg_hover)))
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(self.t("settings.editor.align_center"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.config.editor.title_align = crate::settings::TitleAlignment::WindowCenter;
+                                this.save_settings(cx);
+                            })),
+                    ),
+                cx,
+            ),
+            self.render_setting_row_with_id(
+                Some("editor.titleAlignEditor"),
+                &self.t("settings.editor.title_align_editor"),
+                Some(&self.t("settings.editor.title_align_editor_desc")),
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .bg(theme.bg_sidebar)
+                    .p_0p5()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .id("btn-title-align-editor-left-ui")
+                            .px_2p5()
+                            .py_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .when(config.editor.title_align == crate::settings::TitleAlignment::EditorLeft, |s| s.bg(theme.accent).text_color(theme.text_on_accent))
+                            .when(config.editor.title_align != crate::settings::TitleAlignment::EditorLeft, |s| s.text_color(theme.text_muted).hover(|h| h.bg(theme.bg_hover)))
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(self.t("settings.editor.align_left"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.config.editor.title_align = crate::settings::TitleAlignment::EditorLeft;
+                                this.save_settings(cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("btn-title-align-editor-center-ui")
+                            .px_2p5()
+                            .py_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .when(config.editor.title_align == crate::settings::TitleAlignment::EditorCenter, |s| s.bg(theme.accent).text_color(theme.text_on_accent))
+                            .when(config.editor.title_align != crate::settings::TitleAlignment::EditorCenter, |s| s.text_color(theme.text_muted).hover(|h| h.bg(theme.bg_hover)))
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(self.t("settings.editor.align_center"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.config.editor.title_align = crate::settings::TitleAlignment::EditorCenter;
+                                this.save_settings(cx);
+                            })),
+                    ),
+                cx,
+            ),
         ];
 
         let font_rows = vec![
@@ -3480,6 +3650,7 @@ impl SettingsView {
 
     /// Renders the Editor layout, typography and behaviors settings tab.
     fn render_editor_tab(&self, cx: &Context<Self>) -> gpui::Div {
+        let theme = &self.theme;
         let config = &self.config;
 
         let heading_rows = vec![
@@ -3840,6 +4011,176 @@ impl SettingsView {
 
         let tabs_display = self.t_fmt("settings.editor.live_tabs_unit", &[&config.editor.live_tabs.to_string()]);
         let layout_rows = vec![
+            self.render_setting_row_with_id(
+                Some("editor.noteWidth"),
+                &self.t("settings.editor.note_width"),
+                Some(&self.t("settings.editor.note_width_desc")),
+                self.render_stepper(
+                    "editor-note-width",
+                    &format!("{}%", config.editor.editor_width_pct),
+                    |this: &mut SettingsView, cx| {
+                        if this.config.editor.editor_width_pct > 0 {
+                            this.config.editor.editor_width_pct = this.config.editor.editor_width_pct.saturating_sub(5);
+                            this.save_settings(cx);
+                        }
+                    },
+                    |this: &mut SettingsView, cx| {
+                        if this.config.editor.editor_width_pct < 100 {
+                            this.config.editor.editor_width_pct = (this.config.editor.editor_width_pct + 5).min(100);
+                            this.save_settings(cx);
+                        }
+                    },
+                    cx,
+                ),
+                cx,
+            ),
+            self.render_setting_row_with_id(
+                Some("editor.noteAlign"),
+                &self.t("settings.editor.note_align"),
+                Some(&self.t("settings.editor.note_align_desc")),
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .bg(theme.bg_sidebar)
+                    .p_0p5()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .id("btn-align-left-editor")
+                            .px_2p5()
+                            .py_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .when(config.editor.note_align == crate::settings::NoteAlignment::Left, |s| s.bg(theme.accent).text_color(theme.text_on_accent))
+                            .when(config.editor.note_align != crate::settings::NoteAlignment::Left, |s| s.text_color(theme.text_muted).hover(|h| h.bg(theme.bg_hover)))
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(self.t("settings.editor.align_left"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.config.editor.note_align = crate::settings::NoteAlignment::Left;
+                                this.save_settings(cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("btn-align-center-editor")
+                            .px_2p5()
+                            .py_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .when(config.editor.note_align == crate::settings::NoteAlignment::Center, |s| s.bg(theme.accent).text_color(theme.text_on_accent))
+                            .when(config.editor.note_align != crate::settings::NoteAlignment::Center, |s| s.text_color(theme.text_muted).hover(|h| h.bg(theme.bg_hover)))
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(self.t("settings.editor.align_center"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.config.editor.note_align = crate::settings::NoteAlignment::Center;
+                                this.save_settings(cx);
+                            })),
+                    ),
+                cx,
+            ),
+            self.render_setting_row_with_id(
+                Some("editor.titleAlign"),
+                &self.t("settings.editor.title_align_window"),
+                Some(&self.t("settings.editor.title_align_window_desc")),
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .bg(theme.bg_sidebar)
+                    .p_0p5()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .id("btn-title-align-left-editor")
+                            .px_2p5()
+                            .py_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .when(config.editor.title_align == crate::settings::TitleAlignment::WindowLeft, |s| s.bg(theme.accent).text_color(theme.text_on_accent))
+                            .when(config.editor.title_align != crate::settings::TitleAlignment::WindowLeft, |s| s.text_color(theme.text_muted).hover(|h| h.bg(theme.bg_hover)))
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(self.t("settings.editor.align_left"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.config.editor.title_align = crate::settings::TitleAlignment::WindowLeft;
+                                this.save_settings(cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("btn-title-align-center-editor")
+                            .px_2p5()
+                            .py_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .when(config.editor.title_align == crate::settings::TitleAlignment::WindowCenter, |s| s.bg(theme.accent).text_color(theme.text_on_accent))
+                            .when(config.editor.title_align != crate::settings::TitleAlignment::WindowCenter, |s| s.text_color(theme.text_muted).hover(|h| h.bg(theme.bg_hover)))
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(self.t("settings.editor.align_center"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.config.editor.title_align = crate::settings::TitleAlignment::WindowCenter;
+                                this.save_settings(cx);
+                            })),
+                    ),
+                cx,
+            ),
+            self.render_setting_row_with_id(
+                Some("editor.titleAlignEditor"),
+                &self.t("settings.editor.title_align_editor"),
+                Some(&self.t("settings.editor.title_align_editor_desc")),
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .bg(theme.bg_sidebar)
+                    .p_0p5()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .id("btn-title-align-editor-left-editor")
+                            .px_2p5()
+                            .py_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .when(config.editor.title_align == crate::settings::TitleAlignment::EditorLeft, |s| s.bg(theme.accent).text_color(theme.text_on_accent))
+                            .when(config.editor.title_align != crate::settings::TitleAlignment::EditorLeft, |s| s.text_color(theme.text_muted).hover(|h| h.bg(theme.bg_hover)))
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(self.t("settings.editor.align_left"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.config.editor.title_align = crate::settings::TitleAlignment::EditorLeft;
+                                this.save_settings(cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("btn-title-align-editor-center-editor")
+                            .px_2p5()
+                            .py_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .when(config.editor.title_align == crate::settings::TitleAlignment::EditorCenter, |s| s.bg(theme.accent).text_color(theme.text_on_accent))
+                            .when(config.editor.title_align != crate::settings::TitleAlignment::EditorCenter, |s| s.text_color(theme.text_muted).hover(|h| h.bg(theme.bg_hover)))
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(self.t("settings.editor.align_center"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.config.editor.title_align = crate::settings::TitleAlignment::EditorCenter;
+                                this.save_settings(cx);
+                            })),
+                    ),
+                cx,
+            ),
             self.render_setting_row(
                 &self.t("settings.editor.max_width"),
                 Some(&self.t("settings.editor.max_width_desc")),

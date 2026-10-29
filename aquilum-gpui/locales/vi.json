@@ -117,7 +117,19 @@
       "wide_scrollbar_desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
       "debounce": "Độ trễ tự động lưu",
       "debounce_desc": "Thời gian chờ sau khi nhập trước khi ghi vào đĩa",
-      "debounce_unit": "{} bệnh đa xơ cứng"
+      "debounce_unit": "{} bệnh đa xơ cứng",
+      "note_width": "Độ rộng cột ghi chú",
+      "note_width_desc": "Độ rộng cột ghi chú theo tỷ lệ phần trăm cửa sổ (0-100%)",
+      "note_align": "Căn chỉnh ghi chú",
+      "note_align_desc": "Căn chỉnh ngang của cột ghi chú: căn giữa hoặc sang trái",
+      "align_center": "Giữa",
+      "align_left": "Trái",
+      "title_align": "Căn chỉnh tiêu đề",
+      "title_align_desc": "Vị trí tiêu đề tệp phía trên trình soạn thảo: bên trái hoặc căn giữa",
+      "title_align_window": "Vị trí tiêu đề (theo chiều rộng cửa sổ)",
+      "title_align_window_desc": "Căn chỉnh tiêu đề tài liệu theo cửa sổ: sang trái hoặc căn giữa",
+      "title_align_editor": "Vị trí tiêu đề (theo chiều rộng trình soạn thảo)",
+      "title_align_editor_desc": "Căn chỉnh tiêu đề tài liệu theo cột ghi chú: sang trái hoặc căn giữa"
     },
     "reader": {
       "title": "Chế độ đọc",
@@ -342,7 +354,9 @@
       "bug": "Lỗi",
       "example": "Ví dụ",
       "quote": "Trích dẫn"
-    }
+    },
+    "note_width": "Chiều rộng ghi chú: {}%",
+    "note_width_reset": "Đặt lại chiều rộng ghi chú (100%)"
   },
   "search": {
     "title": "Tìm kiếm cơ sở kiến ​​thức",

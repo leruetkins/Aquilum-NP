@@ -117,7 +117,19 @@
       "wide_scrollbar_desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
       "debounce": "Délai de sauvegarde automatique",
       "debounce_desc": "Délai d'inactivité après la saisie avant l'enregistrement sur disque",
-      "debounce_unit": "{} MS"
+      "debounce_unit": "{} MS",
+      "note_width": "Largeur de la note",
+      "note_width_desc": "Largeur de la colonne de note en pourcentage de la fenêtre (0-100%)",
+      "note_align": "Alignement de la note",
+      "note_align_desc": "Alignement horizontal de la note : centré ou à gauche",
+      "align_center": "Centré",
+      "align_left": "À gauche",
+      "title_align": "Alignement du titre",
+      "title_align_desc": "Position du titre du fichier au-dessus de l'éditeur : à gauche ou centré",
+      "title_align_window": "Position du titre (largeur de la fenêtre)",
+      "title_align_window_desc": "Aligner le titre du document par rapport à la fenêtre : à gauche ou centré",
+      "title_align_editor": "Position du titre (largeur de l'éditeur)",
+      "title_align_editor_desc": "Aligner le titre du document par rapport à la colonne de note : à gauche ou centré"
     },
     "reader": {
       "title": "Mode lecteur",
@@ -342,7 +354,9 @@
       "bug": "Bug",
       "example": "Exemple",
       "quote": "Citation"
-    }
+    },
+    "note_width": "Largeur de la note : {}%",
+    "note_width_reset": "Réinitialiser la largeur de la note (100%)"
   },
   "search": {
     "title": "Rechercher dans la base de connaissances",

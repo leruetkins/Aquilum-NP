@@ -117,7 +117,19 @@
       "wide_scrollbar_desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
       "debounce": "स्वतः-सहेजें देरी",
       "debounce_desc": "टाइप करने के बाद डिस्क पर लिखने से पहले विलंब",
-      "debounce_unit": "{} मिलीसेकंड"
+      "debounce_unit": "{} मिलीसेकंड",
+      "note_width": "नोट की चौड़ाई",
+      "note_width_desc": "विंडो की चौड़ाई के प्रतिशत के रूप में नोट कॉलम की चौड़ाई (0-100%)",
+      "note_align": "नोट संरेखण",
+      "note_align_desc": "नोट कॉलम का क्षैतिज संरेखण: केंद्र या बाएँ",
+      "align_center": "केंद्र",
+      "align_left": "बाएँ",
+      "title_align": "शीर्षक संरेखण",
+      "title_align_desc": "संपादक के ऊपर फ़ाइल शीर्षक की स्थिति: बाएँ या केंद्र",
+      "title_align_window": "शीर्षक स्थिति (विंडो की चौड़ाई)",
+      "title_align_window_desc": "विंडो के सापेक्ष फ़ाइल शीर्षक संरेखित करें: बाएँ या केंद्र",
+      "title_align_editor": "शीर्षक स्थिति (संपादक की चौड़ाई)",
+      "title_align_editor_desc": "नोट कॉलम के सापेक्ष फ़ाइल शीर्षक संरेखित करें: बाएँ या केंद्र"
     },
     "reader": {
       "title": "रीडर मोड",
@@ -342,7 +354,9 @@
       "bug": "बग",
       "example": "उदाहरण",
       "quote": "उद्धरण"
-    }
+    },
+    "note_width": "नोट की चौड़ाई: {}%",
+    "note_width_reset": "नोट की चौड़ाई रीसेट करें (100%)"
   },
   "search": {
     "title": "ज्ञानकोष में खोज",

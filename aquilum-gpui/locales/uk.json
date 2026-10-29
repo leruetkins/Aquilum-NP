@@ -117,7 +117,19 @@
       "wide_scrollbar_desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
       "debounce": "Затримка автозбереження",
       "debounce_desc": "Таймаут після введення тексту перед записом на диск",
-      "debounce_unit": "{} мс"
+      "debounce_unit": "{} мс",
+      "note_width": "Ширина нотатки",
+      "note_width_desc": "Ширина текстової колонки нотатки у відсотках від ширини вікна (0–100%)",
+      "note_align": "Вирівнювання нотатки",
+      "note_align_desc": "Горизонтальне вирівнювання колонки нотатки: по центру або по лівому краю",
+      "align_center": "По центру",
+      "align_left": "По лівому краю",
+      "title_align": "Положення заголовка",
+      "title_align_desc": "Положення імені файлу над редактором: ліворуч або по центру",
+      "title_align_window": "Положення заголовка (по вікну)",
+      "title_align_window_desc": "Вирівнювання імені файлу за шириною вікна: ліворуч або по центру",
+      "title_align_editor": "Положення заголовка (по редактору)",
+      "title_align_editor_desc": "Вирівнювання імені файлу за шириною нотатки: по лівому краю або по середині"
     },
     "reader": {
       "title": "Режим читання",
@@ -342,7 +354,9 @@
       "bug": "Баг",
       "example": "Приклад",
       "quote": "Цитата"
-    }
+    },
+    "note_width": "Ширина нотатки: {}%",
+    "note_width_reset": "Скинути ширину нотатки (100%)"
   },
   "search": {
     "title": "Пошук у базі знань",

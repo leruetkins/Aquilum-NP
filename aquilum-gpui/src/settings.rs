@@ -154,6 +154,59 @@ impl Default for HeadingsSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteAlignment {
+    #[default]
+    Center,
+    Left,
+}
+
+impl NoteAlignment {
+    pub fn is_left(&self) -> bool {
+        matches!(self, Self::Left)
+    }
+
+    pub fn is_center(&self) -> bool {
+        matches!(self, Self::Center)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TitleAlignment {
+    #[serde(alias = "left")]
+    WindowLeft,
+    #[serde(alias = "center")]
+    WindowCenter,
+    EditorLeft,
+    EditorCenter,
+}
+
+impl Default for TitleAlignment {
+    fn default() -> Self {
+        Self::WindowLeft
+    }
+}
+
+impl TitleAlignment {
+    pub fn is_window_left(&self) -> bool {
+        matches!(self, Self::WindowLeft)
+    }
+
+    pub fn is_window_center(&self) -> bool {
+        matches!(self, Self::WindowCenter)
+    }
+
+    pub fn is_editor_left(&self) -> bool {
+        matches!(self, Self::EditorLeft)
+    }
+
+    pub fn is_editor_center(&self) -> bool {
+        matches!(self, Self::EditorCenter)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct EditorSettings {
@@ -184,6 +237,13 @@ pub struct EditorSettings {
     /// Automatically save dirty notes when the application window loses focus.
     /// On by default.
     pub save_on_blur: bool,
+    /// Note content width percentage (0..=100, where 100 is full width). Default is 100.
+    pub editor_width_pct: u32,
+    /// Note alignment inside the editor pane (Center or Left). Default is Center.
+    pub note_align: NoteAlignment,
+    /// Note title alignment (WindowLeft, WindowCenter, EditorLeft, EditorCenter). Default is WindowLeft.
+    #[serde(default)]
+    pub title_align: TitleAlignment,
     #[serde(flatten)]
     pub font: FontSettings,
 }
@@ -208,6 +268,9 @@ impl Default for EditorSettings {
             wide_scrollbar: false,
             adaptive_save: true,
             save_on_blur: true,
+            editor_width_pct: 100,
+            note_align: NoteAlignment::Center,
+            title_align: TitleAlignment::WindowLeft,
             font: FontSettings {
                 font_family: "iA Writer Mono".to_string(),
                 font_weight: 400,
@@ -682,6 +745,50 @@ pub static SETTINGS: &[SettingDescriptor] = &[
         setting_type: SettingType::Bool,
     },
     SettingDescriptor {
+        id: "editor.noteWidth",
+        tab_id: "ui",
+        title_ru: "Ширина заметки",
+        title_en: "Note Column Width",
+        desc_ru: "Ширина текстовой колонки заметки в процентах от ширины окна (0–100%)",
+        desc_en: "Width of the note content column as a percentage of the window (0-100%)",
+        keywords: &["width", "note", "slider", "ширина", "заметка", "ползунок"],
+        aliases: &["ui.noteWidth"],
+        setting_type: SettingType::U32,
+    },
+    SettingDescriptor {
+        id: "editor.noteAlign",
+        tab_id: "ui",
+        title_ru: "Выравнивание заметки",
+        title_en: "Note Alignment",
+        desc_ru: "Горизонтальное выравнивание колонки заметки: по центру или по левому краю",
+        desc_en: "Horizontal alignment of the note column: centered or left-aligned",
+        keywords: &["align", "center", "left", "выравнивание", "центр", "левый край"],
+        aliases: &["ui.noteAlign"],
+        setting_type: SettingType::String,
+    },
+    SettingDescriptor {
+        id: "editor.titleAlign",
+        tab_id: "ui",
+        title_ru: "Положение заголовка (по окну)",
+        title_en: "Note Title Alignment (Window)",
+        desc_ru: "Положение имени файла по ширине окна: слева или по центру",
+        desc_en: "Position of the file title relative to the window: left or centered",
+        keywords: &["title", "align", "filename", "заголовок", "имя файла", "окно"],
+        aliases: &["ui.titleAlign", "editor.titleAlignWindow"],
+        setting_type: SettingType::String,
+    },
+    SettingDescriptor {
+        id: "editor.titleAlignEditor",
+        tab_id: "ui",
+        title_ru: "Положение заголовка (по редактору)",
+        title_en: "Note Title Alignment (Editor)",
+        desc_ru: "Положение имени файла по ширине заметки: по левому краю или по середине",
+        desc_en: "Position of the file title relative to the note column: left edge or centered",
+        keywords: &["title", "align", "editor", "заметка", "редактор", "колонка"],
+        aliases: &["ui.titleAlignEditor"],
+        setting_type: SettingType::String,
+    },
+    SettingDescriptor {
         id: "reader.lineHeight",
         tab_id: "reader",
         title_ru: "Высота строки в режиме чтения",
@@ -909,5 +1016,83 @@ mod tests {
         // Multi-keyword search
         let res_font = search_settings("шрифт размер");
         assert!(res_font.iter().any(|s| s.id == "editor.fontSizeBase"));
+    }
+
+    #[test]
+    fn test_editor_width_pct_default_and_serde() {
+        let default_settings = EditorSettings::default();
+        assert_eq!(default_settings.editor_width_pct, 100);
+
+        // Deserializing empty JSON should default editor_width_pct to 100
+        let json_empty = "{}";
+        let parsed: EditorSettings = serde_json::from_str(json_empty).unwrap();
+        assert_eq!(parsed.editor_width_pct, 100);
+
+        // Deserializing with custom percentage (e.g. 45 from slider)
+        let json_custom = r#"{"editorWidthPct": 45}"#;
+        let parsed_custom: EditorSettings = serde_json::from_str(json_custom).unwrap();
+        assert_eq!(parsed_custom.editor_width_pct, 45);
+
+        // Serialization includes editorWidthPct
+        let serialized = serde_json::to_string(&parsed_custom).unwrap();
+        assert!(serialized.contains(r#""editorWidthPct":45"#));
+    }
+
+    #[test]
+    fn test_note_align_default_and_serde() {
+        let default_settings = EditorSettings::default();
+        assert_eq!(default_settings.note_align, NoteAlignment::Center);
+
+        // Deserializing empty JSON should default note_align to Center
+        let json_empty = "{}";
+        let parsed: EditorSettings = serde_json::from_str(json_empty).unwrap();
+        assert_eq!(parsed.note_align, NoteAlignment::Center);
+
+        // Deserializing with custom alignment "left"
+        let json_left = r#"{"noteAlign": "left"}"#;
+        let parsed_left: EditorSettings = serde_json::from_str(json_left).unwrap();
+        assert_eq!(parsed_left.note_align, NoteAlignment::Left);
+
+        // Deserializing with custom alignment "center"
+        let json_center = r#"{"noteAlign": "center"}"#;
+        let parsed_center: EditorSettings = serde_json::from_str(json_center).unwrap();
+        assert_eq!(parsed_center.note_align, NoteAlignment::Center);
+
+        // Serialization includes noteAlign
+        let serialized = serde_json::to_string(&parsed_left).unwrap();
+        assert!(serialized.contains(r#""noteAlign":"left""#));
+    }
+
+    #[test]
+    fn test_title_align_default_and_serde() {
+        let default_settings = EditorSettings::default();
+        assert_eq!(default_settings.title_align, TitleAlignment::WindowLeft);
+
+        // Deserializing empty JSON should default title_align to WindowLeft
+        let json_empty = "{}";
+        let parsed: EditorSettings = serde_json::from_str(json_empty).unwrap();
+        assert_eq!(parsed.title_align, TitleAlignment::WindowLeft);
+
+        // Deserializing legacy "center" and "left" aliases
+        let json_legacy_center = r#"{"titleAlign": "center"}"#;
+        let parsed_legacy_center: EditorSettings = serde_json::from_str(json_legacy_center).unwrap();
+        assert_eq!(parsed_legacy_center.title_align, TitleAlignment::WindowCenter);
+
+        let json_legacy_left = r#"{"titleAlign": "left"}"#;
+        let parsed_legacy_left: EditorSettings = serde_json::from_str(json_legacy_left).unwrap();
+        assert_eq!(parsed_legacy_left.title_align, TitleAlignment::WindowLeft);
+
+        // Deserializing editor_left and editor_center
+        let json_editor_left = r#"{"titleAlign": "editor_left"}"#;
+        let parsed_editor_left: EditorSettings = serde_json::from_str(json_editor_left).unwrap();
+        assert_eq!(parsed_editor_left.title_align, TitleAlignment::EditorLeft);
+
+        let json_editor_center = r#"{"titleAlign": "editor_center"}"#;
+        let parsed_editor_center: EditorSettings = serde_json::from_str(json_editor_center).unwrap();
+        assert_eq!(parsed_editor_center.title_align, TitleAlignment::EditorCenter);
+
+        // Serialization produces snake_case
+        let serialized = serde_json::to_string(&parsed_editor_center).unwrap();
+        assert!(serialized.contains(r#""titleAlign":"editor_center""#));
     }
 }

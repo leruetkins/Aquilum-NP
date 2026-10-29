@@ -117,7 +117,19 @@
       "wide_scrollbar_desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
       "debounce": "자동 저장 대기 시간",
       "debounce_desc": "입력 후 디스크에 저장하기 전의 대기 시간",
-      "debounce_unit": "{}밀리초"
+      "debounce_unit": "{}밀리초",
+      "note_width": "노트 열 너비",
+      "note_width_desc": "창 너비 대비 노트 열 너비 비율 (0~100%)",
+      "note_align": "노트 정렬",
+      "note_align_desc": "노트 열의 가로 정렬: 가운데 또는 왼쪽 정렬",
+      "align_center": "가운데",
+      "align_left": "왼쪽",
+      "title_align": "제목 정렬",
+      "title_align_desc": "편집기 상단 파일 제목의 위치: 왼쪽 또는 가운데",
+      "title_align_window": "제목 위치 (창 너비 기준)",
+      "title_align_window_desc": "창 너비를 기준으로 파일 제목 정렬: 왼쪽 또는 가운데",
+      "title_align_editor": "제목 위치 (편집기 너비 기준)",
+      "title_align_editor_desc": "노트 열 너비를 기준으로 파일 제목 정렬: 왼쪽 또는 가운데"
     },
     "reader": {
       "title": "리더 모드",
@@ -342,7 +354,9 @@
       "bug": "버그",
       "example": "예시",
       "quote": "인용"
-    }
+    },
+    "note_width": "노트 너비: {}%",
+    "note_width_reset": "노트 너비 초기화 (100%)"
   },
   "search": {
     "title": "지식 베이스 검색",

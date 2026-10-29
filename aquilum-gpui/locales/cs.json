@@ -117,7 +117,19 @@
       "wide_scrollbar_desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
       "debounce": "Zpoždění automatického ukládání",
       "debounce_desc": "Prodleva po zápisu před uložením na disk",
-      "debounce_unit": "{} ms"
+      "debounce_unit": "{} ms",
+      "note_width": "Šířka poznámky",
+      "note_width_desc": "Šířka sloupce poznámky v procentech šířky okna (0–100%)",
+      "note_align": "Zarovnání poznámky",
+      "note_align_desc": "Vodorovné zarovnání sloupce poznámky: na střed nebo vlevo",
+      "align_center": "Na střed",
+      "align_left": "Vlevo",
+      "title_align": "Zarovnání názvu",
+      "title_align_desc": "Umístění názvu souboru nad editorem: vlevo nebo na střed",
+      "title_align_window": "Pozice názvu (šířka okna)",
+      "title_align_window_desc": "Zarovnání názvu dokumentu vůči oknu: vlevo nebo na střed",
+      "title_align_editor": "Pozice názvu (šířka editoru)",
+      "title_align_editor_desc": "Zarovnání názvu dokumentu vůči sloupci poznámky: vlevo nebo na střed"
     },
     "reader": {
       "title": "Režim čtečky",
@@ -342,7 +354,9 @@
       "bug": "Chyba",
       "example": "Příklad",
       "quote": "Citace"
-    }
+    },
+    "note_width": "Šířka poznámky: {}%",
+    "note_width_reset": "Obnovit šířku poznámky (100%)"
   },
   "search": {
     "title": "Prohledejte znalostní bázi",

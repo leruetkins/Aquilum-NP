@@ -117,7 +117,19 @@
       "wide_scrollbar_desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
       "debounce": "自動儲存防抖延遲",
       "debounce_desc": "輸入完成後寫入磁碟前的防抖延時",
-      "debounce_unit": "{} 毫秒"
+      "debounce_unit": "{} 毫秒",
+      "note_width": "筆記欄寬度",
+      "note_width_desc": "筆記內容欄佔視窗寬度的百分比 (0-100%)",
+      "note_align": "筆記對齊方式",
+      "note_align_desc": "筆記欄的水平對齊方式：置中或靠左",
+      "align_center": "置中",
+      "align_left": "靠左",
+      "title_align": "標題對齊方式",
+      "title_align_desc": "編輯器上方檔案標題的位置：靠左或置中",
+      "title_align_window": "標題位置 (依視窗寬度)",
+      "title_align_window_desc": "依視窗寬度對齊檔案標題：靠左或置中",
+      "title_align_editor": "標題位置 (依編輯器寬度)",
+      "title_align_editor_desc": "依筆記欄寬度對齊檔案標題：靠左或置中"
     },
     "reader": {
       "title": "閱讀器模式",
@@ -342,7 +354,9 @@
       "bug": "缺陷",
       "example": "範例",
       "quote": "引用"
-    }
+    },
+    "note_width": "筆記寬度: {}%",
+    "note_width_reset": "重設筆記寬度 (100%)"
   },
   "search": {
     "title": "搜尋知識庫",

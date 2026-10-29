@@ -117,7 +117,19 @@
       "wide_scrollbar_desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
       "debounce": "自動保存の遅延",
       "debounce_desc": "入力完了からディスク書き込みまでの待機時間",
-      "debounce_unit": "{} MS"
+      "debounce_unit": "{} MS",
+      "note_width": "ノートの幅",
+      "note_width_desc": "ウィンドウ幅に対するノート列の幅の割合 (0〜100%)",
+      "note_align": "ノートの配置",
+      "note_align_desc": "ノート列の水平配置: 中央揃えまたは左揃え",
+      "align_center": "中央揃え",
+      "align_left": "左揃え",
+      "title_align": "タイトルの配置",
+      "title_align_desc": "エディタ上部のファイル名の配置: 左揃えまたは中央揃え",
+      "title_align_window": "タイトル配置 (ウィンドウ幅基準)",
+      "title_align_window_desc": "ウィンドウ幅を基準としたファイル名の配置: 左揃えまたは中央揃え",
+      "title_align_editor": "タイトル配置 (エディタ幅基準)",
+      "title_align_editor_desc": "ノート列の幅を基準としたファイル名の配置: 左揃えまたは中央揃え"
     },
     "reader": {
       "title": "リーダーモード",
@@ -342,7 +354,9 @@
       "bug": "バグ",
       "example": "例",
       "quote": "引用"
-    }
+    },
+    "note_width": "ノート幅: {}%",
+    "note_width_reset": "ノート幅をリセット (100%)"
   },
   "search": {
     "title": "ナレッジベースを検索する",

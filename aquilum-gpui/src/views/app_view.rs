@@ -212,6 +212,8 @@ pub struct AppView {
     pub is_dragging_scrollbar: bool,
     pub scrollbar_drag_start_y: f32,
     pub scrollbar_drag_start_scroll_y: f64,
+    pub is_dragging_note_width_slider: bool,
+    pub note_width_slider_origin_x: Rc<Cell<f32>>,
     /// Whether the pointer is over the editor scrollbar track. While hovered
     /// the overview-ruler marks stretch across the full track width; otherwise
     /// they collapse into a thin pill centered like the thumb.
@@ -479,6 +481,8 @@ impl AppView {
             is_dragging_scrollbar: false,
             scrollbar_drag_start_y: 0.0,
             scrollbar_drag_start_scroll_y: 0.0,
+            is_dragging_note_width_slider: false,
+            note_width_slider_origin_x: Rc::new(Cell::new(0.0)),
             is_hovering_editor_scrollbar: false,
             is_hovering_editor_thumb: false,
             sidebar_scrollbar_drag: ScrollbarDrag::default(),
@@ -1374,29 +1378,137 @@ impl AppView {
         cx.notify();
     }
 
-    fn compute_wrap_cols_for_leaf(&self, leaf_id: Option<crate::workspace::LeafId>, window_width: f32, char_width: f32) -> usize {
+    pub(crate) fn note_content_width(&self, max_content_w: f32) -> f32 {
+        let pct = self.config.editor.editor_width_pct;
+        if pct >= 100 {
+            max_content_w
+        } else {
+            let min_w = 400.0f32.min(max_content_w);
+            (min_w + (max_content_w - min_w) * (pct as f32 / 100.0)).clamp(min_w, max_content_w)
+        }
+    }
+
+    pub(crate) fn pane_width_for_leaf(&self, leaf_id: Option<crate::workspace::LeafId>, window_width: f32) -> f32 {
         let editor_left_w = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
-        // The right sidebar shrinks the editor column (flex layout), so the
-        // text must rewrap to the narrower width instead of running under it.
         let editor_right_w = if self.right_sidebar_collapsed {
             0.0
         } else {
             self.right_sidebar_width + 1.0
         };
-        let char_w = if char_width > 1.0 { char_width } else { 7.7 };
         let workspace_w = (window_width - editor_left_w - editor_right_w).max(100.0);
         let width_ratio = leaf_id
             .map(|lid| self.state.workspace.horizontal_width_ratio_of_leaf(lid))
             .unwrap_or(1.0);
-        let pane_w = (workspace_w * width_ratio).max(100.0);
+        (workspace_w * width_ratio).max(100.0)
+    }
 
-        // R14 (§4.4): content_w = pane_w - divider_w - horizontal_padding - gutter_w - scrollbar_w
+    pub(crate) fn note_margins_for_leaf(&self, leaf_id: Option<crate::workspace::LeafId>, window_width: f32) -> (f32, f32) {
+        if self.config.editor.editor_width_pct >= 100 {
+            return (0.0, 0.0);
+        }
+        let pane_w = self.pane_width_for_leaf(leaf_id, window_width);
+        let width_ratio = leaf_id
+            .map(|lid| self.state.workspace.horizontal_width_ratio_of_leaf(lid))
+            .unwrap_or(1.0);
+        let divider_w = if width_ratio < 0.999 { 4.0 } else { 0.0 };
+        let horizontal_padding = 64.0;
+        let gutter_w = 48.0;
+        let scrollbar_w = if self.config.editor.wide_scrollbar { 16.0 } else { 14.0 };
+
+        let max_content_w = (pane_w - divider_w - horizontal_padding - gutter_w - scrollbar_w).max(40.0);
+        let content_w = self.note_content_width(max_content_w);
+        let extra_space = (max_content_w - content_w).max(0.0);
+
+        match self.config.editor.note_align {
+            crate::settings::NoteAlignment::Left => (0.0, extra_space.round()),
+            crate::settings::NoteAlignment::Center => {
+                let half = (extra_space / 2.0).round();
+                (half, half)
+            }
+        }
+    }
+
+    pub(crate) fn note_margin_left_for_leaf(&self, leaf_id: Option<crate::workspace::LeafId>, window_width: f32) -> f32 {
+        self.note_margins_for_leaf(leaf_id, window_width).0
+    }
+
+    pub fn set_note_align(&mut self, align: crate::settings::NoteAlignment, cx: &mut Context<Self>) {
+        if self.config.editor.note_align == align {
+            return;
+        }
+        self.config.editor.note_align = align;
+        self.save_settings(cx);
+        for view in self.state.views.values_mut() {
+            view.visual_cache_dirty = true;
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn note_title_offset_for_leaf(&self, leaf_id: Option<crate::workspace::LeafId>, window_width: f32, title_text_w: f32) -> f32 {
+        let pane_w = self.pane_width_for_leaf(leaf_id, window_width);
+        let width_ratio = leaf_id
+            .map(|lid| self.state.workspace.horizontal_width_ratio_of_leaf(lid))
+            .unwrap_or(1.0);
+        let divider_w = if width_ratio < 0.999 { 4.0 } else { 0.0 };
+        let horizontal_padding = 64.0;
+        let gutter_w = 48.0;
+        let scrollbar_w = if self.config.editor.wide_scrollbar { 16.0 } else { 14.0 };
+
+        let max_content_w = (pane_w - divider_w - horizontal_padding - gutter_w - scrollbar_w).max(40.0);
+        let content_w = self.note_content_width(max_content_w);
+        let extra_space = (max_content_w - content_w).max(0.0);
+
+        let note_margin_left = match self.config.editor.note_align {
+            crate::settings::NoteAlignment::Left => 0.0,
+            crate::settings::NoteAlignment::Center => (extra_space / 2.0).round(),
+        };
+
+        match self.config.editor.title_align {
+            crate::settings::TitleAlignment::WindowLeft => 48.0,
+            crate::settings::TitleAlignment::WindowCenter => {
+                ((pane_w - title_text_w) / 2.0).max(48.0).round()
+            }
+            crate::settings::TitleAlignment::EditorLeft => {
+                48.0 + note_margin_left
+            }
+            crate::settings::TitleAlignment::EditorCenter => {
+                let note_center_offset = note_margin_left + 48.0 + ((content_w - title_text_w) / 2.0).round();
+                note_center_offset.max(48.0 + note_margin_left)
+            }
+        }
+    }
+
+    pub fn set_title_align(&mut self, align: crate::settings::TitleAlignment, cx: &mut Context<Self>) {
+        if self.config.editor.title_align == align {
+            return;
+        }
+        self.config.editor.title_align = align;
+        self.save_settings(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn find_bar_left_offset_for_leaf(&self, leaf_id: Option<crate::workspace::LeafId>, window_width: f32) -> f32 {
+        let pane_w = self.pane_width_for_leaf(leaf_id, window_width);
+        let (note_margin_left, note_margin_right) = self.note_margins_for_leaf(leaf_id, window_width);
+        let note_center_x = (pane_w + note_margin_left - note_margin_right) / 2.0;
+        let bar_w = 620.0_f32.min(pane_w - 32.0).max(100.0);
+        let max_left = (pane_w - 16.0 - bar_w).max(16.0);
+        (note_center_x - bar_w / 2.0).clamp(16.0, max_left).round()
+    }
+
+    fn compute_wrap_cols_for_leaf(&self, leaf_id: Option<crate::workspace::LeafId>, window_width: f32, char_width: f32) -> usize {
+        let char_w = if char_width > 1.0 { char_width } else { 7.7 };
+        let pane_w = self.pane_width_for_leaf(leaf_id, window_width);
+        let width_ratio = leaf_id
+            .map(|lid| self.state.workspace.horizontal_width_ratio_of_leaf(lid))
+            .unwrap_or(1.0);
         let divider_w = if width_ratio < 0.999 { 4.0 } else { 0.0 };
         let horizontal_padding = 64.0; // px_8 on editor_list = 32px left + 32px right
         let gutter_w = 48.0; // line numbers (40px) + gap (8px)
         let scrollbar_w = if self.config.editor.wide_scrollbar { 16.0 } else { 14.0 };
 
-        let content_w = (pane_w - divider_w - horizontal_padding - gutter_w - scrollbar_w).max(40.0);
+        let max_content_w = (pane_w - divider_w - horizontal_padding - gutter_w - scrollbar_w).max(40.0);
+        let content_w = self.note_content_width(max_content_w);
         ((content_w / char_w).floor() as usize).max(20)
     }
 
@@ -1411,7 +1523,174 @@ impl AppView {
         let workspace_w = (window_w - editor_left_x - editor_right_x).max(0.0);
         let target_lid = leaf_id.unwrap_or(self.state.workspace.active_leaf);
         let (start_ratio, _) = self.state.workspace.horizontal_span_of_leaf(target_lid);
-        editor_left_x + start_ratio * workspace_w + 32.0 + 8.0 + 40.0
+        let margin_left = self.note_margin_left_for_leaf(Some(target_lid), window_w);
+        editor_left_x + start_ratio * workspace_w + margin_left + 32.0 + 8.0 + 40.0
+    }
+
+    pub fn set_editor_width_pct(&mut self, pct: u32, window: &Window, cx: &mut Context<Self>) {
+        let clamped = pct.clamp(0, 100);
+        if self.config.editor.editor_width_pct == clamped {
+            return;
+        }
+        self.config.editor.editor_width_pct = clamped;
+        let viewport_w: f32 = window.viewport_size().width.into();
+        let editor_font = self.editor_font_family();
+        let font_id = cx.text_system().resolve_font(&gpui::font(editor_font));
+        let line_char_width = cx
+            .text_system()
+            .advance(font_id, px(14.0), 'x')
+            .map(|s| f32::from(s.width))
+            .unwrap_or(7.7);
+
+        for (leaf_id, leaf) in self.state.leaves.iter() {
+            if let Some(tab) = leaf.active_tab() {
+                if let crate::workspace::TabContent::Document { id: doc_id } = tab.content {
+                    let wrap_cols = self.compute_wrap_cols_for_leaf(Some(*leaf_id), viewport_w, line_char_width);
+                    if let Some(doc) = self.state.documents.get_mut(&doc_id) {
+                        if let Some(view) = self.state.views.get_mut(&tab.id) {
+                            view.visual_cache_dirty = true;
+                            view.ensure_visual_cache_with_headings(
+                                doc,
+                                self.word_wrap,
+                                wrap_cols,
+                                Some(&self.config.editor.headings),
+                                view.viewport.offset,
+                                self.ctrl_preview_selection || !self.edit_mode,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        self.last_wrap_cols = self.compute_wrap_cols(viewport_w, line_char_width);
+        self.state.status_text = self.t_fmt("editor.note_width", &[&clamped.to_string()]);
+        cx.notify();
+    }
+
+    pub fn render_note_width_slider(&self, theme: &Theme, cx: &Context<Self>) -> gpui::Stateful<Div> {
+        const TRACK_W: f32 = 120.0;
+        const THUMB_W: f32 = 16.0;
+
+        let pct = self.config.editor.editor_width_pct.clamp(0, 100);
+        let thumb_x = (TRACK_W - THUMB_W) * (pct as f32 / 100.0);
+        let cell = self.note_width_slider_origin_x.clone();
+
+        let track_bg = if theme.is_dark {
+            gpui::rgba(0xffffff28)
+        } else {
+            gpui::rgba(0x00000022)
+        };
+
+        div()
+            .id("status-note-width-container")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            // Track area
+            .child(
+                div()
+                    .id("status-note-width-track-wrapper")
+                    .relative()
+                    .w(px(TRACK_W))
+                    .h(px(20.0))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .child(
+                        gpui::canvas(
+                            move |bounds, _, _| {
+                                cell.set(f32::from(bounds.origin.x));
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                    // The track line
+                    .child(
+                        div()
+                            .id("status-note-width-track")
+                            .w_full()
+                            .h(px(6.0))
+                            .rounded_full()
+                            .bg(track_bg),
+                    )
+                    // The circular thumb
+                    .child(
+                        div()
+                            .id("status-note-width-thumb")
+                            .absolute()
+                            .left(px(thumb_x))
+                            .top(px(2.0))
+                            .w(px(THUMB_W))
+                            .h(px(THUMB_W))
+                            .rounded_full()
+                            .bg(gpui::white())
+                            .border_1()
+                            .border_color(if theme.is_dark {
+                                gpui::rgba(0x00000040)
+                            } else {
+                                gpui::rgba(0x00000020)
+                            })
+                            .shadow_sm(),
+                    )
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        let click_x: f32 = event.position.x.into();
+                        let track_x = this.note_width_slider_origin_x.get();
+                        let rel_x = click_x - track_x;
+                        let new_pct = ((rel_x / TRACK_W) * 100.0).round().clamp(0.0, 100.0) as u32;
+                        this.is_dragging_note_width_slider = true;
+                        this.set_editor_width_pct(new_pct, window, cx);
+                    }))
+                    .on_scroll_wheel(cx.listener(move |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                        cx.stop_propagation();
+                        let delta = match event.delta {
+                            gpui::ScrollDelta::Lines(l) => l.y * 3.0,
+                            gpui::ScrollDelta::Pixels(p) => f32::from(p.y) / 8.0,
+                        };
+                        let curr = this.config.editor.editor_width_pct as f32;
+                        let next = (curr + delta).round().clamp(0.0, 100.0) as u32;
+                        this.set_editor_width_pct(next, window, cx);
+                        this.save_settings(cx);
+                    })),
+            )
+            // Value badge (purple rectangle with white number, clicking resets to 100% or toggles to 45%)
+            .child(
+                div()
+                    .id("status-note-width-badge")
+                    .h(px(20.0))
+                    .min_w(px(28.0))
+                    .px(px(6.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(5.0))
+                    .bg(gpui::rgb(0x9873f7))
+                    .hover(|h| h.bg(gpui::rgb(0x8b5cf6)))
+                    .cursor_pointer()
+                    .font_family("Segoe UI")
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_size(px(11.0))
+                    .text_color(gpui::rgb(0xffffff))
+                    .child(format!("{}", pct))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let current = this.config.editor.editor_width_pct;
+                        let next = if current == 100 { 45 } else { 100 };
+                        this.set_editor_width_pct(next, window, cx);
+                        this.save_settings(cx);
+                        this.state.status_text = if next == 100 {
+                            this.t("editor.note_width_reset").to_string()
+                        } else {
+                            this.t_fmt("editor.note_width", &[&next.to_string()])
+                        };
+                        cx.notify();
+                    })),
+            )
     }
 
     /// The painted layout of one visual row, in the state its rows were wrapped
@@ -7993,7 +8272,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
     /// Paints the in-editor find/replace bar shown between the note title and
     /// the editor body.
-    fn render_find_bar(&self, theme: &Theme, window: &mut Window, cx: &Context<Self>) -> Div {
+    fn render_find_bar(&self, leaf_id: Option<crate::workspace::LeafId>, theme: &Theme, window: &mut Window, cx: &Context<Self>) -> Div {
         let pixel_scale = window.scale_factor();
         let font_size = 13.0;
         let font_family = "Segoe UI";
@@ -8176,14 +8455,17 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|this, _, window, cx| this.close_find_bar(window, cx)));
 
+        let window_w = f32::from(window.bounds().size.width);
+        let left = self.find_bar_left_offset_for_leaf(leaf_id, window_w);
+
         let mut root = div()
             .w_full()
             .flex()
             .flex_col()
             .gap_1p5()
-            // Symmetric padding keeps the centred block truly centred in the
-            // window; the block itself is narrower than the editor.
-            .px(px(16.0))
+            // Bound to the note center while keeping at least 16px padding from pane edges.
+            .pl(px(left))
+            .pr(px(16.0))
             .pb(px(12.0))
             .bg(theme.bg_editor);
 
@@ -8416,8 +8698,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             div()
                 .w_full()
                 .max_w(px(620.0))
-                // Centred in the editor width instead of pinned to the left.
-                .mx_auto()
+                // Centred over the note content instead of the window.
                 .flex()
                 .flex_row()
                 .items_start()
@@ -8763,14 +9044,18 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
             let lid_tag: u64 = leaf_id.map(|l| (l.0.as_u128() & 0xFFFF_FFFF_FFFF_FFFF) as u64).unwrap_or(0);
 
+            let window_w_title = f32::from(window.bounds().size.width);
+            let title_text_w = f32::from(shaped.width);
+            let title_left_offset = self.note_title_offset_for_leaf(leaf_id, window_w_title, title_text_w);
+
             let mut title_box = div()
                 .id(gpui::ElementId::from(("note-title-panel", lid_tag)))
                 .w_full()
                 .flex()
                 .flex_row()
                 .items_start()
-                .pl(px(48.0))
-                .pr_4()
+                .pl(px(title_left_offset))
+                .pr(px(16.0))
                 .pt(px(2.0))
                 .pb(px(16.0))
                 .cursor(gpui::CursorStyle::IBeam)
@@ -8824,10 +9109,11 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
                         let click_x: f32 = event.position.x.into();
                         let editor_left_x = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
+                        let editor_right_x = if this.right_sidebar_collapsed { 0.0 } else { this.right_sidebar_width + 1.0 };
                         let leaf_ratio = leaf_id.map(|lid| this.state.workspace.horizontal_ratio_of_leaf(lid)).unwrap_or(0.0);
                         let window_w: f32 = window.bounds().size.width.into();
-                        let editor_total_w = (window_w - editor_left_x).max(0.0);
-                        let title_left_x = editor_left_x + leaf_ratio * editor_total_w + 48.0;
+                        let workspace_w = (window_w - editor_left_x - editor_right_x).max(100.0);
+                        let title_left_x = editor_left_x + leaf_ratio * workspace_w + title_left_offset;
                         let rel_x = (click_x - title_left_x).max(0.0);
 
                         let Some((view, doc)) = this.state.active_view_and_doc_mut() else { return; };
@@ -9051,6 +9337,12 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             }
                             this.table_layouts.borrow_mut().remove(&drag.table_first_line);
                             cx.notify();
+                        } else if this.is_dragging_note_width_slider {
+                            let x: f32 = event.position.x.into();
+                            let track_x = this.note_width_slider_origin_x.get();
+                            let rel_x = x - track_x;
+                            let new_pct = ((rel_x / 120.0) * 100.0).round().clamp(0.0, 100.0) as u32;
+                            this.set_editor_width_pct(new_pct, window, cx);
                         } else if this.is_mouse_selecting {
                             let x: f32 = event.position.x.into();
                             let y: f32 = event.position.y.into();
@@ -9067,6 +9359,10 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         this.sidebar_scrollbar_drag.end();
                         this.plugin_modal_scrollbar_drag.end();
                         this.is_mouse_selecting = false;
+                        if this.is_dragging_note_width_slider {
+                            this.is_dragging_note_width_slider = false;
+                            this.save_settings(cx);
+                        }
                         this.table_col_resize_drag = None;
                         if let Some(view) = this.state.active_view_mut() {
                             if view.selection_anchor == Some(view.cursor_offset) {
@@ -9084,6 +9380,10 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         this.sidebar_scrollbar_drag.end();
                         this.plugin_modal_scrollbar_drag.end();
                         this.is_mouse_selecting = false;
+                        if this.is_dragging_note_width_slider {
+                            this.is_dragging_note_width_slider = false;
+                            this.save_settings(cx);
+                        }
                         this.table_col_resize_drag = None;
                         cx.notify();
                     }))
@@ -10508,13 +10808,17 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 items.push(row_div);
             }
 
+            let window_w_editor = f32::from(window.bounds().size.width);
+            let (note_margin_left, note_margin_right) = self.note_margins_for_leaf(leaf_id, window_w_editor);
+
             let mut editor_list = div()
                 .id(gpui::ElementId::from(("note-editor-list", lid_tag)))
                 .flex()
                 .flex_col()
                 .when(show_scrollbar, |d| d.overflow_hidden())
                 .size_full()
-                .px_8()
+                .pl(px(32.0 + note_margin_left))
+                .pr(px(32.0 + note_margin_right))
                 .pt_0();
 
             if is_leaf_active {
@@ -10742,7 +11046,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             // The find bar belongs directly under the note title panel and
             // above the editor body, so it never floats over the text.
             if is_leaf_active && self.find_bar.is_open {
-                editor_root = editor_root.child(self.render_find_bar(theme, window, cx));
+                editor_root = editor_root.child(self.render_find_bar(leaf_id, theme, window, cx));
             }
             editor_root = editor_root.child(editor_container);
         } else if leaf_id
@@ -11230,10 +11534,33 @@ impl Render for AppView {
                 } else if this.state.active_view().and_then(|v| v.title_input.as_ref()).map(|ti| ti.is_mouse_selecting).unwrap_or(false) {
                     let x: f32 = event.position.x.into();
                     let editor_left_x = if this.sidebar_collapsed { 44.0 } else { this.sidebar_width + 1.0 };
+                    let editor_right_x = if this.right_sidebar_collapsed { 0.0 } else { this.right_sidebar_width + 1.0 };
                     let leaf_ratio = this.state.workspace.horizontal_ratio_of_leaf(this.state.workspace.active_leaf);
                     let window_w: f32 = window.bounds().size.width.into();
-                    let editor_total_w = (window_w - editor_left_x).max(0.0);
-                    let title_left_x = editor_left_x + leaf_ratio * editor_total_w + 48.0;
+                    let workspace_w = (window_w - editor_left_x - editor_right_x).max(100.0);
+                    let active_lid = Some(this.state.workspace.active_leaf);
+                    let title_text_w = this.state.active_view()
+                        .and_then(|v| v.title_input.as_ref())
+                        .map(|ti| {
+                            let run = gpui::TextRun {
+                                len: ti.text.len(),
+                                font: gpui::font("Segoe UI").bold(),
+                                color: Default::default(),
+                                underline: Default::default(),
+                                strikethrough: None,
+                                background_color: None,
+                            };
+                            let shaped = window.text_system().shape_line(
+                                SharedString::from(ti.text.clone()),
+                                px(28.0),
+                                &[run],
+                                None,
+                            );
+                            f32::from(shaped.width)
+                        })
+                        .unwrap_or(0.0);
+                    let title_left_offset = this.note_title_offset_for_leaf(active_lid, window_w, title_text_w);
+                    let title_left_x = editor_left_x + leaf_ratio * workspace_w + title_left_offset;
                     let rel_x = (x - title_left_x).max(0.0);
                     if let Some(view) = this.state.active_view_mut() {
                         if let Some(ref mut input) = view.title_input {
@@ -11284,6 +11611,13 @@ impl Render for AppView {
                     let y: f32 = event.position.y.into();
                     let viewport_h: f32 = window.viewport_size().height.into();
                     this.update_mouse_selection(x, y, viewport_h, window, cx);
+                } else if this.is_dragging_note_width_slider {
+                    let x: f32 = event.position.x.into();
+                    let track_x = this.note_width_slider_origin_x.get();
+                    let rel_x = x - track_x;
+                    const TRACK_W: f32 = 120.0;
+                    let new_pct = ((rel_x / TRACK_W) * 100.0).round().clamp(0.0, 100.0) as u32;
+                    this.set_editor_width_pct(new_pct, window, cx);
                 }
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
@@ -11316,6 +11650,10 @@ impl Render for AppView {
                 this.hovered_split_divider = None;
                 this.is_mouse_selecting = false;
                 this.is_dragging_scrollbar = false;
+                if this.is_dragging_note_width_slider {
+                    this.is_dragging_note_width_slider = false;
+                    this.save_settings(cx);
+                }
                 this.sidebar_scrollbar_drag.end();
                 this.plugin_modal_scrollbar_drag.end();
                 if let Some(view) = this.state.active_view_mut() {
@@ -11354,6 +11692,10 @@ impl Render for AppView {
                 this.is_hovering_right_resizer = false;
                 this.is_mouse_selecting = false;
                 this.is_dragging_scrollbar = false;
+                if this.is_dragging_note_width_slider {
+                    this.is_dragging_note_width_slider = false;
+                    this.save_settings(cx);
+                }
                 this.sidebar_scrollbar_drag.end();
                 this.plugin_modal_scrollbar_drag.end();
                 if let Some(view) = this.state.active_view_mut() {
@@ -12121,6 +12463,7 @@ impl Render for AppView {
                             .flex()
                             .flex_shrink_0()
                             .gap_4()
+                            .items_center()
                             // Index status chip, ALWAYS visible with a vault
                             // open: "Indexing NN%" while the background build
                             // runs, "Index ready" afterwards — so "is it
@@ -12191,6 +12534,7 @@ impl Render for AppView {
                                     .id(gpui::SharedString::from(item.id.clone()))
                                     .child(item.text)
                             }))
+                            .child(self.render_note_width_slider(theme, cx))
                             .child("120 FPS"),
                     ),
             )
@@ -16379,5 +16723,109 @@ mod tests {
                 cx.new(|_| DummyView)
             });
         });
+    }
+
+    #[test]
+    fn test_note_width_scaling_and_centering() {
+        let mut config = crate::settings::AppConfig::default();
+        config.editor.editor_width_pct = 100;
+
+        let max_w = 1200.0f32;
+        let pct = config.editor.editor_width_pct;
+        let content_w = if pct >= 100 {
+            max_w
+        } else {
+            let min_w = 400.0f32.min(max_w);
+            (min_w + (max_w - min_w) * (pct as f32 / 100.0)).clamp(min_w, max_w)
+        };
+        assert_eq!(content_w, 1200.0);
+        let margin_left = ((max_w - content_w) / 2.0).round();
+        assert_eq!(margin_left, 0.0);
+
+        // At 45%, note width scales proportionally and margin centers it
+        config.editor.editor_width_pct = 45;
+        let pct = config.editor.editor_width_pct;
+        let content_w_45 = if pct >= 100 {
+            max_w
+        } else {
+            let min_w = 400.0f32.min(max_w);
+            (min_w + (max_w - min_w) * (pct as f32 / 100.0)).clamp(min_w, max_w)
+        };
+        assert_eq!(content_w_45, 760.0);
+        let margin_left_45 = ((max_w - content_w_45) / 2.0).round();
+        assert_eq!(margin_left_45, 220.0);
+        assert_eq!(margin_left_45 + content_w_45 + margin_left_45, max_w);
+
+        // Alignment: Center splits extra space equally
+        let extra_space = max_w - content_w_45;
+        let (margin_left_center, margin_right_center) = match crate::settings::NoteAlignment::Center {
+            crate::settings::NoteAlignment::Left => (0.0, extra_space),
+            crate::settings::NoteAlignment::Center => (extra_space / 2.0, extra_space / 2.0),
+        };
+        assert_eq!(margin_left_center, 220.0);
+        assert_eq!(margin_right_center, 220.0);
+        assert_eq!(margin_left_center + content_w_45 + margin_right_center, max_w);
+
+        // Alignment: Left puts zero margin on left and full extra space on right
+        let (margin_left_left, margin_right_left) = match crate::settings::NoteAlignment::Left {
+            crate::settings::NoteAlignment::Left => (0.0, extra_space),
+            crate::settings::NoteAlignment::Center => (extra_space / 2.0, extra_space / 2.0),
+        };
+        assert_eq!(margin_left_left, 0.0);
+        assert_eq!(margin_right_left, 440.0);
+        assert_eq!(margin_left_left + content_w_45 + margin_right_left, max_w);
+
+        // Title alignment:
+        // WindowLeft: starts at 48.0 px regardless of 45% or 100% width
+        let title_w = 200.0f32;
+        let title_win_left = match crate::settings::TitleAlignment::WindowLeft {
+            crate::settings::TitleAlignment::WindowLeft => 48.0f32,
+            crate::settings::TitleAlignment::WindowCenter => ((max_w - title_w) / 2.0).max(48.0).round(),
+            crate::settings::TitleAlignment::EditorLeft => 48.0 + margin_left_45,
+            crate::settings::TitleAlignment::EditorCenter => 48.0 + margin_left_45 + ((content_w_45 - title_w) / 2.0).round(),
+        };
+        assert_eq!(title_win_left, 48.0);
+
+        // WindowCenter: centered across the entire pane (1200 - 200) / 2 = 500
+        let title_win_center = match crate::settings::TitleAlignment::WindowCenter {
+            crate::settings::TitleAlignment::WindowLeft => 48.0f32,
+            crate::settings::TitleAlignment::WindowCenter => ((max_w - title_w) / 2.0).max(48.0).round(),
+            crate::settings::TitleAlignment::EditorLeft => 48.0 + margin_left_45,
+            crate::settings::TitleAlignment::EditorCenter => 48.0 + margin_left_45 + ((content_w_45 - title_w) / 2.0).round(),
+        };
+        assert_eq!(title_win_center, 500.0);
+
+        // EditorLeft: aligned to the left edge of the editor note column (48 + 220 = 268)
+        let title_ed_left = match crate::settings::TitleAlignment::EditorLeft {
+            crate::settings::TitleAlignment::WindowLeft => 48.0f32,
+            crate::settings::TitleAlignment::WindowCenter => ((max_w - title_w) / 2.0).max(48.0).round(),
+            crate::settings::TitleAlignment::EditorLeft => 48.0 + margin_left_45,
+            crate::settings::TitleAlignment::EditorCenter => 48.0 + margin_left_45 + ((content_w_45 - title_w) / 2.0).round(),
+        };
+        assert_eq!(title_ed_left, 268.0);
+
+        // EditorCenter: centered across the editor note column 48 + 220 + (760 - 200) / 2 = 548
+        let title_ed_center = match crate::settings::TitleAlignment::EditorCenter {
+            crate::settings::TitleAlignment::WindowLeft => 48.0f32,
+            crate::settings::TitleAlignment::WindowCenter => ((max_w - title_w) / 2.0).max(48.0).round(),
+            crate::settings::TitleAlignment::EditorLeft => 48.0 + margin_left_45,
+            crate::settings::TitleAlignment::EditorCenter => 48.0 + margin_left_45 + ((content_w_45 - title_w) / 2.0).round(),
+        };
+        assert_eq!(title_ed_center, 548.0);
+
+        // Find bar alignment:
+        // Bar max width is 620.0
+        let bar_w = 620.0f32;
+        // In full width mode (or Center alignment), extra_space splits equally:
+        let note_center_center = (max_w + margin_left_center - margin_right_center) / 2.0;
+        let find_bar_left_center = (note_center_center - bar_w / 2.0).clamp(16.0, max_w - 16.0 - bar_w).round();
+        // Since margin_left == margin_right, note_center is 600.0, so find bar is at (1200 - 620) / 2 = 290.0
+        assert_eq!(find_bar_left_center, 290.0);
+
+        // In Left alignment, margin_left is 0.0, margin_right is 440.0
+        let note_center_left = (max_w + margin_left_left - margin_right_left) / 2.0;
+        let find_bar_left_left = (note_center_left - bar_w / 2.0).clamp(16.0, max_w - 16.0 - bar_w).round();
+        // 380 - 310 = 70.0
+        assert_eq!(find_bar_left_left, 70.0);
     }
 }

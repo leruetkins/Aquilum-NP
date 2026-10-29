@@ -117,7 +117,19 @@
       "wide_scrollbar_desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
       "debounce": "Autosave Debounce Delay",
       "debounce_desc": "Timeout after typing before saving to disk",
-      "debounce_unit": "{} ms"
+      "debounce_unit": "{} ms",
+      "note_width": "Note Column Width",
+      "note_width_desc": "Width of the note content column as a percentage of the window (0-100%)",
+      "note_align": "Note Alignment",
+      "note_align_desc": "Horizontal alignment of the note column: centered or left-aligned",
+      "align_center": "Center",
+      "align_left": "Left",
+      "title_align": "Title Alignment",
+      "title_align_desc": "Position of the document title above the editor: left or centered",
+      "title_align_window": "Title Position (Window Width)",
+      "title_align_window_desc": "Align document title relative to the window: left or centered",
+      "title_align_editor": "Title Position (Editor Width)",
+      "title_align_editor_desc": "Align document title relative to the note column: left edge or centered"
     },
     "reader": {
       "title": "Reader Mode",
@@ -342,7 +354,9 @@
       "bug": "Bug",
       "example": "Example",
       "quote": "Quote"
-    }
+    },
+    "note_width": "Note width: {}%",
+    "note_width_reset": "Reset note width (100%)"
   },
   "search": {
     "title": "Search the knowledge base",

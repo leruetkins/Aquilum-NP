@@ -117,7 +117,19 @@
       "wide_scrollbar_desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
       "debounce": "Verzögerung des automatischen Speicherns",
       "debounce_desc": "Wartezeit nach Texteingabe vor dem Schreiben auf Festplatte",
-      "debounce_unit": "{} MS"
+      "debounce_unit": "{} MS",
+      "note_width": "Notizspaltenbreite",
+      "note_width_desc": "Breite der Notizspalte in Prozent der Fensterbreite (0–100%)",
+      "note_align": "Notizausrichtung",
+      "note_align_desc": "Horizontale Ausrichtung der Notizspalte: zentriert oder linksbündig",
+      "align_center": "Zentriert",
+      "align_left": "Links",
+      "title_align": "Titelausrichtung",
+      "title_align_desc": "Position des Dateititels über dem Editor: links oder zentriert",
+      "title_align_window": "Titelausrichtung (Fensterbreite)",
+      "title_align_window_desc": "Ausrichtung des Dateititels relativ zum Fenster: links oder zentriert",
+      "title_align_editor": "Titelausrichtung (Editorbreite)",
+      "title_align_editor_desc": "Ausrichtung des Dateititels relativ zur Notizspalte: linksbündig oder zentriert"
     },
     "reader": {
       "title": "Lesemodus",
@@ -342,7 +354,9 @@
       "bug": "Bug",
       "example": "Beispiel",
       "quote": "Zitat"
-    }
+    },
+    "note_width": "Notizbreite: {}%",
+    "note_width_reset": "Notizbreite zurücksetzen (100%)"
   },
   "search": {
     "title": "Durchsuchen Sie die Wissensdatenbank",

@@ -117,7 +117,19 @@
       "wide_scrollbar_desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
       "debounce": "Opóźnienie autozapisu",
       "debounce_desc": "Czas oczekiwania po wpisaniu tekstu przed zapisaniem na dysk",
-      "debounce_unit": "{} SM"
+      "debounce_unit": "{} SM",
+      "note_width": "Szerokość notatki",
+      "note_width_desc": "Szerokość kolumny notatki w procentach szerokości okna (0–100%)",
+      "note_align": "Wyrównanie notatki",
+      "note_align_desc": "Wyrównanie poziome kolumny notatki: do środka lub do lewej",
+      "align_center": "Środek",
+      "align_left": "Do lewej",
+      "title_align": "Wyrównanie tytułu",
+      "title_align_desc": "Pozycja tytułu pliku nad edytorem: do lewej lub wyśrodkowana",
+      "title_align_window": "Pozycja tytułu (szerokość okna)",
+      "title_align_window_desc": "Wyrównanie tytułu dokumentu względem okna: do lewej lub wyśrodkowany",
+      "title_align_editor": "Pozycja tytułu (szerokość edytora)",
+      "title_align_editor_desc": "Wyrównanie tytułu dokumentu względem kolumny notatki: do lewej lub wyśrodkowany"
     },
     "reader": {
       "title": "Tryb czytelnika",
@@ -342,7 +354,9 @@
       "bug": "Błąd",
       "example": "Przykład",
       "quote": "Cytat"
-    }
+    },
+    "note_width": "Szerokość notatki: {}%",
+    "note_width_reset": "Zresetuj szerokość notatki (100%)"
   },
   "search": {
     "title": "Przeszukaj bazę wiedzy",

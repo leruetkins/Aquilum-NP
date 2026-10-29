@@ -117,7 +117,19 @@
       "wide_scrollbar_desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
       "debounce": "مهلة الحفظ التلقائي",
       "debounce_desc": "المهلة بعد إدخال النص قبل الحفظ على القرص",
-      "debounce_unit": "{} مللي ثانية"
+      "debounce_unit": "{} مللي ثانية",
+      "note_width": "عرض عمود الملاحظة",
+      "note_width_desc": "عرض عمود محتوى الملاحظة كنسبة مئوية من عرض النافذة (0-100%)",
+      "note_align": "محاذاة الملاحظة",
+      "note_align_desc": "المحاذاة الأفقية لعمود الملاحظة: في المنتصف أو إلى اليسار",
+      "align_center": "توسيط",
+      "align_left": "يسار",
+      "title_align": "محاذاة العنوان",
+      "title_align_desc": "موضع عنوان الملف أعلى المحرر: إلى اليسار أو في المنتصف",
+      "title_align_window": "موضع العنوان (عرض النافذة)",
+      "title_align_window_desc": "محاذاة عنوان المستند بالنسبة للنافذة: إلى اليسار أو في المنتصف",
+      "title_align_editor": "موضع العنوان (عرض المحرر)",
+      "title_align_editor_desc": "محاذاة عنوان المستند بالنسبة لعمود الملاحظة: إلى اليسار أو في المنتصف"
     },
     "reader": {
       "title": "وضع القارئ",
@@ -342,7 +354,9 @@
       "bug": "خطأ برمجي",
       "example": "مثال",
       "quote": "اقتباس"
-    }
+    },
+    "note_width": "عرض الملاحظة: {}%",
+    "note_width_reset": "إعادة تعيين عرض الملاحظة (100%)"
   },
   "search": {
     "title": "ابحث في قاعدة المعرفة",
