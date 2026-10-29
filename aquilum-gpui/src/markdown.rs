@@ -2798,35 +2798,20 @@ pub fn bullet_paint_text<'a>(raw_marker: &'a str, is_active_line: bool) -> &'a s
     }
 }
 
-/// Columns, measured in cells from the start of the row, where a nested list item
+/// Columns, measured in cells from the start of the row, where a nested list row
 /// draws its vertical indentation guides.
 ///
-/// Every guide lines up with the centre of the marker cell of the list level it
-/// hangs from, so the line runs straight under the markers instead of standing in
-/// front of the next level's marker. `indent_step` is the document's nesting step
-/// (see [`list_indent_step`]); an indent that is not a whole number of steps gets
-/// one guide per completed step.
+/// Bullet and numbered rows guide the same way: every guide lines up with the
+/// centre of the ancestor marker cell of the list level it hangs from, so the line
+/// runs straight under the parent markers instead of standing in front of the
+/// row's own marker. `indent_step` is the document's nesting step (see
+/// [`list_indent_step`]); an indent that is not a whole number of steps gets one
+/// guide per completed step.
 pub fn bullet_guide_columns(indent_chars: usize, indent_step: usize) -> Vec<f32> {
     if indent_step == 0 || indent_chars < indent_step {
         return Vec::new();
     }
     (0..indent_chars / indent_step)
-        .map(|level| (level * indent_step) as f32 + 0.5)
-        .collect()
-}
-
-/// Columns, measured in cells from the start of the row, where a numbered list
-/// item draws its vertical indentation guides.
-///
-/// Unlike a bullet row, a numbered row keeps a guide for its own nesting level:
-/// the numbers are what the reader scans, so the line belongs under them. The
-/// first level has no guide; every completed step after it gets one, and the
-/// last stands under the row's own number.
-pub fn numbered_guide_columns(indent_chars: usize, indent_step: usize) -> Vec<f32> {
-    if indent_step == 0 {
-        return Vec::new();
-    }
-    (1..=indent_chars / indent_step)
         .map(|level| (level * indent_step) as f32 + 0.5)
         .collect()
 }
@@ -2866,9 +2851,9 @@ pub fn list_indent_step<'a>(lines: impl IntoIterator<Item = &'a str>) -> usize {
 ///
 /// A line outside a list block (blank lines, prose, code rows passed as `None`)
 /// gets no columns. Each contiguous block is measured on its own, so a sloppy
-/// indent in one list cannot move the guides of its neighbour. A block that
-/// contains a numbered row anchors every guide on the marker columns of the
-/// levels, while a bullet block keeps them under the parent markers.
+/// indent in one list cannot move the guides of its neighbour. Numbered rows use
+/// the same guides as bullet rows: the line hangs under the ancestor markers, not
+/// under the row's own number.
 pub fn list_block_guide_columns<'a>(
     lines: impl IntoIterator<Item = Option<&'a str>>,
 ) -> Vec<Vec<f32>> {
@@ -2885,14 +2870,10 @@ pub fn list_block_guide_columns<'a>(
             continue;
         }
         let start = at;
-        let mut numbered = false;
         while at < lines.len() {
             let Some(line) = lines[at] else { break };
             if list_item_indent(line).is_none() {
                 break;
-            }
-            if matches!(classify_line(line, None), LineKind::NumberedList { .. }) {
-                numbered = true;
             }
             at += 1;
         }
@@ -2903,11 +2884,7 @@ pub fn list_block_guide_columns<'a>(
         for (offset, line) in lines[start..at].iter().enumerate() {
             let Some(line) = *line else { continue };
             let indent = list_item_indent(line).unwrap_or(0);
-            columns[start + offset] = if numbered {
-                numbered_guide_columns(indent, step)
-            } else {
-                bullet_guide_columns(indent, step)
-            };
+            columns[start + offset] = bullet_guide_columns(indent, step);
         }
     }
     columns
@@ -4248,16 +4225,30 @@ mod tests {
     }
 
     #[test]
-    fn numbered_rows_keep_a_guide_under_their_own_numbers() {
-        assert!(numbered_guide_columns(0, 4).is_empty(), "a top-level item has no guide");
-        assert!(numbered_guide_columns(3, 4).is_empty(), "an indent shorter than the step nests nothing");
-        assert_eq!(numbered_guide_columns(4, 4), vec![4.5]);
-        assert_eq!(numbered_guide_columns(8, 4), vec![4.5, 8.5]);
-        assert_eq!(numbered_guide_columns(12, 4), vec![4.5, 8.5, 12.5]);
-        // A three-space list gets its own step.
-        assert_eq!(numbered_guide_columns(3, 3), vec![3.5]);
-        // An indent that is not a whole number of steps keeps the completed ones.
-        assert_eq!(numbered_guide_columns(7, 4), vec![4.5]);
+    fn numbered_rows_guide_the_same_way_as_bullets() {
+        // A numbered row hangs its guide under the parent marker, exactly like a
+        // bullet row — it must not paint a line through its own number.
+        let numbered = [
+            Some("1. one"),
+            Some("    1. nested"),
+            Some("    2. sibling"),
+            Some("        1. deep"),
+        ];
+        let bullets = [
+            Some("- one"),
+            Some("    - nested"),
+            Some("    - sibling"),
+            Some("        - deep"),
+        ];
+        assert_eq!(
+            list_block_guide_columns(numbered),
+            list_block_guide_columns(bullets),
+        );
+        let guides = list_block_guide_columns(numbered);
+        assert!(guides[0].is_empty(), "a top-level number has no guide");
+        assert_eq!(guides[1], vec![0.5], "the guide sits under the parent number");
+        assert_eq!(guides[2], vec![0.5]);
+        assert_eq!(guides[3], vec![0.5, 4.5]);
     }
 
     #[test]
@@ -4274,13 +4265,13 @@ mod tests {
         ];
         let guides = list_block_guide_columns(lines);
         assert!(guides[0].is_empty(), "a top-level number has no guide");
-        assert_eq!(guides[1], vec![4.5], "the four-space block nests by four");
-        assert_eq!(guides[2], vec![4.5, 8.5]);
+        assert_eq!(guides[1], vec![0.5], "the four-space block nests by four");
+        assert_eq!(guides[2], vec![0.5, 4.5]);
         assert!(guides[3].is_empty());
         assert!(guides[4].is_empty());
         assert!(guides[5].is_empty());
-        assert_eq!(guides[6], vec![3.5], "the three-space block keeps its own step");
-        assert_eq!(guides[7], vec![3.5]);
+        assert_eq!(guides[6], vec![0.5], "the three-space block keeps its own step");
+        assert_eq!(guides[7], vec![0.5]);
 
         let bullets = [Some("- one"), Some("    - two"), Some("        - three")];
         let guides = list_block_guide_columns(bullets);
