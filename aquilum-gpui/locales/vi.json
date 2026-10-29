@@ -56,7 +56,9 @@
       "display_card": "Trưng bày",
       "font_card": "Phông chữ giao diện",
       "sidebar_smart_scroll": "Smart file list scrolling",
-      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held."
+      "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held.",
+      "swap_tab_bar_buttons": "Swap tab bar creation buttons",
+      "swap_tab_bar_buttons_desc": "New tab button '+' on the left (opens tab at far left), and new note button on the right (opens tab at far right)."
     },
     "editor": {
       "title": "Trình chỉnh sửa đánh dấu",

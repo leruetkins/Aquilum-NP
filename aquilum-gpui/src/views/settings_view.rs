@@ -3417,6 +3417,19 @@ impl SettingsView {
                     })),
                 cx,
             ),
+            self.render_setting_row_with_id(
+                Some("ui.swapTabBarButtons"),
+                &self.t("settings.ui.swap_tab_bar_buttons"),
+                Some(&self.t("settings.ui.swap_tab_bar_buttons_desc")),
+                div()
+                    .id("row-swap-tab-bar-buttons")
+                    .child(self.render_toggle_switch(config.ui.swap_tab_bar_buttons))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.config.ui.swap_tab_bar_buttons = !this.config.ui.swap_tab_bar_buttons;
+                        this.save_settings(cx);
+                    })),
+                cx,
+            ),
         ];
 
         let font_rows = vec![

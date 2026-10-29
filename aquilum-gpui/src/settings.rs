@@ -255,6 +255,7 @@ pub struct UiSettings {
     pub language: String,
     pub primary_color: String,
     pub sidebar_smart_scroll: bool,
+    pub swap_tab_bar_buttons: bool,
     #[serde(flatten)]
     pub font: FontSettings,
 }
@@ -266,6 +267,7 @@ impl Default for UiSettings {
             language: String::new(),
             primary_color: "#1471eb".to_string(),
             sidebar_smart_scroll: false,
+            swap_tab_bar_buttons: true,
             font: FontSettings {
                 font_family: "Inter".to_string(),
                 font_weight: 400,
@@ -577,6 +579,17 @@ pub static SETTINGS: &[SettingDescriptor] = &[
         desc_ru: "Автоматически центрировать активный файл в проводнике при переключении заметок",
         desc_en: "Automatically center the active file in the sidebar tree when switching notes",
         keywords: &["sidebar", "scroll", "сайдбар", "прокрутка", "проводник"],
+        aliases: &[],
+        setting_type: SettingType::Bool,
+    },
+    SettingDescriptor {
+        id: "ui.swapTabBarButtons",
+        tab_id: "ui",
+        title_ru: "Поменять местами кнопки на панели вкладок",
+        title_en: "Swap Tab Bar Creation Buttons",
+        desc_ru: "Кнопка «+» слева (создает вкладку крайней слева), а кнопка новой заметки справа (создает заметку крайней справа)",
+        desc_en: "New tab button '+' on the left (opens tab at far left), new note button on the right (opens tab at far right)",
+        keywords: &["tabs", "buttons", "swap", "вкладки", "кнопки", "плюс", "заметка"],
         aliases: &[],
         setting_type: SettingType::Bool,
     },

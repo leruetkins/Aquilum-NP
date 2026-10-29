@@ -6797,7 +6797,68 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             gpui::rgba(0x1e203030)
         };
 
-        tabs_strip = tabs_strip.child(
+        let swap_buttons = self.config.ui.swap_tab_bar_buttons;
+
+        let leading_button = if swap_buttons {
+            div()
+                .id(gpui::ElementId::Name(format!("leaf-btn-new-tab-{}", leaf_id.0).into()))
+                .relative()
+                .flex()
+                .items_center()
+                .justify_center()
+                .h_full()
+                .w(px(32.0))
+                .flex_shrink_0()
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if let Some(leaf) = this.state.leaves.get_mut(&leaf_id) {
+                        let num = leaf.tabs.len();
+                        leaf.tabs.insert(0, crate::workspace::Tab::new_empty());
+                        if num > 0 {
+                            leaf.active_tab_index = leaf.active_tab_index.saturating_add(1);
+                        } else {
+                            leaf.active_tab_index = 1;
+                        }
+                        this.select_leaf_tab(leaf_id, 0, window, cx);
+                    }
+                }))
+                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                    if *hovered {
+                        if let Some((l, _)) = this.hovered_tab {
+                            if l == leaf_id {
+                                this.hovered_tab = None;
+                                cx.notify();
+                            }
+                        }
+                    }
+                }))
+                .when(show_leading_divider, |d| {
+                    d.child(
+                        div()
+                            .id("new-tab-separator")
+                            .absolute()
+                            .top(px(sep_top))
+                            .h(px(16.0))
+                            .w(px(1.0))
+                            .right(px(leading_sep_right))
+                            .rounded_full()
+                            .bg(leading_divider_color),
+                    )
+                })
+                .child(
+                    div()
+                        .id("btn-new-tab-inline-inner")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(28.0))
+                        .h(px(28.0))
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|h| h.bg(theme.bg_hover))
+                        .child(icons::icon(icons::ICON_PLUS, 15.0, theme.text_muted)),
+                )
+        } else {
             div()
                 .id(gpui::ElementId::Name(format!("leaf-btn-new-note-{}", leaf_id.0).into()))
                 .relative()
@@ -6847,8 +6908,10 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         .cursor_pointer()
                         .hover(|h| h.bg(theme.bg_hover))
                         .child(icons::icon(icons::ICON_NOTE_CREATE, 15.0, theme.text_muted)),
-                ),
-        );
+                )
+        };
+
+        tabs_strip = tabs_strip.child(leading_button);
 
         if let Some(leaf) = leaf {
             for (tab_idx, tab) in leaf.tabs.iter().enumerate() {
@@ -7172,45 +7235,84 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             }
         }
 
-        let btn_new_tab = div()
-            .id(gpui::ElementId::Name(format!("leaf-btn-new-tab-{}", leaf_id.0).into()))
-            .flex()
-            .items_center()
-            .justify_center()
-            .h_full()
-            .w(px(32.0))
-            .flex_shrink_0()
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _, window, cx| {
-                if let Some(leaf) = this.state.leaves.get_mut(&leaf_id) {
-                    leaf.tabs.push(crate::workspace::Tab::new_empty());
-                    let new_idx = leaf.tabs.len() - 1;
-                    this.select_leaf_tab(leaf_id, new_idx, window, cx);
-                }
-            }))
-            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                if *hovered {
-                    if let Some((l, _)) = this.hovered_tab {
-                        if l == leaf_id {
-                            this.hovered_tab = None;
-                            cx.notify();
+        let trailing_button = if swap_buttons {
+            div()
+                .id(gpui::ElementId::Name(format!("leaf-btn-new-note-{}", leaf_id.0).into()))
+                .flex()
+                .items_center()
+                .justify_center()
+                .h_full()
+                .w(px(32.0))
+                .flex_shrink_0()
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.state.workspace.active_leaf = leaf_id;
+                    this.create_new_note(window, cx);
+                }))
+                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                    if *hovered {
+                        if let Some((l, _)) = this.hovered_tab {
+                            if l == leaf_id {
+                                this.hovered_tab = None;
+                                cx.notify();
+                            }
                         }
                     }
-                }
-            }))
-            .child(
-                div()
-                    .id("btn-new-tab-inline-inner")
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .w(px(28.0))
-                    .h(px(28.0))
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|h| h.bg(theme.bg_hover))
-                    .child(icons::icon(icons::ICON_PLUS, 15.0, theme.text_muted)),
-            );
+                }))
+                .child(
+                    div()
+                        .id("btn-new-note-inline-inner")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(28.0))
+                        .h(px(28.0))
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|h| h.bg(theme.bg_hover))
+                        .child(icons::icon(icons::ICON_NOTE_CREATE, 15.0, theme.text_muted)),
+                )
+        } else {
+            div()
+                .id(gpui::ElementId::Name(format!("leaf-btn-new-tab-{}", leaf_id.0).into()))
+                .flex()
+                .items_center()
+                .justify_center()
+                .h_full()
+                .w(px(32.0))
+                .flex_shrink_0()
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if let Some(leaf) = this.state.leaves.get_mut(&leaf_id) {
+                        leaf.tabs.push(crate::workspace::Tab::new_empty());
+                        let new_idx = leaf.tabs.len() - 1;
+                        this.select_leaf_tab(leaf_id, new_idx, window, cx);
+                    }
+                }))
+                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                    if *hovered {
+                        if let Some((l, _)) = this.hovered_tab {
+                            if l == leaf_id {
+                                this.hovered_tab = None;
+                                cx.notify();
+                            }
+                        }
+                    }
+                }))
+                .child(
+                    div()
+                        .id("btn-new-tab-inline-inner")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(28.0))
+                        .h(px(28.0))
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|h| h.bg(theme.bg_hover))
+                        .child(icons::icon(icons::ICON_PLUS, 15.0, theme.text_muted)),
+                )
+        };
 
         if in_titlebar {
             div()
@@ -7226,7 +7328,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 .when(is_tabs_overflowing, |d| d.w(px(available_strip_w)))
                 .h_full()
                 .child(tabs_strip)
-                .child(btn_new_tab)
+                .child(trailing_button)
         } else {
             div()
                 .id(gpui::ElementId::Name(format!("leaf-tab-strip-panel-{}", leaf_id.0).into()))
@@ -7262,7 +7364,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         .when(is_tabs_overflowing, |d| d.w(px(available_strip_w)))
                         .h_full()
                         .child(tabs_strip)
-                        .child(btn_new_tab),
+                        .child(trailing_button),
                 )
                 .child(
                     div()
