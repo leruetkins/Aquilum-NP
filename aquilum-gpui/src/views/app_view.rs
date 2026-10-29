@@ -8117,19 +8117,20 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             let code_states_arc = Arc::clone(&view.window.code_states);
             let height_index_arc = Arc::clone(&view.window.height_index);
 
-            // Nesting step of the window's lists, for the indent guides.
-            // Code rows are skipped so a fenced example cannot change it.
-            let list_indent_step = crate::markdown::list_indent_step(
+            // Guide columns of every list block in the window. Code rows are
+            // skipped so a fenced example cannot shape the step of a neighbouring
+            // list.
+            let list_guide_columns = crate::markdown::list_block_guide_columns(
                 lines_arc
                     .as_slice()
                     .iter()
                     .enumerate()
-                    .filter(|(idx, _)| {
+                    .map(|(idx, line)| {
                         code_states_arc
-                            .get(lines_arc.start() + *idx)
+                            .get(lines_arc.start() + idx)
                             .map_or(true, |state| state.is_none())
-                    })
-                    .map(|(_, line)| line.as_str()),
+                            .then_some(line.as_str())
+                    }),
             );
 
             // Callout extents for the window, so every row of a block is tinted and
@@ -9230,8 +9231,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         );
                     }
                 }
-                // Grammar lines under the text. Solid and wavy lines are native
-                // text underlines; the other styles have to be drawn by hand. The
+                // Grammar lines under the text. A wavy line is a native text
+                // underline; the other styles have to be drawn by hand, and a
+                // native solid underline cannot be lowered to their level. The
                 // default colour is the row's own text colour, so an unset colour
                 // inherits it. One canvas per row keeps a dotted line from turning
                 // into hundreds of elements.
@@ -9272,19 +9274,35 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         );
                     }
                     if !quads.is_empty() {
-                        let thickness = crate::snap::device_thickness(1.0, pixel_scale);
                         grammar_layer = Some(
                             gpui::canvas(
                                 |_, _, _| {},
                                 move |bounds, _, window, _| {
-                                    for ((x, y, w), color) in quads {
-                                        window.paint_quad(gpui::fill(
+                                    // The row itself may start between device
+                                    // pixels, so the row-local grid is not enough:
+                                    // a four-pixel dot must land on whole screen
+                                    // pixels or one of its edges renders flatter.
+                                    let scale = window.scale_factor();
+                                    let snap = |v: gpui::Pixels| {
+                                        if scale > 0.0 {
+                                            px((f32::from(v) * scale).round() / scale)
+                                        } else {
+                                            v
+                                        }
+                                    };
+                                    for ((x, y, w, h, radius), color) in quads {
+                                        let origin = bounds.origin + gpui::point(px(x), px(y));
+                                        let mut quad = gpui::fill(
                                             gpui::Bounds::new(
-                                                bounds.origin + gpui::point(px(x), px(y)),
-                                                gpui::size(px(w), px(thickness)),
+                                                gpui::point(snap(origin.x), snap(origin.y)),
+                                                gpui::size(px(w), px(h)),
                                             ),
                                             color,
-                                        ));
+                                        );
+                                        if radius > 0.0 {
+                                            quad = quad.corner_radii(px(radius));
+                                        }
+                                        window.paint_quad(quad);
                                     }
                                 },
                             )
@@ -9816,6 +9834,12 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     None
                 };
 
+                let guide_columns = v_line_idx
+                    .checked_sub(lines_arc.start())
+                    .and_then(|offset| list_guide_columns.get(offset))
+                    .map(|columns| columns.as_slice())
+                    .unwrap_or(&[]);
+
                 let table_render_arg = grid_tbl.map(|tbl| (tbl, table_layout.as_ref().unwrap().as_ref(), if is_active_line && v_line_idx == cursor_line { Some(active_col_in_row) } else { None }, v_line_idx));
 
                 let is_tbl_sep = grid_tbl.map_or(false, |tbl| v_line_idx == tbl.sep_line());
@@ -9968,7 +9992,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                         window,
                                         cx,
                                         line_char_width,
-                                        list_indent_step,
+                                        guide_columns,
                                         callout,
                                         self.config.ui.language.as_str(),
                                     )),
@@ -11994,12 +12018,29 @@ fn marker_paint(m: &str, visible: bool, theme: &Theme) -> Option<gpui::Hsla> {
     }
 }
 
-/// Segments of the line under one grammar member, as `(x, y, width)` in row
-/// logical px.
+/// Thickness of a school-grammar line in device pixels.
 ///
-/// Solid and wavy lines are native text underlines. GPUI has no double, dotted or
-/// dash-dot underline, so the rest are painted by the row backdrop. `y` matches the
-/// native underline position in `vendor/gpui/src/text_system/line.rs`.
+/// The native wavy underline covers three logical pixels, so a one-device-pixel
+/// rule reads as a hairline next to it. Two device pixels match the weight of the
+/// wave and the list indent guides without turning a solid line into a bar.
+const GRAMMAR_LINE_DEVICE_WIDTH: f32 = 2.0;
+
+/// How far below the native underline the solid, dotted and dash-dot lines sit,
+/// in device pixels. A rule on the native underline is cramped against the
+/// glyphs and does not line up with the dash-dot pattern, so solid moves down
+/// with the marked lines. The drop is clamped so a dot never crosses the bottom
+/// of the row, where the canvas would cut it.
+const GRAMMAR_MARKED_LINE_DROP: f32 = 4.0;
+
+/// Segments of the line under one grammar member, as
+/// `(x, y, width, height, corner radius)` in row logical px.
+///
+/// Wavy lines are native text underlines. GPUI has no double, dotted or dash-dot
+/// underline, and a native solid underline cannot be moved down to the level of
+/// those patterns, so the rest are painted by the row backdrop. `y` matches the
+/// native underline position in `vendor/gpui/src/text_system/line.rs`. Dots are
+/// twice as thick as the line, centred on it and rounded to circles, so a dash-dot
+/// line keeps its points on the same axis as the dashes.
 fn grammar_line_segments(
     x: f32,
     width: f32,
@@ -12008,43 +12049,104 @@ fn grammar_line_segments(
     descent: f32,
     line_height: f32,
     scale: f32,
-) -> Vec<(f32, f32, f32)> {
+) -> Vec<(f32, f32, f32, f32, f32)> {
     let mut segments = Vec::new();
     let y = (line_height - ascent - descent) / 2.0 + ascent + descent * 0.618;
     let device = |n: f32| crate::snap::device_thickness(n, scale);
-    let mut push = |segments: &mut Vec<(f32, f32, f32)>, left: f32, w: f32, top: f32| {
+    // A mark is only two or four device pixels tall, so a fractional device
+    // offset flattens the edge it starts on. Snapping to the device grid keeps
+    // a dot round and its top and bottom alike.
+    let snap = |v: f32| {
+        if scale > 0.0 {
+            (v * scale).round() / scale
+        } else {
+            v
+        }
+    };
+    let stroke = device(GRAMMAR_LINE_DEVICE_WIDTH);
+    let dot = stroke * 2.0;
+    let marked_y = snap(
+        (y + device(GRAMMAR_MARKED_LINE_DROP))
+            .min(line_height - stroke * 1.5 - device(1.0))
+            .max(y),
+    );
+    let dot_y = marked_y - (dot - stroke) / 2.0;
+    let mut push = |segments: &mut Vec<(f32, f32, f32, f32, f32)>,
+                    left: f32,
+                    w: f32,
+                    top: f32,
+                    h: f32,
+                    radius: f32| {
         if w > 0.0 {
-            segments.push((left, top, w));
+            segments.push((left, top, w, h, radius));
         }
     };
     match style {
-        crate::markdown::GrammarLine::None
-        | crate::markdown::GrammarLine::Solid
-        | crate::markdown::GrammarLine::Wavy => {}
+        crate::markdown::GrammarLine::None | crate::markdown::GrammarLine::Wavy => {}
+        crate::markdown::GrammarLine::Solid => {
+            push(&mut segments, x, width, marked_y, stroke, 0.0);
+        }
         crate::markdown::GrammarLine::Double => {
-            push(&mut segments, x, width, y);
-            push(&mut segments, x, width, y + device(3.0));
+            push(&mut segments, x, width, y, stroke, 0.0);
+            push(&mut segments, x, width, y + stroke + device(2.0), stroke, 0.0);
         }
         crate::markdown::GrammarLine::Dotted => {
-            let mut off = 0.0;
-            while off < width {
-                push(&mut segments, x + off, device(1.0).min(width - off), y);
-                off += device(3.0);
+            // A dot every ten device pixels: four of ink, six of paper. Only
+            // whole dots are drawn and the run is centred in the member, so the
+            // line neither ends in a speck nor hugs the left edge.
+            let step = device(10.0);
+            let mut count = 0usize;
+            while count as f32 * step + dot <= width {
+                count += 1;
+            }
+            if count > 0 {
+                let total = (count as f32 - 1.0) * step + dot;
+                let shift = (width - total) / 2.0;
+                for i in 0..count {
+                    push(
+                        &mut segments,
+                        snap(x + shift + i as f32 * step),
+                        dot,
+                        dot_y,
+                        dot,
+                        dot / 2.0,
+                    );
+                }
             }
         }
         crate::markdown::GrammarLine::DashDot => {
-            let dash = device(4.0);
-            let dot = device(1.0);
-            let gap = device(2.0);
+            let dash = device(16.0);
+            let gap = device(10.0);
+            // Collect whole marks first: a truncated dash reads as a mistake.
+            let mut marks: Vec<(f32, f32, bool)> = Vec::new();
             let mut off = 0.0;
-            while off < width {
-                push(&mut segments, x + off, dash.min(width - off), y);
-                off += dash + gap;
-                if off >= width {
+            loop {
+                if off + dash > width {
                     break;
                 }
-                push(&mut segments, x + off, dot.min(width - off), y);
+                marks.push((off, dash, false));
+                off += dash + gap;
+                if off + dot > width {
+                    break;
+                }
+                marks.push((off, dot, true));
                 off += dot + gap;
+            }
+            if marks.is_empty() {
+                // Too narrow for a dash: keep the member underlined.
+                if width > 0.0 {
+                    push(&mut segments, snap(x), width, marked_y, stroke, 0.0);
+                }
+            } else {
+                let total = marks.last().map_or(0.0, |(o, w, _)| o + w);
+                let shift = (width - total) / 2.0;
+                for (o, w, is_dot) in marks {
+                    if is_dot {
+                        push(&mut segments, snap(x + shift + o), w, dot_y, dot, dot / 2.0);
+                    } else {
+                        push(&mut segments, snap(x + shift + o), w, marked_y, stroke, 0.0);
+                    }
+                }
             }
         }
     }
@@ -12061,6 +12163,8 @@ fn render_syntax_spans(
     row_key: &str,
     ctrl_held: bool,
     hovered_link_id: Option<&str>,
+    scale: f32,
+    paint_native_solid: bool,
     cx: &Context<AppView>,
 ) -> gpui::AnyElement {
     let main_color = text_color_override.unwrap_or(theme.text_primary);
@@ -12110,9 +12214,10 @@ fn render_syntax_spans(
         .iter()
         .any(|s| matches!(s.span, crate::markdown::SyntaxSpan::Link { .. }));
 
-    // A grammar member's solid and wavy lines are native text underlines; the other
-    // line styles have no native equivalent and are painted by the row backdrop
-    // (`grammar_line_segments`), which reads the same style from `RowShapedLayout`.
+    // A grammar member's wavy line is a native text underline; solid and the
+    // other line styles are painted by the row backdrop (`grammar_line_segments`),
+    // which reads the same style from `RowShapedLayout`. Table cells have no row
+    // backdrop, so their solid line stays native.
     let grammar_run = |kind: crate::markdown::GrammarKind,
                        line_color: Option<crate::markdown::GrammarColor>,
                        text_color: Option<crate::markdown::GrammarColor>,
@@ -12127,8 +12232,8 @@ fn render_syntax_spans(
         let text_rgba = style.text_rgba(main_color);
         let line_rgba = style.line_rgba(main_color);
         let underline = match style.line {
-            crate::markdown::GrammarLine::Solid => Some(gpui::UnderlineStyle {
-                thickness: px(1.0),
+            crate::markdown::GrammarLine::Solid if paint_native_solid => Some(gpui::UnderlineStyle {
+                thickness: px(crate::snap::device_thickness(GRAMMAR_LINE_DEVICE_WIDTH, scale)),
                 color: Some(line_rgba.into()),
                 wavy: false,
             }),
@@ -13339,12 +13444,12 @@ fn render_live_styled_row(
     window: &Window,
     cx: &Context<AppView>,
     // `cell_w` is the width of one character cell of this row in logical px;
-    // `list_indent_step` is the nesting step of the window's lists
-    // (see `markdown::list_indent_step`). Only the block decorations drawn
-    // outside the text flow — the indent guides of a nested list, the icon of a
-    // callout header — need them.
+    // `guide_columns` is the list guide columns for this row, in cells
+    // (see `markdown::list_block_guide_columns`). Only the block decorations
+    // drawn outside the text flow — the indent guides of a nested list, the icon
+    // of a callout header — need them.
     cell_w: f32,
-    list_indent_step: usize,
+    guide_columns: &[f32],
     // The callout block this row belongs to, body rows included; the header row
     // itself keeps its own marker.
     callout_block: Option<crate::markdown::CalloutBlock>,
@@ -13444,7 +13549,7 @@ fn render_live_styled_row(
                 crate::table::Align::Right => { cell_div = cell_div.justify_end(); }
             }
             let cell_key = format!("tbl-cell-{}-{}-{}", line_idx, c_idx, sub_idx);
-            cell_div = cell_div.child(render_syntax_spans(spans, theme, None, font_weight, None, font_family, &cell_key, ctrl_held, hovered_link_id, cx));
+            cell_div = cell_div.child(render_syntax_spans(spans, theme, None, font_weight, None, font_family, &cell_key, ctrl_held, hovered_link_id, window.scale_factor(), true, cx));
 
             let col_widths_clone = table_layout.col_widths.clone();
             cell_div = cell_div.child(
@@ -13474,6 +13579,7 @@ fn render_live_styled_row(
     }
 
     let row_key = format!("row-{}-{}", line_idx, sub_idx);
+    let scale = window.scale_factor();
     let render_spans = |spans: Vec<crate::markdown::VisibleSpan>, text_color: Option<gpui::Rgba>, weight: Option<gpui::FontWeight>, style: Option<gpui::FontStyle>| {
         render_syntax_spans(
             spans,
@@ -13485,24 +13591,26 @@ fn render_live_styled_row(
             &row_key,
             ctrl_held,
             hovered_link_id,
+            scale,
+            false,
             cx,
         )
     };
 
     // One vertical guide per nesting level of a list row, hanging straight under
-    // the marker cell of the level it belongs to. Rows are stacked edge to edge,
-    // so the segments join into a continuous line down the group. Both the
-    // position and the width come from the device grid: the guide has to keep
-    // one thickness at every level, and a single device pixel reads as too faint
+    // the marker of the level it belongs to. Rows are stacked edge to edge, so
+    // the segments join into a continuous line down the group. Both the position
+    // and the width come from the device grid: the guide has to keep one
+    // thickness at every level, and a single device pixel reads as too faint
     // against the editor background, so it is drawn two device pixels wide.
-    let indent_guides = |indent_chars: usize| -> Vec<gpui::Div> {
+    let indent_guides = || -> Vec<gpui::Div> {
         let scale = window.scale_factor();
-        crate::markdown::bullet_guide_columns(indent_chars, list_indent_step)
-            .into_iter()
-            .map(|col| {
-                // `col` is the centre of the ancestor marker's cell; the guide is
-                // shifted half its own width to the left so it stays centred
-                // under the marker instead of growing to the right.
+        guide_columns
+            .iter()
+            .map(|&col| {
+                // `col` is the centre of the marker cell; the guide is shifted
+                // half its own width to the left so it stays centred under the
+                // marker instead of growing to the right.
                 let (left, width) = crate::snap::snapped_rule(col * cell_w - 1.0 / scale, 2.0, scale);
                 div()
                     .absolute()
@@ -14048,7 +14156,7 @@ fn render_live_styled_row(
             // idle line, the raw source marker on the line being edited.
             let bullet_text = crate::markdown::bullet_paint_text(bullet, is_active_line);
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
-            let guides = indent_guides(indent.chars().count());
+            let guides = indent_guides();
             // An idle row draws the dot itself, sized in cells so it stays centred
             // in its marker cell; the line being edited shows the raw source marker.
             let shows_dot = bullet_text != bullet;
@@ -14133,7 +14241,7 @@ fn render_live_styled_row(
             let num_chars = num_part.chars().count();
             let prefix_chars = indent_chars + num_chars;
             let spans = crate::markdown::parse_inline_syntax_spans(rest);
-            let guides = indent_guides(indent_chars);
+            let guides = indent_guides();
 
             if sub_idx == 0 {
                 let row_spans = crate::markdown::slice_syntax_spans_revealed(&spans, 0, char_end.saturating_sub(prefix_chars), prefix_chars, reveal);
@@ -14327,6 +14435,98 @@ fn render_live_styled_row(
 mod tests {
     use super::*;
     use crate::markdown::{classify_line, row_painted_text, VisualRow};
+
+    /// Dotted and dash-dot marks are separate shapes a few device pixels tall, so
+    /// a mark that lands between device pixels loses half of its edge. Every mark
+    /// must sit on the device grid, stay inside its member and inside the row,
+    /// and be a whole dash or a whole dot.
+    #[test]
+    fn grammar_marked_lines_stay_whole_and_inside_the_row() {
+        let scale = 1.75;
+        let line_height = 24.0;
+        let x = 3.3;
+        let width = 41.9;
+        let stroke = crate::snap::device_thickness(GRAMMAR_LINE_DEVICE_WIDTH, scale);
+        let dot = stroke * 2.0;
+        let dash = crate::snap::device_thickness(16.0, scale);
+        for (ascent, descent) in [(14.67f32, 3.79f32), (12.99, 3.42)] {
+            for style in [
+                crate::markdown::GrammarLine::Dotted,
+                crate::markdown::GrammarLine::DashDot,
+            ] {
+                let segments =
+                    grammar_line_segments(x, width, style, ascent, descent, line_height, scale);
+                assert!(!segments.is_empty());
+                let mut first_left = f32::INFINITY;
+                let mut last_right = f32::NEG_INFINITY;
+                for (left, top, w, h, radius) in segments {
+                    for v in [left, top] {
+                        let device = v * scale;
+                        assert!(
+                            (device - device.round()).abs() < 0.01,
+                            "{style:?} mark is off the device grid at {device}"
+                        );
+                    }
+                    assert!(w == dot || w == dash, "{style:?} drew a partial mark of {w}");
+                    if w == dot {
+                        assert!(radius > 0.0, "a dot must be round");
+                    }
+                    assert!(left >= x - 0.5 && left + w <= x + width + 0.5);
+                    assert!(top >= 0.0 && top + h <= line_height + 0.001);
+                    first_left = first_left.min(left);
+                    last_right = last_right.max(left + w);
+                }
+                let left_margin = first_left - x;
+                let right_margin = x + width - last_right;
+                assert!(
+                    (left_margin - right_margin).abs() <= 1.0 / scale + 0.001,
+                    "{style:?} pattern is not centred: {left_margin} vs {right_margin}"
+                );
+            }
+        }
+    }
+
+    /// The solid grammar line shares the level of the dash-dot dashes; a native
+    /// underline sits higher and would break the row of styles.
+    #[test]
+    fn grammar_solid_line_sits_at_the_dash_dot_level() {
+        let scale = 1.75;
+        let line_height = 24.0;
+        let x = 3.3;
+        let width = 41.9;
+        for (ascent, descent) in [(14.67f32, 3.79f32), (12.99, 3.42)] {
+            let solid = grammar_line_segments(
+                x,
+                width,
+                crate::markdown::GrammarLine::Solid,
+                ascent,
+                descent,
+                line_height,
+                scale,
+            );
+            assert_eq!(solid.len(), 1);
+            let (left, top, w, h, radius) = solid[0];
+            assert!((left - x).abs() < 0.001 && (w - width).abs() < 0.001);
+            assert_eq!(radius, 0.0);
+            assert!(top >= 0.0 && top + h <= line_height);
+            let dash_dot = grammar_line_segments(
+                x,
+                width,
+                crate::markdown::GrammarLine::DashDot,
+                ascent,
+                descent,
+                line_height,
+                scale,
+            );
+            assert!(
+                dash_dot
+                    .iter()
+                    .any(|&(_, d_top, _, d_h, _)| (d_top - top).abs() < 0.001
+                        && (d_h - h).abs() < 0.001),
+                "the solid line is not at the dash level"
+            );
+        }
+    }
 
     /// Every mouse position must resolve to the **nearest** painted column, including
     /// the boundary past the last painted character. That one boundary owns no glyph,

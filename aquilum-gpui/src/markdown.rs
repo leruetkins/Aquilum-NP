@@ -889,11 +889,16 @@ fn css_color_name(name: &str) -> Option<GrammarColor> {
     })
 }
 
-/// One colour block: `a/b` means line `a`, text `b`; a single colour is the text
-/// colour and the line inherits it.
-fn parse_grammar_colors(spec: &str) -> (Option<GrammarColor>, Option<GrammarColor>) {
+/// One colour block: `a/b` means line `a`, text `b`. A single colour is the
+/// line colour; a style with no line has nowhere to paint it, so there it stays
+/// the text colour.
+fn parse_grammar_colors(
+    spec: &str,
+    has_line: bool,
+) -> (Option<GrammarColor>, Option<GrammarColor>) {
     match spec.split_once('/') {
         Some((line, text)) => (parse_grammar_color(line), parse_grammar_color(text)),
+        None if has_line => (parse_grammar_color(spec), None),
         None => (None, parse_grammar_color(spec)),
     }
 }
@@ -923,7 +928,8 @@ fn scan_grammar_tag(s: &str) -> Option<GrammarTagScan<'_>> {
     let mut cursor = 2 + type_end;
     let (line_color, text_color) = if bytes.get(cursor) == Some(&b'{') {
         let close = s[cursor + 1..].find('}')? + cursor + 1;
-        let colors = parse_grammar_colors(&s[cursor + 1..close]);
+        let colors =
+            parse_grammar_colors(&s[cursor + 1..close], kind.line() != GrammarLine::None);
         cursor = close + 1;
         colors
     } else {
@@ -2715,6 +2721,22 @@ pub fn bullet_guide_columns(indent_chars: usize, indent_step: usize) -> Vec<f32>
         .collect()
 }
 
+/// Columns, measured in cells from the start of the row, where a numbered list
+/// item draws its vertical indentation guides.
+///
+/// Unlike a bullet row, a numbered row keeps a guide for its own nesting level:
+/// the numbers are what the reader scans, so the line belongs under them. The
+/// first level has no guide; every completed step after it gets one, and the
+/// last stands under the row's own number.
+pub fn numbered_guide_columns(indent_chars: usize, indent_step: usize) -> Vec<f32> {
+    if indent_step == 0 {
+        return Vec::new();
+    }
+    (1..=indent_chars / indent_step)
+        .map(|level| (level * indent_step) as f32 + 0.5)
+        .collect()
+}
+
 /// Indent of a bullet or numbered list row, in chars. `None` for everything else.
 pub fn list_item_indent(line: &str) -> Option<usize> {
     let trimmed = line.trim_start();
@@ -2734,9 +2756,9 @@ pub fn list_item_indent(line: &str) -> Option<usize> {
 ///
 /// It cannot be read off a single line — four spaces are one level of a four-space
 /// document and two levels of a two-space one — so the renderer measures it across
-/// the window it is about to paint. Indents below two columns cannot nest a list
+/// the list block the row belongs to. Indents below two columns cannot nest a list
 /// item (the marker itself is two columns wide) and are ignored. Zero means the
-/// window holds no nested bullets at all.
+/// block holds no nested list items at all.
 pub fn list_indent_step<'a>(lines: impl IntoIterator<Item = &'a str>) -> usize {
     lines
         .into_iter()
@@ -2744,6 +2766,57 @@ pub fn list_indent_step<'a>(lines: impl IntoIterator<Item = &'a str>) -> usize {
         .filter(|&indent| indent >= 2)
         .min()
         .unwrap_or(0)
+}
+
+/// Guide columns for every line of a list window, in cells from the row start.
+///
+/// A line outside a list block (blank lines, prose, code rows passed as `None`)
+/// gets no columns. Each contiguous block is measured on its own, so a sloppy
+/// indent in one list cannot move the guides of its neighbour. A block that
+/// contains a numbered row anchors every guide on the marker columns of the
+/// levels, while a bullet block keeps them under the parent markers.
+pub fn list_block_guide_columns<'a>(
+    lines: impl IntoIterator<Item = Option<&'a str>>,
+) -> Vec<Vec<f32>> {
+    let lines: Vec<Option<&str>> = lines.into_iter().collect();
+    let mut columns = vec![Vec::new(); lines.len()];
+    let mut at = 0;
+    while at < lines.len() {
+        let Some(line) = lines[at] else {
+            at += 1;
+            continue;
+        };
+        if list_item_indent(line).is_none() {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        let mut numbered = false;
+        while at < lines.len() {
+            let Some(line) = lines[at] else { break };
+            if list_item_indent(line).is_none() {
+                break;
+            }
+            if matches!(classify_line(line, None), LineKind::NumberedList { .. }) {
+                numbered = true;
+            }
+            at += 1;
+        }
+        let step = list_indent_step(lines[start..at].iter().filter_map(|line| *line));
+        if step == 0 {
+            continue;
+        }
+        for (offset, line) in lines[start..at].iter().enumerate() {
+            let Some(line) = *line else { continue };
+            let indent = list_item_indent(line).unwrap_or(0);
+            columns[start + offset] = if numbered {
+                numbered_guide_columns(indent, step)
+            } else {
+                bullet_guide_columns(indent, step)
+            };
+        }
+    }
+    columns
 }
 
 /// One run of text painted inside a visual row, with the font traits the renderer
@@ -4071,6 +4144,47 @@ mod tests {
     }
 
     #[test]
+    fn numbered_rows_keep_a_guide_under_their_own_numbers() {
+        assert!(numbered_guide_columns(0, 4).is_empty(), "a top-level item has no guide");
+        assert!(numbered_guide_columns(3, 4).is_empty(), "an indent shorter than the step nests nothing");
+        assert_eq!(numbered_guide_columns(4, 4), vec![4.5]);
+        assert_eq!(numbered_guide_columns(8, 4), vec![4.5, 8.5]);
+        assert_eq!(numbered_guide_columns(12, 4), vec![4.5, 8.5, 12.5]);
+        // A three-space list gets its own step.
+        assert_eq!(numbered_guide_columns(3, 3), vec![3.5]);
+        // An indent that is not a whole number of steps keeps the completed ones.
+        assert_eq!(numbered_guide_columns(7, 4), vec![4.5]);
+    }
+
+    #[test]
+    fn list_blocks_measure_their_own_step() {
+        let lines = [
+            Some("1. one"),
+            Some("    1. nested"),
+            Some("        2. deep"),
+            Some(""),
+            None,
+            Some("1. one"),
+            Some("   1. three-space"),
+            Some("   2. three-space"),
+        ];
+        let guides = list_block_guide_columns(lines);
+        assert!(guides[0].is_empty(), "a top-level number has no guide");
+        assert_eq!(guides[1], vec![4.5], "the four-space block nests by four");
+        assert_eq!(guides[2], vec![4.5, 8.5]);
+        assert!(guides[3].is_empty());
+        assert!(guides[4].is_empty());
+        assert!(guides[5].is_empty());
+        assert_eq!(guides[6], vec![3.5], "the three-space block keeps its own step");
+        assert_eq!(guides[7], vec![3.5]);
+
+        let bullets = [Some("- one"), Some("    - two"), Some("        - three")];
+        let guides = list_block_guide_columns(bullets);
+        assert_eq!(guides[1], vec![0.5], "a bullet guide hangs under the parent dot");
+        assert_eq!(guides[2], vec![0.5, 4.5]);
+    }
+
+    #[test]
     fn painted_quote_hides_its_marker_until_the_line_is_edited() {
         let line = "> hi";
         let kind = classify_line(line, None);
@@ -5030,8 +5144,8 @@ mod tests {
     }
 
     #[test]
-    fn grammar_tag_colours_set_text_then_line() {
-        // One colour is the text colour; the line inherits it.
+    fn grammar_tag_colours_set_line_then_text() {
+        // One colour is the line colour; the text keeps the row's colour.
         let line = "::s{#2a7}[слово]";
         let kind = classify_line(line, None);
         let row = painted(line, &kind, 0, line.chars().count(), 0, false);
@@ -5040,8 +5154,8 @@ mod tests {
             row.grammar_ranges()[0].2,
             GrammarSpanStyle {
                 line: GrammarLine::Solid,
-                line_color: None,
-                text_color: Some((0x22, 0xaa, 0x77)),
+                line_color: Some((0x22, 0xaa, 0x77)),
+                text_color: None,
             }
         );
 
@@ -5055,6 +5169,20 @@ mod tests {
                 line: GrammarLine::Solid,
                 line_color: Some((255, 0, 0)),
                 text_color: Some((0, 0, 255)),
+            }
+        );
+
+        // A style with no line has nowhere to paint a line colour, so one colour
+        // still colours the text.
+        let line = "::v{green}[слово]";
+        let kind = classify_line(line, None);
+        let row = painted(line, &kind, 0, line.chars().count(), 0, false);
+        assert_eq!(
+            row.grammar_ranges()[0].2,
+            GrammarSpanStyle {
+                line: GrammarLine::None,
+                line_color: None,
+                text_color: Some((0, 128, 0)),
             }
         );
 
@@ -5114,8 +5242,8 @@ mod tests {
             styles[0],
             GrammarSpanStyle {
                 line: GrammarLine::Wavy,
-                line_color: None,
-                text_color: Some((0, 128, 0)),
+                line_color: Some((0, 128, 0)),
+                text_color: None,
             }
         );
         assert_eq!(
@@ -5134,16 +5262,16 @@ mod tests {
             styles[3],
             GrammarSpanStyle {
                 line: GrammarLine::Double,
-                line_color: None,
-                text_color: Some((0x22, 0xaa, 0x77)),
+                line_color: Some((0x22, 0xaa, 0x77)),
+                text_color: None,
             }
         );
         assert_eq!(
             styles[4],
             GrammarSpanStyle {
                 line: GrammarLine::DashDot,
-                line_color: None,
-                text_color: Some((255, 165, 0)),
+                line_color: Some((255, 165, 0)),
+                text_color: None,
             }
         );
     }
