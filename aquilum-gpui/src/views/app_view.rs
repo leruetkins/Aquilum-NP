@@ -314,6 +314,7 @@ pub struct AppView {
     pub folder_context_menu: crate::views::sidebar::FolderContextMenuState,
     pub file_context_menu: crate::views::sidebar::FileContextMenuState,
     pub tab_context_menu: crate::views::tab_context_menu::TabContextMenuState,
+    pub more_options_menu: crate::views::more_options_menu::MoreOptionsMenuState,
     pub ribbon_context_menu: crate::views::ribbon_menu::RibbonContextMenuState,
     pub editor_context_menu: crate::views::editor_context_menu::ContextMenuState,
     pub ribbon_dragged_id: Option<String>,
@@ -539,6 +540,7 @@ impl AppView {
             folder_context_menu: crate::views::sidebar::FolderContextMenuState::default(),
             file_context_menu: crate::views::sidebar::FileContextMenuState::default(),
             tab_context_menu: crate::views::tab_context_menu::TabContextMenuState::default(),
+            more_options_menu: crate::views::more_options_menu::MoreOptionsMenuState::default(),
             ribbon_context_menu: crate::views::ribbon_menu::RibbonContextMenuState::default(),
             editor_context_menu: crate::views::editor_context_menu::ContextMenuState::default(),
             ribbon_dragged_id: None,
@@ -1228,6 +1230,7 @@ impl AppView {
         self.save_on_exit(window);
         self.close_tabs_popup(cx);
         self.close_tab_context_menu(cx);
+        self.close_more_options_menu(cx);
         self.window_activation_subscription = None;
         self.suspend_cursor_blinks(cx);
         self.state.active_empty_tab = None;
@@ -5547,6 +5550,12 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             return;
         }
 
+        // Escape closes more options context menu if open
+        if keystroke.key == "escape" && self.more_options_menu.is_open {
+            self.close_more_options_menu(cx);
+            return;
+        }
+
         // Escape closes folder modal if open
         if keystroke.key == "escape" && self.folder_modal != crate::views::sidebar::FolderModal::None {
             self.close_folder_modal(cx);
@@ -6666,8 +6675,12 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                 cx.notify();
                             })),
                     )
-                    // More options (3 vertical dots - saves active note)
-                    .child(
+                    // More options (3 vertical dots - opens Obsidian-style context menu)
+                    .child({
+                        let is_menu_open = self.more_options_menu.is_open;
+                        let target_path_left = full_path_opt.clone();
+                        let target_path_right = full_path_opt.clone();
+                        let target_leaf_for_click = leaf_id;
                         div()
                             .id("btn-more-options")
                             .flex()
@@ -6677,12 +6690,30 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             .h(px(28.0))
                             .rounded_md()
                             .cursor_pointer()
+                            .when(is_menu_open, |d| d.bg(theme.bg_hover))
                             .hover(|h| h.bg(theme.bg_hover))
-                            .child(icons::icon(icons::ICON_MORE_VERTICAL, 16.0, theme.text_muted))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.save_note(window, cx);
-                            })),
-                    ),
+                            .child(icons::icon(
+                                icons::ICON_MORE_VERTICAL,
+                                16.0,
+                                if is_menu_open { theme.text_primary } else { theme.text_muted },
+                            ))
+                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                                let x: f32 = event.position.x.into();
+                                let y: f32 = event.position.y.into();
+                                if this.more_options_menu.is_open {
+                                    this.close_more_options_menu(cx);
+                                } else {
+                                    this.open_more_options_menu(target_path_left.clone(), target_leaf_for_click, x, y, cx);
+                                }
+                            }))
+                            .on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                                let x: f32 = event.position.x.into();
+                                let y: f32 = event.position.y.into();
+                                this.open_more_options_menu(target_path_right.clone(), target_leaf_for_click, x, y, cx);
+                            }))
+                    }),
             )
     }
 
@@ -12593,6 +12624,10 @@ impl Render for AppView {
             // ================= TAB CONTEXT MENU (Obsidian-style) =================
             .when(self.tab_context_menu.is_open, |d| {
                 d.child(self.render_tab_context_menu(theme, window, cx))
+            })
+            // ================= MORE OPTIONS CONTEXT MENU (Obsidian-style 3-dots) =================
+            .when(self.more_options_menu.is_open, |d| {
+                d.child(self.render_more_options_menu(theme, window, cx))
             })
             // ================= RIBBON CONTEXT MENU (Obsidian-style) =================
             .when(self.ribbon_context_menu.is_open, |d| {

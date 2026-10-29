@@ -47,6 +47,7 @@ impl AppView {
         // Only one context menu at a time.
         self.file_context_menu.is_open = false;
         self.folder_context_menu.is_open = false;
+        self.more_options_menu.is_open = false;
         self.close_tabs_popup(cx);
 
         self.tab_context_menu = TabContextMenuState {

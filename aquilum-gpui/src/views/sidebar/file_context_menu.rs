@@ -38,6 +38,7 @@ impl AppView {
     pub fn open_file_context_menu(&mut self, file_path: PathBuf, x: f32, y: f32, cx: &mut Context<Self>) {
         // If folder menu is open, close it
         self.folder_context_menu.is_open = false;
+        self.more_options_menu.is_open = false;
 
         let fallback_file = self.t("common.file");
         let name = file_path

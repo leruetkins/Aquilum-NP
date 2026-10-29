@@ -98,6 +98,7 @@ impl AppView {
         self.folder_context_menu.is_open = false;
         self.tab_context_menu.is_open = false;
         self.ribbon_context_menu.is_open = false;
+        self.more_options_menu.is_open = false;
         self.close_tabs_popup(cx);
 
         // If cursor is within a markdown table, open the specialized table context menu
@@ -352,6 +353,7 @@ impl AppView {
         self.folder_context_menu.is_open = false;
         self.tab_context_menu.is_open = false;
         self.ribbon_context_menu.is_open = false;
+        self.more_options_menu.is_open = false;
         self.close_tabs_popup(cx);
 
         let session_id = std::time::SystemTime::now()

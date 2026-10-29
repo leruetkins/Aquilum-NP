@@ -78,6 +78,9 @@ pub const TABLE_MERGE_CELLS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" v
 pub const TABLE_SPLIT_CELLS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 12h18"/><path d="M12 3v9"/></svg>"#;
 pub const TABLE_DELETE_ROW: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/></svg>"#;
 pub const TABLE_DELETE_COL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>"#;
+pub const SPLIT_DOWN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 12h18"/></svg>"#;
+pub const LOCK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>"#;
+pub const CIRCLE_PLUS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>"#;
 
 pub const ICON_ARROW_LEFT: &str = "icons/arrow_left.svg";
 pub const ICON_ARROW_RIGHT: &str = "icons/arrow_right.svg";
@@ -108,6 +111,9 @@ pub const ICON_TABLE_MERGE_CELLS: &str = "icons/table_merge_cells.svg";
 pub const ICON_TABLE_SPLIT_CELLS: &str = "icons/table_split_cells.svg";
 pub const ICON_TABLE_DELETE_ROW: &str = "icons/table_delete_row.svg";
 pub const ICON_TABLE_DELETE_COL: &str = "icons/table_delete_col.svg";
+pub const ICON_SPLIT_DOWN: &str = "icons/split_down.svg";
+pub const ICON_LOCK: &str = "icons/lock.svg";
+pub const ICON_CIRCLE_PLUS: &str = "icons/circle_plus.svg";
 
 pub const ICON_CHEVRON_RIGHT: &str = "icons/chevron_right.svg";
 pub const ICON_CHEVRON_DOWN: &str = "icons/chevron_down.svg";
@@ -237,6 +243,9 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_TABLE_SPLIT_CELLS => Some(TABLE_SPLIT_CELLS),
             ICON_TABLE_DELETE_ROW => Some(TABLE_DELETE_ROW),
             ICON_TABLE_DELETE_COL => Some(TABLE_DELETE_COL),
+            ICON_SPLIT_DOWN => Some(SPLIT_DOWN),
+            ICON_LOCK => Some(LOCK),
+            ICON_CIRCLE_PLUS => Some(CIRCLE_PLUS),
             _ => None,
         };
         Ok(svg.map(|s| Cow::Borrowed(s.as_bytes())))
@@ -319,6 +328,9 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_TABLE_SPLIT_CELLS.into(),
             ICON_TABLE_DELETE_ROW.into(),
             ICON_TABLE_DELETE_COL.into(),
+            ICON_SPLIT_DOWN.into(),
+            ICON_LOCK.into(),
+            ICON_CIRCLE_PLUS.into(),
         ])
     }
 }
@@ -372,6 +384,9 @@ pub fn map_obsidian_icon(name: &str) -> &'static str {
         "type" | "text" | "pilcrow" | "quote" | "list" | "list-ordered" => ICON_TYPE,
         "hash" | "heading" | "heading-1" | "heading-2" | "heading-3" | "heading-4" | "heading-5" | "heading-6" => ICON_HASH,
         "split" => ICON_SPLIT,
+        "split-down" => ICON_SPLIT_DOWN,
+        "lock" | "encrypted" => ICON_LOCK,
+        "plus-circle" | "circle-plus" => ICON_CIRCLE_PLUS,
         "app-window" => ICON_APP_WINDOW,
         "vault" => ICON_VAULT,
         "pin" => ICON_PIN,

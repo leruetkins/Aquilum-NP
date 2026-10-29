@@ -63,6 +63,7 @@ impl AppView {
         // Close other popups / context menus
         self.close_tabs_popup(cx);
         self.close_tab_context_menu(cx);
+        self.more_options_menu.is_open = false;
         self.file_context_menu.is_open = false;
         self.folder_context_menu.is_open = false;
         if self.search_dialog.is_open {
