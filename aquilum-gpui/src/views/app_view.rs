@@ -10145,7 +10145,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     .unwrap_or(&[]);
 
                 if self.edit_mode && grid_tbl.is_none() {
-                    let preview_sel = if self.ctrl_preview_selection || self.ctrl_held {
+                    let preview_sel = if self.ctrl_preview_selection {
                         row_sel_rect
                     } else {
                         None
@@ -10205,7 +10205,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     };
                     let sel_h = if grid_tbl.is_some() { 28.0 } else { row_h };
 
-                    let is_preview_selection = self.ctrl_preview_selection || (self.ctrl_held && row_sel_rect.is_some()) || !self.edit_mode;
+                    let is_preview_selection = self.ctrl_preview_selection || !self.edit_mode;
                     let sel_color = if is_preview_selection {
                         theme.preview_selection_bg()
                     } else {
@@ -11186,7 +11186,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                     .w(px(ruler_pill_w))
                                     .rounded_full()
                             })
-                            .bg(if self.ctrl_preview_selection || self.ctrl_held || !self.edit_mode {
+                            .bg(if self.ctrl_preview_selection || !self.edit_mode {
                                 theme_scrollbar.preview_selection_bg()
                             } else {
                                 theme_scrollbar.selection_bg
@@ -13182,14 +13182,7 @@ fn whitespace_dot_quads(
         return Vec::new();
     }
 
-    let ascent = f32::from(row_layout.layout.ascent);
-    let descent = f32::from(row_layout.layout.descent);
-    let center_y = if ascent > 0.0 {
-        let baseline = (row_h - ascent - descent) / 2.0 + ascent;
-        baseline - ascent * 0.28
-    } else {
-        row_h / 2.0
-    };
+    let center_y = row_h / 2.0;
 
     let dot_device_px = (2.0 * scale).round().max(2.0);
     let dot_size = if scale > 0.0 { dot_device_px / scale } else { 2.0 };
