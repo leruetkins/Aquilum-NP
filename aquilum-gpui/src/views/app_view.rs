@@ -14482,15 +14482,12 @@ fn render_live_styled_row(
                     .child(line.to_string())
             } else {
                 // A rule is the thinnest thing the document draws, so it is the one
-                // most easily lost: a hairline of `border` over the editor
-                // background is a colour difference of a few percent, and a
-                // row-height split that falls between device pixels spreads it over
-                // two of them at partial alpha until it reads as not drawn at all.
-                // Two whole device pixels of the muted foreground give the weight a
-                // rule has in the rest of the markdown world and read the same in
-                // both themes. The width comes from the row content wrapper, which
-                // the caller gives a definite width for exactly this reason: a rule
-                // has no text of its own to size a shrink-to-fit box with.
+                // most easily lost. Two whole device pixels of the quiet grey overlay
+                // give it the weight a rule has in the rest of the markdown world, in
+                // a neutral grey instead of the muted foreground. The width comes
+                // from the row content wrapper, which the caller gives a definite
+                // width for exactly this reason: a rule has no text of its own to
+                // size a shrink-to-fit box with.
                 div()
                     .w_full()
                     .h_full()
@@ -14501,7 +14498,7 @@ fn render_live_styled_row(
                         div()
                             .w_full()
                             .h(px(crate::snap::device_thickness(2.0, window.scale_factor())))
-                            .bg(theme.text_muted),
+                            .bg(theme.horizontal_rule()),
                     )
             }
         }

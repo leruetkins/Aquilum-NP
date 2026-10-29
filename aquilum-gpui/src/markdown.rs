@@ -665,6 +665,58 @@ fn is_escapable_punctuation(c: char) -> bool {
     matches!(c, '!'..='/' | ':'..='@' | '['..='`' | '{'..='~')
 }
 
+/// Byte length of a bare URL at the head of `s`, or `None` when there is none.
+///
+/// Same acceptance as the original editor: the URL starts with a scheme or `www.`,
+/// runs up to whitespace, and trailing sentence punctuation (plus an unbalanced
+/// closing paren) stays outside the link.
+fn scan_bare_url(s: &str) -> Option<usize> {
+    const PREFIXES: [&str; 3] = ["https://", "http://", "www."];
+    if !PREFIXES.iter().any(|prefix| s.starts_with(prefix)) {
+        return None;
+    }
+    let mut end = s
+        .find(|c: char| c.is_whitespace() || c == '<')
+        .unwrap_or(s.len());
+    while let Some(last) = s[..end].chars().next_back() {
+        let unbalanced_close = last == ')'
+            && s[..end].matches(')').count() > s[..end].matches('(').count();
+        if ".,:;!?\"'*_~".contains(last) || unbalanced_close {
+            end -= last.len_utf8();
+        } else {
+            break;
+        }
+    }
+    let host = s[..end]
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    (host.contains('.') && !host.starts_with('.')).then_some(end)
+}
+
+/// Autolink in angle brackets: `<https://example.com>` or `<mail@example.com>`.
+/// Returns the shown text and the target to open.
+fn scan_angle_autolink(s: &str) -> Option<(&str, String)> {
+    let rest = s.strip_prefix('<')?;
+    let inner = &rest[..rest.find('>')?];
+    if inner.is_empty() || inner.chars().any(|c| c.is_whitespace() || c == '<') {
+        return None;
+    }
+    let has_scheme = inner.split_once("://").is_some_and(|(scheme, _)| {
+        !scheme.is_empty()
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    });
+    if has_scheme {
+        return Some((inner, inner.to_string()));
+    }
+    let is_email = !inner.chars().any(|c| c == '/' || c == ':')
+        && inner
+            .split_once('@')
+            .is_some_and(|(user, host)| !user.is_empty() && host.contains('.') && !host.starts_with('.'));
+    is_email.then(|| (inner, format!("mailto:{inner}")))
+}
+
 pub fn parse_inline_spans(mut s: &str) -> Vec<InlineSpan> {
     let mut spans = Vec::new();
     let mut plain_accum = String::new();
@@ -1434,6 +1486,7 @@ pub fn selection_chars_in_line(
 }
 
 pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
+    let whole = s;
     let mut spans = Vec::new();
     let mut plain_accum = String::new();
 
@@ -1551,6 +1604,24 @@ pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
             }
         }
 
+        // Autolink: `<https://example.com>` / `<mail@example.com>`. The brackets are
+        // markup, so they hide while the caret is away like any other link marker.
+        if s.starts_with('<') {
+            if let Some((shown, target)) = scan_angle_autolink(s) {
+                if !plain_accum.is_empty() {
+                    spans.push(SyntaxSpan::Text(std::mem::take(&mut plain_accum)));
+                }
+                spans.push(SyntaxSpan::Marker("<".to_string()));
+                spans.push(SyntaxSpan::Link {
+                    text: shown.to_string(),
+                    url: target,
+                });
+                spans.push(SyntaxSpan::Marker(">".to_string()));
+                s = &s[1 + shown.len() + 1..];
+                continue;
+            }
+        }
+
         // Highlight: ==...==
         if s.starts_with("==") {
             if let Some(end_idx) = s[2..].find("==") {
@@ -1651,6 +1722,36 @@ pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
                 spans.push(SyntaxSpan::Strikethrough(content.to_string()));
                 spans.push(SyntaxSpan::Marker("~~".to_string()));
                 s = &s[4 + end_idx..];
+                continue;
+            }
+        }
+
+        // Bare autolink: GFM links a URL that is not inside other markup, and the
+        // original editor shows `https://example.com` / `www.example.com` accented and
+        // clickable without any `[...]()` around it.
+        if let Some(len) = scan_bare_url(s) {
+            // The prefix must start a word: `nothttps://` is plain text. Openers count
+            // as a boundary too, so a URL right after `(` or an emphasis marker links.
+            let before = &whole[..whole.len() - s.len()];
+            let at_boundary = before
+                .chars()
+                .next_back()
+                .map_or(true, |c| c.is_whitespace() || "([<*_~".contains(c));
+            if at_boundary {
+                if !plain_accum.is_empty() {
+                    spans.push(SyntaxSpan::Text(std::mem::take(&mut plain_accum)));
+                }
+                let shown = &s[..len];
+                let url = if shown.starts_with("www.") {
+                    format!("https://{shown}")
+                } else {
+                    shown.to_string()
+                };
+                spans.push(SyntaxSpan::Link {
+                    text: shown.to_string(),
+                    url,
+                });
+                s = &s[len..];
                 continue;
             }
         }
@@ -3822,6 +3923,83 @@ mod tests {
         assert!(spans.iter().any(|s| matches!(s, SyntaxSpan::Underline(u) if u == "HTML-подчёркиванием")));
         assert!(spans.iter().any(|s| matches!(s, SyntaxSpan::Link { text, url } if text == "ссылкой" && url == "https://example.com")));
         assert!(spans.iter().any(|s| matches!(s, SyntaxSpan::Marker(m) if m == "](https://example.com)")));
+    }
+
+    #[test]
+    fn bare_and_angle_urls_parse_as_links() {
+        let input = "см. https://example.com/a_(b), www.site.ru. и <https://x.org>, <mail@example.com>";
+        let spans = parse_inline_syntax_spans(input);
+        let links: Vec<(&str, &str)> = spans
+            .iter()
+            .filter_map(|span| match span {
+                SyntaxSpan::Link { text, url } => Some((text.as_str(), url.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            links,
+            vec![
+                ("https://example.com/a_(b)", "https://example.com/a_(b)"),
+                ("www.site.ru", "https://www.site.ru"),
+                ("https://x.org", "https://x.org"),
+                ("mail@example.com", "mailto:mail@example.com"),
+            ]
+        );
+    }
+
+    #[test]
+    fn bare_url_detection_skips_code_markdown_links_and_word_tails() {
+        let input = "`https://code.io` nothttps://x.io, [https://label.io](https://target.io)";
+        let spans = parse_inline_syntax_spans(input);
+        let links: Vec<(&str, &str)> = spans
+            .iter()
+            .filter_map(|span| match span {
+                SyntaxSpan::Link { text, url } => Some((text.as_str(), url.as_str())),
+                _ => None,
+            })
+            .collect();
+        // The code span keeps its URL literal, a prefix glued to a word is not a
+        // link, and the markdown link is not linked a second time.
+        assert_eq!(links, vec![("https://label.io", "https://target.io")]);
+    }
+
+    #[test]
+    fn painted_bare_url_keeps_source_columns() {
+        let line = "см. https://example.com/путь и www.site.ru";
+        let kind = classify_line(line, None);
+        let headings = crate::settings::HeadingsSettings::default();
+        let v = VisualRow {
+            line_idx: 0,
+            sub_idx: 0,
+            is_last_sub: true,
+            char_start: 0,
+            char_end: line.chars().count(),
+        };
+        // An autolink has no hidden markers: every source char keeps its cell.
+        let painted = row_painted_text(line, &kind, &v, false, &InlineReveal::None, &headings);
+        assert_eq!(painted.columns(), line.chars().count());
+        let text: String = painted.segments.iter().map(|segment| segment.text.as_str()).collect();
+        assert_eq!(text, line);
+    }
+
+    #[test]
+    fn angle_autolink_hides_its_brackets_like_a_markdown_link() {
+        let line = "см. <https://example.com> конец";
+        let kind = classify_line(line, None);
+        let headings = crate::settings::HeadingsSettings::default();
+        let v = VisualRow {
+            line_idx: 0,
+            sub_idx: 0,
+            is_last_sub: true,
+            char_start: 0,
+            char_end: line.chars().count(),
+        };
+        let idle = row_painted_text(line, &kind, &v, false, &InlineReveal::None, &headings);
+        let idle_text: String = idle.segments.iter().map(|segment| segment.text.as_str()).collect();
+        assert_eq!(idle_text, "см. https://example.com конец");
+        let raw = row_painted_text(line, &kind, &v, false, &InlineReveal::All, &headings);
+        let raw_text: String = raw.segments.iter().map(|segment| segment.text.as_str()).collect();
+        assert_eq!(raw_text, line);
     }
 
     #[test]

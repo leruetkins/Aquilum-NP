@@ -81,6 +81,19 @@ impl Theme {
         }
     }
 
+    /// Hairline tint for a horizontal rule.
+    ///
+    /// The design system's quiet icon tone: a neutral 12% foreground overlay over the
+    /// editor surface. It reads as a soft grey line in both themes, instead of a strip
+    /// of the muted text colour.
+    pub fn horizontal_rule(&self) -> Rgba {
+        if self.is_dark {
+            rgba(0xffffff1f)
+        } else {
+            rgba(0x0000001f)
+        }
+    }
+
     /// Returns the default dark theme (Catppuccin Mocha palette).
     pub fn dark() -> Self {
         Self {
