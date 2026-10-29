@@ -70,6 +70,41 @@ impl AppView {
         cx.notify();
     }
 
+    /// Removes a vault from the list of known vaults.
+    /// If the removed vault is currently active, switches to another known vault
+    /// or clears the workspace if none remain.
+    pub(crate) fn remove_known_vault(
+        &mut self,
+        path: &std::path::Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.known_vaults.retain(|p| p.as_path() != path);
+        self.state.session.known_vaults = self.state.known_vaults.clone();
+        if self.state.workspace_path.as_deref() == Some(path) {
+            if let Some(next) = self.state.known_vaults.first().cloned() {
+                self.switch_vault(next, window, cx);
+            } else {
+                self.unload_all_plugins();
+                self.state.detach_fs_watcher();
+                self.state.search_worker.reset(None);
+                self.state.workspace_path = None;
+                self.state.workspace_name = "No Workspace".to_owned();
+                self.state.vault = None;
+                self.state.file_tree.clear();
+                self.state.open_tabs.clear();
+                self.state.active_empty_tab = None;
+                self.state.session.workspace_path = None;
+                self.state.save_session_state();
+                self.open_empty_tab(window, cx);
+                self.close_vault_dialog(cx);
+            }
+        } else {
+            self.state.save_session_state();
+            cx.notify();
+        }
+    }
+
     /// Renders the vault switcher dialog overlay.
     pub fn render_vault_dialog(
         &self,
@@ -213,7 +248,8 @@ impl AppView {
                                         self.state.known_vaults.iter().enumerate()
                                     {
                                         let is_current = current.as_deref() == Some(vault.as_path());
-                                        let vault_clone = vault.clone();
+                                        let vault_to_switch = vault.clone();
+                                        let vault_to_remove = vault.clone();
                                         let name = vault
                                             .file_name()
                                             .map(|s| s.to_string_lossy().into_owned())
@@ -275,11 +311,45 @@ impl AppView {
                                                                 ),
                                                         ),
                                                 )
+                                                .child(
+                                                    div()
+                                                        .id(SharedString::from(format!(
+                                                            "vault-row-remove-{}",
+                                                            ix
+                                                        )))
+                                                        .flex()
+                                                        .flex_shrink_0()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .w(px(24.0))
+                                                        .h(px(24.0))
+                                                        .rounded_md()
+                                                        .cursor_pointer()
+                                                        .hover(|h| h.bg(theme.border))
+                                                        .child(icons::icon(
+                                                            icons::ICON_CLOSE,
+                                                            12.0,
+                                                            theme.text_muted,
+                                                        ))
+                                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                            cx.stop_propagation();
+                                                        })
+                                                        .on_click(cx.listener(
+                                                            move |this, _, window, cx| {
+                                                                cx.stop_propagation();
+                                                                this.remove_known_vault(
+                                                                    &vault_to_remove,
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                )
                                                 .on_click(cx.listener(
                                                     move |this, _, window, cx| {
                                                         cx.stop_propagation();
                                                         this.switch_vault(
-                                                            vault_clone.clone(),
+                                                            vault_to_switch.clone(),
                                                             window,
                                                             cx,
                                                         );

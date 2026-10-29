@@ -5916,10 +5916,27 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
         let can_go_back = self.state.can_navigate_back();
         let can_go_forward = self.state.can_navigate_forward();
+        let full_path_opt = if let Some(doc) = doc_override {
+            Some(doc.path.clone())
+        } else if let Some(lid) = leaf_id {
+            self.state
+                .leaves
+                .get(&lid)
+                .and_then(|l| l.active_tab())
+                .and_then(|t| match &t.content {
+                    crate::workspace::TabContent::Document { id } => {
+                        self.state.documents.get(id).map(|d| d.path.clone())
+                    }
+                    _ => None,
+                })
+        } else {
+            self.state.active_document().map(|d| d.path.clone())
+        };
         let breadcrumbs = if let Some(doc) = doc_override {
             if let Some(ref ws) = self.state.workspace_path {
                 if let Ok(rel) = doc.path.strip_prefix(ws) {
                     let mut parts = Vec::new();
+                    parts.push(self.state.workspace_name.clone());
                     for comp in rel.components() {
                         let comp_str = comp.as_os_str().to_string_lossy().to_string();
                         if !comp_str.is_empty() {
@@ -6068,28 +6085,46 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                 );
                             }
                             let is_last = idx == count.saturating_sub(1);
+                            let is_root_folder = idx == 0 && !is_empty_tab && self.state.workspace_path.is_some();
                             crumbs_bar = crumbs_bar.child(
                                 div()
-                                    .text_sm()
-                                    .font_weight(if is_last {
-                                        gpui::FontWeight::SEMIBOLD
-                                    } else {
-                                        gpui::FontWeight::NORMAL
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .min_w_0()
+                                    .when(is_root_folder, |d| {
+                                        d.child(
+                                            div()
+                                                .flex_shrink_0()
+                                                .flex()
+                                                .items_center()
+                                                .child(icons::icon(icons::ICON_FOLDER, 14.0, theme.accent)),
+                                        )
                                     })
-                                    .text_color(if is_last {
-                                        theme.text_primary
-                                    } else {
-                                        theme.text_muted
-                                    })
-                                    .truncate()
-                                    .hover(|h| {
-                                        if !is_last {
-                                            h.text_color(theme.text_secondary)
-                                        } else {
-                                            h
-                                        }
-                                    })
-                                    .child(part.clone()),
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_weight(if is_last {
+                                                gpui::FontWeight::SEMIBOLD
+                                            } else {
+                                                gpui::FontWeight::NORMAL
+                                            })
+                                            .text_color(if is_last {
+                                                theme.text_primary
+                                            } else {
+                                                theme.text_muted
+                                            })
+                                            .truncate()
+                                            .hover(|h| {
+                                                if !is_last {
+                                                    h.text_color(theme.text_secondary)
+                                                } else {
+                                                    h
+                                                }
+                                            })
+                                            .child(part.clone()),
+                                    ),
                             );
                         }
 
@@ -6101,6 +6136,40 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                     .ml_1p5()
                                     .child("●"),
                             );
+                        }
+
+                        if let Some(ref full_path) = full_path_opt {
+                            if !crate::state::is_empty_tab_path(full_path) {
+                                let path_to_copy = full_path.to_string_lossy().to_string();
+                                crumbs_bar = crumbs_bar.child(
+                                    div()
+                                        .id("btn-copy-full-path")
+                                        .flex()
+                                        .flex_shrink_0()
+                                        .items_center()
+                                        .justify_center()
+                                        .w(px(22.0))
+                                        .h(px(22.0))
+                                        .ml_1p5()
+                                        .rounded_md()
+                                        .cursor_pointer()
+                                        .hover(|h| h.bg(theme.bg_hover))
+                                        .child(icons::icon(
+                                            icons::ICON_COPY,
+                                            13.0,
+                                            theme.text_muted,
+                                        ))
+                                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                            cx.stop_propagation();
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(path_to_copy.clone()));
+                                            this.state.status_text = this.t_fmt("sidebar.copy_absolute_path_msg", &[&path_to_copy]);
+                                            cx.notify();
+                                        })),
+                                );
+                            }
                         }
 
                         crumbs_bar
@@ -11482,25 +11551,9 @@ impl Render for AppView {
                                             .flex()
                                             .flex_row()
                                             .items_center()
-                                            .justify_between()
+                                            .justify_end()
                                             .px_2()
                                             .py_1()
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .flex_row()
-                                                    .items_center()
-                                                    .gap_2()
-                                                    .child(icons::icon(icons::ICON_FOLDER, 15.0, theme.accent))
-                                                    .child(
-                                                        div()
-                                                            .text_sm()
-                                                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                            .text_color(theme.text_primary)
-                                                            .truncate()
-                                                            .child(self.state.workspace_name.clone()),
-                                                    ),
-                                            )
                                             .child(
                                                 div()
                                                     .flex()
@@ -11569,9 +11622,10 @@ impl Render for AppView {
                                     }
                                 },
                             )
-                            // Sidebar Footer (Vault switcher button + Reload button)
-                            .child(
-                                div()
+                            // Sidebar Footer (Vault switcher button + Reload button, or Open Folder button if none selected)
+                            .child({
+                                let has_workspace = self.state.workspace_path.is_some();
+                                let mut footer = div()
                                     .id("sidebar-footer")
                                     .flex()
                                     .flex_row()
@@ -11580,49 +11634,87 @@ impl Render for AppView {
                                     .px_2()
                                     .py_1p5()
                                     .border_t_1()
-                                    .border_color(theme.border_subtle)
-                                    .child(
+                                    .border_color(theme.border_subtle);
+
+                                if has_workspace {
+                                    footer = footer
+                                        .child(
+                                            div()
+                                                .id("btn-switch-vault")
+                                                .flex()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .flex_row()
+                                                .items_center()
+                                                .gap_2()
+                                                .px_1p5()
+                                                .py_1()
+                                                .rounded_md()
+                                                .cursor_pointer()
+                                                .hover(|h| h.bg(theme.bg_hover))
+                                                .child(icons::icon(icons::ICON_FOLDER, 15.0, theme.accent))
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .truncate()
+                                                        .text_sm()
+                                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                        .text_color(theme.text_primary)
+                                                        .child(self.state.workspace_name.clone()),
+                                                )
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.open_vault_dialog(cx);
+                                                })),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("btn-reload-vault")
+                                                .p_1()
+                                                .rounded_md()
+                                                .cursor_pointer()
+                                                .hover(|h| h.bg(theme.bg_hover))
+                                                .child(icons::icon(icons::ICON_REFRESH, 13.0, theme.text_muted))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.reload_files(window, cx);
+                                                })),
+                                        );
+                                } else {
+                                    footer = footer.child(
                                         div()
-                                            .id("btn-switch-vault")
+                                            .id("btn-open-folder")
                                             .flex()
                                             .flex_1()
-                                            .min_w_0()
                                             .flex_row()
                                             .items_center()
+                                            .justify_center()
                                             .gap_2()
-                                            .px_1p5()
-                                            .py_1()
-                                            .rounded_md()
+                                            .px_4()
+                                            .py_1p5()
+                                            .rounded_lg()
                                             .cursor_pointer()
-                                            .hover(|h| h.bg(theme.bg_hover))
-                                            .child(icons::icon(icons::ICON_FOLDER, 15.0, theme.accent))
+                                            .bg(theme.accent)
+                                            .hover(|h| h.opacity(0.9))
+                                            .child(icons::icon(
+                                                icons::ICON_FOLDER_OPEN,
+                                                15.0,
+                                                gpui::rgb(0xffffff),
+                                            ))
                                             .child(
                                                 div()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .truncate()
                                                     .text_sm()
                                                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                    .text_color(theme.text_primary)
-                                                    .child(self.state.workspace_name.clone()),
+                                                    .text_color(gpui::rgb(0xffffff))
+                                                    .child(self.t("sidebar.open_folder")),
                                             )
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.open_vault_dialog(cx);
-                                            })),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("btn-reload-vault")
-                                            .p_1()
-                                            .rounded_md()
-                                            .cursor_pointer()
-                                            .hover(|h| h.bg(theme.bg_hover))
-                                            .child(icons::icon(icons::ICON_REFRESH, 13.0, theme.text_muted))
                                             .on_click(cx.listener(|this, _, window, cx| {
-                                                this.reload_files(window, cx);
+                                                this.open_folder_dialog_deferred(window, cx);
                                             })),
-                                    ),
-                            )
+                                    );
+                                }
+
+                                footer
+                            })
                         )
                     })
                     // ----- Sidebar Resizer Divider (1px border line + 7px transparent hitbox) -----

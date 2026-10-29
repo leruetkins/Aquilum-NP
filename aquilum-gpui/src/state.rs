@@ -2686,6 +2686,7 @@ impl AppState {
         if let Some(ref ws) = self.workspace_path {
             if let Ok(rel) = doc.path.strip_prefix(ws) {
                 let mut parts = Vec::new();
+                parts.push(self.workspace_name.clone());
                 for comp in rel.components() {
                     let comp_str = comp.as_os_str().to_string_lossy().to_string();
                     if !comp_str.is_empty() {
