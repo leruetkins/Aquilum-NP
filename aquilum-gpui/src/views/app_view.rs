@@ -144,6 +144,7 @@ pub struct AppView {
     pub sidebar_collapsed: bool,
     pub is_resizing_sidebar: bool,
     pub is_hovering_resizer: bool,
+    pub selected_sidebar_folder: Option<PathBuf>,
     pub right_sidebar_width: f32,
     pub right_sidebar_collapsed: bool,
     pub is_resizing_right_sidebar: bool,
@@ -445,6 +446,7 @@ impl AppView {
             sidebar_collapsed: false,
             is_resizing_sidebar: false,
             is_hovering_resizer: false,
+            selected_sidebar_folder: None,
             right_sidebar_width: 260.0,
             right_sidebar_collapsed: true,
             is_resizing_right_sidebar: false,
@@ -2331,6 +2333,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 let folder = folder_handle.path().to_path_buf();
                 let _ = entity.update(&mut async_cx, |this, cx| {
                     this.unload_all_plugins();
+                    this.selected_sidebar_folder = None;
                     this.state.open_workspace(folder);
                     this.load_installed_plugins_for_vault();
                     if this.state.active_document().is_none() {
@@ -2397,6 +2400,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
     }
 
     pub(crate) fn select_note(&mut self, path: PathBuf, center_in_sidebar: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.selected_sidebar_folder = None;
         // A match list belongs to the note it was scanned from.
         if self.find_bar.is_open {
             self.close_find_bar(window, cx);
@@ -2431,6 +2435,25 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         }
         window.focus(&self.focus_handle);
         self.reset_editor_cursor_blink(cx);
+        cx.notify();
+    }
+
+    /// Selects a folder in the sidebar file tree, expanding its parent folders and scrolling to it.
+    pub(crate) fn select_sidebar_folder(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.sidebar_mode = crate::views::sidebar::SidebarMode::Files;
+        self.sidebar_collapsed = false;
+        self.selected_sidebar_folder = Some(path.clone());
+        if let Some(ref ws) = self.state.workspace_path {
+            if &path == ws {
+                self.sidebar_scroll_handle.set_offset(gpui::Point::default());
+                self.state.session.sidebar_scroll_top = 0.0;
+            } else {
+                self.state.reveal_path_in_tree(&path);
+                self.state.expanded_folders.insert(path);
+                self.state.save_session_state();
+                self.need_scroll_sidebar_to_active.set(true);
+            }
+        }
         cx.notify();
     }
 
@@ -5932,44 +5955,86 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         } else {
             self.state.active_document().map(|d| d.path.clone())
         };
-        let breadcrumbs = if let Some(doc) = doc_override {
+        struct NavBreadcrumb {
+            name: String,
+            path: Option<PathBuf>,
+            is_folder: bool,
+        }
+
+        let breadcrumbs = if is_empty_tab {
+            vec![NavBreadcrumb {
+                name: self.t("tabs.newTab"),
+                path: None,
+                is_folder: false,
+            }]
+        } else if let Some(ref doc_path) = full_path_opt {
             if let Some(ref ws) = self.state.workspace_path {
-                if let Ok(rel) = doc.path.strip_prefix(ws) {
-                    let mut parts = Vec::new();
-                    parts.push(self.state.workspace_name.clone());
-                    for comp in rel.components() {
+                if let Ok(rel) = doc_path.strip_prefix(ws) {
+                    let mut list = Vec::new();
+                    list.push(NavBreadcrumb {
+                        name: self.state.workspace_name.clone(),
+                        path: Some(ws.clone()),
+                        is_folder: true,
+                    });
+                    let mut curr = ws.clone();
+                    let comps: Vec<_> = rel.components().collect();
+                    let total = comps.len();
+                    for (i, comp) in comps.into_iter().enumerate() {
+                        curr.push(comp);
                         let comp_str = comp.as_os_str().to_string_lossy().to_string();
-                        if !comp_str.is_empty() {
-                            parts.push(comp_str);
+                        if comp_str.is_empty() {
+                            continue;
+                        }
+                        let is_last = i == total.saturating_sub(1);
+                        if is_last {
+                            let mut name = comp_str;
+                            if let Some(stripped) = name.strip_suffix(".md") {
+                                name = stripped.to_string();
+                            } else if let Some(stripped) = name.strip_suffix(".markdown") {
+                                name = stripped.to_string();
+                            }
+                            list.push(NavBreadcrumb {
+                                name,
+                                path: Some(curr.clone()),
+                                is_folder: false,
+                            });
+                        } else {
+                            list.push(NavBreadcrumb {
+                                name: comp_str,
+                                path: Some(curr.clone()),
+                                is_folder: true,
+                            });
                         }
                     }
-                    if let Some(last) = parts.last_mut() {
-                        if let Some(stripped) = last.strip_suffix(".md") {
-                            *last = stripped.to_string();
-                        } else if let Some(stripped) = last.strip_suffix(".markdown") {
-                            *last = stripped.to_string();
-                        }
-                    }
-                    if !parts.is_empty() {
-                        parts
-                    } else {
-                        vec![doc.title.clone()]
-                    }
+                    list
                 } else {
-                    vec![doc.title.clone()]
+                    let title = doc_override
+                        .map(|d| d.title.clone())
+                        .or_else(|| self.state.active_document().map(|d| d.title.clone()))
+                        .unwrap_or_else(|| self.t("tabs.newTab"));
+                    vec![NavBreadcrumb {
+                        name: title,
+                        path: Some(doc_path.clone()),
+                        is_folder: false,
+                    }]
                 }
             } else {
-                vec![doc.title.clone()]
+                let title = doc_override
+                    .map(|d| d.title.clone())
+                    .or_else(|| self.state.active_document().map(|d| d.title.clone()))
+                    .unwrap_or_else(|| self.t("tabs.newTab"));
+                vec![NavBreadcrumb {
+                    name: title,
+                    path: Some(doc_path.clone()),
+                    is_folder: false,
+                }]
             }
-        } else if is_empty_tab {
-            vec![self.t("tabs.newTab")]
         } else {
-            let crumbs = self.state.note_breadcrumbs();
-            if crumbs.is_empty() {
-                vec![self.t("tabs.newTab")]
-            } else {
-                crumbs
-            }
+            vec![NavBreadcrumb {
+                name: self.t("tabs.newTab"),
+                path: None,
+                is_folder: false,
+            }]
         };
         let is_dirty = if let Some(doc) = doc_override {
             doc.is_dirty
@@ -6073,7 +6138,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             .overflow_hidden();
 
                         let count = breadcrumbs.len();
-                        for (idx, part) in breadcrumbs.iter().enumerate() {
+                        for (idx, crumb) in breadcrumbs.iter().enumerate() {
                             if idx > 0 {
                                 crumbs_bar = crumbs_bar.child(
                                     div()
@@ -6085,47 +6150,72 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                 );
                             }
                             let is_last = idx == count.saturating_sub(1);
-                            let is_root_folder = idx == 0 && !is_empty_tab && self.state.workspace_path.is_some();
-                            crumbs_bar = crumbs_bar.child(
+                            let is_root_folder = idx == 0 && crumb.is_folder;
+                            let is_folder = crumb.is_folder;
+                            let item_path = crumb.path.clone();
+
+                            let mut item_elem = div()
+                                .id(SharedString::from(format!("nav-crumb-{}", idx)))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_1p5()
+                                .min_w_0()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded_md()
+                                .text_color(if is_last {
+                                    theme.text_primary
+                                } else {
+                                    theme.text_secondary
+                                });
+
+                            if is_root_folder {
+                                item_elem = item_elem.child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .child(icons::icon(icons::ICON_FOLDER, 15.0, theme.accent)),
+                                );
+                            }
+
+                            item_elem = item_elem.child(
                                 div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap_1p5()
-                                    .min_w_0()
-                                    .when(is_root_folder, |d| {
-                                        d.child(
-                                            div()
-                                                .flex_shrink_0()
-                                                .flex()
-                                                .items_center()
-                                                .child(icons::icon(icons::ICON_FOLDER, 14.0, theme.accent)),
-                                        )
+                                    .text_sm()
+                                    .font_weight(if is_last {
+                                        gpui::FontWeight::SEMIBOLD
+                                    } else {
+                                        gpui::FontWeight::NORMAL
                                     })
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .font_weight(if is_last {
-                                                gpui::FontWeight::SEMIBOLD
-                                            } else {
-                                                gpui::FontWeight::NORMAL
-                                            })
-                                            .text_color(if is_last {
-                                                theme.text_primary
-                                            } else {
-                                                theme.text_muted
-                                            })
-                                            .truncate()
-                                            .hover(|h| {
-                                                if !is_last {
-                                                    h.text_color(theme.text_secondary)
-                                                } else {
-                                                    h
-                                                }
-                                            })
-                                            .child(part.clone()),
-                                    ),
+                                    .truncate()
+                                    .child(crumb.name.clone()),
                             );
+
+                            if is_folder {
+                                item_elem = item_elem
+                                    .cursor_pointer()
+                                    .hover(|h| h.bg(theme.bg_hover).text_color(theme.text_primary));
+                                if let Some(path) = item_path {
+                                    item_elem = item_elem.on_click(cx.listener(move |this, _, _, cx| {
+                                        this.select_sidebar_folder(path.clone(), cx);
+                                    }));
+                                }
+                            } else if let Some(path) = item_path {
+                                item_elem = item_elem
+                                    .cursor_pointer()
+                                    .hover(|h| h.bg(theme.bg_hover))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.sidebar_mode = crate::views::sidebar::SidebarMode::Files;
+                                        this.sidebar_collapsed = false;
+                                        this.selected_sidebar_folder = None;
+                                        this.state.reveal_path_in_tree(&path);
+                                        this.need_scroll_sidebar_to_active.set(true);
+                                        cx.notify();
+                                    }));
+                            }
+
+                            crumbs_bar = crumbs_bar.child(item_elem);
                         }
 
                         if is_dirty {
@@ -6390,6 +6480,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         if same_tab {
             return;
         }
+
+        self.selected_sidebar_folder = None;
 
         // The match list belongs to the outgoing note.
         if self.find_bar.is_open {
@@ -10803,7 +10895,7 @@ impl Render for AppView {
         self.theme = Theme::from_config(&self.config.ui.theme, Some(window.appearance()));
         let cx = &*cx;
         let theme = &self.theme;
-        let active_path = self.state.active_document().map(|d| d.path.clone());
+        let active_path = self.selected_sidebar_folder.clone().or_else(|| self.state.active_document().map(|d| d.path.clone()));
         let _is_editing = self.edit_mode;
 
         // Draw the frames the scrollbar needs to settle.
@@ -11637,6 +11729,8 @@ impl Render for AppView {
                                     .border_color(theme.border_subtle);
 
                                 if has_workspace {
+                                    let is_ws_selected = self.selected_sidebar_folder.as_ref().is_some()
+                                        && self.selected_sidebar_folder.as_ref() == self.state.workspace_path.as_ref();
                                     footer = footer
                                         .child(
                                             div()
@@ -11651,7 +11745,8 @@ impl Render for AppView {
                                                 .py_1()
                                                 .rounded_md()
                                                 .cursor_pointer()
-                                                .hover(|h| h.bg(theme.bg_hover))
+                                                .when(is_ws_selected, |s| s.bg(theme.bg_selected))
+                                                .when(!is_ws_selected, |s| s.hover(|h| h.bg(theme.bg_hover)))
                                                 .child(icons::icon(icons::ICON_FOLDER, 15.0, theme.accent))
                                                 .child(
                                                     div()

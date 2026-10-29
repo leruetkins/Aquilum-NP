@@ -164,7 +164,7 @@ struct SidebarRow {
     is_folder: bool,
     /// Folders only: whether the folder is currently expanded.
     is_expanded: bool,
-    /// Files only: whether this row is the active note.
+    /// Whether this row is selected (active note or selected folder).
     is_selected: bool,
     name: String,
     path: PathBuf,
@@ -573,10 +573,15 @@ impl AppView {
                     let is_expanded = self.state.expanded_folders.contains(path)
                         || (is_filtering && (folder_matches_self || folder_has_matching_descendant));
 
+                    let is_selected = active_path.map(|p| p == path).unwrap_or(false);
+                    if is_selected {
+                        *selected = Some(out.len());
+                    }
+
                     out.push(SidebarRow {
                         is_folder: true,
                         is_expanded,
-                        is_selected: false,
+                        is_selected,
                         name: name.clone(),
                         path: path.clone(),
                         depth,
@@ -614,7 +619,8 @@ impl AppView {
     /// the caller can place it from the row index alone.
     fn render_sidebar_row(&self, row: &SidebarRow, theme: &Theme, cx: &Context<Self>) -> AnyElement {
         if row.is_folder {
-            let is_folder_selected = self.folder_context_menu.is_open && self.folder_context_menu.folder_path == row.path;
+            let is_folder_selected = (self.folder_context_menu.is_open && self.folder_context_menu.folder_path == row.path)
+                || row.is_selected;
 
             let chevron = if row.is_expanded {
                 icons::icon(icons::ICON_CHEVRON_DOWN, 12.0, theme.text_muted)
@@ -677,6 +683,7 @@ impl AppView {
                         .child(label),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
+                    this.selected_sidebar_folder = Some(folder_path.clone());
                     this.state.toggle_folder(folder_path.clone());
                     cx.notify();
                 }))
