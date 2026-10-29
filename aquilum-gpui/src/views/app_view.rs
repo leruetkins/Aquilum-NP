@@ -6209,6 +6209,12 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             let is_folder = crumb.is_folder;
                             let item_path = crumb.path.clone();
 
+                            let crumb_color = if is_last && is_dirty {
+                                theme.text_primary
+                            } else {
+                                theme.text_muted
+                            };
+
                             let mut item_elem = div()
                                 .id(SharedString::from(format!("nav-crumb-{}", idx)))
                                 .flex()
@@ -6219,11 +6225,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                 .px_1p5()
                                 .py_0p5()
                                 .rounded_md()
-                                .text_color(if is_last {
-                                    theme.text_primary
-                                } else {
-                                    theme.text_secondary
-                                });
+                                .text_color(crumb_color);
 
                             if is_root_folder {
                                 item_elem = item_elem.child(
@@ -6238,11 +6240,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             item_elem = item_elem.child(
                                 div()
                                     .text_sm()
-                                    .font_weight(if is_last {
-                                        gpui::FontWeight::SEMIBOLD
-                                    } else {
-                                        gpui::FontWeight::NORMAL
-                                    })
+                                    .font_weight(gpui::FontWeight::NORMAL)
                                     .truncate()
                                     .child(crumb.name.clone()),
                             );
@@ -6259,7 +6257,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             } else if let Some(path) = item_path {
                                 item_elem = item_elem
                                     .cursor_pointer()
-                                    .hover(|h| h.bg(theme.bg_hover))
+                                    .hover(|h| h.bg(theme.bg_hover).text_color(theme.text_primary))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.sidebar_mode = crate::views::sidebar::SidebarMode::Files;
                                         this.sidebar_collapsed = false;
@@ -6271,16 +6269,6 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             }
 
                             crumbs_bar = crumbs_bar.child(item_elem);
-                        }
-
-                        if is_dirty {
-                            crumbs_bar = crumbs_bar.child(
-                                div()
-                                    .text_sm()
-                                    .text_color(theme.accent)
-                                    .ml_1p5()
-                                    .child("●"),
-                            );
                         }
 
                         if let Some(ref full_path) = full_path_opt {
