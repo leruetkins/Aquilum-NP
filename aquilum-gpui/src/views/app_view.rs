@@ -12217,13 +12217,15 @@ fn render_syntax_spans(
     // A grammar member's wavy line is a native text underline; solid and the
     // other line styles are painted by the row backdrop (`grammar_line_segments`),
     // which reads the same style from `RowShapedLayout`. Table cells have no row
-    // backdrop, so their solid line stays native.
-    let grammar_run = |kind: crate::markdown::GrammarKind,
-                       line_color: Option<crate::markdown::GrammarColor>,
-                       text_color: Option<crate::markdown::GrammarColor>,
-                       raw: &str|
-     -> (String, gpui::TextRun) {
-        let painted = crate::markdown::grammar_paint_text(raw);
+    // backdrop, so their solid line stays native. The member paints one run per
+    // inline span it carries, so emphasis and code inside it keep their face while
+    // the line under them stays continuous.
+    let push_grammar = |kind: crate::markdown::GrammarKind,
+                        line_color: Option<crate::markdown::GrammarColor>,
+                        text_color: Option<crate::markdown::GrammarColor>,
+                        content: &[crate::markdown::VisibleSpan],
+                        full_text: &mut String,
+                        runs: &mut Vec<gpui::TextRun>| {
         let style = crate::markdown::GrammarSpanStyle {
             line: kind.line(),
             line_color,
@@ -12244,15 +12246,62 @@ fn render_syntax_spans(
             }),
             _ => None,
         };
-        let run = gpui::TextRun {
-            len: painted.len(),
-            font: reg_font.clone(),
-            color: text_rgba.into(),
-            background_color: None,
-            underline,
-            strikethrough: None,
-        };
-        (painted, run)
+        for visible in content {
+            let (text, font, color, strikethrough) = match &visible.span {
+                crate::markdown::SyntaxSpan::Marker(m) => {
+                    // The escape backslash never paints, revealed or not.
+                    if m == "\\" {
+                        continue;
+                    }
+                    let Some(color) = marker_paint(m, visible.marker_visible, theme) else {
+                        continue;
+                    };
+                    let font = if crate::markdown::is_inline_code_delim(m) {
+                        code_font.clone()
+                    } else {
+                        reg_font.clone()
+                    };
+                    (m.as_str(), font, color, None)
+                }
+                crate::markdown::SyntaxSpan::Text(t) => (t.as_str(), reg_font.clone(), text_rgba.into(), None),
+                crate::markdown::SyntaxSpan::Bold(t) => {
+                    (t.as_str(), bold_font.clone(), text_rgba.into(), None)
+                }
+                crate::markdown::SyntaxSpan::Italic(t) => {
+                    (t.as_str(), italic_font.clone(), text_rgba.into(), None)
+                }
+                crate::markdown::SyntaxSpan::BoldItalic(t) => {
+                    (t.as_str(), bold_italic_font.clone(), text_rgba.into(), None)
+                }
+                crate::markdown::SyntaxSpan::InlineCode(t) => {
+                    (t.as_str(), code_font.clone(), text_rgba.into(), None)
+                }
+                crate::markdown::SyntaxSpan::Strikethrough(t) => (
+                    t.as_str(),
+                    reg_font.clone(),
+                    text_rgba.into(),
+                    Some(gpui::StrikethroughStyle {
+                        thickness: px(1.0),
+                        color: Some(text_rgba.into()),
+                    }),
+                ),
+                other => (
+                    crate::markdown::span_text(other),
+                    reg_font.clone(),
+                    text_rgba.into(),
+                    None,
+                ),
+            };
+            full_text.push_str(text);
+            runs.push(gpui::TextRun {
+                len: text.len(),
+                font,
+                color,
+                background_color: None,
+                underline,
+                strikethrough,
+            });
+        }
     };
 
     if !has_links {
@@ -12352,10 +12401,8 @@ fn render_syntax_spans(
                         }),
                     });
                 }
-                crate::markdown::SyntaxSpan::Grammar { kind, line_color, text_color, text } => {
-                    let (painted, run) = grammar_run(kind, line_color, text_color, &text);
-                    full_text.push_str(&painted);
-                    runs.push(run);
+                crate::markdown::SyntaxSpan::Grammar { kind, line_color, text_color, content, .. } => {
+                    push_grammar(kind, line_color, text_color, &content, &mut full_text, &mut runs);
                 }
                 crate::markdown::SyntaxSpan::Link { .. } => unreachable!(),
                 crate::markdown::SyntaxSpan::Underline(u) => {
@@ -12515,10 +12562,8 @@ fn render_syntax_spans(
                         }),
                     });
                 }
-                crate::markdown::SyntaxSpan::Grammar { kind, line_color, text_color, text } => {
-                    let (painted, run) = grammar_run(kind, line_color, text_color, &text);
-                    full_text.push_str(&painted);
-                    runs.push(run);
+                crate::markdown::SyntaxSpan::Grammar { kind, line_color, text_color, content, .. } => {
+                    push_grammar(kind, line_color, text_color, &content, &mut full_text, &mut runs);
                 }
                 crate::markdown::SyntaxSpan::Link { text, url } => {
                     // Flush preceding text runs

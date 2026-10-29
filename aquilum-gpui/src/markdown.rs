@@ -725,11 +725,14 @@ pub enum SyntaxSpan {
     /// School-grammar sentence member: `::type{line/text}[text]`. `text` is the raw
     /// content, escapes included, so its char count stays equal to the source count
     /// and every span/column offset keeps pointing at the right source char.
+    /// `content` is that same text parsed into the inline markup a member may carry;
+    /// see [`parse_grammar_content`] for the kinds that are allowed inside.
     Grammar {
         kind: GrammarKind,
         line_color: Option<GrammarColor>,
         text_color: Option<GrammarColor>,
         text: String,
+        content: Vec<VisibleSpan>,
     },
 }
 
@@ -988,6 +991,73 @@ pub fn grammar_paint_text(raw: &str) -> String {
     out
 }
 
+/// Inline markup a grammar member may carry, scanned by the same parser as the rest
+/// of the line.
+///
+/// Emphasis, strikethrough and inline code keep their formatting; every other
+/// construct is flattened into its literal source text, so a link or a highlight
+/// inside a member looks exactly as it did before nested markup existed. Adding a
+/// kind later means widening the `formatted` match below and teaching the two
+/// painters (`push_grammar_runs`, `render_syntax_spans`) the same kind.
+fn parse_grammar_content(raw: &str) -> Vec<VisibleSpan> {
+    let spans = parse_inline_syntax_spans(raw);
+    let mut out: Vec<VisibleSpan> = Vec::new();
+    let mut i = 0;
+    while i < spans.len() {
+        // An escape stays a two-char pair: the backslash paints nothing and the
+        // escaped char keeps its own source offset, which the grammar painters rely on.
+        if matches!(&spans[i], SyntaxSpan::Marker(m) if m == "\\") {
+            if let Some(SyntaxSpan::Text(t)) = spans.get(i + 1) {
+                out.push(VisibleSpan {
+                    span: SyntaxSpan::Marker("\\".to_string()),
+                    marker_visible: true,
+                });
+                push_grammar_text(&mut out, t);
+                i += 2;
+                continue;
+            }
+        }
+        let formatted = matches!(spans[i], SyntaxSpan::Marker(_))
+            && matches!(
+                spans.get(i + 1),
+                Some(
+                    SyntaxSpan::Bold(_)
+                        | SyntaxSpan::Italic(_)
+                        | SyntaxSpan::BoldItalic(_)
+                        | SyntaxSpan::InlineCode(_)
+                        | SyntaxSpan::Strikethrough(_)
+                )
+            )
+            && matches!(spans.get(i + 2), Some(SyntaxSpan::Marker(_)));
+        if formatted {
+            for span in &spans[i..i + 3] {
+                out.push(VisibleSpan {
+                    span: span.clone(),
+                    marker_visible: true,
+                });
+            }
+            i += 3;
+            continue;
+        }
+        push_grammar_text(&mut out, span_text(&spans[i]));
+        i += 1;
+    }
+    out
+}
+
+fn push_grammar_text(out: &mut Vec<VisibleSpan>, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    match out.last_mut() {
+        Some(VisibleSpan { span: SyntaxSpan::Text(t), .. }) => t.push_str(text),
+        _ => out.push(VisibleSpan {
+            span: SyntaxSpan::Text(text.to_string()),
+            marker_visible: true,
+        }),
+    }
+}
+
 /// Which syntax markers of a line are shown right now.
 ///
 /// The line layout is computed from the raw source, so revealing markers never changes how
@@ -1022,7 +1092,7 @@ pub struct VisibleSpan {
     pub marker_visible: bool,
 }
 
-fn span_text(span: &SyntaxSpan) -> &str {
+pub(crate) fn span_text(span: &SyntaxSpan) -> &str {
     match span {
         SyntaxSpan::Marker(t)
         | SyntaxSpan::Text(t)
@@ -1271,6 +1341,7 @@ pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
                     line_color: scan.line_color,
                     text_color: scan.text_color,
                     text: scan.content.to_string(),
+                    content: parse_grammar_content(scan.content),
                 });
                 spans.push(SyntaxSpan::Marker("]".to_string()));
                 s = &s[scan.consumed..];
@@ -2169,8 +2240,10 @@ pub fn slice_syntax_spans_revealed(
 
     for span in spans {
         // Grammar spans carry their colours, so they are sliced on their own instead
-        // of going through the kind code below.
-        if let SyntaxSpan::Grammar { kind, line_color, text_color, text } = span {
+        // of going through the kind code below. Their inline content is sliced too,
+        // with the member's absolute offset, so a nested marker reveals with the line
+        // it belongs to.
+        if let SyntaxSpan::Grammar { kind, line_color, text_color, text, content } = span {
             let span_len = text.chars().count();
             let span_end = curr_char + span_len;
             if span_end > start_char && curr_char < end_char {
@@ -2184,6 +2257,13 @@ pub fn slice_syntax_spans_revealed(
                             line_color: *line_color,
                             text_color: *text_color,
                             text: sliced,
+                            content: slice_visible_spans_revealed(
+                                content,
+                                s,
+                                e,
+                                abs_start + curr_char,
+                                reveal,
+                            ),
                         },
                         marker_visible: true,
                     });
@@ -2254,6 +2334,20 @@ pub fn slice_syntax_spans_revealed(
     }
 
     result
+}
+
+/// Same as [`slice_syntax_spans_revealed`], for a grammar member's already parsed
+/// inline content. The content is re-sliced through the span slicer, so its markers
+/// get their visibility from the same reveal ranges as the line's own markers.
+fn slice_visible_spans_revealed(
+    spans: &[VisibleSpan],
+    start_char: usize,
+    end_char: usize,
+    abs_start: usize,
+    reveal: &InlineReveal,
+) -> Vec<VisibleSpan> {
+    let plain: Vec<SyntaxSpan> = spans.iter().map(|v| v.span.clone()).collect();
+    slice_syntax_spans_revealed(&plain, start_char, end_char, abs_start, reveal)
 }
 
 /// Legacy visual-column -> row-char mapping.
@@ -2978,43 +3072,44 @@ fn push_padding(
     segments.push(PaintedSegment { text: text.to_string(), bold, italic, code: false, tag: None, grammar: None });
 }
 
-/// Paints a grammar fragment's resolved runs, mapping every painted char back to its
-/// source char. Escapes keep the source offsets: the backslash has no cell and the
-/// escaped `]` maps to the `]` itself.
+/// Paints a grammar fragment's runs, mapping every painted char back to its source
+/// char.
+///
+/// The fragment is already parsed into the markup a member may carry, so a bold word
+/// inside it keeps its face and the line under the member stays unbroken: hidden
+/// markers take no cell at all. The escape backslash never paints, even when revealed,
+/// and the escaped char maps to its own source offset.
 fn push_grammar_runs(
     segments: &mut Vec<PaintedSegment>,
     line_chars: &mut Vec<usize>,
-    raw: &str,
+    content: &[VisibleSpan],
     src_start: usize,
     bold: bool,
     italic: bool,
     style: GrammarSpanStyle,
 ) {
-    let mut run = String::new();
-    let mut run_start = 0usize;
-    let mut char_idx = 0usize;
-    let mut chars = raw.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(&next) = chars.peek() {
-                if next == ']' || next == '\\' {
-                    chars.next();
-                    push_grammar_run(segments, line_chars, &run, src_start + run_start, bold, italic, style);
-                    run.clear();
-                    push_grammar_run(segments, line_chars, &next.to_string(), src_start + char_idx + 1, bold, italic, style);
-                    char_idx += 2;
-                    run_start = char_idx;
+    let mut src = src_start;
+    for visible in content {
+        let (text, is_bold, is_italic, is_code) = match &visible.span {
+            SyntaxSpan::Marker(t) => {
+                let n = t.chars().count();
+                if t == "\\" || (!visible.marker_visible && !is_inline_code_delim(t)) {
+                    src += n;
                     continue;
                 }
+                (t.as_str(), bold, italic, is_inline_code_delim(t))
             }
-        }
-        if run.is_empty() {
-            run_start = char_idx;
-        }
-        run.push(c);
-        char_idx += 1;
+            SyntaxSpan::Text(t) => (t.as_str(), bold, italic, false),
+            SyntaxSpan::Bold(t) => (t.as_str(), true, italic, false),
+            SyntaxSpan::Italic(t) => (t.as_str(), bold, true, false),
+            SyntaxSpan::BoldItalic(t) => (t.as_str(), true, true, false),
+            SyntaxSpan::InlineCode(t) => (t.as_str(), bold, italic, true),
+            SyntaxSpan::Strikethrough(t) => (t.as_str(), bold, italic, false),
+            other => (span_text(other), bold, italic, false),
+        };
+        push_grammar_run(segments, line_chars, text, src, is_bold, is_italic, is_code, style);
+        src += text.chars().count();
     }
-    push_grammar_run(segments, line_chars, &run, src_start + run_start, bold, italic, style);
 }
 
 fn push_grammar_run(
@@ -3024,6 +3119,7 @@ fn push_grammar_run(
     src_start: usize,
     bold: bool,
     italic: bool,
+    code: bool,
     style: GrammarSpanStyle,
 ) {
     if text.is_empty() {
@@ -3036,7 +3132,7 @@ fn push_grammar_run(
         text: text.to_string(),
         bold,
         italic,
-        code: false,
+        code,
         tag: None,
         grammar: Some(style),
     });
@@ -3217,7 +3313,7 @@ pub fn row_painted_text(
             for visible in slice_syntax_spans_revealed(&spans, s, e, content_offset, reveal) {
                 // A grammar fragment paints escape-resolved text, so its runs are
                 // pushed separately from the plain span table.
-                if let SyntaxSpan::Grammar { kind, line_color, text_color, text } = &visible.span {
+                if let SyntaxSpan::Grammar { kind, line_color, text_color, text, content } = &visible.span {
                     let style = GrammarSpanStyle {
                         line: kind.line(),
                         line_color: *line_color,
@@ -3226,7 +3322,7 @@ pub fn row_painted_text(
                     push_grammar_runs(
                         &mut segments,
                         &mut line_chars,
-                        text,
+                        content,
                         src,
                         base_bold,
                         base_italic,
@@ -3402,8 +3498,16 @@ pub fn strip_inline_markdown(mut s: &str) -> String {
             SyntaxSpan::Link { text, .. } => {
                 out.push_str(&text);
             }
-            SyntaxSpan::Grammar { text, .. } => {
-                out.push_str(&grammar_paint_text(&text));
+            SyntaxSpan::Grammar { text, content, .. } => {
+                if content.is_empty() {
+                    out.push_str(&grammar_paint_text(&text));
+                } else {
+                    for inner in &content {
+                        if !matches!(inner.span, SyntaxSpan::Marker(_)) {
+                            out.push_str(&grammar_paint_text(span_text(&inner.span)));
+                        }
+                    }
+                }
             }
         }
     }
@@ -5225,6 +5329,77 @@ mod tests {
         assert_eq!((ranges[0].0, ranges[0].1), (0, 20));
         // The painted `]` maps back to the source bracket, not to the backslash.
         assert_eq!(row.line_chars[12], 17);
+    }
+
+    #[test]
+    fn grammar_member_paints_emphasis_inside_itself() {
+        let line = "::d{red}[**наш** и *рыжий*]";
+        let kind = classify_line(line, None);
+        let row = painted(line, &kind, 0, line.chars().count(), 0, false);
+        assert_eq!(text_of(&row), "наш и рыжий");
+        // Hidden nested markers take no cell, so the member's line stays unbroken.
+        assert_eq!(
+            row.grammar_ranges(),
+            vec![(
+                0,
+                11,
+                GrammarSpanStyle {
+                    line: GrammarLine::Wavy,
+                    line_color: Some((255, 0, 0)),
+                    text_color: None,
+                }
+            )]
+        );
+        assert!(row.segments.iter().any(|s| s.text == "наш" && s.bold && s.grammar.is_some()));
+        assert!(row.segments.iter().any(|s| s.text == "рыжий" && s.italic && s.grammar.is_some()));
+        // Copying the line yields the visible text, not the nested markup.
+        assert_eq!(strip_inline_markdown(line), "наш и рыжий");
+
+        // On the active line the nested markers are painted too, still inside the member.
+        let row = painted(line, &kind, 0, line.chars().count(), 0, true);
+        assert_eq!(text_of(&row), line);
+        let ranges = row.grammar_ranges();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!((ranges[0].0, ranges[0].1), (9, line.chars().count() - 1));
+    }
+
+    #[test]
+    fn grammar_member_paints_strikethrough_and_inline_code() {
+        let line = "::o[~~старый~~ и `код`]";
+        let kind = classify_line(line, None);
+        let row = painted(line, &kind, 0, line.chars().count(), 0, false);
+        assert_eq!(text_of(&row), "старый и `код`");
+        assert!(row.segments.iter().any(|s| s.text == "старый" && s.grammar.is_some()));
+        assert!(row.segments.iter().any(|s| s.text == "код" && s.code && s.grammar.is_some()));
+        // The chip keeps its delimiters, and the member's dotted line covers it.
+        assert_eq!(row.code_ranges(), vec![(9, 14)]);
+        assert_eq!(row.grammar_ranges().len(), 1);
+        assert_eq!((row.grammar_ranges()[0].0, row.grammar_ranges()[0].1), (0, 14));
+    }
+
+    #[test]
+    fn grammar_member_inline_markup_keeps_source_columns() {
+        let line = "::s[**наш**]";
+        let kind = classify_line(line, None);
+        let row = painted(line, &kind, 0, line.chars().count(), 0, false);
+        assert_eq!(text_of(&row), "наш");
+        // Hidden `**` take no cell, so each painted char maps to its source char.
+        assert_eq!(row.line_chars, vec![6, 7, 8, 12]);
+
+        // A wrapped row slices the member's content and keeps its line.
+        let sliced = painted(line, &kind, 7, 9, 0, false);
+        assert_eq!(text_of(&sliced), "аш");
+        assert_eq!(sliced.line_chars, vec![7, 8, 9]);
+        assert_eq!((sliced.grammar_ranges()[0].0, sliced.grammar_ranges()[0].1), (0, 2));
+    }
+
+    #[test]
+    fn grammar_member_keeps_other_markup_literal() {
+        let line = "::d[а ==выделено== б]";
+        let kind = classify_line(line, None);
+        let row = painted(line, &kind, 0, line.chars().count(), 0, false);
+        assert_eq!(text_of(&row), "а ==выделено== б");
+        assert_eq!(row.grammar_ranges().len(), 1);
     }
 
     #[test]
