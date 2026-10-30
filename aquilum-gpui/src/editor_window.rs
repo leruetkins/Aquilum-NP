@@ -407,21 +407,20 @@ impl EditorWindow {
         let mut scanner = markdown::CodeScanner::from_state(initial);
         let code_states: Vec<Option<CodeBlockState>> =
             line_refs.iter().map(|line| scanner.step(line)).collect();
-        let default_headings = crate::settings::HeadingsSettings::default();
-        let h_settings = headings.unwrap_or(&default_headings);
         let mut visual_rows = markdown::build_visual_rows_canonical(
             &line_refs,
             &code_states,
             word_wrap,
             wrap_cols,
-            h_settings,
+            headings,
+            false,
             |_| false,
         );
         // The height index resolves every row back to its line text, so it has
         // to be built while `line_idx` still counts from the window's first
         // line. It is only after this that rows are lifted to document
         // coordinates.
-        let height_index = VisualRowHeightIndex::from_rows(&lines, &visual_rows, headings);
+        let height_index = VisualRowHeightIndex::from_rows(&lines, &visual_rows, headings, false);
         for row in &mut visual_rows {
             row.line_idx += start_line;
         }
@@ -450,6 +449,7 @@ impl EditorWindow {
         word_wrap: bool,
         wrap_cols: usize,
         headings: Option<&crate::settings::HeadingsSettings>,
+        source_mode: bool,
         initial: crate::markdown::CodeScanState,
         table_row_info: impl Fn(usize) -> Option<crate::markdown::TableRowVisualKind>,
     ) -> Self {
@@ -466,20 +466,20 @@ impl EditorWindow {
         let mut scanner = markdown::CodeScanner::from_state(initial);
         let code_states: Vec<Option<CodeBlockState>> =
             line_refs.iter().map(|line| scanner.step(line)).collect();
-        let default_headings = crate::settings::HeadingsSettings::default();
-        let h_settings = headings.unwrap_or(&default_headings);
         let mut visual_rows = markdown::build_visual_rows_canonical(
             &line_refs,
             &code_states,
             word_wrap,
             wrap_cols,
-            h_settings,
+            headings,
+            source_mode,
             |idx| table_row_info(start_line + idx).is_some(),
         );
         let height_index = VisualRowHeightIndex::from_rows_with_tables(
             &lines,
             &visual_rows,
             headings,
+            source_mode,
             |idx| table_row_info(start_line + idx),
         );
         for row in &mut visual_rows {
@@ -521,6 +521,7 @@ impl EditorWindow {
             word_wrap,
             wrap_cols,
             headings,
+            false,
             initial,
             |_| None,
         )
@@ -586,9 +587,7 @@ impl EditorWindow {
         }
 
         let new_rows = {
-            let default_headings = crate::settings::HeadingsSettings::default();
-            let h_settings = headings.unwrap_or(&default_headings);
-            let ranges = self.wrap_ranges_for(line, &new_line_text, None, h_settings, table_kind);
+            let ranges = self.wrap_ranges_for(line, &new_line_text, None, headings, table_kind);
             Self::rows_from_ranges(line, &ranges)
         };
 
@@ -608,9 +607,7 @@ impl EditorWindow {
         // Every sub-row of one line carries the same height: it derives from the
         // line text and the table kind only, exactly as the full rebuild computes
         // it in `VisualRowHeightIndex::from_rows_with_tables`.
-        let default_headings = crate::settings::HeadingsSettings::default();
-        let h_settings = headings.unwrap_or(&default_headings);
-        let row_h = markdown::visual_row_height(&new_line_text, h_settings, table_kind);
+        let row_h = markdown::visual_row_height(&new_line_text, headings, false, table_kind);
         let new_heights = vec![row_h; adjusted_new_rows.len()];
 
         vrows_mut.splice(first_row..=last_row, adjusted_new_rows);
@@ -633,7 +630,7 @@ impl EditorWindow {
         line: usize,
         text: &str,
         paint: Option<&markdown::PaintedLineSpec>,
-        headings: &crate::settings::HeadingsSettings,
+        headings: Option<&crate::settings::HeadingsSettings>,
         table_kind: Option<markdown::TableRowVisualKind>,
     ) -> Vec<(usize, usize)> {
         let char_count = text.chars().count();
@@ -649,8 +646,10 @@ impl EditorWindow {
             Some(p) => (p.active, p.reveal.clone()),
             None => (false, markdown::InlineReveal::None),
         };
+        let default_headings = crate::settings::HeadingsSettings::default();
+        let h_settings = headings.unwrap_or(&default_headings);
         let metrics =
-            markdown::painted_line_metrics(text, &classified, active, &reveal, headings);
+            markdown::painted_line_metrics(text, &classified, active, &reveal, h_settings);
         markdown::wrap_line_ranges_painted(text, &metrics, self.wrap_cols)
     }
 
@@ -686,9 +685,7 @@ impl EditorWindow {
         }
         let text = self.lines.get(line)?.to_string();
         let table_kind = table_row_info(line);
-        let default_headings = crate::settings::HeadingsSettings::default();
-        let h_settings = headings.unwrap_or(&default_headings);
-        let ranges = self.wrap_ranges_for(line, &text, Some(paint), h_settings, table_kind);
+        let ranges = self.wrap_ranges_for(line, &text, Some(paint), headings, table_kind);
         let new_rows = Self::rows_from_ranges(line, &ranges);
 
         let vrows_mut = Arc::make_mut(&mut self.visual_rows);
@@ -698,7 +695,7 @@ impl EditorWindow {
         if old_count == new_rows.len() && vrows_mut[first_row..=last_row] == new_rows[..] {
             return Some((old_count, old_count));
         }
-        let row_h = markdown::visual_row_height(&text, h_settings, table_kind);
+        let row_h = markdown::visual_row_height(&text, headings, false, table_kind);
         let new_count = new_rows.len();
         vrows_mut.splice(first_row..=last_row, new_rows);
         let heights = vec![row_h; new_count];
@@ -813,6 +810,7 @@ mod tests {
             true,
             10,
             None,
+            false,
             crate::markdown::CodeScanState::default(),
             table_kind,
         );

@@ -283,6 +283,7 @@ pub struct TabSession {
     pub is_mouse_selecting: bool,
     pub word_wrap: bool,
     pub edit_mode: bool,
+    pub source_mode: bool,
     pub title_input: Option<TitleInput>,
     pub measured_viewport_h: Option<f32>,
     /// Line whose markdown is fully revealed by Alt+click. Only honoured while the caret
@@ -322,6 +323,7 @@ impl TabSession {
             is_mouse_selecting: false,
             word_wrap: true,
             edit_mode: false,
+            source_mode: false,
             title_input: None,
             measured_viewport_h: None,
             reveal_all_line: None,
@@ -391,7 +393,8 @@ impl TabSession {
         cursor_line: usize,
         suppress_selection_reveal: bool,
     ) -> bool {
-        (self.raw_tables.contains(&tbl.first_line) && tbl.contains(cursor_line))
+        self.source_mode
+            || (self.raw_tables.contains(&tbl.first_line) && tbl.contains(cursor_line))
             || self.drag_revealed_tables.contains(&tbl.first_line)
             || Self::reveals_table(
                 self.selection_reveal_state(doc, suppress_selection_reveal),
@@ -488,7 +491,7 @@ impl TabSession {
         headings: Option<&crate::settings::HeadingsSettings>,
         suppress_selection_reveal: bool,
     ) {
-        if self.window.is_empty() {
+        if self.window.is_empty() || self.source_mode {
             self.line_paints.clear();
             return;
         }
@@ -1131,8 +1134,12 @@ impl TabSession {
             word_wrap,
             wrap_cols,
             headings,
+            self.source_mode,
             initial,
             |line| {
+                if self.source_mode {
+                    return None;
+                }
                 if let Some(t) = tables.at(line) {
                     if (self.raw_tables.contains(&t.first_line) && t.contains(cursor_line))
                         || self.drag_revealed_tables.contains(&t.first_line)
@@ -2237,5 +2244,30 @@ mod tests {
         // Editing again restores the revealed wrap.
         view.ensure_visual_cache_with_headings(&mut doc, true, wrap_cols, None, 0, false);
         assert!(rows_of_line(&view, 0) > canonical_rows);
+    }
+
+    #[test]
+    fn source_mode_disables_markdown_formatting_and_keeps_uniform_heights() {
+        let text = "# Heading 1\n| col 1 | col 2 |\n| --- | --- |\n| val 1 | val 2 |\n```rust\nfn main() {}\n```\n- [ ] Task\n> [!NOTE]\n> Callout\n";
+        let mut doc = DocumentBuffer::new(
+            DocumentId::new(),
+            std::path::PathBuf::from("test.md"),
+            "test".to_string(),
+            text.to_string(),
+            1,
+        );
+        let mut view = TabSession::new(TabId::new(), doc.id);
+        view.source_mode = true;
+        let default_headings = crate::settings::HeadingsSettings::default();
+        view.rebuild_visual_cache_with_headings(&mut doc, true, 80, Some(&default_headings), 0, false);
+
+        // Every row in the window must have height 24.0 in source mode
+        for i in 0..view.window.visual_rows.len() {
+            assert_eq!(view.window.height_index.height_of(i), 24.0, "row {} must have uniform height 24.0 in source mode", i);
+        }
+
+        // Tables must not be shaped into visual grid rows
+        let tables = doc.ensure_table_index_for_window(0, 10);
+        assert!(view.grid_table_at(&doc, &tables, 1, 0, false).is_none(), "table must not be grid table in source mode");
     }
 }

@@ -20,6 +20,7 @@ pub struct ViewState {
     pub measured_viewport_h: Option<f32>,
     pub word_wrap: bool,
     pub edit_mode: bool,
+    pub source_mode: bool,
 }
 
 /// Some(..) = заголовок редактируется; is_focused не нужен.

@@ -302,7 +302,21 @@
     "foldername_cannot_be_empty": "文件夹名称不能为空",
     "vaults_title": "知识库",
     "open_folder": "打开文件夹",
-    "no_vaults": "还没有金库"
+    "no_vaults": "还没有金库",
+    "remove_from_bookmarks": "Remove from Bookmarks",
+    "bookmark_current_tab": "Bookmark current tab...",
+    "file_unbookmarked": "File '{}' removed from bookmarks",
+    "folder_unbookmarked": "Folder '{}' removed from bookmarks",
+    "untitled_group": "Untitled group",
+    "new_bookmark_group": "New bookmark group",
+    "delete_group": "Delete group",
+    "rename_group": "Rename group",
+    "no_bookmarks": "No bookmarks",
+    "collapse_all_groups": "Collapse all groups",
+    "expand_all_groups": "Expand all groups",
+    "open_in_new_tab": "Open in new tab",
+    "opened_files_count": "Opened {} files",
+    "no_files_in_folder": "No files in folder"
   },
   "tabs": {
     "fold_tabs": "折叠标签",

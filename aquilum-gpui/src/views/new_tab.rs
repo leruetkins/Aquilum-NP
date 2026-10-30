@@ -16,7 +16,7 @@ impl AppView {
         self.flush_active_note_now(cx);
         let current_scroll = self.current_scroll_top();
         self.state
-            .snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+            .snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap, self.source_mode);
         self.state.open_empty_tab();
         self.active_center_leaf = None;
         window.focus(&self.focus_handle);
@@ -36,7 +36,7 @@ impl AppView {
         self.flush_active_note_now(cx);
         let current_scroll = self.current_scroll_top();
         self.state
-            .snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+            .snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap, self.source_mode);
         let sidebar_offset_y: f32 = self.sidebar_scroll_handle.offset().y.into();
         self.state.session.sidebar_scroll_top = sidebar_offset_y;
         self.state.activate_empty_tab(path);

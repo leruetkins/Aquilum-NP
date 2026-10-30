@@ -129,6 +129,7 @@ pub struct AppView {
     pub need_scroll_sidebar_to_active: Cell<bool>,
     pub initial_sidebar_scroll_done: Cell<bool>,
     pub edit_mode: bool,
+    pub source_mode: bool,
     pub editor_blink: BlinkManager,
     pub editor_is_focused: bool,
     /// Last observed OS window activation state. gpui tracks focus per window and never
@@ -447,6 +448,7 @@ impl AppView {
             need_scroll_sidebar_to_active: Cell::new(false),
             initial_sidebar_scroll_done: Cell::new(false),
             edit_mode,
+            source_mode: false,
             editor_blink: BlinkManager::new(),
             editor_is_focused: true,
             window_was_active: true,
@@ -1188,6 +1190,10 @@ impl AppView {
         if let Some(settings) = self.state.note_states.get(path).cloned() {
             self.edit_mode = settings.edit_mode;
             self.word_wrap = settings.word_wrap;
+            self.source_mode = settings.source_mode;
+            if let Some(view) = self.state.active_view_mut() {
+                view.source_mode = self.source_mode;
+            }
             if settings.scroll_top > 0.0 {
                 self.set_editor_scroll_top(settings.scroll_top);
                 restore_to = settings.scroll_top;
@@ -1197,6 +1203,10 @@ impl AppView {
         } else {
             self.edit_mode = true;
             self.word_wrap = true;
+            self.source_mode = false;
+            if let Some(view) = self.state.active_view_mut() {
+                view.source_mode = false;
+            }
             self.set_editor_scroll_top(0.0);
         }
         // Same guard as at startup: re-apply once measured (a no-op write
@@ -1246,7 +1256,7 @@ impl AppView {
         }
 
         let current_scroll = self.current_scroll_top();
-        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap, self.source_mode);
         let sidebar_offset_y: f32 = self.sidebar_scroll_handle.offset().y.into();
         self.state.session.sidebar_scroll_top = sidebar_offset_y;
         self.state.session.sidebar_width = self.sidebar_width;
@@ -1414,7 +1424,7 @@ impl AppView {
     pub fn toggle_word_wrap(&mut self, cx: &mut Context<Self>) {
         self.word_wrap = !self.word_wrap;
         let current_scroll = self.current_scroll_top();
-        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap, self.source_mode);
         cx.notify();
     }
 
@@ -2792,7 +2802,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         self.commit_title_rename_internal();
         self.flush_active_note_now(cx);
         let current_scroll = self.current_scroll_top();
-        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap, self.source_mode);
         let created = if at_front {
             self.state.create_new_note_at_front()
         } else {
@@ -2837,7 +2847,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         self.commit_title_rename_internal();
         self.flush_active_note_now(cx);
         let current_scroll = self.current_scroll_top();
-        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap, self.source_mode);
         let sidebar_offset_y: f32 = self.sidebar_scroll_handle.offset().y.into();
         self.state.session.sidebar_scroll_top = sidebar_offset_y;
         self.state.open_note(path.clone());
@@ -3942,7 +3952,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         let is_closing_active = self.state.active_document().map(|d| d.path == path).unwrap_or(false);
         if is_closing_active {
             let current_scroll = self.current_scroll_top();
-            self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+            self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap, self.source_mode);
         }
         self.state.close_tab(path);
         if let Some((target_path, _title)) = self.state.active_document().map(|d| (d.path.clone(), d.title.clone())) {
@@ -3956,7 +3966,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         self.commit_title_rename_internal();
         self.flush_active_note_now(cx);
         let current_scroll = self.current_scroll_top();
-        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap, self.source_mode);
         if let Some(target) = self.state.navigate_back() {
             self.apply_note_settings_for_path(&target);
             self.need_scroll_sidebar_to_active.set(true);
@@ -3969,7 +3979,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         self.commit_title_rename_internal();
         self.flush_active_note_now(cx);
         let current_scroll = self.current_scroll_top();
-        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+        self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap, self.source_mode);
         if let Some(target) = self.state.navigate_forward() {
             self.apply_note_settings_for_path(&target);
             self.need_scroll_sidebar_to_active.set(true);
@@ -6914,7 +6924,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.edit_mode = !this.edit_mode;
                                 let current_scroll = this.current_scroll_top();
-                                this.state.snapshot_active_note_settings(current_scroll, this.edit_mode, this.word_wrap);
+                                this.state.snapshot_active_note_settings(current_scroll, this.edit_mode, this.word_wrap, this.source_mode);
                                 if this.edit_mode {
                                     this.reset_editor_cursor_blink(cx);
                                 }
@@ -7154,7 +7164,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         // 1. Snapshot outgoing note settings & view state ONLY if switching away from a different tab
         if !same_tab {
             let current_scroll = self.current_scroll_top();
-            self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+            self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap, self.source_mode);
             let current_scroll_f64 = self.current_scroll_top_f64();
             if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
                 let lines_total = doc.line_index.lines();
@@ -9941,7 +9951,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     .map(|s| active_block_ids.contains(&s.block_id))
                     .unwrap_or(false);
                 let (is_raw_table_line, is_raw_table_first, is_raw_table_last) = if let Some(tbl) = tables.at(v.line_idx) {
-                    if view.table_raw_now(doc, tbl, cursor_line, self.ctrl_preview_selection || !self.edit_mode) {
+                    if self.source_mode || view.table_raw_now(doc, tbl, cursor_line, self.ctrl_preview_selection || !self.edit_mode) {
                         (
                             true,
                             v.line_idx == tbl.first_line && v.sub_idx == 0,
@@ -9956,7 +9966,18 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 let is_active_line = is_editing && (v.line_idx == cursor_line || is_line_in_selection || is_in_active_block || is_raw_table_line);
                 let code_state = code_states_arc[v.line_idx].as_ref().map(|s| (s.kind, s.lang.as_deref()));
                 let classified = crate::markdown::classify_line(line, code_state);
-                let reveal = if is_editing {
+                let effective_classified = if self.source_mode {
+                    match &classified {
+                        crate::markdown::LineKind::CodeFence { is_opening, lang } => crate::markdown::LineKind::CodeFence { is_opening: *is_opening, lang: *lang },
+                        crate::markdown::LineKind::CodeLine(raw) => crate::markdown::LineKind::CodeLine(raw),
+                        _ => crate::markdown::LineKind::Paragraph(line),
+                    }
+                } else {
+                    classified.clone()
+                };
+                let reveal = if self.source_mode {
+                    crate::markdown::InlineReveal::All
+                } else if is_editing {
                     crate::markdown::inline_reveal(
                         line,
                         &classified,
@@ -9970,19 +9991,30 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 let is_opening_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: true, .. });
                 let is_closing_fence = matches!(classified, crate::markdown::LineKind::CodeFence { is_opening: false, .. });
                 let is_code_line = matches!(classified, crate::markdown::LineKind::CodeLine(_));
-                let callout = callout_blocks
-                    .get(v.line_idx.wrapping_sub(lines_arc.start()))
-                    .copied()
-                    .flatten();
+                let callout = if self.source_mode {
+                    None
+                } else {
+                    callout_blocks
+                        .get(v.line_idx.wrapping_sub(lines_arc.start()))
+                        .copied()
+                        .flatten()
+                };
                 // The block is rounded at its two ends only, and a wrapped row is not
                 // an end even when its source line is.
                 let callout_first = callout.map_or(false, |block| block.first) && v.sub_idx == 0;
                 let callout_last = callout.map_or(false, |block| block.last) && v.is_last_sub;
                 let row_len = v.char_end.saturating_sub(v.char_start);
 
-                let (h_metrics_row_h, row_char_w, _row_font_size, _cursor_h, _cursor_top) =
-                    Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths));
-                let grid_tbl = view.grid_table_at(doc, &tables, v.line_idx, cursor_line, self.ctrl_preview_selection || !self.edit_mode);
+                let (h_metrics_row_h, row_char_w, _row_font_size, _cursor_h, _cursor_top) = if self.source_mode {
+                    (24.0, line_char_width, 14.0, 18.0, 3.0)
+                } else {
+                    Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths))
+                };
+                let grid_tbl = if self.source_mode {
+                    None
+                } else {
+                    view.grid_table_at(doc, &tables, v.line_idx, cursor_line, self.ctrl_preview_selection || !self.edit_mode)
+                };
                 let table_layout = grid_tbl.map(|tbl| {
                     Self::get_or_compute_table_layout(
                         &self.table_layouts,
@@ -10009,7 +10041,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     let cursor_col = if is_active_line && v.line_idx == cursor_line { Some(active_col_in_row) } else { None };
                     Arc::new(shape_table_row(window.text_system(), line, tbl, v.line_idx, cursor_col, table_layout.as_ref().unwrap(), headings, &editor_font, row_char_w))
                 } else {
-                    Self::get_or_shape_row(&self.row_shape_cache, &text_system, line, &classified, v, is_active_line, &reveal, headings, &editor_font, row_char_w)
+                    Self::get_or_shape_row(&self.row_shape_cache, &text_system, line, &effective_classified, v, is_active_line, &reveal, headings, &editor_font, row_char_w)
                 };
                 let row_layout_down = row_layout.clone();
                 let row_layout_move = row_layout.clone();
@@ -10020,7 +10052,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 let edit_mode_down = self.edit_mode;
                 let is_active_down = is_active_line;
                 let exact_cursor_down = self.config.editor.exact_reveal_cursor;
-                let row_layout_preview: Arc<RowShapedLayout> = if is_active_line {
+                let row_layout_preview: Arc<RowShapedLayout> = if self.source_mode {
+                    row_layout.clone()
+                } else if is_active_line {
                     if let Some(tbl) = grid_tbl {
                         Arc::new(shape_table_row(window.text_system(), line, tbl, v.line_idx, None, table_layout.as_ref().unwrap(), headings, &editor_font, row_char_w))
                     } else {
@@ -10158,65 +10192,67 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 let mut backdrop_rects = Vec::new();
                 let mut grammar_layer: Option<gpui::AnyElement> = None;
                 let mut whitespace_layer: Option<gpui::AnyElement> = None;
-                for &(code_start, code_end) in row_layout.code_ranges() {
-                    let (chip_x, chip_w) = row_layout.selection_rect(code_start, code_end, pixel_scale);
-                    let chip_top = if let Some(tbl) = grid_tbl {
-                        if v.line_idx == tbl.first_line { 14.0 + chip_inset } else { chip_inset }
-                    } else {
-                        chip_inset
-                    };
-                    let chip_h = if grid_tbl.is_some() { 28.0 - 2.0 * chip_inset } else { (row_h - 2.0 * chip_inset).max(1.0) };
-                    backdrop_rects.push(
-                        div()
-                            .absolute()
-                            .left(px(chip_x))
-                            .top(px(chip_top))
-                            .h(px(chip_h))
-                            .w(px(chip_w))
-                            .bg(theme.code_bg)
-                            .rounded_sm(),
-                    );
-                }
                 let mut tag_overlays = Vec::new();
-                for (tag_idx, (tag_start, tag_end, tag_name)) in row_layout.tag_ranges().iter().enumerate() {
-                    let (chip_x, chip_w) = row_layout.selection_rect(*tag_start, *tag_end, pixel_scale);
-                    let (bg_color, _) = crate::markdown::tag_color_pair(tag_name, theme.is_dark);
-                    let tag_top = if let Some(tbl) = grid_tbl {
-                        if v.line_idx == tbl.first_line { 14.0 + chip_inset } else { chip_inset }
-                    } else {
-                        chip_inset
-                    };
-                    let tag_h = if grid_tbl.is_some() { 28.0 - 2.0 * chip_inset } else { (row_h - 2.0 * chip_inset).max(1.0) };
-                    let pill_pad = 2.0f32;
-                    backdrop_rects.push(
-                        div()
-                            .absolute()
-                            .left(px(chip_x - pill_pad))
-                            .top(px(tag_top))
-                            .h(px(tag_h))
-                            .w(px(chip_w + 2.0 * pill_pad))
-                            .bg(bg_color)
-                            .rounded_full(),
-                    );
-                    if self.ctrl_held || !self.edit_mode {
-                        let tag_id = format!("v-tag-ov-{}-{}-{}-{}", lid_tag, v_idx, tag_idx, tag_name);
-                        let t = tag_name.clone();
-                        tag_overlays.push(
+                if !self.source_mode {
+                    for &(code_start, code_end) in row_layout.code_ranges() {
+                        let (chip_x, chip_w) = row_layout.selection_rect(code_start, code_end, pixel_scale);
+                        let chip_top = if let Some(tbl) = grid_tbl {
+                            if v.line_idx == tbl.first_line { 14.0 + chip_inset } else { chip_inset }
+                        } else {
+                            chip_inset
+                        };
+                        let chip_h = if grid_tbl.is_some() { 28.0 - 2.0 * chip_inset } else { (row_h - 2.0 * chip_inset).max(1.0) };
+                        backdrop_rects.push(
                             div()
-                                .id(gpui::ElementId::Name(tag_id.into()))
+                                .absolute()
+                                .left(px(chip_x))
+                                .top(px(chip_top))
+                                .h(px(chip_h))
+                                .w(px(chip_w))
+                                .bg(theme.code_bg)
+                                .rounded_sm(),
+                        );
+                    }
+                    for (tag_idx, (tag_start, tag_end, tag_name)) in row_layout.tag_ranges().iter().enumerate() {
+                        let (chip_x, chip_w) = row_layout.selection_rect(*tag_start, *tag_end, pixel_scale);
+                        let (bg_color, _) = crate::markdown::tag_color_pair(tag_name, theme.is_dark);
+                        let tag_top = if let Some(tbl) = grid_tbl {
+                            if v.line_idx == tbl.first_line { 14.0 + chip_inset } else { chip_inset }
+                        } else {
+                            chip_inset
+                        };
+                        let tag_h = if grid_tbl.is_some() { 28.0 - 2.0 * chip_inset } else { (row_h - 2.0 * chip_inset).max(1.0) };
+                        let pill_pad = 2.0f32;
+                        backdrop_rects.push(
+                            div()
                                 .absolute()
                                 .left(px(chip_x - pill_pad))
                                 .top(px(tag_top))
                                 .h(px(tag_h))
                                 .w(px(chip_w + 2.0 * pill_pad))
-                                .cursor(gpui::CursorStyle::PointingHand)
-                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                    if event.modifiers.control || event.modifiers.platform || !this.edit_mode {
-                                        cx.stop_propagation();
-                                        this.open_tag_search(&t, window, cx);
-                                    }
-                                })),
+                                .bg(bg_color)
+                                .rounded_full(),
                         );
+                        if self.ctrl_held || !self.edit_mode {
+                            let tag_id = format!("v-tag-ov-{}-{}-{}-{}", lid_tag, v_idx, tag_idx, tag_name);
+                            let t = tag_name.clone();
+                            tag_overlays.push(
+                                div()
+                                    .id(gpui::ElementId::Name(tag_id.into()))
+                                    .absolute()
+                                    .left(px(chip_x - pill_pad))
+                                    .top(px(tag_top))
+                                    .h(px(tag_h))
+                                    .w(px(chip_w + 2.0 * pill_pad))
+                                    .cursor(gpui::CursorStyle::PointingHand)
+                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                        if event.modifiers.control || event.modifiers.platform || !this.edit_mode {
+                                            cx.stop_propagation();
+                                            this.open_tag_search(&t, window, cx);
+                                        }
+                                    })),
+                            );
+                        }
                     }
                 }
                 // Grammar lines under the text. A wavy line is a native text
@@ -10225,7 +10261,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 // default colour is the row's own text colour, so an unset colour
                 // inherits it. One canvas per row keeps a dotted line from turning
                 // into hundreds of elements.
-                if grid_tbl.is_none() && !row_layout.grammar_ranges().is_empty() {
+                if !self.source_mode && grid_tbl.is_none() && !row_layout.grammar_ranges().is_empty() {
                     let base_color = match &classified {
                         crate::markdown::LineKind::Heading1(_) => crate::markdown::heading_color_to_rgb(&headings.h1.color_name),
                         crate::markdown::LineKind::Heading2(_) => crate::markdown::heading_color_to_rgb(&headings.h2.color_name),
@@ -10568,15 +10604,19 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     }
                 }
 
-                let (custom_ui_node, custom_plugin_id, is_first_code_line) = match code_states_arc[v.line_idx].as_ref() {
-                    Some(st) => {
-                        let view_opt = self.code_block_views.get(&st.block_id);
-                        let is_first = st.kind == crate::markdown::CodeBlockKind::InsideCode
-                            && v.line_idx > 0
-                            && code_states_arc.get(v.line_idx - 1).and_then(|s| s.as_ref()).map(|s| s.block_id) != Some(st.block_id);
-                        (view_opt.map(|(_, node)| node), view_opt.map(|(id, _)| id.as_str()), is_first)
+                let (custom_ui_node, custom_plugin_id, is_first_code_line) = if self.source_mode {
+                    (None, None, false)
+                } else {
+                    match code_states_arc[v.line_idx].as_ref() {
+                        Some(st) => {
+                            let view_opt = self.code_block_views.get(&st.block_id);
+                            let is_first = st.kind == crate::markdown::CodeBlockKind::InsideCode
+                                && v.line_idx > 0
+                                && code_states_arc.get(v.line_idx - 1).and_then(|s| s.as_ref()).map(|s| s.block_id) != Some(st.block_id);
+                            (view_opt.map(|(_, node)| node), view_opt.map(|(id, _)| id.as_str()), is_first)
+                        }
+                        None => (None, None, false),
                     }
-                    None => (None, None, false),
                 };
 
                 let mut row_div = div()
@@ -10638,7 +10678,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 // draw it unless the caret or the selection reveals the raw
                 // source there, and clicking it flips the mark instead of
                 // placing the caret.
-                let task_box = if is_leaf_active && v.sub_idx == 0 {
+                let task_box = if !self.source_mode && is_leaf_active && v.sub_idx == 0 {
                     crate::markdown::task_prefix(line)
                         .filter(|task| !reveal.shows(0, task.chars))
                         .map(|task| (task.indent_chars + task.list_chars(), task.mark.clone()))
@@ -10693,7 +10733,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             }
                             if let Some((view, doc)) = this.state.active_view_and_doc_mut() {
                                 let mut target_char = target_char;
-                                if exact_cursor_down && edit_mode_down && !ctrl_held && event.click_count == 1 {
+                                if exact_cursor_down && edit_mode_down && !this.source_mode && !ctrl_held && event.click_count == 1 {
                                     let line = &view.window.lines[v_line_idx];
                                     let code_state = view.window.code_states.get(v_line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
                                     let classified = crate::markdown::classify_line(line, code_state);
@@ -10829,7 +10869,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 let is_editor_focused = is_leaf_active && self.editor_is_focused;
                 let cursor_table = tables.at(cursor_line);
 
-                let raw_btn = if is_editing {
+                let raw_btn = if is_editing && !self.source_mode {
                     if let Some(tbl) = cursor_table {
                         if v_line_idx == tbl.first_line {
                             let is_raw = view.table_raw_now(doc, tbl, cursor_line, self.ctrl_preview_selection || !self.edit_mode);
@@ -11170,7 +11210,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                     .whitespace_nowrap()
                                     .child(render_live_styled_row(
                                         line,
-                                        &classified,
+                                        &effective_classified,
                                         v_char_start,
                                         v_char_end,
                                         v_line_idx,
@@ -11178,7 +11218,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                         v.is_last_sub,
                                         is_active_line,
                                         &reveal,
-                                        is_in_active_block,
+                                        self.source_mode || is_in_active_block,
                                         headings,
                                         theme,
                                         &editor_font,
@@ -17097,6 +17137,7 @@ mod tests {
             &lines,
             &visual_rows,
             None,
+            false,
             |line| {
                 if line == 1 {
                     Some(crate::markdown::TableRowVisualKind::Delimiter)

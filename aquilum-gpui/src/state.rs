@@ -201,6 +201,8 @@ pub struct NoteSettings {
     pub edit_mode: bool,
     #[serde(default = "default_true")]
     pub word_wrap: bool,
+    #[serde(default)]
+    pub source_mode: bool,
 }
 
 impl Default for NoteSettings {
@@ -211,6 +213,7 @@ impl Default for NoteSettings {
             scroll_top: 0.0,
             edit_mode: true,
             word_wrap: true,
+            source_mode: false,
         }
     }
 }
@@ -306,6 +309,7 @@ impl SessionState {
                 scroll_top: 0.0,
                 edit_mode: true,
                 word_wrap: true,
+                source_mode: false,
             });
         }
 
@@ -2884,7 +2888,7 @@ impl AppState {
         self.evict_inactive_documents_if_needed();
     }
 
-    pub fn snapshot_active_note_settings(&mut self, scroll_top: f32, edit_mode: bool, word_wrap: bool) {
+    pub fn snapshot_active_note_settings(&mut self, scroll_top: f32, edit_mode: bool, word_wrap: bool, source_mode: bool) {
         if let (Some(view), Some(doc)) = (self.active_view(), self.active_document()) {
             let path = doc.path.clone();
             let cursor_offset = view.cursor_offset;
@@ -2895,6 +2899,7 @@ impl AppState {
                 scroll_top,
                 edit_mode,
                 word_wrap,
+                source_mode,
             };
             self.note_states.insert(path.clone(), settings.clone());
             self.session.note_states.insert(path.clone(), settings);

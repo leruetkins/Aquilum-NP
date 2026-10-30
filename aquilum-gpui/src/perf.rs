@@ -528,7 +528,7 @@ mod tests {
             let visual_rows = build_visual_rows(&line_refs, false, 0);
 
             let t0 = Instant::now();
-            let index = VisualRowHeightIndex::from_rows(&lines, &visual_rows, None);
+            let index = VisualRowHeightIndex::from_rows(&lines, &visual_rows, None, false);
             let index_time = t0.elapsed();
 
             let iters = 10_000;

@@ -302,7 +302,21 @@
     "foldername_cannot_be_empty": "Il nome della cartella non può essere vuoto",
     "vaults_title": "Basi di conoscenza",
     "open_folder": "Apri cartella",
-    "no_vaults": "Nessun caveau ancora"
+    "no_vaults": "Nessun caveau ancora",
+    "remove_from_bookmarks": "Remove from Bookmarks",
+    "bookmark_current_tab": "Bookmark current tab...",
+    "file_unbookmarked": "File '{}' removed from bookmarks",
+    "folder_unbookmarked": "Folder '{}' removed from bookmarks",
+    "untitled_group": "Untitled group",
+    "new_bookmark_group": "New bookmark group",
+    "delete_group": "Delete group",
+    "rename_group": "Rename group",
+    "no_bookmarks": "No bookmarks",
+    "collapse_all_groups": "Collapse all groups",
+    "expand_all_groups": "Expand all groups",
+    "open_in_new_tab": "Open in new tab",
+    "opened_files_count": "Opened {} files",
+    "no_files_in_folder": "No files in folder"
   },
   "tabs": {
     "fold_tabs": "Piega le linguette",

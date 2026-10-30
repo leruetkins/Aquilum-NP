@@ -2078,13 +2078,24 @@ pub fn build_visual_rows_canonical(
     code_states: &[Option<CodeBlockState>],
     word_wrap: bool,
     wrap_cols: usize,
-    headings: &crate::settings::HeadingsSettings,
+    headings: Option<&crate::settings::HeadingsSettings>,
+    source_mode: bool,
     is_table_row: impl Fn(usize) -> bool,
 ) -> Vec<VisualRow> {
     let mut visual_rows = Vec::new();
+    let default_headings = crate::settings::HeadingsSettings::default();
+    let h_settings = headings.unwrap_or(&default_headings);
     for (line_idx, line) in lines.iter().enumerate() {
         let state = code_states.get(line_idx).and_then(|s| s.as_ref());
-        let classified = classify_line(line, state.map(|s| (s.kind, s.lang.as_deref())));
+        let classified = if source_mode {
+            match classify_line(line, state.map(|s| (s.kind, s.lang.as_deref()))) {
+                LineKind::CodeFence { is_opening, lang } => LineKind::CodeFence { is_opening, lang },
+                LineKind::CodeLine(raw) => LineKind::CodeLine(raw),
+                _ => LineKind::Paragraph(line),
+            }
+        } else {
+            classify_line(line, state.map(|s| (s.kind, s.lang.as_deref())))
+        };
         let ranges = if is_table_row(line_idx)
             || !(word_wrap && wrap_cols > 0)
             || line_never_wraps(&classified)
@@ -2094,9 +2105,9 @@ pub fn build_visual_rows_canonical(
             let metrics = painted_line_metrics(
                 line,
                 &classified,
-                false,
-                &InlineReveal::None,
-                headings,
+                source_mode,
+                if source_mode { &InlineReveal::All } else { &InlineReveal::None },
+                h_settings,
             );
             wrap_line_ranges_painted(line, &metrics, wrap_cols)
         };
@@ -2265,9 +2276,13 @@ pub fn heading_row_height(h_size: f32, base_line_h: f32) -> f32 {
 /// building a window from scratch and when updating a single line in place.
 pub fn visual_row_height(
     line_str: &str,
-    h_settings: &crate::settings::HeadingsSettings,
+    headings: Option<&crate::settings::HeadingsSettings>,
+    source_mode: bool,
     table_kind: Option<TableRowVisualKind>,
 ) -> f32 {
+    if source_mode {
+        return 24.0;
+    }
     if let Some(kind) = table_kind {
         return match kind {
             TableRowVisualKind::Delimiter => 1.0,
@@ -2275,6 +2290,8 @@ pub fn visual_row_height(
             TableRowVisualKind::Body => 28.0,
         };
     }
+    let default_headings = crate::settings::HeadingsSettings::default();
+    let h_settings = headings.unwrap_or(&default_headings);
     let classified = classify_line(line_str, None);
     let h_size = match classified {
         LineKind::Heading1(_) => h_settings.h1.font_size as f32,
@@ -2343,15 +2360,14 @@ impl VisualRowHeightIndex {
         lines: &[impl AsRef<str>],
         visual_rows: &[VisualRow],
         headings: Option<&crate::settings::HeadingsSettings>,
+        source_mode: bool,
         table_row_info: impl Fn(usize) -> Option<TableRowVisualKind>,
     ) -> Self {
         let mut heights = Vec::with_capacity(visual_rows.len());
-        let default_headings = crate::settings::HeadingsSettings::default();
-        let h_settings = headings.unwrap_or(&default_headings);
 
         for v in visual_rows {
             let line_str = lines.get(v.line_idx).map(|s| s.as_ref()).unwrap_or("");
-            heights.push(visual_row_height(line_str, h_settings, table_row_info(v.line_idx)));
+            heights.push(visual_row_height(line_str, headings, source_mode, table_row_info(v.line_idx)));
         }
 
         Self::new(heights)
@@ -2361,8 +2377,9 @@ impl VisualRowHeightIndex {
         lines: &[impl AsRef<str>],
         visual_rows: &[VisualRow],
         headings: Option<&crate::settings::HeadingsSettings>,
+        source_mode: bool,
     ) -> Self {
-        Self::from_rows_with_tables(lines, visual_rows, headings, |_| None)
+        Self::from_rows_with_tables(lines, visual_rows, headings, source_mode, |_| None)
     }
 
     pub fn len(&self) -> usize {

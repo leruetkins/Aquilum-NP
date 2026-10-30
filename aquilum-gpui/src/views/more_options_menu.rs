@@ -363,45 +363,114 @@ impl AppView {
                         theme,
                         cx,
                     ))
-                    // 2. Просмотр
-                    .child(self.render_more_options_item(
-                        1,
-                        "more-item-reading-view",
-                        icons::ICON_BOOK_OPEN,
-                        if is_ru { "Просмотр".to_string() } else { "Reading view".to_string() },
-                        false,
-                        false,
-                        ActiveSubmenu::None,
-                        Box::new(|this, _, cx| {
-                            this.edit_mode = false;
-                            let current_scroll = this.current_scroll_top();
-                            this.state.snapshot_active_note_settings(current_scroll, this.edit_mode, this.word_wrap);
-                            this.close_more_options_menu(cx);
-                            cx.notify();
-                        }),
-                        theme,
-                        cx,
-                    ))
-                    // 3. Просмотр исходного кода
-                    .child(self.render_more_options_item(
-                        2,
-                        "more-item-source-view",
-                        icons::ICON_CODE,
-                        if is_ru { "Просмотр исходного кода".to_string() } else { "Source view".to_string() },
-                        false,
-                        false,
-                        ActiveSubmenu::None,
-                        Box::new(|this, _, cx| {
-                            this.edit_mode = true;
-                            let current_scroll = this.current_scroll_top();
-                            this.state.snapshot_active_note_settings(current_scroll, this.edit_mode, this.word_wrap);
-                            this.reset_editor_cursor_blink(cx);
-                            this.close_more_options_menu(cx);
-                            cx.notify();
-                        }),
-                        theme,
-                        cx,
-                    ))
+                    // 2. Reading view / Live preview
+                    .child(if self.edit_mode {
+                        self.render_more_options_item(
+                            1,
+                            "more-item-reading-view",
+                            icons::ICON_BOOK_OPEN,
+                            if is_ru { "Просмотр".to_string() } else { "Reading view".to_string() },
+                            false,
+                            false,
+                            ActiveSubmenu::None,
+                            Box::new(|this, _, cx| {
+                                this.edit_mode = false;
+                                if let Some(view) = this.state.active_view_mut() {
+                                    view.visual_cache_dirty = true;
+                                }
+                                this.row_shape_cache.borrow_mut().clear();
+                                let current_scroll = this.current_scroll_top();
+                                this.state.snapshot_active_note_settings(current_scroll, this.edit_mode, this.word_wrap, this.source_mode);
+                                this.close_more_options_menu(cx);
+                                cx.notify();
+                            }),
+                            theme,
+                            cx,
+                        )
+                    } else {
+                        self.render_more_options_item(
+                            1,
+                            "more-item-live-preview",
+                            icons::ICON_EYE,
+                            if is_ru { "Живой просмотр".to_string() } else { "Live preview".to_string() },
+                            false,
+                            false,
+                            ActiveSubmenu::None,
+                            Box::new(|this, _, cx| {
+                                this.edit_mode = true;
+                                this.source_mode = false;
+                                if let Some(view) = this.state.active_view_mut() {
+                                    view.source_mode = false;
+                                    view.visual_cache_dirty = true;
+                                }
+                                this.row_shape_cache.borrow_mut().clear();
+                                this.table_layouts.borrow_mut().clear();
+                                let current_scroll = this.current_scroll_top();
+                                this.state.snapshot_active_note_settings(current_scroll, this.edit_mode, this.word_wrap, this.source_mode);
+                                this.reset_editor_cursor_blink(cx);
+                                this.close_more_options_menu(cx);
+                                cx.notify();
+                            }),
+                            theme,
+                            cx,
+                        )
+                    })
+                    // 3. Source view / Live preview toggle
+                    .child(if self.edit_mode && self.source_mode {
+                        self.render_more_options_item(
+                            2,
+                            "more-item-live-preview",
+                            icons::ICON_EYE,
+                            if is_ru { "Живой просмотр".to_string() } else { "Live preview".to_string() },
+                            false,
+                            false,
+                            ActiveSubmenu::None,
+                            Box::new(|this, _, cx| {
+                                this.edit_mode = true;
+                                this.source_mode = false;
+                                if let Some(view) = this.state.active_view_mut() {
+                                    view.source_mode = false;
+                                    view.visual_cache_dirty = true;
+                                }
+                                this.row_shape_cache.borrow_mut().clear();
+                                this.table_layouts.borrow_mut().clear();
+                                let current_scroll = this.current_scroll_top();
+                                this.state.snapshot_active_note_settings(current_scroll, this.edit_mode, this.word_wrap, this.source_mode);
+                                this.reset_editor_cursor_blink(cx);
+                                this.close_more_options_menu(cx);
+                                cx.notify();
+                            }),
+                            theme,
+                            cx,
+                        )
+                    } else {
+                        self.render_more_options_item(
+                            2,
+                            "more-item-source-view",
+                            icons::ICON_CODE,
+                            if is_ru { "Просмотр исходного кода".to_string() } else { "Source view".to_string() },
+                            false,
+                            false,
+                            ActiveSubmenu::None,
+                            Box::new(|this, _, cx| {
+                                this.edit_mode = true;
+                                this.source_mode = true;
+                                if let Some(view) = this.state.active_view_mut() {
+                                    view.source_mode = true;
+                                    view.visual_cache_dirty = true;
+                                }
+                                this.row_shape_cache.borrow_mut().clear();
+                                this.table_layouts.borrow_mut().clear();
+                                let current_scroll = this.current_scroll_top();
+                                this.state.snapshot_active_note_settings(current_scroll, this.edit_mode, this.word_wrap, this.source_mode);
+                                this.reset_editor_cursor_blink(cx);
+                                this.close_more_options_menu(cx);
+                                cx.notify();
+                            }),
+                            theme,
+                            cx,
+                        )
+                    })
                     // 4. Показывать непечатаемые знаки
                     .child(self.render_more_options_check_item(
                         100,
@@ -1135,7 +1204,7 @@ impl AppView {
                                         this.split_tab_right(path, window, cx);
                                         this.edit_mode = false;
                                         let current_scroll = this.current_scroll_top();
-                                        this.state.snapshot_active_note_settings(current_scroll, this.edit_mode, this.word_wrap);
+                                        this.state.snapshot_active_note_settings(current_scroll, this.edit_mode, this.word_wrap, this.source_mode);
                                     }
                                     this.close_more_options_menu(cx);
                                     cx.notify();
