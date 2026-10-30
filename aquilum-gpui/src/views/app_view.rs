@@ -5959,6 +5959,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         if ctrl && (keystroke.key.eq_ignore_ascii_case("v") || keystroke.key == "м" || keystroke.key == "М") {
             if let Some(item) = cx.read_from_clipboard() {
                 if let Some(text) = item.text() {
+                    let text = crate::document_buffer::normalize_newlines(&text).into_owned();
                     enum PasteAction {
                         ApplyEdit(crate::table::LineEdit, Option<(usize, usize)>),
                         InsertText(String),
@@ -13405,6 +13406,7 @@ fn grammar_line_segments(
 /// 1. Any run of 2 or more consecutive spaces anywhere in the line.
 /// 2. Any trailing space at the end of the line (even a single space).
 fn whitespace_dot_ranges(line: &str) -> Vec<std::ops::Range<usize>> {
+    let line = line.strip_suffix('\r').unwrap_or(line);
     let mut ranges = Vec::new();
     let mut run_start: Option<usize> = None;
     let mut count = 0;
@@ -17415,6 +17417,9 @@ mod tests {
         assert_eq!(whitespace_dot_ranges("a  b "), vec![1..3, 4..5]);
         assert_eq!(whitespace_dot_ranges(" "), vec![0..1]);
         assert_eq!(whitespace_dot_ranges("hello world "), vec![11..12]);
+        // Lines with CRLF / trailing \r: trailing spaces must still show dots
+        assert_eq!(whitespace_dot_ranges("a \r"), vec![1..2]);
+        assert_eq!(whitespace_dot_ranges("a  b \r"), vec![1..3, 4..5]);
     }
 
     #[test]

@@ -115,6 +115,26 @@ pub fn transform_selection_range(range: (usize, usize), e: Edit) -> (usize, usiz
     }
 }
 
+/// Normalizes newline sequences (`\r\n` and isolated `\r`) to standard line feeds (`\n`).
+pub fn normalize_newlines(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains('\r') {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\r' {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            out.push('\n');
+        } else {
+            out.push(ch);
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 pub struct DocumentBuffer {
     pub id: DocumentId,
     pub path: PathBuf,
@@ -1024,5 +1044,30 @@ mod tests {
         assert_eq!(active_doc.len(), text.len());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_normalize_newlines() {
+        use super::normalize_newlines;
+        // No CR: borrowed as-is
+        let s = "hello\nworld";
+        assert_eq!(normalize_newlines(s), std::borrow::Cow::Borrowed("hello\nworld"));
+
+        // Windows CRLF
+        assert_eq!(normalize_newlines("hello\r\nworld\r\n"), "hello\nworld\n");
+
+        // Classic Mac CR
+        assert_eq!(normalize_newlines("hello\rworld\r"), "hello\nworld\n");
+
+        // Mixed CRLF, CR, LF
+        assert_eq!(normalize_newlines("a\r\nb\rc\nd"), "a\nb\nc\nd");
+
+        // Consecutive CRs
+        assert_eq!(normalize_newlines("a\r\r\rb"), "a\n\n\nb");
+
+        // User's exact pattern: isolated CR between spaces
+        let user_str = "после исправления -  проверь  ssl  еще раз  \r \r \r                            ";
+        let expected = "после исправления -  проверь  ssl  еще раз  \n \n \n                            ";
+        assert_eq!(normalize_newlines(user_str), expected);
     }
 }

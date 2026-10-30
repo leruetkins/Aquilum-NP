@@ -761,6 +761,7 @@ impl TabSession {
     }
 
     pub fn replace_selection(&mut self, doc: &mut DocumentBuffer, text: &str) -> (BufferEvent, NoteEditEvent, EditEvent) {
+        let text = crate::document_buffer::normalize_newlines(text);
         if let Some(range) = self.selection_range(doc.len()) {
             let sel_before = self.selection();
             let removed = doc.slice_to_string(range.clone());
@@ -769,7 +770,7 @@ impl TabSession {
             self.cursor_offset = new_cursor;
             self.selection_anchor = None;
             self.visual_cache_dirty = true;
-            doc.record_change_with_selection(at, removed, text.to_string(), sel_before, Selection::cursor_only(new_cursor), Some(self.tab_id))
+            doc.record_change_with_selection(at, removed, text.into_owned(), sel_before, Selection::cursor_only(new_cursor), Some(self.tab_id))
         } else {
             let mut offset = self.cursor_offset.min(doc.len());
             while offset > 0 && !doc.is_char_boundary(offset) {
@@ -780,7 +781,7 @@ impl TabSession {
             let new_cursor = at + text.len();
             self.cursor_offset = new_cursor;
             self.selection_anchor = None;
-            let res = doc.record_change_with_selection(at, String::new(), text.to_string(), sel_before, Selection::cursor_only(new_cursor), Some(self.tab_id));
+            let res = doc.record_change_with_selection(at, String::new(), text.into_owned(), sel_before, Selection::cursor_only(new_cursor), Some(self.tab_id));
             let (_, ref note_edit, _) = res;
             if note_edit.line_diff == 0 && self.window.covers_line(note_edit.edit_line) {
                 let delta = note_edit.new_len as isize - note_edit.old_len as isize;
@@ -1529,6 +1530,20 @@ mod tests {
             String::new(),
             0,
         )
+    }
+
+    #[test]
+    fn test_insert_text_with_cr_and_crlf_breaks_into_multiple_lines() {
+        let mut doc = scratch_doc();
+        let mut view = EditorViewState::new(TabId::new(), doc.id);
+        let input = "после исправления -  проверь  ssl  еще раз  \r \r \r                            ";
+        view.insert_text(&mut doc, input);
+
+        assert_eq!(doc.line_index.lines(), 4);
+        assert_eq!(doc.line_text(0), "после исправления -  проверь  ssl  еще раз  ");
+        assert_eq!(doc.line_text(1), " ");
+        assert_eq!(doc.line_text(2), " ");
+        assert_eq!(doc.line_text(3), "                            ");
     }
 
     #[test]

@@ -613,7 +613,12 @@ impl DirectWriteState {
                     first_run = false;
                     let mut metrics = vec![DWRITE_LINE_METRICS::default(); 4];
                     let mut line_count = 0u32;
-                    text_layout.GetLineMetrics(Some(&mut metrics), &mut line_count as _)?;
+                    if text_layout.GetLineMetrics(Some(&mut metrics), &mut line_count as _).is_err() {
+                        if line_count as usize > metrics.len() {
+                            metrics.resize(line_count as usize, DWRITE_LINE_METRICS::default());
+                            text_layout.GetLineMetrics(Some(&mut metrics), &mut line_count as _)?;
+                        }
+                    }
                     ascent = px(metrics[0].baseline);
                     descent = px(metrics[0].height - metrics[0].baseline);
                     continue;
