@@ -82,6 +82,8 @@ pub const TABLE_DELETE_COL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" vi
 pub const SPLIT_DOWN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 12h18"/></svg>"#;
 pub const LOCK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>"#;
 pub const CIRCLE_PLUS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>"#;
+pub const SORT_ASC: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/><path d="M11 12h4"/><path d="M11 16h7"/><path d="M11 20h10"/></svg>"#;
+pub const SORT_DESC: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="M11 4h10"/><path d="M11 8h7"/><path d="M11 12h4"/></svg>"#;
 
 pub const ICON_ARROW_LEFT: &str = "icons/arrow_left.svg";
 pub const ICON_ARROW_RIGHT: &str = "icons/arrow_right.svg";
@@ -115,6 +117,8 @@ pub const ICON_TABLE_DELETE_COL: &str = "icons/table_delete_col.svg";
 pub const ICON_SPLIT_DOWN: &str = "icons/split_down.svg";
 pub const ICON_LOCK: &str = "icons/lock.svg";
 pub const ICON_CIRCLE_PLUS: &str = "icons/circle_plus.svg";
+pub const ICON_SORT_ASC: &str = "icons/sort_asc.svg";
+pub const ICON_SORT_DESC: &str = "icons/sort_desc.svg";
 
 pub const ICON_CHEVRON_RIGHT: &str = "icons/chevron_right.svg";
 pub const ICON_CHEVRON_DOWN: &str = "icons/chevron_down.svg";
@@ -249,6 +253,8 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_SPLIT_DOWN => Some(SPLIT_DOWN),
             ICON_LOCK => Some(LOCK),
             ICON_CIRCLE_PLUS => Some(CIRCLE_PLUS),
+            ICON_SORT_ASC => Some(SORT_ASC),
+            ICON_SORT_DESC => Some(SORT_DESC),
             _ => None,
         };
         Ok(svg.map(|s| Cow::Borrowed(s.as_bytes())))
@@ -335,6 +341,8 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_SPLIT_DOWN.into(),
             ICON_LOCK.into(),
             ICON_CIRCLE_PLUS.into(),
+            ICON_SORT_ASC.into(),
+            ICON_SORT_DESC.into(),
         ])
     }
 }

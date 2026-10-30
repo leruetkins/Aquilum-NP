@@ -337,6 +337,9 @@ pub struct AppView {
     pub bookmark_rename: Option<crate::views::sidebar::bookmarks::BookmarkRenameState>,
     pub bookmark_rename_focus_handle: FocusHandle,
     pub bookmark_rename_blink: BlinkManager,
+    pub recent_files_sort_order: crate::views::sidebar::recent_files::RecentFilesSortOrder,
+    pub recent_files_scroll_handle: ScrollHandle,
+    pub recent_files_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag,
     /// Go to file dialog ("Search the knowledge base").
     pub search_dialog: crate::views::goto_search::SearchDialogState,
     pub goto_focus_handle: FocusHandle,
@@ -422,6 +425,7 @@ impl AppView {
         } else {
             sidebar_mode
         };
+        let recent_files_sort_order = state.session.recent_files_sort_order;
         let settings_model = cx.new(|_cx| {
             crate::settings::SettingsModel::new(state.settings.clone())
         });
@@ -572,6 +576,9 @@ impl AppView {
             bookmark_rename: None,
             bookmark_rename_focus_handle: cx.focus_handle(),
             bookmark_rename_blink: BlinkManager::new(),
+            recent_files_sort_order,
+            recent_files_scroll_handle: ScrollHandle::new(),
+            recent_files_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
             search_dialog: crate::views::goto_search::SearchDialogState::default(),
             goto_focus_handle: cx.focus_handle(),
             goto_blink: BlinkManager::new(),
@@ -1261,6 +1268,8 @@ impl AppView {
         self.state.session.sidebar_scroll_top = sidebar_offset_y;
         self.state.session.sidebar_width = self.sidebar_width;
         self.state.session.sidebar_mode = self.sidebar_mode.clone();
+        self.state.session.recent_files_sort_order = self.recent_files_sort_order;
+        self.state.session.recent_files = self.state.recent_files.clone();
         // Restored on the next launch by `AppView::new`.
         self.state.session.find_replace_open = self.find_bar.replace_open;
         self.state.queue_session_state_save(true);
@@ -1302,6 +1311,12 @@ impl AppView {
             for change in changes {
                 match change {
                     crate::state::FsChangeEvent::Deleted(path) => {
+                        let ws = self.state.workspace_path.as_deref();
+                        if self.state.recent_files.remove_path_or_prefix(&path, ws) {
+                            self.state.session.recent_files = self.state.recent_files.clone();
+                            self.save_recent_files();
+                            any_handled = true;
+                        }
                         if config.files.close_deleted_tabs {
                             let keep_dirty = config.files.keep_modified_on_delete;
                             if self.state.handle_file_deleted(&path, keep_dirty) {
@@ -1310,6 +1325,12 @@ impl AppView {
                         }
                     }
                     crate::state::FsChangeEvent::Renamed { old_path, new_path } => {
+                        let ws = self.state.workspace_path.as_deref();
+                        if self.state.recent_files.rename_path_or_prefix(&old_path, &new_path, ws) {
+                            self.state.session.recent_files = self.state.recent_files.clone();
+                            self.save_recent_files();
+                            any_handled = true;
+                        }
                         if self.state.handle_file_renamed(&old_path, &new_path) {
                             any_handled = true;
                         }
@@ -1326,6 +1347,11 @@ impl AppView {
                         // feeding every open path as potentially missing.
                         self.state.invalidate_markdown_cache_and_tree();
                         self.state.recheck_open_paths_after_rescan();
+                        let ws = self.state.workspace_path.as_deref();
+                        if self.state.recent_files.prune_nonexistent(ws) {
+                            self.state.session.recent_files = self.state.recent_files.clone();
+                            self.save_recent_files();
+                        }
                         any_handled = true;
                     }
                 }
@@ -2851,6 +2877,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         let sidebar_offset_y: f32 = self.sidebar_scroll_handle.offset().y.into();
         self.state.session.sidebar_scroll_top = sidebar_offset_y;
         self.state.open_note(path.clone());
+        self.save_recent_files();
         self.active_center_leaf = None;
         let rel_str = if let Some(ref vault) = self.state.vault {
             path.strip_prefix(&vault.root)
@@ -5335,6 +5362,10 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
     /// Activates a plugin workspace leaf tab in the left sidebar
     pub fn select_left_leaf(&mut self, leaf_id: &str, cx: &mut Context<Self>) {
+        if leaf_id == "recent-files" {
+            self.open_sidebar_recent_files(cx);
+            return;
+        }
         self.active_left_leaf = Some(leaf_id.to_string());
         self.sidebar_mode = crate::views::sidebar::SidebarMode::Plugin(leaf_id.to_string());
         self.sidebar_collapsed = false;
@@ -9647,6 +9678,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         this.hovered_split_divider = None;
                         this.is_dragging_scrollbar = false;
                         this.sidebar_scrollbar_drag.end();
+                        this.recent_files_scrollbar_drag.end();
                         this.plugin_modal_scrollbar_drag.end();
                         this.is_mouse_selecting = false;
                         this.mouse_drag_started = false;
@@ -9670,6 +9702,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         this.hovered_split_divider = None;
                         this.is_dragging_scrollbar = false;
                         this.sidebar_scrollbar_drag.end();
+                        this.recent_files_scrollbar_drag.end();
                         this.plugin_modal_scrollbar_drag.end();
                         this.is_mouse_selecting = false;
                         this.mouse_drag_started = false;
@@ -12124,6 +12157,9 @@ impl Render for AppView {
                 } else if this.panel_scrollbar_drag.active {
                     let y: f32 = event.position.y.into();
                     this.handle_panel_scrollbar_drag(y, cx);
+                } else if this.recent_files_scrollbar_drag.active {
+                    let y: f32 = event.position.y.into();
+                    this.handle_recent_files_scrollbar_drag(y, cx);
                 } else if this.sidebar_search.is_mouse_selecting {
                     this.handle_panel_mouse_move(event, window, cx);
                 } else if this.catalog_scrollbar_drag.active {
@@ -12155,6 +12191,7 @@ impl Render for AppView {
                 this.catalog_scrollbar_drag.end();
                 this.handle_panel_mouse_up(cx);
                 this.panel_scrollbar_drag.end();
+                this.recent_files_scrollbar_drag.end();
                 if this.is_resizing_sidebar {
                     // Persist the dragged width right away (crash-safe;
                     // exit save refreshes it again).
@@ -12185,6 +12222,7 @@ impl Render for AppView {
                     this.save_settings(cx);
                 }
                 this.sidebar_scrollbar_drag.end();
+                this.recent_files_scrollbar_drag.end();
                 this.plugin_modal_scrollbar_drag.end();
                 if let Some(view) = this.state.active_view_mut() {
                     if !view.drag_revealed_tables.is_empty() {
@@ -12203,6 +12241,7 @@ impl Render for AppView {
                 this.goto_scrollbar_drag.end();
                 this.handle_panel_mouse_up(cx);
                 this.panel_scrollbar_drag.end();
+                this.recent_files_scrollbar_drag.end();
                 if let Some(view) = this.state.active_view_mut() {
                     if let Some(ref mut input) = view.title_input {
                         if input.is_mouse_selecting {
@@ -12229,6 +12268,7 @@ impl Render for AppView {
                     this.save_settings(cx);
                 }
                 this.sidebar_scrollbar_drag.end();
+                this.recent_files_scrollbar_drag.end();
                 this.plugin_modal_scrollbar_drag.end();
                 if let Some(view) = this.state.active_view_mut() {
                     if !view.drag_revealed_tables.is_empty() {
@@ -12514,10 +12554,39 @@ impl Render for AppView {
                                                             this.open_sidebar_bookmarks(cx);
                                                         })),
                                                 )
+                                                .child(
+                                                    div()
+                                                        .id("btn-sidebar-recent-files")
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .w(px(28.0))
+                                                        .h(px(28.0))
+                                                        .rounded_md()
+                                                        .cursor_pointer()
+                                                        .when(
+                                                            self.sidebar_mode
+                                                                == crate::views::sidebar::SidebarMode::RecentFiles,
+                                                            |d| d.bg(theme.bg_hover),
+                                                        )
+                                                        .hover(|h| h.bg(theme.bg_hover))
+                                                        .child(icons::icon(
+                                                            icons::ICON_HISTORY,
+                                                            14.0,
+                                                            if self.sidebar_mode == crate::views::sidebar::SidebarMode::RecentFiles {
+                                                                theme.accent
+                                                            } else {
+                                                                theme.text_muted
+                                                            },
+                                                        ))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.open_sidebar_recent_files(cx);
+                                                        })),
+                                                )
                                                 .children(
                                                     self.plugin_leaf_views
                                                         .values()
-                                                        .filter(|leaf| leaf.location == "left")
+                                                        .filter(|leaf| leaf.location == "left" && leaf.leaf_id != "recent-files")
                                                         .map(|leaf| {
                                                             let is_active = match &self.sidebar_mode {
                                                                 crate::views::sidebar::SidebarMode::Plugin(id) => id == &leaf.leaf_id,
@@ -12754,7 +12823,63 @@ impl Render for AppView {
                             .when(
                                 !matches!(self.sidebar_mode, crate::views::sidebar::SidebarMode::Plugin(_)),
                                 |d| {
-                                    d.child(
+                                    if self.sidebar_mode == crate::views::sidebar::SidebarMode::RecentFiles {
+                                        d.child(
+                                            div()
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .justify_between()
+                                                .px_2()
+                                                .py_1()
+                                                .child(
+                                                    div()
+                                                        .text_xs()
+                                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                        .text_color(theme.text_muted)
+                                                        .child(self.t("sidebar.recent_files")),
+                                                )
+                                                .child({
+                                                    let sort_icon = match self.recent_files_sort_order {
+                                                        crate::views::sidebar::recent_files::RecentFilesSortOrder::RecentAsc
+                                                        | crate::views::sidebar::recent_files::RecentFilesSortOrder::AlphabeticalDesc => {
+                                                            icons::ICON_SORT_DESC
+                                                        }
+                                                        _ => icons::ICON_SORT_ASC,
+                                                    };
+                                                    div()
+                                                        .flex()
+                                                        .flex_row()
+                                                        .items_center()
+                                                        .gap_1()
+                                                        .child(
+                                                            div()
+                                                                .id("btn-recent-sort")
+                                                                .p_1()
+                                                                .rounded_md()
+                                                                .cursor_pointer()
+                                                                .hover(|h| h.bg(theme.bg_hover))
+                                                                .child(icons::icon(sort_icon, 14.0, theme.text_primary))
+                                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                                    this.toggle_recent_files_sort(cx);
+                                                                })),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .id("btn-recent-clear-all")
+                                                                .p_1()
+                                                                .rounded_md()
+                                                                .cursor_pointer()
+                                                                .hover(|h| h.bg(theme.bg_hover))
+                                                                .child(icons::icon(icons::ICON_TRASH_2, 14.0, theme.text_primary))
+                                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                                    this.clear_all_recent_files(cx);
+                                                                })),
+                                                        )
+                                                }),
+                                        )
+                                    } else {
+                                        d.child(
                                         div()
                                             .flex()
                                             .flex_row()
@@ -12814,6 +12939,7 @@ impl Render for AppView {
                                                     ),
                                             ),
                                     )
+                                }
                                 },
                             )
                             // Search Filter Bar + Tree (Files mode) or Bookmarks or Search Panel or Plugin Leaf View
@@ -12837,6 +12963,19 @@ impl Render for AppView {
                                 |d| {
                                     d.child(self.render_quick_filter(window, cx))
                                         .child(self.render_sidebar_bookmarks(
+                                            active_path.as_ref(),
+                                            theme,
+                                            window,
+                                            cx,
+                                        ))
+                                },
+                            )
+                            .when(
+                                self.sidebar_mode
+                                    == crate::views::sidebar::SidebarMode::RecentFiles,
+                                |d| {
+                                    d.child(self.render_quick_filter(window, cx))
+                                        .child(self.render_sidebar_recent_files(
                                             active_path.as_ref(),
                                             theme,
                                             window,

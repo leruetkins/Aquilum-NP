@@ -268,6 +268,12 @@ pub struct SessionState {
     /// Bookmarks matching Obsidian format.
     #[serde(default)]
     pub bookmarks: crate::views::sidebar::bookmarks::BookmarksData,
+    /// Recent files matching recent-files-obsidian plugin.
+    #[serde(default)]
+    pub recent_files: crate::views::sidebar::recent_files::RecentFilesData,
+    /// Sort order of the recent files sidebar list.
+    #[serde(default)]
+    pub recent_files_sort_order: crate::views::sidebar::recent_files::RecentFilesSortOrder,
 }
 
 impl Default for SessionState {
@@ -288,6 +294,8 @@ impl Default for SessionState {
             ribbon_order: Vec::new(),
             ribbon_visible: true,
             bookmarks: crate::views::sidebar::bookmarks::BookmarksData::default(),
+            recent_files: crate::views::sidebar::recent_files::RecentFilesData::default(),
+            recent_files_sort_order: crate::views::sidebar::recent_files::RecentFilesSortOrder::default(),
         }
     }
 }
@@ -510,6 +518,8 @@ pub struct AppState {
     pub fs_events_rx: Option<std::sync::mpsc::Receiver<crate::fs_watcher::FsBatch>>,
     /// Bookmarks hierarchy matching Obsidian format.
     pub bookmarks: crate::views::sidebar::bookmarks::BookmarksData,
+    /// Recent files matching recent-files-obsidian plugin.
+    pub recent_files: crate::views::sidebar::recent_files::RecentFilesData,
     /// Background search scanner: owns the body cache and the file list, so
     /// the UI thread never touches the filesystem during a search. One
     /// worker per AppState — the "Go to file" dialog and the sidebar panel
@@ -538,6 +548,7 @@ impl AppState {
             .collect();
 
         let mut bookmarks = session.bookmarks.clone();
+        let mut recent_files = session.recent_files.clone();
         if let Some(ref ws) = session.workspace_path {
             let vault_bm = ws.join(".vault").join("bookmarks.json");
             let obs_bm = ws.join(".obsidian").join("bookmarks.json");
@@ -552,6 +563,23 @@ impl AppState {
                 if let Ok(content) = std::fs::read_to_string(&p) {
                     if let Ok(data) = serde_json::from_str::<crate::views::sidebar::bookmarks::BookmarksData>(&content) {
                         bookmarks = data;
+                    }
+                }
+            }
+
+            let plugin_rf = ws.join(".vault").join("plugins").join("recent-files-obsidian").join("data.json");
+            let vault_rf = ws.join(".vault").join("recent-files.json");
+            let rf_path = if plugin_rf.exists() {
+                Some(plugin_rf)
+            } else if vault_rf.exists() {
+                Some(vault_rf)
+            } else {
+                None
+            };
+            if let Some(p) = rf_path {
+                if let Ok(content) = std::fs::read_to_string(&p) {
+                    if let Ok(data) = serde_json::from_str::<crate::views::sidebar::recent_files::RecentFilesData>(&content) {
+                        recent_files = data;
                     }
                 }
             }
@@ -612,6 +640,7 @@ impl AppState {
             fs_watcher: crate::fs_watcher::Watcher::new(),
             fs_events_rx: None,
             bookmarks,
+            recent_files,
             search_worker: crate::search::worker::SearchWorker::spawn(
                 None,
                 settings.clone(),
@@ -1612,6 +1641,13 @@ impl AppState {
             }
         }
 
+        // Also remove from recent files
+        let ws = self.workspace_path.as_deref();
+        if self.recent_files.remove_path_or_prefix(path, ws) {
+            self.session.recent_files = self.recent_files.clone();
+            any_closed = true;
+        }
+
         self.cleanup_orphaned_documents_and_views();
 
         // If session active_note is None, try activating whatever tab is in active_leaf
@@ -1768,6 +1804,13 @@ impl AppState {
                     any_renamed = true;
                 }
             }
+        }
+
+        // Also update recent files
+        let ws = self.workspace_path.as_deref();
+        if self.recent_files.rename_path_or_prefix(old_path, new_path, ws) {
+            self.session.recent_files = self.recent_files.clone();
+            any_renamed = true;
         }
 
         self.save_session_state();
@@ -1952,14 +1995,21 @@ impl AppState {
             }
         }
 
-        // 3. Clean up pending deletions for paths that are no longer open.
-        let open_paths: Vec<PathBuf> = self
+        // 3. Clean up pending deletions for paths that are no longer open or in recent files.
+        let mut tracked_paths: Vec<PathBuf> = self
             .documents
             .values()
             .map(|d| d.path.clone())
             .chain(self.doc_meta.values().map(|m| m.path.clone()))
             .collect();
-        self.pending_file_deletions.retain(|p, _| open_paths.contains(p));
+        if let Some(ws) = &self.workspace_path {
+            for item in &self.recent_files.recent_files {
+                let p = Path::new(&item.path);
+                let abs = if p.is_absolute() { p.to_path_buf() } else { ws.join(p) };
+                tracked_paths.push(abs);
+            }
+        }
+        self.pending_file_deletions.retain(|p, _| tracked_paths.contains(p));
         events
     }
 
@@ -2250,6 +2300,23 @@ impl AppState {
             if let Ok(content) = std::fs::read_to_string(&p) {
                 if let Ok(data) = serde_json::from_str::<crate::views::sidebar::bookmarks::BookmarksData>(&content) {
                     self.bookmarks = data;
+                }
+            }
+        }
+
+        let plugin_rf = path.join(".vault").join("plugins").join("recent-files-obsidian").join("data.json");
+        let vault_rf = path.join(".vault").join("recent-files.json");
+        let rf_path = if plugin_rf.exists() {
+            Some(plugin_rf)
+        } else if vault_rf.exists() {
+            Some(vault_rf)
+        } else {
+            None
+        };
+        if let Some(p) = rf_path {
+            if let Ok(content) = std::fs::read_to_string(&p) {
+                if let Ok(data) = serde_json::from_str::<crate::views::sidebar::recent_files::RecentFilesData>(&content) {
+                    self.recent_files = data;
                 }
             }
         }
@@ -2796,12 +2863,43 @@ impl AppState {
         self.open_note_internal_at(path, false);
     }
 
+    /// Records an opened note in the recent files list.
+    pub fn record_recent_file(&mut self, path: &Path) {
+        if is_empty_tab_path(path) || path.to_string_lossy() == "Welcome.md" {
+            return;
+        }
+        let (rel_path, basename) = if let Some(ref ws) = self.workspace_path {
+            let rel = path.strip_prefix(ws).unwrap_or(path);
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            let stem = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| rel_str.clone());
+            (rel_str, stem)
+        } else {
+            let p_str = path.to_string_lossy().replace('\\', "/");
+            let stem = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| p_str.clone());
+            (p_str, stem)
+        };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        self.recent_files.add_file(&rel_path, &basename, now);
+    }
+
     pub fn open_note_internal_at(&mut self, path: PathBuf, at_front: bool) {
         // Empty-tab sentinels carry no file: just activate the New Tab page.
         if is_empty_tab_path(&path) {
             self.activate_empty_tab(path);
             return;
         }
+        self.record_recent_file(&path);
         self.reveal_path_in_tree(&path);
 
         // Save current view's cursor, selection before switching
@@ -4297,6 +4395,7 @@ mod tests {
             fs_watcher: crate::fs_watcher::Watcher::new(),
             fs_events_rx: None,
             bookmarks: crate::views::sidebar::bookmarks::BookmarksData::default(),
+            recent_files: crate::views::sidebar::recent_files::RecentFilesData::default(),
             search_worker: crate::search::worker::SearchWorker::spawn(
                 None,
                 settings.clone(),

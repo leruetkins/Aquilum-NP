@@ -53,7 +53,7 @@ const SIDEBAR_PADDING: f32 = 8.0;
 /// scrollbar lane begins — so a highlighted row would run straight into the thumb. The rows
 /// give up this much of their right edge to open the gap. Only the background moves: the label
 /// keeps its own `pr_2` padding and does not shift.
-const SIDEBAR_ROW_SCROLLBAR_GAP: f32 = 4.0;
+pub(crate) const SIDEBAR_ROW_SCROLLBAR_GAP: f32 = 4.0;
 
 /// Visible width of the sidebar thumb, in pixels.
 const SIDEBAR_THUMB_W: f32 = 6.0;
@@ -72,7 +72,7 @@ const SIDEBAR_SCROLLBAR_BORDER_GAP: f32 = 2.0;
 /// [`SIDEBAR_SCROLLBAR_BORDER_GAP`] and the row highlight by [`SIDEBAR_ROW_SCROLLBAR_GAP`].
 /// `thumb_w == thumb_w_active` keeps the width constant — the bar never changes size under the
 /// pointer.
-fn sidebar_scrollbar_style() -> ScrollbarStyle {
+pub(crate) fn sidebar_scrollbar_style() -> ScrollbarStyle {
     ScrollbarStyle {
         track_w: SIDEBAR_PADDING,
         thumb_w: SIDEBAR_THUMB_W,
