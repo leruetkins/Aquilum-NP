@@ -10369,11 +10369,6 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     }
 
                     if self.show_invisibles && v.is_last_sub {
-                        let eol_symbol = if v.line_idx + 1 < doc_lines {
-                            "¶"
-                        } else {
-                            "¤"
-                        };
                         let end_col = if line.is_empty() || v.char_start >= v.char_end {
                             0
                         } else {
@@ -10383,20 +10378,50 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             row_layout.x_for_column(end_col) + 3.0,
                             pixel_scale,
                         );
-                        eol_marker = Some(
-                            div()
-                                .absolute()
-                                .left(px(eol_x))
-                                .top(px(0.0))
-                                .h(px(row_h))
-                                .flex()
-                                .items_center()
-                                .font_family("Segoe UI")
-                                .text_sm()
-                                .text_color(theme.marked_line_red())
-                                .child(eol_symbol)
-                                .into_any_element(),
-                        );
+                        let hide_eol = if self.ctrl_preview_selection {
+                            if let Some((sel_x, sel_w)) = preview_sel {
+                                if sel_w > 0.0 {
+                                    let sel_right = sel_x + sel_w;
+                                    let covered_by_rect = eol_x >= sel_x - 0.5 && eol_x <= sel_right + 0.5;
+                                    let covered_by_range = selection_range.as_ref().map_or(false, |s| {
+                                        s.start < s.end && s.end >= line_end && s.start <= line_end
+                                    });
+                                    covered_by_rect || covered_by_range
+                                } else {
+                                    false
+                                }
+                            } else if v.line_idx + 1 >= doc_lines {
+                                selection_range.as_ref().map_or(false, |s| {
+                                    s.start < s.end && s.end >= line_end && s.start <= line_end
+                                })
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
+                        if !hide_eol {
+                            let eol_symbol = if v.line_idx + 1 < doc_lines {
+                                "¶"
+                            } else {
+                                "¤"
+                            };
+                            eol_marker = Some(
+                                div()
+                                    .absolute()
+                                    .left(px(eol_x))
+                                    .top(px(0.0))
+                                    .h(px(row_h))
+                                    .flex()
+                                    .items_center()
+                                    .font_family("Segoe UI")
+                                    .text_sm()
+                                    .text_color(theme.marked_line_red())
+                                    .child(eol_symbol)
+                                    .into_any_element(),
+                            );
+                        }
                     }
                 }
                 if let Some((sel_x, sel_w)) = row_sel_rect {
