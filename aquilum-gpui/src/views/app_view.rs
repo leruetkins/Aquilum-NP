@@ -765,6 +765,7 @@ impl AppView {
             self.state.commands.unregister_all_of(&handle.manifest.id);
             self.state.ribbon.unregister_all_of(&handle.manifest.id);
             self.state.status_bar.unregister_all_of(&handle.manifest.id);
+            self.state.notifications.unregister_all_of(&handle.manifest.id);
         }
         self.state.code_block_processors.clear();
         self.code_block_views.clear();
@@ -803,6 +804,7 @@ impl AppView {
 
         // 5. Remove all status bar items registered by this plugin
         self.state.status_bar.unregister_all_of(plugin_id);
+        self.state.notifications.unregister_all_of(plugin_id);
 
         // 6. Remove all code block processors and views registered by this plugin
         self.state.code_block_processors.unregister_all_of(plugin_id);
@@ -1013,7 +1015,7 @@ impl AppView {
             _ => None,
         };
 
-        let Some((path, rope, title, version, expected_hash)) = to_save else {
+        let Some((path, rope, _title, version, expected_hash)) = to_save else {
             return;
         };
 
@@ -1030,6 +1032,7 @@ impl AppView {
 
             let _ = entity.update(&mut async_cx, |this, cx| {
                 if let Some(doc_id) = this.state.find_document_by_path(&path) {
+                    let mut notif_to_push = None;
                     if let Some(doc) = this.state.documents.get_mut(&doc_id) {
                         match write_res {
                             crate::save_manager::CheckedWrite::Written(hash) => {
@@ -1049,11 +1052,11 @@ impl AppView {
                                         meta.is_dirty = false;
                                     }
                                 }
-                                this.state.status_text = format!("Saved: {}", title);
+                                let doc_path = doc.path.clone();
                                 let rel_path = this.state.vault.as_ref()
-                                    .and_then(|v| doc.path.strip_prefix(&v.root).ok())
+                                    .and_then(|v| doc_path.strip_prefix(&v.root).ok())
                                     .map(|p| p.to_string_lossy().replace('\\', "/"))
-                                    .unwrap_or_else(|| doc.path.to_string_lossy().into_owned());
+                                    .unwrap_or_else(|| doc_path.to_string_lossy().into_owned());
                                 this.state.events.emit_vault(&crate::events::VaultEvent::Modify { path: rel_path });
                                 this.state.publish_snapshot();
                             }
@@ -1067,17 +1070,31 @@ impl AppView {
                                         view.visual_cache_dirty = true;
                                     }
                                 }
-                                this.state.status_text = format!(
-                                    "Файл изменён извне; ваша версия сохранена в {}",
-                                    copy.file_name().unwrap_or_default().to_string_lossy()
-                                );
+                                let copy_name = copy.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                                notif_to_push = Some((
+                                    crate::views::notification::NotificationType::Warning,
+                                    Some("Conflict".into()),
+                                    format!(
+                                        "Файл изменён извне; ваша версия сохранена в {}",
+                                        copy_name
+                                    ),
+                                    8000,
+                                ));
                             }
                             crate::save_manager::CheckedWrite::Failed(err) => {
-                                this.state.status_text = format!("Save error: {}", err);
+                                notif_to_push = Some((
+                                    crate::views::notification::NotificationType::Error,
+                                    Some("Save Failed".into()),
+                                    format!("Save error: {}", err),
+                                    6000,
+                                ));
                             }
                         }
-                        cx.notify();
                     }
+                    if let Some((notif_type, title, msg, duration)) = notif_to_push {
+                        this.push_notification(notif_type, title, msg, Some(duration), cx);
+                    }
+                    cx.notify();
                 }
                 this.state.save_session_state();
             });
@@ -13005,11 +13022,17 @@ impl Render for AppView {
                                                         shown.clone(),
                                                     ),
                                                 );
-                                                this.state.status_text = this
-                                                    .t_fmt(
-                                                        "search.index_copied",
-                                                        &[&shown],
-                                                    );
+                                                let msg = this.t_fmt(
+                                                    "search.index_copied",
+                                                    &[&shown],
+                                                );
+                                                this.push_notification(
+                                                    crate::views::notification::NotificationType::Info,
+                                                    None,
+                                                    msg,
+                                                    Some(3000),
+                                                    cx,
+                                                );
                                                 cx.notify();
                                             }
                                         })),
@@ -13136,6 +13159,10 @@ impl Render for AppView {
             // ================= PLUGIN MODAL DIALOG OVERLAY =================
             .when_some(self.render_plugin_modal_overlay(theme, window, cx), |d, overlay| {
                 d.child(overlay)
+            })
+            // ================= TOAST NOTIFICATIONS OVERLAY =================
+            .when(!self.state.notifications.all().is_empty(), |d| {
+                d.child(self.render_notifications(theme, window, cx))
             })
             // ================= MIDDLE-BUTTON SMART SCROLL HINT (editor) =================
             .when(self.editor_middle_active, |d| {

@@ -625,7 +625,14 @@ impl AppView {
                                         let ws = this.state.workspace_path.as_deref().unwrap_or(std::path::Path::new(""));
                                         let uri = file_actions::get_obsidian_uri(ws, &p);
                                         cx.write_to_clipboard(ClipboardItem::new_string(uri.clone()));
-                                        this.state.status_text = this.t_fmt("sidebar.copy_obsidian_url", &[&uri]);
+                                        let msg = this.t_fmt("sidebar.copy_obsidian_url", &[&uri]);
+                                        this.push_notification(
+                                            crate::views::notification::NotificationType::Info,
+                                            None,
+                                            msg,
+                                            Some(3000),
+                                            cx,
+                                        );
                                         this.close_file_context_menu(cx);
                                     })
                                 }),
@@ -656,7 +663,14 @@ impl AppView {
                                         let ws = this.state.workspace_path.as_deref().unwrap_or(std::path::Path::new(""));
                                         let rel = folder_actions::get_relative_path_string(ws, &p);
                                         cx.write_to_clipboard(ClipboardItem::new_string(rel.clone()));
-                                        this.state.status_text = this.t_fmt("sidebar.copy_from_vault_msg", &[&rel]);
+                                        let msg = this.t_fmt("sidebar.copy_from_vault_msg", &[&rel]);
+                                        this.push_notification(
+                                            crate::views::notification::NotificationType::Info,
+                                            None,
+                                            msg,
+                                            Some(3000),
+                                            cx,
+                                        );
                                         this.close_file_context_menu(cx);
                                     })
                                 }),
@@ -686,7 +700,14 @@ impl AppView {
                                     cx.listener(move |this, _, _, cx| {
                                         let abs = p.to_string_lossy().to_string();
                                         cx.write_to_clipboard(ClipboardItem::new_string(abs.clone()));
-                                        this.state.status_text = this.t_fmt("sidebar.copy_absolute_path_msg", &[&abs]);
+                                        let msg = this.t_fmt("sidebar.copy_absolute_path_msg", &[&abs]);
+                                        this.push_notification(
+                                            crate::views::notification::NotificationType::Info,
+                                            None,
+                                            msg,
+                                            Some(3000),
+                                            cx,
+                                        );
                                         this.close_file_context_menu(cx);
                                     })
                                 }),

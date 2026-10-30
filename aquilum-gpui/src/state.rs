@@ -461,6 +461,7 @@ pub struct AppState {
     pub commands: Arc<crate::commands::CommandRegistry>,
     pub ribbon: Arc<crate::ribbon::RibbonRegistry>,
     pub status_bar: Arc<crate::ribbon::StatusBarRegistry>,
+    pub notifications: Arc<crate::views::notification::NotificationRegistry>,
     pub code_block_processors: Arc<crate::plugins::code_block::CodeBlockProcessorRegistry>,
     pub plugin_host: Arc<crate::plugins::bridge::PluginHostState>,
     pub snapshot: Arc<arc_swap::ArcSwap<Snapshot>>,
@@ -556,6 +557,7 @@ impl AppState {
         let commands = Arc::new(crate::commands::CommandRegistry::new());
         let ribbon = Arc::new(crate::ribbon::RibbonRegistry::new());
         let status_bar = Arc::new(crate::ribbon::StatusBarRegistry::new());
+        let notifications = Arc::new(crate::views::notification::NotificationRegistry::new());
         let code_block_processors = Arc::new(crate::plugins::code_block::CodeBlockProcessorRegistry::new());
         let plugin_host = Arc::new(crate::plugins::bridge::PluginHostState::new());
         let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(Snapshot::default()));
@@ -570,6 +572,7 @@ impl AppState {
             commands,
             ribbon,
             status_bar,
+            notifications,
             code_block_processors,
             plugin_host,
             snapshot,
@@ -4262,6 +4265,7 @@ mod tests {
             commands,
             ribbon: Arc::new(crate::ribbon::RibbonRegistry::new()),
             status_bar: Arc::new(crate::ribbon::StatusBarRegistry::new()),
+            notifications: Arc::new(crate::views::notification::NotificationRegistry::new()),
             code_block_processors: Arc::new(crate::plugins::code_block::CodeBlockProcessorRegistry::new()),
             plugin_host: Arc::new(crate::plugins::bridge::PluginHostState::new()),
             snapshot: snapshot.clone(),

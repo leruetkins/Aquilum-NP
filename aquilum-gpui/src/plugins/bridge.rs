@@ -312,8 +312,21 @@ impl AppView {
 
         // 2. Dispatch request
         match call.request {
-            ApiRequest::Notice { text, id, .. } => {
-                self.state.status_text = format!("[{}] {}", plugin_id, text);
+            ApiRequest::Notice { text, timeout_ms, id } => {
+                let plugin_name = self.state.plugin_host.get_plugin_name(&plugin_id);
+                let duration = if timeout_ms == 0 {
+                    Some(5000)
+                } else {
+                    Some(timeout_ms as u64)
+                };
+                self.push_plugin_notice(
+                    id,
+                    plugin_name,
+                    text,
+                    duration,
+                    Some(plugin_id.clone()),
+                    cx,
+                );
                 let _ = self.state.plugin_host.send_event(
                     &plugin_id,
                     HostEvent::response_ok(request_id, serde_json::Value::Null),
@@ -321,10 +334,7 @@ impl AppView {
                 cx.notify();
             }
             ApiRequest::NoticeUpdate { id, text } => {
-                // Notices render into the shared status line: the latest text of the
-                // same plugin wins, which is what setMessage() means in a single-slot UI.
-                self.state.status_text = format!("[{}] {}", plugin_id, text);
-                let _ = id;
+                self.state.notifications.update(&id, &text);
                 let _ = self.state.plugin_host.send_event(
                     &plugin_id,
                     HostEvent::response_ok(request_id, serde_json::Value::Null),
@@ -332,13 +342,12 @@ impl AppView {
                 cx.notify();
             }
             ApiRequest::NoticeHide { id } => {
-                // Nothing to remove from a shared status line; acknowledge so the
-                // plugin's promise settles.
-                let _ = id;
+                self.dismiss_notification(&id, cx);
                 let _ = self.state.plugin_host.send_event(
                     &plugin_id,
                     HostEvent::response_ok(request_id, serde_json::Value::Null),
                 );
+                cx.notify();
             }
             ApiRequest::OpenUrl { url } => {
                 cx.open_url(&url);

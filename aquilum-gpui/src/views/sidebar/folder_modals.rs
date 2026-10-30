@@ -146,7 +146,14 @@ impl AppView {
                     self.folder_modal = FolderModal::None;
                 }
                 Err(e) => {
-                    self.state.status_text = self.t_fmt("sidebar.error_deleting", &[&e]);
+                    let msg = self.t_fmt("sidebar.error_deleting", &[&e]);
+                    self.push_notification(
+                        crate::views::notification::NotificationType::Error,
+                        None,
+                        msg,
+                        Some(6000),
+                        cx,
+                    );
                     self.folder_modal = FolderModal::None;
                 }
             }
@@ -169,7 +176,14 @@ impl AppView {
                     self.folder_modal = FolderModal::None;
                 }
                 Err(e) => {
-                    self.state.status_text = self.t_fmt("sidebar.error_moving", &[&e]);
+                    let msg = self.t_fmt("sidebar.error_moving", &[&e]);
+                    self.push_notification(
+                        crate::views::notification::NotificationType::Error,
+                        None,
+                        msg,
+                        Some(6000),
+                        cx,
+                    );
                     self.folder_modal = FolderModal::None;
                 }
             }

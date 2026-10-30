@@ -5,6 +5,7 @@ pub mod find_bar;
 pub mod goto_search;
 pub mod more_options_menu;
 pub mod new_tab;
+pub mod notification;
 pub mod plugin_catalog;
 pub mod ribbon_menu;
 pub mod right_sidebar;
