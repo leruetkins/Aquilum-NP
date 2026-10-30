@@ -1858,12 +1858,18 @@ pub fn wrap_line_ranges(line: &str, max_cols: usize) -> Vec<(usize, usize)> {
         // Check if there is whitespace right at limit
         let next_start = if limit < char_count && chars[limit].is_whitespace() {
             limit + 1
+        } else if limit < char_count && chars[limit - 1] == ']' && (chars[limit] == '(' || chars[limit] == '[') {
+            limit
         } else {
             // Look backwards for whitespace between start + 1 and limit
             let mut found = None;
             for i in (start + 1..limit).rev() {
                 if chars[i].is_whitespace() {
                     found = Some(i + 1);
+                    break;
+                }
+                if chars[i - 1] == ']' && (chars[i] == '(' || chars[i] == '[') {
+                    found = Some(i);
                     break;
                 }
             }
@@ -2050,10 +2056,20 @@ pub fn wrap_line_ranges_painted(
         // Prefer a break after whitespace, but only if the row keeps at least
         // one painted content cell: the block prefix ("# ", "> ") must not
         // fill a row by itself while the content is pushed to the next one.
+        // Also allow breaking between a markdown link label and its destination
+        // (`](` or `][`) when revealed so the label stays on the line.
         let content_base = base.max(cum[metrics.content_start.min(char_count)]);
         let mut cut = None;
         for b in (start + 1..=end).rev() {
             if chars[b - 1].is_whitespace() && cum[b] > content_base {
+                cut = Some(b);
+                break;
+            }
+            if chars[b - 1] == ']'
+                && (chars[b] == '(' || chars[b] == '[')
+                && metrics.char_widths.get(b).copied().unwrap_or(0) > 0
+                && cum[b] > content_base
+            {
                 cut = Some(b);
                 break;
             }
@@ -5465,6 +5481,35 @@ mod tests {
         // The same line with the link revealed pays for the URL and wraps.
         let revealed = painted_wrap_rows(line, &kind, false, &InlineReveal::All, 30);
         assert!(revealed.len() > 1);
+    }
+
+    #[test]
+    fn revealed_link_wraps_between_label_and_url() {
+        let line = "1. Добавить передачу формы курсора из rfbClient.ts во вьюпорт [RfbViewport.vue](file:///d:/Naben/Github/rfb-cloud/web/apps/app/src/components/RfbViewport.vue).";
+        let kind = classify_line(line, None);
+
+        // When revealed, with wrap columns set to 90, the label fits on the first line,
+        // and the url wraps to the second line.
+        let rows = painted_wrap_rows(line, &kind, true, &InlineReveal::All, 90);
+        assert!(rows.len() >= 2);
+        assert!(rows[0].0.ends_with("[RfbViewport.vue]"));
+        assert!(rows[1].0.contains("(file:///d:/Naben/Github/rfb-cloud"));
+
+        // When hidden, the entire line fits in 90 columns because the URL is collapsed.
+        let hidden = painted_wrap_rows(line, &kind, false, &InlineReveal::None, 90);
+        assert_eq!(hidden.len(), 1);
+    }
+
+    #[test]
+    fn wrap_line_ranges_breaks_between_link_label_and_url() {
+        let line = "prefix [label](https://example.com/very/long/url)";
+        let ranges = wrap_line_ranges(line, 40);
+        assert_eq!(ranges.len(), 2);
+        let chars: Vec<char> = line.chars().collect();
+        let row0: String = chars[ranges[0].0..ranges[0].1].iter().collect();
+        let row1: String = chars[ranges[1].0..ranges[1].1].iter().collect();
+        assert_eq!(row0, "prefix [label]");
+        assert_eq!(row1, "(https://example.com/very/long/url)");
     }
 
     #[test]
