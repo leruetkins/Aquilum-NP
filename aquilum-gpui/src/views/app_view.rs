@@ -10310,7 +10310,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     );
                     if !ws_quads.is_empty() {
                         let dot_color = if self.show_invisibles {
-                            theme.marked_line_red()
+                            let mut c = theme.marked_line_red();
+                            c.a = if theme.is_dark { 0.70 } else { 0.75 };
+                            c
                         } else {
                             theme.whitespace_dot()
                         };
@@ -10372,7 +10374,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                 .h(px(row_h))
                                 .flex()
                                 .items_center()
-                                .font_family(editor_font.clone())
+                                .font_family("Segoe UI")
                                 .text_sm()
                                 .text_color(theme.marked_line_red())
                                 .child(eol_symbol)
@@ -13463,8 +13465,9 @@ fn grammar_line_segments(
 }
 
 /// Returns char-index ranges `[start, end)` of spaces that show whitespace dots in `line`:
-/// 1. Any run of 2 or more consecutive spaces anywhere in the line.
-/// 2. Any trailing space at the end of the line (even a single space).
+/// 1. Any leading space at the start of the line (even a single space).
+/// 2. Any run of 2 or more consecutive spaces anywhere in the line.
+/// 3. Any trailing space at the end of the line (even a single space).
 #[allow(dead_code)]
 fn whitespace_dot_ranges(line: &str) -> Vec<std::ops::Range<usize>> {
     whitespace_dot_ranges_with_mode(line, false)
@@ -13490,7 +13493,8 @@ fn whitespace_dot_ranges_with_mode(line: &str, show_all: bool) -> Vec<std::ops::
             }
             count += 1;
         } else {
-            if count >= 2 {
+            // Leading spaces (start == 0) and runs of >= 2 spaces anywhere show dots.
+            if count >= 2 || (run_start == Some(0) && count >= 1) {
                 if let Some(start) = run_start {
                     ranges.push(start..i);
                 }
@@ -17488,6 +17492,9 @@ mod tests {
         assert_eq!(whitespace_dot_ranges("  hello   world  "), vec![0..2, 7..10, 15..17]);
         assert_eq!(whitespace_dot_ranges("    fn main() {"), vec![0..4]);
         assert_eq!(whitespace_dot_ranges("привет  мир"), vec![6..8]);
+        // Leading spaces: even 1 space at the start of a line is visible
+        assert_eq!(whitespace_dot_ranges(" a"), vec![0..1]);
+        assert_eq!(whitespace_dot_ranges(" привет"), vec![0..1]);
         // Trailing spaces: even 1 space at the end of a line is visible
         assert_eq!(whitespace_dot_ranges("a "), vec![1..2]);
         assert_eq!(whitespace_dot_ranges("a  b "), vec![1..3, 4..5]);
