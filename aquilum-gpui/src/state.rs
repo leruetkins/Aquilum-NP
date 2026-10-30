@@ -1645,7 +1645,6 @@ impl AppState {
         let ws = self.workspace_path.as_deref();
         if self.recent_files.remove_path_or_prefix(path, ws) {
             self.session.recent_files = self.recent_files.clone();
-            any_closed = true;
         }
 
         self.cleanup_orphaned_documents_and_views();

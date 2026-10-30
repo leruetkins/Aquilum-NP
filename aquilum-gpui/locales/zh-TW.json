@@ -316,7 +316,20 @@
     "expand_all_groups": "Expand all groups",
     "open_in_new_tab": "Open in new tab",
     "opened_files_count": "Opened {} files",
-    "no_files_in_folder": "No files in folder"
+    "no_files_in_folder": "No files in folder",
+    "files_title": "Files",
+    "search_title": "Search",
+    "bookmarks_title": "Bookmarks",
+    "recent_files": "Recent files",
+    "clear_recent_files": "Clear recent files",
+    "recent_files_cleared": "Recent files list cleared",
+    "sort_recent_desc": "Sort: newest first",
+    "sort_recent_asc": "Sort: oldest first",
+    "sort_alpha_asc": "Sort: A to Z",
+    "sort_alpha_desc": "Sort: Z to A",
+    "no_recent_files": "No recent files",
+    "remove_from_recent": "Remove from recent",
+    "yesterday": "Yesterday"
   },
   "tabs": {
     "fold_tabs": "折疊標籤",

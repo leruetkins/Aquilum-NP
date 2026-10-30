@@ -12489,7 +12489,7 @@ impl Render for AppView {
                                                             if self.sidebar_mode == crate::views::sidebar::SidebarMode::Files {
                                                                 theme.accent
                                                             } else {
-                                                                theme.text_muted
+                                                                theme.text_primary
                                                             },
                                                         ))
                                                         .on_click(cx.listener(|this, _, _, cx| {
@@ -12518,7 +12518,7 @@ impl Render for AppView {
                                                             if self.sidebar_mode == crate::views::sidebar::SidebarMode::Search {
                                                                 theme.accent
                                                             } else {
-                                                                theme.text_muted
+                                                                theme.text_primary
                                                             },
                                                         ))
                                                         .on_click(cx.listener(|this, _, window, cx| {
@@ -12547,7 +12547,7 @@ impl Render for AppView {
                                                             if self.sidebar_mode == crate::views::sidebar::SidebarMode::Bookmarks {
                                                                 theme.accent
                                                             } else {
-                                                                theme.text_muted
+                                                                theme.text_primary
                                                             },
                                                         ))
                                                         .on_click(cx.listener(|this, _, _, cx| {
@@ -12576,7 +12576,7 @@ impl Render for AppView {
                                                             if self.sidebar_mode == crate::views::sidebar::SidebarMode::RecentFiles {
                                                                 theme.accent
                                                             } else {
-                                                                theme.text_muted
+                                                                theme.text_primary
                                                             },
                                                         ))
                                                         .on_click(cx.listener(|this, _, _, cx| {
@@ -12611,7 +12611,7 @@ impl Render for AppView {
                                                                     if is_active {
                                                                         theme.accent
                                                                     } else {
-                                                                        theme.text_muted
+                                                                        theme.text_primary
                                                                     },
                                                                 ))
                                                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -12819,127 +12819,150 @@ impl Render for AppView {
                                         cx.notify();
                                     }
                                 }))
-                            // Vault Header (Files and Search modes)
+                            // Vault Header (Files, Bookmarks, RecentFiles, and Search modes)
                             .when(
                                 !matches!(self.sidebar_mode, crate::views::sidebar::SidebarMode::Plugin(_)),
                                 |d| {
-                                    if self.sidebar_mode == crate::views::sidebar::SidebarMode::RecentFiles {
-                                        d.child(
-                                            div()
+                                    let (title, actions) = match self.sidebar_mode {
+                                        crate::views::sidebar::SidebarMode::Files => {
+                                            let is_any_expanded = !self.state.expanded_folders.is_empty();
+                                            let expand_icon = if is_any_expanded {
+                                                icons::ICON_CHEVRONS_DOWN_UP
+                                            } else {
+                                                icons::ICON_CHEVRONS_UP_DOWN
+                                            };
+                                            let actions = div()
                                                 .flex()
                                                 .flex_row()
                                                 .items_center()
-                                                .justify_between()
-                                                .px_2()
-                                                .py_1()
+                                                .gap_1()
                                                 .child(
                                                     div()
-                                                        .text_xs()
-                                                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                        .text_color(theme.text_muted)
-                                                        .child(self.t("sidebar.recent_files")),
+                                                        .id("btn-new-folder")
+                                                        .p_1()
+                                                        .rounded_md()
+                                                        .cursor_pointer()
+                                                        .hover(|h| h.bg(theme.bg_hover))
+                                                        .child(icons::icon(icons::ICON_FOLDER_PLUS, 14.0, theme.text_muted))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.create_new_folder(cx);
+                                                        })),
                                                 )
-                                                .child({
-                                                    let sort_icon = match self.recent_files_sort_order {
-                                                        crate::views::sidebar::recent_files::RecentFilesSortOrder::RecentAsc
-                                                        | crate::views::sidebar::recent_files::RecentFilesSortOrder::AlphabeticalDesc => {
-                                                            icons::ICON_SORT_DESC
-                                                        }
-                                                        _ => icons::ICON_SORT_ASC,
-                                                    };
+                                                .child(
                                                     div()
-                                                        .flex()
-                                                        .flex_row()
-                                                        .items_center()
-                                                        .gap_1()
-                                                        .child(
-                                                            div()
-                                                                .id("btn-recent-sort")
-                                                                .p_1()
-                                                                .rounded_md()
-                                                                .cursor_pointer()
-                                                                .hover(|h| h.bg(theme.bg_hover))
-                                                                .child(icons::icon(sort_icon, 14.0, theme.text_primary))
-                                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                                    this.toggle_recent_files_sort(cx);
-                                                                })),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .id("btn-recent-clear-all")
-                                                                .p_1()
-                                                                .rounded_md()
-                                                                .cursor_pointer()
-                                                                .hover(|h| h.bg(theme.bg_hover))
-                                                                .child(icons::icon(icons::ICON_TRASH_2, 14.0, theme.text_primary))
-                                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                                    this.clear_all_recent_files(cx);
-                                                                })),
-                                                        )
-                                                }),
-                                        )
-                                    } else {
-                                        d.child(
+                                                        .id("btn-toggle-expand-all")
+                                                        .p_1()
+                                                        .rounded_md()
+                                                        .cursor_pointer()
+                                                        .hover(|h| h.bg(theme.bg_hover))
+                                                        .child(icons::icon(expand_icon, 14.0, theme.text_muted))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.toggle_expand_all_folders(cx);
+                                                        })),
+                                                );
+                                            (self.t("sidebar.files_title"), Some(actions))
+                                        }
+                                        crate::views::sidebar::SidebarMode::Bookmarks => {
+                                            let is_any_expanded = self.is_any_bookmark_group_expanded();
+                                            let expand_icon = if is_any_expanded {
+                                                icons::ICON_CHEVRONS_DOWN_UP
+                                            } else {
+                                                icons::ICON_CHEVRONS_UP_DOWN
+                                            };
+                                            let actions = div()
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .gap_1()
+                                                .child(
+                                                    div()
+                                                        .id("btn-new-folder")
+                                                        .p_1()
+                                                        .rounded_md()
+                                                        .cursor_pointer()
+                                                        .hover(|h| h.bg(theme.bg_hover))
+                                                        .child(icons::icon(icons::ICON_FOLDER_PLUS, 14.0, theme.text_muted))
+                                                        .on_click(cx.listener(|this, _, window, cx| {
+                                                            this.create_bookmark_group(window, cx);
+                                                        })),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id("btn-toggle-expand-all")
+                                                        .p_1()
+                                                        .rounded_md()
+                                                        .cursor_pointer()
+                                                        .hover(|h| h.bg(theme.bg_hover))
+                                                        .child(icons::icon(expand_icon, 14.0, theme.text_muted))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.toggle_expand_all_bookmark_groups(cx);
+                                                        })),
+                                                );
+                                            (self.t("sidebar.bookmarks_title"), Some(actions))
+                                        }
+                                        crate::views::sidebar::SidebarMode::RecentFiles => {
+                                            let sort_icon = match self.recent_files_sort_order {
+                                                crate::views::sidebar::recent_files::RecentFilesSortOrder::RecentAsc
+                                                | crate::views::sidebar::recent_files::RecentFilesSortOrder::AlphabeticalDesc => {
+                                                    icons::ICON_SORT_DESC
+                                                }
+                                                _ => icons::ICON_SORT_ASC,
+                                            };
+                                            let actions = div()
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .gap_1()
+                                                .child(
+                                                    div()
+                                                        .id("btn-recent-sort")
+                                                        .p_1()
+                                                        .rounded_md()
+                                                        .cursor_pointer()
+                                                        .hover(|h| h.bg(theme.bg_hover))
+                                                        .child(icons::icon(sort_icon, 14.0, theme.text_muted))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.toggle_recent_files_sort(cx);
+                                                        })),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id("btn-recent-clear-all")
+                                                        .p_1()
+                                                        .rounded_md()
+                                                        .cursor_pointer()
+                                                        .hover(|h| h.bg(theme.bg_hover))
+                                                        .child(icons::icon(icons::ICON_TRASH_2, 14.0, theme.text_muted))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.clear_all_recent_files(cx);
+                                                        })),
+                                                );
+                                            (self.t("sidebar.recent_files"), Some(actions))
+                                        }
+                                        crate::views::sidebar::SidebarMode::Search => {
+                                            (self.t("sidebar.search_title"), None)
+                                        }
+                                        _ => (String::new(), None),
+                                    };
+
+                                    d.child(
                                         div()
                                             .flex()
                                             .flex_row()
                                             .items_center()
-                                            .justify_end()
+                                            .justify_between()
+                                            .min_h(px(28.0))
                                             .px_2()
                                             .py_1()
                                             .child(
                                                 div()
-                                                    .flex()
-                                                    .flex_row()
-                                                    .items_center()
-                                                    .gap_1()
-                                                    .child(
-                                                        div()
-                                                            .id("btn-new-folder")
-                                                            .p_1()
-                                                            .rounded_md()
-                                                            .cursor_pointer()
-                                                            .hover(|h| h.bg(theme.bg_hover))
-                                                            .child(icons::icon(icons::ICON_FOLDER_PLUS, 14.0, theme.text_primary))
-                                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                                if this.sidebar_mode == crate::views::sidebar::SidebarMode::Bookmarks {
-                                                                    this.create_bookmark_group(window, cx);
-                                                                } else {
-                                                                    this.create_new_folder(cx);
-                                                                }
-                                                            })),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .id("btn-toggle-expand-all")
-                                                            .p_1()
-                                                            .rounded_md()
-                                                            .cursor_pointer()
-                                                            .hover(|h| h.bg(theme.bg_hover))
-                                                            .child({
-                                                                let is_any_expanded = if self.sidebar_mode == crate::views::sidebar::SidebarMode::Bookmarks {
-                                                                    self.is_any_bookmark_group_expanded()
-                                                                } else {
-                                                                    !self.state.expanded_folders.is_empty()
-                                                                };
-                                                                let expand_icon = if is_any_expanded {
-                                                                    icons::ICON_CHEVRONS_DOWN_UP
-                                                                } else {
-                                                                    icons::ICON_CHEVRONS_UP_DOWN
-                                                                };
-                                                                icons::icon(expand_icon, 14.0, theme.text_primary)
-                                                            })
-                                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                                if this.sidebar_mode == crate::views::sidebar::SidebarMode::Bookmarks {
-                                                                    this.toggle_expand_all_bookmark_groups(cx);
-                                                                } else {
-                                                                    this.toggle_expand_all_folders(cx);
-                                                                }
-                                                             })),
-                                                    ),
-                                            ),
+                                                    .text_xs()
+                                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                    .text_color(theme.text_muted)
+                                                    .child(title),
+                                            )
+                                            .children(actions),
                                     )
-                                }
                                 },
                             )
                             // Search Filter Bar + Tree (Files mode) or Bookmarks or Search Panel or Plugin Leaf View

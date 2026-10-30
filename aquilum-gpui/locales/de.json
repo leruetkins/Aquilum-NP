@@ -316,7 +316,20 @@
     "expand_all_groups": "Expand all groups",
     "open_in_new_tab": "Open in new tab",
     "opened_files_count": "Opened {} files",
-    "no_files_in_folder": "No files in folder"
+    "no_files_in_folder": "No files in folder",
+    "files_title": "Dateien",
+    "search_title": "Suche",
+    "bookmarks_title": "Lesezeichen",
+    "recent_files": "Zuletzt verwendete Dateien",
+    "clear_recent_files": "Zuletzt verwendete Dateien löschen",
+    "recent_files_cleared": "Zuletzt verwendete Dateien gelöscht",
+    "sort_recent_desc": "Sortierung: Neueste zuerst",
+    "sort_recent_asc": "Sortierung: Älteste zuerst",
+    "sort_alpha_asc": "Sortierung: A bis Z",
+    "sort_alpha_desc": "Sortierung: Z bis A",
+    "no_recent_files": "Keine zuletzt verwendeten Dateien",
+    "remove_from_recent": "Aus zuletzt verwendeten entfernen",
+    "yesterday": "Gestern"
   },
   "tabs": {
     "fold_tabs": "Tabs falten",

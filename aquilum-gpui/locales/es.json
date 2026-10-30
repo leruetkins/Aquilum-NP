@@ -316,7 +316,20 @@
     "expand_all_groups": "Expand all groups",
     "open_in_new_tab": "Open in new tab",
     "opened_files_count": "Opened {} files",
-    "no_files_in_folder": "No files in folder"
+    "no_files_in_folder": "No files in folder",
+    "files_title": "Archivos",
+    "search_title": "Buscar",
+    "bookmarks_title": "Marcadores",
+    "recent_files": "Archivos recientes",
+    "clear_recent_files": "Borrar archivos recientes",
+    "recent_files_cleared": "Lista de archivos recientes borrada",
+    "sort_recent_desc": "Ordenar: más recientes primero",
+    "sort_recent_asc": "Ordenar: más antiguos primero",
+    "sort_alpha_asc": "Ordenar: de A a Z",
+    "sort_alpha_desc": "Ordenar: de Z a A",
+    "no_recent_files": "No hay archivos recientes",
+    "remove_from_recent": "Eliminar de recientes",
+    "yesterday": "Ayer"
   },
   "tabs": {
     "fold_tabs": "Pestañas plegables",

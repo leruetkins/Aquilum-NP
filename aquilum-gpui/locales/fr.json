@@ -316,7 +316,20 @@
     "expand_all_groups": "Expand all groups",
     "open_in_new_tab": "Open in new tab",
     "opened_files_count": "Opened {} files",
-    "no_files_in_folder": "No files in folder"
+    "no_files_in_folder": "No files in folder",
+    "files_title": "Fichiers",
+    "search_title": "Recherche",
+    "bookmarks_title": "Favoris",
+    "recent_files": "Fichiers récents",
+    "clear_recent_files": "Effacer les fichiers récents",
+    "recent_files_cleared": "Liste des fichiers récents effacée",
+    "sort_recent_desc": "Tri : du plus récent au plus ancien",
+    "sort_recent_asc": "Tri : du plus ancien au plus récent",
+    "sort_alpha_asc": "Tri : de A à Z",
+    "sort_alpha_desc": "Tri : de Z à A",
+    "no_recent_files": "Aucun fichier récent",
+    "remove_from_recent": "Supprimer des fichiers récents",
+    "yesterday": "Hier"
   },
   "tabs": {
     "fold_tabs": "Plier les onglets",

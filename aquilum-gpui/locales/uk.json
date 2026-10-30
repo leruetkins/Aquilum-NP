@@ -316,7 +316,20 @@
     "expand_all_groups": "Expand all groups",
     "open_in_new_tab": "Open in new tab",
     "opened_files_count": "Opened {} files",
-    "no_files_in_folder": "No files in folder"
+    "no_files_in_folder": "No files in folder",
+    "files_title": "Провідник",
+    "search_title": "Пошук",
+    "bookmarks_title": "Закладки",
+    "recent_files": "Нещодавні файли",
+    "clear_recent_files": "Очистити список нещодавніх файлів",
+    "recent_files_cleared": "Список нещодавніх файлів очищено",
+    "sort_recent_desc": "Сортування: спочатку нові",
+    "sort_recent_asc": "Сортування: спочатку старі",
+    "sort_alpha_asc": "Сортування: А — Я",
+    "sort_alpha_desc": "Сортування: Я — А",
+    "no_recent_files": "Немає нещодавніх файлів",
+    "remove_from_recent": "Видалити з нещодавніх",
+    "yesterday": "Вчора"
   },
   "tabs": {
     "fold_tabs": "Складні вкладки",
