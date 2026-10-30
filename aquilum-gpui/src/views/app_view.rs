@@ -329,6 +329,12 @@ pub struct AppView {
     pub panel_scroll_handle: ScrollHandle,
     /// Drag state of the search panel results overlay scrollbar.
     pub panel_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag,
+    pub bookmark_drag: Option<crate::views::sidebar::bookmarks::BookmarkDragState>,
+    pub expanded_bookmark_groups: std::collections::HashSet<String>,
+    pub bookmark_context_menu: Option<crate::views::sidebar::bookmarks::BookmarkContextMenuState>,
+    pub bookmark_rename: Option<crate::views::sidebar::bookmarks::BookmarkRenameState>,
+    pub bookmark_rename_focus_handle: FocusHandle,
+    pub bookmark_rename_blink: BlinkManager,
     /// Go to file dialog ("Search the knowledge base").
     pub search_dialog: crate::views::goto_search::SearchDialogState,
     pub goto_focus_handle: FocusHandle,
@@ -555,6 +561,12 @@ impl AppView {
             search_panel_focus_handle: cx.focus_handle(),
             panel_scroll_handle: ScrollHandle::new(),
             panel_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
+            bookmark_drag: None,
+            expanded_bookmark_groups: std::collections::HashSet::new(),
+            bookmark_context_menu: None,
+            bookmark_rename: None,
+            bookmark_rename_focus_handle: cx.focus_handle(),
+            bookmark_rename_blink: BlinkManager::new(),
             search_dialog: crate::views::goto_search::SearchDialogState::default(),
             goto_focus_handle: cx.focus_handle(),
             goto_blink: BlinkManager::new(),
@@ -5702,6 +5714,18 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             return;
         }
 
+        // Escape closes bookmark context menu if open
+        if keystroke.key == "escape" && self.bookmark_context_menu.is_some() {
+            self.close_bookmark_context_menu(cx);
+            return;
+        }
+
+        // Escape cancels bookmark rename if active
+        if keystroke.key == "escape" && self.bookmark_rename.is_some() {
+            self.cancel_bookmark_rename(cx);
+            return;
+        }
+
         // Escape closes file context menu if open
         if keystroke.key == "escape" && self.file_context_menu.is_open {
             self.close_file_context_menu(cx);
@@ -6785,6 +6809,38 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     .items_center()
                     .gap_1p5()
                     .flex_shrink_0()
+                    // Bookmark indicator / toggle
+                    .when(!is_empty_tab && full_path_opt.is_some(), |row| {
+                        let is_bookmarked = full_path_opt
+                            .as_ref()
+                            .map(|p| self.is_file_bookmarked(p))
+                            .unwrap_or(false);
+                        let p_click = full_path_opt.clone();
+
+                        row.child(
+                            div()
+                                .id("btn-note-bookmark")
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .w(px(28.0))
+                                .h(px(28.0))
+                                .rounded_md()
+                                .cursor_pointer()
+                                .hover(|h| h.bg(theme.bg_hover))
+                                .child(if is_bookmarked {
+                                    // Purple ribbon icon matching Image 2
+                                    icons::icon(icons::ICON_BOOKMARK_FILLED, 16.0, rgb(0x8b5cf6))
+                                } else {
+                                    icons::icon(icons::ICON_BOOKMARK, 16.0, theme.text_muted)
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(ref p) = p_click {
+                                        this.toggle_file_bookmark(p, cx);
+                                    }
+                                })),
+                        )
+                    })
                     // Toggle wrap
                     .child(
                         div()
@@ -12284,6 +12340,35 @@ impl Render for AppView {
                                                             this.open_sidebar_search(window, cx);
                                                         })),
                                                 )
+                                                .child(
+                                                    div()
+                                                        .id("btn-sidebar-bookmarks")
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .w(px(28.0))
+                                                        .h(px(28.0))
+                                                        .rounded_md()
+                                                        .cursor_pointer()
+                                                        .when(
+                                                            self.sidebar_mode
+                                                                == crate::views::sidebar::SidebarMode::Bookmarks,
+                                                            |d| d.bg(theme.bg_hover),
+                                                        )
+                                                        .hover(|h| h.bg(theme.bg_hover))
+                                                        .child(icons::icon(
+                                                            icons::ICON_BOOKMARK,
+                                                            14.0,
+                                                            if self.sidebar_mode == crate::views::sidebar::SidebarMode::Bookmarks {
+                                                                theme.accent
+                                                            } else {
+                                                                theme.text_muted
+                                                            },
+                                                        ))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.open_sidebar_bookmarks(cx);
+                                                        })),
+                                                )
                                                 .children(
                                                     self.plugin_leaf_views
                                                         .values()
@@ -12546,8 +12631,12 @@ impl Render for AppView {
                                                             .cursor_pointer()
                                                             .hover(|h| h.bg(theme.bg_hover))
                                                             .child(icons::icon(icons::ICON_FOLDER_PLUS, 14.0, theme.text_primary))
-                                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                                this.create_new_folder(cx);
+                                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                                if this.sidebar_mode == crate::views::sidebar::SidebarMode::Bookmarks {
+                                                                    this.create_bookmark_group(window, cx);
+                                                                } else {
+                                                                    this.create_new_folder(cx);
+                                                                }
                                                             })),
                                                     )
                                                     .child(
@@ -12558,7 +12647,11 @@ impl Render for AppView {
                                                             .cursor_pointer()
                                                             .hover(|h| h.bg(theme.bg_hover))
                                                             .child({
-                                                                let is_any_expanded = !self.state.expanded_folders.is_empty();
+                                                                let is_any_expanded = if self.sidebar_mode == crate::views::sidebar::SidebarMode::Bookmarks {
+                                                                    self.is_any_bookmark_group_expanded()
+                                                                } else {
+                                                                    !self.state.expanded_folders.is_empty()
+                                                                };
                                                                 let expand_icon = if is_any_expanded {
                                                                     icons::ICON_CHEVRONS_DOWN_UP
                                                                 } else {
@@ -12567,14 +12660,18 @@ impl Render for AppView {
                                                                 icons::icon(expand_icon, 14.0, theme.text_primary)
                                                             })
                                                             .on_click(cx.listener(|this, _, _, cx| {
-                                                                this.toggle_expand_all_folders(cx);
+                                                                if this.sidebar_mode == crate::views::sidebar::SidebarMode::Bookmarks {
+                                                                    this.toggle_expand_all_bookmark_groups(cx);
+                                                                } else {
+                                                                    this.toggle_expand_all_folders(cx);
+                                                                }
                                                              })),
                                                     ),
                                             ),
                                     )
                                 },
                             )
-                            // Search Filter Bar + Tree (Files mode) or Search Panel or Plugin Leaf View
+                            // Search Filter Bar + Tree (Files mode) or Bookmarks or Search Panel or Plugin Leaf View
                             .when(
                                 self.sidebar_mode
                                     == crate::views::sidebar::SidebarMode::Files,
@@ -12582,6 +12679,19 @@ impl Render for AppView {
                                     d.child(self.render_quick_filter(window, cx))
                                         // Tree Scroll — виртуализированный список (см. views/sidebar/tree.rs)
                                         .child(self.render_sidebar_tree(
+                                            active_path.as_ref(),
+                                            theme,
+                                            window,
+                                            cx,
+                                        ))
+                                },
+                            )
+                            .when(
+                                self.sidebar_mode
+                                    == crate::views::sidebar::SidebarMode::Bookmarks,
+                                |d| {
+                                    d.child(self.render_quick_filter(window, cx))
+                                        .child(self.render_sidebar_bookmarks(
                                             active_path.as_ref(),
                                             theme,
                                             window,
@@ -12916,6 +13026,13 @@ impl Render for AppView {
             // ================= FOLDER CONTEXT MENU =================
             .when(self.folder_context_menu.is_open, |d| {
                 d.child(self.render_folder_context_menu(theme, window, cx))
+            })
+            // ================= BOOKMARK CONTEXT MENU =================
+            .when(self.bookmark_context_menu.is_some(), |d| {
+                d.child(
+                    gpui::deferred(self.render_bookmark_context_menu(theme, window, cx))
+                        .with_priority(1000),
+                )
             })
             // ================= FILE CONTEXT MENU =================
             .when(self.file_context_menu.is_open, |d| {

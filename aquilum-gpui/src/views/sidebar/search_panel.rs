@@ -47,12 +47,13 @@ fn panel_scrollbar_style() -> ScrollbarStyle {
     }
 }
 
-/// Sidebar content mode: file tree, search panel, or active plugin leaf view.
+/// Sidebar content mode: file tree, search panel, bookmarks, or active plugin leaf view.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SidebarMode {
     #[default]
     Files,
     Search,
+    Bookmarks,
     Plugin(String),
 }
 

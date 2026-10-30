@@ -453,29 +453,36 @@ impl AppView {
                         theme,
                         cx,
                     ))
-                    // 9. Добавить в закладки...
-                    .child(self.render_more_options_item(
-                        8,
-                        "more-item-bookmark",
-                        icons::ICON_BOOKMARK,
-                        if is_ru { "Добавить в закладки...".to_string() } else { "Add to bookmarks...".to_string() },
-                        false,
-                        false,
-                        ActiveSubmenu::None,
-                        {
-                            let p = target_path.clone();
+                    // 9. Добавить / удалить из закладок...
+                    .child({
+                        let is_bm = target_path
+                            .as_ref()
+                            .map(|p| self.is_file_bookmarked(p))
+                            .unwrap_or(false);
+                        let label_str = if is_bm {
+                            if is_ru { "Удалить из закладок".to_string() } else { "Remove from Bookmarks".to_string() }
+                        } else {
+                            if is_ru { "Добавить в закладки...".to_string() } else { "Add to bookmarks...".to_string() }
+                        };
+                        let p = target_path.clone();
+                        self.render_more_options_item(
+                            8,
+                            "more-item-bookmark",
+                            if is_bm { icons::ICON_BOOKMARK_FILLED } else { icons::ICON_BOOKMARK },
+                            label_str,
+                            false,
+                            false,
+                            ActiveSubmenu::None,
                             Box::new(move |this, _, cx| {
                                 if let Some(ref path) = p {
-                                    let name = path.file_name().unwrap_or_default().to_string_lossy();
-                                    this.state.status_text = this.t_fmt("sidebar.file_bookmarked", &[&name]);
+                                    this.toggle_file_bookmark(path, cx);
                                 }
                                 this.close_more_options_menu(cx);
-                                cx.notify();
-                            })
-                        },
-                        theme,
-                        cx,
-                    ))
+                            }),
+                            theme,
+                            cx,
+                        )
+                    })
                     // 10. Объединить весь файл с...
                     .child(self.render_more_options_item(
                         9,

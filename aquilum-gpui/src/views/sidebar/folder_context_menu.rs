@@ -368,23 +368,36 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 8. Добавить в закладки... (index 7)
-                    .child(render_item(
-                        7,
-                        "menu-item-bookmark-folder",
-                        icons::ICON_BOOKMARK,
-                        self.t("sidebar.add_to_bookmarks"),
-                        false,
-                        {
-                            let p = target_path.clone();
+                    // 8. Добавить / удалить из закладок (index 7)
+                    .child({
+                        let is_bm = self.is_folder_bookmarked(&target_path);
+                        let label = if is_bm {
+                            self.t("sidebar.remove_from_bookmarks")
+                        } else {
+                            self.t("sidebar.add_to_bookmarks")
+                        };
+                        let label_str = if label.is_empty() || label == "sidebar.remove_from_bookmarks" {
+                            if is_bm { "Удалить из закладок".to_string() } else { "Добавить в закладки...".to_string() }
+                        } else {
+                            label
+                        };
+                        let p = target_path.clone();
+                        render_item(
+                            7,
+                            "menu-item-bookmark-folder",
+                            if is_bm { icons::ICON_BOOKMARK_FILLED } else { icons::ICON_BOOKMARK },
+                            label_str,
+                            false,
                             Box::new(cx.listener(move |this, _, _, cx| {
                                 this.close_folder_context_menu(cx);
-                                let name = p.file_name().unwrap_or_default().to_string_lossy();
-                                this.state.status_text = this.t_fmt("sidebar.folder_bookmarked", &[&name]);
-                                cx.notify();
-                            }))
-                        },
-                    ))
+                                if is_bm {
+                                    this.remove_folder_from_bookmarks(&p, cx);
+                                } else {
+                                    this.add_folder_to_bookmarks(&p, cx);
+                                }
+                            })),
+                        )
+                    })
                     // Divider 2
                     .child(self.render_menu_divider(theme))
                     // --- SECTION 3: PATHS & EXPLORER ---

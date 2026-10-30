@@ -335,23 +335,32 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 7. Добавить в закладки... (index 6)
-                    .child(render_item(
-                        6,
-                        "menu-item-file-bookmark",
-                        icons::ICON_BOOKMARK,
-                        self.t("sidebar.add_to_bookmarks"),
-                        false,
-                        {
-                            let p = target_path.clone();
+                    // 7. Добавить / удалить из закладок (index 6)
+                    .child({
+                        let is_bm = self.is_file_bookmarked(&target_path);
+                        let label = if is_bm {
+                            self.t("sidebar.remove_from_bookmarks")
+                        } else {
+                            self.t("sidebar.add_to_bookmarks")
+                        };
+                        let label_str = if label.is_empty() || label == "sidebar.remove_from_bookmarks" {
+                            if is_bm { "Удалить из закладок".to_string() } else { "Добавить в закладки...".to_string() }
+                        } else {
+                            label
+                        };
+                        let p = target_path.clone();
+                        render_item(
+                            6,
+                            "menu-item-file-bookmark",
+                            if is_bm { icons::ICON_BOOKMARK_FILLED } else { icons::ICON_BOOKMARK },
+                            label_str,
+                            false,
                             Box::new(cx.listener(move |this, _, _, cx| {
                                 this.close_file_context_menu(cx);
-                                let name = p.file_name().unwrap_or_default().to_string_lossy();
-                                this.state.status_text = this.t_fmt("sidebar.file_bookmarked", &[&name]);
-                                cx.notify();
-                            }))
-                        },
-                    ))
+                                this.toggle_file_bookmark(&p, cx);
+                            })),
+                        )
+                    })
                     // 8. Объединить весь файл с... (index 7 - in Group 3)
                     .child(render_item(
                         7,

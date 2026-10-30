@@ -1,3 +1,4 @@
+pub mod bookmarks;
 pub mod file_actions;
 pub mod file_context_menu;
 pub mod folder_actions;
@@ -8,6 +9,7 @@ pub mod search_panel;
 pub mod tree;
 pub mod vault_dialog;
 
+pub use bookmarks::*;
 pub use file_actions::*;
 pub use file_context_menu::*;
 pub use folder_actions::*;

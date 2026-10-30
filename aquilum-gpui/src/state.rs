@@ -10,17 +10,31 @@ use crate::workspace::{EditorViewState, LeafId, LeafState, TabId, WorkspaceTree}
 
 pub fn app_data_dir() -> PathBuf {
     dirs::data_dir()
-        .map(|d| {
-            let vibe = d.join("com.dmitriy.vibecodium");
-            if !vibe.exists() {
-                let old = d.join("com.dmitriy.aquilum-app");
-                if old.exists() {
-                    return old;
-                }
-            }
-            vibe
-        })
+        .map(|d| resolve_app_data_dir(&d))
         .unwrap_or_else(|| PathBuf::from("./data"))
+}
+
+pub fn resolve_app_data_dir(data_dir: &Path) -> PathBuf {
+    let vibe = data_dir.join("Vibecodium");
+    if vibe.exists() {
+        return vibe;
+    }
+    let old_aquilum = data_dir.join("com.dmitriy.aquilum-app");
+    let old_vibe = data_dir.join("com.dmitriy.vibecodium");
+    let legacy = if old_aquilum.exists() {
+        Some(old_aquilum)
+    } else if old_vibe.exists() {
+        Some(old_vibe)
+    } else {
+        None
+    };
+    if let Some(old) = legacy {
+        if std::fs::rename(&old, &vibe).is_ok() {
+            return vibe;
+        }
+        return old;
+    }
+    vibe
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -248,6 +262,9 @@ pub struct SessionState {
     /// Whether the ribbon rail itself is visible.
     #[serde(default = "default_true")]
     pub ribbon_visible: bool,
+    /// Bookmarks matching Obsidian format.
+    #[serde(default)]
+    pub bookmarks: crate::views::sidebar::bookmarks::BookmarksData,
 }
 
 impl Default for SessionState {
@@ -267,6 +284,7 @@ impl Default for SessionState {
             ribbon_hidden: default_ribbon_hidden(),
             ribbon_order: Vec::new(),
             ribbon_visible: true,
+            bookmarks: crate::views::sidebar::bookmarks::BookmarksData::default(),
         }
     }
 }
@@ -485,6 +503,8 @@ pub struct AppState {
     /// Receiving end of coalesced watcher batches. `None` while no watcher is
     /// attached (no workspace).
     pub fs_events_rx: Option<std::sync::mpsc::Receiver<crate::fs_watcher::FsBatch>>,
+    /// Bookmarks hierarchy matching Obsidian format.
+    pub bookmarks: crate::views::sidebar::bookmarks::BookmarksData,
     /// Background search scanner: owns the body cache and the file list, so
     /// the UI thread never touches the filesystem during a search. One
     /// worker per AppState — the "Go to file" dialog and the sidebar panel
@@ -511,6 +531,26 @@ impl AppState {
             .filter(|p| is_empty_tab_path(p) || p.exists() || p.to_string_lossy() == "Welcome.md")
             .cloned()
             .collect();
+
+        let mut bookmarks = session.bookmarks.clone();
+        if let Some(ref ws) = session.workspace_path {
+            let vault_bm = ws.join(".vault").join("bookmarks.json");
+            let obs_bm = ws.join(".obsidian").join("bookmarks.json");
+            let bm_path = if vault_bm.exists() {
+                Some(vault_bm)
+            } else if obs_bm.exists() {
+                Some(obs_bm)
+            } else {
+                None
+            };
+            if let Some(p) = bm_path {
+                if let Ok(content) = std::fs::read_to_string(&p) {
+                    if let Ok(data) = serde_json::from_str::<crate::views::sidebar::bookmarks::BookmarksData>(&content) {
+                        bookmarks = data;
+                    }
+                }
+            }
+        }
 
         let events = Arc::new(crate::events::EventBus::new());
         let commands = Arc::new(crate::commands::CommandRegistry::new());
@@ -564,6 +604,7 @@ impl AppState {
             views: HashMap::new(),
             fs_watcher: crate::fs_watcher::Watcher::new(),
             fs_events_rx: None,
+            bookmarks,
             search_worker: crate::search::worker::SearchWorker::spawn(
                 None,
                 settings.clone(),
@@ -2189,6 +2230,22 @@ impl AppState {
             }
         }
         self.reload_file_tree();
+        let vault_bm = path.join(".vault").join("bookmarks.json");
+        let obs_bm = path.join(".obsidian").join("bookmarks.json");
+        let bm_path = if vault_bm.exists() {
+            Some(vault_bm)
+        } else if obs_bm.exists() {
+            Some(obs_bm)
+        } else {
+            None
+        };
+        if let Some(p) = bm_path {
+            if let Ok(content) = std::fs::read_to_string(&p) {
+                if let Ok(data) = serde_json::from_str::<crate::views::sidebar::bookmarks::BookmarksData>(&content) {
+                    self.bookmarks = data;
+                }
+            }
+        }
         self.status_text = format!("Workspace: {}", self.workspace_name);
 
         self.events.emit_workspace(&crate::events::WorkspaceEvent::VaultOpen {
@@ -3285,6 +3342,33 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_app_data_dir_migration() {
+        let temp_base = std::env::temp_dir().join(format!("vibe_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_base).unwrap();
+
+        // 1. Clean path (neither exists): resolves to Vibecodium
+        let resolved = resolve_app_data_dir(&temp_base);
+        assert_eq!(resolved, temp_base.join("Vibecodium"));
+
+        // 2. Legacy com.dmitriy.aquilum-app exists: should auto-migrate (rename) to Vibecodium
+        let legacy_dir = temp_base.join("com.dmitriy.aquilum-app");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::write(legacy_dir.join("test.txt"), "hello").unwrap();
+
+        let migrated = resolve_app_data_dir(&temp_base);
+        assert_eq!(migrated, temp_base.join("Vibecodium"));
+        assert!(migrated.exists());
+        assert!(migrated.join("test.txt").exists());
+        assert!(!legacy_dir.exists());
+
+        // 3. Existing Vibecodium returns directly
+        let second_call = resolve_app_data_dir(&temp_base);
+        assert_eq!(second_call, temp_base.join("Vibecodium"));
+
+        let _ = std::fs::remove_dir_all(temp_base);
+    }
+
+    #[test]
     fn session_persists_sidebar_geometry() {
         let dir = std::env::temp_dir().join(format!(
             "vibecodium_session_{}",
@@ -4203,6 +4287,7 @@ mod tests {
             views,
             fs_watcher: crate::fs_watcher::Watcher::new(),
             fs_events_rx: None,
+            bookmarks: crate::views::sidebar::bookmarks::BookmarksData::default(),
             search_worker: crate::search::worker::SearchWorker::spawn(
                 None,
                 settings.clone(),
