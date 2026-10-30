@@ -75,6 +75,21 @@ fn item(id: &str, title: String, icon: &str, disabled: bool) -> ContextMenuItem 
     }
 }
 
+fn check_item(id: &str, title: String, icon: &str, checked: bool, disabled: bool) -> ContextMenuItem {
+    ContextMenuItem {
+        id: id.to_string(),
+        title,
+        icon: icon.to_string(),
+        checked,
+        disabled,
+        is_label: false,
+        is_separator: false,
+        has_callback: true,
+        owner_plugin: None,
+        submenu: None,
+    }
+}
+
 fn submenu(id: &str, title: String, icon: &str, sub: Vec<ContextMenuItem>) -> ContextMenuItem {
     ContextMenuItem {
         id: id.to_string(),
@@ -312,6 +327,16 @@ impl AppView {
             if is_ru { "AI-инструменты".to_string() } else { "AI tools".to_string() },
             "sparkles",
             ai_tools_items,
+        ));
+
+        // Separator & View Options
+        items.push(separator("sep-invisibles"));
+        items.push(check_item(
+            "editor-toggle-invisibles",
+            if is_ru { "Показывать непечатаемые знаки".to_string() } else { "Show non-printable characters".to_string() },
+            "pilcrow",
+            self.show_invisibles,
+            false,
         ));
 
         // 5. Query active plugins for editor-menu items
@@ -696,6 +721,9 @@ impl AppView {
                     cx.notify();
                 }
             }
+            "editor-toggle-invisibles" => {
+                self.toggle_show_invisibles(cx);
+            }
             "table-copy" => {
                 if let Some((tbl, _, _)) = table_target {
                     let lines: Vec<String> = self.state.active_document().map(|d| Self::table_lines_slice(d, &tbl)).unwrap_or_default();
@@ -1015,6 +1043,20 @@ impl AppView {
                                 .child(item.title.clone()),
                         ),
                 )
+                .when(item.checked, |d| {
+                    d.child(
+                        div()
+                            .ml_2()
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .child(icons::icon(
+                                icons::ICON_CHECK,
+                                12.0,
+                                theme.accent,
+                            )),
+                    )
+                })
                 .when(has_sub, |d| {
                     d.child(
                         div()

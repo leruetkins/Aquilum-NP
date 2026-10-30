@@ -188,6 +188,62 @@ impl AppView {
             }))
     }
 
+    fn render_more_options_check_item(
+        &self,
+        ix: usize,
+        id: &'static str,
+        icon_path: &'static str,
+        label: String,
+        checked: bool,
+        on_click: Box<dyn Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static>,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let is_selected = self.more_options_menu.hovered_item == Some(ix);
+        let text_color = theme.text_primary;
+        let icon_color = theme.text_secondary;
+
+        div()
+            .id(id)
+            .h(px(28.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px_2p5()
+            .rounded_md()
+            .cursor_pointer()
+            .when(is_selected, |d| d.bg(theme.bg_hover))
+            .hover(|h| h.bg(theme.bg_hover))
+            .on_hover(cx.listener(move |this, is_hovered: &bool, _, cx| {
+                if *is_hovered {
+                    this.more_options_menu.hovered_item = Some(ix);
+                    this.more_options_menu.active_submenu = ActiveSubmenu::None;
+                    cx.notify();
+                }
+            }))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2p5()
+                    .child(icons::icon(icon_path, 14.0, icon_color))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(text_color)
+                            .child(label),
+                    ),
+            )
+            .when(checked, |d| {
+                d.child(icons::icon(icons::ICON_CHECK, 12.0, theme.accent))
+            })
+            .on_click(cx.listener(move |this, _, window, cx| {
+                on_click(this, window, cx);
+            }))
+    }
+
     /// Renders the complete Obsidian-like more options context menu overlay.
     pub fn render_more_options_menu(
         &self,
@@ -342,6 +398,20 @@ impl AppView {
                             this.reset_editor_cursor_blink(cx);
                             this.close_more_options_menu(cx);
                             cx.notify();
+                        }),
+                        theme,
+                        cx,
+                    ))
+                    // 4. Показывать непечатаемые знаки
+                    .child(self.render_more_options_check_item(
+                        100,
+                        "more-item-toggle-invisibles",
+                        icons::ICON_TYPE,
+                        if is_ru { "Показывать непечатаемые знаки".to_string() } else { "Show non-printable characters".to_string() },
+                        self.show_invisibles,
+                        Box::new(|this, _, cx| {
+                            this.toggle_show_invisibles(cx);
+                            this.close_more_options_menu(cx);
                         }),
                         theme,
                         cx,

@@ -241,6 +241,10 @@ pub struct EditorSettings {
     /// Automatically save dirty notes when the application window loses focus.
     /// On by default.
     pub save_on_blur: bool,
+    /// Whether to display invisible characters (spaces, line breaks, EOF) in red.
+    /// Off by default.
+    #[serde(default)]
+    pub show_invisibles: bool,
     /// Note content width percentage (0..=100, where 100 is full width). Default is 100.
     pub editor_width_pct: u32,
     /// Note alignment inside the editor pane (Center or Left). Default is Center.
@@ -273,6 +277,7 @@ impl Default for EditorSettings {
             exact_reveal_cursor: true,
             adaptive_save: true,
             save_on_blur: true,
+            show_invisibles: false,
             editor_width_pct: 100,
             note_align: NoteAlignment::Center,
             title_align: TitleAlignment::WindowLeft,
@@ -560,6 +565,11 @@ impl SettingsModel {
         self.config.editor.word_wrap = word_wrap;
         self.save(cx);
         cx.emit(SettingsEvent::WordWrapToggled(word_wrap));
+    }
+
+    pub fn set_show_invisibles(&mut self, show: bool, cx: &mut gpui::Context<Self>) {
+        self.config.editor.show_invisibles = show;
+        self.save(cx);
     }
 }
 

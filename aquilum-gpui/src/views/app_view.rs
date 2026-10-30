@@ -206,6 +206,7 @@ pub struct AppView {
     /// Active API sender channel connected to the GPUI plugin bridge background listener.
     pub plugin_api_tx: Option<futures::channel::mpsc::UnboundedSender<crate::plugins::api::ApiCall>>,
     pub word_wrap: bool,
+    pub show_invisibles: bool,
     pub last_wrap_cols: usize,
     pub is_settings_open: bool,
     pub settings_tab: crate::views::settings_view::SettingsTab,
@@ -384,6 +385,7 @@ impl AppView {
 
         let mut edit_mode = true;
         let mut word_wrap = true;
+        let show_invisibles = config.editor.show_invisibles;
         let mut initial_scroll_top = 0.0;
         if let Some(doc) = state.active_document() {
             if let Some(leaf) = state.leaves.get(&state.workspace.active_leaf) {
@@ -484,6 +486,7 @@ impl AppView {
             command_palette_scroll_handle: ScrollHandle::new(),
             plugin_modal_scroll_handle: ScrollHandle::new(),
             word_wrap,
+            show_invisibles,
             last_wrap_cols: 80,
             is_settings_open: false,
             settings_tab: crate::views::settings_view::SettingsTab::Ui,
@@ -611,6 +614,7 @@ impl AppView {
             match event {
                 crate::settings::SettingsEvent::ConfigChanged => {
                     this.config = model.read(cx).config.clone();
+                    this.show_invisibles = this.config.editor.show_invisibles;
                     // Font sizes / families changed: every cached shaped row
                     // is stale; the content-hash key covers sizes, but the
                     // family is hashed too — a wholesale clear is simplest
@@ -1394,6 +1398,16 @@ impl AppView {
         self.word_wrap = !self.word_wrap;
         let current_scroll = self.current_scroll_top();
         self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap);
+        cx.notify();
+    }
+
+    /// Toggles displaying invisible characters (spaces, line breaks, EOF) in the editor.
+    pub fn toggle_show_invisibles(&mut self, cx: &mut Context<Self>) {
+        self.show_invisibles = !self.show_invisibles;
+        let show = self.show_invisibles;
+        self.settings_model.update(cx, |settings, cx| {
+            settings.set_show_invisibles(show, cx);
+        });
         cx.notify();
     }
 
@@ -9034,7 +9048,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 .unwrap_or_else(|| "Untitled".to_string());
 
             let lines_arc = Arc::clone(&view.window.lines);
-            let line_number_digits = doc.line_index.lines().max(1).to_string().len().max(3);
+            let doc_lines = doc.line_index.lines();
+            let line_number_digits = doc_lines.max(1).to_string().len().max(3);
             let line_number_width = 40.0 + line_number_digits.saturating_sub(3) as f32 * line_char_width;
             let visual_rows_arc = Arc::clone(&view.window.visual_rows);
             let code_states_arc = Arc::clone(&view.window.code_states);
@@ -10277,15 +10292,28 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     .map(|columns| columns.as_slice())
                     .unwrap_or(&[]);
 
+                let mut eol_marker: Option<gpui::AnyElement> = None;
                 if self.edit_mode && grid_tbl.is_none() {
                     let preview_sel = if self.ctrl_preview_selection {
                         row_sel_rect
                     } else {
                         None
                     };
-                    let ws_quads = whitespace_dot_quads(line, &row_layout, row_h, pixel_scale, guide_columns, preview_sel);
+                    let ws_quads = whitespace_dot_quads(
+                        line,
+                        &row_layout,
+                        row_h,
+                        pixel_scale,
+                        guide_columns,
+                        preview_sel,
+                        self.show_invisibles,
+                    );
                     if !ws_quads.is_empty() {
-                        let dot_color = theme.whitespace_dot();
+                        let dot_color = if self.show_invisibles {
+                            theme.marked_line_red()
+                        } else {
+                            theme.whitespace_dot()
+                        };
                         whitespace_layer = Some(
                             gpui::canvas(
                                 |_, _, _| {},
@@ -10318,6 +10346,37 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             .w_full()
                             .h_full()
                             .into_any_element(),
+                        );
+                    }
+
+                    if self.show_invisibles && v.is_last_sub {
+                        let eol_symbol = if v.line_idx + 1 < doc_lines {
+                            "¶"
+                        } else {
+                            "¤"
+                        };
+                        let end_col = if line.is_empty() || v.char_start >= v.char_end {
+                            0
+                        } else {
+                            row_layout.column_for_line_char(v.char_end)
+                        };
+                        let eol_x = crate::snap::snap_x(
+                            row_layout.x_for_column(end_col) + 3.0,
+                            pixel_scale,
+                        );
+                        eol_marker = Some(
+                            div()
+                                .absolute()
+                                .left(px(eol_x))
+                                .top(px(0.0))
+                                .h(px(row_h))
+                                .flex()
+                                .items_center()
+                                .font_family(editor_font.clone())
+                                .text_sm()
+                                .text_color(theme.marked_line_red())
+                                .child(eol_symbol)
+                                .into_any_element(),
                         );
                     }
                 }
@@ -11050,6 +11109,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             .children(backdrop_rects)
                             .children(grammar_layer)
                             .children(whitespace_layer)
+                            .children(eol_marker)
                             .child(
                                 // The row content is full-width on purpose. An
                                 // auto-width wrapper inside the line box makes a
@@ -13405,9 +13465,22 @@ fn grammar_line_segments(
 /// Returns char-index ranges `[start, end)` of spaces that show whitespace dots in `line`:
 /// 1. Any run of 2 or more consecutive spaces anywhere in the line.
 /// 2. Any trailing space at the end of the line (even a single space).
+#[allow(dead_code)]
 fn whitespace_dot_ranges(line: &str) -> Vec<std::ops::Range<usize>> {
+    whitespace_dot_ranges_with_mode(line, false)
+}
+
+fn whitespace_dot_ranges_with_mode(line: &str, show_all: bool) -> Vec<std::ops::Range<usize>> {
     let line = line.strip_suffix('\r').unwrap_or(line);
     let mut ranges = Vec::new();
+    if show_all {
+        for (i, ch) in line.chars().enumerate() {
+            if ch == ' ' {
+                ranges.push(i..i + 1);
+            }
+        }
+        return ranges;
+    }
     let mut run_start: Option<usize> = None;
     let mut count = 0;
     for (i, ch) in line.chars().enumerate() {
@@ -13441,6 +13514,8 @@ fn whitespace_dot_ranges(line: &str) -> Vec<std::ops::Range<usize>> {
 ///
 /// If `preview_selection` is `Some((sel_x, sel_w))`, dots that fall inside
 /// that horizontal selection range are omitted.
+///
+/// When `show_all` is true (non-printable characters mode), every space is marked.
 fn whitespace_dot_quads(
     line: &str,
     row_layout: &RowShapedLayout,
@@ -13448,8 +13523,9 @@ fn whitespace_dot_quads(
     scale: f32,
     guide_columns: &[f32],
     preview_selection: Option<(f32, f32)>,
+    show_all: bool,
 ) -> Vec<(f32, f32, f32, f32, f32)> {
-    let ranges = whitespace_dot_ranges(line);
+    let ranges = whitespace_dot_ranges_with_mode(line, show_all);
     if ranges.is_empty() {
         return Vec::new();
     }
@@ -17420,6 +17496,10 @@ mod tests {
         // Lines with CRLF / trailing \r: trailing spaces must still show dots
         assert_eq!(whitespace_dot_ranges("a \r"), vec![1..2]);
         assert_eq!(whitespace_dot_ranges("a  b \r"), vec![1..3, 4..5]);
+        // With show_all = true (show invisibles mode), all spaces are marked:
+        assert_eq!(whitespace_dot_ranges_with_mode("a b", true), vec![1..2]);
+        assert_eq!(whitespace_dot_ranges_with_mode("   ", true), vec![0..1, 1..2, 2..3]);
+        assert_eq!(whitespace_dot_ranges_with_mode("hello world \r", true), vec![5..6, 11..12]);
     }
 
     #[test]
