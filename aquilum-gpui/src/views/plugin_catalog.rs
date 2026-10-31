@@ -569,6 +569,7 @@ fn compat_popup_entries(
             icon: icons::ICON_CHEVRON_RIGHT,
             font_family: None,
             dot_color: Some(option.dot_color_static()),
+            trailing_icon: None,
         })
         .collect();
     let active_ix = CatalogCompatFilter::ALL

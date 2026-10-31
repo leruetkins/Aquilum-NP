@@ -34,6 +34,32 @@ fn scaled_wheel_dy(delta: ScrollDelta, line_h: f32) -> f32 {
     }
 }
 
+/// Helper to determine whether a command is a plugin command or built-in/internal.
+fn is_plugin_command(cmd_id: &str, owner: Option<&str>) -> bool {
+    if let Some(owner) = owner {
+        if !owner.is_empty() {
+            return true;
+        }
+    }
+    if let Some((prefix, _)) = cmd_id.split_once(':') {
+        !matches!(
+            prefix,
+            "editor" | "workspace" | "view" | "app" | "markdown" | "core" | "file" | "folder" | "window"
+        )
+    } else {
+        false
+    }
+}
+
+/// Helper returning the icon indicating whether a command is a plugin or internal/built-in.
+fn command_type_icon(is_plugin: bool) -> &'static str {
+    if is_plugin {
+        icons::ICON_PLUG
+    } else {
+        icons::ICON_APP_WINDOW
+    }
+}
+
 /// Represents the navigation tabs available in the Settings modal window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingsTab {
@@ -1240,6 +1266,7 @@ impl SettingsView {
                 icon: icons::ICON_GLOBE,
                 font_family: None,
                 dot_color: None,
+                trailing_icon: None,
             })
             .collect();
         let active_ix = SUPPORTED_LOCALES
@@ -1309,6 +1336,7 @@ impl SettingsView {
                 icon: icons::ICON_TYPE,
                 font_family: Some(SharedString::from(*name)),
                 dot_color: None,
+                trailing_icon: None,
             })
             .collect();
         let active_ix = crate::fonts::EDITOR_FONT_CHOICES
@@ -1377,6 +1405,7 @@ impl SettingsView {
                 icon: icons::ICON_CHEVRON_RIGHT,
                 font_family: None,
                 dot_color: None,
+                trailing_icon: None,
             })
             .collect();
 
@@ -7033,6 +7062,13 @@ impl SettingsView {
             crate::toolbar::ToolbarItemKind::Button { command_id, icon, tooltip } => {
                 let icon_asset = icons::resolve_toolbar_icon(icon);
                 let label = tooltip.clone().unwrap_or_else(|| command_id.clone());
+                let is_plugin = self
+                    .weak_app
+                    .upgrade()
+                    .and_then(|a| a.read(cx).state.commands.get(command_id))
+                    .map(|c| is_plugin_command(&c.id, c.owner.as_deref()))
+                    .unwrap_or_else(|| is_plugin_command(command_id, None));
+                let cmd_type_icon = command_type_icon(is_plugin);
 
                 let main_row = div()
                     .flex()
@@ -7068,6 +7104,11 @@ impl SettingsView {
                             )
                             .child(
                                 div()
+                                    .flex_shrink_0()
+                                    .child(icons::icon(cmd_type_icon, 12.0, theme.text_muted)),
+                            )
+                            .child(
+                                div()
                                     .text_xs()
                                     .text_color(theme.text_muted)
                                     .child(format!("({})", command_id)),
@@ -7089,6 +7130,15 @@ impl SettingsView {
                 let icon_asset = icons::resolve_toolbar_icon(icon);
                 let title = tooltip.clone().unwrap_or_else(|| "Dropdown".to_string());
                 let target_dd_id = item.id.clone();
+                let split_type_icon = command.as_ref().map(|cmd_id| {
+                    let is_plugin = self
+                        .weak_app
+                        .upgrade()
+                        .and_then(|a| a.read(cx).state.commands.get(cmd_id))
+                        .map(|c| is_plugin_command(&c.id, c.owner.as_deref()))
+                        .unwrap_or_else(|| is_plugin_command(cmd_id, None));
+                    command_type_icon(is_plugin)
+                });
 
                 let target_dd_str = target_dd_id.clone();
                 let add_inside_btn = div()
@@ -7147,6 +7197,13 @@ impl SettingsView {
                                     .text_color(theme.text_primary)
                                     .child(format!("{} ▾", title)),
                             )
+                            .when_some(split_type_icon, |row, ic| {
+                                row.child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .child(icons::icon(ic, 12.0, theme.text_muted)),
+                                )
+                            })
                             .child(
                                 div()
                                     .text_xs()
@@ -7220,13 +7277,18 @@ impl SettingsView {
         let tabs: Vec<TabEntry> = all_commands
             .iter()
             .enumerate()
-            .map(|(id, cmd)| TabEntry {
-                id,
-                title: SharedString::from(cmd.name.clone()),
-                subtitle: Some(SharedString::from(cmd.id.clone())),
-                icon: icons::map_obsidian_icon(cmd.icon.as_deref().unwrap_or("inline-code")),
-                font_family: None,
-                dot_color: None,
+            .map(|(id, cmd)| {
+                let is_plugin = is_plugin_command(&cmd.id, cmd.owner.as_deref());
+                let type_icon = command_type_icon(is_plugin);
+                TabEntry {
+                    id,
+                    title: SharedString::from(cmd.name.clone()),
+                    subtitle: Some(SharedString::from(cmd.id.clone())),
+                    icon: type_icon,
+                    font_family: None,
+                    dot_color: None,
+                    trailing_icon: None,
+                }
             })
             .collect();
 
@@ -7244,7 +7306,6 @@ impl SettingsView {
                 cx,
             )
             .with_full_width()
-            .without_icons()
             .with_subtitle_below()
             .with_search(search_placeholder)
         });
@@ -7321,6 +7382,7 @@ impl SettingsView {
                 icon: icons::map_obsidian_icon(ic),
                 font_family: None,
                 dot_color: None,
+                trailing_icon: None,
             })
             .collect();
 
@@ -7390,11 +7452,10 @@ impl SettingsView {
             .map(|a| a.read(cx).state.commands.all())
             .unwrap_or_default();
 
-        let selected_cmd_display = self
+        let selected_cmd = self
             .toolbar_selected_command
             .as_ref()
-            .and_then(|sel_id| all_commands.iter().find(|c| &c.id == sel_id))
-            .map(|c| c.name.clone());
+            .and_then(|sel_id| all_commands.iter().find(|c| &c.id == sel_id));
 
         let is_cmd_open = self.toolbar_command_popup_is_open();
         let cmd_select_trigger = div()
@@ -7418,8 +7479,44 @@ impl SettingsView {
                     .min_w_0()
                     .text_xs()
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .child(if let Some(ref name) = selected_cmd_display {
-                        div().text_color(theme.text_primary).child(name.clone())
+                    .child(if let Some(cmd) = selected_cmd {
+                        let is_plugin = is_plugin_command(&cmd.id, cmd.owner.as_deref());
+                        let type_icon = command_type_icon(is_plugin);
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .child(icons::icon(type_icon, 14.0, theme.text_secondary)),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_color(theme.text_primary)
+                                    .child(cmd.name.clone()),
+                            )
+                    } else if let Some(ref sel_id) = self.toolbar_selected_command {
+                        let is_plugin = is_plugin_command(sel_id, None);
+                        let type_icon = command_type_icon(is_plugin);
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .child(icons::icon(type_icon, 14.0, theme.text_secondary)),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_color(theme.text_primary)
+                                    .child(sel_id.clone()),
+                            )
                     } else {
                         div().text_color(theme.text_muted).child(
                             if is_ru { "Выберите команду..." } else { "Select command..." },
@@ -8215,6 +8312,24 @@ mod tests {
         let dy_up_large = 20.0 * line_h;
         cur_offset = (cur_offset + dy_up_large).clamp(-max_height, 0.0);
         assert_eq!(cur_offset, 0.0);
+    }
+
+    #[test]
+    fn test_is_plugin_command_and_type_icon() {
+        // Built-in commands with owner: None
+        assert!(!is_plugin_command("editor:save", None));
+        assert!(!is_plugin_command("workspace:new-tab", None));
+        assert!(!is_plugin_command("view:toggle-left-sidebar", None));
+        assert_eq!(command_type_icon(is_plugin_command("editor:save", None)), icons::ICON_APP_WINDOW);
+
+        // Plugin commands with owner: Some(plugin_id)
+        assert!(is_plugin_command("editor:custom-cmd", Some("my-plugin")));
+        assert!(is_plugin_command("git-commit", Some("obsidian-git")));
+        assert_eq!(command_type_icon(is_plugin_command("git-commit", Some("obsidian-git"))), icons::ICON_PLUG);
+
+        // Fallback heuristic for unknown owner
+        assert!(is_plugin_command("obsidian-git:pull", None));
+        assert!(!is_plugin_command("editor:toggle-source", None));
     }
 }
 

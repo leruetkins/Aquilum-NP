@@ -116,6 +116,8 @@ pub struct TabEntry {
     /// Colored leading dot instead of the icon (filter swatches, status
     /// pickers); `None` renders `icon` as before.
     pub dot_color: Option<Rgba>,
+    /// Trailing icon rendered to the right of title/subtitle (e.g. internal command vs plugin icon).
+    pub trailing_icon: Option<&'static str>,
 }
 
 /// Events emitted by [`TabListPopup`] towards the parent.
@@ -779,6 +781,7 @@ impl TabListPopup {
             .font_family
             .clone()
             .unwrap_or_else(|| SharedString::from("Segoe UI"));
+        let trailing_icon = tab.trailing_icon;
         let is_active = self.active_ix == Some(ix);
 
         let bg_hover = self.theme.bg_hover;
@@ -818,10 +821,10 @@ impl TabListPopup {
             .cursor_pointer()
             // Manual highlight (see `hover_tab_ix`): stock hover lights every
             // hitbox sharing the cursor point, i.e. both rows on a seam.
-            .when(hovered, move |row| row.bg(bg_hover))
-            .when_some(leading, |row, icon_el| row.child(icon_el));
+            .when(hovered, move |row| row.bg(bg_hover));
 
         let row = if self.subtitle_below {
+            let has_leading = leading.is_some();
             row.child(
                 div()
                     .flex_1()
@@ -832,11 +835,19 @@ impl TabListPopup {
                     .gap_0p5()
                     .child(
                         div()
-                            .truncate()
-                            .text_xs()
-                            .font_family(font_family)
-                            .text_color(text_primary)
-                            .child(title),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .when_some(leading, |r, icon_el| r.child(icon_el))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .font_family(font_family)
+                                    .text_color(text_primary)
+                                    .child(title),
+                            ),
                     )
                     .when_some(subtitle, |col, subtitle| {
                         col.child(
@@ -844,32 +855,42 @@ impl TabListPopup {
                                 .truncate()
                                 .text_size(px(11.0))
                                 .text_color(text_muted)
+                                .when(has_leading, |d| d.pl(px(22.0)))
                                 .child(subtitle),
                         )
                     }),
             )
         } else {
+            row.when_some(leading, |row, icon_el| row.child(icon_el))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .font_family(font_family)
+                        .text_color(text_primary)
+                        .child(title),
+                )
+                .when_some(subtitle, |row, subtitle| {
+                    row.child(
+                        div()
+                            .flex_shrink_0()
+                            .ml_1p5()
+                            .text_xs()
+                            .text_color(text_muted)
+                            .child(subtitle),
+                    )
+                })
+        };
+
+        let row = row.when_some(trailing_icon, |row, tr_icon| {
             row.child(
                 div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_xs()
-                    .font_family(font_family)
-                    .text_color(text_primary)
-                    .child(title),
+                    .flex_shrink_0()
+                    .child(icons::icon(tr_icon, 13.0, text_muted)),
             )
-            .when_some(subtitle, |row, subtitle| {
-                row.child(
-                    div()
-                        .flex_shrink_0()
-                        .ml_1p5()
-                        .text_xs()
-                        .text_color(text_muted)
-                        .child(subtitle),
-                )
-            })
-        };
+        });
 
         row.when(is_active, move |row| {
             row.child(
@@ -1736,6 +1757,7 @@ impl AppView {
                     icon,
                     font_family: None,
                     dot_color: None,
+                    trailing_icon: None,
                 }
             })
             .collect();
@@ -1822,6 +1844,7 @@ impl AppView {
                 icon: icons::ICON_GLOBE,
                 font_family: None,
                 dot_color: None,
+                trailing_icon: None,
             })
             .collect();
         let active_ix = SUPPORTED_LOCALES
@@ -1896,6 +1919,7 @@ impl AppView {
                 icon: icons::ICON_TYPE,
                 font_family: Some(SharedString::from(*name)),
                 dot_color: None,
+                trailing_icon: None,
             })
             .collect();
         let active_ix = crate::fonts::EDITOR_FONT_CHOICES
@@ -1968,6 +1992,7 @@ impl AppView {
                 icon: icons::ICON_CHEVRON_RIGHT,
                 font_family: None,
                 dot_color: None,
+                trailing_icon: None,
             })
             .collect();
 
@@ -2252,6 +2277,7 @@ mod tests {
                 icon: "",
                 font_family: None,
                 dot_color: None,
+                trailing_icon: None,
             },
             TabEntry {
                 id: 1,
@@ -2260,6 +2286,7 @@ mod tests {
                 icon: "",
                 font_family: None,
                 dot_color: None,
+                trailing_icon: None,
             },
         ];
 
@@ -2301,6 +2328,30 @@ mod tests {
             })
             .collect();
         assert!(matches3.is_empty());
+    }
+
+    #[test]
+    fn test_tab_entry_trailing_icon() {
+        let entry_internal = TabEntry {
+            id: 0,
+            title: SharedString::from("Save"),
+            subtitle: Some(SharedString::from("editor:save")),
+            icon: "",
+            font_family: None,
+            dot_color: None,
+            trailing_icon: Some(icons::ICON_APP_WINDOW),
+        };
+        let entry_plugin = TabEntry {
+            id: 1,
+            title: SharedString::from("Git Commit"),
+            subtitle: Some(SharedString::from("obsidian-git:commit")),
+            icon: "",
+            font_family: None,
+            dot_color: None,
+            trailing_icon: Some(icons::ICON_PLUG),
+        };
+        assert_eq!(entry_internal.trailing_icon, Some(icons::ICON_APP_WINDOW));
+        assert_eq!(entry_plugin.trailing_icon, Some(icons::ICON_PLUG));
     }
 
     #[test]
