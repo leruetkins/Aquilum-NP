@@ -452,12 +452,15 @@ impl VaultCore {
     /// Defaults to default core plugins (command-palette, word-counter) if file does not exist.
     pub fn load_core_plugins(&self) -> Vec<String> {
         let path = self.core_plugins_path();
+        let default_list = vec![
+            "command-palette".to_string(),
+            "word-counter".to_string(),
+            "editor-toolbar".to_string(),
+        ];
         let Ok(content) = std::fs::read_to_string(path) else {
-            return vec!["command-palette".to_string(), "word-counter".to_string()];
+            return default_list;
         };
-        serde_json::from_str(&content).unwrap_or_else(|_| {
-            vec!["command-palette".to_string(), "word-counter".to_string()]
-        })
+        serde_json::from_str(&content).unwrap_or(default_list)
     }
 
     /// Saves the list of active core plugin IDs.

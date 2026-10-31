@@ -84,14 +84,34 @@ pub enum ApiRequest {
         block_id: usize,
         tree: crate::plugins::ui::UiNode,
     },
-    /// Register a command in the command palette: plugin.addCommand({ id, name, hotkey })
+    /// Register a command in the command palette: plugin.addCommand({ id, name, hotkey, icon })
     AddCommand {
         id: String,
         name: String,
         hotkey: Option<String>,
+        #[serde(default)]
+        icon: Option<String>,
     },
     /// Unregister a previously added command: plugin.removeCommand(id)
     RemoveCommand { id: String },
+    /// Register a toolbar: plugin.addToolbar({ id, placement, items })
+    AddToolbar {
+        spec: crate::toolbar::ToolbarSpec,
+    },
+    /// Update toolbar items: plugin.updateToolbar(id, items)
+    UpdateToolbar {
+        id: String,
+        items: Vec<crate::toolbar::ToolbarItem>,
+    },
+    /// Remove a toolbar: plugin.removeToolbar(id)
+    RemoveToolbar {
+        id: String,
+    },
+    /// Register a custom SVG icon: plugin.registerIcon(name, svg)
+    RegisterIcon {
+        name: String,
+        svg: String,
+    },
     /// Register ribbon action: plugin.addRibbonIcon(icon, title, callback)
     AddRibbonIcon {
         id: String,

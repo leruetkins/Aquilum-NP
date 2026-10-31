@@ -460,7 +460,7 @@ impl TabSession {
     /// Line-number shift for the stored wrap exceptions, so an external edit
     /// above the window does not leave a painted line wrapped for the wrong
     /// row. A full rebuild clears the map; this covers the in-place shift.
-    fn shift_line_paints(&mut self, edit_line: usize, line_diff: isize) {
+    pub(crate) fn shift_line_paints(&mut self, edit_line: usize, line_diff: isize) {
         if line_diff == 0 || self.line_paints.is_empty() {
             return;
         }

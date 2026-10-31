@@ -321,6 +321,7 @@ pub struct AppView {
     pub more_options_menu: crate::views::more_options_menu::MoreOptionsMenuState,
     pub ribbon_context_menu: crate::views::ribbon_menu::RibbonContextMenuState,
     pub editor_context_menu: crate::views::editor_context_menu::ContextMenuState,
+    pub toolbar_view: crate::views::toolbar_view::ToolbarViewState,
     pub ribbon_dragged_id: Option<String>,
     pub ribbon_drag_start_y: Option<f32>,
     pub ribbon_is_dragging: bool,
@@ -562,6 +563,7 @@ impl AppView {
             more_options_menu: crate::views::more_options_menu::MoreOptionsMenuState::default(),
             ribbon_context_menu: crate::views::ribbon_menu::RibbonContextMenuState::default(),
             editor_context_menu: crate::views::editor_context_menu::ContextMenuState::default(),
+            toolbar_view: crate::views::toolbar_view::ToolbarViewState::default(),
             ribbon_dragged_id: None,
             ribbon_drag_start_y: None,
             ribbon_is_dragging: false,
@@ -618,6 +620,7 @@ impl AppView {
         };
         this.editor_blink.enable(BlinkTarget::Editor, cx);
         crate::commands_builtin::register_builtin_commands(&this.state.commands);
+        crate::plugins::editor_toolbar::sync_editor_toolbar_with_vault(&this.state, this.state.vault.as_ref());
 
         cx.subscribe(&this.settings_model, |this, model, event: &crate::settings::SettingsEvent, cx| {
             match event {
@@ -725,6 +728,7 @@ impl AppView {
     /// Discovers and spawns all installed plugins located in `<vault>/.vault/plugins/`.
     pub fn load_installed_plugins_for_vault(&mut self) {
         self.unload_all_plugins();
+        crate::plugins::editor_toolbar::sync_editor_toolbar_with_vault(&self.state, self.state.vault.as_ref());
 
         let Some(api_tx) = self.plugin_api_tx.clone() else {
             return;
@@ -775,6 +779,7 @@ impl AppView {
             self.state.ribbon.unregister_all_of(&handle.manifest.id);
             self.state.status_bar.unregister_all_of(&handle.manifest.id);
             self.state.notifications.unregister_all_of(&handle.manifest.id);
+            self.state.toolbars.remove_all_of(&handle.manifest.id);
         }
         self.state.code_block_processors.clear();
         self.code_block_views.clear();
@@ -813,6 +818,9 @@ impl AppView {
 
         // 5. Remove all status bar items registered by this plugin
         self.state.status_bar.unregister_all_of(plugin_id);
+
+        // 6. Remove all toolbars registered by this plugin
+        self.state.toolbars.remove_all_of(plugin_id);
         self.state.notifications.unregister_all_of(plugin_id);
 
         // 6. Remove all code block processors and views registered by this plugin
@@ -9090,6 +9098,43 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
         editor_root = editor_root.child(self.render_navigation_bar(override_doc, leaf_id, theme, cx));
 
+        let window_w: f32 = window.bounds().size.width.into();
+        let editor_left_w = if self.sidebar_collapsed {
+            44.0
+        } else {
+            self.sidebar_width + 1.0
+        };
+        let editor_right_w = if self.right_sidebar_collapsed {
+            0.0
+        } else {
+            self.right_sidebar_width + 1.0
+        };
+        let workspace_w = (window_w - editor_left_w - editor_right_w).max(100.0);
+        let in_titlebar = leaf_id.map(|lid| self.state.workspace.is_leaf_in_titlebar(lid)).unwrap_or(false);
+        let leaf_h_ratio = leaf_id.map(|lid| self.state.workspace.horizontal_ratio_of_leaf(lid)).unwrap_or(0.0);
+        let leaf_w_ratio = leaf_id.map(|lid| self.state.workspace.horizontal_width_ratio_of_leaf(lid)).unwrap_or(1.0);
+        let leaf_v_ratio = leaf_id.map(|lid| self.state.workspace.vertical_ratio_of_leaf(lid)).unwrap_or(0.0);
+
+        let toolbar_origin_x = editor_left_w + (workspace_w * leaf_h_ratio);
+        let toolbar_width = (workspace_w * leaf_w_ratio).max(100.0);
+
+        let workspace_h = (window_h - 66.0).max(100.0);
+        let tab_bar_h = if in_titlebar { 0.0 } else { 36.0 };
+        let nav_bar_h = 40.0;
+        let titlebar_h = 38.0;
+        let toolbar_origin_y = titlebar_h + (workspace_h * leaf_v_ratio) + tab_bar_h + nav_bar_h;
+
+        if let Some(top_toolbar) = self.render_toolbar_strips(
+            crate::toolbar::ToolbarPlacement::Top,
+            toolbar_origin_x,
+            toolbar_origin_y,
+            toolbar_width,
+            theme,
+            cx,
+        ) {
+            editor_root = editor_root.child(top_toolbar);
+        }
+
         let current_view_and_doc = match (override_view, override_doc) {
             (Some(v), Some(d)) => Some((v, d)),
             _ if is_leaf_active && self.active_center_leaf.is_none() => {
@@ -12303,6 +12348,10 @@ impl Render for AppView {
             }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let keystroke = &event.keystroke;
+                let key_lower = keystroke.key.to_lowercase();
+                if this.handle_toolbar_dropdown_key(&key_lower, window, cx) {
+                    return;
+                }
                 // Ctrl+P opens Command Palette from anywhere (leaves don't handle it,
                 // so this root listener fires exactly once; the modal input
                 // stops propagation, so an open modal never re-triggers it).
@@ -13367,6 +13416,22 @@ impl Render for AppView {
             .when(self.editor_context_menu.is_open, |d| {
                 d.child(self.render_editor_context_menu(theme, window, cx))
             })
+            // ================= TOOLBAR DROPDOWN OVERLAY =================
+            .when(self.toolbar_view.open_dropdown.is_some(), |d| {
+                if let Some(dd_overlay) = self.render_toolbar_dropdown_overlay(theme, window, cx) {
+                    d.child(dd_overlay)
+                } else {
+                    d
+                }
+            })
+            // ================= TOOLBAR HOVER TOOLTIP =================
+            .when(self.toolbar_view.hovered_tooltip.is_some(), |d| {
+                if let Some(tip_overlay) = self.render_toolbar_tooltip_overlay(theme, window, cx) {
+                    d.child(tip_overlay)
+                } else {
+                    d
+                }
+            })
             // ================= GO TO FILE DIALOG =================
             .when(self.search_dialog.is_open, |d| {
                 d.child(self.render_search_dialog(theme, window, cx))
@@ -13636,7 +13701,7 @@ fn grammar_line_segments(
             .max(y),
     );
     let dot_y = marked_y - (dot - stroke) / 2.0;
-    let mut push = |segments: &mut Vec<(f32, f32, f32, f32, f32)>,
+    let push = |segments: &mut Vec<(f32, f32, f32, f32, f32)>,
                     left: f32,
                     w: f32,
                     top: f32,

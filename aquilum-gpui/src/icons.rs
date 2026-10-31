@@ -85,6 +85,34 @@ pub const CIRCLE_PLUS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox
 pub const SORT_ASC: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/><path d="M11 12h4"/><path d="M11 16h7"/><path d="M11 20h10"/></svg>"#;
 pub const SORT_DESC: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="M11 4h10"/><path d="M11 8h7"/><path d="M11 12h4"/></svg>"#;
 
+pub const UNDO: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>"#;
+pub const REDO: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7"/></svg>"#;
+pub const ERASER: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>"#;
+pub const BOLD: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 12h9a4 4 0 0 1 0 8H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h7a4 4 0 0 1 0 8"/></svg>"#;
+pub const ITALIC: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" x2="10" y1="4" y2="4"/><line x1="14" x2="5" y1="20" y2="20"/><line x1="15" x2="9" y1="4" y2="20"/></svg>"#;
+pub const STRIKETHROUGH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4H9a3 3 0 0 0-2.83 4"/><path d="M14 12a4 4 0 0 1 0 8H6"/><line x1="4" x2="20" y1="12" y2="12"/></svg>"#;
+pub const UNDERLINE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4v6a6 6 0 0 0 12 0V4"/><line x1="4" x2="20" y1="20" y2="20"/></svg>"#;
+pub const HIGHLIGHTER: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 11-6 6v3h9l3-3"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/></svg>"#;
+pub const HEADING_1: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h8"/><path d="M4 18V6"/><path d="M12 18V6"/><path d="m17 12 3-2v8"/></svg>"#;
+pub const HEADING_2: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h8"/><path d="M4 18V6"/><path d="M12 18V6"/><path d="M21 18h-4c0-4 4-3 4-6 0-1.5-2-2.5-4-1"/></svg>"#;
+pub const HEADING_3: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h8"/><path d="M4 18V6"/><path d="M12 18V6"/><path d="M17.5 10.5c1.7-1 3.5 0 3.5 1.5a2 2 0 0 1-2 2"/><path d="M17 17.5c2 1.5 4 .3 4-1.5a2 2 0 0 0-2-2"/></svg>"#;
+pub const HEADING_4: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h8"/><path d="M4 18V6"/><path d="M12 18V6"/><path d="M17 10v4h4"/><path d="M21 10v8"/></svg>"#;
+pub const HEADING_5: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h8"/><path d="M4 18V6"/><path d="M12 18V6"/><path d="M17 13v-3h4"/><path d="M17 17.7c.4.2.8.3 1.3.3 1.5 0 2.7-1.1 2.7-2.5s-1.2-2.5-2.7-2.5h-1.3"/></svg>"#;
+pub const HEADING_6: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h8"/><path d="M4 18V6"/><path d="M12 18V6"/><circle cx="19" cy="15" r="2.5"/><path d="M20 10.8A3.5 3.5 0 0 0 16.5 14"/></svg>"#;
+pub const HEADING_N: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h8"/><path d="M4 18V6"/><path d="M12 18V6"/><path d="M17 18V12l4 6V12"/></svg>"#;
+pub const TABLE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/></svg>"#;
+pub const LIST_BULLET: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/></svg>"#;
+pub const LIST_NUMBERED: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="10" x2="21" y1="6" y2="6"/><line x1="10" x2="21" y1="12" y2="12"/><line x1="10" x2="21" y1="18" y2="18"/><path d="M4 6h1v4"/><path d="M4 10h2"/><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/></svg>"#;
+pub const LIST_TASK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="6" height="6" rx="1"/><path d="m3 17 2 2 4-4"/><line x1="13" x2="21" y1="6" y2="6"/><line x1="13" x2="21" y1="12" y2="12"/><line x1="13" x2="21" y1="18" y2="18"/></svg>"#;
+pub const INDENT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 8 7 12 3 16"/><line x1="21" x2="11" y1="12" y2="12"/><line x1="21" x2="11" y1="6" y2="6"/><line x1="21" x2="11" y1="18" y2="18"/></svg>"#;
+pub const OUTDENT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="7 8 3 12 7 16"/><line x1="21" x2="11" y1="12" y2="12"/><line x1="21" x2="11" y1="6" y2="6"/><line x1="21" x2="11" y1="18" y2="18"/></svg>"#;
+pub const MESSAGE_SQUARE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>"#;
+pub const FULLSCREEN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></svg>"#;
+pub const MORE_HORIZONTAL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>"#;
+pub const INLINE_CODE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg>"#;
+pub const CODE_BLOCK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="black" stroke="none"><path d="M20 3H4c-1.103 0-2 .897-2 2v14c0 1.103.897 2 2 2h16c1.103 0 2-.897 2-2V5c0-1.103-.897-2-2-2zM4 19V7h16l.002 12H4z"/><path d="M9.293 9.293L5.586 13l3.707 3.707l1.414-1.414L8.414 13l2.293-2.293zm5.414 0l-1.414 1.414L15.586 13l-2.293 2.293l1.414 1.414L18.414 13z"/></svg>"#;
+pub const PILCROW: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 12h1"/><path d="M18 12h1"/><path d="M20 7H9a5 5 0 0 0 0 10h4"/><path d="M19 3v18"/><path d="M15 3v18"/></svg>"#;
+
 pub const ICON_ARROW_LEFT: &str = "icons/arrow_left.svg";
 pub const ICON_ARROW_RIGHT: &str = "icons/arrow_right.svg";
 pub const ICON_MORE_VERTICAL: &str = "icons/more_vertical.svg";
@@ -119,6 +147,33 @@ pub const ICON_LOCK: &str = "icons/lock.svg";
 pub const ICON_CIRCLE_PLUS: &str = "icons/circle_plus.svg";
 pub const ICON_SORT_ASC: &str = "icons/sort_asc.svg";
 pub const ICON_SORT_DESC: &str = "icons/sort_desc.svg";
+pub const ICON_UNDO: &str = "icons/undo.svg";
+pub const ICON_REDO: &str = "icons/redo.svg";
+pub const ICON_ERASER: &str = "icons/eraser.svg";
+pub const ICON_BOLD: &str = "icons/bold.svg";
+pub const ICON_ITALIC: &str = "icons/italic.svg";
+pub const ICON_STRIKETHROUGH: &str = "icons/strikethrough.svg";
+pub const ICON_UNDERLINE: &str = "icons/underline.svg";
+pub const ICON_HIGHLIGHTER: &str = "icons/highlighter.svg";
+pub const ICON_HEADING_1: &str = "icons/heading_1.svg";
+pub const ICON_HEADING_2: &str = "icons/heading_2.svg";
+pub const ICON_HEADING_3: &str = "icons/heading_3.svg";
+pub const ICON_HEADING_4: &str = "icons/heading_4.svg";
+pub const ICON_HEADING_5: &str = "icons/heading_5.svg";
+pub const ICON_HEADING_6: &str = "icons/heading_6.svg";
+pub const ICON_HEADING_N: &str = "icons/heading_n.svg";
+pub const ICON_TABLE: &str = "icons/table.svg";
+pub const ICON_LIST_BULLET: &str = "icons/list_bullet.svg";
+pub const ICON_LIST_NUMBERED: &str = "icons/list_numbered.svg";
+pub const ICON_LIST_TASK: &str = "icons/list_task.svg";
+pub const ICON_INDENT: &str = "icons/indent.svg";
+pub const ICON_OUTDENT: &str = "icons/outdent.svg";
+pub const ICON_MESSAGE_SQUARE: &str = "icons/message_square.svg";
+pub const ICON_FULLSCREEN: &str = "icons/fullscreen.svg";
+pub const ICON_MORE_HORIZONTAL: &str = "icons/more_horizontal.svg";
+pub const ICON_INLINE_CODE: &str = "icons/inline_code.svg";
+pub const ICON_CODE_BLOCK: &str = "icons/code_block.svg";
+pub const ICON_PILCROW: &str = "icons/pilcrow.svg";
 
 pub const ICON_CHEVRON_RIGHT: &str = "icons/chevron_right.svg";
 pub const ICON_CHEVRON_DOWN: &str = "icons/chevron_down.svg";
@@ -255,9 +310,42 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_CIRCLE_PLUS => Some(CIRCLE_PLUS),
             ICON_SORT_ASC => Some(SORT_ASC),
             ICON_SORT_DESC => Some(SORT_DESC),
+            ICON_UNDO => Some(UNDO),
+            ICON_REDO => Some(REDO),
+            ICON_ERASER => Some(ERASER),
+            ICON_BOLD => Some(BOLD),
+            ICON_ITALIC => Some(ITALIC),
+            ICON_STRIKETHROUGH => Some(STRIKETHROUGH),
+            ICON_UNDERLINE => Some(UNDERLINE),
+            ICON_HIGHLIGHTER => Some(HIGHLIGHTER),
+            ICON_HEADING_1 => Some(HEADING_1),
+            ICON_HEADING_2 => Some(HEADING_2),
+            ICON_HEADING_3 => Some(HEADING_3),
+            ICON_HEADING_4 => Some(HEADING_4),
+            ICON_HEADING_5 => Some(HEADING_5),
+            ICON_HEADING_6 => Some(HEADING_6),
+            ICON_HEADING_N => Some(HEADING_N),
+            ICON_TABLE => Some(TABLE),
+            ICON_LIST_BULLET => Some(LIST_BULLET),
+            ICON_LIST_NUMBERED => Some(LIST_NUMBERED),
+            ICON_LIST_TASK => Some(LIST_TASK),
+            ICON_INDENT => Some(INDENT),
+            ICON_OUTDENT => Some(OUTDENT),
+            ICON_MESSAGE_SQUARE => Some(MESSAGE_SQUARE),
+            ICON_FULLSCREEN => Some(FULLSCREEN),
+            ICON_MORE_HORIZONTAL => Some(MORE_HORIZONTAL),
+            ICON_INLINE_CODE => Some(INLINE_CODE),
+            ICON_CODE_BLOCK => Some(CODE_BLOCK),
+            ICON_PILCROW => Some(PILCROW),
             _ => None,
         };
-        Ok(svg.map(|s| Cow::Borrowed(s.as_bytes())))
+        if let Some(s) = svg {
+            return Ok(Some(Cow::Borrowed(s.as_bytes())));
+        }
+        if let Some(custom) = crate::toolbar::get_custom_icon(path) {
+            return Ok(Some(Cow::Owned(custom.into_bytes())));
+        }
+        Ok(None)
     }
 
     /// Lists all registered virtual SVG asset paths.
@@ -343,6 +431,9 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_CIRCLE_PLUS.into(),
             ICON_SORT_ASC.into(),
             ICON_SORT_DESC.into(),
+            ICON_INLINE_CODE.into(),
+            ICON_CODE_BLOCK.into(),
+            ICON_PILCROW.into(),
         ])
     }
 }
@@ -379,7 +470,11 @@ pub fn map_obsidian_icon(name: &str) -> &'static str {
         "chevrons-up-down" | "unfold" => ICON_CHEVRONS_UP_DOWN,
         "chevrons-down-up" | "fold" => ICON_CHEVRONS_DOWN_UP,
         "calendar" => ICON_CALENDAR,
-        "code" | "terminal" => ICON_CODE,
+        "code-block" | "codeblock-glyph" | "code-square" | "window-code" => ICON_CODE_BLOCK,
+        "inline-code" | "code-glyph" | "code-xml" | "code-slash" => ICON_INLINE_CODE,
+        "code" => ICON_CODE_BLOCK,
+        "terminal" => ICON_INLINE_CODE,
+        "console" | "cli" | "prompt" | "terminal-square" => ICON_TERMINAL,
         "history" | "clock" => ICON_HISTORY,
         "trash" | "trash-2" => ICON_TRASH_2,
         "settings" | "gear" => ICON_SETTINGS,
@@ -393,8 +488,34 @@ pub fn map_obsidian_icon(name: &str) -> &'static str {
         "copy" | "clipboard" | "clipboard-list" => ICON_COPY,
         "scissors" | "cut" => ICON_PENCIL,
         "check" | "check-square" => ICON_CHECK,
-        "type" | "text" | "pilcrow" | "quote" | "list" | "list-ordered" => ICON_TYPE,
-        "hash" | "heading" | "heading-1" | "heading-2" | "heading-3" | "heading-4" | "heading-5" | "heading-6" => ICON_HASH,
+        "undo" => ICON_UNDO,
+        "redo" => ICON_REDO,
+        "eraser" | "clear-formatting" => ICON_ERASER,
+        "bold" => ICON_BOLD,
+        "italic" => ICON_ITALIC,
+        "strikethrough" => ICON_STRIKETHROUGH,
+        "underline" => ICON_UNDERLINE,
+        "highlight" | "highlighter" => ICON_HIGHLIGHTER,
+        "h1" | "heading-1" => ICON_HEADING_1,
+        "h2" | "heading-2" => ICON_HEADING_2,
+        "h3" | "heading-3" => ICON_HEADING_3,
+        "h4" | "heading-4" => ICON_HEADING_4,
+        "h5" | "heading-5" => ICON_HEADING_5,
+        "h6" | "heading-6" => ICON_HEADING_6,
+        "hn" | "heading-n" | "headings" => ICON_HEADING_N,
+        "table" => ICON_TABLE,
+        "task" | "toggle-task" | "checkbox" => ICON_CHECK,
+        "callout" | "comment" | "message-square" => ICON_MESSAGE_SQUARE,
+        "list-bullet" | "bullet-list" => ICON_LIST_BULLET,
+        "list-numbered" | "numbered-list" => ICON_LIST_NUMBERED,
+        "list-task" | "task-list" => ICON_LIST_TASK,
+        "indent" => ICON_INDENT,
+        "outdent" => ICON_OUTDENT,
+        "fullscreen" | "toggle-fullscreen" => ICON_FULLSCREEN,
+        "more-horizontal" | "overflow" => ICON_MORE_HORIZONTAL,
+        "pilcrow" | "invisibles" | "whitespace" => ICON_PILCROW,
+        "type" | "text" | "quote" | "list" | "list-ordered" => ICON_TYPE,
+        "hash" | "heading" => ICON_HASH,
         "split" => ICON_SPLIT,
         "split-down" => ICON_SPLIT_DOWN,
         "lock" | "encrypted" => ICON_LOCK,
@@ -411,6 +532,57 @@ pub fn map_obsidian_icon(name: &str) -> &'static str {
         "table-delete-row" | "delete-row" | "rows" => ICON_TABLE_DELETE_ROW,
         "table-delete-col" | "delete-col" | "columns" => ICON_TABLE_DELETE_COL,
         _ => ICON_NOTE_CREATE,
+    }
+}
+
+/// Resolves an icon name or path to a valid virtual asset path or custom icon name.
+pub fn resolve_toolbar_icon(name: &str) -> SharedString {
+    if crate::toolbar::has_custom_icon(name) {
+        return name.to_string().into();
+    }
+    if name.starts_with("icons/") {
+        return name.to_string().into();
+    }
+    map_obsidian_icon(name).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::AssetSource;
+
+    #[test]
+    fn test_inline_code_and_code_block_icons() {
+        let source = MemoryAssetSource;
+
+        // Check virtual asset loading
+        let inline_bytes = source.load(ICON_INLINE_CODE).expect("load inline-code").expect("bytes");
+        assert_eq!(inline_bytes.as_ref(), INLINE_CODE.as_bytes());
+
+        let block_bytes = source.load(ICON_CODE_BLOCK).expect("load code-block").expect("bytes");
+        assert_eq!(block_bytes.as_ref(), CODE_BLOCK.as_bytes());
+
+        // Check list contains both
+        let list = source.list("").expect("list");
+        assert!(list.iter().any(|p| p.as_ref() == ICON_INLINE_CODE));
+        assert!(list.iter().any(|p| p.as_ref() == ICON_CODE_BLOCK));
+
+        // Check icon name mappings
+        assert_eq!(map_obsidian_icon("inline-code"), ICON_INLINE_CODE);
+        assert_eq!(map_obsidian_icon("code-glyph"), ICON_INLINE_CODE);
+        assert_eq!(map_obsidian_icon("code-xml"), ICON_INLINE_CODE);
+        assert_eq!(map_obsidian_icon("code-slash"), ICON_INLINE_CODE);
+        assert_eq!(map_obsidian_icon("terminal"), ICON_INLINE_CODE);
+
+        assert_eq!(map_obsidian_icon("code-block"), ICON_CODE_BLOCK);
+        assert_eq!(map_obsidian_icon("codeblock-glyph"), ICON_CODE_BLOCK);
+        assert_eq!(map_obsidian_icon("code-square"), ICON_CODE_BLOCK);
+        assert_eq!(map_obsidian_icon("window-code"), ICON_CODE_BLOCK);
+        assert_eq!(map_obsidian_icon("code"), ICON_CODE_BLOCK);
+
+        // Check resolve_toolbar_icon
+        assert_eq!(resolve_toolbar_icon("inline-code").as_ref(), ICON_INLINE_CODE);
+        assert_eq!(resolve_toolbar_icon("code-block").as_ref(), ICON_CODE_BLOCK);
     }
 }
 

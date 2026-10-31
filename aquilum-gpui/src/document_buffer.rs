@@ -452,6 +452,50 @@ impl DocumentBuffer {
         self.rope.byte_len()
     }
 
+    pub fn char_to_byte(&self, char_idx: usize) -> usize {
+        let mut cur_char = 0;
+        let mut cur_byte = 0;
+        for chunk in self.rope.chunks() {
+            let chunk_chars = chunk.chars().count();
+            if cur_char + chunk_chars >= char_idx {
+                let rem = char_idx - cur_char;
+                let b: usize = chunk.chars().take(rem).map(|c| c.len_utf8()).sum();
+                return cur_byte + b;
+            }
+            cur_char += chunk_chars;
+            cur_byte += chunk.len();
+        }
+        self.rope.byte_len()
+    }
+
+    pub fn byte_to_char(&self, byte_idx: usize) -> usize {
+        let target_byte = byte_idx.min(self.rope.byte_len());
+        let mut cur_char = 0;
+        let mut cur_byte = 0;
+        for chunk in self.rope.chunks() {
+            if cur_byte + chunk.len() >= target_byte {
+                let rem = target_byte - cur_byte;
+                let c = chunk[..rem].chars().count();
+                return cur_char + c;
+            }
+            cur_char += chunk.chars().count();
+            cur_byte += chunk.len();
+        }
+        cur_char
+    }
+
+    pub fn char_len(&self) -> usize {
+        self.byte_to_char(self.rope.byte_len())
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.history.undo_len() > 0
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.history.redo_len() > 0
+    }
+
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.rope.byte_len() == 0

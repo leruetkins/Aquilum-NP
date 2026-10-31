@@ -4517,6 +4517,18 @@ fn setup_plugin_environment<'js>(
             registerExtensions(extensions, viewType) {}
             registerHoverLinkSource(id, info) {}
             registerEditorExtension(extension) {}
+            addToolbar(spec) {
+                return __invoke_host("add_toolbar", { spec });
+            }
+            updateToolbar(id, items) {
+                return __invoke_host("update_toolbar", { id, items });
+            }
+            removeToolbar(id) {
+                return __invoke_host("remove_toolbar", { id });
+            }
+            registerIcon(name, svg) {
+                return __invoke_host("register_icon", { name: String(name), svg: String(svg) });
+            }
         }
 
         const rawVault = {
@@ -4835,6 +4847,10 @@ fn setup_plugin_environment<'js>(
         };
 
         const rawWorkspace = {
+            addToolbar: (spec) => __invoke_host("add_toolbar", { spec }),
+            updateToolbar: (id, items) => __invoke_host("update_toolbar", { id, items }),
+            removeToolbar: (id) => __invoke_host("remove_toolbar", { id }),
+            registerIcon: (name, svg) => __invoke_host("register_icon", { name: String(name), svg: String(svg) }),
             getActiveFile: () => {
                 const p = __host_get_active_file();
                 return p ? new TFile(p) : null;
@@ -6172,7 +6188,11 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
                 .get("hotkey")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            ApiRequest::AddCommand { id, name, hotkey }
+            let icon = payload
+                .get("icon")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            ApiRequest::AddCommand { id, name, hotkey, icon }
         }
         "remove_command" => {
             let id = payload
@@ -6181,6 +6201,51 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
                 .unwrap_or_default()
                 .to_string();
             ApiRequest::RemoveCommand { id }
+        }
+        "add_toolbar" => {
+            let spec_val = payload.get("spec").cloned().unwrap_or(serde_json::Value::Null);
+            let spec: crate::toolbar::ToolbarSpec = serde_json::from_value(spec_val).unwrap_or_else(|_| {
+                crate::toolbar::ToolbarSpec {
+                    id: "default-toolbar".to_string(),
+                    placement: crate::toolbar::ToolbarPlacement::Top,
+                    items: Vec::new(),
+                    owner: None,
+                }
+            });
+            ApiRequest::AddToolbar { spec }
+        }
+        "update_toolbar" => {
+            let id = payload
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let items: Vec<crate::toolbar::ToolbarItem> = payload
+                .get("items")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            ApiRequest::UpdateToolbar { id, items }
+        }
+        "remove_toolbar" => {
+            let id = payload
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::RemoveToolbar { id }
+        }
+        "register_icon" => {
+            let name = payload
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let svg = payload
+                .get("svg")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            ApiRequest::RegisterIcon { name, svg }
         }
         "add_status_bar_item" => {
             let id = payload

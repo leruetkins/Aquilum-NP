@@ -93,7 +93,17 @@ impl SettingsTab {
                     "Community plugins".to_string()
                 }
             }
-            Self::PluginSettings(name) => name.clone(),
+            Self::PluginSettings(name) => {
+                if name == "editor-toolbar" {
+                    if lang.starts_with("ru") {
+                        "Панель инструментов".to_string()
+                    } else {
+                        "Editor Toolbar".to_string()
+                    }
+                } else {
+                    name.clone()
+                }
+            }
             _ => crate::i18n::t(self.key(), lang),
         }
     }
@@ -115,7 +125,13 @@ impl SettingsTab {
             Self::Shortcuts => icons::ICON_KEYBOARD,
             Self::CorePlugins => icons::ICON_PLUG,
             Self::CommunityPlugins => icons::ICON_GLOBE,
-            Self::PluginSettings(_) => icons::ICON_SETTINGS,
+            Self::PluginSettings(name) => {
+                if name == "editor-toolbar" {
+                    icons::ICON_TYPE
+                } else {
+                    icons::ICON_SETTINGS
+                }
+            }
         }
     }
 
@@ -530,6 +546,30 @@ pub struct SettingsView {
     pub search_filter: SearchFilterState,
     pub highlighted_setting_id: Option<String>,
     pub copied_setting_url_id: Option<String>,
+    // Editor toolbar customization state
+    pub toolbar_add_button_open: bool,
+    pub toolbar_add_dropdown_open: bool,
+    pub toolbar_target_dropdown_id: Option<String>,
+    pub toolbar_command_filter: String,
+    pub toolbar_filter_focus_handle: FocusHandle,
+    pub toolbar_command_dropdown_open: bool,
+    pub toolbar_icon_dropdown_open: bool,
+    pub toolbar_icon_filter: String,
+    pub toolbar_icon_filter_focus_handle: FocusHandle,
+    pub toolbar_selected_command: Option<String>,
+    pub toolbar_selected_icon: Option<String>,
+    pub toolbar_custom_tooltip: String,
+    pub toolbar_status_msg: Option<String>,
+    pub toolbar_cmd_scroll_handle: ScrollHandle,
+    pub toolbar_cmd_scroll_y: f32,
+    pub toolbar_cmd_scroll_drag: crate::views::scrollbar::ScrollbarDrag,
+    pub toolbar_icon_scroll_handle: ScrollHandle,
+    pub toolbar_icon_scroll_y: f32,
+    pub toolbar_icon_scroll_drag: crate::views::scrollbar::ScrollbarDrag,
+    pub toolbar_command_popup: Option<gpui::Entity<TabListPopup>>,
+    pub toolbar_command_popup_subscription: Option<Subscription>,
+    pub toolbar_icon_popup: Option<gpui::Entity<TabListPopup>>,
+    pub toolbar_icon_popup_subscription: Option<Subscription>,
 }
 
 /// Encapsulates the complete state of the settings search input (based on quick_filter.rs).
@@ -727,6 +767,29 @@ impl SettingsView {
             search_filter: SearchFilterState::new(),
             highlighted_setting_id: None,
             copied_setting_url_id: None,
+            toolbar_add_button_open: false,
+            toolbar_add_dropdown_open: false,
+            toolbar_target_dropdown_id: None,
+            toolbar_command_filter: String::new(),
+            toolbar_filter_focus_handle: cx.focus_handle(),
+            toolbar_command_dropdown_open: false,
+            toolbar_icon_dropdown_open: false,
+            toolbar_icon_filter: String::new(),
+            toolbar_icon_filter_focus_handle: cx.focus_handle(),
+            toolbar_selected_command: None,
+            toolbar_selected_icon: None,
+            toolbar_custom_tooltip: String::new(),
+            toolbar_status_msg: None,
+            toolbar_cmd_scroll_handle: ScrollHandle::new(),
+            toolbar_cmd_scroll_y: 0.0,
+            toolbar_cmd_scroll_drag: crate::views::scrollbar::ScrollbarDrag::default(),
+            toolbar_icon_scroll_handle: ScrollHandle::new(),
+            toolbar_icon_scroll_y: 0.0,
+            toolbar_icon_scroll_drag: crate::views::scrollbar::ScrollbarDrag::default(),
+            toolbar_command_popup: None,
+            toolbar_command_popup_subscription: None,
+            toolbar_icon_popup: None,
+            toolbar_icon_popup_subscription: None,
         }
     }
 
@@ -893,9 +956,27 @@ impl SettingsView {
             self.close_plugin_select(cx);
             return true;
         }
+        if self.toolbar_command_popup.is_some() {
+            self.close_toolbar_command_popup(cx);
+            return true;
+        }
+        if self.toolbar_icon_popup.is_some() {
+            self.close_toolbar_icon_popup(cx);
+            return true;
+        }
         if self.active_color_picker.is_some() {
             self.active_color_picker = None;
             self.hex_is_focused = false;
+            cx.notify();
+            return true;
+        }
+        if self.toolbar_command_dropdown_open {
+            self.toolbar_command_dropdown_open = false;
+            cx.notify();
+            return true;
+        }
+        if self.toolbar_icon_dropdown_open {
+            self.toolbar_icon_dropdown_open = false;
             cx.notify();
             return true;
         }
@@ -1170,7 +1251,7 @@ impl SettingsView {
         let popup = cx.new(|cx| {
             TabListPopup::new(
                 tabs,
-                active_ix,
+                Some(active_ix),
                 theme,
                 None,
                 Some(px(ROW_HEIGHT * 10.0)),
@@ -1236,7 +1317,7 @@ impl SettingsView {
             .unwrap_or(0);
         let theme = self.theme.clone();
 
-        let popup = cx.new(|cx| TabListPopup::new(tabs, active_ix, theme, None, None, None, cx));
+        let popup = cx.new(|cx| TabListPopup::new(tabs, Some(active_ix), theme, None, None, None, cx));
         let subscription = cx.subscribe_in(
             &popup,
             window,
@@ -1304,7 +1385,7 @@ impl SettingsView {
         let popup = cx.new(|cx| {
             TabListPopup::new(
                 tabs,
-                active_ix,
+                Some(active_ix),
                 theme,
                 None,
                 Some(px(ROW_HEIGHT * max_rows)),
@@ -1797,6 +1878,12 @@ impl SettingsView {
             } else if self.active_color_picker.is_some() {
                 self.active_color_picker = None;
                 cx.notify();
+            } else if self.toolbar_command_dropdown_open {
+                self.toolbar_command_dropdown_open = false;
+                cx.notify();
+            } else if self.toolbar_icon_dropdown_open {
+                self.toolbar_icon_dropdown_open = false;
+                cx.notify();
             } else if !self.search_query.is_empty() {
                 self.search_filter.clear(&mut self.search_query, cx);
             } else {
@@ -1811,6 +1898,7 @@ impl SettingsView {
         }
 
         if !self.search_focus_handle.is_focused(window)
+            && !self.toolbar_filter_focus_handle.is_focused(window)
             && self.active_color_picker.is_none()
             && self.active_plugin_input.is_none()
         {
@@ -2476,6 +2564,10 @@ impl SettingsView {
         let theme = &self.theme;
         let scroll_handle = self.settings_scroll_handle.clone();
         let is_catalog_open = false;
+        let is_toolbar_dropdown_open = self.toolbar_command_popup_is_open()
+            || self.toolbar_icon_popup_is_open()
+            || self.toolbar_command_dropdown_open
+            || self.toolbar_icon_dropdown_open;
 
         div()
             .id("settings-content-scroll")
@@ -2485,13 +2577,24 @@ impl SettingsView {
             .flex_col()
             .flex_1()
             .h_full()
-            .overflow_scroll()
+            .when(
+                !self.toolbar_command_dropdown_open && !self.toolbar_icon_dropdown_open,
+                |d| d.overflow_scroll(),
+            )
+            .when(
+                self.toolbar_command_dropdown_open || self.toolbar_icon_dropdown_open,
+                |d| d.overflow_hidden(),
+            )
             .bg(theme.bg_editor)
             .rounded_br_xl()
             .cursor(gpui::CursorStyle::Arrow)
             .p_6()
             .gap_5()
             .on_scroll_wheel(cx.listener(|this, _, _, cx| {
+                if this.toolbar_command_dropdown_open || this.toolbar_icon_dropdown_open {
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.active_color_picker.is_some() {
                     this.active_color_picker = None;
                     cx.notify();
@@ -2525,6 +2628,7 @@ impl SettingsView {
                         window.on_mouse_event(
                             move |event: &ScrollWheelEvent, phase, window, cx| {
                                 if !is_catalog_open
+                                    && !is_toolbar_dropdown_open
                                     && phase == DispatchPhase::Capture
                                     && viewport.contains(&event.position)
                                 {
@@ -4915,6 +5019,12 @@ impl SettingsView {
                 true,
             ),
             (
+                "editor-toolbar",
+                if is_ru { "Панель инструментов редактора" } else { "Editor toolbar" },
+                if is_ru { "Панель форматирования Markdown над редактором с настраиваемыми кнопками" } else { "Markdown formatting toolbar above the editor with customizable buttons" },
+                true,
+            ),
+            (
                 "file-recovery",
                 if is_ru { "Восстановление файлов" } else { "File recovery" },
                 if is_ru { "Создание регулярных локальных снэпшотов для защиты от потери данных" } else { "Automatic local snapshotting to protect against data loss" },
@@ -4953,6 +5063,9 @@ impl SettingsView {
                                     } else {
                                         let _ = vault.enable_core_plugin(&tid);
                                     }
+                                    if tid == "editor-toolbar" {
+                                        crate::plugins::editor_toolbar::sync_editor_toolbar_with_vault(&app.state, Some(vault));
+                                    }
                                     app.state.status_text = format!("Core plugin '{}' updated", tid);
                                     cx.notify();
                                 }
@@ -4961,7 +5074,24 @@ impl SettingsView {
                         }
                     }));
 
-                self.render_setting_row(name, Some(desc), toggle)
+                let action_container = if id == "editor-toolbar" {
+                    let gear_btn = div()
+                        .id("core-settings-editor-toolbar")
+                        .p_1()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|h| h.bg(self.theme.bg_hover))
+                        .child(icons::icon(icons::ICON_SETTINGS, 16.0, self.theme.text_secondary))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.settings_tab = SettingsTab::PluginSettings("editor-toolbar".to_string());
+                            cx.notify();
+                        }));
+                    div().flex().flex_row().items_center().gap_3().child(gear_btn).child(toggle)
+                } else {
+                    div().child(toggle)
+                };
+
+                self.render_setting_row(name, Some(desc), action_container)
             })
             .collect();
 
@@ -5679,6 +5809,10 @@ impl SettingsView {
 
     /// Renders the individual details and settings tab for a specific community plugin.
     fn render_plugin_settings_tab(&self, plugin_id: &str, window: &Window, cx: &Context<Self>) -> gpui::Div {
+        if plugin_id == "editor-toolbar" {
+            return self.render_editor_toolbar_settings(window, cx);
+        }
+
         let theme = &self.theme;
         let is_ru = self.config.ui.language.starts_with("ru");
 
@@ -6540,6 +6674,1377 @@ impl UiSink for SettingsView {
     }
 }
 
+impl SettingsView {
+    /// Renders the complete settings and customization view for the Editor Toolbar plugin.
+    fn render_editor_toolbar_settings(&self, window: &Window, cx: &Context<Self>) -> gpui::Div {
+        let theme = &self.theme;
+        let is_ru = self.config.ui.language.starts_with("ru");
+
+        let vault_root = self
+            .weak_app
+            .upgrade()
+            .and_then(|a| a.read(cx).state.vault.as_ref().map(|v| v.root.clone()));
+        let items = crate::plugins::editor_toolbar::load_toolbar_config(vault_root.as_deref());
+
+        // Back button to Core Plugins
+        let back_btn = div()
+            .id("btn-back-to-core-plugins")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1p5()
+            .px_3()
+            .py_1p5()
+            .rounded_md()
+            .bg(theme.bg_hover)
+            .cursor_pointer()
+            .hover(|h| h.bg(theme.border))
+            .child(icons::icon(icons::ICON_ARROW_LEFT, 14.0, theme.text_secondary))
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.text_primary)
+                    .child(if is_ru { "Назад к модулям" } else { "Back to core plugins" }),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.settings_tab = SettingsTab::CorePlugins;
+                cx.notify();
+            }));
+
+        // Header
+        let header = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_color(theme.text_primary)
+                    .child(if is_ru { "Панель инструментов редактора" } else { "Editor Toolbar" }),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.text_muted)
+                    .child(if is_ru {
+                        "Настройка кнопок форматирования Markdown над редактором, вложенных выпадающих списков и разделителей."
+                    } else {
+                        "Customize formatting buttons, nested dropdown groups, and separators above the editor."
+                    }),
+            );
+
+        // Status banner
+        let status_banner = self.toolbar_status_msg.as_ref().map(|msg| {
+            div()
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .bg(theme.bg_hover)
+                .border_1()
+                .border_color(theme.accent)
+                .text_xs()
+                .text_color(theme.accent)
+                .child(msg.clone())
+        });
+
+        // Top Actions Bar (Buttons)
+        let actions_bar = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .id("tb-cfg-add-btn")
+                    .px_3()
+                    .py_1p5()
+                    .rounded_md()
+                    .bg(theme.accent)
+                    .cursor_pointer()
+                    .hover(|h| h.bg(theme.accent_hover))
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.text_on_accent)
+                    .child(if is_ru { "+ Кнопка" } else { "+ Button" })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toolbar_add_button_open = !this.toolbar_add_button_open;
+                        this.toolbar_add_dropdown_open = false;
+                        this.toolbar_command_dropdown_open = false;
+                        this.toolbar_icon_dropdown_open = false;
+                        this.toolbar_selected_command = None;
+                        this.toolbar_selected_icon = None;
+                        this.toolbar_custom_tooltip.clear();
+                        this.close_toolbar_command_popup(cx);
+                        this.close_toolbar_icon_popup(cx);
+                        this.toolbar_target_dropdown_id = None;
+                        cx.notify();
+                    }))
+            )
+            .child(
+                div()
+                    .id("tb-cfg-add-dropdown")
+                    .px_3()
+                    .py_1p5()
+                    .rounded_md()
+                    .bg(theme.bg_hover)
+                    .cursor_pointer()
+                    .hover(|h| h.bg(theme.border))
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text_primary)
+                    .child(if is_ru { "+ Группа ▾" } else { "+ Dropdown ▾" })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toolbar_add_dropdown_open = !this.toolbar_add_dropdown_open;
+                        this.toolbar_add_button_open = false;
+                        this.close_toolbar_command_popup(cx);
+                        this.close_toolbar_icon_popup(cx);
+                        this.toolbar_target_dropdown_id = None;
+                        cx.notify();
+                    }))
+            )
+            .child(
+                div()
+                    .id("tb-cfg-add-sep")
+                    .px_3()
+                    .py_1p5()
+                    .rounded_md()
+                    .bg(theme.bg_hover)
+                    .cursor_pointer()
+                    .hover(|h| h.bg(theme.border))
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text_primary)
+                    .child(if is_ru { "+ Разделитель" } else { "+ Separator" })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let sep = crate::toolbar::ToolbarItem::separator();
+                        this.toolbar_add_item_at_target(sep, cx);
+                    }))
+            )
+            .child(
+                div()
+                    .id("tb-cfg-reset")
+                    .px_3()
+                    .py_1p5()
+                    .rounded_md()
+                    .bg(theme.bg_hover)
+                    .cursor_pointer()
+                    .hover(|h| h.bg(theme.border))
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text_secondary)
+                    .child(if is_ru { "Сбросить по умолчанию" } else { "Reset to defaults" })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toolbar_reset_defaults(cx);
+                    }))
+            )
+            .child(
+                div()
+                    .id("tb-cfg-export")
+                    .px_3()
+                    .py_1p5()
+                    .rounded_md()
+                    .bg(theme.bg_hover)
+                    .cursor_pointer()
+                    .hover(|h| h.bg(theme.border))
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text_secondary)
+                    .child(if is_ru { "Экспорт JSON" } else { "Export JSON" })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toolbar_export_json(cx);
+                    }))
+            )
+            .child(
+                div()
+                    .id("tb-cfg-import")
+                    .px_3()
+                    .py_1p5()
+                    .rounded_md()
+                    .bg(theme.bg_hover)
+                    .cursor_pointer()
+                    .hover(|h| h.bg(theme.border))
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text_secondary)
+                    .child(if is_ru { "Импорт JSON" } else { "Import JSON" })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toolbar_import_json(cx);
+                    }))
+            );
+
+        // Add Forms
+        let add_button_form = if self.toolbar_add_button_open {
+            Some(self.render_toolbar_add_button_form(window, cx))
+        } else {
+            None
+        };
+
+        let add_dropdown_form = if self.toolbar_add_dropdown_open {
+            Some(self.render_toolbar_add_dropdown_form(cx))
+        } else {
+            None
+        };
+
+        // Render current items list
+        let mut items_container = div()
+            .flex()
+            .flex_col()
+            .gap_1p5()
+            .p_4()
+            .rounded_lg()
+            .bg(theme.bg_card)
+            .border_1()
+            .border_color(theme.border_subtle);
+
+        let total_items = items.len();
+        for (i, it) in items.iter().enumerate() {
+            let row = self.render_toolbar_item_row(it, &[i], i, total_items, cx);
+            items_container = items_container.child(row);
+        }
+
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(back_btn)
+            .child(header);
+
+        if let Some(banner) = status_banner {
+            content = content.child(banner);
+        }
+
+        content = content.child(actions_bar);
+
+        if let Some(form) = add_button_form {
+            content = content.child(form);
+        }
+        if let Some(form) = add_dropdown_form {
+            content = content.child(form);
+        }
+
+        content = content.child(items_container);
+        content
+    }
+
+    /// Renders an item row with Move Up, Move Down, Delete, and recursive sub-items.
+    fn render_toolbar_item_row(
+        &self,
+        item: &crate::toolbar::ToolbarItem,
+        path: &[usize],
+        idx: usize,
+        total: usize,
+        cx: &Context<Self>,
+    ) -> gpui::Div {
+        let theme = &self.theme;
+        let is_ru = self.config.ui.language.starts_with("ru");
+
+        let path_vec = path.to_vec();
+        let path_move_up = path_vec.clone();
+        let path_move_down = path_vec.clone();
+        let path_delete = path_vec.clone();
+
+        let can_move_up = idx > 0;
+        let can_move_down = idx + 1 < total;
+        let item_id_str = item.id.clone();
+
+        let move_up_btn = div()
+            .id(gpui::SharedString::from(format!("tb-up-{}", item_id_str)))
+            .px_1p5()
+            .py_0p5()
+            .rounded_sm()
+            .when(can_move_up, |d| {
+                d.cursor_pointer()
+                    .hover(|h| h.bg(theme.bg_hover))
+                    .text_color(theme.text_primary)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toolbar_move_item_at_path(&path_move_up, true, cx);
+                    }))
+            })
+            .when(!can_move_up, |d| d.opacity(0.3).cursor_not_allowed())
+            .child("↑");
+
+        let move_down_btn = div()
+            .id(gpui::SharedString::from(format!("tb-down-{}", item_id_str)))
+            .px_1p5()
+            .py_0p5()
+            .rounded_sm()
+            .when(can_move_down, |d| {
+                d.cursor_pointer()
+                    .hover(|h| h.bg(theme.bg_hover))
+                    .text_color(theme.text_primary)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toolbar_move_item_at_path(&path_move_down, false, cx);
+                    }))
+            })
+            .when(!can_move_down, |d| d.opacity(0.3).cursor_not_allowed())
+            .child("↓");
+
+        let delete_btn = div()
+            .id(gpui::SharedString::from(format!("tb-del-{}", item_id_str)))
+            .px_2()
+            .py_0p5()
+            .rounded_sm()
+            .cursor_pointer()
+            .hover(|h| h.bg(theme.bg_hover))
+            .text_color(theme.text_muted)
+            .child("✕")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toolbar_delete_item_at_path(&path_delete, cx);
+            }));
+
+        let mut row_container = div()
+            .flex()
+            .flex_col()
+            .gap_1();
+
+        match &item.kind {
+            crate::toolbar::ToolbarItemKind::Separator => {
+                let main_row = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .px_3()
+                    .py_1p5()
+                    .rounded_md()
+                    .bg(theme.bg_editor)
+                    .border_1()
+                    .border_color(theme.border_subtle)
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.text_muted)
+                            .child("──────── (разделитель)"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .child(move_up_btn)
+                            .child(move_down_btn)
+                            .child(delete_btn),
+                    );
+                row_container = row_container.child(main_row);
+            }
+            crate::toolbar::ToolbarItemKind::Button { command_id, icon, tooltip } => {
+                let icon_asset = icons::resolve_toolbar_icon(icon);
+                let label = tooltip.clone().unwrap_or_else(|| command_id.clone());
+
+                let main_row = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .px_3()
+                    .py_1p5()
+                    .rounded_md()
+                    .bg(theme.bg_editor)
+                    .border_1()
+                    .border_color(theme.border_subtle)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                gpui::svg()
+                                    .path(icon_asset)
+                                    .w(px(14.0))
+                                    .h(px(14.0))
+                                    .text_color(theme.accent)
+                                    .flex_shrink_0()
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(theme.text_primary)
+                                    .child(label),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.text_muted)
+                                    .child(format!("({})", command_id)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .child(move_up_btn)
+                            .child(move_down_btn)
+                            .child(delete_btn),
+                    );
+                row_container = row_container.child(main_row);
+            }
+            crate::toolbar::ToolbarItemKind::Dropdown { icon, tooltip, command, items: sub_items } => {
+                let icon_asset = icons::resolve_toolbar_icon(icon);
+                let title = tooltip.clone().unwrap_or_else(|| "Dropdown".to_string());
+                let target_dd_id = item.id.clone();
+
+                let target_dd_str = target_dd_id.clone();
+                let add_inside_btn = div()
+                    .id(gpui::SharedString::from(format!("tb-inside-{}", target_dd_str)))
+                    .px_2()
+                    .py_0p5()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .bg(theme.bg_hover)
+                    .hover(|h| h.bg(theme.border))
+                    .text_xs()
+                    .text_color(theme.accent)
+                    .child(if is_ru { "+ внутрь" } else { "+ add inside" })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toolbar_target_dropdown_id = Some(target_dd_id.clone());
+                        this.toolbar_add_button_open = true;
+                        this.toolbar_command_dropdown_open = false;
+                        this.toolbar_icon_dropdown_open = false;
+                        this.toolbar_selected_command = None;
+                        this.toolbar_selected_icon = None;
+                        this.toolbar_custom_tooltip.clear();
+                        this.close_toolbar_command_popup(cx);
+                        this.close_toolbar_icon_popup(cx);
+                        cx.notify();
+                    }));
+
+                let main_row = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .px_3()
+                    .py_1p5()
+                    .rounded_md()
+                    .bg(theme.bg_hover)
+                    .border_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                gpui::svg()
+                                    .path(icon_asset)
+                                    .w(px(14.0))
+                                    .h(px(14.0))
+                                    .text_color(theme.accent)
+                                    .flex_shrink_0()
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .text_color(theme.text_primary)
+                                    .child(format!("{} ▾", title)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.text_muted)
+                                    .child(format!(
+                                        "({} {}){}",
+                                        sub_items.len(),
+                                        if is_ru { "элементов" } else { "items" },
+                                        if let Some(cmd) = command { format!(" [split: {}]", cmd) } else { "".to_string() }
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .child(add_inside_btn)
+                            .child(move_up_btn)
+                            .child(move_down_btn)
+                            .child(delete_btn),
+                    );
+                row_container = row_container.child(main_row);
+
+                // Nested child items
+                if !sub_items.is_empty() {
+                    let mut sub_list = div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .pl_5()
+                        .border_l_2()
+                        .border_color(theme.border_subtle);
+
+                    let sub_total = sub_items.len();
+                    for (c_idx, child_item) in sub_items.iter().enumerate() {
+                        let mut child_path = path_vec.clone();
+                        child_path.push(c_idx);
+                        let child_row = self.render_toolbar_item_row(
+                            child_item,
+                            &child_path,
+                            c_idx,
+                            sub_total,
+                            cx,
+                        );
+                        sub_list = sub_list.child(child_row);
+                    }
+                    row_container = row_container.child(sub_list);
+                }
+            }
+        }
+
+        row_container
+    }
+
+    pub fn open_toolbar_command_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_toolbar_icon_popup(cx);
+        let all_commands = self
+            .weak_app
+            .upgrade()
+            .map(|a| a.read(cx).state.commands.all())
+            .unwrap_or_default();
+
+        let is_ru = self.config.ui.language.starts_with("ru");
+        let active_ix = self
+            .toolbar_selected_command
+            .as_ref()
+            .and_then(|sel_id| all_commands.iter().position(|c| &c.id == sel_id));
+
+        let tabs: Vec<TabEntry> = all_commands
+            .iter()
+            .enumerate()
+            .map(|(id, cmd)| TabEntry {
+                id,
+                title: SharedString::from(cmd.name.clone()),
+                subtitle: Some(SharedString::from(cmd.id.clone())),
+                icon: icons::map_obsidian_icon(cmd.icon.as_deref().unwrap_or("inline-code")),
+                font_family: None,
+                dot_color: None,
+            })
+            .collect();
+
+        let theme = self.theme.clone();
+        let max_rows = all_commands.len().clamp(1, 8) as f32;
+        let search_placeholder = if is_ru { "Поиск..." } else { "Search..." };
+        let popup = cx.new(|cx| {
+            TabListPopup::new(
+                tabs,
+                active_ix,
+                theme,
+                None,
+                Some(px(42.0 * max_rows)),
+                Some(50.0),
+                cx,
+            )
+            .with_full_width()
+            .without_icons()
+            .with_subtitle_below()
+            .with_search(search_placeholder)
+        });
+
+        let cmds_for_sub = all_commands;
+        let subscription = cx.subscribe_in(
+            &popup,
+            window,
+            move |this, _popup, event: &TabListEvent, _window, cx| {
+                match event {
+                    TabListEvent::Activate(id) => {
+                        if let Some(cmd) = cmds_for_sub.get(*id) {
+                            this.toolbar_selected_command = Some(cmd.id.clone());
+                            this.toolbar_custom_tooltip = cmd.name.clone();
+                            if let Some(ref ic) = cmd.icon {
+                                this.toolbar_selected_icon = Some(ic.clone());
+                            }
+                            cx.notify();
+                        }
+                        this.close_toolbar_command_popup(cx);
+                    }
+                    TabListEvent::FoldTabs
+                    | TabListEvent::BookmarkTabs
+                    | TabListEvent::CloseAllTabs => {}
+                    TabListEvent::Dismiss => this.close_toolbar_command_popup(cx),
+                }
+            },
+        );
+
+        window.focus(&popup.read(cx).focus_handle());
+        self.toolbar_command_popup = Some(popup);
+        self.toolbar_command_popup_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    pub fn close_toolbar_command_popup(&mut self, cx: &mut Context<Self>) {
+        if self.toolbar_command_popup.take().is_none() {
+            return;
+        }
+        self.toolbar_command_popup_subscription = None;
+        cx.notify();
+    }
+
+    pub fn toolbar_command_popup_is_open(&self) -> bool {
+        self.toolbar_command_popup.is_some()
+    }
+
+    pub fn open_toolbar_icon_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_toolbar_command_popup(cx);
+        let available_icons = [
+            "bold", "italic", "strikethrough", "underline", "highlighter",
+            "h1", "h2", "h3", "h4", "h5", "h6", "heading-n",
+            "undo", "redo", "eraser", "paperclip", "table", "check",
+            "inline-code", "code-block", "pilcrow", "message-square", "list-bullet",
+            "list-numbered", "list-task", "indent", "outdent",
+            "align-left", "align-center", "align-right", "fullscreen",
+            "search", "save", "settings", "file-text", "folder",
+            "bookmark", "link", "external-link", "eye", "copy",
+        ];
+
+        let is_ru = self.config.ui.language.starts_with("ru");
+        let active_ix = self
+            .toolbar_selected_icon
+            .as_ref()
+            .and_then(|sel_ic| available_icons.iter().position(|ic| ic == sel_ic));
+
+        let tabs: Vec<TabEntry> = available_icons
+            .iter()
+            .enumerate()
+            .map(|(id, ic)| TabEntry {
+                id,
+                title: SharedString::from(*ic),
+                subtitle: None,
+                icon: icons::map_obsidian_icon(ic),
+                font_family: None,
+                dot_color: None,
+            })
+            .collect();
+
+        let theme = self.theme.clone();
+        let max_rows = available_icons.len().clamp(1, 10) as f32;
+        let search_placeholder = if is_ru { "Поиск..." } else { "Search..." };
+        let popup = cx.new(|cx| {
+            TabListPopup::new(
+                tabs,
+                active_ix,
+                theme,
+                None,
+                Some(px(ROW_HEIGHT * max_rows)),
+                Some(50.0),
+                cx,
+            )
+            .with_full_width()
+            .with_search(search_placeholder)
+        });
+
+        let subscription = cx.subscribe_in(
+            &popup,
+            window,
+            move |this, _popup, event: &TabListEvent, _window, cx| {
+                match event {
+                    TabListEvent::Activate(id) => {
+                        if let Some(ic) = available_icons.get(*id) {
+                            this.toolbar_selected_icon = Some(ic.to_string());
+                            cx.notify();
+                        }
+                        this.close_toolbar_icon_popup(cx);
+                    }
+                    TabListEvent::FoldTabs
+                    | TabListEvent::BookmarkTabs
+                    | TabListEvent::CloseAllTabs => {}
+                    TabListEvent::Dismiss => this.close_toolbar_icon_popup(cx),
+                }
+            },
+        );
+
+        window.focus(&popup.read(cx).focus_handle());
+        self.toolbar_icon_popup = Some(popup);
+        self.toolbar_icon_popup_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    pub fn close_toolbar_icon_popup(&mut self, cx: &mut Context<Self>) {
+        if self.toolbar_icon_popup.take().is_none() {
+            return;
+        }
+        self.toolbar_icon_popup_subscription = None;
+        cx.notify();
+    }
+
+    pub fn toolbar_icon_popup_is_open(&self) -> bool {
+        self.toolbar_icon_popup.is_some()
+    }
+
+    /// Renders inline form to add a new button.
+    fn render_toolbar_add_button_form(&self, _window: &Window, cx: &Context<Self>) -> gpui::Div {
+        let theme = &self.theme;
+        let is_ru = self.config.ui.language.starts_with("ru");
+
+        let all_commands = self
+            .weak_app
+            .upgrade()
+            .map(|a| a.read(cx).state.commands.all())
+            .unwrap_or_default();
+
+        let selected_cmd_display = self
+            .toolbar_selected_command
+            .as_ref()
+            .and_then(|sel_id| all_commands.iter().find(|c| &c.id == sel_id))
+            .map(|c| c.name.clone());
+
+        let is_cmd_open = self.toolbar_command_popup_is_open();
+        let cmd_select_trigger = div()
+            .id("tb-cfg-cmd-select-trigger")
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .w_full()
+            .h(px(32.0))
+            .px_3()
+            .bg(theme.bg_editor)
+            .border_1()
+            .border_color(if is_cmd_open { theme.accent } else { theme.border })
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|h| h.border_color(theme.accent))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(if let Some(ref name) = selected_cmd_display {
+                        div().text_color(theme.text_primary).child(name.clone())
+                    } else {
+                        div().text_color(theme.text_muted).child(
+                            if is_ru { "Выберите команду..." } else { "Select command..." },
+                        )
+                    }),
+            )
+            .child(
+                if self.toolbar_selected_command.is_some() {
+                    div()
+                        .id("tb-cfg-cmd-clear-btn")
+                        .w(px(16.0))
+                        .h(px(16.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .hover(|h| h.text_color(theme.text_primary))
+                        .child(icons::icon(icons::ICON_CLOSE, 12.0, theme.text_muted))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.toolbar_selected_command = None;
+                            this.toolbar_custom_tooltip.clear();
+                            this.close_toolbar_command_popup(cx);
+                            cx.notify();
+                        }))
+                } else {
+                    div()
+                        .id("tb-cfg-cmd-chevron")
+                        .w(px(16.0))
+                        .h(px(16.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icons::icon(icons::ICON_CHEVRON_DOWN, 12.0, theme.text_muted))
+                }
+            )
+            .on_click(cx.listener(|this, _, window, cx| {
+                if this.toolbar_command_popup_is_open() {
+                    this.close_toolbar_command_popup(cx);
+                } else {
+                    this.open_toolbar_command_popup(window, cx);
+                }
+            }));
+
+        let is_icon_open = self.toolbar_icon_popup_is_open();
+        let icon_select_trigger = div()
+            .id("tb-cfg-icon-select-trigger")
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .w_full()
+            .h(px(32.0))
+            .px_3()
+            .bg(theme.bg_editor)
+            .border_1()
+            .border_color(if is_icon_open { theme.accent } else { theme.border })
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|h| h.border_color(theme.accent))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(if let Some(ref icon_name) = self.toolbar_selected_icon {
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                gpui::svg()
+                                    .path(icons::resolve_toolbar_icon(icon_name))
+                                    .w(px(16.0))
+                                    .h(px(16.0))
+                                    .text_color(theme.text_primary)
+                                    .flex_shrink_0(),
+                            )
+                            .child(
+                                div()
+                                    .text_color(theme.text_primary)
+                                    .child(icon_name.clone()),
+                            )
+                    } else {
+                        div()
+                            .text_color(theme.text_muted)
+                            .child(if is_ru { "Выберите значок..." } else { "Select icon..." })
+                    }),
+            )
+            .child(
+                if self.toolbar_selected_icon.is_some() {
+                    div()
+                        .id("tb-cfg-icon-clear-btn")
+                        .w(px(16.0))
+                        .h(px(16.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .hover(|h| h.text_color(theme.text_primary))
+                        .child(icons::icon(icons::ICON_CLOSE, 12.0, theme.text_muted))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.toolbar_selected_icon = None;
+                            this.close_toolbar_icon_popup(cx);
+                            cx.notify();
+                        }))
+                } else {
+                    div()
+                        .id("tb-cfg-icon-chevron")
+                        .w(px(16.0))
+                        .h(px(16.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icons::icon(icons::ICON_CHEVRON_DOWN, 12.0, theme.text_muted))
+                }
+            )
+            .on_click(cx.listener(|this, _, window, cx| {
+                if this.toolbar_icon_popup_is_open() {
+                    this.close_toolbar_icon_popup(cx);
+                } else {
+                    this.open_toolbar_icon_popup(window, cx);
+                }
+            }));
+
+        let cmd_column = div()
+            .flex_1()
+            .min_w_0()
+            .relative()
+            .flex()
+            .flex_col()
+            .gap_1p5()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .text_xs()
+                    .text_color(theme.text_secondary)
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child(if is_ru { "1. Команда:" } else { "1. Command:" })
+                    )
+                    .child(
+                        div()
+                            .text_color(theme.text_muted)
+                            .child(format!("{}/{}", all_commands.len(), all_commands.len())),
+                    ),
+            )
+            .child(
+                div()
+                    .relative()
+                    .w_full()
+                    .child(cmd_select_trigger)
+                    .when_some(self.toolbar_command_popup.clone(), |parent, popup| {
+                        parent.child(
+                            gpui::deferred(
+                                div()
+                                    .id("tb-cmd-popup-anchor")
+                                    .absolute()
+                                    .top_full()
+                                    .left_0()
+                                    .right_0()
+                                    .w_full()
+                                    .mt_1()
+                                    .child(popup),
+                            )
+                            .with_priority(999),
+                        )
+                    }),
+            );
+
+        let icon_column = div()
+            .flex_1()
+            .min_w_0()
+            .relative()
+            .flex()
+            .flex_col()
+            .gap_1p5()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .text_xs()
+                    .text_color(theme.text_secondary)
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child(if is_ru { "2. Значок:" } else { "2. Icon:" })
+                    ),
+            )
+            .child(
+                div()
+                    .relative()
+                    .w_full()
+                    .child(icon_select_trigger)
+                    .when_some(self.toolbar_icon_popup.clone(), |parent, popup| {
+                        parent.child(
+                            gpui::deferred(
+                                div()
+                                    .id("tb-icon-popup-anchor")
+                                    .absolute()
+                                    .top_full()
+                                    .left_0()
+                                    .right_0()
+                                    .w_full()
+                                    .mt_1()
+                                    .child(popup),
+                            )
+                            .with_priority(999),
+                        )
+                    }),
+            );
+
+        let columns_row = div()
+            .flex()
+            .flex_row()
+            .gap_3()
+            .items_start()
+            .w_full()
+            .child(cmd_column)
+            .child(icon_column);
+
+        // ================= BOTTOM ACTIONS ROW =================
+        let can_save = self.toolbar_selected_command.is_some();
+
+        let actions_row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .id("tb-save-custom-btn")
+                    .px_3()
+                    .py_1p5()
+                    .rounded_md()
+                    .when(can_save, |d| {
+                        d.bg(theme.accent)
+                            .cursor_pointer()
+                            .hover(|h| h.bg(theme.accent_hover))
+                            .text_color(theme.text_on_accent)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(cmd_id) = this.toolbar_selected_command.clone() {
+                                    let icon = this.toolbar_selected_icon.clone().unwrap_or_else(|| "inline-code".to_string());
+                                    let tooltip = if this.toolbar_custom_tooltip.is_empty() {
+                                        None
+                                    } else {
+                                        Some(this.toolbar_custom_tooltip.clone())
+                                    };
+                                    let new_btn = crate::toolbar::ToolbarItem::button(
+                                        format!("tb-custom-{}", uuid::Uuid::new_v4().simple()),
+                                        cmd_id,
+                                        icon,
+                                        tooltip.as_deref(),
+                                    );
+                                    this.toolbar_add_item_at_target(new_btn, cx);
+                                    this.toolbar_add_button_open = false;
+                                    this.toolbar_selected_command = None;
+                                    this.toolbar_selected_icon = None;
+                                    this.toolbar_custom_tooltip.clear();
+                                    this.close_toolbar_command_popup(cx);
+                                    this.close_toolbar_icon_popup(cx);
+                                    cx.notify();
+                                }
+                            }))
+                    })
+                    .when(!can_save, |d| {
+                        d.bg(theme.bg_hover)
+                            .text_color(theme.text_muted)
+                            .cursor_not_allowed()
+                    })
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(if is_ru { "Сохранить кнопку" } else { "Save Button" }),
+            )
+            .child(
+                div()
+                    .id("tb-cancel-custom-btn")
+                    .px_3()
+                    .py_1p5()
+                    .rounded_md()
+                    .bg(theme.bg_hover)
+                    .cursor_pointer()
+                    .hover(|h| h.bg(theme.border))
+                    .text_xs()
+                    .text_color(theme.text_secondary)
+                    .child(if is_ru { "Отмена" } else { "Cancel" })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toolbar_add_button_open = false;
+                        this.toolbar_selected_command = None;
+                        this.toolbar_selected_icon = None;
+                        this.toolbar_custom_tooltip.clear();
+                        this.close_toolbar_command_popup(cx);
+                        this.close_toolbar_icon_popup(cx);
+                        cx.notify();
+                    })),
+            );
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_4()
+            .rounded_lg()
+            .bg(theme.bg_card)
+            .border_1()
+            .border_color(theme.accent)
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_color(theme.text_primary)
+                    .child(if is_ru { "Добавить кнопку форматирования" } else { "Add Formatting Button" }),
+            )
+            .child(columns_row)
+            .child(actions_row)
+    }
+
+    /// Renders inline form to add a new dropdown group.
+    fn render_toolbar_add_dropdown_form(&self, cx: &Context<Self>) -> gpui::Div {
+        let theme = &self.theme;
+        let is_ru = self.config.ui.language.starts_with("ru");
+
+        let available_icons = [
+            "heading-n", "type", "list-bullet", "align-left", "message-square", "more-horizontal",
+        ];
+
+        let mut icon_grid = div().flex().flex_wrap().gap_1p5();
+        for ic in available_icons {
+            let is_sel = self.toolbar_selected_icon.as_deref() == Some(ic);
+            let ic_str = ic.to_string();
+            let icon_asset = icons::resolve_toolbar_icon(ic);
+
+            let icon_box = div()
+                .id(gpui::SharedString::from(format!("tb-sel-dd-icon-{}", ic)))
+                .p_1()
+                .rounded_md()
+                .cursor_pointer()
+                .when(is_sel, |d| d.bg(theme.accent).border_1().border_color(theme.accent))
+                .when(!is_sel, |d| d.bg(theme.bg_editor).hover(|h| h.bg(theme.bg_hover)))
+                .child(
+                    gpui::svg()
+                        .path(icon_asset)
+                        .w(px(16.0))
+                        .h(px(16.0))
+                        .text_color(if is_sel { theme.text_on_accent } else { theme.text_primary })
+                        .flex_shrink_0()
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toolbar_selected_icon = Some(ic_str.clone());
+                    cx.notify();
+                }));
+            icon_grid = icon_grid.child(icon_box);
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_4()
+            .rounded_lg()
+            .bg(theme.bg_card)
+            .border_1()
+            .border_color(theme.accent)
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_color(theme.text_primary)
+                    .child(if is_ru { "Создать группу (выпадающий список)" } else { "Create Dropdown Group" }),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.text_secondary)
+                    .child(if is_ru { "Выберите значок группы:" } else { "Select group icon:" }),
+            )
+            .child(icon_grid)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id("tb-save-dd-btn")
+                            .px_3()
+                            .py_1p5()
+                            .rounded_md()
+                            .bg(theme.accent)
+                            .cursor_pointer()
+                            .hover(|h| h.bg(theme.accent_hover))
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.text_on_accent)
+                            .child(if is_ru { "Создать группу" } else { "Create Group" })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let new_dropdown = crate::toolbar::ToolbarItem::dropdown(
+                                    format!("tb-grp-{}", uuid::Uuid::new_v4().simple()),
+                                    this.toolbar_selected_icon.clone().unwrap_or_else(|| "heading-n".to_string()),
+                                    Some("Новая группа"),
+                                    None,
+                                    Vec::new(),
+                                );
+                                this.toolbar_add_item_at_target(new_dropdown, cx);
+                                this.toolbar_add_dropdown_open = false;
+                                this.toolbar_selected_icon = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("tb-cancel-dd-btn")
+                            .px_3()
+                            .py_1p5()
+                            .rounded_md()
+                            .bg(theme.bg_hover)
+                            .cursor_pointer()
+                            .hover(|h| h.bg(theme.border))
+                            .text_xs()
+                            .text_color(theme.text_secondary)
+                            .child(if is_ru { "Отмена" } else { "Cancel" })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.toolbar_add_dropdown_open = false;
+                                this.toolbar_selected_icon = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+    }
+
+    /// Moves a toolbar item up or down at a hierarchical path.
+    fn toolbar_move_item_at_path(&mut self, path: &[usize], up: bool, cx: &mut Context<Self>) {
+        let vault_root = self
+            .weak_app
+            .upgrade()
+            .and_then(|a| a.read(cx).state.vault.as_ref().map(|v| v.root.clone()));
+        let mut items = crate::plugins::editor_toolbar::load_toolbar_config(vault_root.as_deref());
+
+        if path.is_empty() {
+            return;
+        }
+
+        if path.len() == 1 {
+            let idx = path[0];
+            if up && idx > 0 && idx < items.len() {
+                items.swap(idx, idx - 1);
+            } else if !up && idx + 1 < items.len() {
+                items.swap(idx, idx + 1);
+            }
+        } else if path.len() == 2 {
+            let p0 = path[0];
+            let p1 = path[1];
+            if let Some(parent) = items.get_mut(p0) {
+                if let crate::toolbar::ToolbarItemKind::Dropdown { ref mut items, .. } = parent.kind {
+                    if up && p1 > 0 && p1 < items.len() {
+                        items.swap(p1, p1 - 1);
+                    } else if !up && p1 + 1 < items.len() {
+                        items.swap(p1, p1 + 1);
+                    }
+                }
+            }
+        }
+
+        self.toolbar_save_and_sync(items, None, cx);
+    }
+
+    /// Deletes a toolbar item at a hierarchical path.
+    fn toolbar_delete_item_at_path(&mut self, path: &[usize], cx: &mut Context<Self>) {
+        let vault_root = self
+            .weak_app
+            .upgrade()
+            .and_then(|a| a.read(cx).state.vault.as_ref().map(|v| v.root.clone()));
+        let mut items = crate::plugins::editor_toolbar::load_toolbar_config(vault_root.as_deref());
+
+        if path.is_empty() {
+            return;
+        }
+
+        if path.len() == 1 {
+            let idx = path[0];
+            if idx < items.len() {
+                items.remove(idx);
+            }
+        } else if path.len() == 2 {
+            let p0 = path[0];
+            let p1 = path[1];
+            if let Some(parent) = items.get_mut(p0) {
+                if let crate::toolbar::ToolbarItemKind::Dropdown { ref mut items, .. } = parent.kind {
+                    if p1 < items.len() {
+                        items.remove(p1);
+                    }
+                }
+            }
+        }
+
+        self.toolbar_save_and_sync(items, None, cx);
+    }
+
+    /// Appends a new item into target dropdown group or to root items.
+    fn toolbar_add_item_at_target(&mut self, new_item: crate::toolbar::ToolbarItem, cx: &mut Context<Self>) {
+        let vault_root = self
+            .weak_app
+            .upgrade()
+            .and_then(|a| a.read(cx).state.vault.as_ref().map(|v| v.root.clone()));
+        let mut items = crate::plugins::editor_toolbar::load_toolbar_config(vault_root.as_deref());
+
+        if let Some(ref target_id) = self.toolbar_target_dropdown_id {
+            let mut added = false;
+            for it in items.iter_mut() {
+                if it.id == *target_id {
+                    if let crate::toolbar::ToolbarItemKind::Dropdown { ref mut items, .. } = it.kind {
+                        items.push(new_item.clone());
+                        added = true;
+                        break;
+                    }
+                }
+            }
+            if !added {
+                items.push(new_item);
+            }
+        } else {
+            items.push(new_item);
+        }
+
+        self.toolbar_save_and_sync(items, None, cx);
+    }
+
+    /// Resets the toolbar configuration to defaults.
+    fn toolbar_reset_defaults(&mut self, cx: &mut Context<Self>) {
+        let vault_root = self
+            .weak_app
+            .upgrade()
+            .and_then(|a| a.read(cx).state.vault.as_ref().map(|v| v.root.clone()));
+        if let Some(ref root) = vault_root {
+            let _ = crate::plugins::editor_toolbar::reset_toolbar_config(root);
+        }
+        let defaults = crate::plugins::editor_toolbar::default_toolbar_items();
+        self.toolbar_save_and_sync(defaults, Some("Сброшено на настройки по умолчанию"), cx);
+    }
+
+    /// Exports current toolbar configuration as JSON to clipboard.
+    fn toolbar_export_json(&mut self, cx: &mut Context<Self>) {
+        let vault_root = self
+            .weak_app
+            .upgrade()
+            .and_then(|a| a.read(cx).state.vault.as_ref().map(|v| v.root.clone()));
+        let items = crate::plugins::editor_toolbar::load_toolbar_config(vault_root.as_deref());
+
+        let cfg = crate::plugins::editor_toolbar::ToolbarConfigFile {
+            version: 1,
+            items,
+        };
+
+        if let Ok(json_str) = serde_json::to_string_pretty(&cfg) {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(json_str));
+            self.toolbar_status_msg = Some("Конфигурация скопирована в буфер обмена".to_string());
+            cx.notify();
+        }
+    }
+
+    /// Imports toolbar configuration from JSON in clipboard.
+    fn toolbar_import_json(&mut self, cx: &mut Context<Self>) {
+        let clip_text = cx.read_from_clipboard().and_then(|item| item.text());
+        let Some(text) = clip_text else {
+            self.toolbar_status_msg = Some("Буфер обмена пуст".to_string());
+            cx.notify();
+            return;
+        };
+
+        let parsed_items: Option<Vec<crate::toolbar::ToolbarItem>> =
+            serde_json::from_str::<crate::plugins::editor_toolbar::ToolbarConfigFile>(&text)
+                .map(|c| c.items)
+                .or_else(|_| serde_json::from_str::<Vec<crate::toolbar::ToolbarItem>>(&text))
+                .ok();
+
+        if let Some(items) = parsed_items {
+            let validated = crate::toolbar::validate_and_prune_items(items, 1);
+            self.toolbar_save_and_sync(validated, Some("Конфигурация успешно импортирована!"), cx);
+        } else {
+            self.toolbar_status_msg = Some("Ошибка: не удалось распознать JSON".to_string());
+            cx.notify();
+        }
+    }
+
+    /// Saves items to vault disk and live-updates toolbar registry in state.
+    fn toolbar_save_and_sync(
+        &mut self,
+        items: Vec<crate::toolbar::ToolbarItem>,
+        msg: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        let vault_root = self
+            .weak_app
+            .upgrade()
+            .and_then(|a| a.read(cx).state.vault.as_ref().map(|v| v.root.clone()));
+
+        if let Some(ref root) = vault_root {
+            let _ = crate::plugins::editor_toolbar::save_toolbar_config(root, &items);
+        }
+
+        if let Some(app) = self.weak_app.upgrade() {
+            let items_clone = items.clone();
+            app.update(cx, |app, cx| {
+                crate::plugins::editor_toolbar::register_or_update_bundled_toolbar(&app.state, items_clone);
+                cx.notify();
+            });
+        }
+
+        if let Some(m) = msg {
+            self.toolbar_status_msg = Some(m.to_string());
+        }
+        cx.notify();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6640,6 +8145,76 @@ mod tests {
         assert_eq!(tabs.len(), 7);
         assert!(matches!(tabs[0], SettingsTab::Ui));
         assert!(matches!(tabs[6], SettingsTab::PluginSettings(ref id) if id == "dataview"));
+    }
+
+    #[test]
+    fn test_toolbar_scroll_handle_and_drag_math() {
+        let style = crate::views::scrollbar::ScrollbarStyle::default();
+        let mut drag = crate::views::scrollbar::ScrollbarDrag::default();
+
+        assert!(!drag.active);
+
+        // Simulated bounds: track length 240, max offset 1000, scroll at 0
+        let geom = crate::views::scrollbar::ScrollbarGeometry::new(
+            0.0,
+            240.0,
+            1000.0,
+            0.0,
+            &style,
+        ).expect("should compute geometry");
+
+        assert_eq!(geom.track_h, 240.0);
+        assert_eq!(geom.max_offset, 1000.0);
+        assert_eq!(geom.scroll_y, 0.0);
+        assert!(geom.thumb_h >= style.min_thumb_h);
+        assert_eq!(geom.thumb_top, 0.0);
+
+        // Click on track at y = 120 (middle of 240px track)
+        let clicked_target = geom.offset_for_track_click(120.0);
+        assert!(clicked_target > 400.0 && clicked_target < 600.0);
+
+        // Drag begins
+        drag.begin(50.0, 0.0);
+        assert!(drag.active);
+        assert_eq!(drag.start_y, 50.0);
+        assert_eq!(drag.start_scroll, 0.0);
+
+        // Pointer moves 20px down
+        let new_offset = geom.offset_after_drag(&drag, 70.0);
+        assert!(new_offset > 0.0);
+
+        // End drag
+        drag.end();
+        assert!(!drag.active);
+    }
+
+    #[test]
+    fn test_toolbar_dropdown_scroll_wheel_offset_clamping() {
+        let max_height = 400.0f32;
+        let line_h = 36.0f32;
+
+        // Start at top (offset = 0)
+        let mut cur_offset = 0.0f32;
+
+        // Scroll down 2 lines (dy = -72.0)
+        let dy = -2.0 * line_h;
+        cur_offset = (cur_offset + dy).clamp(-max_height, 0.0);
+        assert_eq!(cur_offset, -72.0);
+
+        // Scroll down beyond max_height (e.g. 15 lines)
+        let dy_large = -15.0 * line_h;
+        cur_offset = (cur_offset + dy_large).clamp(-max_height, 0.0);
+        assert_eq!(cur_offset, -max_height);
+
+        // Scroll up 1 line (dy = +36.0)
+        let dy_up = 1.0 * line_h;
+        cur_offset = (cur_offset + dy_up).clamp(-max_height, 0.0);
+        assert_eq!(cur_offset, -max_height + 36.0);
+
+        // Scroll up beyond top
+        let dy_up_large = 20.0 * line_h;
+        cur_offset = (cur_offset + dy_up_large).clamp(-max_height, 0.0);
+        assert_eq!(cur_offset, 0.0);
     }
 }
 

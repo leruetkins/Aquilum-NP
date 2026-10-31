@@ -1480,7 +1480,11 @@ pub fn selection_chars_in_line(
     }
     let to_line_char = |byte: usize| {
         let byte = byte.clamp(line_start, line_end);
-        line[..byte - line_start].chars().count()
+        let mut rel = byte - line_start;
+        while rel > 0 && !line.is_char_boundary(rel) {
+            rel -= 1;
+        }
+        line[..rel].chars().count()
     };
     Some((to_line_char(start), to_line_char(end)))
 }
@@ -3845,6 +3849,41 @@ pub fn strip_markdown_tags(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_selection_chars_in_line_unicode_boundary_safety() {
+        // "Привет" is 12 bytes: П(0..2), р(2..4), и(4..6), в(6..8), е(8..10), т(10..12)
+        // With line_start = 20, 'в' sits at bytes 26..28. Byte 27 is strictly inside 'в'.
+        let line = "Привет мир";
+        let line_start = 20;
+
+        // Selection ends at byte 27 (inside 'в' at relative byte 7)
+        let sel = 20..27;
+        let res = selection_chars_in_line(line, line_start, Some(&sel));
+        assert!(res.is_some());
+        let (start_ch, end_ch) = res.unwrap();
+        assert_eq!(start_ch, 0);
+        // Clamps to byte 6 ('и'), so 3 characters: 'П', 'р', 'и'
+        assert_eq!(end_ch, 3);
+
+        // Selection starts inside 'р' (relative byte 3) and ends after 'м' (relative byte 15)
+        let sel2 = 23..35;
+        let res2 = selection_chars_in_line(line, line_start, Some(&sel2));
+        assert!(res2.is_some());
+        let (start_ch2, end_ch2) = res2.unwrap();
+        // Clamps start from 23 to 22 ('П'), counting 1 char ('П')
+        assert_eq!(start_ch2, 1);
+        // Byte 35 - 20 = 15 bytes: "Привет " (13 bytes, 7 chars) + "м" (2 bytes, 1 char) = 8 chars
+        assert_eq!(end_ch2, 8);
+
+        // Selection extends beyond end of line
+        let sel3 = 20..50;
+        let res3 = selection_chars_in_line(line, line_start, Some(&sel3));
+        assert!(res3.is_some());
+        let (start_ch3, end_ch3) = res3.unwrap();
+        assert_eq!(start_ch3, 0);
+        assert_eq!(end_ch3, 10);
+    }
 
     #[test]
     fn test_classify_all_headings() {

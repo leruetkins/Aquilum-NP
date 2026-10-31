@@ -12,6 +12,8 @@ pub struct Command {
     pub callback: CommandCallback,
     /// Горячая клавиша для отображения в палитре (например, "Ctrl+S").
     pub hotkey: Option<String>,
+    /// Иконка для отображения в тулбаре и палитре команд.
+    pub icon: Option<String>,
 }
 
 impl std::fmt::Debug for Command {
@@ -21,6 +23,7 @@ impl std::fmt::Debug for Command {
             .field("name", &self.name)
             .field("owner", &self.owner)
             .field("hotkey", &self.hotkey)
+            .field("icon", &self.icon)
             .finish()
     }
 }
@@ -48,6 +51,12 @@ impl CommandRegistry {
         let id = cmd.id.clone();
         self.commands.lock().unwrap().insert(id.clone(), cmd);
         id
+    }
+
+    /// Найти команду по id.
+    pub fn get(&self, id: &str) -> Option<Command> {
+        let cmds = self.commands.lock().unwrap();
+        cmds.get(id).cloned()
     }
 
     /// Снять регистрацию команды по идентификатору.
@@ -126,6 +135,7 @@ mod tests {
                 flag.store(true, Ordering::SeqCst);
             }),
             hotkey: Some("Ctrl+Shift+T".into()),
+            icon: None,
         });
 
         assert_eq!(registry.all().len(), 1);
@@ -150,6 +160,7 @@ mod tests {
             owner: None,
             callback: Arc::new(|| {}),
             hotkey: None,
+            icon: None,
         });
 
         registry.register(Command {
@@ -158,6 +169,7 @@ mod tests {
             owner: Some("plugin-a".into()),
             callback: Arc::new(|| {}),
             hotkey: None,
+            icon: None,
         });
 
         registry.register(Command {
@@ -166,6 +178,7 @@ mod tests {
             owner: Some("plugin-b".into()),
             callback: Arc::new(|| {}),
             hotkey: None,
+            icon: None,
         });
 
         assert_eq!(registry.all().len(), 3);

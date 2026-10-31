@@ -693,7 +693,7 @@ impl PluginCatalogView {
         let popup = cx.new(|cx| {
             crate::views::tab_list::TabListPopup::new(
                 tabs,
-                active_ix,
+                Some(active_ix),
                 theme,
                 None,
                 None,
@@ -3511,7 +3511,7 @@ impl AppView {
         let popup = cx.new(|cx| {
             crate::views::tab_list::TabListPopup::new(
                 tabs,
-                active_ix,
+                Some(active_ix),
                 theme,
                 None,
                 None,

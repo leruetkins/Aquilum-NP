@@ -473,6 +473,7 @@ pub struct AppState {
     pub commands: Arc<crate::commands::CommandRegistry>,
     pub ribbon: Arc<crate::ribbon::RibbonRegistry>,
     pub status_bar: Arc<crate::ribbon::StatusBarRegistry>,
+    pub toolbars: Arc<crate::toolbar::ToolbarRegistry>,
     pub notifications: Arc<crate::views::notification::NotificationRegistry>,
     pub code_block_processors: Arc<crate::plugins::code_block::CodeBlockProcessorRegistry>,
     pub plugin_host: Arc<crate::plugins::bridge::PluginHostState>,
@@ -589,6 +590,7 @@ impl AppState {
         let commands = Arc::new(crate::commands::CommandRegistry::new());
         let ribbon = Arc::new(crate::ribbon::RibbonRegistry::new());
         let status_bar = Arc::new(crate::ribbon::StatusBarRegistry::new());
+        let toolbars = Arc::new(crate::toolbar::ToolbarRegistry::new());
         let notifications = Arc::new(crate::views::notification::NotificationRegistry::new());
         let code_block_processors = Arc::new(crate::plugins::code_block::CodeBlockProcessorRegistry::new());
         let plugin_host = Arc::new(crate::plugins::bridge::PluginHostState::new());
@@ -604,6 +606,7 @@ impl AppState {
             commands,
             ribbon,
             status_bar,
+            toolbars,
             notifications,
             code_block_processors,
             plugin_host,
@@ -881,6 +884,224 @@ impl AppState {
         let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return; };
         let (_, note_edit, edit_event) = view.insert_text(doc, text);
         self.dispatch_edit_event(&edit_event, &note_edit);
+    }
+
+    pub fn active_apply_formatting(&mut self, op: &crate::formatting::FormattingOp) -> bool {
+        let Some(tab_id) = self.active_tab_id() else { return false; };
+        let Some(doc_id) = self.active_doc_id() else { return false; };
+        let (Some(view), Some(doc)) = (self.views.get_mut(&tab_id), self.documents.get_mut(&doc_id)) else { return false; };
+
+        let doc_len = doc.len();
+        let cur = view.cursor_offset.min(doc_len);
+        let (sel_min, sel_max) = match view.selection_anchor {
+            Some(a) => {
+                let a = a.min(doc_len);
+                (a.min(cur), a.max(cur))
+            }
+            None => (cur, cur),
+        };
+
+        let result = match op {
+            crate::formatting::FormattingOp::InsertTable => {
+                let template = "\n| Column 1 | Column 2 | Column 3 |\n| -------- | -------- | -------- |\n| Item 1   | Item 2   | Item 3   |\n| Item 4   | Item 5   | Item 6   |\n";
+                crate::formatting::FormattingResult {
+                    byte_range: sel_min..sel_max,
+                    new_text: template.to_string(),
+                    new_cursor: sel_min + template.len(),
+                    new_anchor: None,
+                }
+            }
+            crate::formatting::FormattingOp::CodeBlock => {
+                let (replacement, new_cursor) = if sel_min == sel_max {
+                    ("```\n\n```\n".to_string(), sel_min + 4)
+                } else {
+                    let selected_text = doc.slice_to_string(sel_min..sel_max);
+                    (format!("```\n{}\n```\n", selected_text), sel_min + 4 + selected_text.len())
+                };
+                crate::formatting::FormattingResult {
+                    byte_range: sel_min..sel_max,
+                    new_text: replacement,
+                    new_cursor,
+                    new_anchor: None,
+                }
+            }
+            crate::formatting::FormattingOp::InsertCallout(kind) => {
+                let c_type = if kind.trim().is_empty() { "note" } else { kind.trim() };
+                let (replacement, new_cursor) = if sel_min == sel_max {
+                    (format!("> [!{}]\n> \n", c_type), sel_min + format!("> [!{}]\n> ", c_type).len())
+                } else {
+                    let selected_text = doc.slice_to_string(sel_min..sel_max);
+                    let lines: Vec<String> = selected_text.lines().map(|l| format!("> {}", l)).collect();
+                    let content = if lines.is_empty() { "> ".to_string() } else { lines.join("\n") };
+                    let rep = format!("> [!{}]\n{}\n", c_type, content);
+                    let cur = sel_min + rep.len();
+                    (rep, cur)
+                };
+                crate::formatting::FormattingResult {
+                    byte_range: sel_min..sel_max,
+                    new_text: replacement,
+                    new_cursor,
+                    new_anchor: None,
+                }
+            }
+            crate::formatting::FormattingOp::AttachFile(target) => {
+                let selected_text = if sel_min != sel_max { doc.slice_to_string(sel_min..sel_max) } else { String::new() };
+                let (replacement, new_cursor) = match target {
+                    Some(path) => {
+                        let alt = if selected_text.is_empty() { "" } else { &selected_text };
+                        (format!("![{}]({})", alt, path), sel_min + format!("![{}]({})", alt, path).len())
+                    }
+                    None => {
+                        if selected_text.is_empty() {
+                            ("![[]]".to_string(), sel_min + 3)
+                        } else {
+                            (format!("![[{}]]", selected_text), sel_min + format!("![[{}]]", selected_text).len())
+                        }
+                    }
+                };
+                crate::formatting::FormattingResult {
+                    byte_range: sel_min..sel_max,
+                    new_text: replacement,
+                    new_cursor,
+                    new_anchor: None,
+                }
+            }
+            crate::formatting::FormattingOp::ToggleInline { open, close } => {
+                let open_chars = open.chars().count();
+                let close_chars = close.chars().count();
+                let char_sel_start = doc.byte_to_char(sel_min);
+                let char_sel_end = doc.byte_to_char(sel_max);
+                let slice_char_start = char_sel_start.saturating_sub(open_chars);
+                let slice_char_end = (char_sel_end + close_chars).min(doc.char_len());
+                let slice_byte_start = doc.char_to_byte(slice_char_start);
+                let slice_byte_end = doc.char_to_byte(slice_char_end);
+                let slice_text = doc.slice_to_string(slice_byte_start..slice_byte_end);
+                let rel_sel_start = char_sel_start - slice_char_start;
+                let rel_sel_end = char_sel_end - slice_char_start;
+                let res = crate::formatting::apply_toggle_inline(&slice_text, rel_sel_start, rel_sel_end, open, close);
+                crate::formatting::FormattingResult {
+                    byte_range: slice_byte_start + res.byte_range.start .. slice_byte_start + res.byte_range.end,
+                    new_text: res.new_text,
+                    new_cursor: slice_byte_start + res.new_cursor,
+                    new_anchor: res.new_anchor.map(|a| slice_byte_start + a),
+                }
+            }
+            line_op => {
+                let start_line = doc.line_of_byte(sel_min);
+                let end_line = doc.line_of_byte(sel_max);
+                let lines_byte_start = doc.line_start_byte(start_line);
+                let lines_byte_end = doc.line_end_byte(end_line);
+                let lines_text = doc.slice_to_string(lines_byte_start..lines_byte_end);
+                let char_lines_start = doc.byte_to_char(lines_byte_start);
+                let char_sel_start = doc.byte_to_char(sel_min).saturating_sub(char_lines_start);
+                let char_sel_end = doc.byte_to_char(sel_max).saturating_sub(char_lines_start);
+
+                let res = match line_op {
+                    crate::formatting::FormattingOp::ToggleHeading(level) => {
+                        crate::formatting::apply_toggle_heading(&lines_text, char_sel_start, char_sel_end, *level)
+                    }
+                    crate::formatting::FormattingOp::ClearFormatting => {
+                        crate::formatting::apply_clear_formatting(&lines_text, char_sel_start, char_sel_end)
+                    }
+                    crate::formatting::FormattingOp::ToggleTask | crate::formatting::FormattingOp::ListTask => {
+                        crate::formatting::apply_toggle_task(&lines_text, char_sel_start, char_sel_end)
+                    }
+                    crate::formatting::FormattingOp::ListBullet => {
+                        crate::formatting::apply_list_bullet(&lines_text, char_sel_start, char_sel_end)
+                    }
+                    crate::formatting::FormattingOp::ListNumbered => {
+                        crate::formatting::apply_list_numbered(&lines_text, char_sel_start, char_sel_end)
+                    }
+                    crate::formatting::FormattingOp::Indent => {
+                        crate::formatting::apply_indent(&lines_text, char_sel_start, char_sel_end)
+                    }
+                    crate::formatting::FormattingOp::Outdent => {
+                        crate::formatting::apply_outdent(&lines_text, char_sel_start, char_sel_end)
+                    }
+                    crate::formatting::FormattingOp::Align(align) => {
+                        crate::formatting::apply_align(&lines_text, char_sel_start, char_sel_end, *align)
+                    }
+                    _ => unreachable!(),
+                };
+
+                crate::formatting::FormattingResult {
+                    byte_range: lines_byte_start + res.byte_range.start .. lines_byte_start + res.byte_range.end,
+                    new_text: res.new_text,
+                    new_cursor: lines_byte_start + res.new_cursor,
+                    new_anchor: res.new_anchor.map(|a| lines_byte_start + a),
+                }
+            }
+        };
+
+        let range = result.byte_range;
+        if range.start > range.end || range.end > doc.len() || !doc.is_char_boundary(range.start) || !doc.is_char_boundary(range.end) {
+            return false;
+        }
+
+        let removed = doc.slice_to_string(range.clone());
+        let inserted = result.new_text;
+        let sel_before = view.selection();
+        let sel_after = match result.new_anchor {
+            Some(anchor) => crate::workspace::session_core::undo::Selection {
+                cursor: result.new_cursor,
+                anchor: Some(anchor),
+            },
+            None => crate::workspace::session_core::undo::Selection::cursor_only(result.new_cursor),
+        };
+
+        let (_, note_edit, edit_event) = doc.record_change_with_selection(
+            range.start,
+            removed,
+            inserted,
+            sel_before,
+            sel_after,
+            Some(tab_id),
+        );
+
+        let mut cursor = result.new_cursor.min(doc.len());
+        while cursor > 0 && !doc.is_char_boundary(cursor) {
+            cursor -= 1;
+        }
+        let anchor = result.new_anchor.map(|a| {
+            let mut anchor = a.min(doc.len());
+            while anchor > 0 && !doc.is_char_boundary(anchor) {
+                anchor -= 1;
+            }
+            anchor
+        });
+
+        self.dispatch_edit_event(&edit_event, &note_edit);
+
+        if let Some(v) = self.views.get_mut(&tab_id) {
+            v.cursor_offset = cursor;
+            v.selection_anchor = anchor;
+            v.visual_cache_dirty = true;
+            if note_edit.line_diff != 0 {
+                v.shift_raw_tables(note_edit.edit_line, note_edit.line_diff);
+                v.shift_line_paints(note_edit.edit_line, note_edit.line_diff);
+                if note_edit.edit_line < v.viewport.offset {
+                    let line_h = v.est_rows_per_line * v.est_row_h;
+                    let h_diff = (note_edit.line_diff as f64) * line_h;
+                    v.viewport.offset = (v.viewport.offset as isize + note_edit.line_diff).max(0) as usize;
+                    v.above_lines = (v.above_lines as isize + note_edit.line_diff).max(0) as usize;
+                    v.above_h = (v.above_h + h_diff).max(0.0);
+                    v.scroll_top = (v.scroll_top + h_diff).max(0.0);
+                }
+            }
+        }
+        true
+    }
+
+    pub fn active_formatting_state(&self) -> crate::formatting::ActiveFormatting {
+        let Some((_view, doc)) = self.active_view_and_doc() else {
+            return crate::formatting::ActiveFormatting::default();
+        };
+
+        crate::formatting::ActiveFormatting {
+            can_undo: doc.can_undo(),
+            can_redo: doc.can_redo(),
+            ..Default::default()
+        }
     }
 
     pub fn active_replace_range(
@@ -4368,6 +4589,7 @@ mod tests {
             ribbon: Arc::new(crate::ribbon::RibbonRegistry::new()),
             status_bar: Arc::new(crate::ribbon::StatusBarRegistry::new()),
             notifications: Arc::new(crate::views::notification::NotificationRegistry::new()),
+            toolbars: Arc::new(crate::toolbar::ToolbarRegistry::new()),
             code_block_processors: Arc::new(crate::plugins::code_block::CodeBlockProcessorRegistry::new()),
             plugin_host: Arc::new(crate::plugins::bridge::PluginHostState::new()),
             snapshot: snapshot.clone(),
@@ -5258,16 +5480,18 @@ mod tests {
 
         // 3. Our own write echo (same content as the buffer): no reload.
         // Simulate a completed own save: hash matches the buffer content.
-        let doc = state.documents.get_mut(&doc_id).unwrap();
-        doc.disk_hash = Some(crate::save_manager::hash_rope(&doc.rope));
-        doc.disk_stamp = crate::save_manager::file_stamp(&note_path);
-        drop(doc);
+        {
+            let doc = state.documents.get_mut(&doc_id).unwrap();
+            doc.disk_hash = Some(crate::save_manager::hash_rope(&doc.rope));
+            doc.disk_stamp = crate::save_manager::file_stamp(&note_path);
+        }
         assert!(!state.handle_file_modified(&note_path), "own write echo must not reload");
 
         // 4. External change to a DIRTY doc: only a status, no reload.
-        let doc = state.documents.get_mut(&doc_id).unwrap();
-        doc.record_change_with_selection(0, String::new(), "typed ".to_string(), crate::workspace::session_core::undo::Selection::cursor_only(0), crate::workspace::session_core::undo::Selection::cursor_only(6), None);
-        drop(doc);
+        {
+            let doc = state.documents.get_mut(&doc_id).unwrap();
+            doc.record_change_with_selection(0, String::new(), "typed ".to_string(), crate::workspace::session_core::undo::Selection::cursor_only(0), crate::workspace::session_core::undo::Selection::cursor_only(6), None);
+        }
         std::fs::write(&note_path, "disk v3 (external)").unwrap();
         assert!(!state.handle_file_modified(&note_path), "dirty buffer must not be reloaded");
         assert_eq!(state.documents.get(&doc_id).unwrap().content(), "typed disk v2 (external)");
@@ -5288,9 +5512,10 @@ mod tests {
         let doc_id = state.find_document_by_path(&note_path).unwrap();
 
         // The user types while another program rewrites the file.
-        let doc = state.documents.get_mut(&doc_id).unwrap();
-        doc.record_change_with_selection(0, String::new(), "typed ".to_string(), crate::workspace::session_core::undo::Selection::cursor_only(0), crate::workspace::session_core::undo::Selection::cursor_only(6), None);
-        drop(doc);
+        {
+            let doc = state.documents.get_mut(&doc_id).unwrap();
+            doc.record_change_with_selection(0, String::new(), "typed ".to_string(), crate::workspace::session_core::undo::Selection::cursor_only(0), crate::workspace::session_core::undo::Selection::cursor_only(6), None);
+        }
         std::fs::write(&note_path, "disk v2 (external)").unwrap();
 
         assert!(state.save_document(doc_id));
@@ -6214,6 +6439,65 @@ mod tests {
         // The toggle is one ordinary undo step.
         assert!(state.active_undo());
         assert_eq!(state.documents.get(&doc_id).unwrap().line_text(1), "- [x] second");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_active_apply_formatting_russian_sequence_and_dirty_flag() {
+        let temp_dir = std::env::temp_dir().join(format!("test_fmt_ru_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let note_path = temp_dir.join("ru_formatting.md");
+        std::fs::write(&note_path, "Привет мир\nВторая строка с русским текстом\n").unwrap();
+
+        let mut state = AppState::new_empty();
+        state.open_note(note_path);
+        let doc_id = state.active_doc_id().unwrap();
+        let tab_id = state.active_tab_id().unwrap();
+
+        // Select "Привет" (bytes 0..12)
+        {
+            let view = state.views.get_mut(&tab_id).unwrap();
+            view.selection_anchor = Some(0);
+            view.cursor_offset = 12;
+            view.visual_cache_dirty = false;
+        }
+
+        // 1. Insert table
+        assert!(state.active_apply_formatting(&crate::formatting::FormattingOp::InsertTable));
+        {
+            let view = state.views.get(&tab_id).unwrap();
+            assert!(view.visual_cache_dirty, "formatting must immediately mark visual cache dirty");
+            assert_eq!(view.scroll_top, 0.0, "scroll_top must not jump when applying formatting");
+            let doc = state.documents.get(&doc_id).unwrap();
+            assert!(doc.is_dirty, "formatting must mark document dirty for debounced autosave");
+            assert!(doc.is_char_boundary(view.cursor_offset));
+        }
+
+        // 2. Highlight
+        assert!(state.active_apply_formatting(&crate::formatting::FormattingOp::ToggleInline { open: "==", close: "==" }));
+        {
+            let view = state.views.get(&tab_id).unwrap();
+            assert!(view.visual_cache_dirty);
+            let doc = state.documents.get(&doc_id).unwrap();
+            assert!(doc.is_char_boundary(view.cursor_offset));
+            if let Some(anchor) = view.selection_anchor {
+                assert!(doc.is_char_boundary(anchor));
+            }
+        }
+
+        // 3. Heading 2
+        assert!(state.active_apply_formatting(&crate::formatting::FormattingOp::ToggleHeading(2)));
+        {
+            let view = state.views.get(&tab_id).unwrap();
+            assert!(view.visual_cache_dirty);
+            let doc = state.documents.get(&doc_id).unwrap();
+            assert!(doc.is_char_boundary(view.cursor_offset));
+        }
+
+        // 4. Undo and Redo
+        assert!(state.active_undo());
+        assert!(state.active_redo());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

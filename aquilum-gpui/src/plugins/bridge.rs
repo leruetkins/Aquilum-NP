@@ -130,6 +130,10 @@ impl PluginHostState {
             | ApiRequest::SetCodeBlockView { .. }
             | ApiRequest::AddCommand { .. }
             | ApiRequest::RemoveCommand { .. }
+            | ApiRequest::AddToolbar { .. }
+            | ApiRequest::UpdateToolbar { .. }
+            | ApiRequest::RemoveToolbar { .. }
+            | ApiRequest::RegisterIcon { .. }
             | ApiRequest::AddStatusBarItem { .. }
             | ApiRequest::UpdateStatusBarItem { .. }
             | ApiRequest::AddRibbonIcon { .. }
@@ -759,7 +763,7 @@ impl AppView {
                             (None, 0) => base.clone(),
                             (None, _) => format!("{base} {n}"),
                         };
-                        let mut taken = |p: &String| vault.resolve(p).map(|a| a.exists()).unwrap_or(false);
+                        let taken = |p: &String| vault.resolve(p).map(|a| a.exists()).unwrap_or(false);
                         let mut n = 0;
                         let mut path = candidate(n);
                         while taken(&path) {
@@ -959,7 +963,8 @@ impl AppView {
                     HostEvent::response_ok(request_id, serde_json::Value::Null),
                 );
             }
-            ApiRequest::AddCommand { id, name, hotkey } => {                let p_id = plugin_id.clone();
+            ApiRequest::AddCommand { id, name, hotkey, icon } => {
+                let p_id = plugin_id.clone();
                 let cmd_id = id.clone();
                 let host = self.state.plugin_host.clone();
                 let p_name = host.get_plugin_name(&plugin_id).unwrap_or_else(|| plugin_id.clone());
@@ -975,6 +980,7 @@ impl AppView {
                     name: command_name,
                     owner: Some(plugin_id.clone()),
                     hotkey,
+                    icon,
                     callback: std::sync::Arc::new(move || {
                         println!("[bridge:{}] Command callback triggered! Sending HostEvent::ExecuteCommand for '{}'", p_id, cmd_id);
                         let _ = host.send_event(
@@ -989,6 +995,38 @@ impl AppView {
                 let _ = self.state.plugin_host.send_event(
                     &plugin_id,
                     HostEvent::response_ok(request_id, serde_json::Value::Null),
+                );
+            }
+            ApiRequest::AddToolbar { spec } => {
+                let id = spec.id.clone();
+                self.state.toolbars.add_toolbar(spec, Some(plugin_id.clone()));
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::json!({ "id": id })),
+                );
+                cx.notify();
+            }
+            ApiRequest::UpdateToolbar { id, items } => {
+                let ok = self.state.toolbars.update_toolbar(&id, items);
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Bool(ok)),
+                );
+                cx.notify();
+            }
+            ApiRequest::RemoveToolbar { id } => {
+                let ok = self.state.toolbars.remove_toolbar(&id);
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Bool(ok)),
+                );
+                cx.notify();
+            }
+            ApiRequest::RegisterIcon { name, svg } => {
+                crate::toolbar::register_custom_icon(&name, &svg);
+                let _ = self.state.plugin_host.send_event(
+                    &plugin_id,
+                    HostEvent::response_ok(request_id, serde_json::Value::Bool(true)),
                 );
             }
             ApiRequest::AddRibbonIcon { id, icon, title } => {

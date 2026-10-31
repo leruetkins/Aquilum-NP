@@ -171,6 +171,180 @@ impl AppView {
             "app:open-search-dialog" => {
                 self.open_search_dialog(window, cx);
             }
+            "editor:undo" => {
+                if self.state.active_undo() {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:redo" => {
+                if self.state.active_redo() {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:bold" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::ToggleInline { open: "**", close: "**" }) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:italic" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::ToggleInline { open: "*", close: "*" }) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:strikethrough" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::ToggleInline { open: "~~", close: "~~" }) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:underline" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::ToggleInline { open: "<u>", close: "</u>" }) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:highlight" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::ToggleInline { open: "==", close: "==" }) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:inline-code" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::ToggleInline { open: "`", close: "`" }) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:clear-formatting" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::ClearFormatting) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:heading-1" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::ToggleHeading(1)) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:heading-2" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::ToggleHeading(2)) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:heading-3" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::ToggleHeading(3)) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:heading-4" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::ToggleHeading(4)) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:heading-5" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::ToggleHeading(5)) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:heading-6" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::ToggleHeading(6)) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:toggle-task" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::ToggleTask) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:list-bullet" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::ListBullet) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:list-numbered" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::ListNumbered) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:list-task" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::ListTask) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:indent" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::Indent) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:outdent" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::Outdent) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:insert-table" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::InsertTable) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:code-block" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::CodeBlock) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:insert-callout" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::InsertCallout("note".into())) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:attach-file" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::AttachFile(None)) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:align-left" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::Align(crate::formatting::AlignKind::Left)) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:align-center" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::Align(crate::formatting::AlignKind::Center)) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:align-right" => {
+                if self.state.active_apply_formatting(&crate::formatting::FormattingOp::Align(crate::formatting::AlignKind::Right)) {
+                    cx.notify();
+                }
+                self.schedule_auto_save(cx);
+            }
+            "editor:toggle-fullscreen" => {
+                window.toggle_fullscreen();
+            }
+            "editor:toggle-invisibles" | "editor:show-invisibles" => {
+                self.toggle_show_invisibles(cx);
+            }
             _ => {
                 if !executed {
                     self.state.status_text = format!("Unknown command: {}", cmd_id);
