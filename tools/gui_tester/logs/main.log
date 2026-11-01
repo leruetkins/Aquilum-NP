@@ -1,0 +1,18 @@
+[plugin:new-note-np] [plugin] addRibbonIcon: registering icon "square-pen", title "Новая заметка", id "ribbon-kbiv5v40i"
+[plugin:demo-counter] [plugin] addCommand: registering command "hello-world" ("Demo: Поприветствовать")
+[plugin:empty-files-cleaner-np] [plugin] addRibbonIcon: registering icon "trash-2", title "Find empty files", id "ribbon-kbiv5v40i"
+[plugin:empty-files-cleaner-np] [plugin] addCommand: registering command "find-empty-files" ("Find and delete empty files")
+[bridge:new-note-np] Registering ribbon icon: 'square-pen' (title: 'Новая заметка', full id: 'new-note-np:ribbon-kbiv5v40i')
+[bridge:demo-counter] Registering command: 'Demo Counter Plugin: Demo: Поприветствовать' (full id: 'demo-counter:hello-world')
+[bridge:empty-files-cleaner-np] Registering ribbon icon: 'trash-2' (title: 'Find empty files', full id: 'empty-files-cleaner-np:ribbon-kbiv5v40i')
+[bridge:empty-files-cleaner-np] Registering command: 'Empty Files Cleaner NP: Find and delete empty files' (full id: 'empty-files-cleaner-np:find-empty-files')
+[plugin:weekly-review] [plugin] addCommand: registering command "Start Review" ("Start Review")
+[plugin:amount-in-words-np] [plugin] addCommand: registering command "convert-selected-amount-to-words" ("Преобразовать выделенную сумму в пропись")
+[bridge:weekly-review] Registering command: 'Weekly Review: Start Review' (full id: 'weekly-review:Start Review')
+[bridge:amount-in-words-np] Registering command: 'Amount in words NP: Преобразовать выделенную сумму в пропись' (full id: 'amount-in-words-np:convert-selected-amount-to-words')
+[bridge:weekly-review] Stored view tree for view_id: 0
+[bridge:amount-in-words-np] Stored view tree for view_id: 0
+[FPS Monitor] 1.1122335s elapsed, 5 render calls (~4.5 FPS), frame_ms p50=48.5 p95=1013.8 max=1013.8, shape=62 shape_hits=54
+[FPS Monitor] 1.0819887s elapsed, 2 render calls (~1.8 FPS), frame_ms p50=549.9 p95=549.9 max=549.9, shape=22 shape_hits=36
+[FPS Monitor] 1.0838616s elapsed, 5 render calls (~4.6 FPS), frame_ms p50=17.6 p95=518.3 max=518.3, shape=68 shape_hits=69
+[FPS Monitor] 1.0672968s elapsed, 3 render calls (~2.8 FPS), frame_ms p50=301.0 p95=532.9 max=532.9, shape=30 shape_hits=51

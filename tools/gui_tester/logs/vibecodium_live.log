@@ -1,0 +1,27 @@
+[plugin:demo-counter] [plugin] addCommand: registering command "hello-world" ("Demo: Поприветствовать")
+[plugin:new-note-np] [plugin] addRibbonIcon: registering icon "square-pen", title "Новая заметка", id "ribbon-s5baa20ho"
+[plugin:empty-files-cleaner-np] [plugin] addRibbonIcon: registering icon "trash-2", title "Find empty files", id "ribbon-s5baa20ho"
+[plugin:empty-files-cleaner-np] [plugin] addCommand: registering command "find-empty-files" ("Find and delete empty files")
+[bridge:demo-counter] Registering command: 'Demo Counter Plugin: Demo: Поприветствовать' (full id: 'demo-counter:hello-world')
+[bridge:new-note-np] Registering ribbon icon: 'square-pen' (title: 'Новая заметка', full id: 'new-note-np:ribbon-s5baa20ho')
+[bridge:empty-files-cleaner-np] Registering ribbon icon: 'trash-2' (title: 'Find empty files', full id: 'empty-files-cleaner-np:ribbon-s5baa20ho')
+[bridge:empty-files-cleaner-np] Registering command: 'Empty Files Cleaner NP: Find and delete empty files' (full id: 'empty-files-cleaner-np:find-empty-files')
+[plugin:weekly-review] [plugin] addCommand: registering command "Start Review" ("Start Review")
+[plugin:amount-in-words-np] [plugin] addCommand: registering command "convert-selected-amount-to-words" ("Преобразовать выделенную сумму в пропись")
+[bridge:weekly-review] Registering command: 'Weekly Review: Start Review' (full id: 'weekly-review:Start Review')
+[bridge:weekly-review] Stored view tree for view_id: 0
+[bridge:amount-in-words-np] Registering command: 'Amount in words NP: Преобразовать выделенную сумму в пропись' (full id: 'amount-in-words-np:convert-selected-amount-to-words')
+[bridge:amount-in-words-np] Stored view tree for view_id: 0
+[FPS Monitor] 1.1155498s elapsed, 5 render calls (~4.5 FPS), frame_ms p50=39.7 p95=1029.5 max=1029.5, shape=62 shape_hits=54
+[FPS Monitor] 1.0994839s elapsed, 2 render calls (~1.8 FPS), frame_ms p50=549.9 p95=549.9 max=549.9, shape=22 shape_hits=36
+[FPS Monitor] 1.0667715s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=533.7 p95=533.7 max=533.7, shape=22 shape_hits=36
+[FPS Monitor] 1.0834727s elapsed, 3 render calls (~2.8 FPS), frame_ms p50=316.7 p95=551.1 max=551.1, shape=33 shape_hits=54
+[FPS Monitor] 1.0667587s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=533.8 p95=533.8 max=533.8, shape=22 shape_hits=36
+[FPS Monitor] 1.0830784s elapsed, 2 render calls (~1.8 FPS), frame_ms p50=549.7 p95=549.7 max=549.7, shape=22 shape_hits=36
+[FPS Monitor] 1.0670218s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=533.8 p95=533.8 max=533.8, shape=22 shape_hits=36
+[FPS Monitor] 1.0670329s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=533.8 p95=533.8 max=533.8, shape=22 shape_hits=36
+[FPS Monitor] 1.0832126s elapsed, 2 render calls (~1.8 FPS), frame_ms p50=549.7 p95=549.7 max=549.7, shape=22 shape_hits=36
+[FPS Monitor] 1.0671656s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=534.5 p95=534.5 max=534.5, shape=22 shape_hits=36
+[FPS Monitor] 1.0684726s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=550.1 p95=550.1 max=550.1, shape=22 shape_hits=36
+[FPS Monitor] 1.0814431s elapsed, 2 render calls (~1.8 FPS), frame_ms p50=548.5 p95=548.5 max=548.5, shape=22 shape_hits=36
+[FPS Monitor] 1.1000246s elapsed, 2 render calls (~1.8 FPS), frame_ms p50=550.0 p95=550.0 max=550.0, shape=22 shape_hits=36

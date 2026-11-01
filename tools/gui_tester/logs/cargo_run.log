@@ -1,0 +1,57 @@
+warning: field `generated` is never read
+   --> src\plugins\compat.rs:223:5
+    |
+221 | struct RegistryFile {
+    |        ------------ field in this struct
+222 |     #[serde(default)]
+223 |     generated: String,
+    |     ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `vibecodium` (bin "vibecodium") generated 1 warning
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.53s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target\debug\vibecodium.exe`
+[plugin:demo-counter] [plugin] addCommand: registering command "hello-world" ("Demo: Поприветствовать")
+[plugin:new-note-np] [plugin] addRibbonIcon: registering icon "square-pen", title "Новая заметка", id "ribbon-kcyjyuq7r"
+[plugin:empty-files-cleaner-np] [plugin] addRibbonIcon: registering icon "trash-2", title "Find empty files", id "ribbon-kcyjyuq7r"
+[plugin:empty-files-cleaner-np] [plugin] addCommand: registering command "find-empty-files" ("Find and delete empty files")
+[bridge:demo-counter] Registering command: 'Demo Counter Plugin: Demo: Поприветствовать' (full id: 'demo-counter:hello-world')
+[bridge:new-note-np] Registering ribbon icon: 'square-pen' (title: 'Новая заметка', full id: 'new-note-np:ribbon-kcyjyuq7r')
+[bridge:empty-files-cleaner-np] Registering ribbon icon: 'trash-2' (title: 'Find empty files', full id: 'empty-files-cleaner-np:ribbon-kcyjyuq7r')
+[bridge:empty-files-cleaner-np] Registering command: 'Empty Files Cleaner NP: Find and delete empty files' (full id: 'empty-files-cleaner-np:find-empty-files')
+[plugin:amount-in-words-np] [plugin] addCommand: registering command "convert-selected-amount-to-words" ("Преобразовать выделенную сумму в пропись")
+[plugin:weekly-review] [plugin] addCommand: registering command "Start Review" ("Start Review")
+[bridge:amount-in-words-np] Registering command: 'Amount in words NP: Преобразовать выделенную сумму в пропись' (full id: 'amount-in-words-np:convert-selected-amount-to-words')
+[bridge:weekly-review] Registering command: 'Weekly Review: Start Review' (full id: 'weekly-review:Start Review')
+[bridge:weekly-review] Stored view tree for view_id: 0
+[bridge:amount-in-words-np] Stored view tree for view_id: 0
+[FPS Monitor] 1.115153s elapsed, 5 render calls (~4.5 FPS), frame_ms p50=37.7 p95=1029.0 max=1029.0, shape=62 shape_hits=54
+[FPS Monitor] 1.0675334s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=535.3 p95=535.3 max=535.3, shape=22 shape_hits=36
+[FPS Monitor] 1.0669974s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=534.5 p95=534.5 max=534.5, shape=22 shape_hits=36
+[FPS Monitor] 1.0664006s elapsed, 3 render calls (~2.8 FPS), frame_ms p50=266.8 p95=533.2 max=533.2, shape=33 shape_hits=54
+[FPS Monitor] 1.0661483s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=533.5 p95=533.5 max=533.5, shape=22 shape_hits=36
+[FPS Monitor] 1.0678228s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=534.0 p95=534.0 max=534.0, shape=22 shape_hits=36
+[FPS Monitor] 1.0824312s elapsed, 2 render calls (~1.8 FPS), frame_ms p50=549.1 p95=549.1 max=549.1, shape=22 shape_hits=36
+[FPS Monitor] 1.0675611s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=534.7 p95=534.7 max=534.7, shape=22 shape_hits=36
+[FPS Monitor] 1.0501486s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=533.4 p95=533.4 max=533.4, shape=22 shape_hits=36
+[FPS Monitor] 1.066874s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=533.6 p95=533.6 max=533.6, shape=22 shape_hits=36
+[FPS Monitor] 1.0668373s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=533.7 p95=533.7 max=533.7, shape=22 shape_hits=36
+[FPS Monitor] 1.0851075s elapsed, 2 render calls (~1.8 FPS), frame_ms p50=552.5 p95=552.5 max=552.5, shape=22 shape_hits=36
+[FPS Monitor] 1.0662797s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=550.2 p95=550.2 max=550.2, shape=22 shape_hits=36
+[FPS Monitor] 1.0838027s elapsed, 2 render calls (~1.8 FPS), frame_ms p50=548.9 p95=548.9 max=548.9, shape=22 shape_hits=36
+[FPS Monitor] 1.0666169s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=546.6 p95=546.6 max=546.6, shape=22 shape_hits=36
+[FPS Monitor] 1.0820267s elapsed, 2 render calls (~1.8 FPS), frame_ms p50=547.8 p95=547.8 max=547.8, shape=22 shape_hits=36
+[FPS Monitor] 1.0846734s elapsed, 2 render calls (~1.8 FPS), frame_ms p50=551.0 p95=551.0 max=551.0, shape=22 shape_hits=36
+[FPS Monitor] 1.0820739s elapsed, 2 render calls (~1.8 FPS), frame_ms p50=550.9 p95=550.9 max=550.9, shape=22 shape_hits=36
+[FPS Monitor] 1.0653487s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=550.3 p95=550.3 max=550.3, shape=22 shape_hits=36
+[FPS Monitor] 1.0671389s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=534.1 p95=534.1 max=534.1, shape=22 shape_hits=36
+[FPS Monitor] 1.0660768s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=533.6 p95=533.6 max=533.6, shape=22 shape_hits=36
+[FPS Monitor] 1.0834914s elapsed, 2 render calls (~1.8 FPS), frame_ms p50=550.3 p95=550.3 max=550.3, shape=22 shape_hits=36
+[FPS Monitor] 1.0834401s elapsed, 2 render calls (~1.8 FPS), frame_ms p50=549.6 p95=549.6 max=549.6, shape=22 shape_hits=36
+[FPS Monitor] 1.0500178s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=534.0 p95=534.0 max=534.0, shape=22 shape_hits=36
+[FPS Monitor] 1.0667205s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=533.6 p95=533.6 max=533.6, shape=22 shape_hits=36
+[FPS Monitor] 1.0666714s elapsed, 2 render calls (~1.9 FPS), frame_ms p50=533.5 p95=533.5 max=533.5, shape=22 shape_hits=36
+[FPS Monitor] 1.1008987s elapsed, 2 render calls (~1.8 FPS), frame_ms p50=551.0 p95=551.0 max=551.0, shape=22 shape_hits=36

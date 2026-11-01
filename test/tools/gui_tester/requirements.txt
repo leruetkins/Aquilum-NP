@@ -1,0 +1,10 @@
+mcp>=1.2
+pyautogui
+opencv-python
+numpy
+pillow
+pywin32
+# optional but strongly recommended: lets the agent read/click text in GPU-rendered UIs
+rapidocr-onnxruntime
+# needed to find the window of `cargo run` (the app is a child process of cargo)
+psutil

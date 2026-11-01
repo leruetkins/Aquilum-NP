@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "gui-tester": {
+      "command": "python",
+      "args": ["tools/gui_tester/mcp_server.py"],
+      "env": {
+        "GUI_TESTER_WINDOW": "Vibecodium"
+      }
+    }
+  }
+}
