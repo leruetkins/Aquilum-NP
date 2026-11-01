@@ -213,6 +213,11 @@ pub struct ViewCache {
     /// build produces. Only the caret line and the lines the selection touches
     /// ever enter this map, so preview and Ctrl-selection never reflow.
     pub line_paints: std::collections::HashMap<usize, crate::markdown::PaintedLineSpec>,
+    /// Painted column budget of every column of each table in the window,
+    /// keyed by the table's first line. The renderer owns the table layout
+    /// (only it can measure text), so it publishes these budgets here and the
+    /// row geometry wraps cells with exactly the same widths that are painted.
+    pub table_cell_cols: std::collections::HashMap<usize, Vec<usize>>,
 }
 
 impl Default for ViewCache {
@@ -233,6 +238,7 @@ impl Default for ViewCache {
             revealed_selection: None,
             cursor_line: 0,
             line_paints: std::collections::HashMap::new(),
+            table_cell_cols: std::collections::HashMap::new(),
         }
     }
 }
@@ -441,6 +447,20 @@ impl TabSession {
         is_now_raw
     }
 
+    /// Publishes the painted column budgets of the window's tables.
+    ///
+    /// The renderer measures the table layout, so the row geometry cannot know
+    /// how wide a cell is on its own; it reads these budgets instead. A change
+    /// invalidates the row heights, because the same text wraps differently.
+    pub fn set_table_cell_cols(&mut self, cols: std::collections::HashMap<usize, Vec<usize>>) -> bool {
+        if self.table_cell_cols == cols {
+            return false;
+        }
+        self.table_cell_cols = cols;
+        self.visual_cache_dirty = true;
+        true
+    }
+
     pub fn shift_raw_tables(&mut self, edit_line: usize, line_diff: isize) {
         if line_diff == 0 || self.raw_tables.is_empty() {
             return;
@@ -455,6 +475,24 @@ impl TabSession {
             }
         }
         self.raw_tables = updated;
+    }
+
+    /// Line-number shift for the published table budgets, so an edit above the
+    /// table does not leave the budgets under the wrong first line.
+    pub fn shift_table_cell_cols(&mut self, edit_line: usize, line_diff: isize) {
+        if line_diff == 0 || self.table_cell_cols.is_empty() {
+            return;
+        }
+        let mut updated = std::collections::HashMap::with_capacity(self.table_cell_cols.len());
+        for (first_line, cols) in self.table_cell_cols.drain() {
+            let first_line = if first_line >= edit_line {
+                (first_line as isize + line_diff).max(0) as usize
+            } else {
+                first_line
+            };
+            updated.insert(first_line, cols);
+        }
+        self.table_cell_cols = updated;
     }
 
     /// Line-number shift for the stored wrap exceptions, so an external edit
@@ -552,13 +590,19 @@ impl TabSession {
         let kinds: Vec<Option<crate::markdown::TableRowVisualKind>> = changed
             .iter()
             .map(|(line, _)| {
+                let text = self.window.line(*line).unwrap_or("");
                 Self::table_row_kind_at(
                     &tables,
                     &self.raw_tables,
                     &self.drag_revealed_tables,
+                    &self.table_cell_cols,
                     reveal_state,
                     cursor_line,
+                    cursor_col,
+                    !suppress_selection_reveal,
                     *line,
+                    text,
+                    headings,
                 )
             })
             .collect();
@@ -572,7 +616,7 @@ impl TabSession {
 
         for ((line, spec), kind) in changed.into_iter().zip(kinds) {
             let paint = spec.as_ref().unwrap_or(&canonical);
-            self.window.rewrap_line(line, paint, headings, |_| kind);
+            self.window.rewrap_line(line, paint, headings, |_, _| kind);
         }
         let anchor_after = self.doc_y_of_line(lines_total, anchor);
         let shift = anchor_after - anchor_before;
@@ -629,13 +673,20 @@ impl TabSession {
         ))
     }
 
-    fn table_row_kind_at(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn table_row_kind_at(
         tables: &crate::table::TableIndex,
         raw_tables: &std::collections::HashSet<usize>,
         drag_revealed_tables: &std::collections::HashSet<usize>,
+        cell_cols: &std::collections::HashMap<usize, Vec<usize>>,
         reveal_state: Option<(usize, usize, usize)>,
         cursor_line: usize,
+        cursor_col: usize,
+        // Whether the caret may reveal its cell (edit mode, not preview).
+        allow_active_cell: bool,
         line: usize,
+        line_text: &str,
+        headings: Option<&crate::settings::HeadingsSettings>,
     ) -> Option<crate::markdown::TableRowVisualKind> {
         let t = tables.at(line)?;
         if (raw_tables.contains(&t.first_line) && t.contains(cursor_line))
@@ -644,14 +695,38 @@ impl TabSession {
         {
             return None;
         }
-        Some(if line == t.sep_line() {
-            crate::markdown::TableRowVisualKind::Delimiter
-        } else if line == t.first_line {
-            crate::markdown::TableRowVisualKind::Header
+        if line == t.sep_line() {
+            return Some(crate::markdown::TableRowVisualKind::Delimiter);
+        }
+        // The renderer publishes the painted column budget of every column; the
+        // row must wrap its cells with those exact widths or the height it
+        // claims would not match the grid that is painted over it.
+        let lines = match cell_cols.get(&t.first_line) {
+            Some(cols) => {
+                let cells = crate::table::split_row(line_text);
+                let ranges: Vec<std::ops::Range<usize>> =
+                    cells.iter().map(|c| c.content.clone()).collect();
+                let active_cell = (allow_active_cell && line == cursor_line)
+                    .then(|| crate::table::cell_index_at(&cells, cursor_col));
+                let default_headings = crate::settings::HeadingsSettings::default();
+                let h = headings.unwrap_or(&default_headings);
+                crate::markdown::table_row_wrap_lines(
+                    line_text,
+                    &ranges,
+                    cols,
+                    active_cell,
+                    &crate::markdown::InlineReveal::None,
+                    h,
+                )
+            }
+            None => 1,
+        };
+        Some(if line == t.first_line {
+            crate::markdown::TableRowVisualKind::Header { lines }
         } else if line == t.last_line {
-            crate::markdown::TableRowVisualKind::LastRow
+            crate::markdown::TableRowVisualKind::LastRow { lines }
         } else {
-            crate::markdown::TableRowVisualKind::Body
+            crate::markdown::TableRowVisualKind::Body { lines }
         })
     }
 
@@ -836,7 +911,7 @@ impl TabSession {
             doc.line_text(edit_line),
             delta,
             Some(&headings),
-            |_| None,
+            |_, _| None,
         );
         if !updated {
             return false;
@@ -1122,7 +1197,7 @@ impl TabSession {
         let slice = doc.slice_to_string(start_byte..end_byte);
 
         let tables = doc.ensure_table_index_for_window(start, end);
-        let (cursor_line, _) = self.line_col(doc);
+        let (cursor_line, cursor_col) = self.line_col(doc);
         self.cursor_line = cursor_line;
         let reveal_state = self.selection_reveal_state(doc, suppress_selection_reveal);
         let window = crate::editor_window::EditorWindow::build_from_slice_with_tables(
@@ -1136,28 +1211,23 @@ impl TabSession {
             headings,
             self.source_mode,
             initial,
-            |line| {
+            |line, line_text| {
                 if self.source_mode {
                     return None;
                 }
-                if let Some(t) = tables.at(line) {
-                    if (self.raw_tables.contains(&t.first_line) && t.contains(cursor_line))
-                        || self.drag_revealed_tables.contains(&t.first_line)
-                        || Self::reveals_table(reveal_state, t)
-                    {
-                        None
-                    } else if line == t.sep_line() {
-                        Some(crate::markdown::TableRowVisualKind::Delimiter)
-                    } else if line == t.first_line {
-                        Some(crate::markdown::TableRowVisualKind::Header)
-                    } else if line == t.last_line {
-                        Some(crate::markdown::TableRowVisualKind::LastRow)
-                    } else {
-                        Some(crate::markdown::TableRowVisualKind::Body)
-                    }
-                } else {
-                    None
-                }
+                Self::table_row_kind_at(
+                    &tables,
+                    &self.raw_tables,
+                    &self.drag_revealed_tables,
+                    &self.table_cell_cols,
+                    reveal_state,
+                    cursor_line,
+                    cursor_col,
+                    !suppress_selection_reveal,
+                    line,
+                    line_text,
+                    headings,
+                )
             },
         );
 

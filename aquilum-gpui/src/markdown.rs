@@ -2145,12 +2145,218 @@ pub fn build_visual_rows_canonical(
     visual_rows
 }
 
+/// Height of one painted text line inside a table cell.
+pub const TABLE_LINE_H: f32 = 20.0;
+/// Vertical padding above and below the painted lines of a table row.
+pub const TABLE_PAD_Y: f32 = 4.0;
+/// Gap the table keeps above its header row and below its last row.
+pub const TABLE_EDGE_MARGIN: f32 = 14.0;
+
+/// A table row as the row geometry knows it: its kind and how many wrapped
+/// text lines its tallest cell needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableRowVisualKind {
-    Header,
     Delimiter,
-    Body,
-    LastRow,
+    Header { lines: usize },
+    Body { lines: usize },
+    LastRow { lines: usize },
+}
+
+impl TableRowVisualKind {
+    /// Total height of the row in logical pixels, margins included.
+    pub fn height(&self) -> f32 {
+        match self {
+            Self::Delimiter => 1.0,
+            Self::Header { lines } => self.cell_height(*lines) + TABLE_EDGE_MARGIN,
+            Self::Body { lines } => self.cell_height(*lines),
+            Self::LastRow { lines } => self.cell_height(*lines) + TABLE_EDGE_MARGIN,
+        }
+    }
+
+    fn cell_height(&self, lines: usize) -> f32 {
+        (lines.max(1) as f32) * TABLE_LINE_H + 2.0 * TABLE_PAD_Y
+    }
+}
+
+/// One wrapped sub-line of a table cell.
+///
+/// `painted_*` are offsets into the cell's painted text (markers hidden), which
+/// is what the cell is wrapped by; `raw_*` are the offsets into the document
+/// line that the sub-line covers, which is what the caret and hit-testing use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellWrapLine {
+    pub painted_start: usize,
+    pub painted_end: usize,
+    pub raw_start: usize,
+    pub raw_end: usize,
+}
+
+/// Split one table cell into word-wrapped sub-lines at `max_cols` painted
+/// columns.
+///
+/// The wrap is computed from the painted text — the same text the renderer
+/// paints, with hidden markup costing no column — so a long cell wraps where
+/// the reader sees it end. `raw_*` offsets come from the painted row's
+/// `line_chars`, which keeps every sub-line boundary on a real document char
+/// even when hidden markers sit between two visible ones.
+pub fn table_cell_wrap_lines(
+    line: &str,
+    content: std::ops::Range<usize>,
+    is_active_cell: bool,
+    reveal: &InlineReveal,
+    headings: &crate::settings::HeadingsSettings,
+    max_cols: usize,
+) -> Vec<CellWrapLine> {
+    let v = VisualRow {
+        line_idx: 0,
+        sub_idx: 0,
+        is_last_sub: true,
+        char_start: content.start,
+        char_end: content.end,
+    };
+    let painted = row_painted_text(
+        line,
+        &LineKind::Paragraph(Default::default()),
+        &v,
+        is_active_cell,
+        reveal,
+        headings,
+    );
+    wrap_painted_cell(&painted, content.end, max_cols)
+}
+
+/// Wrapped sub-lines of a cell whose painted row is already known.
+pub fn wrap_painted_cell(
+    painted: &PaintedRow,
+    content_end: usize,
+    max_cols: usize,
+) -> Vec<CellWrapLine> {
+    let mut text = String::new();
+    for segment in &painted.segments {
+        text.push_str(&segment.text);
+    }
+    let columns = painted.columns();
+    let ranges = wrap_line_ranges(&text, max_cols.max(1));
+    let raw_at = |painted_col: usize| -> usize {
+        painted
+            .line_chars
+            .get(painted_col.min(columns))
+            .copied()
+            .unwrap_or(content_end)
+    };
+    ranges
+        .into_iter()
+        .map(|(ps, pe)| CellWrapLine {
+            painted_start: ps,
+            painted_end: pe,
+            raw_start: raw_at(ps),
+            raw_end: raw_at(pe),
+        })
+        .collect()
+}
+
+/// Number of wrapped lines the tallest cell of one table row needs.
+///
+/// `column_cols[c]` is the painted column budget of column `c`; a missing
+/// entry means the column is unknown and does not force a wrap.
+pub fn table_row_wrap_lines(
+    line: &str,
+    content_ranges: &[std::ops::Range<usize>],
+    column_cols: &[usize],
+    active_cell: Option<usize>,
+    reveal: &InlineReveal,
+    headings: &crate::settings::HeadingsSettings,
+) -> usize {
+    let mut lines = 1usize;
+    for (idx, range) in content_ranges.iter().enumerate() {
+        let Some(&cols) = column_cols.get(idx) else { continue; };
+        if cols == 0 || range.start >= range.end {
+            continue;
+        }
+        let reveal = if active_cell == Some(idx) {
+            InlineReveal::All
+        } else {
+            reveal.clone()
+        };
+        let count = table_cell_wrap_lines(
+            line,
+            range.clone(),
+            active_cell == Some(idx),
+            &reveal,
+            headings,
+            cols,
+        )
+        .len();
+        lines = lines.max(count);
+    }
+    lines
+}
+
+/// Slice an already revealed span sequence by char range.
+///
+/// Table cells are painted one wrapped sub-line at a time, but their spans are
+/// revealed once for the whole cell, so each sub-line needs the piece of that
+/// sequence that falls inside it. The span kinds are preserved, which keeps a
+/// link or a code run styled across a wrap.
+pub fn slice_visible_spans(
+    spans: &[VisibleSpan],
+    start_char: usize,
+    end_char: usize,
+) -> Vec<VisibleSpan> {
+    if start_char >= end_char {
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+    let mut curr = 0usize;
+    for visible in spans {
+        let len = span_text(&visible.span).chars().count();
+        let span_end = curr + len;
+        if span_end > start_char && curr < end_char {
+            let s = start_char.saturating_sub(curr);
+            let e = (end_char - curr).min(len);
+            if s < e {
+                let sliced = slice_syntax_span(&visible.span, s, e);
+                result.push(VisibleSpan {
+                    span: sliced,
+                    marker_visible: visible.marker_visible,
+                });
+            }
+        }
+        curr = span_end;
+        if curr >= end_char {
+            break;
+        }
+    }
+    result
+}
+
+fn slice_syntax_span(span: &SyntaxSpan, start_char: usize, end_char: usize) -> SyntaxSpan {
+    let take = |text: &str| -> String {
+        text.chars().skip(start_char).take(end_char - start_char).collect()
+    };
+    match span {
+        SyntaxSpan::Marker(t) => SyntaxSpan::Marker(take(t)),
+        SyntaxSpan::Text(t) => SyntaxSpan::Text(take(t)),
+        SyntaxSpan::Bold(t) => SyntaxSpan::Bold(take(t)),
+        SyntaxSpan::Italic(t) => SyntaxSpan::Italic(take(t)),
+        SyntaxSpan::BoldItalic(t) => SyntaxSpan::BoldItalic(take(t)),
+        SyntaxSpan::InlineCode(t) => SyntaxSpan::InlineCode(take(t)),
+        SyntaxSpan::Strikethrough(t) => SyntaxSpan::Strikethrough(take(t)),
+        SyntaxSpan::Underline(t) => SyntaxSpan::Underline(take(t)),
+        SyntaxSpan::Highlight(t) => SyntaxSpan::Highlight(take(t)),
+        SyntaxSpan::Tag(t) => SyntaxSpan::Tag(take(t)),
+        SyntaxSpan::Link { text, url } => SyntaxSpan::Link {
+            text: take(text),
+            url: url.clone(),
+        },
+        SyntaxSpan::Grammar { kind, line_color, text_color, text, content } => SyntaxSpan::Grammar {
+            kind: *kind,
+            line_color: *line_color,
+            text_color: *text_color,
+            text: take(text),
+            content: slice_visible_spans(content, start_char, end_char),
+        },
+    }
 }
 
 pub fn build_visual_rows_with_table_filter(
@@ -2304,11 +2510,7 @@ pub fn visual_row_height(
         return 24.0;
     }
     if let Some(kind) = table_kind {
-        return match kind {
-            TableRowVisualKind::Delimiter => 1.0,
-            TableRowVisualKind::Header | TableRowVisualKind::LastRow => 42.0,
-            TableRowVisualKind::Body => 28.0,
-        };
+        return kind.height();
     }
     let default_headings = crate::settings::HeadingsSettings::default();
     let h_settings = headings.unwrap_or(&default_headings);
@@ -2381,13 +2583,13 @@ impl VisualRowHeightIndex {
         visual_rows: &[VisualRow],
         headings: Option<&crate::settings::HeadingsSettings>,
         source_mode: bool,
-        table_row_info: impl Fn(usize) -> Option<TableRowVisualKind>,
+        table_row_info: impl Fn(usize, &str) -> Option<TableRowVisualKind>,
     ) -> Self {
         let mut heights = Vec::with_capacity(visual_rows.len());
 
         for v in visual_rows {
             let line_str = lines.get(v.line_idx).map(|s| s.as_ref()).unwrap_or("");
-            heights.push(visual_row_height(line_str, headings, source_mode, table_row_info(v.line_idx)));
+            heights.push(visual_row_height(line_str, headings, source_mode, table_row_info(v.line_idx, line_str)));
         }
 
         Self::new(heights)
@@ -2399,7 +2601,7 @@ impl VisualRowHeightIndex {
         headings: Option<&crate::settings::HeadingsSettings>,
         source_mode: bool,
     ) -> Self {
-        Self::from_rows_with_tables(lines, visual_rows, headings, source_mode, |_| None)
+        Self::from_rows_with_tables(lines, visual_rows, headings, source_mode, |_, _| None)
     }
 
     pub fn len(&self) -> usize {
@@ -3849,6 +4051,85 @@ pub fn strip_markdown_tags(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn table_cell_wraps_by_words_and_keeps_raw_offsets() {
+        let line = "| id | a long description made of several words here | x |";
+        let cells = crate::table::split_row(line);
+        let content = cells[1].content.clone();
+        let headings = crate::settings::HeadingsSettings::default();
+        let lines = table_cell_wrap_lines(
+            line,
+            content.clone(),
+            false,
+            &InlineReveal::None,
+            &headings,
+            12,
+        );
+        assert!(lines.len() > 1, "a cell wider than its budget must wrap");
+        // Every sub-line is non-empty, in order, and lands on real line chars.
+        let mut prev = content.start;
+        for l in &lines {
+            assert!(l.painted_end > l.painted_start);
+            assert!(l.raw_start >= prev);
+            assert!(l.raw_end <= content.end);
+            prev = l.raw_end;
+        }
+        assert_eq!(lines.last().unwrap().raw_end, content.end);
+        // No sub-line is longer than the budget.
+        for l in &lines {
+            assert!(
+                l.painted_end - l.painted_start <= 12,
+                "line {:?} exceeds the column budget",
+                l
+            );
+        }
+    }
+
+    #[test]
+    fn table_row_height_grows_with_wrapped_lines() {
+        assert_eq!(
+            TableRowVisualKind::Body { lines: 1 }.height(),
+            28.0
+        );
+        assert_eq!(
+            TableRowVisualKind::Body { lines: 3 }.height(),
+            68.0
+        );
+        assert_eq!(
+            TableRowVisualKind::Header { lines: 2 }.height(),
+            62.0
+        );
+        assert_eq!(
+            TableRowVisualKind::LastRow { lines: 4 }.height(),
+            102.0
+        );
+        assert_eq!(TableRowVisualKind::Delimiter.height(), 1.0);
+    }
+
+    #[test]
+    fn table_row_wrap_lines_uses_the_widest_cell() {
+        let line = "| short | a much longer cell that needs to wrap |";
+        let cells = crate::table::split_row(line);
+        let ranges: Vec<std::ops::Range<usize>> =
+            cells.iter().map(|c| c.content.clone()).collect();
+        let headings = crate::settings::HeadingsSettings::default();
+        // Generous budget: one line everywhere.
+        assert_eq!(
+            table_row_wrap_lines(line, &ranges, &[40, 40], None, &InlineReveal::None, &headings),
+            1
+        );
+        // Tight budget: the long cell decides the row height.
+        let lines = table_row_wrap_lines(
+            line,
+            &ranges,
+            &[40, 8],
+            None,
+            &InlineReveal::None,
+            &headings,
+        );
+        assert!(lines >= 4, "expected several wrapped lines, got {lines}");
+    }
 
     #[test]
     fn test_selection_chars_in_line_unicode_boundary_safety() {

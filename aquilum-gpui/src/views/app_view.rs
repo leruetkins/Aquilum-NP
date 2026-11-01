@@ -1610,6 +1610,82 @@ impl AppView {
         self.compute_wrap_cols_for_leaf(Some(self.state.workspace.active_leaf), window_width, char_width)
     }
 
+    /// Width in pixels the editor lets a table occupy. A table wider than this
+    /// is fitted to it and its cells wrap instead of widening the note.
+    fn table_room_px(view: &crate::workspace::EditorViewState, char_width: f32) -> f32 {
+        (view.window.wrap_cols as f32 * char_width).max(160.0)
+    }
+
+    /// Painted column budgets of every table intersecting the window.
+    ///
+    /// The row geometry cannot measure text, so the renderer — the only side
+    /// that can — hands it these numbers. They are the same `TableLayout`
+    /// values the visible rows are painted from, which is what makes a wrapped
+    /// cell and the height the row claims the same thing.
+    fn collect_table_cell_cols(
+        table_layouts: &std::cell::RefCell<std::collections::HashMap<usize, (u64, Arc<TableLayout>)>>,
+        text_system: &gpui::WindowTextSystem,
+        doc: &crate::document_buffer::DocumentBuffer,
+        view: &crate::workspace::EditorViewState,
+        font: &SharedString,
+        manual: &HashMap<usize, Vec<f32>>,
+        char_width: f32,
+    ) -> HashMap<usize, Vec<usize>> {
+        if view.window.is_empty() {
+            return HashMap::new();
+        }
+        Self::collect_table_cell_cols_for_range(
+            table_layouts,
+            text_system,
+            doc,
+            view.window.start_line,
+            view.window.end_line,
+            font,
+            manual,
+            char_width,
+            Self::table_room_px(view, char_width),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn collect_table_cell_cols_for_range(
+        table_layouts: &std::cell::RefCell<std::collections::HashMap<usize, (u64, Arc<TableLayout>)>>,
+        text_system: &gpui::WindowTextSystem,
+        doc: &crate::document_buffer::DocumentBuffer,
+        start: usize,
+        end: usize,
+        font: &SharedString,
+        manual: &HashMap<usize, Vec<f32>>,
+        char_width: f32,
+        room: f32,
+    ) -> HashMap<usize, Vec<usize>> {
+        let mut out = HashMap::new();
+        let tables = doc.ensure_table_index_for_window(start, end);
+        for t in &tables.blocks {
+            if t.last_line < start || t.first_line >= end {
+                continue;
+            }
+            let lines: Vec<String> = (t.first_line..=t.last_line)
+                .map(|l| doc.line_text(l))
+                .collect();
+            let get_line = |idx: usize| -> Option<&str> {
+                idx.checked_sub(t.first_line).and_then(|i| lines.get(i)).map(|s| s.as_str())
+            };
+            let layout = Self::get_or_compute_table_layout(
+                table_layouts,
+                text_system,
+                &get_line,
+                t,
+                font,
+                manual.get(&t.first_line).map(|w| w.as_slice()),
+                char_width,
+                room,
+            );
+            out.insert(t.first_line, layout.col_chars.clone());
+        }
+        out
+    }
+
     pub(crate) fn pane_text_start_x(&self, leaf_id: Option<crate::workspace::LeafId>, window: &Window) -> f32 {
         let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
         let editor_right_x = if self.right_sidebar_collapsed { 0.0 } else { self.right_sidebar_width + 1.0 };
@@ -4072,6 +4148,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         block: &crate::table::TableBlock,
         font_family: &SharedString,
         manual_widths: Option<&[f32]>,
+        char_width: f32,
+        room_px: f32,
     ) -> Arc<TableLayout> {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -4085,6 +4163,10 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 w.to_bits().hash(&mut hasher);
             }
         }
+        // The wrap width and the cell width decide how the cells wrap, so a
+        // resize of the pane or a font change must not reuse an old layout.
+        char_width.to_bits().hash(&mut hasher);
+        room_px.to_bits().hash(&mut hasher);
         let content_hash = hasher.finish();
 
         if let Ok(layouts) = table_layouts.try_borrow() {
@@ -4095,7 +4177,15 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             }
         }
 
-        let layout = Arc::new(compute_table_layout(text_system, get_line, block, font_family, manual_widths));
+        let layout = Arc::new(compute_table_layout(
+            text_system,
+            get_line,
+            block,
+            font_family,
+            manual_widths,
+            char_width,
+            room_px,
+        ));
         if let Ok(mut layouts) = table_layouts.try_borrow_mut() {
             layouts.insert(block.first_line, (content_hash, layout.clone()));
         }
@@ -4268,6 +4358,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     tbl,
                     &editor_font,
                     self.manual_table_col_widths.get(&tbl.first_line).map(|w| w.as_slice()),
+                    line_char_width,
+                    Self::table_room_px(view, line_char_width),
                 );
                 let cursor_col = if !self.ctrl_preview_selection && v.line_idx == cursor_line {
                     let (_, col) = view.line_col(doc);
@@ -4302,7 +4394,17 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     row_char_w,
                 )
             };
-            let column = row_layout.column_for_x(click_x - text_start_x);
+            let edge_top = tables
+                .at(v.line_idx)
+                .filter(|t| v.line_idx == t.first_line)
+                .map(|_| crate::markdown::TABLE_EDGE_MARGIN)
+                .unwrap_or(0.0);
+            let row_content_top =
+                view.above_h + view.window.height_index.top_of(target_v_idx) + f64::from(edge_top);
+            let column = row_layout.column_for_xy(
+                click_x - text_start_x,
+                (rel_y - row_content_top) as f32,
+            );
             row_layout.line_char_for_column(column).saturating_sub(v.char_start).min(v_len)
         } else {
             0
@@ -4519,6 +4621,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     tbl,
                     &editor_font,
                     self.manual_table_col_widths.get(&tbl.first_line).map(|w| w.as_slice()),
+                    line_char_width,
+                    Self::table_room_px(view, line_char_width),
                 );
                 let cursor_col = if !self.ctrl_preview_selection && v.line_idx == cursor_line {
                     let (_, col) = view.line_col(doc);
@@ -4553,7 +4657,17 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     row_char_w,
                 )
             };
-            let column = row_layout.column_for_x(pos_x - text_start_x);
+            let edge_top = tables
+                .at(v.line_idx)
+                .filter(|t| v.line_idx == t.first_line)
+                .map(|_| crate::markdown::TABLE_EDGE_MARGIN)
+                .unwrap_or(0.0);
+            let row_content_top =
+                view.above_h + view.window.height_index.top_of(target_v_idx) + f64::from(edge_top);
+            let column = row_layout.column_for_xy(
+                pos_x - text_start_x,
+                (rel_y - row_content_top) as f32,
+            );
             row_layout.line_char_for_column(column).saturating_sub(v.char_start).min(v_len)
         } else {
             0
@@ -7018,7 +7132,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         let active_leaf_id = self.state.workspace.active_leaf;
         let viewport_w: f32 = window.viewport_size().width.into();
         let editor_font = self.editor_font_family();
-        let font_id = cx.text_system().resolve_font(&gpui::font(editor_font));
+        let font_id = cx.text_system().resolve_font(&gpui::font(editor_font.clone()));
         let line_char_width = cx
             .text_system()
             .advance(font_id, px(14.0), 'x')
@@ -7042,8 +7156,58 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             })
             .collect();
 
-        let headings = &self.config.editor.headings;
+        // Table cell budgets for every background pane, measured before the
+        // state is borrowed mutably. Their rows are wrapped exactly like the
+        // active pane's, so a split view does not paint a taller table than the
+        // height its geometry claims. A pane that needs no rebuild keeps its
+        // published budgets: measuring them again would only hash its tables.
         let word_wrap = self.word_wrap;
+        let text_system = window.text_system().clone();
+        let leaf_info: Vec<_> = leaf_info
+            .into_iter()
+            .map(|(leaf_id, tab_id, doc_id, wrap_cols)| {
+                let cols = (|| {
+                    let doc = self.state.documents.get(&doc_id)?;
+                    let view = self.state.views.get(&tab_id)?;
+                    let needs_build = view.window.is_empty()
+                        || view.visual_cache_dirty
+                        || view.window.should_move_to(
+                            view.viewport.offset,
+                            doc.line_index.lines(),
+                            word_wrap,
+                            wrap_cols,
+                        )
+                        || !view.line_paints.is_empty();
+                    if !needs_build {
+                        return None;
+                    }
+                    let (start, end) = if !view.window.is_empty()
+                        && view.window.start_line < view.window.end_line
+                    {
+                        (view.window.start_line, view.window.end_line)
+                    } else {
+                        crate::editor_window::EditorWindow::bounds_for(
+                            view.viewport.offset,
+                            doc.line_index.lines(),
+                        )
+                    };
+                    Some(Self::collect_table_cell_cols_for_range(
+                        &self.table_layouts,
+                        &text_system,
+                        doc,
+                        start,
+                        end,
+                        &editor_font,
+                        &self.manual_table_col_widths,
+                        line_char_width,
+                        (wrap_cols as f32 * line_char_width).max(160.0),
+                    ))
+                })();
+                (leaf_id, tab_id, doc_id, wrap_cols, cols)
+            })
+            .collect();
+
+        let headings = &self.config.editor.headings;
 
         let crate::state::AppState {
             ref mut documents,
@@ -7051,7 +7215,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             ..
         } = self.state;
 
-        for (_leaf_id, tab_id, doc_id, wrap_cols) in leaf_info {
+        for (_leaf_id, tab_id, doc_id, wrap_cols, table_cols) in leaf_info {
             let doc = match documents.get_mut(&doc_id) {
                 Some(d) => d,
                 None => continue,
@@ -7062,6 +7226,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
             let lines_total = line_index.lines();
             let view = views.entry(tab_id).or_insert_with(|| crate::workspace::EditorViewState::new(tab_id, doc_id));
+            if let Some(cols) = table_cols {
+                view.set_table_cell_cols(cols);
+            }
 
             if view.window.is_empty()
                 || view.visual_cache_dirty
@@ -7075,7 +7242,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 let end_byte = doc.line_end_byte(end.saturating_sub(1)).max(start_byte);
                 let slice = doc.slice_to_string(start_byte..end_byte);
 
-                let new_window = crate::editor_window::EditorWindow::build_from_slice(
+                let tables = doc.ensure_table_index_for_window(start, end);
+                let new_window = crate::editor_window::EditorWindow::build_from_slice_with_tables(
                     &slice,
                     start,
                     end,
@@ -7084,7 +7252,25 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     word_wrap,
                     wrap_cols,
                     Some(headings),
+                    false,
                     initial,
+                    |line, line_text| {
+                        // A background pane never reveals a cell: its grid is
+                        // painted with markup hidden, so no cell is active.
+                        crate::workspace::EditorViewState::table_row_kind_at(
+                            &tables,
+                            &view.raw_tables,
+                            &view.drag_revealed_tables,
+                            &view.table_cell_cols,
+                            None,
+                            usize::MAX,
+                            0,
+                            false,
+                            line,
+                            line_text,
+                            Some(headings),
+                        )
+                    },
                 );
                 view.above_lines = new_window.start_line;
                 view.below_lines = lines_total.saturating_sub(new_window.end_line);
@@ -9884,6 +10070,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         tbl,
                         &editor_font,
                         self.manual_table_col_widths.get(&tbl.first_line).map(|w| w.as_slice()),
+                        line_char_width,
+                        Self::table_room_px(view, line_char_width),
                     );
                     let cursor_col = if is_act_line && line_idx == cursor_line { Some(active_col_in_row) } else { None };
                     shape_table_row(window.text_system(), line, tbl, line_idx, cursor_col, &table_layout, headings, &editor_font, row_char_w)
@@ -9896,7 +10084,11 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
                 if line.is_empty() {
                     if sel.start <= line_start && sel.end > line_start {
-                        return Some(row_layout.selection_rect(0, 1, pixel_scale));
+                        return row_layout
+                            .span_rects(0, 1, pixel_scale)
+                            .into_iter()
+                            .next()
+                            .map(|(x, w, _)| (x, w));
                     } else {
                         return None;
                     }
@@ -9932,7 +10124,11 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                 let vis_s = row_layout.column_for_line_char(c_s);
                                 let vis_e = row_layout.column_for_line_char(c_e);
                                 if vis_s < vis_e {
-                                    return Some(row_layout.selection_rect(vis_s, vis_e, pixel_scale));
+                                    return row_layout
+                                        .span_rects(vis_s, vis_e, pixel_scale)
+                                        .into_iter()
+                                        .next()
+                                        .map(|(x, w, _)| (x, w));
                                 }
                             }
                             return None;
@@ -9944,6 +10140,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                 tbl,
                                 &editor_font,
                                 self.manual_table_col_widths.get(&tbl.first_line).map(|w| w.as_slice()),
+                                line_char_width,
+                                Self::table_room_px(view, line_char_width),
                             );
                             let col_x = table_layout.col_x.get(col_min).copied().unwrap_or(0.0);
                             let col_w = if let Some(&max_x) = table_layout.col_x.get(col_max) {
@@ -9980,7 +10178,11 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             vis_e += 1;
                         }
                         if vis_s < vis_e {
-                            Some(row_layout.selection_rect(vis_s, vis_e, pixel_scale))
+                            row_layout
+                                .span_rects(vis_s, vis_e, pixel_scale)
+                                .into_iter()
+                                .next()
+                                .map(|(x, w, _)| (x, w))
                         } else {
                             None
                         }
@@ -9989,7 +10191,11 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     }
                 } else if includes_newline && char_s == v.char_end {
                     let vis_s = row_layout.column_for_line_char(v.char_end);
-                    Some(row_layout.selection_rect(vis_s, vis_s + 1, pixel_scale))
+                    row_layout
+                                    .span_rects(vis_s, vis_s + 1, pixel_scale)
+                                    .into_iter()
+                                    .next()
+                                    .map(|(x, w, _)| (x, w))
                 } else {
                     None
                 }
@@ -10101,17 +10307,16 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         tbl,
                         &editor_font,
                         self.manual_table_col_widths.get(&tbl.first_line).map(|w| w.as_slice()),
+                        line_char_width,
+                        Self::table_room_px(view, line_char_width),
                     )
                 });
                 let is_tbl_sep = grid_tbl.map_or(false, |tbl| v.line_idx == tbl.sep_line());
-                let row_h = if let Some(tbl) = grid_tbl {
-                    if v.line_idx == tbl.sep_line() {
-                        1.0
-                    } else if v.line_idx == tbl.first_line || v.line_idx == tbl.last_line {
-                        42.0
-                    } else {
-                        28.0
-                    }
+                // Table row heights come from the row geometry itself: a row
+                // is as tall as the wrapped lines of its tallest cell, and the
+                // height index measured exactly that.
+                let row_h = if grid_tbl.is_some() {
+                    height_index_arc.height_of(v_idx)
                 } else {
                     h_metrics_row_h
                 };
@@ -10156,7 +10361,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
                 let row_sel_rect = if line.is_empty() {
                     if selection_range.as_ref().map_or(false, |s| s.start <= line_start && s.end > line_start) {
-                        Some(row_layout.selection_rect(0, 1, pixel_scale))
+                        Some(row_layout.span_rects(0, 1, pixel_scale))
                     } else {
                         None
                     }
@@ -10192,7 +10397,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                             let vis_s = row_layout.column_for_line_char(c_s);
                                             let vis_e = row_layout.column_for_line_char(c_e);
                                             if vis_s < vis_e {
-                                                Some(Some(row_layout.selection_rect(vis_s, vis_e, pixel_scale)))
+                                                let rects = row_layout.span_rects(vis_s, vis_e, pixel_scale);
+                                                if rects.is_empty() { Some(None) } else { Some(Some(rects)) }
                                             } else {
                                                 Some(None)
                                             }
@@ -10200,15 +10406,14 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                             Some(None)
                                         }
                                     } else {
-                                        let tl = table_layout.as_ref().unwrap();
-                                        let col_x = tl.col_x.get(col_min).copied().unwrap_or(0.0);
-                                        let col_w = if let Some(&max_x) = tl.col_x.get(col_max) {
-                                            let max_w = tl.col_widths.get(col_max).copied().unwrap_or(0.0);
-                                            (max_x + max_w - col_x).max(0.0)
-                                        } else {
-                                            tl.total_width - col_x
-                                        };
-                                        Some(Some(crate::snap::snapped_span(col_x, col_x + col_w, pixel_scale)))
+                                        // Whole cells: cover every wrapped line of them.
+                                        let cur_cells = crate::table::split_row(line);
+                                        let c_start = cur_cells.get(col_min).map(|c| c.content.start).unwrap_or(0);
+                                        let c_end = cur_cells.get(col_max).map(|c| c.content.end).unwrap_or(line.chars().count());
+                                        let vis_s = row_layout.column_for_line_char(c_start);
+                                        let vis_e = row_layout.column_for_line_char(c_end);
+                                        let rects = row_layout.span_rects(vis_s, vis_e, pixel_scale);
+                                        if rects.is_empty() { Some(None) } else { Some(Some(rects)) }
                                     }
                                 }
                             } else {
@@ -10244,7 +10449,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                         vis_e += 1;
                                     }
                                     if vis_s < vis_e {
-                                        Some(row_layout.selection_rect(vis_s, vis_e, pixel_scale))
+                                        Some(row_layout.span_rects(vis_s, vis_e, pixel_scale))
                                     } else {
                                         None
                                     }
@@ -10253,7 +10458,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                 }
                             } else if includes_newline && char_s == v.char_end {
                                 let vis_s = row_layout.column_for_line_char(v.char_end);
-                                Some(row_layout.selection_rect(vis_s, vis_s + 1, pixel_scale))
+                                Some(row_layout.span_rects(vis_s, vis_s + 1, pixel_scale))
                             } else {
                                 None
                             }
@@ -10265,71 +10470,82 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     None
                 };
 
-                let chip_cell_h = if grid_tbl.is_some() { 28.0 } else { row_h };
+                let chip_cell_h = if grid_tbl.is_some() {
+                    crate::markdown::TABLE_LINE_H
+                } else {
+                    row_h
+                };
                 let chip_inset = code_chip_inset(chip_cell_h);
+                // Top of the table content box inside this row (the table keeps
+                // an edge margin above the header and below the last row).
+                let tbl_edge_top = grid_tbl.map_or(0.0, |tbl| {
+                    if v.line_idx == tbl.first_line {
+                        crate::markdown::TABLE_EDGE_MARGIN
+                    } else {
+                        0.0
+                    }
+                });
                 let mut backdrop_rects = Vec::new();
                 let mut grammar_layer: Option<gpui::AnyElement> = None;
                 let mut whitespace_layer: Option<gpui::AnyElement> = None;
                 let mut tag_overlays = Vec::new();
                 if !self.source_mode {
                     for &(code_start, code_end) in row_layout.code_ranges() {
-                        let (chip_x, chip_w) = row_layout.selection_rect(code_start, code_end, pixel_scale);
-                        let chip_top = if let Some(tbl) = grid_tbl {
-                            if v.line_idx == tbl.first_line { 14.0 + chip_inset } else { chip_inset }
-                        } else {
-                            chip_inset
-                        };
-                        let chip_h = if grid_tbl.is_some() { 28.0 - 2.0 * chip_inset } else { (row_h - 2.0 * chip_inset).max(1.0) };
-                        backdrop_rects.push(
-                            div()
-                                .absolute()
-                                .left(px(chip_x))
-                                .top(px(chip_top))
-                                .h(px(chip_h))
-                                .w(px(chip_w))
-                                .bg(theme.code_bg)
-                                .rounded_sm(),
-                        );
+                        for (chip_x, chip_w, line_top) in row_layout.span_rects(code_start, code_end, pixel_scale) {
+                            let chip_top = tbl_edge_top + line_top + chip_inset;
+                            let chip_h = (chip_cell_h - 2.0 * chip_inset).max(1.0);
+                            backdrop_rects.push(
+                                div()
+                                    .absolute()
+                                    .left(px(chip_x))
+                                    .top(px(chip_top))
+                                    .h(px(chip_h))
+                                    .w(px(chip_w))
+                                    .bg(theme.code_bg)
+                                    .rounded_sm(),
+                            );
+                        }
                     }
                     for (tag_idx, (tag_start, tag_end, tag_name)) in row_layout.tag_ranges().iter().enumerate() {
-                        let (chip_x, chip_w) = row_layout.selection_rect(*tag_start, *tag_end, pixel_scale);
                         let (bg_color, _) = crate::markdown::tag_color_pair(tag_name, theme.is_dark);
-                        let tag_top = if let Some(tbl) = grid_tbl {
-                            if v.line_idx == tbl.first_line { 14.0 + chip_inset } else { chip_inset }
-                        } else {
-                            chip_inset
-                        };
-                        let tag_h = if grid_tbl.is_some() { 28.0 - 2.0 * chip_inset } else { (row_h - 2.0 * chip_inset).max(1.0) };
+                        let tag_h = (chip_cell_h - 2.0 * chip_inset).max(1.0);
                         let pill_pad = 2.0f32;
-                        backdrop_rects.push(
-                            div()
-                                .absolute()
-                                .left(px(chip_x - pill_pad))
-                                .top(px(tag_top))
-                                .h(px(tag_h))
-                                .w(px(chip_w + 2.0 * pill_pad))
-                                .bg(bg_color)
-                                .rounded_full(),
-                        );
-                        if self.ctrl_held || !self.edit_mode {
-                            let tag_id = format!("v-tag-ov-{}-{}-{}-{}", lid_tag, v_idx, tag_idx, tag_name);
-                            let t = tag_name.clone();
-                            tag_overlays.push(
+                        for (chip_no, (chip_x, chip_w, line_top)) in row_layout
+                            .span_rects(*tag_start, *tag_end, pixel_scale)
+                            .into_iter()
+                            .enumerate()
+                        {
+                            let tag_top = tbl_edge_top + line_top + chip_inset;
+                            backdrop_rects.push(
                                 div()
-                                    .id(gpui::ElementId::Name(tag_id.into()))
                                     .absolute()
                                     .left(px(chip_x - pill_pad))
                                     .top(px(tag_top))
                                     .h(px(tag_h))
                                     .w(px(chip_w + 2.0 * pill_pad))
-                                    .cursor(gpui::CursorStyle::PointingHand)
-                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                        if event.modifiers.control || event.modifiers.platform || !this.edit_mode {
-                                            cx.stop_propagation();
-                                            this.open_tag_search(&t, window, cx);
-                                        }
-                                    })),
+                                    .bg(bg_color)
+                                    .rounded_full(),
                             );
+                            if self.ctrl_held || !self.edit_mode {
+                                let tag_id = format!("v-tag-ov-{}-{}-{}-{}-{}", lid_tag, v_idx, tag_idx, chip_no, tag_name);
+                                let t = tag_name.clone();
+                                tag_overlays.push(
+                                    div()
+                                        .id(gpui::ElementId::Name(tag_id.into()))
+                                        .absolute()
+                                        .left(px(chip_x - pill_pad))
+                                        .top(px(tag_top))
+                                        .h(px(tag_h))
+                                        .w(px(chip_w + 2.0 * pill_pad))
+                                        .cursor(gpui::CursorStyle::PointingHand)
+                                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                            if event.modifiers.control || event.modifiers.platform || !this.edit_mode {
+                                                cx.stop_propagation();
+                                                this.open_tag_search(&t, window, cx);
+                                            }
+                                        })),
+                                );
+                            }
                         }
                     }
                 }
@@ -10424,12 +10640,15 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     .unwrap_or(&[]);
 
                 let mut eol_marker: Option<gpui::AnyElement> = None;
+                let preview_sel: Option<(f32, f32)> = if self.ctrl_preview_selection {
+                    row_sel_rect
+                        .as_ref()
+                        .and_then(|rects| rects.first().copied())
+                        .map(|(x, w, _)| (x, w))
+                } else {
+                    None
+                };
                 if self.edit_mode && grid_tbl.is_none() {
-                    let preview_sel = if self.ctrl_preview_selection {
-                        row_sel_rect
-                    } else {
-                        None
-                    };
                     let ws_quads = whitespace_dot_quads(
                         line,
                         &row_layout,
@@ -10538,23 +10757,25 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         }
                     }
                 }
-                if let Some((sel_x, sel_w)) = row_sel_rect {
-                    let sel_right = sel_x + sel_w;
-                    let sel_above = if v_idx > 0 { calc_v_row_sel_rect(v_idx - 1) } else { None };
-                    let sel_below = if v_idx + 1 < visual_rows_arc.len() { calc_v_row_sel_rect(v_idx + 1) } else { None };
-
-                    let round_tl = sel_above.map_or(true, |(ax, aw)| sel_x < ax - 0.5 || sel_x >= ax + aw - 0.5);
-                    let round_tr = sel_above.map_or(true, |(ax, aw)| sel_right > ax + aw + 0.5 || sel_right <= ax + 0.5);
-                    let round_bl = sel_below.map_or(true, |(bx, bw)| sel_x < bx - 0.5 || sel_x >= bx + bw - 0.5);
-                    let round_br = sel_below.map_or(true, |(bx, bw)| sel_right > bx + bw + 0.5 || sel_right <= bx + 0.5);
-
-                    let sel_top = if let Some(tbl) = grid_tbl {
-                        if v.line_idx == tbl.first_line { 14.0 } else { 0.0 }
+                if let Some(rects) = &row_sel_rect {
+                    let edge_top = if let Some(tbl) = grid_tbl {
+                        if v.line_idx == tbl.first_line {
+                            crate::markdown::TABLE_EDGE_MARGIN
+                        } else {
+                            0.0
+                        }
                     } else {
                         0.0
                     };
-                    let sel_h = if grid_tbl.is_some() { 28.0 } else { row_h };
-
+                    // A table cell that wrapped paints one selection rectangle
+                    // per sub-line; every other row has exactly one.
+                    let sel_h = if grid_tbl.is_some() {
+                        crate::markdown::TABLE_LINE_H
+                    } else {
+                        row_h
+                    };
+                    let sel_above = if v_idx > 0 { calc_v_row_sel_rect(v_idx - 1) } else { None };
+                    let sel_below = if v_idx + 1 < visual_rows_arc.len() { calc_v_row_sel_rect(v_idx + 1) } else { None };
                     let is_preview_selection = self.ctrl_preview_selection || !self.edit_mode;
                     let sel_color = if is_preview_selection {
                         theme.preview_selection_bg()
@@ -10562,28 +10783,42 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         theme.selection_bg
                     };
 
-                    let mut sel_rect = div()
-                        .absolute()
-                        .left(px(sel_x))
-                        .top(px(sel_top))
-                        .h(px(sel_h))
-                        .w(px(sel_w))
-                        .bg(sel_color);
+                    for (idx, &(sel_x, sel_w, sel_top)) in rects.iter().enumerate() {
+                        let sel_right = sel_x + sel_w;
+                        let is_first = idx == 0;
+                        let is_last = idx + 1 == rects.len();
+                        let round_tl = is_first
+                            && sel_above.map_or(true, |(ax, aw)| sel_x < ax - 0.5 || sel_x >= ax + aw - 0.5);
+                        let round_tr = is_first
+                            && sel_above.map_or(true, |(ax, aw)| sel_right > ax + aw + 0.5 || sel_right <= ax + 0.5);
+                        let round_bl = is_last
+                            && sel_below.map_or(true, |(bx, bw)| sel_x < bx - 0.5 || sel_x >= bx + bw - 0.5);
+                        let round_br = is_last
+                            && sel_below.map_or(true, |(bx, bw)| sel_right > bx + bw + 0.5 || sel_right <= bx + 0.5);
 
-                    if round_tl {
-                        sel_rect = sel_rect.rounded_tl_xs();
-                    }
-                    if round_tr {
-                        sel_rect = sel_rect.rounded_tr_xs();
-                    }
-                    if round_bl {
-                        sel_rect = sel_rect.rounded_bl_xs();
-                    }
-                    if round_br {
-                        sel_rect = sel_rect.rounded_br_xs();
-                    }
+                        let mut sel_rect = div()
+                            .absolute()
+                            .left(px(sel_x))
+                            .top(px(edge_top + sel_top))
+                            .h(px(sel_h))
+                            .w(px(sel_w))
+                            .bg(sel_color);
 
-                    backdrop_rects.push(sel_rect);
+                        if round_tl {
+                            sel_rect = sel_rect.rounded_tl_xs();
+                        }
+                        if round_tr {
+                            sel_rect = sel_rect.rounded_tr_xs();
+                        }
+                        if round_bl {
+                            sel_rect = sel_rect.rounded_bl_xs();
+                        }
+                        if round_br {
+                            sel_rect = sel_rect.rounded_br_xs();
+                        }
+
+                        backdrop_rects.push(sel_rect);
+                    }
                 }
 
                 // Find matches sit above the selection so the active match is
@@ -10609,33 +10844,30 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         if vis_s >= vis_e {
                             continue;
                         }
-                        let (match_x, match_w) = row_layout.selection_rect(vis_s, vis_e, pixel_scale);
-                        let match_top = if let Some(tbl) = grid_tbl {
-                            if v.line_idx == tbl.first_line { 14.0 } else { 0.0 }
-                        } else {
-                            0.0
-                        };
                         let match_h = if grid_tbl.is_some() && !is_tbl_sep {
-                            28.0
+                            crate::markdown::TABLE_LINE_H
                         } else {
                             row_h
                         };
                         let is_active = first + offset == self.find_bar.active;
                         find_highlight_budget -= 1;
-                        backdrop_rects.push(
-                            div()
-                                .absolute()
-                                .left(px(match_x))
-                                .top(px(match_top))
-                                .h(px(match_h))
-                                .w(px(match_w))
-                                .bg(if is_active {
-                                    theme.find_match_active_bg()
-                                } else {
-                                    theme.find_match_bg()
-                                })
-                                .rounded_xs(),
-                        );
+                        let rects = row_layout.span_rects(vis_s, vis_e, pixel_scale);
+                        for (match_x, match_w, line_top) in rects {
+                            backdrop_rects.push(
+                                div()
+                                    .absolute()
+                                    .left(px(match_x))
+                                    .top(px(tbl_edge_top + line_top))
+                                    .h(px(match_h))
+                                    .w(px(match_w))
+                                    .bg(if is_active {
+                                        theme.find_match_active_bg()
+                                    } else {
+                                        theme.find_match_bg()
+                                    })
+                                    .rounded_xs(),
+                            );
+                        }
                     }
                 }
 
@@ -10714,11 +10946,22 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 if show_current_line_highlight {
                     let is_sep = grid_tbl.map_or(false, |tbl| v.line_idx == tbl.sep_line());
                     let hl_top = if let Some(tbl) = grid_tbl {
-                        if v.line_idx == tbl.first_line { 14.0 } else { 0.0 }
+                        if v.line_idx == tbl.first_line { crate::markdown::TABLE_EDGE_MARGIN } else { 0.0 }
                     } else {
                         0.0
                     };
-                    let hl_h = if is_sep { 1.0 } else if grid_tbl.is_some() { 28.0 } else { row_h };
+                    let hl_h = if is_sep {
+                        1.0
+                    } else if let Some(tbl) = grid_tbl {
+                        let edge_bottom = if v.line_idx == tbl.last_line {
+                            crate::markdown::TABLE_EDGE_MARGIN
+                        } else {
+                            0.0
+                        };
+                        (row_h - hl_top - edge_bottom).max(crate::markdown::TABLE_LINE_H)
+                    } else {
+                        row_h
+                    };
 
                     if is_leaf_active {
                         row_div = row_div.child(
@@ -10764,6 +11007,16 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     None
                 };
 
+                // Document Y of this row's top, so a click inside a wrapped
+                // table cell can resolve the sub-line it landed on.
+                let row_doc_top = view.above_h + height_index_arc.top_of(v_idx);
+                let row_edge_top = grid_tbl.map_or(0.0, |tbl| {
+                    if v_line_idx == tbl.first_line {
+                        crate::markdown::TABLE_EDGE_MARGIN
+                    } else {
+                        0.0
+                    }
+                });
                 if is_leaf_active {
                     row_div = row_div
                         .cursor(gpui::CursorStyle::IBeam)
@@ -10780,9 +11033,14 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             this.mouse_down_pos = Some((click_x, click_y));
                             this.mouse_drag_started = false;
 
+                            let row_local_y = (f64::from(click_y)
+                                - f64::from(this.editor_rows_top_y())
+                                + this.current_scroll_top_f64()
+                                - row_doc_top) as f32
+                                - row_edge_top;
                             let col_in_row = if click_x > text_start_x {
                                 let layout = if ctrl_held { &row_layout_preview_down } else { &row_layout_down };
-                                let column = layout.column_for_x(click_x - text_start_x);
+                                let column = layout.column_for_xy(click_x - text_start_x, row_local_y);
                                 if (ctrl_held || !this.edit_mode) && event.click_count == 1 {
                                     if let Some((_, _, tag_name)) = layout.tag_ranges().iter().find(|(s, e, _)| column >= *s && column < *e) {
                                         this.open_tag_search(tag_name, window, cx);
@@ -10920,9 +11178,15 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                 }
                                 cx.stop_propagation();
                                 let click_x: f32 = event.position.x.into();
+                                let click_y: f32 = event.position.y.into();
+                                let row_local_y = (f64::from(click_y)
+                                    - f64::from(this.editor_rows_top_y())
+                                    + this.current_scroll_top_f64()
+                                    - row_doc_top) as f32
+                                    - row_edge_top;
                                 let col_in_row = if click_x > text_start_x {
                                     let layout = if this.ctrl_preview_selection { &row_layout_preview_move } else { &row_layout_move };
-                                    let column = layout.column_for_x(click_x - text_start_x);
+                                    let column = layout.column_for_xy(click_x - text_start_x, row_local_y);
                                     layout.line_char_for_column(column).saturating_sub(v_char_start).min(row_len)
                                 } else {
                                     0
@@ -10956,7 +11220,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                 (row_layout.width() + 18.0, ((row_h - btn_h) / 2.0).max(0.0))
                             } else {
                                 let total_w = table_layout.as_ref().map(|l| l.total_width).unwrap_or(0.0);
-                                (total_w + 20.0, 14.0 + (28.0 - btn_h) / 2.0)
+                                let content_h = (row_h - crate::markdown::TABLE_EDGE_MARGIN)
+                                    .max(crate::markdown::TABLE_LINE_H);
+                                (total_w + 20.0, crate::markdown::TABLE_EDGE_MARGIN + (content_h - btn_h) / 2.0)
                             };
                             let tbl_first_line = tbl.first_line;
                             let icon_color = if is_raw { theme.accent } else { theme.text_secondary };
@@ -11008,14 +11274,37 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             let current_widths = table_layout.as_ref().unwrap().col_widths.clone();
                             let tbl_clone = tbl.clone();
                             let group_name = format!("tbl-add-col-grp-{}", tbl.first_line);
-                            let (col_btn_top, table_h) = if tbl.last_line == tbl.sep_line() {
-                                (-28.0, 29.0)
-                            } else {
-                                let n = tbl.row_count();
-                                let dist_up = (n - 1) as f32 * 28.0 + 1.0;
-                                let h = n as f32 * 28.0 + 1.0;
-                                (-dist_up, h)
+                            // Row heights vary with the wrapped lines of every
+                            // row, so the strip is measured from the table's own
+                            // cell budgets instead of a fixed row height.
+                            let col_budgets = table_layout.as_ref().unwrap().col_chars.clone();
+                            let row_h_of = |l: usize| -> f32 {
+                                if l == tbl.sep_line() {
+                                    return 1.0;
+                                }
+                                let text = &lines_arc[l];
+                                let cells = crate::table::split_row(text);
+                                let ranges: Vec<std::ops::Range<usize>> =
+                                    cells.iter().map(|c| c.content.clone()).collect();
+                                let n = crate::markdown::table_row_wrap_lines(
+                                    text,
+                                    &ranges,
+                                    &col_budgets,
+                                    None,
+                                    &crate::markdown::InlineReveal::None,
+                                    headings,
+                                );
+                                let content = n as f32 * crate::markdown::TABLE_LINE_H
+                                    + 2.0 * crate::markdown::TABLE_PAD_Y;
+                                if l == tbl.first_line || l == tbl.last_line {
+                                    content + crate::markdown::TABLE_EDGE_MARGIN
+                                } else {
+                                    content
+                                }
                             };
+                            let above: f32 = (tbl.first_line..tbl.last_line).map(row_h_of).sum();
+                            let table_h = above + row_h_of(tbl.last_line);
+                            let col_btn_top = -above;
                             Some(
                                 div()
                                     .id(gpui::ElementId::Name(format!("table-add-col-{}", v_idx).into()))
@@ -11099,7 +11388,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                     .group(group_name.clone())
                                     .absolute()
                                     .left_0()
-                                    .top(px(27.0))
+                                    .top(px((row_h - crate::markdown::TABLE_EDGE_MARGIN).max(crate::markdown::TABLE_LINE_H) - 1.0))
                                     .w(px(total_w))
                                     .h(px(13.0))
                                     .cursor_pointer()
@@ -11160,15 +11449,26 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     .map(|columns| columns.as_slice())
                     .unwrap_or(&[]);
 
-                let table_render_arg = grid_tbl.map(|tbl| (tbl, table_layout.as_ref().unwrap().as_ref(), if is_active_line && v_line_idx == cursor_line { Some(active_col_in_row) } else { None }, v_line_idx));
+                let table_render_arg = grid_tbl.map(|tbl| (tbl, table_layout.as_ref().unwrap().as_ref(), if is_active_line && v_line_idx == cursor_line { Some(active_col_in_row) } else { None }, v_line_idx, row_h));
 
                 let is_tbl_sep = grid_tbl.map_or(false, |tbl| v_line_idx == tbl.sep_line());
                 let line_num_top = if let Some(tbl) = grid_tbl {
-                    if v_line_idx == tbl.first_line { 14.0 } else { 0.0 }
+                    if v_line_idx == tbl.first_line { crate::markdown::TABLE_EDGE_MARGIN } else { 0.0 }
                 } else {
                     0.0
                 };
-                let line_num_h = if is_tbl_sep { 0.0 } else if grid_tbl.is_some() { 28.0 } else { row_h };
+                let line_num_h = if is_tbl_sep {
+                    0.0
+                } else if let Some(tbl) = grid_tbl {
+                    let edge_bottom = if v_line_idx == tbl.last_line {
+                        crate::markdown::TABLE_EDGE_MARGIN
+                    } else {
+                        0.0
+                    };
+                    (row_h - line_num_top - edge_bottom).max(crate::markdown::TABLE_LINE_H)
+                } else {
+                    row_h
+                };
 
                 row_div = row_div
                     .child(
@@ -11337,8 +11637,18 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                     (2.0, theme.accent)
                                 };
                                 let (caret_top, caret_h) = if let Some(tbl) = grid_tbl {
-                                    let top = if v_line_idx == tbl.first_line { 14.0 } else { 0.0 };
-                                    (top, 28.0)
+                                    // The caret sits on the wrapped sub-line the
+                                    // cursor char belongs to, inside the row's
+                                    // content box.
+                                    let edge = if v_line_idx == tbl.first_line {
+                                        crate::markdown::TABLE_EDGE_MARGIN
+                                    } else {
+                                        0.0
+                                    };
+                                    let line_top = row_layout.top_for_column(
+                                        row_layout.column_for_line_char(v_char_start + active_col_in_row),
+                                    );
+                                    (edge + line_top, crate::markdown::TABLE_LINE_H)
                                 } else {
                                     (0.0, row_h)
                                 };
@@ -11927,7 +12237,7 @@ impl Render for AppView {
         // borrows `self`: the reveal may re-place the editor window on the caret,
         // and that needs the note mutably.
         let editor_font = self.editor_font_family();
-        let font_id = cx.text_system().resolve_font(&gpui::font(editor_font));
+        let font_id = cx.text_system().resolve_font(&gpui::font(editor_font.clone()));
         let line_char_width = cx
             .text_system()
             .advance(font_id, px(14.0), 'x')
@@ -11937,9 +12247,29 @@ impl Render for AppView {
         let viewport_w: f32 = window.viewport_size().width.into();
         let wrap_cols = self.compute_wrap_cols(viewport_w, line_char_width);
         self.last_wrap_cols = wrap_cols;
+
+        // Tables wrap their cells by the painted column budget of each column.
+        // Measure them here, before the visual cache is ensured, so the row
+        // heights of this very frame already include the wrapped lines.
+        let table_cell_cols = match (self.state.active_view(), self.state.active_document()) {
+            (Some(view), Some(doc)) => Some(Self::collect_table_cell_cols(
+                &self.table_layouts,
+                window.text_system(),
+                doc,
+                view,
+                &editor_font,
+                &self.manual_table_col_widths,
+                line_char_width,
+            )),
+            _ => None,
+        };
+
         let curr_scroll = self.current_scroll_top_f64();
         let mut new_active_scroll = None;
         if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
+            if let Some(cols) = table_cell_cols {
+                view.set_table_cell_cols(cols);
+            }
             let anchor_line = view.viewport.offset;
             let old_line_top = view.doc_y_of_line(doc.line_index.lines(), anchor_line);
             let px_in_line = (curr_scroll - old_line_top).max(0.0);
@@ -14479,27 +14809,34 @@ pub(crate) struct TableLayout {
     pub col_x: Vec<f32>,
     pub total_width: f32,
     pub aligns: Vec<crate::table::Align>,
+    /// Painted columns each cell of a column can hold before its text wraps.
+    /// The row geometry wraps cells with these exact budgets, so the height a
+    /// row claims always matches the grid painted over it.
+    pub col_chars: Vec<usize>,
 }
 
+/// One wrapped sub-line of a table cell, shaped on its own.
+///
+/// A cell that does not fit its column is painted as a stack of these; every
+/// pixel <-> column conversion inside the cell resolves to one of them, so the
+/// caret and the selection land on the line they belong to.
 #[allow(dead_code)]
 #[derive(Clone)]
-pub(crate) struct TableCellLayout {
-    pub col_idx: usize,
-    pub cell_x: f32,
-    pub cell_w: f32,
-    pub content_x: f32,
-    pub cell_start_col: usize,
-    pub cell_columns: usize,
-    pub content_range: std::ops::Range<usize>,
-    pub outer_range: std::ops::Range<usize>,
-    pub line_chars: Vec<usize>,
+pub(crate) struct TableCellLine {
     pub text: SharedString,
     pub layout: Arc<gpui::LineLayout>,
-    pub code_ranges: Vec<(usize, usize)>,
-    pub tag_ranges: Vec<(usize, usize, String)>,
+    /// Painted columns of this sub-line.
+    pub columns: usize,
+    /// Raw document char painted at each column, plus one trailing entry.
+    pub line_chars: Vec<usize>,
+    /// Raw document chars this sub-line covers.
+    pub raw_start: usize,
+    pub raw_end: usize,
+    /// X of the first painted column inside the cell, alignment included.
+    pub content_x: f32,
 }
 
-impl TableCellLayout {
+impl TableCellLine {
     fn byte_for_column(&self, col: usize) -> usize {
         self.text
             .char_indices()
@@ -14508,24 +14845,95 @@ impl TableCellLayout {
             .unwrap_or(self.text.len())
     }
 
+    /// X of painted column `col` of this sub-line, relative to the row.
     fn glyph_x(&self, col: usize) -> f32 {
-        if col >= self.cell_columns {
-            return f32::from(self.layout.width);
+        if col >= self.columns {
+            return self.content_x + f32::from(self.layout.width);
         }
         let byte = self.byte_for_column(col);
         let mut cluster_x = 0.0f32;
         for run in &self.layout.runs {
             for glyph in &run.glyphs {
                 if glyph.index == byte {
-                    return f32::from(glyph.position.x);
+                    return self.content_x + f32::from(glyph.position.x);
                 }
                 if glyph.index > byte {
-                    return cluster_x;
+                    return self.content_x + cluster_x;
                 }
                 cluster_x = f32::from(glyph.position.x);
             }
         }
-        cluster_x
+        self.content_x + cluster_x
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone)]
+pub(crate) struct TableCellLayout {
+    pub col_idx: usize,
+    pub cell_x: f32,
+    pub cell_w: f32,
+    pub cell_start_col: usize,
+    pub cell_columns: usize,
+    pub content_range: std::ops::Range<usize>,
+    pub outer_range: std::ops::Range<usize>,
+    pub lines: Vec<TableCellLine>,
+    pub code_ranges: Vec<(usize, usize)>,
+    pub tag_ranges: Vec<(usize, usize, String)>,
+}
+
+impl TableCellLayout {
+    /// Sub-line and column-in-line a flat column of this cell resolves to.
+    fn line_col(&self, flat: usize) -> (usize, usize) {
+        let mut acc = 0usize;
+        for (i, line) in self.lines.iter().enumerate() {
+            if flat < acc + line.columns {
+                return (i, flat - acc);
+            }
+            acc += line.columns;
+        }
+        let last = self.lines.len().saturating_sub(1);
+        (last, self.lines.get(last).map_or(0, |l| l.columns))
+    }
+
+    fn line_offset(&self, line: usize) -> usize {
+        self.lines.iter().take(line).map(|l| l.columns).sum()
+    }
+
+    /// Raw document char a flat column of this cell maps to.
+    fn line_char_for_flat(&self, flat: usize) -> usize {
+        if flat >= self.cell_columns {
+            return self.content_range.end;
+        }
+        let (line_idx, col) = self.line_col(flat);
+        self.lines
+            .get(line_idx)
+            .and_then(|l| l.line_chars.get(col))
+            .copied()
+            .unwrap_or(self.content_range.end)
+    }
+
+    /// Flat column of a raw document char, clamped to the cell.
+    fn flat_for_line_char(&self, lc: usize) -> usize {
+        if lc <= self.content_range.start {
+            return 0;
+        }
+        if lc >= self.content_range.end {
+            return self.cell_columns;
+        }
+        let mut offset = 0usize;
+        for (i, line) in self.lines.iter().enumerate() {
+            let is_last = i + 1 == self.lines.len();
+            if line.raw_end >= lc || is_last {
+                let col = line
+                    .line_chars
+                    .partition_point(|&ch| ch < lc)
+                    .min(line.columns);
+                return offset + col;
+            }
+            offset += line.columns;
+        }
+        self.cell_columns
     }
 }
 
@@ -14546,6 +14954,23 @@ impl TableRowLayout {
         self.total_columns
     }
 
+    fn cell_for_col(&self, col: usize) -> Option<&TableCellLayout> {
+        self.cells
+            .iter()
+            .find(|c| col <= c.cell_start_col + c.cell_columns)
+    }
+
+    fn cell_for_x(&self, x: f32) -> Option<&TableCellLayout> {
+        self.cells
+            .iter()
+            .find(|c| x >= c.cell_x && x < c.cell_x + c.cell_w)
+    }
+
+    /// Vertical position of a sub-line inside the row content box.
+    pub fn line_top(line: usize) -> f32 {
+        crate::markdown::TABLE_PAD_Y + line as f32 * crate::markdown::TABLE_LINE_H
+    }
+
     pub fn x_for_column(&self, col: usize, cell_w: f32) -> f32 {
         if self.is_delimiter || self.cells.is_empty() {
             return 0.0;
@@ -14553,36 +14978,72 @@ impl TableRowLayout {
         if col >= self.total_columns {
             return self.total_width + (col - self.total_columns) as f32 * cell_w;
         }
-        for cell in &self.cells {
-            if col >= cell.cell_start_col && col <= cell.cell_start_col + cell.cell_columns {
-                let k = col - cell.cell_start_col;
-                return cell.content_x + cell.glyph_x(k);
-            }
+        if let Some(cell) = self.cell_for_col(col) {
+            let flat = col - cell.cell_start_col;
+            let (line_idx, col_in_line) = cell.line_col(flat);
+            return cell
+                .lines
+                .get(line_idx)
+                .map_or(cell.cell_x, |l| l.glyph_x(col_in_line));
         }
         if let Some(last) = self.cells.last() {
-            last.content_x + f32::from(last.layout.width)
+            last.lines
+                .last()
+                .map_or(last.cell_x + last.cell_w, |l| l.glyph_x(l.columns))
         } else {
             0.0
         }
     }
 
-    pub fn column_for_x(&self, x: f32) -> usize {
+    /// Vertical position of the sub-line a flat column belongs to, relative to
+    /// the row content box.
+    pub fn top_for_column(&self, col: usize) -> f32 {
+        if self.is_delimiter || self.cells.is_empty() {
+            return 0.0;
+        }
+        let cell = self.cell_for_col(col).or_else(|| self.cells.last());
+        match cell {
+            Some(cell) => {
+                let (line_idx, _) = cell.line_col(col.saturating_sub(cell.cell_start_col));
+                Self::line_top(line_idx)
+            }
+            None => 0.0,
+        }
+    }
+
+    /// Column a click at `(x, y)` inside the row content box resolves to.
+    ///
+    /// The y picks the wrapped sub-line, so clicking the second line of a cell
+    /// puts the caret on the second line instead of the first.
+    pub fn column_for_xy(&self, x: f32, y: f32) -> usize {
         if self.is_delimiter || self.cells.is_empty() {
             return 0;
         }
         if x < 0.0 {
             return 0;
         }
-        for cell in &self.cells {
-            if x >= cell.cell_x && x < cell.cell_x + cell.cell_w {
-                if cell.cell_columns == 0 {
-                    return cell.cell_start_col;
-                }
-                let local_x = (x - cell.content_x).max(0.0);
-                let byte = cell.layout.closest_index_for_x(px(local_x));
-                let col_in_cell = cell.text.get(..byte).map(|s| s.chars().count()).unwrap_or(0).min(cell.cell_columns);
-                return cell.cell_start_col + col_in_cell;
+        if let Some(cell) = self.cell_for_x(x) {
+            if cell.lines.is_empty() {
+                return cell.cell_start_col;
             }
+            let line_idx = if y <= crate::markdown::TABLE_PAD_Y {
+                0
+            } else {
+                (((y - crate::markdown::TABLE_PAD_Y) / crate::markdown::TABLE_LINE_H).floor()
+                    as usize)
+                    .min(cell.lines.len() - 1)
+            };
+            let offset = cell.line_offset(line_idx);
+            let line = &cell.lines[line_idx];
+            let local_x = (x - line.content_x).max(0.0);
+            let byte = line.layout.closest_index_for_x(px(local_x));
+            let col_in_line = line
+                .text
+                .get(..byte)
+                .map(|s| s.chars().count())
+                .unwrap_or(0)
+                .min(line.columns);
+            return cell.cell_start_col + offset + col_in_line;
         }
         if let Some(last) = self.cells.last() {
             return last.cell_start_col + last.cell_columns;
@@ -14594,14 +15055,8 @@ impl TableRowLayout {
         if self.is_delimiter || self.cells.is_empty() {
             return 0;
         }
-        for cell in &self.cells {
-            if col >= cell.cell_start_col && col <= cell.cell_start_col + cell.cell_columns {
-                let k = col - cell.cell_start_col;
-                if k >= cell.cell_columns {
-                    return cell.content_range.end;
-                }
-                return cell.line_chars.get(k).copied().unwrap_or(cell.content_range.end);
-            }
+        if let Some(cell) = self.cell_for_col(col) {
+            return cell.line_char_for_flat(col - cell.cell_start_col);
         }
         if let Some(last) = self.cells.last() {
             last.content_range.end
@@ -14616,16 +15071,7 @@ impl TableRowLayout {
         }
         for cell in &self.cells {
             if lc <= cell.outer_range.end {
-                if lc <= cell.content_range.start {
-                    return cell.cell_start_col;
-                }
-                if lc >= cell.content_range.end {
-                    return cell.cell_start_col + cell.cell_columns;
-                }
-                let k = cell.line_chars
-                    .partition_point(|&ch| ch < lc)
-                    .min(cell.cell_columns);
-                return cell.cell_start_col + k;
+                return cell.cell_start_col + cell.flat_for_line_char(lc);
             }
         }
         if let Some(last) = self.cells.last() {
@@ -14633,6 +15079,35 @@ impl TableRowLayout {
         } else {
             self.total_columns
         }
+    }
+
+    /// One rectangle per painted sub-line that the column range covers, as
+    /// `(x, width, top)`. A range inside a multi-line cell therefore yields one
+    /// rectangle per line it spans, which is what makes the selection follow the
+    /// wrap instead of jumping to a single line.
+    pub fn span_rects(&self, start_col: usize, end_col: usize) -> Vec<(f32, f32, f32)> {
+        if self.is_delimiter || self.cells.is_empty() || start_col >= end_col {
+            return Vec::new();
+        }
+        let mut rects = Vec::new();
+        for cell in &self.cells {
+            let mut offset = 0usize;
+            for (line_idx, line) in cell.lines.iter().enumerate() {
+                let line_start = cell.cell_start_col + offset;
+                let line_end = line_start + line.columns;
+                let s = start_col.max(line_start);
+                let e = end_col.min(line_end);
+                if s < e {
+                    let x0 = line.glyph_x(s - line_start);
+                    let x1 = line.glyph_x(e - line_start);
+                    if x1 > x0 {
+                        rects.push((x0, x1 - x0, Self::line_top(line_idx)));
+                    }
+                }
+                offset += line.columns;
+            }
+        }
+        rects
     }
 }
 
@@ -14671,6 +15146,8 @@ pub(crate) fn compute_table_layout<'a>(
     block: &crate::table::TableBlock,
     font_family: &SharedString,
     manual_widths: Option<&[f32]>,
+    char_width: f32,
+    room_px: f32,
 ) -> TableLayout {
     const PADDING_X: f32 = 8.0;
     const MIN_COL_WIDTH: f32 = 80.0;
@@ -14748,13 +15225,27 @@ pub(crate) fn compute_table_layout<'a>(
         }
         w
     } else {
+        // A table wider than the room the editor has for it would push the
+        // note sideways and never wrap; it is fitted to the room instead, which
+        // is what turns a long cell into several painted lines.
         let sum_natural: f32 = natural_widths.iter().sum();
-        if sum_natural < 720.0 {
-            fit_table_columns(&natural_widths, 720.0)
+        let room = room_px.max(MIN_COL_WIDTH);
+        if sum_natural > room {
+            fit_table_columns(&natural_widths, room)
+        } else if sum_natural < 720.0 {
+            fit_table_columns(&natural_widths, 720.0f32.min(room))
         } else {
             natural_widths
         }
     };
+
+    let col_chars: Vec<usize> = col_widths
+        .iter()
+        .map(|&w| {
+            let avail = (w - 2.0 * PADDING_X).max(0.0);
+            ((avail / char_width.max(1.0)).floor() as usize).max(1)
+        })
+        .collect();
 
     let mut col_x = Vec::with_capacity(n_cols);
     let mut cur_x = 0.0f32;
@@ -14769,6 +15260,7 @@ pub(crate) fn compute_table_layout<'a>(
         col_x,
         total_width: cur_x,
         aligns: block.aligns.clone(),
+        col_chars,
     }
 }
 
@@ -14852,62 +15344,151 @@ pub(crate) fn shape_table_row(
             headings,
         );
 
-        let cell_code_ranges = painted.code_ranges();
+        // Wrap the cell by the painted column budget of its column. The
+        // budget comes from the same `TableLayout` the grid is painted with,
+        // so the wrap the row height was computed from is the wrap shown here.
+        let wrap: Vec<crate::markdown::CellWrapLine> = match table_layout.col_chars.get(c) {
+            Some(&max_cols) => {
+                crate::markdown::wrap_painted_cell(&painted, content_range.end, max_cols)
+            }
+            None => vec![crate::markdown::CellWrapLine {
+                painted_start: 0,
+                painted_end: painted.columns(),
+                raw_start: content_range.start,
+                raw_end: content_range.end,
+            }],
+        };
+
+        let painted_text: String = painted.segments.iter().map(|s| s.text.as_str()).collect();
+        let color = rgba(0x000000ff).into();
+        let cell_x = table_layout.col_x[c];
+        let cell_w_val = table_layout.col_widths[c];
+        let avail_w = (cell_w_val - 2.0 * PADDING_X).max(0.0);
+
+        let mut lines: Vec<TableCellLine> = Vec::with_capacity(wrap.len());
+        let mut cell_columns = 0usize;
+        for wl in &wrap {
+            let text: String = painted_text
+                .chars()
+                .skip(wl.painted_start)
+                .take(wl.painted_end.saturating_sub(wl.painted_start))
+                .collect();
+            let mut runs = Vec::new();
+            let mut seg_offset = 0usize;
+            for seg in &painted.segments {
+                let seg_len = seg.text.chars().count();
+                let seg_end = seg_offset + seg_len;
+                let s = wl.painted_start.max(seg_offset);
+                let e = wl.painted_end.min(seg_end);
+                if s < e {
+                    let part: String = seg
+                        .text
+                        .chars()
+                        .skip(s - seg_offset)
+                        .take(e - s)
+                        .collect();
+                    if !part.is_empty() {
+                        let weight = if seg.code {
+                            inline_code_weight(if seg.bold || is_header {
+                                gpui::FontWeight::BOLD
+                            } else {
+                                gpui::FontWeight::NORMAL
+                            })
+                        } else if seg.bold || is_header {
+                            gpui::FontWeight::BOLD
+                        } else {
+                            gpui::FontWeight::NORMAL
+                        };
+                        runs.push(gpui::TextRun {
+                            len: part.len(),
+                            font: gpui::Font {
+                                family: font_family.clone(),
+                                weight,
+                                style: if seg.italic {
+                                    gpui::FontStyle::Italic
+                                } else {
+                                    gpui::FontStyle::Normal
+                                },
+                                features: Default::default(),
+                                fallbacks: None,
+                            },
+                            color,
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        });
+                    }
+                }
+                seg_offset = seg_end;
+                if seg_offset >= wl.painted_end {
+                    break;
+                }
+            }
+
+            let text_shared: SharedString = text.into();
+            let line_layout =
+                text_system.layout_line(text_shared.as_ref(), px(14.0), &runs, None);
+            let text_w = f32::from(line_layout.width);
+            let extra_space = (avail_w - text_w).max(0.0);
+            let align_offset = match table_layout.aligns.get(c).copied().unwrap_or_default() {
+                crate::table::Align::None | crate::table::Align::Left => 0.0,
+                crate::table::Align::Center => extra_space / 2.0,
+                crate::table::Align::Right => extra_space,
+            };
+            let columns = text_shared.chars().count();
+            let line_chars = painted
+                .line_chars
+                .iter()
+                .skip(wl.painted_start)
+                .take(wl.painted_end.saturating_sub(wl.painted_start) + 1)
+                .copied()
+                .collect::<Vec<_>>();
+            cell_columns += columns;
+            lines.push(TableCellLine {
+                text: text_shared,
+                layout: line_layout,
+                columns,
+                line_chars,
+                raw_start: wl.raw_start,
+                raw_end: wl.raw_end,
+                content_x: cell_x + PADDING_X + align_offset,
+            });
+        }
+
+        // Inline code and tags are painted as chips per sub-line, so their
+        // painted offsets are rebased onto the cell's flattened column space.
+        let flat_of_painted = |painted_col: usize| -> usize {
+            let mut acc = 0usize;
+            for line in &lines {
+                if painted_col <= acc + line.columns {
+                    return acc + (painted_col - acc).min(line.columns);
+                }
+                acc += line.columns;
+            }
+            acc
+        };
+        let cell_code_ranges: Vec<(usize, usize)> = painted
+            .code_ranges()
+            .into_iter()
+            .map(|(s, e)| (flat_of_painted(s), flat_of_painted(e)))
+            .collect();
+        let cell_tag_ranges: Vec<(usize, usize, String)> = painted
+            .tag_ranges()
+            .into_iter()
+            .map(|(s, e, tag)| (flat_of_painted(s), flat_of_painted(e), tag))
+            .collect();
+
         for &(cs, ce) in &cell_code_ranges {
             flat_code_ranges.push((cur_col_offset + cs, cur_col_offset + ce));
         }
-        let cell_tag_ranges = painted.tag_ranges();
         for (cs, ce, tag) in &cell_tag_ranges {
             flat_tag_ranges.push((cur_col_offset + cs, cur_col_offset + ce, tag.clone()));
         }
 
-        let mut cell_text = String::new();
-        let mut runs = Vec::new();
-        let color = rgba(0x000000ff).into();
-
-        for seg in &painted.segments {
-            let weight = if seg.code {
-                inline_code_weight(if seg.bold || is_header { gpui::FontWeight::BOLD } else { gpui::FontWeight::NORMAL })
-            } else if seg.bold || is_header {
-                gpui::FontWeight::BOLD
-            } else {
-                gpui::FontWeight::NORMAL
-            };
-            cell_text.push_str(&seg.text);
-            runs.push(gpui::TextRun {
-                len: seg.text.len(),
-                font: gpui::Font {
-                    family: font_family.clone(),
-                    weight,
-                    style: if seg.italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal },
-                    features: Default::default(),
-                    fallbacks: None,
-                },
-                color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            });
-        }
-
-        let cell_text_shared: SharedString = cell_text.into();
-        let cell_layout = text_system.layout_line(cell_text_shared.as_ref(), px(14.0), &runs, None);
-        let text_w = f32::from(cell_layout.width);
-        let cell_x = table_layout.col_x[c];
-        let cell_w_val = table_layout.col_widths[c];
-        let avail_w = (cell_w_val - 2.0 * PADDING_X).max(0.0);
-        let extra_space = (avail_w - text_w).max(0.0);
-
-        let align_offset = match table_layout.aligns.get(c).copied().unwrap_or_default() {
-            crate::table::Align::None | crate::table::Align::Left => 0.0,
-            crate::table::Align::Center => extra_space / 2.0,
-            crate::table::Align::Right => extra_space,
-        };
-        let content_x = cell_x + PADDING_X + align_offset;
-        let cell_columns = painted.line_chars.len().saturating_sub(1);
-
-        for &lc in painted.line_chars.iter().take(cell_columns) {
-            flat_line_chars.push(lc);
+        for line in &lines {
+            for &lc in line.line_chars.iter().take(line.columns) {
+                flat_line_chars.push(lc);
+            }
         }
         flat_line_chars.push(content_range.end);
 
@@ -14915,14 +15496,11 @@ pub(crate) fn shape_table_row(
             col_idx: c,
             cell_x,
             cell_w: cell_w_val,
-            content_x,
             cell_start_col: cur_col_offset,
             cell_columns,
             content_range,
             outer_range,
-            line_chars: painted.line_chars,
-            text: cell_text_shared,
-            layout: cell_layout,
+            lines,
             code_ranges: cell_code_ranges,
             tag_ranges: cell_tag_ranges,
         });
@@ -15010,9 +15588,12 @@ impl RowShapedLayout {
         cluster_x
     }
 
-    pub fn column_for_x(&self, x: f32) -> usize {
+    /// Column a click at `(x, y)` resolves to. `y` is relative to the row's
+    /// content box and only matters for table rows, where it selects the
+    /// wrapped sub-line of a cell.
+    pub fn column_for_xy(&self, x: f32, y: f32) -> usize {
         if let Some(tr) = &self.table_row {
-            return tr.column_for_x(x);
+            return tr.column_for_xy(x, y);
         }
         let columns = self.columns();
         let end_x = f32::from(self.layout.width);
@@ -15028,6 +15609,10 @@ impl RowShapedLayout {
             }
         }
         col
+    }
+
+    pub fn column_for_x(&self, x: f32) -> usize {
+        self.column_for_xy(x, 0.0)
     }
 
     pub fn line_char_for_column(&self, col: usize) -> usize {
@@ -15078,6 +15663,37 @@ impl RowShapedLayout {
             self.x_for_column(sel_e),
             scale_factor,
         )
+    }
+
+    /// Rectangles a painted column range covers, as `(x, width, top)`.
+    ///
+    /// A table row with wrapped cells yields one rectangle per painted
+    /// sub-line; every other row yields exactly one, at the top of the row.
+    pub fn span_rects(&self, start_col: usize, end_col: usize, scale_factor: f32) -> Vec<(f32, f32, f32)> {
+        if let Some(tr) = &self.table_row {
+            return tr
+                .span_rects(start_col, end_col)
+                .into_iter()
+                .map(|(x, w, top)| {
+                    let (sx, sw) = crate::snap::snapped_span(x, x + w, scale_factor);
+                    (sx, sw, top)
+                })
+                .collect();
+        }
+        if start_col >= end_col {
+            return Vec::new();
+        }
+        let (x, w) = self.selection_rect(start_col, end_col, scale_factor);
+        vec![(x, w, 0.0)]
+    }
+
+    /// Vertical position of the painted line a column belongs to, relative to
+    /// the row content box. Zero for every row that is not a table row.
+    pub fn top_for_column(&self, col: usize) -> f32 {
+        match &self.table_row {
+            Some(tr) => tr.top_for_column(col),
+            None => 0.0,
+        }
     }
 }
 
@@ -15251,7 +15867,7 @@ fn render_live_styled_row(
     active_plugin_select: Option<&(String, u64, String)>,
     plugin_select_popup: Option<&Entity<crate::views::tab_list::TabListPopup>>,
     plugin_input_blink_visible: bool,
-    table_render: Option<(&crate::table::TableBlock, &TableLayout, Option<usize>, usize)>,
+    table_render: Option<(&crate::table::TableBlock, &TableLayout, Option<usize>, usize, f32)>,
     ctrl_held: bool,
     hovered_link_id: Option<&str>,
     window: &Window,
@@ -15269,7 +15885,7 @@ fn render_live_styled_row(
     // Interface language for the callout type names a header shows.
     lang: &str,
 ) -> gpui::Div {
-    if let Some((tbl, table_layout, cursor_col, line_idx)) = table_render {
+    if let Some((tbl, table_layout, cursor_col, line_idx, row_h)) = table_render {
         if line_idx == tbl.sep_line() {
             return div()
                 .w(px(table_layout.total_width))
@@ -15285,10 +15901,18 @@ fn render_live_styled_row(
         // of re-walking the line from the start for every cell.
         let mut char_byte_offsets: Vec<usize> = line.char_indices().map(|(b, _)| b).collect();
         char_byte_offsets.push(line.len());
+        // The row height is the wrapped height of its tallest cell plus the
+        // edge margin the table keeps above the header and below the last row.
+        let edge_margin = if is_header || is_last_row {
+            crate::markdown::TABLE_EDGE_MARGIN
+        } else {
+            0.0
+        };
+        let content_h = (row_h - edge_margin).max(crate::markdown::TABLE_LINE_H);
         let mut row_div = div().flex().flex_row().items_center()
-            .when(is_header, |d| d.h(px(28.0)).mt(px(14.0)))
-            .when(is_last_row, |d| d.h(px(28.0)).mb(px(14.0)))
-            .when(!is_header && !is_last_row, |d| d.h(px(28.0)));
+            .when(is_header, |d| d.h(px(content_h)).mt(px(crate::markdown::TABLE_EDGE_MARGIN)))
+            .when(is_last_row, |d| d.h(px(content_h)).mb(px(crate::markdown::TABLE_EDGE_MARGIN)))
+            .when(!is_header && !is_last_row, |d| d.h(px(content_h)));
         for (c_idx, &col_w) in table_layout.col_widths.iter().enumerate() {
             let cell_text = raw_cells
                 .get(c_idx)
@@ -15315,6 +15939,31 @@ fn render_live_styled_row(
                 0,
                 &cell_reveal,
             );
+            let content_range = raw_cells
+                .get(c_idx)
+                .map(|c| c.content.clone())
+                .unwrap_or_else(|| {
+                    let len = line.chars().count();
+                    len..len
+                });
+            // The cell is wrapped by the same column budget `shape_table_row`
+            // used to shape it, so its painted lines match the row height.
+            let wrap = match table_layout.col_chars.get(c_idx) {
+                Some(&max_cols) => crate::markdown::table_cell_wrap_lines(
+                    line,
+                    content_range.clone(),
+                    is_active_cell,
+                    &cell_reveal,
+                    headings,
+                    max_cols,
+                ),
+                None => vec![crate::markdown::CellWrapLine {
+                    painted_start: 0,
+                    painted_end: cell_text.chars().count(),
+                    raw_start: content_range.start,
+                    raw_end: content_range.end,
+                }],
+            };
             let align = table_layout.aligns.get(c_idx).copied().unwrap_or_default();
             let font_weight = if is_header { Some(gpui::FontWeight::BOLD) } else { None };
             let is_first_col = c_idx == 0;
@@ -15331,7 +15980,9 @@ fn render_live_styled_row(
                 .w(px(col_w))
                 .h_full()
                 .flex()
-                .items_center()
+                .flex_col()
+                .justify_start()
+                .pt(px(crate::markdown::TABLE_PAD_Y))
                 .px_2()
                 .border_l_1()
                 .border_color(theme.border_subtle)
@@ -15356,13 +16007,42 @@ fn render_live_styled_row(
                     let click_y: f32 = event.position.y.into();
                     this.open_table_context_menu(tbl_block.clone(), row_idx, c_idx, click_x, click_y, cx);
                 }));
-            match align {
-                crate::table::Align::None | crate::table::Align::Left => { cell_div = cell_div.justify_start(); }
-                crate::table::Align::Center => { cell_div = cell_div.justify_center(); }
-                crate::table::Align::Right => { cell_div = cell_div.justify_end(); }
-            }
             let cell_key = format!("tbl-cell-{}-{}-{}", line_idx, c_idx, sub_idx);
-            cell_div = cell_div.child(render_syntax_spans(spans, theme, None, font_weight, None, font_family, &cell_key, ctrl_held, hovered_link_id, window.scale_factor(), true, cx));
+            let mut lines_col = div().w_full().flex().flex_col();
+            for (line_no, wl) in wrap.iter().enumerate() {
+                let s = wl.raw_start.saturating_sub(content_range.start);
+                let e = wl.raw_end.saturating_sub(content_range.start);
+                let line_spans = crate::markdown::slice_visible_spans(&spans, s, e);
+                let mut line_div = div()
+                    .w_full()
+                    .h(px(crate::markdown::TABLE_LINE_H))
+                    .line_height(px(crate::markdown::TABLE_LINE_H))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .whitespace_nowrap();
+                line_div = match align {
+                    crate::table::Align::None | crate::table::Align::Left => line_div.justify_start(),
+                    crate::table::Align::Center => line_div.justify_center(),
+                    crate::table::Align::Right => line_div.justify_end(),
+                };
+                line_div = line_div.child(render_syntax_spans(
+                    line_spans,
+                    theme,
+                    None,
+                    font_weight,
+                    None,
+                    font_family,
+                    &format!("{}-l{}", cell_key, line_no),
+                    ctrl_held,
+                    hovered_link_id,
+                    window.scale_factor(),
+                    true,
+                    cx,
+                ));
+                lines_col = lines_col.child(line_div);
+            }
+            cell_div = cell_div.child(lines_col);
 
             let col_widths_clone = table_layout.col_widths.clone();
             cell_div = cell_div.child(
@@ -17275,21 +17955,26 @@ mod tests {
             col_idx: 0,
             cell_x: 0.0,
             cell_w: 100.0,
-            content_x: 8.0,
             cell_start_col: 0,
             cell_columns: 3,
             content_range: c0.content.clone(),
             outer_range: c0.outer.clone(),
-            line_chars: vec![2, 3, 4],
-            text: "aaa".into(),
-            layout: Arc::new(gpui::LineLayout {
-                width: px(30.0),
-                runs: Vec::new(),
-                ascent: px(10.0),
-                descent: px(4.0),
-                font_size: px(14.0),
-                len: 3,
-            }),
+            lines: vec![TableCellLine {
+                text: "aaa".into(),
+                layout: Arc::new(gpui::LineLayout {
+                    width: px(30.0),
+                    runs: Vec::new(),
+                    ascent: px(10.0),
+                    descent: px(4.0),
+                    font_size: px(14.0),
+                    len: 3,
+                }),
+                columns: 3,
+                line_chars: vec![2, 3, 4],
+                raw_start: 2,
+                raw_end: 5,
+                content_x: 8.0,
+            }],
             code_ranges: Vec::new(),
             tag_ranges: Vec::new(),
         };
@@ -17298,21 +17983,26 @@ mod tests {
             col_idx: 1,
             cell_x: 100.0,
             cell_w: 100.0,
-            content_x: 108.0,
             cell_start_col: 4,
             cell_columns: 3,
             content_range: c1.content.clone(),
             outer_range: c1.outer.clone(),
-            line_chars: vec![8, 9, 10],
-            text: "bbb".into(),
-            layout: Arc::new(gpui::LineLayout {
-                width: px(30.0),
-                runs: Vec::new(),
-                ascent: px(10.0),
-                descent: px(4.0),
-                font_size: px(14.0),
-                len: 3,
-            }),
+            lines: vec![TableCellLine {
+                text: "bbb".into(),
+                layout: Arc::new(gpui::LineLayout {
+                    width: px(30.0),
+                    runs: Vec::new(),
+                    ascent: px(10.0),
+                    descent: px(4.0),
+                    font_size: px(14.0),
+                    len: 3,
+                }),
+                columns: 3,
+                line_chars: vec![8, 9, 10],
+                raw_start: 8,
+                raw_end: 11,
+                content_x: 108.0,
+            }],
             code_ranges: Vec::new(),
             tag_ranges: Vec::new(),
         };
@@ -17328,7 +18018,7 @@ mod tests {
         };
 
         // Click past the end of cell 0 text (e.g. at x = 80.0):
-        let col = row_layout.column_for_x(80.0);
+        let col = row_layout.column_for_xy(80.0, 0.0);
         assert_eq!(col, 3, "click at end of cell 0 must resolve to cell 0 end slot (col 3)");
 
         // Column 3 must map to line_char 5 (end of cell 0 'aaa'), NOT jumping to cell 1 (8)!
@@ -17365,13 +18055,13 @@ mod tests {
             &visual_rows,
             None,
             false,
-            |line| {
+            |line, _| {
                 if line == 1 {
                     Some(crate::markdown::TableRowVisualKind::Delimiter)
                 } else if line == 0 {
-                    Some(crate::markdown::TableRowVisualKind::Header)
+                    Some(crate::markdown::TableRowVisualKind::Header { lines: 1 })
                 } else {
-                    Some(crate::markdown::TableRowVisualKind::LastRow)
+                    Some(crate::markdown::TableRowVisualKind::LastRow { lines: 1 })
                 }
             },
         );
@@ -17379,6 +18069,117 @@ mod tests {
         assert_eq!(height_index.height_of(0), 42.0, "header row height must be 42.0 (28.0 + 14.0 mt)");
         assert_eq!(height_index.height_of(1), 1.0, "delimiter row height must be 1.0 (matching 1px border)");
         assert_eq!(height_index.height_of(2), 42.0, "last row height must be 42.0 (28.0 + 14.0 mb)");
+    }
+
+    /// A wrapped table cell must paint its lines at the height the row
+    /// geometry claims, and a click on any of them must resolve to a char of
+    /// that very line. This is the contract the height index and the renderer
+    /// share: same column budgets, same wrap.
+    #[test]
+    fn wrapped_table_cell_maps_clicks_to_the_painted_line() {
+        gpui::Application::new().run(|cx: &mut gpui::App| {
+            crate::fonts::register_embedded_fonts(cx);
+            let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                let text = "| a1 | alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu |";
+                let block = crate::table::TableBlock {
+                    first_line: 0,
+                    last_line: 2,
+                    aligns: vec![crate::table::Align::Left, crate::table::Align::Left],
+                };
+                let lines = vec![
+                    "| id | a long description column |",
+                    "|---|---|",
+                    text,
+                ];
+                let get_line = |idx: usize| lines.get(idx).copied();
+                let font = gpui::SharedString::from("Consolas");
+                // A narrow long column forces the text to wrap.
+                let manual = vec![60.0, 200.0];
+                let layout =
+                    compute_table_layout(window.text_system(), &get_line, &block, &font, Some(&manual), 7.7, 720.0);
+                let col_chars = layout.col_chars.clone();
+                assert!(col_chars[1] >= 4 && col_chars[1] <= 26, "budget {:?}", col_chars);
+
+                let headings = crate::settings::HeadingsSettings::default();
+                let cells = crate::table::split_row(text);
+                let ranges: Vec<std::ops::Range<usize>> =
+                    cells.iter().map(|c| c.content.clone()).collect();
+                let n = crate::markdown::table_row_wrap_lines(
+                    text,
+                    &ranges,
+                    &col_chars,
+                    None,
+                    &crate::markdown::InlineReveal::None,
+                    &headings,
+                );
+                assert!(n >= 3, "the long cell must wrap into several lines, got {n}");
+                // Row height is exactly the wrapped height, edges included.
+                let kind = crate::markdown::TableRowVisualKind::LastRow { lines: n };
+                assert_eq!(
+                    kind.height(),
+                    n as f32 * crate::markdown::TABLE_LINE_H + 2.0 * crate::markdown::TABLE_PAD_Y
+                        + crate::markdown::TABLE_EDGE_MARGIN
+                );
+
+                let row = shape_table_row(
+                    window.text_system(),
+                    text,
+                    &block,
+                    2,
+                    None,
+                    &layout,
+                    &headings,
+                    &font,
+                    7.7,
+                );
+
+                // The sub-lines of the long cell, in raw document chars.
+                let wrap = crate::markdown::table_cell_wrap_lines(
+                    text,
+                    ranges[1].clone(),
+                    false,
+                    &crate::markdown::InlineReveal::None,
+                    &headings,
+                    col_chars[1],
+                );
+                assert_eq!(wrap.len(), n);
+
+                // A vertical probe inside the long cell: one y per painted line.
+                for (k, line) in wrap.iter().enumerate() {
+                    let y = crate::markdown::TABLE_PAD_Y
+                        + k as f32 * crate::markdown::TABLE_LINE_H
+                        + crate::markdown::TABLE_LINE_H / 2.0;
+                    let col = row.column_for_xy(150.0, y);
+                    let lc = row.line_char_for_column(col);
+                    assert!(
+                        lc >= line.raw_start && lc <= line.raw_end,
+                        "click on painted line {k} resolved to char {lc}, outside {:?}",
+                        line
+                    );
+                    // The caret is drawn on that very line.
+                    assert_eq!(
+                        row.top_for_column(col),
+                        crate::markdown::TABLE_PAD_Y
+                            + k as f32 * crate::markdown::TABLE_LINE_H
+                    );
+                }
+
+                // One selection rectangle per painted line of the wrapped cell.
+                let sel_start = row.column_for_line_char(ranges[1].start + 1);
+                let sel_end = row.column_for_line_char(ranges[1].end - 1);
+                let rects = row.span_rects(sel_start, sel_end, 1.0);
+                assert_eq!(rects.len(), n, "selection must follow every painted line");
+
+                cx.quit();
+                struct DummyView;
+                impl gpui::Render for DummyView {
+                    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+                        gpui::div()
+                    }
+                }
+                cx.new(|_| DummyView)
+            });
+        });
     }
 
     #[test]
@@ -17400,7 +18201,7 @@ mod tests {
                 let manual = vec![150.0, 200.0]; // previously had 2 columns resized
                 let font = gpui::SharedString::from("Consolas");
 
-                let layout = compute_table_layout(window.text_system(), &get_line, &block, &font, Some(&manual));
+                let layout = compute_table_layout(window.text_system(), &get_line, &block, &font, Some(&manual), 7.7, 720.0);
                 assert_eq!(layout.col_widths.len(), 3);
                 assert_eq!(layout.col_widths[0], 150.0, "col 0 must keep manual width 150.0");
                 assert_eq!(layout.col_widths[1], 200.0, "col 1 must keep manual width 200.0");

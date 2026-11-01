@@ -1078,6 +1078,7 @@ impl AppState {
             v.visual_cache_dirty = true;
             if note_edit.line_diff != 0 {
                 v.shift_raw_tables(note_edit.edit_line, note_edit.line_diff);
+                v.shift_table_cell_cols(note_edit.edit_line, note_edit.line_diff);
                 v.shift_line_paints(note_edit.edit_line, note_edit.line_diff);
                 if note_edit.edit_line < v.viewport.offset {
                     let line_h = v.est_rows_per_line * v.est_row_h;

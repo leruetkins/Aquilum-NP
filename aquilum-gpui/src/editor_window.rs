@@ -451,7 +451,7 @@ impl EditorWindow {
         headings: Option<&crate::settings::HeadingsSettings>,
         source_mode: bool,
         initial: crate::markdown::CodeScanState,
-        table_row_info: impl Fn(usize) -> Option<crate::markdown::TableRowVisualKind>,
+        table_row_info: impl Fn(usize, &str) -> Option<crate::markdown::TableRowVisualKind>,
     ) -> Self {
         let lines_total = end_line.max(start_line);
         if lines_total == 0 || start_line >= end_line {
@@ -473,14 +473,17 @@ impl EditorWindow {
             wrap_cols,
             headings,
             source_mode,
-            |idx| table_row_info(start_line + idx).is_some(),
+            |idx| {
+                let text = line_refs.get(idx).copied().unwrap_or("");
+                table_row_info(start_line + idx, text).is_some()
+            },
         );
         let height_index = VisualRowHeightIndex::from_rows_with_tables(
             &lines,
             &visual_rows,
             headings,
             source_mode,
-            |idx| table_row_info(start_line + idx),
+            |idx, text| table_row_info(start_line + idx, text),
         );
         for row in &mut visual_rows {
             row.line_idx += start_line;
@@ -523,7 +526,7 @@ impl EditorWindow {
             headings,
             false,
             initial,
-            |_| None,
+            |_, _| None,
         )
     }
 
@@ -542,7 +545,7 @@ impl EditorWindow {
         new_line_text: String,
         delta: isize,
         headings: Option<&crate::settings::HeadingsSettings>,
-        table_row_info: impl Fn(usize) -> Option<markdown::TableRowVisualKind>,
+        table_row_info: impl Fn(usize, &str) -> Option<markdown::TableRowVisualKind>,
     ) -> bool {
         if !self.covers_line(line) {
             return false;
@@ -560,17 +563,15 @@ impl EditorWindow {
 
         self.end_byte = (self.end_byte as isize + delta).max(self.start_byte as isize) as usize;
 
-        let table_kind = table_row_info(line);
+        let table_kind = table_row_info(line, &new_line_text);
 
-        // Table rows never wrap and keep their fixed height. If the row is already
-        // a single table row of the expected height, only the text changed: there
-        // is nothing to re-wrap and no height to recompute (R18, N9).
+        // Table rows never wrap: a table line is always one visual row whose
+        // height comes from the wrapped lines of its tallest cell. If the row is
+        // already a single table row of the expected height, only the text
+        // changed: there is nothing to re-wrap and no height to recompute
+        // (R18, N9).
         if let Some(kind) = table_kind {
-            let expected_h = match kind {
-                markdown::TableRowVisualKind::Delimiter => 1.0,
-                markdown::TableRowVisualKind::Header | markdown::TableRowVisualKind::LastRow => 42.0,
-                markdown::TableRowVisualKind::Body => 28.0,
-            };
+            let expected_h = kind.height();
             if let Some(first) = self.first_row_of_line(line) {
                 let last = self.visual_rows.iter().rposition(|r| r.line_idx == line).unwrap_or(first);
                 if first == last && self.height_index.height_of(first) == expected_h {
@@ -678,13 +679,13 @@ impl EditorWindow {
         line: usize,
         paint: &markdown::PaintedLineSpec,
         headings: Option<&crate::settings::HeadingsSettings>,
-        table_row_info: impl Fn(usize) -> Option<markdown::TableRowVisualKind>,
+        table_row_info: impl Fn(usize, &str) -> Option<markdown::TableRowVisualKind>,
     ) -> Option<(usize, usize)> {
         if !self.covers_line(line) {
             return None;
         }
         let text = self.lines.get(line)?.to_string();
-        let table_kind = table_row_info(line);
+        let table_kind = table_row_info(line, &text);
         let ranges = self.wrap_ranges_for(line, &text, Some(paint), headings, table_kind);
         let new_rows = Self::rows_from_ranges(line, &ranges);
 
@@ -795,10 +796,10 @@ mod tests {
     #[test]
     fn single_line_update_keeps_table_rows_unwrapped_and_measured() {
         let text = "intro intro intro\n| a | b |\n|---|---|\n| a very long cell that exceeds the wrap width | b |";
-        let table_kind = |line: usize| match line {
-            1 => Some(crate::markdown::TableRowVisualKind::Header),
+        let table_kind = |line: usize, _: &str| match line {
+            1 => Some(crate::markdown::TableRowVisualKind::Header { lines: 1 }),
             2 => Some(crate::markdown::TableRowVisualKind::Delimiter),
-            3 => Some(crate::markdown::TableRowVisualKind::LastRow),
+            3 => Some(crate::markdown::TableRowVisualKind::LastRow { lines: 1 }),
             _ => None,
         };
         let mut w = EditorWindow::build_from_slice_with_tables(
