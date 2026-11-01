@@ -117,25 +117,69 @@ async fn import_images(note: &NotePath, source: ImageImportSource)
 
 Принцип: быстрые настройки с мгновенным результатом на картинке идут в popover, режимы, где работают прямо на картинке, идут во встроенный режим, а сложные или необратимые операции с предпросмотром идут в модальное окно.
 
-| Элемент | Интерфейс | Почему |
-|---|---|---|
-| Панель кнопок над картинкой | Плавающая панель | Появляется при наведении или клике |
-| Обрезать | Встроенный режим | Рамка с ручками прямо на картинке, затемнение, небольшая панель (пропорции, поля, «Готово», «Отмена», «Сбросить»). Список пропорций открывается popover |
-| Размер | Popover под кнопкой | Ширина, высота, замок пропорций, масштаб, «Сбросить», результат виден сразу |
-| Скругление | Popover | Один ползунок и число |
-| Аннотации | Встроенный режим | Палитра инструментов, работа на картинке. Параметры выбранного объекта (цвет, толщина, размер текста) в панели свойств или popover у объекта |
-| Подпись | Поле под картинкой (inline) | Текст правится на месте. Положение, нумерация и шаблон в popover |
-| Сжать | **Модальное окно** | Предпросмотр до/после, формат, качество, необратимо, кнопки «Отмена» и «Сжать» |
-| Экспорт MD | **Модальное окно** | Настройки и прогресс |
-| Применить обрезку окончательно, блюр | Диалог подтверждения | Необратимые действия |
-| Удалить | Без окна, с Undo | Работает отложенное удаление в корзину, подтверждение не нужно |
-| ПКМ по картинке | Контекстное меню | Копировать, вырезать, вставить, копировать ссылку, показать оригинал, обрезать, аннотации, подпись, сжать, удалить. Недоступное показывать неактивным |
+| Элемент | Интерфейс | Макет | Компонент GPUI Kit | Почему |
+|---|---|---|---|---|
+| Панель кнопок над картинкой | Плавающая панель | [Заметка с картинкой@2x.png](Заметка%20с%20картинкой@2x.png) | `Toolbar`, `ToolbarGroup`, `Button` (`crates/component/src/toolbar.rs`, `button/`) | Появляется при наведении или клике |
+| Бейдж «обрезано» на картинке | Индикатор на картинке | [Заметка с картинкой@2x.png](Заметка%20с%20картинкой@2x.png) | `Tag`, `Badge` (`crates/component/src/tag.rs`, `badge.rs`) | Сигнализирует о наличии недеструктивного crop в `.edit.json` |
+| Перетаскивание файлов (Drop) | Индикатор вставки + Toast | [Перетаскивание файла@2x.png](Перетаскивание%20файла@2x.png) | `Badge` (счетчик файлов), `Notification` (`with_action` для кнопок [Сжать]/[Закрыть]) | Подсветка курсора вставки и ненавязчивый тост о большом файле |
+| Обрезать | Встроенный режим | [Обрезка и показ оригинала@2x.png](Обрезка%20и%20показ%20оригинала@2x.png) | `canvas()` + `PathBuilder` (`examples/brush/src/main.rs`), `ButtonGroup` (пропорции), `NumberInput` (X, Y, W, H) | Рамка с ручками прямо на картинке, затемнение, боковая панель. Список пропорций в `ButtonGroup` |
+| Размер | Popover под кнопкой | [Размер в заметке@2x.png](Размер%20в%20заметке@2x.png) | `Popover` (`crates/component/src/popover.rs`), `ButtonGroup` (`px`/`%`), `NumberInput` (Ширина/Высота), `ResizeHandle` | Ширина, высота, замок пропорций, масштаб, «Сбросить», результат виден сразу |
+| Скругление | Popover | [Скругление углов@2x.png](Скругление%20углов@2x.png) | `Popover`, `Slider` + `SliderState` (`crates/component/src/slider.rs`), `Switch` («Как по умолчанию») | Ползунок 0–50% и тумблер дефолта, результат сразу на картинке (`overflow_hidden`) |
+| Аннотации | Встроенный режим | [Аннотации@2x.png](Аннотации@2x.png) | `canvas()` + `PathBuilder` (`examples/brush/src/main.rs`), `Toolbar` (палитра инструментов), `ColorPicker`/`ColorSelect`, `Slider` (толщина), `Switch` (заливка), `List`/`ListItem` (слои) | Палитра инструментов слева, холст на картинке, список слоёв и свойства справа |
+| Подпись | Поле под картинкой (inline) | [Подпись к изображению (popover)@2x.png](Подпись%20к%20изображению%20(popover)@2x.png) | `Input` / `InputState` (под картинкой), `Popover`, `ButtonGroup` (`Над`/`Под`), `Switch` (`Нумеровать`) | Текст правится на месте. Положение, нумерация и шаблон в popover |
+| Сжать | **Модальное окно** | [Сжатие@2x.png](Сжатие@2x.png) | `Dialog`, `DialogHeader`, `DialogFooter` (`crates/component/src/dialog/`), `ButtonGroup` (форматы, пресеты 100/75/50%), `Slider`, `Checkbox` | Предпросмотр до/после, формат, качество, необратимо, кнопки «Отмена» и «Применить» |
+| Экспорт MD | **Модальное окно** | — | `Dialog`, `ProgressCircle` / `ProgressBar` (`crates/component/src/progress.rs`) | Настройки и прогресс экспорта в zip |
+| Применить обрезку окончательно, блюр | Диалог подтверждения | — | `AlertDialog` (`crates/component/src/dialog/alert_dialog.rs`) | Необратимые деструктивные действия |
+| Удалить | Без окна, с Undo | — | Интеграция в стек истории заметки | Работает отложенное удаление в корзину, подтверждение не нужно |
+| ПКМ по картинке | Контекстное меню | [Контекстное меню@2x.png](Контекстное%20меню@2x.png) | `ContextMenuExt` (`crates/component/src/menu/context_menu.rs`, `stories/menu_story.rs`), `PopupMenuItem` | Копировать, вырезать, вставить, копировать ссылку, показать оригинал, обрезать, аннотации, подпись, сжать, удалить. Недоступное показывать неактивным |
 
 Правила для GPUI:
 - Единая система позиционирования: popover привязан к кнопке или объекту, контекстное меню у курсора, модальное окно по центру окна приложения, inline-элементы в потоке документа. Не делать каждое меню отдельным окном ОС.
 - Одновременно открыт только один popover. Открытие другого закрывает предыдущий.
 - Открытие popover или меню не сбрасывает режимы «Обрезать» и «Аннотации». Esc закрывает самый верхний слой: popover, затем режим.
 - Всё управляется с клавиатуры, модальное окно возвращает фокус в редактор.
+
+### Готовые компоненты и примеры реализации (GPUI Kit)
+
+База готовых компонентов и проверенных решений находится в репозитории `D:\Naben\Github\rust\gpui-examples\gpui-kit`. В соответствии с [AGENTS.md](../../AGENTS.md) («новые компоненты не создаются»), все элементы интерфейса берутся из этой базы либо переиспользуют существующие стили/компоненты:
+
+1. **Плавающая панель над картинкой ([Заметка с картинкой@2x.png](Заметка%20с%20картинкой@2x.png)):**
+   * Панель инструментов: `Toolbar`, `ToolbarGroup` (`crates/component/src/toolbar.rs`, история: `crates/story/src/stories/toolbar_story.rs`).
+   * Кнопки действий: `Button` с вариантами `ghost`, `outline`, `danger` (для «Удалить») из `crates/component/src/button/`.
+   * Бейдж «обрезано»: `Tag` (`crates/component/src/tag.rs`) со статусом `Secondary` или `Badge` (`crates/component/src/badge.rs`).
+   * Статус вложения: `AttachmentStatus` (`crates/component/src/attachment.rs`).
+
+2. **Контекстное меню ([Контекстное меню@2x.png](Контекстное%20меню@2x.png)):**
+   * Реализация через extension-метод `.context_menu(...)` из `ContextMenuExt` (`crates/component/src/menu/context_menu.rs`).
+   * Пункты меню: `PopupMenuItem` с шорткатами (`Ctrl+C`, `Ctrl+X`, `Ctrl+V`, `Del`), разделителями `separator()` и проверкой доступности (`disabled`). Образец: `crates/story/src/stories/menu_story.rs`.
+
+3. **Всплывающие панели (Popovers) ([Размер в заметке@2x.png](Размер%20в%20заметке@2x.png), [Скругление углов@2x.png](Скругление%20углов@2x.png), [Подпись к изображению (popover)@2x.png](Подпись%20к%20изображению%20(popover)@2x.png)):**
+   * Движок всплывающих окон: `Popover` (`crates/component/src/popover.rs`, история: `crates/story/src/stories/popover_story.rs`).
+   * Позиционирование: `gpui_base::Positioner::side(bounds).placement(Placement::Bottom).align(Align::Start)`.
+   * Сегментированные переключатели: `ButtonGroup::new(...).compact()` (`crates/component/src/button/button_group.rs`) — используется для выбора `px` / `%`, `Над` / `Под`, форматов `PNG` / `WebP` / `JPEG` и пресетов разрешения `100%` / `75%` / `50%`.
+   * Ползунки: `Slider` и `SliderState` (`crates/component/src/slider.rs`, история: `crates/story/src/stories/slider_story.rs`) — для скругления (0–50%) и толщины аннотаций (1–50 px).
+   * Тумблеры: `Switch` (`crates/component/src/switch.rs`, история: `crates/story/src/stories/switch_story.rs`) — для переключателей «Как в настройках по умолчанию», «Нумеровать», «Заливка».
+   * Числовые поля: `NumberInput` (`crates/component/src/input/number_input.rs`, история: `crates/story/src/stories/number_input_story.rs`) — для X, Y, ширины и высоты.
+   * Текстовый ввод подписи: `Input` / `InputState` (`crates/component/src/input/`).
+
+4. **Модальное окно сжатия ([Сжатие@2x.png](Сжатие@2x.png)):**
+   * Окно и оверлей: `Dialog`, `DialogHeader`, `DialogTitle`, `DialogDescription`, `DialogFooter` (`crates/component/src/dialog/dialog.rs`, история: `crates/story/src/stories/dialog_story.rs`).
+   * Затемнение фона (`overlay: true`), закрытие по клику вне окна и по клавише Esc (`keyboard: true`).
+   * Опции сжатия: `Checkbox` (`crates/component/src/checkbox.rs`).
+   * Слайдер сравнения «До/После»: на базе сплит-разделителя `crates/component/src/resizable.rs`.
+
+5. **Перетаскивание файлов и тосты ([Перетаскивание файла@2x.png](Перетаскивание%20файла@2x.png)):**
+   * Всплывающие уведомления: `Notification` (`crates/component/src/notification.rs`, история: `crates/story/src/stories/notification_story.rs`).
+   * Вызов тоста: `window.push_notification(...)` с действиями `action_builder` / кнопками `[Сжать]` и `[Закрыть]`, привязкой `Anchor::BottomRight` и автоскрытием.
+   * Бейдж счетчика перетаскиваемых файлов: `Badge::new().count(2)` (`crates/component/src/badge.rs`).
+
+6. **Векторный холст аннотаций и обрезки ([Аннотации@2x.png](Аннотации@2x.png), [Обрезка и показ оригинала@2x.png](Обрезка%20и%20показ%20оригинала@2x.png)):**
+   * Архитектурный эталон: **`examples/brush`** (`examples/brush/src/main.rs`).
+   * Рисование: `canvas()` + `PathBuilder::stroke(px(...))` / `PathBuilder::fill()`, построение линий и кривых (`move_to`, `line_to`, `curve_to`), вызов `window.paint_path(path, color)`.
+   * Обработка мыши: `on_mouse_down`, `on_mouse_move`, `on_mouse_up`, отслеживание границ через `on_prepaint`.
+   * Палитра цветов: `ColorPicker` / `ColorSelect` (`crates/component/src/color_picker/`, история: `crates/story/src/stories/color_picker_story.rs`).
+   * Список слоёв фигур: `List`, `ListItem` (`crates/component/src/list/`).
+   * Ручки изменения размеров и кадрирования: `crates/component/src/resizable.rs`.
 
 ### Хранение правок (`имя.edit.json`)
 
@@ -361,7 +405,8 @@ async fn import_images(note: &NotePath, source: ImageImportSource)
 | Задача | Решение |
 |---|---|
 | Отображение изображений | GPUI `img()` |
-| Выделение, рамки, ручки, мышь | GPUI `canvas()`, `div()` и события |
+| Выделение, рамки, ручки, мышь, векторный холст | GPUI `canvas()`, `div()` и события по эталону `examples/brush` (`PathBuilder`, `paint_path`) |
+| UI-компоненты (панели, тулбары, поповеры, диалоги, тосты, контролы) | GPUI Kit (`crates/component`, `crates/base`): `Toolbar`, `Popover`, `Dialog`, `Notification`, `ButtonGroup`, `Slider`, `Switch`, `NumberInput`, `ContextMenuExt`, `Badge`, `Tag`, `ColorPicker` |
 | Декодирование, crop, resize | `image` (отключить ненужные форматы через фичи) |
 | Стрелки, фигуры, маски, скругления (растеризация при экспорте) | `tiny-skia` |
 | Текстовые аннотации и вшитая подпись | `cosmic-text` (shaping, переносы) или `ab_glyph` (простой текст); выбрать один |
@@ -371,7 +416,7 @@ async fn import_images(note: &NotePath, source: ImageImportSource)
 | Квантизация PNG | отдельно, проверить лицензию (`imagequant`) |
 | Буфер обмена | отдельный адаптер (trait) с реализациями под платформы |
 
-Не добавлять `imageproc` и `resvg` специально ради редактора. `resvg` уже есть в стеке GPUI и не должен быть обязательным звеном обработки изображений. OpenCV и внешние графические редакторы не использовать.
+Не добавлять `imageproc` и `resvg` специально ради редактора. `resvg` уже есть в стеке GPUI и не должен быть обязательным звеном обработки изображений. OpenCV и внешние графические редакторы не использовать. По правилам [AGENTS.md](../../AGENTS.md) («новые компоненты не создаются»), все элементы интерфейса берутся из существующей кодовой базы или готовых компонентов GPUI Kit (`D:\Naben\Github\rust\gpui-examples\gpui-kit`).
 
 ### Ограничение 1. Единая геометрия аннотаций
 
