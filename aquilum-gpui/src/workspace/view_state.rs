@@ -1230,6 +1230,7 @@ impl TabSession {
         let tables = doc.ensure_table_index_for_window(start, end);
         let (cursor_line, cursor_col) = self.line_col(doc);
         self.cursor_line = cursor_line;
+        let selection = self.selection_range(doc.len());
         let reveal_state = self.selection_reveal_state(doc, suppress_selection_reveal);
         let window = crate::editor_window::EditorWindow::build_from_slice_with_tables(
             &slice,
@@ -1266,7 +1267,32 @@ impl TabSession {
                 }
                 let show_original = crate::images::parse_image_reference(line_text)
                     .is_some_and(|reference| self.shows_original_image(line, &reference.target));
-                crate::images::block_height(&doc.path, line_text, wrap_cols, show_original)
+                if show_original {
+                    return crate::images::block_height(
+                        &doc.path,
+                        line_text,
+                        wrap_cols,
+                        true,
+                    );
+                }
+                // An active image line paints its markup, not the picture;
+                // keeping the picture height here left a huge empty row.
+                // "Active" includes a line covered by a text selection, not
+                // only the caret line: dragging across a picture shows its
+                // markup too.
+                let in_selection = selection.as_ref().is_some_and(|range| {
+                    let line_start = doc.line_start_byte(line);
+                    let line_end = doc.line_end_byte(line);
+                    if line_start == line_end {
+                        range.start <= line_start && range.end > line_start
+                    } else {
+                        range.end > line_start && range.start < line_end
+                    }
+                });
+                if !suppress_selection_reveal && (line == cursor_line || in_selection) {
+                    return None;
+                }
+                crate::images::block_height(&doc.path, line_text, wrap_cols, false)
             },
         );
 
@@ -1374,6 +1400,18 @@ impl TabSession {
         suppress_selection_reveal: bool,
     ) {
         let reveal_state = self.selection_reveal_state(doc, suppress_selection_reveal);
+        // Entering or leaving an image line swaps between the picture height
+        // and a plain text row. The height index has to be rebuilt for that,
+        // otherwise the old picture-sized row leaves a blank strip.
+        let cursor_line_now = self.line_col(doc).0;
+        if cursor_line_now != self.cursor_line {
+            let is_image = |line: usize| {
+                crate::images::parse_image_reference(&doc.line_text(line)).is_some()
+            };
+            if is_image(cursor_line_now) || is_image(self.cursor_line) {
+                self.visual_cache_dirty = true;
+            }
+        }
         if suppress_selection_reveal && !self.drag_revealed_tables.is_empty() {
             self.drag_revealed_tables.clear();
             self.visual_cache_dirty = true;

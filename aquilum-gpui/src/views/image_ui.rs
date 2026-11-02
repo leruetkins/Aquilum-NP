@@ -147,6 +147,9 @@ impl AppView {
             .overflow_hidden()
             .flex_shrink_0()
             .when(normal_interaction, |d| d.cursor_pointer())
+            // Annotation tools draw on the picture: the inherited I-beam read
+            // as a text caret over the image.
+            .when(editing_annotate, |d| d.cursor(gpui::CursorStyle::Arrow))
             .when(normal_interaction, |d| d.on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this: &mut AppView, event: &MouseDownEvent, window, cx| {
@@ -198,9 +201,22 @@ impl AppView {
             });
 
         // Vector annotations live above the picture and stay editable. The
-        // geometry comes from the same model the exporter rasterises.
-        if !image.edit.annotations.is_empty() {
-            let annotations = image.edit.annotations.clone();
+        // geometry comes from the same model the exporter rasterises. While a
+        // tool is dragging, its draft is painted in the same pass so lines,
+        // arrows and shapes are visible before the mouse is released.
+        let mut annotations = image.edit.annotations.clone();
+        if editing_annotate {
+            if let Some(editor) = self.image_editor.as_ref() {
+                if let Some(draft) = editor
+                    .annotation_drag
+                    .as_ref()
+                    .and_then(|drag| drag.draft.as_ref())
+                {
+                    annotations.push(draft.clone());
+                }
+            }
+        }
+        if !annotations.is_empty() {
             let scale = if image.visible.0 > 0 {
                 width / image.visible.0 as f32
             } else {
@@ -277,6 +293,10 @@ impl AppView {
                             if let Some(bounds) = annotation.bounds() {
                                 wrapper = wrapper.child(
                                     div()
+                                        .id(gpui::ElementId::Name(SharedString::from(format!(
+                                            "annotation-frame-{}",
+                                            index
+                                        ))))
                                         .absolute()
                                         .left(px((bounds.x - offset.0) * scale))
                                         .top(px((bounds.y - offset.1) * scale))
@@ -284,7 +304,19 @@ impl AppView {
                                         .h(px(bounds.h * scale))
                                         .border_1()
                                         .border_dashed()
-                                        .border_color(theme.accent),
+                                        .border_color(theme.accent)
+                                        .cursor(gpui::CursorStyle::OpenHand)
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                                cx.stop_propagation();
+                                                this.image_editor_begin_move(
+                                                    index,
+                                                    event.position,
+                                                    cx,
+                                                );
+                                            }),
+                                        ),
                                 );
                             }
                             if matches!(
@@ -1206,20 +1238,44 @@ impl AppView {
         let text = self.image_insert_text(&references);
         self.state.active_replace_selection(&text);
         self.schedule_auto_save(cx);
-        if let Some((view, doc)) = self.state.active_view_and_doc() {
-            let (line, _) = view.line_col(doc);
+        // Put the caret on the empty line created under the last inserted
+        // reference and select that reference line, so the picture is painted
+        // at once instead of its markup.
+        let last_reference = references.last().cloned().unwrap_or_default();
+        let reference_count = references.len();
+        let inserted_line = self.state.active_view_and_doc_mut().and_then(|(view, doc)| {
+            let lines_total = doc.line_index.lines();
+            let (caret_line, _) = view.line_col(doc);
+            let first = caret_line.saturating_sub(reference_count + 3);
+            let mut ref_line = None;
+            for line in first..=caret_line.min(lines_total.saturating_sub(1)) {
+                if doc.line_text(line).trim() == last_reference {
+                    ref_line = Some(line);
+                }
+            }
+            let ref_line = ref_line?;
+            let empty_line = (ref_line + 1).min(lines_total.saturating_sub(1));
+            let offset = doc.line_start_byte(empty_line);
+            view.cursor_offset = offset;
+            view.selection_anchor = None;
+            view.visual_cache_dirty = true;
+            Some(ref_line)
+        });
+        if let Some(line) = inserted_line {
+            self.need_reveal_cursor = true;
             self.select_image_line(line);
             self.hovered_image_line = Some(line);
         }
         if self.config.images.open_editor_after_insert {
-            let info = self.state.active_view_and_doc().map(|(view, doc)| {
-                let (line, _) = view.line_col(doc);
-                (
-                    line,
-                    doc.path.clone(),
-                    doc.line_text(line),
-                    view.window.wrap_cols,
-                )
+            let info = inserted_line.and_then(|line| {
+                self.state.active_view_and_doc().map(|(view, doc)| {
+                    (
+                        line,
+                        doc.path.clone(),
+                        doc.line_text(line),
+                        view.window.wrap_cols,
+                    )
+                })
             });
             if let Some((line, note, text, wrap_cols)) = info {
                 if let Some(image) = images::resolve_for_note(&note, &text, wrap_cols, false) {
@@ -1260,9 +1316,10 @@ impl AppView {
             out.push('\n');
         }
         out.push_str(&references.join("\n"));
-        if !after.trim().is_empty() {
-            out.push('\n');
-        }
+        // One break ends the reference line, the second creates the empty
+        // line that the caret will occupy under the picture.
+        out.push_str("\n\n");
+        let _ = after;
         out
     }
 

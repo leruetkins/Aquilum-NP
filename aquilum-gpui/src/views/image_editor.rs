@@ -702,6 +702,7 @@ impl AppView {
     pub fn image_editor_pointer_move(
         &mut self,
         position: GPoint<gpui::Pixels>,
+        shift: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(editor) = self.image_editor.as_mut() else {
@@ -746,7 +747,28 @@ impl AppView {
             if let Some(annotation) = editor.edit.annotations.get_mut(index) {
                 if let Some(handle) = drag.handle {
                     if let Some(target) = annotation.points.get_mut(handle) {
-                        *target = point;
+                        let mut next = point;
+                        // Shift keeps the original width/height ratio while a
+                        // rectangle or ellipse corner is dragged.
+                        if shift
+                            && matches!(annotation.kind, AnnotationKind::Rect | AnnotationKind::Ellipse)
+                            && drag.origin.len() >= 2
+                        {
+                            let anchor = drag.origin[1 - handle.min(1)];
+                            let origin_w = (drag.origin[1].x - drag.origin[0].x).abs();
+                            let origin_h = (drag.origin[1].y - drag.origin[0].y).abs();
+                            if origin_w > 0.5 && origin_h > 0.5 {
+                                let ratio = origin_w / origin_h;
+                                let dx = point.x - anchor.x;
+                                let dy = point.y - anchor.y;
+                                if dx.abs() / dy.abs().max(0.001) > ratio {
+                                    next.y = anchor.y + dy.signum() * dx.abs() / ratio;
+                                } else {
+                                    next.x = anchor.x + dx.signum() * dy.abs() * ratio;
+                                }
+                            }
+                        }
+                        *target = next;
                     }
                 } else {
                     annotation.points = drag
@@ -871,6 +893,49 @@ impl AppView {
             editor.selected = Some(index);
             cx.notify();
         }
+    }
+
+    /// The pencil button in the layers list: switch to the selection tool and
+    /// select the layer so its dashed frame and resize handles appear.
+    pub fn image_editor_edit_layer(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(editor) = self.image_editor.as_mut() {
+            editor.tool = AnnotationTool::Select;
+            editor.selected = Some(index);
+            editor.text_entry = None;
+            editor.annotation_drag = None;
+            cx.notify();
+        }
+    }
+
+    /// Drag that starts on the dashed selection frame itself (not only on a
+    /// stroke): moves the whole annotation.
+    pub fn image_editor_begin_move(
+        &mut self,
+        index: usize,
+        position: GPoint<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self.image_editor.as_mut() else {
+            return;
+        };
+        let (rx, ry, _, _) = editor.rect.get();
+        let scale = editor.scale.get().max(0.0001);
+        let point = Point::new(
+            (f32::from(position.x) - rx) / scale,
+            (f32::from(position.y) - ry) / scale,
+        );
+        editor.selected = Some(index);
+        if let Some(annotation) = editor.edit.annotations.get(index) {
+            let origin = annotation.points.clone();
+            editor.annotation_drag = Some(AnnotationDrag {
+                origin,
+                start_image: point,
+                index: Some(index),
+                handle: None,
+                draft: None,
+            });
+        }
+        cx.notify();
     }
 }
 
@@ -1190,47 +1255,56 @@ impl AppView {
         let fw = (frame.w * scale).clamp(0.0, width - fx);
         let fh = (frame.h * scale).clamp(0.0, height - fy);
         let shade = gpui::rgba(0x00000073);
+        // Fractional layout coordinates can leave a 1px unshaded column at the
+        // frame edge, which reads as a bright vertical line. Overlap the
+        // shading a little under the frame border.
+        const OVERLAP: f32 = 2.0;
+        let full_frame =
+            fx <= 0.5 && fy <= 0.5 && fw >= width - 0.5 && fh >= height - 0.5;
 
-        let mut layer = div()
-            .id("crop-frame-overlay")
-            .absolute()
-            .inset_0()
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top_0()
-                    .w(px(fx))
-                    .h_full()
-                    .bg(shade),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left(px(fx + fw))
-                    .top_0()
-                    .w(px((width - fx - fw).max(0.0)))
-                    .h_full()
-                    .bg(shade),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left(px(fx))
-                    .top_0()
-                    .w(px(fw))
-                    .h(px(fy))
-                    .bg(shade),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left(px(fx))
-                    .top(px(fy + fh))
-                    .w(px(fw))
-                    .h(px((height - fy - fh).max(0.0)))
-                    .bg(shade),
-            )
+        let mut layer = div().id("crop-frame-overlay").absolute().inset_0();
+        if !full_frame {
+            let right_start = (fx + fw - OVERLAP).max(0.0);
+            let bottom_start = (fy + fh - OVERLAP).max(0.0);
+            layer = layer
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .w(px((fx + OVERLAP).min(width)))
+                        .h_full()
+                        .bg(shade),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(right_start))
+                        .top_0()
+                        .w(px((width - right_start).max(0.0)))
+                        .h_full()
+                        .bg(shade),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(fx))
+                        .top_0()
+                        .w(px(fw))
+                        .h(px((fy + OVERLAP).min(height)))
+                        .bg(shade),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(fx))
+                        .top(px(bottom_start))
+                        .w(px(fw))
+                        .h(px((height - bottom_start).max(0.0)))
+                        .bg(shade),
+                );
+        }
+        layer = layer
             .child(
                 div()
                     .id("crop-frame")
@@ -1357,7 +1431,7 @@ impl AppView {
                     .absolute()
                     .inset_0()
                     .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
-                        this.image_editor_pointer_move(event.position, cx);
+                        this.image_editor_pointer_move(event.position, event.modifiers.shift, cx);
                     }))
                     .on_mouse_up(
                         MouseButton::Left,
@@ -1425,11 +1499,23 @@ impl AppView {
                 } else {
                     (ry + rh + 8.0).min((window_h - 50.0).max(8.0))
                 };
+                // Center on the note column ("page"), not the window: the
+                // picture and its panels share that axis.
+                let wrap_cols = self
+                    .state
+                    .active_view()
+                    .map(|view| view.window.wrap_cols)
+                    .unwrap_or(80);
+                let page_left = self.pane_text_start_x(None, window);
+                let page_w = crate::images::text_width(wrap_cols);
                 root = root.child(
                     div()
                         .absolute()
-                        .left(px(rx.max(8.0)))
                         .top(px(toolbar_y.max(8.0)))
+                        .left(px(page_left))
+                        .w(px(page_w))
+                        .flex()
+                        .justify_center()
                         .child(self.render_annotation_toolbar(theme, cx)),
                 );
                 root = root.child(
@@ -1993,7 +2079,7 @@ impl AppView {
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
-                            this.image_editor_select_layer(index, cx);
+                            this.image_editor_edit_layer(index, cx);
                         }),
                     )
                     .child(
@@ -2003,6 +2089,25 @@ impl AppView {
                             .text_xs()
                             .text_color(if selected { theme.accent } else { theme.text_secondary })
                             .child(label),
+                    )
+                    .child(
+                        div()
+                            .id(gpui::ElementId::Name(
+                                SharedString::from(format!("ann-layer-edit-{}", index)),
+                            ))
+                            .w(px(18.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.image_editor_edit_layer(index, cx);
+                                }),
+                            )
+                            .child(icons::icon(icons::ICON_PENCIL, 11.0, theme.text_muted)),
                     )
                     .child(
                         div()

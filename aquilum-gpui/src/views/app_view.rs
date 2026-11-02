@@ -6154,6 +6154,19 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             return;
         }
 
+        // A selected picture is an object: Delete/Backspace removes the whole
+        // reference line instead of editing text under it.
+        let delete_key = event.keystroke.key.to_lowercase();
+        if (delete_key == "delete" || delete_key == "backspace")
+            && !self.editor_context_menu.is_open
+            && self.selected_image_doc == self.state.active_doc_id()
+        {
+            if let Some(line) = self.selected_image_line {
+                self.delete_image_at_line(line, cx);
+                return;
+            }
+        }
+
         // Esc closes the topmost layer: a popover, then the context menu.
         if event.keystroke.key == "escape" && self.editor_context_menu.is_open {
             self.close_editor_context_menu(cx);
