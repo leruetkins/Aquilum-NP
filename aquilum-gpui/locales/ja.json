@@ -169,7 +169,9 @@
       "close_deleted_tabs": "Close tabs of deleted files",
       "close_deleted_tabs_desc": "Automatically close all related tabs and release resources when a file is deleted on disk or by a plugin",
       "keep_modified_on_delete": "Keep tab open on delete if modified",
-      "keep_modified_on_delete_desc": "Keep the tab open when a file is deleted if the document has unsaved edits"
+      "keep_modified_on_delete_desc": "Keep the tab open when a file is deleted if the document has unsaved edits",
+      "auto_trash_attachments": "削除した添付ファイルをゴミ箱へ移動",
+      "auto_trash_attachments_desc": "最後の参照を削除すると、ファイルはゴミ箱に移動します"
     },
     "analysis": {
       "title": "リンク解析手法",

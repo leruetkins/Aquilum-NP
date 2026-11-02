@@ -4979,6 +4979,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             view.cursor_offset = offset;
         }
         view.hold_drag_revealed_tables(doc, self.ctrl_preview_selection || !self.edit_mode);
+        view.hold_drag_revealed_images(doc, self.ctrl_preview_selection || !self.edit_mode);
         if moved {
             cx.notify();
         } else if scroll_moved {
@@ -10840,10 +10841,20 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     && ((self.selected_image_line == Some(v.line_idx)
                         && self.selected_image_doc == Some(doc.id))
                         || self.image_popover.as_ref().map_or(false, |p| p.line == v.line_idx));
-                let row_h = if grid_tbl.is_some() || image_block.is_some() {
+                let is_image_reference = crate::images::parse_image_reference(line).is_some();
+                let row_h = if grid_tbl.is_some() || image_block.is_some() || is_image_reference {
                     height_index_arc.height_of(v_idx)
                 } else {
                     h_metrics_row_h
+                };
+                // A link painted over a reserved image block uses a text-height
+                // band centred in that block. Highlight, selection and caret
+                // all share its geometry.
+                let image_text_band = is_image_reference && is_active_line;
+                let image_band_top = if image_text_band {
+                    ((row_h - h_metrics_row_h) / 2.0).max(0.0)
+                } else {
+                    0.0
                 };
                 let row_layout: Arc<RowShapedLayout> = if let Some(tbl) = grid_tbl {
                     let cursor_col = if is_active_line && v.line_idx == cursor_line { Some(active_col_in_row) } else { None };
@@ -11283,7 +11294,11 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     }
                 }
                 if let Some(rects) = &row_sel_rect {
-                    let edge_top = if let Some(tbl) = grid_tbl {
+                    // Selection rectangles live inside `line-content`, which is
+                    // already centred in an image row; their top is local.
+                    let edge_top = if image_text_band {
+                        0.0
+                    } else if let Some(tbl) = grid_tbl {
                         if v.line_idx == tbl.first_line {
                             crate::markdown::TABLE_EDGE_MARGIN
                         } else {
@@ -11294,7 +11309,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     };
                     // A table cell that wrapped paints one selection rectangle
                     // per sub-line; every other row has exactly one.
-                    let sel_h = if grid_tbl.is_some() {
+                    let sel_h = if image_text_band {
+                        h_metrics_row_h
+                    } else if grid_tbl.is_some() {
                         crate::markdown::TABLE_LINE_H
                     } else {
                         row_h
@@ -11369,7 +11386,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         if vis_s >= vis_e {
                             continue;
                         }
-                        let match_h = if grid_tbl.is_some() && !is_tbl_sep {
+                        let match_h = if image_text_band {
+                            h_metrics_row_h
+                        } else if grid_tbl.is_some() && !is_tbl_sep {
                             crate::markdown::TABLE_LINE_H
                         } else {
                             row_h
@@ -11382,7 +11401,11 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                 div()
                                     .absolute()
                                     .left(px(match_x))
-                                    .top(px(tbl_edge_top + line_top))
+                                    .top(px(if image_text_band {
+                                        line_top
+                                    } else {
+                                        tbl_edge_top + line_top
+                                    }))
                                     .h(px(match_h))
                                     .w(px(match_w))
                                     .bg(if is_active {
@@ -11472,13 +11495,17 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
                 if show_current_line_highlight {
                     let is_sep = grid_tbl.map_or(false, |tbl| v.line_idx == tbl.sep_line());
-                    let hl_top = if let Some(tbl) = grid_tbl {
+                    let hl_top = if image_text_band {
+                        image_band_top
+                    } else if let Some(tbl) = grid_tbl {
                         if v.line_idx == tbl.first_line { crate::markdown::TABLE_EDGE_MARGIN } else { 0.0 }
                     } else {
                         0.0
                     };
                     let hl_h = if is_sep {
                         1.0
+                    } else if image_text_band {
+                        h_metrics_row_h
                     } else if let Some(tbl) = grid_tbl {
                         let edge_bottom = if v.line_idx == tbl.last_line {
                             crate::markdown::TABLE_EDGE_MARGIN
@@ -11747,6 +11774,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                     if view.cursor_offset != new_offset {
                                         view.cursor_offset = new_offset;
                                         view.hold_drag_revealed_tables(doc, this.ctrl_preview_selection || !this.edit_mode);
+                                        view.hold_drag_revealed_images(doc, this.ctrl_preview_selection || !this.edit_mode);
                                         this.state.publish_snapshot();
                                         cx.notify();
                                     }
@@ -11999,12 +12027,16 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 let table_render_arg = grid_tbl.map(|tbl| (tbl, table_layout.as_ref().unwrap().as_ref(), if is_active_line && v_line_idx == cursor_line { Some(active_col_in_row) } else { None }, v_line_idx, row_h));
 
                 let is_tbl_sep = grid_tbl.map_or(false, |tbl| v_line_idx == tbl.sep_line());
-                let line_num_top = if let Some(tbl) = grid_tbl {
+                let line_num_top = if image_text_band {
+                    image_band_top
+                } else if let Some(tbl) = grid_tbl {
                     if v_line_idx == tbl.first_line { crate::markdown::TABLE_EDGE_MARGIN } else { 0.0 }
                 } else {
                     0.0
                 };
-                let line_num_h = if is_tbl_sep {
+                let line_num_h = if image_text_band {
+                    h_metrics_row_h
+                } else if is_tbl_sep {
                     0.0
                 } else if let Some(tbl) = grid_tbl {
                     let edge_bottom = if v_line_idx == tbl.last_line {
@@ -12089,11 +12121,16 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             .flex_1()
                             .min_w_0()
                             .whitespace_nowrap()
-                            .h(px(row_h))
+                            .when(image_text_band, |d| {
+                                d.h(px(h_metrics_row_h))
+                                    .line_height(px(h_metrics_row_h))
+                            })
+                            .when(!image_text_band, |d| {
+                                d.h(px(row_h)).line_height(px(row_h))
+                            })
                             .py_0()
                             .font_family(editor_font.clone())
                             .text_sm()
-                            .line_height(px(row_h))
                             .cursor(gpui::CursorStyle::IBeam)
                             // The current-line highlight is a child of the row, so a
                             // block wash over the content box would paint on top of
@@ -12127,7 +12164,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                 // wrapper its size, so it collapsed to nothing.
                                 div()
                                     .w_full()
-                                    .h_full()
+                                    .when(image_text_band, |d| d.h(px(h_metrics_row_h)))
+                                    .when(!image_text_band, |d| d.h_full())
                                     .flex()
                                     .flex_row()
                                     .when(grid_tbl.is_none(), |d| d.items_center())
@@ -12287,7 +12325,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                 } else {
                                     (2.0, theme.accent)
                                 };
-                                let (caret_top, caret_h) = if let Some(tbl) = grid_tbl {
+                                let (caret_top, caret_h) = if image_text_band {
+                                    (0.0, h_metrics_row_h)
+                                } else if let Some(tbl) = grid_tbl {
                                     // The caret sits on the wrapped sub-line the
                                     // cursor char belongs to, inside the row's
                                     // content box.
@@ -13266,8 +13306,11 @@ if let Some(new_scroll) = new_active_scroll {
                 this.recent_files_scrollbar_drag.end();
                 this.plugin_modal_scrollbar_drag.end();
                 if let Some(view) = this.state.active_view_mut() {
-                    if !view.drag_revealed_tables.is_empty() {
+                    if !view.drag_revealed_tables.is_empty()
+                        || !view.drag_revealed_images.is_empty()
+                    {
                         view.drag_revealed_tables.clear();
+                        view.drag_revealed_images.clear();
                         view.visual_cache_dirty = true;
                     }
                     if view.selection_anchor == Some(view.cursor_offset) {
@@ -13312,8 +13355,11 @@ if let Some(new_scroll) = new_active_scroll {
                 this.recent_files_scrollbar_drag.end();
                 this.plugin_modal_scrollbar_drag.end();
                 if let Some(view) = this.state.active_view_mut() {
-                    if !view.drag_revealed_tables.is_empty() {
+                    if !view.drag_revealed_tables.is_empty()
+                        || !view.drag_revealed_images.is_empty()
+                    {
                         view.drag_revealed_tables.clear();
+                        view.drag_revealed_images.clear();
                         view.visual_cache_dirty = true;
                     }
                     if view.selection_anchor == Some(view.cursor_offset) {

@@ -206,6 +206,10 @@ pub struct ViewCache {
     /// the line under a fixed pointer can then fall outside the table and the
     /// reveal decision would flip back and forth. Held until the drag ends.
     pub drag_revealed_tables: std::collections::HashSet<usize>,
+    /// Image lines already reached by the current drag. Their block height is
+    /// reserved either way; the hold keeps the link painted instead of
+    /// flashing the picture back while the pointer moves.
+    pub drag_revealed_images: std::collections::HashSet<usize>,
     pub revealed_selection: Option<(usize, usize, usize)>,
     pub cursor_line: usize,
     /// Painted state each line's rows were wrapped for. Absent means the line
@@ -235,6 +239,7 @@ impl Default for ViewCache {
             raw_table: false,
             raw_tables: std::collections::HashSet::new(),
             drag_revealed_tables: std::collections::HashSet::new(),
+            drag_revealed_images: std::collections::HashSet::new(),
             revealed_selection: None,
             cursor_line: 0,
             line_paints: std::collections::HashMap::new(),
@@ -449,6 +454,37 @@ impl TabSession {
             if Self::reveals_table(Some(state), t) {
                 self.drag_revealed_tables.insert(t.first_line);
             }
+        }
+    }
+
+    /// Image analogue of `hold_drag_revealed_tables`: once the drag reaches a
+    /// picture, keep its link visible for the rest of the drag.
+    pub fn hold_drag_revealed_images(
+        &mut self,
+        doc: &DocumentBuffer,
+        suppress_selection_reveal: bool,
+    ) {
+        if suppress_selection_reveal || self.window.is_empty() {
+            return;
+        }
+        let Some((anchor_line, start_line, end_line)) =
+            self.selection_reveal_state(doc, false)
+        else {
+            return;
+        };
+        let mut changed = false;
+        for line in start_line..=end_line {
+            if line == anchor_line {
+                continue;
+            }
+            if crate::images::parse_image_reference(&doc.line_text(line)).is_some()
+                && self.drag_revealed_images.insert(line)
+            {
+                changed = true;
+            }
+        }
+        if changed {
+            self.visual_cache_dirty = true;
         }
     }
 
@@ -1230,7 +1266,6 @@ impl TabSession {
         let tables = doc.ensure_table_index_for_window(start, end);
         let (cursor_line, cursor_col) = self.line_col(doc);
         self.cursor_line = cursor_line;
-        let selection = self.selection_range(doc.len());
         let reveal_state = self.selection_reveal_state(doc, suppress_selection_reveal);
         let window = crate::editor_window::EditorWindow::build_from_slice_with_tables(
             &slice,
@@ -1275,23 +1310,10 @@ impl TabSession {
                         true,
                     );
                 }
-                // An active image line paints its markup, not the picture;
-                // keeping the picture height here left a huge empty row.
-                // "Active" includes a line covered by a text selection, not
-                // only the caret line: dragging across a picture shows its
-                // markup too.
-                let in_selection = selection.as_ref().is_some_and(|range| {
-                    let line_start = doc.line_start_byte(line);
-                    let line_end = doc.line_end_byte(line);
-                    if line_start == line_end {
-                        range.start <= line_start && range.end > line_start
-                    } else {
-                        range.end > line_start && range.start < line_end
-                    }
-                });
-                if !suppress_selection_reveal && (line == cursor_line || in_selection) {
-                    return None;
-                }
+                // Reserve the picture block even when its markup is painted
+                // instead of the picture (caret on the line, selection, click
+                // to either side). Collapsing it moved every following line
+                // and made selection jump.
                 crate::images::block_height(&doc.path, line_text, wrap_cols, false)
             },
         );
@@ -1412,8 +1434,11 @@ impl TabSession {
                 self.visual_cache_dirty = true;
             }
         }
-        if suppress_selection_reveal && !self.drag_revealed_tables.is_empty() {
+        if suppress_selection_reveal
+            && (!self.drag_revealed_tables.is_empty() || !self.drag_revealed_images.is_empty())
+        {
             self.drag_revealed_tables.clear();
+            self.drag_revealed_images.clear();
             self.visual_cache_dirty = true;
         }
         if reveal_state != self.revealed_selection {
@@ -2243,6 +2268,33 @@ mod tests {
             let tables = doc.ensure_table_index();
             assert!(view.grid_table_at(&doc, &tables, 8, 6, false).is_some());
         }
+    }
+
+    #[test]
+    fn an_upward_drag_holds_a_revealed_image_against_the_reflow() {
+        let text = "Intro
+
+![[pic.png]]
+
+Middle";
+        let mut doc = DocumentBuffer::new(
+            DocumentId::new(),
+            std::path::PathBuf::from("test.md"),
+            "test".to_string(),
+            text.to_string(),
+            1,
+        );
+        let mut view = TabSession::new(TabId::new(), doc.id);
+        view.cursor_offset = doc.line_start_byte(4);
+        view.ensure_visual_cache_with_headings(&mut doc, false, 80, None, 0, false);
+        view.selection_anchor = Some(doc.line_start_byte(4));
+        view.cursor_offset = doc.line_start_byte(2);
+        view.hold_drag_revealed_images(&doc, false);
+        assert!(view.drag_revealed_images.contains(&2));
+
+        view.cursor_offset = doc.line_start_byte(3);
+        assert!(view.drag_revealed_images.contains(&2));
+        view.drag_revealed_images.clear();
     }
 
     #[test]

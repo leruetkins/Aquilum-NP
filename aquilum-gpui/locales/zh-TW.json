@@ -169,7 +169,9 @@
       "close_deleted_tabs": "Close tabs of deleted files",
       "close_deleted_tabs_desc": "Automatically close all related tabs and release resources when a file is deleted on disk or by a plugin",
       "keep_modified_on_delete": "Keep tab open on delete if modified",
-      "keep_modified_on_delete_desc": "Keep the tab open when a file is deleted if the document has unsaved edits"
+      "keep_modified_on_delete_desc": "Keep the tab open when a file is deleted if the document has unsaved edits",
+      "auto_trash_attachments": "將刪除的附件移入資源回收筒",
+      "auto_trash_attachments_desc": "刪除最後一個參照後，檔案會移入資源回收筒"
     },
     "analysis": {
       "title": "連結分析方法",
