@@ -1258,7 +1258,10 @@ impl AppView {
         // Fractional layout coordinates can leave a 1px unshaded column at the
         // frame edge, which reads as a bright vertical line. Overlap the
         // shading a little under the frame border.
-        const OVERLAP: f32 = 2.0;
+        // Just enough to hide the antialiasing seam, but still under the
+        // one-pixel frame border (a larger overlap showed as a dark stripe
+        // inside the crop).
+        const OVERLAP: f32 = 1.0;
         let full_frame =
             fx <= 0.5 && fy <= 0.5 && fw >= width - 0.5 && fh >= height - 0.5;
 
@@ -1313,8 +1316,9 @@ impl AppView {
                     .top(px(fy))
                     .w(px(fw))
                     .h(px(fh))
-                    .border_1()
-                    .border_color(theme.accent)
+                    // No solid outline: the mask contrast and the white corner
+                    // handles already mark the crop, and the accent border
+                    // read as stray vertical lines along both sides.
                     .cursor(gpui::CursorStyle::OpenHand)
                     .on_mouse_down(
                         MouseButton::Left,
