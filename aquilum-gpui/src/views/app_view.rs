@@ -13233,6 +13233,15 @@ if let Some(new_scroll) = new_active_scroll {
                             }
                         }
                     }
+                } else if this
+                    .caption_editor
+                    .as_ref()
+                    .is_some_and(|state| state.input.is_mouse_selecting)
+                {
+                    if let Some(state) = this.caption_editor.as_mut() {
+                        state.input.handle_mouse_move(event, window, 12.0, "Segoe UI");
+                    }
+                    cx.notify();
                 } else if this.quick_filter.is_mouse_selecting {
                     this.quick_filter.handle_mouse_move(event, &this.state.search_query, window, cx);
                 } else if this.panel_scrollbar_drag.active {
@@ -13266,6 +13275,12 @@ if let Some(new_scroll) = new_active_scroll {
                 }
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if let Some(state) = this.caption_editor.as_mut() {
+                    if state.input.is_mouse_selecting {
+                        state.input.handle_mouse_up();
+                        cx.notify();
+                    }
+                }
                 this.quick_filter.handle_mouse_up(cx);
                 this.handle_goto_mouse_up(cx);
                 this.goto_scrollbar_drag.end();
@@ -13320,6 +13335,12 @@ if let Some(new_scroll) = new_active_scroll {
                 cx.notify();
             }))
             .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if let Some(state) = this.caption_editor.as_mut() {
+                    if state.input.is_mouse_selecting {
+                        state.input.handle_mouse_up();
+                        cx.notify();
+                    }
+                }
                 this.quick_filter.handle_mouse_up(cx);
                 this.handle_goto_mouse_up(cx);
                 this.goto_scrollbar_drag.end();

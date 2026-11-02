@@ -278,6 +278,7 @@ pub enum BlinkTarget {
     PluginInput,
     FindQuery,
     FindReplace,
+    Caption,
 }
 
 impl BlinkTarget {
@@ -294,6 +295,10 @@ impl BlinkTarget {
             BlinkTarget::PluginInput => &mut view.plugin_input_blink,
             BlinkTarget::FindQuery => &mut view.find_bar.query.blink,
             BlinkTarget::FindReplace => &mut view.find_bar.replace.blink,
+            BlinkTarget::Caption => match view.caption_editor.as_mut() {
+                Some(state) => &mut state.input.blink,
+                None => &mut view.editor_blink,
+            },
         }
     }
 }

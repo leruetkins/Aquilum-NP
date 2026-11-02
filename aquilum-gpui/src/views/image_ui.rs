@@ -129,6 +129,8 @@ pub struct SizeDrag {
 
 const POPOVER_W: f32 = 268.0;
 const RADIUS_TRACK_W: f32 = 196.0;
+/// The inline caption editor keeps this much room even under a tiny picture.
+const CAPTION_EDITOR_MIN_W: f32 = 360.0;
 
 impl AppView {
     /// Draws one image block: the picture, its clipping radius, and the hover
@@ -526,8 +528,18 @@ impl AppView {
         }
 
         // Pictures are centered in the note column; the toolbar band and the
-        // caption slot share the same width, so they move together.
-        let center_margin = ((image.max_width - width) / 2.0).max(0.0);
+        // caption slot share the same width, so they move together. While the
+        // inline caption editor is open the block grows to a usable minimum,
+        // so a narrow picture cannot squeeze the text field.
+        let caption_width = if caption_editing {
+            width
+                .max(CAPTION_EDITOR_MIN_W)
+                .min(image.max_width.max(width))
+        } else {
+            width
+        };
+        let block_width = width.max(caption_width);
+        let center_margin = ((image.max_width - block_width) / 2.0).max(0.0);
         let mut block = div()
             .id(gpui::ElementId::Name(SharedString::from(format!(
                 "image-block-body-{}",
@@ -538,7 +550,7 @@ impl AppView {
             .flex_col()
             .items_center()
             .gap(px(6.0))
-            .w(px(width))
+            .w(px(block_width))
             .flex_shrink_0()
             // Hover belongs to the whole block, not just the picture: moving
             // from the picture to its floating bar crosses the gap and must
@@ -594,7 +606,7 @@ impl AppView {
                     "image-caption-slot-{}",
                     line_idx
                 ))))
-                .w(px(width))
+                .w(px(block_width))
                 .h(px(caption_slot_h))
                 .flex()
                 .flex_col()

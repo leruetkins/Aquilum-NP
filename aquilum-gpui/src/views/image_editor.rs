@@ -2439,15 +2439,22 @@ impl AppView {
             numbered: caption.numbered,
             position_menu_open: false,
         });
+        if let Some(state) = self.caption_editor.as_mut() {
+            state
+                .input
+                .blink
+                .enable(crate::blink_manager::BlinkTarget::Caption, cx);
+        }
         self.pending_caption_reveal = Some(line);
         self.select_image_line(line);
         cx.notify();
     }
 
     pub fn save_caption_editor(&mut self, cx: &mut Context<Self>) {
-        let Some(state) = self.caption_editor.take() else {
+        let Some(mut state) = self.caption_editor.take() else {
             return;
         };
+        state.input.blink.disable(cx);
         let mut edit = state.edit;
         let text = state.input.text().trim().to_string();
         edit.caption = if text.is_empty() {
@@ -2469,7 +2476,8 @@ impl AppView {
     }
 
     pub fn cancel_caption_editor(&mut self, cx: &mut Context<Self>) {
-        if self.caption_editor.take().is_some() {
+        if let Some(mut state) = self.caption_editor.take() {
+            state.input.blink.disable(cx);
             self.clear_image_selection();
             cx.notify();
         }
@@ -2505,6 +2513,11 @@ impl AppView {
         }
         if let Some(state) = self.caption_editor.as_mut() {
             state.input.handle_key_down(event, cx);
+            state
+                .input
+                .blink
+                .pause_and_show(crate::blink_manager::BlinkTarget::Caption, cx);
+            cx.notify();
         }
     }
 
@@ -2688,7 +2701,7 @@ impl AppView {
 
         div()
             .id("caption-inline-editor")
-            .w(px(image.width))
+            .w_full()
             .flex()
             .flex_row()
             .items_center()
@@ -2722,13 +2735,43 @@ impl AppView {
                     .track_focus(&state.focus)
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
+                        cx.listener(|this, event, window, cx| {
                             cx.stop_propagation();
-                            if let Some(state) = this.caption_editor.as_ref() {
+                            if let Some(state) = this.caption_editor.as_mut() {
+                                // Mirror the sidebar quick filter: a click
+                                // places the caret, drag selects, double-click
+                                // picks a word. Focusing alone left the old
+                                // caret/selection in place.
+                                state.input.handle_mouse_down(event, window, 12.0, "Segoe UI");
+                                state
+                                    .input
+                                    .blink
+                                    .pause_and_show(crate::blink_manager::BlinkTarget::Caption, cx);
                                 window.focus(&state.focus);
                             }
+                            cx.notify();
                         }),
                     )
+                    .on_mouse_move(cx.listener(|this, event, window, cx| {
+                        if let Some(state) = this.caption_editor.as_mut() {
+                            if state.input.is_mouse_selecting {
+                                state.input.handle_mouse_move(event, window, 12.0, "Segoe UI");
+                                state
+                                    .input
+                                    .blink
+                                    .pause_and_show(crate::blink_manager::BlinkTarget::Caption, cx);
+                                cx.notify();
+                            }
+                        }
+                    }))
+                    .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                        if let Some(state) = this.caption_editor.as_mut() {
+                            if state.input.is_mouse_selecting {
+                                state.input.handle_mouse_up();
+                                cx.notify();
+                            }
+                        }
+                    }))
                     .child(state.input.render(
                         &crate::i18n::t("editor.image.caption_title", lang),
                         theme,
