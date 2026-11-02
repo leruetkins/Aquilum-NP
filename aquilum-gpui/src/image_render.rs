@@ -31,6 +31,7 @@ pub fn invalidate_decoded() {
 /// Drops every pixel cache after an external file/sidecar change.
 pub fn invalidate_caches() {
     invalidate_decoded();
+    crate::images::invalidate_dimensions();
     if let Ok(mut cache) = display_cache().lock() {
         cache.clear();
     }
@@ -673,7 +674,7 @@ pub fn flatten_file(path: &Path, edit: &mut ImageEdit) -> Result<(), String> {
     save_rgba_like(path, &rgba)?;
     edit.annotations.clear();
     images::save_edit(path, edit).map_err(|err| err.to_string())?;
-    invalidate_decoded();
+    invalidate_caches();
     Ok(())
 }
 
@@ -698,7 +699,8 @@ pub fn apply_crop_file(path: &Path, edit: &mut ImageEdit) -> Result<(), String> 
     images::shift_annotations_after_crop(&mut edit.annotations, crop);
     edit.crop = None;
     images::save_edit(path, edit).map_err(|err| err.to_string())?;
-    invalidate_decoded();
+    invalidate_caches();
+    images::invalidate_dimensions();
     Ok(())
 }
 
@@ -723,7 +725,7 @@ pub fn blur_region_file(
     let mut out = (*original).clone();
     image::imageops::replace(&mut out, &processed, x as i64, y as i64);
     save_rgba_like(path, &out)?;
-    invalidate_decoded();
+    invalidate_caches();
     Ok(())
 }
 
@@ -845,7 +847,7 @@ pub fn apply_compression(
     if target != path {
         let _ = std::fs::remove_file(path);
     }
-    invalidate_decoded();
+    invalidate_caches();
     Ok(target)
 }
 

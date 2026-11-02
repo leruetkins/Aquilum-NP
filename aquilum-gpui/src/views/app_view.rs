@@ -1763,6 +1763,37 @@ impl AppView {
         out
     }
 
+    /// Screen rectangle of a note image block. Used to place the size/radius
+    /// cards next to the picture, the same way the crop editor panel is placed.
+    pub(crate) fn image_block_screen_rect(
+        &self,
+        line: usize,
+        window: &Window,
+    ) -> Option<(f32, f32, f32, f32)> {
+        let (view, doc) = self.state.active_view_and_doc()?;
+        let text = doc.line_text(line);
+        let image = crate::images::resolve_for_note(
+            &doc.path,
+            &text,
+            view.window.wrap_cols,
+            false,
+        )?;
+        let v_idx = view.window.first_row_of_line(line)?;
+        let row_doc_top = view.above_h + view.window.height_index.top_of(v_idx);
+        let screen_y = self.editor_rows_top_y() - self.current_scroll_top_f64() as f32
+            + row_doc_top as f32
+            + crate::images::BLOCK_PADDING
+            + crate::images::TOOLBAR_RESERVE;
+        let text_start_x = self.pane_text_start_x(None, window);
+        let center_margin = ((image.max_width - image.width) / 2.0).max(0.0);
+        Some((
+            text_start_x + center_margin,
+            screen_y,
+            image.width,
+            image.height,
+        ))
+    }
+
     pub(crate) fn pane_text_start_x(&self, leaf_id: Option<crate::workspace::LeafId>, window: &Window) -> f32 {
         let editor_left_x = if self.sidebar_collapsed { 44.0 } else { self.sidebar_width + 1.0 };
         let editor_right_x = if self.right_sidebar_collapsed { 0.0 } else { self.right_sidebar_width + 1.0 };
@@ -12121,17 +12152,6 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                                     + row_doc_top as f32
                                                     + crate::images::BLOCK_PADDING
                                                     + crate::images::TOOLBAR_RESERVE;
-                                                let center_margin =
-                                                    ((image.max_width - image.width) / 2.0).max(0.0);
-                                                editor.rect.set((
-                                                    text_start_x + center_margin,
-                                                    screen_y,
-                                                    image.width,
-                                                    image.height,
-                                                ));
-                                                editor.scale.set(
-                                                    image.width / image.visible.0.max(1) as f32,
-                                                );
                                                 let mut working = (**image).clone();
                                                 working.edit = editor.edit.clone();
                                                 working.crop = None;
@@ -12143,6 +12163,20 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                                 );
                                                 working.width = w;
                                                 working.height = h;
+                                                // The editor paints the full original, so its
+                                                // hit geometry must describe that image, not
+                                                // the previously cropped display.
+                                                let center_margin =
+                                                    ((working.max_width - w) / 2.0).max(0.0);
+                                                editor.rect.set((
+                                                    text_start_x + center_margin,
+                                                    screen_y,
+                                                    w,
+                                                    h,
+                                                ));
+                                                editor.scale.set(
+                                                    w / working.natural.0.max(1) as f32,
+                                                );
                                                 self.render_image_block(
                                                     &working,
                                                     v_line_idx,

@@ -227,6 +227,8 @@ impl AppView {
                 }
                 images::invalidate_resolved_images();
                 image_render::invalidate_caches();
+                gpui::ImageSource::from(old_path.as_path()).remove_asset(cx);
+                gpui::ImageSource::from(new_path.as_path()).remove_asset(cx);
                 self.compress_dialog = None;
                 self.clear_image_selection();
                 cx.notify();

@@ -1650,8 +1650,25 @@ impl AppView {
 
         let window_w = f32::from(window.bounds().size.width);
         let window_h = f32::from(window.bounds().size.height);
-        let panel_x = popover.x.clamp(8.0, (window_w - POPOVER_W - 8.0).max(8.0));
-        let panel_y = (popover.y + 8.0).clamp(8.0, (window_h - 200.0).max(8.0));
+        // Sit to the right of the picture, exactly like the crop editor panel;
+        // fall back to the left side when the right edge has no room.
+        let (panel_x, panel_y) = match self.image_block_screen_rect(popover.line, window) {
+            Some((rx, ry, rw, _rh)) => {
+                let x = if rx + rw + POPOVER_W + 16.0 <= window_w {
+                    rx + rw + 12.0
+                } else if rx - POPOVER_W - 12.0 >= 8.0 {
+                    rx - POPOVER_W - 12.0
+                } else {
+                    (window_w - POPOVER_W - 8.0).max(8.0)
+                };
+                let y = ry.clamp(8.0, (window_h - 220.0).max(8.0));
+                (x, y)
+            }
+            None => (
+                popover.x.clamp(8.0, (window_w - POPOVER_W - 8.0).max(8.0)),
+                (popover.y + 8.0).clamp(8.0, (window_h - 200.0).max(8.0)),
+            ),
+        };
         let panel = div()
             .id("image-popover-panel")
             .track_focus(&popover.focus)

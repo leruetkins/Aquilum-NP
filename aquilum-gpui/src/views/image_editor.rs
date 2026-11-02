@@ -193,6 +193,11 @@ const PALETTE: &[&str] = &[
 const MIN_CROP: f32 = 8.0;
 const PANEL_W: f32 = 276.0;
 
+
+fn drop_image_asset(path: &std::path::Path, cx: &mut gpui::App) {
+    gpui::ImageSource::from(path).remove_asset(cx);
+}
+
 impl AppView {
     pub fn open_image_editor(
         &mut self,
@@ -517,6 +522,7 @@ impl AppView {
             editor.aspect = CropAspect::Free;
             editor.sync_crop_fields();
             images::invalidate_resolved_images();
+            drop_image_asset(&path, cx);
             if let Some((view, _)) = self.state.active_view_and_doc_mut() {
                 view.visual_cache_dirty = true;
             }
@@ -542,6 +548,7 @@ impl AppView {
             editor.edit = edit.clone();
             editor.saved_edit = edit;
             images::invalidate_resolved_images();
+            drop_image_asset(&path, cx);
             cx.notify();
         }
     }
@@ -553,6 +560,7 @@ impl AppView {
         let path = editor.path.clone();
         if crate::image_render::blur_region_file(&path, region, pixelate).is_ok() {
             images::invalidate_resolved_images();
+            drop_image_asset(&path, cx);
             cx.notify();
         }
     }
@@ -1532,7 +1540,8 @@ impl AppView {
                 .flex()
                 .flex_col()
                 .gap(px(3.0))
-                .w(px((PANEL_W - 24.0 - 8.0) / 2.0))
+                // Two fields per row with slack; the exact half width wrapped to one column.
+                .w(px((PANEL_W - 24.0 - 8.0) / 2.0 - 6.0))
                 .child(div().text_xs().text_color(theme.text_muted).child(label))
                 .child(
                     div()

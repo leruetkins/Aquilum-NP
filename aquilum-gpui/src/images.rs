@@ -330,6 +330,15 @@ pub fn invalidate_index() {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     invalidate_resolution();
     invalidate_resolved_images();
+    invalidate_dimensions();
+}
+
+/// Pixel dimensions change when a file is cropped, compressed or replaced on
+/// disk; the size cache must not outlive the file.
+pub fn invalidate_dimensions() {
+    if let Ok(mut cache) = dimensions().lock() {
+        cache.clear();
+    }
 }
 
 pub fn is_image_path(path: &Path) -> bool {
