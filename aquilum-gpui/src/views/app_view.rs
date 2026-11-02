@@ -154,6 +154,8 @@ pub struct AppView {
     /// not leave a selection frame on an unrelated line.
     pub selected_image_doc: Option<crate::document_buffer::DocumentId>,
     pub hovered_image_doc: Option<crate::document_buffer::DocumentId>,
+    /// Full-window preview of the original image file.
+    pub image_viewer: Option<crate::views::image_ui::ImageViewerState>,
     /// In-place crop/annotation editor for one image block.
     pub image_editor: Option<crate::views::image_editor::ImageEditorState>,
     pub caption_editor: Option<crate::views::image_editor::CaptionEditorState>,
@@ -502,6 +504,7 @@ impl AppView {
             size_drag: None,
             selected_image_doc: None,
             hovered_image_doc: None,
+            image_viewer: None,
             image_editor: None,
             caption_editor: None,
             compress_dialog: None,
@@ -6142,6 +6145,10 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
     }
 
     pub(crate) fn handle_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.image_viewer.is_some() {
+            self.handle_image_viewer_key(event, _window, cx);
+            return;
+        }
         if self.image_editor.is_some() {
             self.handle_image_editor_key(event, _window, cx);
             return;
@@ -14463,6 +14470,10 @@ if let Some(new_scroll) = new_active_scroll {
             // ================= PLUGIN MODAL DIALOG OVERLAY =================
             .when_some(self.render_plugin_modal_overlay(theme, window, cx), |d, overlay| {
                 d.child(overlay)
+            })
+            // ================= IMAGE FULL-WINDOW VIEWER =================
+            .when(self.image_viewer.is_some(), |d| {
+                d.child(self.render_image_viewer(theme, window, cx))
             })
             // ================= TOAST NOTIFICATIONS OVERLAY =================
             .when(!self.state.notifications.all().is_empty(), |d| {

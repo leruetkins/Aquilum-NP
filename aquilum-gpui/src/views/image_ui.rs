@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use gpui::{
     div, prelude::*, px, AnyElement, Context, Div, IntoElement, MouseButton, MouseDownEvent,
-    SharedString, Stateful, StyledImage, Window,
+    MouseMoveEvent, ScrollWheelEvent, SharedString, Stateful, StyledImage, Window,
 };
 
 use crate::icons;
@@ -63,6 +63,18 @@ impl ImagePopoverState {
             SizeField::Height => &mut self.height,
         }
     }
+}
+
+/// Full-window preview of the original image file. `scale` is the on-screen
+/// size of one source pixel: 1.0 means the picture is shown at its natural
+/// resolution, and the wheel changes it. `pan` moves a zoomed picture around.
+pub struct ImageViewerState {
+    pub path: PathBuf,
+    pub title: String,
+    pub natural: (u32, u32),
+    pub scale: f32,
+    pub pan: (f32, f32),
+    pub drag: Option<(f32, f32, f32, f32)>,
 }
 
 pub struct SizeDrag {
@@ -686,6 +698,21 @@ impl AppView {
                 }
             }))
             .child(self.image_tool_button(
+                "image-tool-view",
+                icons::ICON_SEARCH,
+                label("editor.image.view_full"),
+                true,
+                theme,
+                {
+                    let viewer_path = image.path.clone();
+                    let viewer_natural = image.natural;
+                    cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.open_image_viewer(viewer_path.clone(), viewer_natural, window, cx);
+                    })
+                },
+            ))
+            .child(self.image_tool_button(
                 "image-tool-crop",
                 icons::ICON_IMAGE_CROP,
                 label("editor.image.menu_crop"),
@@ -819,6 +846,218 @@ impl AppView {
             }),
         ))
         .into_any_element()
+    }
+
+    /// Opens the full-window preview of the original file (not the cropped
+    /// view). The magnifier on the toolbar is the entry point.
+    pub(crate) fn open_image_viewer(
+        &mut self,
+        path: PathBuf,
+        natural: (u32, u32),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let title = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "image".to_string());
+        self.image_popover = None;
+        self.image_viewer = Some(ImageViewerState {
+            path,
+            title,
+            natural,
+            scale: 1.0,
+            pan: (0.0, 0.0),
+            drag: None,
+        });
+        window.focus(&self.focus_handle);
+        cx.notify();
+    }
+
+    pub(crate) fn close_image_viewer(&mut self, cx: &mut Context<Self>) {
+        if self.image_viewer.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn begin_image_viewer_drag(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
+        let Some(viewer) = self.image_viewer.as_mut() else {
+            return;
+        };
+        if event.click_count >= 2 {
+            viewer.scale = 1.0;
+            viewer.pan = (0.0, 0.0);
+            viewer.drag = None;
+        } else {
+            let x: f32 = event.position.x.into();
+            let y: f32 = event.position.y.into();
+            viewer.drag = Some((x, y, viewer.pan.0, viewer.pan.1));
+        }
+        cx.notify();
+    }
+
+    fn drag_image_viewer(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let Some(viewer) = self.image_viewer.as_mut() else {
+            return;
+        };
+        let Some((start_x, start_y, pan_x, pan_y)) = viewer.drag else {
+            return;
+        };
+        let x: f32 = event.position.x.into();
+        let y: f32 = event.position.y.into();
+        viewer.pan = (pan_x + x - start_x, pan_y + y - start_y);
+        cx.notify();
+    }
+
+    fn end_image_viewer_drag(&mut self, cx: &mut Context<Self>) {
+        if let Some(viewer) = self.image_viewer.as_mut() {
+            if viewer.drag.take().is_some() {
+                cx.notify();
+            }
+        }
+    }
+
+    fn zoom_image_viewer(&mut self, factor: f32, cx: &mut Context<Self>) {
+        if let Some(viewer) = self.image_viewer.as_mut() {
+            viewer.scale = (viewer.scale * factor).clamp(0.05, 8.0);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn handle_image_viewer_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event.keystroke.key.as_str() {
+            "escape" => {
+                self.close_image_viewer(cx);
+                window.focus(&self.focus_handle);
+            }
+            "+" | "=" => self.zoom_image_viewer(1.1, cx),
+            "-" => self.zoom_image_viewer(1.0 / 1.1, cx),
+            "0" => {
+                if let Some(viewer) = self.image_viewer.as_mut() {
+                    viewer.scale = 1.0;
+                    viewer.pan = (0.0, 0.0);
+                    cx.notify();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn render_image_viewer(
+        &self,
+        theme: &Theme,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let Some(viewer) = self.image_viewer.as_ref() else {
+            return div().into_any_element();
+        };
+        let window_w = f32::from(window.bounds().size.width);
+        let window_h = f32::from(window.bounds().size.height);
+        let natural_w = viewer.natural.0.max(1) as f32;
+        let natural_h = viewer.natural.1.max(1) as f32;
+        let width = natural_w * viewer.scale;
+        let height = natural_h * viewer.scale;
+        let left = (window_w - width) / 2.0 + viewer.pan.0;
+        let top = (window_h - height) / 2.0 + viewer.pan.1;
+        let dragging = viewer.drag.is_some();
+        let title = format!(
+            "{}  ·  {:.0}%  ·  {} × {}",
+            viewer.title,
+            viewer.scale * 100.0,
+            viewer.natural.0,
+            viewer.natural.1
+        );
+
+        div()
+            .id("image-viewer-backdrop")
+            .absolute()
+            .inset_0()
+            .bg(gpui::rgba(0x000000f2))
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.close_image_viewer(cx);
+            }))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                this.drag_image_viewer(event, cx);
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                this.end_image_viewer_drag(cx);
+            }))
+            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                cx.stop_propagation();
+                let dy = match event.delta {
+                    gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
+                    gpui::ScrollDelta::Lines(l) => l.y * 30.0,
+                };
+                if dy != 0.0 {
+                    this.zoom_image_viewer((dy / 320.0).exp(), cx);
+                }
+            }))
+            .child(
+                div()
+                    .id("image-viewer-picture")
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top))
+                    .w(px(width))
+                    .h(px(height))
+                    .flex_shrink_0()
+                    .cursor(if dragging {
+                        gpui::CursorStyle::ClosedHand
+                    } else {
+                        gpui::CursorStyle::OpenHand
+                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.begin_image_viewer_drag(event, cx);
+                        }),
+                    )
+                    .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                        this.end_image_viewer_drag(cx);
+                    }))
+                    .child(
+                        gpui::img(viewer.path.clone())
+                            .w_full()
+                            .h_full()
+                            .object_fit(gpui::ObjectFit::Fill),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(12.0))
+                    .left(px(16.0))
+                    .right(px(16.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme.text_primary)
+                            .bg(gpui::rgba(0x00000080))
+                            .px(px(8.0))
+                            .py(px(4.0))
+                            .rounded_md()
+                            .child(title),
+                    )
+                    .child(self.image_close_button(
+                        "image-viewer-close",
+                        theme,
+                        cx.listener(|this, _, _, cx| this.close_image_viewer(cx)),
+                    )),
+            )
+            .into_any_element()
     }
 
     /// Close cross for every image editing window. Sits in the top-right
