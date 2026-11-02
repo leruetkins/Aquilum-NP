@@ -1115,13 +1115,26 @@ pub fn copy_attachment(
     folder: &str,
     name: &str,
 ) -> Option<String> {
-    let source = resolve_attachment(vault_root, note_path, folder, name)?;
+    copy_attachment_to(vault_root, note_path, note_path, folder, name)
+}
+
+/// Copies an attachment (and its `.edit.json`) from one note's attachment
+/// folder into another note's, keeping every pixel and edit intact under a
+/// fresh unique name.
+pub fn copy_attachment_to(
+    vault_root: Option<&Path>,
+    from_note: &Path,
+    to_note: &Path,
+    folder: &str,
+    name: &str,
+) -> Option<String> {
+    let source = resolve_attachment(vault_root, from_note, folder, name)?;
     let bytes = std::fs::read(&source).ok()?;
     let ext = source
         .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or("png");
-    let dir = attachments_dir(note_path, folder);
+    let dir = attachments_dir(to_note, folder);
     let (new_name, new_path) = write_new(&dir, ext, &bytes).ok()?;
     let source_edit = edit_path(&source);
     if source_edit.is_file() {
@@ -1443,6 +1456,81 @@ mod tests {
         let edit = ImageEdit { corner_radius: Some(10.0), ..Default::default() };
         assert_eq!(radius_px(&edit, 400.0, 200.0), 20.0);
     }
+
+    #[test]
+    fn copying_between_notes_keeps_pixels_and_sidecar_under_a_new_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let from = root.join("a").join("NoteA.md");
+        let to = root.join("b").join("NoteB.md");
+        std::fs::create_dir_all(from.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        let source_dir = attachments_dir(&from, "Files");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("pic.png");
+        std::fs::write(&source, b"pixels").unwrap();
+        std::fs::write(edit_path(&source), b"{\"version\":1}").unwrap();
+
+        let copied = copy_attachment_to(Some(root), &from, &to, "Files", "pic.png").unwrap();
+        assert_ne!(copied, "pic.png");
+        let target = attachments_dir(&to, "Files").join(&copied);
+        assert_eq!(std::fs::read(&target).unwrap(), b"pixels");
+        assert!(edit_path(&target).is_file());
+        assert!(source.is_file());
+    }
+
+    #[test]
+    fn saving_without_a_reference_moves_the_pair_to_the_trash() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let note = root.join("Test").join("test1.md");
+        std::fs::create_dir_all(note.parent().unwrap()).unwrap();
+        std::fs::write(&note, "").unwrap();
+        let source_dir = attachments_dir(&note, "Files");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("pic.png");
+        std::fs::write(&source, b"pixels").unwrap();
+        std::fs::write(edit_path(&source), b"{\"version\":1}").unwrap();
+
+        let mut previous = std::collections::HashSet::new();
+        previous.insert("pic.png".to_string());
+        reconcile_saved_references(
+            Some(root),
+            &note,
+            "Files",
+            &previous,
+            &std::collections::HashSet::new(),
+        );
+
+        assert!(!source.exists());
+        let trashed = trash_dir(root, "Files").join("pic.png");
+        assert_eq!(std::fs::read(&trashed).unwrap(), b"pixels");
+        assert!(edit_path(&trashed).is_file());
+    }
+
+    #[test]
+    fn moving_between_notes_preserves_the_name_and_the_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let from = root.join("a").join("NoteA.md");
+        let to = root.join("b").join("NoteB.md");
+        std::fs::create_dir_all(from.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::write(&from, "").unwrap();
+        std::fs::write(&to, "").unwrap();
+        let source_dir = attachments_dir(&from, "Files");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("pic.png");
+        std::fs::write(&source, b"pixels").unwrap();
+        std::fs::write(edit_path(&source), b"{\"version\":1}").unwrap();
+
+        let moved = move_attachment(Some(root), &from, &to, "Files", "pic.png").unwrap();
+        assert_eq!(moved, "pic.png");
+        let target = attachments_dir(&to, "Files").join("pic.png");
+        assert_eq!(std::fs::read(&target).unwrap(), b"pixels");
+        assert!(edit_path(&target).is_file());
+        assert!(!source.exists());
+    }
 }
 
 // ─────────────────────── Platform clipboard ───────────────────────
@@ -1466,6 +1554,34 @@ pub fn clipboard_raster() -> Option<(Vec<u8>, gpui::ImageFormat)> {
 
 #[cfg(not(windows))]
 pub fn clipboard_raster() -> Option<(Vec<u8>, gpui::ImageFormat)> {
+    None
+}
+
+/// Sidecar-independent attachment payload for Cut/Copy across notes. GPUI's
+/// own metadata channel is text-hash checked, which is easy to lose to a
+/// CRLF normalisation; this is a plain private clipboard format.
+#[cfg(windows)]
+pub fn set_clipboard_attachment_meta(note: &Path, name: &str, cut: bool) {
+    let json = serde_json::json!({
+        "name": name,
+        "note": note.to_string_lossy(),
+        "cut": cut,
+    })
+    .to_string();
+    win_clipboard::write_meta(&json);
+}
+
+#[cfg(not(windows))]
+pub fn set_clipboard_attachment_meta(_note: &Path, _name: &str, _cut: bool) {}
+
+#[cfg(windows)]
+pub fn clipboard_attachment_meta() -> Option<serde_json::Value> {
+    let text = win_clipboard::read_meta()?;
+    serde_json::from_str(&text).ok()
+}
+
+#[cfg(not(windows))]
+pub fn clipboard_attachment_meta() -> Option<serde_json::Value> {
     None
 }
 
@@ -1533,9 +1649,13 @@ mod win_clipboard {
 
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+        RegisterClipboardFormatW, SetClipboardData,
     };
     use windows_sys::Win32::System::Ole::{CF_DIB, CF_HDROP};
-    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    use windows_sys::Win32::Foundation::GlobalFree;
+    use windows_sys::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
+    };
     use windows_sys::Win32::UI::Shell::DragQueryFileW;
 
     fn open() -> bool {
@@ -1604,6 +1724,77 @@ mod win_clipboard {
                 paths.push(PathBuf::from(String::from_utf16_lossy(&buffer)));
             }
             (!paths.is_empty()).then_some(paths)
+        })();
+        unsafe { CloseClipboard() };
+        result
+    }
+
+    fn meta_format() -> u32 {
+        static FORMAT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+        *FORMAT.get_or_init(|| unsafe {
+            RegisterClipboardFormatW(windows_sys::w!("VibecodiumAttachment"))
+        })
+    }
+
+    pub(super) fn read_meta() -> Option<String> {
+        if !open() {
+            return None;
+        }
+        let result = (|| {
+            let format = meta_format();
+            if unsafe { IsClipboardFormatAvailable(format) } == 0 {
+                return None;
+            }
+            let handle = unsafe { GetClipboardData(format) };
+            if handle.is_null() {
+                return None;
+            }
+            let size = unsafe { GlobalSize(handle) };
+            if size < 2 {
+                return None;
+            }
+            let ptr = unsafe { GlobalLock(handle) };
+            if ptr.is_null() {
+                return None;
+            }
+            let data = unsafe {
+                std::slice::from_raw_parts(ptr as *const u16, size / 2)
+            };
+            let len = data.iter().position(|c| *c == 0).unwrap_or(data.len());
+            let out = String::from_utf16_lossy(&data[..len]);
+            unsafe { GlobalUnlock(handle) };
+            Some(out)
+        })();
+        unsafe { CloseClipboard() };
+        result
+    }
+
+    pub(super) fn write_meta(json: &str) -> bool {
+        if !open() {
+            return false;
+        }
+        let result = (|| {
+            let wide: Vec<u16> = json.encode_utf16().chain(Some(0)).collect();
+            let bytes = wide.len() * 2;
+            let handle = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes) };
+            if handle.is_null() {
+                return false;
+            }
+            let ptr = unsafe { GlobalLock(handle) };
+            if ptr.is_null() {
+                unsafe { GlobalFree(handle) };
+                return false;
+            }
+            unsafe {
+                std::ptr::copy_nonoverlapping(wide.as_ptr() as *const u8, ptr as *mut u8, bytes);
+                GlobalUnlock(handle);
+            }
+            let stored = unsafe { SetClipboardData(meta_format(), handle) };
+            if stored.is_null() {
+                unsafe { GlobalFree(handle) };
+                return false;
+            }
+            true
         })();
         unsafe { CloseClipboard() };
         result
@@ -1845,6 +2036,36 @@ pub fn referenced_elsewhere(vault_root: &Path, name: &str, exclude: &[&Path]) ->
     false
 }
 
+static CUT_PROTECTED: OnceLock<Mutex<std::collections::HashSet<(PathBuf, String)>>> =
+    OnceLock::new();
+
+fn cut_protected_cell() -> &'static Mutex<std::collections::HashSet<(PathBuf, String)>> {
+    CUT_PROTECTED.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// A Cut copied the reference away: keep the pair until it is pasted into
+/// another note (then it is moved), instead of trashing it on the next save.
+pub fn protect_cut(note_path: &Path, name: &str) {
+    cut_protected_cell()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert((note_path.to_path_buf(), name.to_string()));
+}
+
+pub fn release_cut(note_path: &Path, name: &str) {
+    cut_protected_cell()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&(note_path.to_path_buf(), name.to_string()));
+}
+
+fn is_cut_protected(note_path: &Path, name: &str) -> bool {
+    cut_protected_cell()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(&(note_path.to_path_buf(), name.to_string()))
+}
+
 /// A save removed `name`: move the pair to the trash unless another note still
 /// uses it or it came from a shared folder.
 pub fn defer_removed_reference(
@@ -1858,10 +2079,35 @@ pub fn defer_removed_reference(
     if !beside.is_file() {
         return;
     }
+    if is_cut_protected(note_path, name) {
+        return;
+    }
     if referenced_elsewhere(vault_root, name, exclude_notes) {
         return;
     }
     let _ = trash_pair(vault_root, folder, &beside);
+}
+
+/// Applies the attachment lifecycle after a successful save: references that
+/// disappeared from the saved text go to the trash (unless another note still
+/// uses them), and references that came back are restored from the trash.
+pub fn reconcile_saved_references(
+    vault_root: Option<&Path>,
+    note_path: &Path,
+    folder: &str,
+    previous: &std::collections::HashSet<String>,
+    current: &std::collections::HashSet<String>,
+) {
+    let Some(vault_root) = vault_root else {
+        return;
+    };
+    let exclude = [note_path];
+    for name in previous.difference(current) {
+        defer_removed_reference(vault_root, note_path, folder, name, &exclude);
+    }
+    for name in current {
+        restore_if_trashed(vault_root, note_path, folder, name);
+    }
 }
 
 /// Moves the pairs referenced by a note from `old_note`'s attachments to
@@ -2025,13 +2271,15 @@ pub fn move_attachment(
     if !source.is_file() {
         return None;
     }
+    let target_dir = attachments_dir(to_note, &folder);
+    // Both notes keep attachments in the same folder: nothing to move and no
+    // need to scan the whole vault for other references.
+    if source.parent() == Some(target_dir.as_path()) {
+        return Some(name.to_string());
+    }
     let root = vault_root?;
     if referenced_elsewhere(root, name, &[from_note, to_note]) {
         return None;
-    }
-    let target_dir = attachments_dir(to_note, &folder);
-    if source.parent() == Some(target_dir.as_path()) {
-        return Some(name.to_string());
     }
     std::fs::create_dir_all(&target_dir).ok()?;
     let target = if target_dir.join(name).exists() {

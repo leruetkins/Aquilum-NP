@@ -990,10 +990,14 @@ impl AppView {
         let lang = self.config.ui.language.as_str();
         let t = |key: &str| crate::i18n::t(key, lang);
         let items = vec![
+            item("image-copy-reference", t("editor.image.menu_copy_ref"), "copy", false),
+            item("image-cut", t("editor.image.menu_cut"), "cut", false),
+            item("image-paste", t("editor.image.menu_paste"), "download", false),
+            separator("sep-image-clipboard"),
             item("image-copy", t("editor.image.menu_copy"), "copy", false),
             item("image-copy-link", t("editor.image.menu_copy_link"), "link", false),
             item("image-save-as", t("editor.image.menu_save_as"), "download", false),
-            separator("sep-image-clipboard"),
+            separator("sep-image-clipboard-2"),
             item("image-size", t("editor.image.menu_size"), "move", false),
             item("image-radius", t("editor.image.menu_radius"), "maximize", false),
             separator("sep-image-edit"),
@@ -1059,6 +1063,135 @@ impl AppView {
         cx.write_to_clipboard(gpui::ClipboardItem::new_image(&gpui::Image::from_bytes(
             format, bytes,
         )));
+    }
+
+    /// Copies the wiki reference line itself, with metadata that lets a paste
+    /// into another note copy (or move, for Cut) the image and its sidecar.
+    pub fn copy_image_reference(
+        &mut self,
+        line: usize,
+        cut: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(doc) = self.state.active_document() else {
+            return false;
+        };
+        let text = doc.line_text(line);
+        let Some(reference) = images::parse_image_reference(&text) else {
+            return false;
+        };
+        if !reference.wiki {
+            return false;
+        }
+        let Some(meta) = self.attachment_clipboard_metadata(&text, cut) else {
+            return false;
+        };
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string_with_json_metadata(
+            text.clone(),
+            meta,
+        ));
+        crate::images::set_clipboard_attachment_meta(&doc.path, &reference.target, cut);
+        if cut {
+            images::protect_cut(&doc.path, &reference.target);
+            self.delete_image_at_line(line, cx);
+        }
+        true
+    }
+
+    /// Handles every clipboard payload that carries a picture: a raster, a
+    /// file list, or wiki references (with or without attachment metadata).
+    /// Returns `true` when the paste was consumed, so callers may fall back to
+    /// plain text only for text-only clipboards.
+    pub fn paste_clipboard_image_aware(&mut self, cx: &mut Context<Self>) -> bool {
+        let raster = cx
+            .read_from_clipboard()
+            .and_then(|item| {
+                item.entries().iter().find_map(|entry| match entry {
+                    gpui::ClipboardEntry::Image(image) => {
+                        Some((image.bytes().to_vec(), image.format()))
+                    }
+                    _ => None,
+                })
+            })
+            .or_else(crate::images::clipboard_raster);
+        if let Some((bytes, format)) = raster {
+            if self.import_clipboard_image(bytes, format, cx) {
+                return true;
+            }
+        }
+        if let Some(paths) = crate::images::clipboard_file_paths() {
+            if self.import_clipboard_files(paths, cx) {
+                return true;
+            }
+        }
+        if let Some(item) = cx.read_from_clipboard() {
+            if let Some(text) = item.text() {
+                if let Some(meta) = crate::images::clipboard_attachment_meta() {
+                    if self.copy_pasted_references(&text, Some(&meta), cx) {
+                        return true;
+                    }
+                }
+                if let Some(meta) = item
+                    .metadata()
+                    .and_then(|meta| serde_json::from_str::<serde_json::Value>(meta).ok())
+                    .and_then(|value| value.get("vibecodiumAttachment").cloned())
+                {
+                    if self.copy_pasted_references(&text, Some(&meta), cx) {
+                        return true;
+                    }
+                }
+                if text.contains("![[") && self.copy_pasted_references(&text, None, cx) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Context-menu Paste: inserts the clipboard right after the image line.
+    pub fn paste_after_image(&mut self, line: usize, cx: &mut Context<Self>) {
+        if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
+            let offset = doc.line_end_byte(line);
+            view.cursor_offset = offset;
+            view.selection_anchor = None;
+            view.visual_cache_dirty = true;
+        }
+        if self.paste_clipboard_image_aware(cx) {
+            return;
+        }
+        if let Some(item) = cx.read_from_clipboard() {
+            if let Some(text) = item.text() {
+                let text = crate::document_buffer::normalize_newlines(&text).into_owned();
+                self.state.active_insert_text(&text);
+                self.schedule_auto_save(cx);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Image actions from keyboard shortcuts when the picture is selected.
+    pub fn handle_selected_image_clipboard_key(
+        &mut self,
+        key: &str,
+        ctrl: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !ctrl {
+            return false;
+        }
+        let Some(line) = self.selected_image_line else {
+            return false;
+        };
+        if self.selected_image_doc != self.state.active_doc_id() {
+            return false;
+        }
+        if key.eq_ignore_ascii_case("c") || key == "с" || key == "С" {
+            return self.copy_image_reference(line, false, cx);
+        }
+        if key.eq_ignore_ascii_case("x") || key == "ч" || key == "Ч" {
+            return self.copy_image_reference(line, true, cx);
+        }
+        false
     }
 
     pub fn copy_image_link(&self, line: usize, cx: &mut Context<Self>) {
@@ -1374,18 +1507,20 @@ impl AppView {
             if !reference.wiki {
                 return false;
             }
-            let resolve_note = if cut {
-                source_note.as_deref().unwrap_or(&note)
-            } else {
-                &note
-            };
+            let resolve_note = source_note.as_deref().unwrap_or(&note);
             if images::resolve_attachment(root.as_deref(), resolve_note, &folder, &reference.target).is_none() {
                 return false;
             }
             any = true;
             let can_move = cut
-                && source_note.as_deref().is_some_and(|source| source != note.as_path())
+                && source_note.is_some()
                 && source_name == Some(reference.target.as_str());
+            if cut {
+                images::release_cut(
+                    source_note.as_deref().unwrap_or(&note),
+                    &reference.target,
+                );
+            }
             let replacement = if can_move {
                 match images::move_attachment(
                     root.as_deref(),
@@ -1398,12 +1533,24 @@ impl AppView {
                         moved = true;
                         name
                     }
-                    None => images::copy_attachment(root.as_deref(), &note, &folder, &reference.target)
-                        .unwrap_or_else(|| reference.target.clone()),
+                    None => images::copy_attachment_to(
+                        root.as_deref(),
+                        source_note.as_deref().unwrap_or(&note),
+                        &note,
+                        &folder,
+                        &reference.target,
+                    )
+                    .unwrap_or_else(|| reference.target.clone()),
                 }
             } else {
-                images::copy_attachment(root.as_deref(), &note, &folder, &reference.target)
-                    .unwrap_or_else(|| reference.target.clone())
+                images::copy_attachment_to(
+                    root.as_deref(),
+                    resolve_note,
+                    &note,
+                    &folder,
+                    &reference.target,
+                )
+                .unwrap_or_else(|| reference.target.clone())
             };
             rewritten.push(reference.with_target(replacement).markup());
         }
@@ -1421,6 +1568,7 @@ impl AppView {
                 }
             });
             cx.write_to_clipboard(gpui::ClipboardItem::new_string_with_json_metadata(text.clone(), meta));
+            crate::images::set_clipboard_attachment_meta(&note, "", false);
         }
         self.schedule_auto_save(cx);
         cx.notify();
@@ -1675,7 +1823,17 @@ impl AppView {
             return;
         }
         let old_cursor = view.cursor_offset.min(doc.len());
-        let new_cursor = old_cursor.saturating_sub(end - start).min(start);
+        // Deleting a whole line is before, inside, or after the caret. Only the
+        // "after" case may shift left by the removed length; a caret inside the
+        // line must collapse to its start, otherwise the shifted byte offset
+        // can land inside a multibyte character and panic in the rope.
+        let new_cursor = if old_cursor >= end {
+            old_cursor - (end - start)
+        } else if old_cursor > start {
+            start
+        } else {
+            old_cursor
+        };
         let (_, note_edit, edit_event) = view.replace_range(doc, start..end, String::new(), new_cursor);
         self.state.dispatch_edit_event(&edit_event, &note_edit);
         self.schedule_auto_save(cx);

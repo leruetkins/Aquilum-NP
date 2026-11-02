@@ -26,7 +26,7 @@ pub struct MoreOptionsMenuState {
     pub leaf_id: Option<crate::workspace::LeafId>,
     pub position_x: f32,
     pub position_y: f32,
-    pub hovered_item: Option<usize>,
+    pub hovered_item: Option<&'static str>,
     pub active_submenu: ActiveSubmenu,
 }
 
@@ -123,7 +123,6 @@ impl AppView {
     /// Renders one menu item in the more options menu.
     fn render_more_options_item(
         &self,
-        ix: usize,
         id: &'static str,
         icon_path: &'static str,
         label: String,
@@ -134,7 +133,7 @@ impl AppView {
         theme: &Theme,
         cx: &Context<Self>,
     ) -> impl IntoElement {
-        let is_selected = self.more_options_menu.hovered_item == Some(ix)
+        let is_selected = self.more_options_menu.hovered_item == Some(id)
             || (has_submenu && self.more_options_menu.active_submenu == submenu_target);
         let text_color = if is_danger {
             gpui::rgb(0xe05252)
@@ -161,8 +160,11 @@ impl AppView {
             .hover(|h| h.bg(theme.bg_hover))
             .on_hover(cx.listener(move |this, is_hovered: &bool, _, cx| {
                 if *is_hovered {
-                    this.more_options_menu.hovered_item = Some(ix);
+                    this.more_options_menu.hovered_item = Some(id);
                     this.more_options_menu.active_submenu = submenu_target;
+                    cx.notify();
+                } else if this.more_options_menu.hovered_item == Some(id) {
+                    this.more_options_menu.hovered_item = None;
                     cx.notify();
                 }
             }))
@@ -190,7 +192,6 @@ impl AppView {
 
     fn render_more_options_check_item(
         &self,
-        ix: usize,
         id: &'static str,
         icon_path: &'static str,
         label: String,
@@ -199,7 +200,7 @@ impl AppView {
         theme: &Theme,
         cx: &Context<Self>,
     ) -> impl IntoElement {
-        let is_selected = self.more_options_menu.hovered_item == Some(ix);
+        let is_selected = self.more_options_menu.hovered_item == Some(id);
         let text_color = theme.text_primary;
         let icon_color = theme.text_secondary;
 
@@ -217,8 +218,11 @@ impl AppView {
             .hover(|h| h.bg(theme.bg_hover))
             .on_hover(cx.listener(move |this, is_hovered: &bool, _, cx| {
                 if *is_hovered {
-                    this.more_options_menu.hovered_item = Some(ix);
+                    this.more_options_menu.hovered_item = Some(id);
                     this.more_options_menu.active_submenu = ActiveSubmenu::None;
+                    cx.notify();
+                } else if this.more_options_menu.hovered_item == Some(id) {
+                    this.more_options_menu.hovered_item = None;
                     cx.notify();
                 }
             }))
@@ -343,7 +347,6 @@ impl AppView {
                     // --- GROUP 1: VIEWS & BACKLINKS ---
                     // 1. Показывать обратные ссылки
                     .child(self.render_more_options_item(
-                        0,
                         "more-item-show-backlinks",
                         icons::ICON_LINK,
                         if is_ru { "Показывать обратные ссылки".to_string() } else { "Show backlinks".to_string() },
@@ -366,7 +369,6 @@ impl AppView {
                     // 2. Reading view / Live preview
                     .child(if self.edit_mode {
                         self.render_more_options_item(
-                            1,
                             "more-item-reading-view",
                             icons::ICON_BOOK_OPEN,
                             if is_ru { "Просмотр".to_string() } else { "Reading view".to_string() },
@@ -389,7 +391,6 @@ impl AppView {
                         )
                     } else {
                         self.render_more_options_item(
-                            1,
                             "more-item-live-preview",
                             icons::ICON_EYE,
                             if is_ru { "Живой просмотр".to_string() } else { "Live preview".to_string() },
@@ -418,7 +419,6 @@ impl AppView {
                     // 3. Source view / Live preview toggle
                     .child(if self.edit_mode && self.source_mode {
                         self.render_more_options_item(
-                            2,
                             "more-item-live-preview",
                             icons::ICON_EYE,
                             if is_ru { "Живой просмотр".to_string() } else { "Live preview".to_string() },
@@ -445,7 +445,6 @@ impl AppView {
                         )
                     } else {
                         self.render_more_options_item(
-                            2,
                             "more-item-source-view",
                             icons::ICON_CODE,
                             if is_ru { "Просмотр исходного кода".to_string() } else { "Source view".to_string() },
@@ -473,7 +472,6 @@ impl AppView {
                     })
                     // 4. Показывать непечатаемые знаки
                     .child(self.render_more_options_check_item(
-                        100,
                         "more-item-toggle-invisibles",
                         icons::ICON_TYPE,
                         if is_ru { "Показывать непечатаемые знаки".to_string() } else { "Show non-printable characters".to_string() },
@@ -490,7 +488,6 @@ impl AppView {
                     // --- GROUP 2: SPLITS & WINDOWS ---
                     // 4. Разделить вправо
                     .child(self.render_more_options_item(
-                        3,
                         "more-item-split-right",
                         icons::ICON_SPLIT,
                         if is_ru { "Разделить вправо".to_string() } else { "Split right".to_string() },
@@ -511,7 +508,6 @@ impl AppView {
                     ))
                     // 5. Разделить вниз
                     .child(self.render_more_options_item(
-                        4,
                         "more-item-split-down",
                         icons::ICON_SPLIT_DOWN,
                         if is_ru { "Разделить вниз".to_string() } else { "Split down".to_string() },
@@ -532,7 +528,6 @@ impl AppView {
                     ))
                     // 6. Открыть в новом окне
                     .child(self.render_more_options_item(
-                        5,
                         "more-item-new-window",
                         icons::ICON_APP_WINDOW,
                         if is_ru { "Открыть в новом окне".to_string() } else { "Open in new window".to_string() },
@@ -552,7 +547,6 @@ impl AppView {
                     // --- GROUP 3: FILE MANAGEMENT ---
                     // 7. Переименовать
                     .child(self.render_more_options_item(
-                        6,
                         "more-item-rename",
                         icons::ICON_PENCIL,
                         if is_ru { "Переименовать".to_string() } else { "Rename".to_string() },
@@ -573,7 +567,6 @@ impl AppView {
                     ))
                     // 8. Переместить файл в...
                     .child(self.render_more_options_item(
-                        7,
                         "more-item-move",
                         icons::ICON_FOLDER_INPUT,
                         if is_ru { "Переместить файл в...".to_string() } else { "Move file to...".to_string() },
@@ -605,7 +598,6 @@ impl AppView {
                         };
                         let p = target_path.clone();
                         self.render_more_options_item(
-                            8,
                             "more-item-bookmark",
                             if is_bm { icons::ICON_BOOKMARK_FILLED } else { icons::ICON_BOOKMARK },
                             label_str,
@@ -624,7 +616,6 @@ impl AppView {
                     })
                     // 10. Объединить весь файл с...
                     .child(self.render_more_options_item(
-                        9,
                         "more-item-merge",
                         icons::ICON_MERGE,
                         if is_ru { "Объединить весь файл с...".to_string() } else { "Merge entire file with...".to_string() },
@@ -647,7 +638,6 @@ impl AppView {
                     ))
                     // 11. Добавить свойство файла
                     .child(self.render_more_options_item(
-                        10,
                         "more-item-add-property",
                         icons::ICON_CIRCLE_PLUS,
                         if is_ru { "Добавить свойство файла".to_string() } else { "Add file property".to_string() },
@@ -663,7 +653,6 @@ impl AppView {
                     ))
                     // 12. Экспортировать в PDF
                     .child(self.render_more_options_item(
-                        11,
                         "more-item-export-pdf",
                         icons::ICON_DOWNLOAD,
                         if is_ru { "Экспортировать в PDF".to_string() } else { "Export to PDF".to_string() },
@@ -682,7 +671,6 @@ impl AppView {
                     ))
                     // 12b. Экспорт MD в zip
                     .child(self.render_more_options_item(
-                        11,
                         "more-item-export-md",
                         icons::ICON_DOWNLOAD,
                         if is_ru { "Экспорт MD в zip".to_string() } else { "Export MD to zip".to_string() },
@@ -704,7 +692,6 @@ impl AppView {
                     // --- GROUP 4: SEARCH & REPLACE ---
                     // 13. Найти...
                     .child(self.render_more_options_item(
-                        12,
                         "more-item-find",
                         icons::ICON_SEARCH,
                         if is_ru { "Найти...".to_string() } else { "Find...".to_string() },
@@ -721,7 +708,6 @@ impl AppView {
                     ))
                     // 14. Заменить...
                     .child(self.render_more_options_item(
-                        13,
                         "more-item-replace",
                         icons::ICON_REFRESH,
                         if is_ru { "Заменить...".to_string() } else { "Replace...".to_string() },
@@ -744,7 +730,6 @@ impl AppView {
                     // --- GROUP 5: PATHS & LINKED VIEWS (SUBMENUS) ---
                     // 15. Копировать путь >
                     .child(self.render_more_options_item(
-                        14,
                         "more-item-copy-path",
                         icons::ICON_COPY,
                         if is_ru { "Копировать путь".to_string() } else { "Copy path".to_string() },
@@ -760,7 +745,6 @@ impl AppView {
                     ))
                     // 16. Открыть связанное представление >
                     .child(self.render_more_options_item(
-                        15,
                         "more-item-linked-view",
                         icons::ICON_LINK,
                         if is_ru { "Открыть связанное представление".to_string() } else { "Open linked view".to_string() },
@@ -779,7 +763,6 @@ impl AppView {
                     // --- GROUP 6: EXTERNAL & EXPLORER ---
                     // 17. Открыть в приложении по умолчанию
                     .child(self.render_more_options_item(
-                        16,
                         "more-item-open-default",
                         icons::ICON_EXTERNAL_LINK,
                         if is_ru { "Открыть в приложении по умолчанию".to_string() } else { "Open in default app".to_string() },
@@ -800,7 +783,6 @@ impl AppView {
                     ))
                     // 18. Показать в Проводнике
                     .child(self.render_more_options_item(
-                        17,
                         "more-item-reveal-explorer",
                         icons::ICON_EXTERNAL_LINK,
                         if is_ru { "Показать в Проводнике".to_string() } else { "Show in Explorer".to_string() },
@@ -821,7 +803,6 @@ impl AppView {
                     ))
                     // 19. Показать в файловом менеджере
                     .child(self.render_more_options_item(
-                        18,
                         "more-item-reveal-file-manager",
                         icons::ICON_FOLDER,
                         if is_ru { "Показать в файловом менеджере".to_string() } else { "Show in file manager".to_string() },
@@ -850,7 +831,6 @@ impl AppView {
                     // --- GROUP 7: PLUGINS / NOTE TOOLS ---
                     // 20. Change icon
                     .child(self.render_more_options_item(
-                        19,
                         "more-item-change-icon",
                         icons::ICON_HASH,
                         "Change icon".to_string(),
@@ -867,7 +847,6 @@ impl AppView {
                     ))
                     // 21. Encrypt note
                     .child(self.render_more_options_item(
-                        20,
                         "more-item-encrypt-note",
                         icons::ICON_LOCK,
                         "Encrypt note".to_string(),
@@ -889,7 +868,6 @@ impl AppView {
                     ))
                     // 22. Check file stats
                     .child(self.render_more_options_item(
-                        21,
                         "more-item-check-stats",
                         icons::ICON_ANALYSIS,
                         "Check file stats".to_string(),
@@ -928,7 +906,6 @@ impl AppView {
                     // --- GROUP 8: DELETE (RED DANGER) ---
                     // 23. Удалить файл
                     .child(self.render_more_options_item(
-                        22,
                         "more-item-delete-file",
                         icons::ICON_TRASH_2,
                         if is_ru { "Удалить файл".to_string() } else { "Delete file".to_string() },
@@ -952,7 +929,6 @@ impl AppView {
                     // --- GROUP 9: ATTACHMENTS & DRAWINGS ---
                     // 24. Collect attachments in file
                     .child(self.render_more_options_item(
-                        23,
                         "more-item-collect-attachments",
                         icons::ICON_DOWNLOAD,
                         "Collect attachments in file".to_string(),
@@ -969,7 +945,6 @@ impl AppView {
                     ))
                     // 25. Создать новый чертеж
                     .child(self.render_more_options_item(
-                        24,
                         "more-item-new-drawing",
                         icons::ICON_DRAWING,
                         if is_ru { "Создать новый чертеж".to_string() } else { "Create new drawing".to_string() },
@@ -998,7 +973,6 @@ impl AppView {
                     ))
                     // 26. Неиспользуемые вложения
                     .child(self.render_more_options_item(
-                        25,
                         "more-item-unused-attachments",
                         icons::ICON_PAPERCLIP,
                         if is_ru { "Неиспользуемые вложения".to_string() } else { "Unused attachments".to_string() },

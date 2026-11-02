@@ -355,10 +355,21 @@ impl DocumentBuffer {
         }
     }
 
+    /// Clamps a possibly stale byte offset into the document and moves it back
+    /// to the nearest character boundary. Cursor offsets can briefly trail an
+    /// edit; every consumer must tolerate that instead of panicking in the rope.
+    #[inline]
+    pub fn clamp_offset(&self, byte: usize) -> usize {
+        let mut byte = byte.min(self.rope.byte_len());
+        while byte > 0 && !self.rope.is_char_boundary(byte) {
+            byte -= 1;
+        }
+        byte
+    }
+
     #[inline]
     pub fn line_of_byte(&self, byte: usize) -> usize {
-        let byte = byte.min(self.rope.byte_len());
-        self.rope.line_of_byte(byte)
+        self.rope.line_of_byte(self.clamp_offset(byte))
     }
 
     #[inline]
@@ -368,8 +379,8 @@ impl DocumentBuffer {
 
     #[inline]
     pub fn slice_to_string(&self, range: std::ops::Range<usize>) -> String {
-        let start = range.start.min(self.rope.byte_len());
-        let end = range.end.min(self.rope.byte_len());
+        let start = self.clamp_offset(range.start);
+        let end = self.clamp_offset(range.end).max(start);
         if start >= end {
             String::new()
         } else {
@@ -797,6 +808,21 @@ mod tests {
         assert_eq!(transform_offset(9, e_del, Bias::Right), 6);
         // After deleted range shifts by -5
         assert_eq!(transform_offset(15, e_del, Bias::Left), 10);
+    }
+
+    #[test]
+    fn line_of_byte_rounds_a_stale_offset_down_to_a_char_boundary() {
+        let doc = DocumentBuffer::new(
+            DocumentId::new(),
+            PathBuf::from("test.md"),
+            "test".to_string(),
+            "первая строка
+вторая".to_string(),
+            1,
+        );
+        // 9 is inside the two-byte 'а' of "первая".
+        assert_eq!(doc.line_of_byte(9), 0);
+        assert_eq!(doc.line_of_byte(29), 1);
     }
 
     #[test]

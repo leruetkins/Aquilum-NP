@@ -2690,7 +2690,8 @@ impl AppState {
         let active_doc_snapshot = active_doc.zip(self.active_view()).map(|(doc, view)| {
             let head = view.line_col(doc);
             let anchor = view.selection_anchor.map(|a| {
-                let anchor_line = doc.line_of_byte(a.min(doc.len()));
+                let a = doc.clamp_offset(a);
+                let anchor_line = doc.line_of_byte(a);
                 let anchor_start = doc.line_start_byte(anchor_line).min(a);
                 let anchor_ch = doc.slice_to_string(anchor_start..a).chars().count();
                 (anchor_line, anchor_ch)
@@ -3284,29 +3285,13 @@ impl AppState {
                     // and a restored reference comes back from the trash.
                     let new_refs = crate::images::references_in_rope(doc.rope());
                     let previous = doc.attachment_refs.replace(new_refs.clone());
-                    let note_path = doc.path.clone();
-                    if let (Some(root), Some(vault_root)) = (self.workspace_path.clone(), self.workspace_path.clone()) {
-                        let _ = root;
-                        let folder = crate::images::folder();
-                        let exclude = [note_path.as_path()];
-                        for name in previous.difference(&new_refs) {
-                            crate::images::defer_removed_reference(
-                                &vault_root,
-                                &note_path,
-                                &folder,
-                                name,
-                                &exclude,
-                            );
-                        }
-                        for name in &new_refs {
-                            crate::images::restore_if_trashed(
-                                &vault_root,
-                                &note_path,
-                                &folder,
-                                name,
-                            );
-                        }
-                    }
+                    crate::images::reconcile_saved_references(
+                        self.workspace_path.as_deref(),
+                        &doc.path,
+                        &crate::images::folder(),
+                        &previous,
+                        &new_refs,
+                    );
                     if let Some(meta) = self.doc_meta.get_mut(&doc_id) {
                         meta.is_dirty = false;
                     }

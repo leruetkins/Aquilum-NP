@@ -1128,7 +1128,7 @@ impl TabSession {
     }
 
     pub fn line_col(&self, doc: &DocumentBuffer) -> (usize, usize) {
-        let offset = self.cursor_offset.min(doc.len());
+        let offset = doc.clamp_offset(self.cursor_offset);
         let line_idx = doc.line_of_byte(offset);
         let line_start = doc.line_start_byte(line_idx).min(offset);
         let prefix = doc.slice_to_string(line_start..offset);

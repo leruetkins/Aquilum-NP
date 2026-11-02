@@ -1081,6 +1081,7 @@ impl AppView {
         let Some((path, rope, _title, version, expected_hash)) = to_save else {
             return;
         };
+        let saved_refs = crate::images::references_in_rope(&rope);
 
         self.auto_save_epoch = self.auto_save_epoch.wrapping_add(1);
         let entity = cx.weak_entity();
@@ -1096,6 +1097,7 @@ impl AppView {
             let _ = entity.update(&mut async_cx, |this, cx| {
                 if let Some(doc_id) = this.state.find_document_by_path(&path) {
                     let mut notif_to_push = None;
+                    let mut reconcile: Option<(PathBuf, std::collections::HashSet<String>)> = None;
                     if let Some(doc) = this.state.documents.get_mut(&doc_id) {
                         match write_res {
                             crate::save_manager::CheckedWrite::Written(hash) => {
@@ -1114,6 +1116,8 @@ impl AppView {
                                     if let Some(meta) = this.state.doc_meta.get_mut(&doc_id) {
                                         meta.is_dirty = false;
                                     }
+                                    let previous = doc.attachment_refs.replace(saved_refs.clone());
+                                    reconcile = Some((doc.path.clone(), previous));
                                 }
                                 let doc_path = doc.path.clone();
                                 let rel_path = this.state.vault.as_ref()
@@ -1153,6 +1157,15 @@ impl AppView {
                                 ));
                             }
                         }
+                    }
+                    if let Some((note_path, previous)) = reconcile {
+                        crate::images::reconcile_saved_references(
+                            this.state.workspace_path.as_deref(),
+                            &note_path,
+                            &crate::images::folder(),
+                            &previous,
+                            &saved_refs,
+                        );
                     }
                     if let Some((notif_type, title, msg, duration)) = notif_to_push {
                         this.push_notification(notif_type, title, msg, Some(duration), cx);
@@ -4452,7 +4465,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         self.selected_image_doc = None;
     }
 
-    fn attachment_clipboard_metadata(
+    pub(crate) fn attachment_clipboard_metadata(
         &self,
         text: &str,
         cut: bool,
@@ -6167,6 +6180,18 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             }
         }
 
+        // Ctrl+C / Ctrl+X on a selected picture copies or cuts the reference
+        // (with attachment metadata), like the context menu entries.
+        if (event.keystroke.modifiers.control || event.keystroke.modifiers.platform)
+            && self.handle_selected_image_clipboard_key(
+                &event.keystroke.key,
+                true,
+                cx,
+            )
+        {
+            return;
+        }
+
         // Esc closes the topmost layer: a popover, then the context menu.
         if event.keystroke.key == "escape" && self.editor_context_menu.is_open {
             self.close_editor_context_menu(cx);
@@ -6541,38 +6566,11 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             // also carries text (browsers, Paint). GPUI sees only its own
             // registered PNG/GIF/JFIF formats; CF_DIB (screenshots) is read by
             // the platform adapter instead.
-            let raster = cx
-                .read_from_clipboard()
-                .and_then(|item| {
-                    item.entries().iter().find_map(|entry| match entry {
-                        gpui::ClipboardEntry::Image(image) => {
-                            Some((image.bytes().to_vec(), image.format()))
-                        }
-                        _ => None,
-                    })
-                })
-                .or_else(crate::images::clipboard_raster);
-            if let Some((bytes, format)) = raster {
-                if self.import_clipboard_image(bytes, format, cx) {
-                    return;
-                }
-            }
-            if let Some(paths) = crate::images::clipboard_file_paths() {
-                if self.import_clipboard_files(paths, cx) {
-                    return;
-                }
+            if self.paste_clipboard_image_aware(cx) {
+                return;
             }
             if let Some(item) = cx.read_from_clipboard() {
                 if let Some(text) = item.text() {
-                    if let Some(meta) = item
-                        .metadata()
-                        .and_then(|meta| serde_json::from_str::<serde_json::Value>(meta).ok())
-                        .and_then(|value| value.get("vibecodiumAttachment").cloned())
-                    {
-                        if self.copy_pasted_references(&text, Some(&meta), cx) {
-                            return;
-                        }
-                    }
                     if let Some(paths) = AppView::clipboard_image_files(&text) {
                         if self.import_image_files(paths, cx) {
                             return;

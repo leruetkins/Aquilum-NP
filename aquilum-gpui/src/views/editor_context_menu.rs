@@ -571,6 +571,21 @@ impl AppView {
         self.close_editor_context_menu(cx);
 
         match action_id.as_str() {
+            "image-copy-reference" => {
+                if let Some(line) = image_target {
+                    self.copy_image_reference(line, false, cx);
+                }
+            }
+            "image-cut" => {
+                if let Some(line) = image_target {
+                    self.copy_image_reference(line, true, cx);
+                }
+            }
+            "image-paste" => {
+                if let Some(line) = image_target {
+                    self.paste_after_image(line, cx);
+                }
+            }
             "image-copy" => {
                 if let Some(line) = image_target {
                     self.copy_image_to_clipboard(line, cx);
@@ -662,6 +677,9 @@ impl AppView {
                 }
             }
             "editor-paste" | "editor-paste-plain" => {
+                if self.paste_clipboard_image_aware(cx) {
+                    return;
+                }
                 if let Some(clipboard) = cx.read_from_clipboard() {
                     if let Some(text) = clipboard.text() {
                         self.state.active_replace_selection(&text);
