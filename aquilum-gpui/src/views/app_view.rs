@@ -307,6 +307,9 @@ pub struct AppView {
     /// measured. A handle write before that is eaten by prepaint clamping
     /// against a not-yet-measured max — and the restore is lost for good.
     pub pending_editor_restore: Option<f64>,
+    /// Image line whose inline caption editor should be scrolled into view on
+    /// the next frame (the editor sits at the bottom of a possibly tall row).
+    pub pending_caption_reveal: Option<usize>,
     /// Validate cursor visibility on the next render (the saved offset may be
     /// stale after a resize/rewrap); the reveal is a no-op when exact.
     pub need_reveal_cursor: bool,
@@ -570,6 +573,7 @@ impl AppView {
             initial_scroll_done: false,
             initial_scroll_top,
             pending_editor_restore: None,
+            pending_caption_reveal: None,
             need_reveal_cursor: false,
             layout_settle_frames: Cell::new(SCROLL_SETTLE_FRAMES),
             last_scroll_inputs: Cell::new((0.0, 0.0)),
@@ -11501,6 +11505,10 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             if this.is_resizing_any() {
                                 return;
                             }
+                            // Leaving the caption line commits what was typed.
+                            if this.caption_editor.is_some() {
+                                this.save_caption_editor(cx);
+                            }
                             // Clicking text leaves the picture mode entirely:
                             // the frame, its handles and the floating toolbar
                             // must not outlive the selection they belong to.
@@ -12113,7 +12121,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                                 let screen_y = f32::from(self.editor_rows_top_y())
                                                     - self.current_scroll_top_f64() as f32
                                                     + row_doc_top as f32
-                                                    + crate::images::BLOCK_PADDING;
+                                                    + crate::images::BLOCK_PADDING
+                                                    + crate::images::TOOLBAR_RESERVE;
                                                 editor.rect.set((
                                                     text_start_x,
                                                     screen_y,
@@ -12142,6 +12151,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                                     false,
                                                     None,
                                                     theme,
+                                                    window,
                                                     cx,
                                                 )
                                             } else {
@@ -12154,6 +12164,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                                         && self.selected_image_doc == Some(doc.id),
                                                     caption,
                                                     theme,
+                                                    window,
                                                     cx,
                                                 )
                                             }
@@ -12873,8 +12884,23 @@ impl Render for AppView {
                 let new_scroll_y = view.above_h + line_local_y + px_in_line;
                 new_active_scroll = Some(new_scroll_y);
             }
+            if let Some(line) = self.pending_caption_reveal {
+                if let Some(v_idx) = view.window.first_row_of_line(line) {
+                    let row_top =
+                        view.doc_y_of_line(doc.line_index.lines(), line);
+                    let row_h = f64::from(view.window.height_index.height_of(v_idx));
+                    let viewport_h = f64::from(f32::from(window.viewport_size().height));
+                    let row_bottom = row_top + row_h;
+                    if row_bottom > curr_scroll + viewport_h - 8.0 {
+                        new_active_scroll = Some((row_bottom - viewport_h + 8.0).max(0.0));
+                    }
+                }
+            }
         }
-        if let Some(new_scroll) = new_active_scroll {
+                if self.pending_caption_reveal.is_some() {
+            self.pending_caption_reveal = None;
+        }
+if let Some(new_scroll) = new_active_scroll {
             self.set_editor_scroll_top_f64(new_scroll);
         }
         let active_leaf_id = self.state.workspace.active_leaf;
@@ -14340,10 +14366,6 @@ impl Render for AppView {
             // ================= IN-PLACE IMAGE EDITOR =================
             .when(self.image_editor.is_some(), |d| {
                 d.child(self.render_image_editor_overlay(theme, window, cx))
-            })
-            // ================= IMAGE CAPTION POPOVER =================
-            .when(self.caption_editor.is_some(), |d| {
-                d.child(self.render_caption_editor_popover(theme, window, cx))
             })
             // ================= IMAGE COMPRESSION DIALOG =================
             .when(self.compress_dialog.is_some(), |d| {

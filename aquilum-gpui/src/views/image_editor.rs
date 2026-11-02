@@ -2264,16 +2264,13 @@ pub struct CaptionEditorState {
     pub focus: gpui::FocusHandle,
     pub position: String,
     pub numbered: bool,
-    pub x: f32,
-    pub y: f32,
+    pub position_menu_open: bool,
 }
 
 impl AppView {
     pub fn open_caption_editor_at_line(
         &mut self,
         line: usize,
-        x: f32,
-        y: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2285,15 +2282,13 @@ impl AppView {
         let Some(image) = images::resolve_for_note(&doc.path, &text, wrap_cols, false) else {
             return;
         };
-        self.open_caption_editor(line, &image, x, y, window, cx);
+        self.open_caption_editor(line, &image, window, cx);
     }
 
     pub fn open_caption_editor(
         &mut self,
         line: usize,
         image: &images::ResolvedImage,
-        x: f32,
-        y: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2305,7 +2300,9 @@ impl AppView {
             position: self.config.images.caption_position.clone(),
             numbered: self.config.images.caption_numbered,
         });
-        let focus = cx.focus_handle();
+        // The editor container listens for keys on AppView's stored handle,
+        // so the input must use that exact handle, not a fresh one.
+        let focus = self.focus_handle.clone();
         let mut input = TextInput::new(focus.clone());
         input.set_text(caption.text.clone());
         input.select_all();
@@ -2322,9 +2319,9 @@ impl AppView {
                 caption.position
             },
             numbered: caption.numbered,
-            x,
-            y,
+            position_menu_open: false,
         });
+        self.pending_caption_reveal = Some(line);
         self.select_image_line(line);
         cx.notify();
     }
@@ -2346,6 +2343,9 @@ impl AppView {
         };
         let _ = images::save_edit(&state.path, &edit);
         images::invalidate_resolved_images();
+        if let Some(view) = self.state.active_view_mut() {
+            view.visual_cache_dirty = true;
+        }
         self.clear_image_selection();
         cx.notify();
     }
@@ -2365,6 +2365,17 @@ impl AppView {
     ) {
         let key = event.keystroke.key.as_str();
         if key == "escape" {
+            if self
+                .caption_editor
+                .as_ref()
+                .is_some_and(|state| state.position_menu_open)
+            {
+                if let Some(state) = self.caption_editor.as_mut() {
+                    state.position_menu_open = false;
+                }
+                cx.notify();
+                return;
+            }
             self.cancel_caption_editor(cx);
             window.focus(&self.focus_handle);
             return;
@@ -2379,68 +2390,199 @@ impl AppView {
         }
     }
 
-    pub fn render_caption_editor_popover(
+    /// Inline caption editor: the field sits on the caption line itself.
+    /// Position and numbering controls share that line; the text is committed
+    /// on Enter or a click outside, Esc restores the saved caption.
+    pub fn render_caption_inline_editor(
         &self,
+        image: &images::ResolvedImage,
+        line: usize,
         theme: &Theme,
         window: &Window,
         cx: &Context<Self>,
     ) -> gpui::AnyElement {
-        let Some(state) = self.caption_editor.as_ref() else {
+        let Some(state) = self
+            .caption_editor
+            .as_ref()
+            .filter(|state| state.line == line && state.path == image.path)
+        else {
             return div().into_any_element();
         };
         let lang = self.config.ui.language.as_str();
-        let window_w = f32::from(window.bounds().size.width);
-        let window_h = f32::from(window.bounds().size.height);
-        let panel_w = 320.0;
-        let left = state.x.clamp(8.0, (window_w - panel_w - 8.0).max(8.0));
-        let top = (state.y + 8.0).clamp(8.0, (window_h - 180.0).max(8.0));
-        let below = state.position != "above";
-        let position_button = |label: String, selected: bool, above: bool| {
+        let above = state.position == "above";
+        let menu_open = state.position_menu_open;
+        let position_label = crate::i18n::t(
+            if above {
+                "editor.image.caption_above_image"
+            } else {
+                "editor.image.caption_below_image"
+            },
+            lang,
+        );
+
+        let option = |id: &'static str, label: String, selected: bool, is_above: bool| {
             div()
-                .id(gpui::ElementId::Name(SharedString::from(format!(
-                    "caption-pos-{}",
-                    if above { "above" } else { "below" }
-                ))))
-                .h(px(24.0))
-                .px(px(9.0))
+                .id(gpui::ElementId::Name(SharedString::from(id)))
+                .h(px(26.0))
+                .px(px(8.0))
                 .flex()
                 .items_center()
                 .rounded_sm()
-                .bg(if selected { theme.bg_selected } else { theme.bg_sidebar })
-                .border_1()
-                .border_color(if selected { theme.accent } else { theme.border })
-                .text_xs()
+                .when(selected, |d| d.bg(theme.bg_selected))
+                .text_size(px(12.0))
                 .text_color(if selected { theme.accent } else { theme.text_secondary })
                 .cursor_pointer()
+                .hover(|h| h.bg(theme.bg_hover))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         if let Some(state) = this.caption_editor.as_mut() {
-                            state.position = if above { "above".to_string() } else { "below".to_string() };
+                            state.position = if is_above { "above" } else { "below" }.to_string();
+                            state.position_menu_open = false;
                         }
                         cx.notify();
                     }),
                 )
                 .child(label)
         };
-        let panel = div()
-            .id("caption-editor-panel")
-            .absolute()
-            .left(px(left))
-            .top(px(top))
-            .w(px(panel_w))
+
+        let position_select = div()
+            .relative()
+            .w(px(132.0))
+            .h(px(34.0))
+            .flex_shrink_0()
+            .child(
+                div()
+                    .id("caption-position-select")
+                    .size_full()
+                    .px(px(8.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(4.0))
+                    .rounded_md()
+                    .bg(theme.bg_sidebar)
+                    .border_1()
+                    .border_color(theme.border)
+                    .text_size(px(12.0))
+                    .text_color(theme.text_primary)
+                    .cursor_pointer()
+                    .hover(|h| h.bg(theme.bg_hover))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            if let Some(state) = this.caption_editor.as_mut() {
+                                state.position_menu_open = !state.position_menu_open;
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .h(px(16.0))
+                            .line_height(px(15.0))
+                            .font_family("Segoe UI")
+                            .child(position_label.clone()),
+                    )
+                    .child(icons::icon(icons::ICON_CHEVRON_DOWN, 12.0, theme.text_muted)),
+            )
+            .when(menu_open, |d| {
+                d.child(
+                    div()
+                        .id("caption-position-menu")
+                        .absolute()
+                        .top(px(37.0))
+                        .left_0()
+                        .w(px(132.0))
+                        .p(px(3.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .rounded_md()
+                        .bg(theme.bg_card)
+                        .border_1()
+                        .border_color(theme.border)
+                        .child(option(
+                            "caption-pos-above",
+                            crate::i18n::t("editor.image.caption_above_image", lang),
+                            above,
+                            true,
+                        ))
+                        .child(option(
+                            "caption-pos-below",
+                            crate::i18n::t("editor.image.caption_below_image", lang),
+                            !above,
+                            false,
+                        )),
+                )
+            });
+
+        let numbered = state.numbered;
+        let numbered_toggle = div()
+            .id("caption-numbered-toggle")
+            .h(px(34.0))
             .flex()
-            .flex_col()
-            .gap(px(9.0))
-            .p(px(12.0))
-            .rounded_lg()
-            .bg(theme.bg_card)
-            .border_1()
-            .border_color(theme.border)
-            .track_focus(&state.focus)
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .flex_shrink_0()
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    if let Some(state) = this.caption_editor.as_mut() {
+                        state.numbered = !state.numbered;
+                    }
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .w(px(28.0))
+                    .h(px(16.0))
+                    .rounded_full()
+                    .bg(if numbered { theme.accent } else { theme.bg_selected })
+                    .relative()
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(2.0))
+                            .left(px(if numbered { 14.0 } else { 2.0 }))
+                            .w(px(12.0))
+                            .h(px(12.0))
+                            .rounded_full()
+                            .bg(if numbered { theme.text_on_accent } else { theme.text_muted }),
+                    ),
+            )
+            .child(
+                div()
+                    .h(px(16.0))
+                    .line_height(px(15.0))
+                    .text_size(px(12.0))
+                    .font_family("Segoe UI")
+                    .text_color(theme.text_primary)
+                    .child(crate::i18n::t("editor.image.numbered", lang)),
+            );
+
+        div()
+            .id("caption-inline-editor")
+            .w(px(image.width))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            // A little air under the line, plus room for the dropdown list.
+            .pb(px(if menu_open { 62.0 } else { 6.0 }))
             .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| {
                 cx.stop_propagation();
+            }))
+            .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                this.save_caption_editor(cx);
+                window.focus(&this.focus_handle);
             }))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 cx.stop_propagation();
@@ -2448,27 +2590,10 @@ impl AppView {
             }))
             .child(
                 div()
-                    .w_full()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(theme.text_primary)
-                            .child(crate::i18n::t("editor.image.caption_title", lang)),
-                    )
-                    .child(self.image_close_button(
-                        "caption-close-x",
-                        theme,
-                        cx.listener(|this, _, _, cx| this.cancel_caption_editor(cx)),
-                    )),
-            )
-            .child(
-                div()
-                    .h(px(28.0))
+                    .id("caption-inline-field")
+                    .h(px(34.0))
+                    .flex_1()
+                    .min_w_0()
                     .px(px(8.0))
                     .flex()
                     .items_center()
@@ -2476,119 +2601,37 @@ impl AppView {
                     .bg(theme.bg_sidebar)
                     .border_1()
                     .border_color(theme.accent)
-                    .cursor(gpui::CursorStyle::IBeam)
+                    .track_focus(&state.focus)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            cx.stop_propagation();
+                            if let Some(state) = this.caption_editor.as_ref() {
+                                window.focus(&state.focus);
+                            }
+                        }),
+                    )
                     .child(state.input.render(
-                        &crate::i18n::t("editor.image.text_placeholder", lang),
+                        &crate::i18n::t("editor.image.caption_title", lang),
                         theme,
                         window,
                         window.scale_factor(),
-                        13.0,
+                        12.0,
                         "Segoe UI",
                     )),
             )
             .child(
                 div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.text_muted)
-                            .child(crate::i18n::t("editor.image.caption_position", lang)))
-                    .child(position_button(
-                        crate::i18n::t("editor.image.above", lang),
-                        !below,
-                        true,
-                    ))
-                    .child(position_button(
-                        crate::i18n::t("editor.image.below", lang),
-                        below,
-                        false,
-                    )),
-            )
-            .child(
-                div()
-                    .id("caption-numbered")
-                    .h(px(26.0))
-                    .px(px(8.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .rounded_md()
-                    .bg(if state.numbered {
-                        theme.bg_selected
-                    } else {
-                        theme.bg_sidebar
-                    })
-                    .border_1()
-                    .border_color(if state.numbered {
-                        theme.accent
-                    } else {
-                        theme.border
-                    })
-                    .text_xs()
+                    .h(px(16.0))
+                    .line_height(px(15.0))
+                    .text_size(px(12.0))
+                    .font_family("Segoe UI")
                     .text_color(theme.text_secondary)
-                    .cursor_pointer()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            cx.stop_propagation();
-                            if let Some(state) = this.caption_editor.as_mut() {
-                                state.numbered = !state.numbered;
-                            }
-                            cx.notify();
-                        }),
-                    )
-                    .child(crate::i18n::t("editor.image.numbered", lang)),
+                    .flex_shrink_0()
+                    .child(crate::i18n::t("editor.image.caption_position", lang)),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_end()
-                    .gap(px(6.0))
-                    .child(self.editor_text_button(
-                        "caption-cancel",
-                        crate::i18n::t("editor.image.crop_cancel", lang),
-                        theme,
-                        false,
-                        cx.listener(|this, _, window, cx| {
-                            this.cancel_caption_editor(cx);
-                            window.focus(&this.focus_handle);
-                        }),
-                    ))
-                    .child(self.editor_text_button(
-                        "caption-done",
-                        crate::i18n::t("editor.image.crop_done", lang),
-                        theme,
-                        true,
-                        cx.listener(|this, _, window, cx| {
-                            this.save_caption_editor(cx);
-                            window.focus(&this.focus_handle);
-                        }),
-                    )),
-            );
-
-        div()
-            .id("caption-editor-backdrop")
-            .absolute()
-            .inset_0()
-            .child(
-                div()
-                    .id("caption-editor-backdrop-area")
-                    .absolute()
-                    .inset_0()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            this.cancel_caption_editor(cx);
-                            window.focus(&this.focus_handle);
-                        }),
-                    ),
-            )
-            .child(panel)
+            .child(position_select)
+            .child(numbered_toggle)
             .into_any_element()
     }
 }

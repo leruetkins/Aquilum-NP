@@ -630,7 +630,7 @@ impl AppView {
             }
             "image-caption" => {
                 if let Some(line) = image_target {
-                    self.open_caption_editor_at_line(line, menu_x, menu_y, _window, cx);
+                    self.open_caption_editor_at_line(line, _window, cx);
                 }
             }
             "image-compress" => {

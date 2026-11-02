@@ -1217,12 +1217,34 @@ pub fn block_height(
     let (width, height) = reference.display_size(visible, text_width(wrap_cols));
     // Captions are hidden while the full original is shown for editing; the
     // row then matches the picture exactly so the floating frame lines up.
-    let caption = if show_original { 0.0 } else { caption_height(&edit, width) };
-    Some((height + caption + BLOCK_PADDING * 2.0).max(MIN_BLOCK_HEIGHT))
+    let caption = if show_original {
+        0.0
+    } else {
+        // The caption slot is always at least as tall as the inline editor, so
+        // opening it never moves the picture or the text below.
+        let content = (caption_height(&edit, width) - 6.0).max(0.0);
+        content.max(CAPTION_SLOT_H) + 6.0
+    };
+    Some((height + caption + BLOCK_PADDING * 2.0 + TOOLBAR_RESERVE).max(MIN_BLOCK_HEIGHT))
 }
+
+/// Height of the inline caption editor content (field row + breathing room).
+pub const CAPTION_EDITOR_H: f32 = 40.0;
+/// The caption slot always reserves this much room below/above the picture, so
+/// switching between the static caption and the editor does not reflow.
+pub const CAPTION_SLOT_H: f32 = CAPTION_EDITOR_H;
 
 /// Vertical room around the image inside its row.
 pub const BLOCK_PADDING: f32 = 8.0;
+
+/// Height of the floating image action bar. Buttons must fit inside.
+pub const TOOLBAR_H: f32 = 34.0;
+/// Empty band above every picture. The bar is painted inside it, so hovering
+/// or selecting a picture never overlaps the text that precedes it.
+pub const TOOLBAR_BAND: f32 = 38.0;
+/// Band plus the flex gap between the band and the picture/caption. This is
+/// what the row height has to add to `height + caption`.
+pub const TOOLBAR_RESERVE: f32 = TOOLBAR_BAND + 6.0;
 pub const MIN_BLOCK_HEIGHT: f32 = 32.0;
 
 // The vault root and folder name are process-wide: the editor window is built

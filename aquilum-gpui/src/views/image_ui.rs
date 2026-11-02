@@ -65,7 +65,6 @@ impl ImagePopoverState {
     }
 }
 
-const TOOLBAR_H: f32 = 40.0;
 pub struct SizeDrag {
     pub line: usize,
     pub max_width: f32,
@@ -91,6 +90,7 @@ impl AppView {
         selected: bool,
         caption: Option<(String, String)>,
         theme: &Theme,
+        window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
         let radius = if image.show_original { 0.0 } else { image.radius_px() };
@@ -109,11 +109,19 @@ impl AppView {
             .unwrap_or(false);
         let normal_interaction = interactive && editing.is_none();
 
-        let (caption_above, caption_below) = match caption {
-            Some((text, position)) if position == "above" => (Some(text), None),
-            Some((text, _)) => (None, Some(text)),
-            None => (None, None),
-        };
+        let caption_editing = self
+            .caption_editor
+            .as_ref()
+            .is_some_and(|state| state.line == line_idx && state.path == image.path);
+        let caption_above_side = caption
+            .as_ref()
+            .map(|(_, position)| position == "above")
+            .unwrap_or(self.config.images.caption_position == "above");
+        let caption_text = caption.as_ref().map(|(text, _)| text.clone());
+        // Same formula as images::block_height: the slot never shrinks below
+        // the inline editor, so the layout does not jump when it opens.
+        let caption_content_h = (crate::images::caption_height(&image.edit, width) - 6.0).max(0.0);
+        let caption_slot_h = caption_content_h.max(crate::images::CAPTION_SLOT_H);
 
         let picture = if let Some(crop) = image.crop {
             match crate::image_render::cropped_display(&image.path, crop) {
@@ -139,26 +147,13 @@ impl AppView {
             .overflow_hidden()
             .flex_shrink_0()
             .when(normal_interaction, |d| d.cursor_pointer())
-            .when(normal_interaction, |d| d.on_hover(cx.listener(move |this, hovered, _, cx| {
-                if *hovered {
-                    if this.hovered_image_line != Some(hover_line) {
-                        this.hovered_image_line = Some(hover_line);
-                        this.hovered_image_doc = this.state.active_doc_id();
-                        cx.notify();
-                    }
-                } else if this.hovered_image_line == Some(hover_line)
-                    && this.selected_image_line != Some(hover_line)
-                    && this.image_popover.as_ref().map_or(true, |p| p.line != hover_line)
-                {
-                    this.hovered_image_line = None;
-                    this.hovered_image_doc = None;
-                    cx.notify();
-                }
-            })))
             .when(normal_interaction, |d| d.on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this: &mut AppView, event: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
+                    if this.caption_editor.is_some() {
+                        this.save_caption_editor(cx);
+                    }
                     if event.click_count >= 2 {
                         // Second click is the way back into the markup: place
                         // the caret on the reference line, which reveals it.
@@ -447,14 +442,82 @@ impl AppView {
         }
 
         let mut block = div()
+            .id(gpui::ElementId::Name(SharedString::from(format!(
+                "image-block-body-{}",
+                line_idx
+            ))))
             .flex()
             .flex_col()
             .items_center()
             .gap(px(6.0))
             .w(px(width))
+            .flex_shrink_0()
+            // Hover belongs to the whole block, not just the picture: moving
+            // from the picture to its floating bar crosses the gap and must
+            // not make the bar disappear under the pointer.
+            .when(normal_interaction, |d| d.on_hover(cx.listener(move |this, hovered, _, cx| {
+                if *hovered {
+                    if this.hovered_image_line != Some(hover_line) {
+                        this.hovered_image_line = Some(hover_line);
+                        this.hovered_image_doc = this.state.active_doc_id();
+                        cx.notify();
+                    }
+                } else if this.hovered_image_line == Some(hover_line)
+                    && this.selected_image_line != Some(hover_line)
+                    && this.image_popover.as_ref().map_or(true, |p| p.line != hover_line)
+                {
+                    this.hovered_image_line = None;
+                    this.hovered_image_doc = None;
+                    cx.notify();
+                }
+            })));
+        // The action bar lives in this band, not floating over the previous
+        // paragraph. The band is always reserved so hover/selection never
+        // shifts the note.
+        let mut band = div()
+            .relative()
+            .w(px(width))
+            .h(px(crate::images::TOOLBAR_BAND))
             .flex_shrink_0();
-        if let Some(text) = caption_above {
-            block = block.child(self.render_image_caption(text, width, theme));
+        if show_toolbar && editing.is_none() {
+            band = band.child(self.render_image_toolbar(image, line_idx, theme, cx));
+        }
+        block = block.child(band);
+        // A fixed-height slot holds either the static caption or the editor.
+        // Its whole area is clickable, so the hitbox is taller than one text
+        // line and the reserved room never reflows when the editor opens.
+        let mut caption_box = div()
+            .id(gpui::ElementId::Name(SharedString::from(format!(
+                "image-caption-slot-{}",
+                line_idx
+            ))))
+            .w(px(width))
+            .h(px(caption_slot_h))
+            .flex()
+            .flex_col()
+            .items_center()
+            .flex_shrink_0()
+            .when(caption_above_side, |d| d.justify_end())
+            .when(!caption_above_side, |d| d.justify_start());
+        if caption_editing {
+            caption_box = caption_box
+                .child(self.render_caption_inline_editor(image, line_idx, theme, window, cx));
+        } else if let Some(text) = caption_text.clone() {
+            let holder = image.clone();
+            caption_box = caption_box
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.open_caption_editor(line_idx, &holder, window, cx);
+                    }),
+                )
+                .child(self.render_image_caption(text, width, theme, line_idx, image, cx));
+        }
+        let mut caption_box = Some(caption_box);
+        if caption_above_side {
+            block = block.child(caption_box.take().unwrap());
         }
         let mut area = div()
             .relative()
@@ -462,9 +525,6 @@ impl AppView {
             .h(px(height))
             .flex_shrink_0()
             .child(wrapper);
-        if show_toolbar && editing.is_none() {
-            area = area.child(self.render_image_toolbar(image, line_idx, theme, cx));
-        }
         if let Some(drag) = self.size_drag.as_ref().filter(|drag| drag.line == line_idx) {
             area = area.child(
                 div()
@@ -479,14 +539,24 @@ impl AppView {
             );
         }
         block = block.child(area);
-        if let Some(text) = caption_below {
-            block = block.child(self.render_image_caption(text, width, theme));
+        if !caption_above_side {
+            block = block.child(caption_box.take().unwrap());
         }
         block.into_any_element()
     }
 
-    fn render_image_caption(&self, text: String, width: f32, theme: &Theme) -> gpui::Div {
+    fn render_image_caption(
+        &self,
+        text: String,
+        width: f32,
+        theme: &Theme,
+        line_idx: usize,
+        image: &ResolvedImage,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
+        let holder = image.clone();
         div()
+            .id(("image-caption", line_idx))
             .w(px(width))
             .flex()
             .justify_center()
@@ -494,6 +564,15 @@ impl AppView {
             .line_height(px(16.0))
             .text_center()
             .text_color(theme.text_secondary)
+            .cursor_pointer()
+            .hover(|h| h.text_color(theme.accent))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.open_caption_editor(line_idx, &holder, window, cx);
+                }),
+            )
             .child(text)
     }
 
@@ -524,7 +603,7 @@ impl AppView {
         let mut bar = div()
             .id(("image-toolbar", line_idx))
             .absolute()
-            .top(px(-(TOOLBAR_H + 6.0)))
+            .top(px(0.0))
             .right(px(0.0))
             .on_hover(cx.listener(move |this, hovered, _, cx| {
                 if *hovered && this.hovered_image_line != Some(line_idx) {
@@ -532,18 +611,21 @@ impl AppView {
                     cx.notify();
                 }
             }))
-            .h(px(TOOLBAR_H))
+            .h(px(crate::images::TOOLBAR_H))
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(12.0))
-            .px(px(12.0))
+            .gap(px(6.0))
+            .px(px(8.0))
             .rounded_lg()
             .bg(theme.bg_card)
             .border_1()
             .border_color(theme.border)
-            .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| {
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                 cx.stop_propagation();
+                if this.caption_editor.is_some() {
+                    this.save_caption_editor(cx);
+                }
             }))
             .child(self.image_tool_button(
                 "image-tool-crop",
@@ -636,11 +718,9 @@ impl AppView {
                 label("editor.image.menu_caption"),
                 true,
                 theme,
-                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
-                    let x: f32 = event.position.x.into();
-                    let y: f32 = event.position.y.into();
-                    this.open_caption_editor(holder_line, &holder_caption, x, y, window, cx);
+                    this.open_caption_editor(holder_line, &holder_caption, window, cx);
                 }),
             ));
 
@@ -722,12 +802,12 @@ impl AppView {
         };
         div()
             .id(gpui::ElementId::Name(SharedString::from(id)))
-            .h(px(30.0))
-            .px(px(8.0))
+            .h(px(26.0))
+            .px(px(7.0))
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(7.0))
+            .gap(px(6.0))
             .rounded_md()
             .when(enabled, |d| {
                 d.cursor_pointer()
@@ -738,9 +818,9 @@ impl AppView {
             .child(icons::icon(icon, 14.0, color))
             .child(
                 div()
-                    .h(px(16.0))
-                    .line_height(px(15.0))
-                    .text_size(px(11.0))
+                    .h(px(15.0))
+                    .line_height(px(14.0))
+                    .text_size(px(10.5))
                     .font_family("Segoe UI")
                     .whitespace_nowrap()
                     .text_color(color)
