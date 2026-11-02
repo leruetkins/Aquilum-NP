@@ -37,6 +37,9 @@ pub struct ImagePopoverState {
     pub path: PathBuf,
     pub reference: ImageReference,
     pub natural: (u32, u32),
+    /// Size of the shown region (after crop). Aspect ratio for the lock must
+    /// use this, not the full original.
+    pub visible: (u32, u32),
     pub wrap_cols: usize,
     pub x: f32,
     pub y: f32,
@@ -65,6 +68,41 @@ impl ImagePopoverState {
     }
 }
 
+/// Scale that makes the whole picture fit the viewer, limited by its larger
+/// side. Small pictures stay at 100% instead of being blown up.
+fn fit_scale(natural: (u32, u32), available: (f32, f32)) -> f32 {
+    let nw = natural.0.max(1) as f32;
+    let nh = natural.1.max(1) as f32;
+    (available.0 / nw)
+        .min(available.1 / nh)
+        .min(1.0)
+        .clamp(0.05, 8.0)
+}
+
+/// Resolves the reference size written from the Size popover. With the lock
+/// on, the field the user last edited drives the other dimension; editing
+/// height must therefore change width instead of being ignored.
+fn locked_display_size(
+    active: SizeField,
+    raw_width: Option<u32>,
+    raw_height: Option<u32>,
+    visible: (u32, u32),
+) -> (Option<u32>, Option<u32>) {
+    if active == SizeField::Height {
+        let ratio = if visible.1 > 0 {
+            visible.0 as f32 / visible.1 as f32
+        } else {
+            1.0
+        };
+        let width = raw_height
+            .map(|height| ((height as f32) * ratio).round().max(1.0) as u32)
+            .or(raw_width);
+        (width, None)
+    } else {
+        (raw_width, None)
+    }
+}
+
 /// Full-window preview of the original image file. `scale` is the on-screen
 /// size of one source pixel: 1.0 means the picture is shown at its natural
 /// resolution, and the wheel changes it. `pan` moves a zoomed picture around.
@@ -73,6 +111,8 @@ pub struct ImageViewerState {
     pub title: String,
     pub natural: (u32, u32),
     pub scale: f32,
+    /// Default fitted scale, restored by double-click and the `0` key.
+    pub fit: f32,
     pub pan: (f32, f32),
     pub drag: Option<(f32, f32, f32, f32)>,
 }
@@ -861,12 +901,21 @@ impl AppView {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "image".to_string());
+        // Leave room for the title bar and a small breathing margin. The
+        // larger natural side decides which direction is limiting.
+        let size = window.bounds().size;
+        let available = (
+            (f32::from(size.width) - 48.0).max(1.0),
+            (f32::from(size.height) - 88.0).max(1.0),
+        );
+        let fit = fit_scale(natural, available);
         self.image_popover = None;
         self.image_viewer = Some(ImageViewerState {
             path,
             title,
             natural,
-            scale: 1.0,
+            scale: fit,
+            fit,
             pan: (0.0, 0.0),
             drag: None,
         });
@@ -885,7 +934,7 @@ impl AppView {
             return;
         };
         if event.click_count >= 2 {
-            viewer.scale = 1.0;
+            viewer.scale = viewer.fit;
             viewer.pan = (0.0, 0.0);
             viewer.drag = None;
         } else {
@@ -939,7 +988,7 @@ impl AppView {
             "-" => self.zoom_image_viewer(1.0 / 1.1, cx),
             "0" => {
                 if let Some(viewer) = self.image_viewer.as_mut() {
-                    viewer.scale = 1.0;
+                    viewer.scale = viewer.fit;
                     viewer.pan = (0.0, 0.0);
                     cx.notify();
                 }
@@ -1848,6 +1897,7 @@ impl AppView {
             path: image.path.clone(),
             reference: image.reference.clone(),
             natural: image.natural,
+            visible: image.visible,
             wrap_cols: self.state.active_view().map(|view| view.window.wrap_cols).unwrap_or(80),
             x,
             y,
@@ -1951,7 +2001,7 @@ impl AppView {
         let raw_width = popover.width.text().trim().parse::<u32>().ok();
         let raw_height = popover.height.text().trim().parse::<u32>().ok();
         let (width, height) = if popover.lock {
-            (raw_width, None)
+            locked_display_size(popover.active, raw_width, raw_height, popover.visible)
         } else {
             (raw_width, raw_height)
         };
@@ -1990,8 +2040,8 @@ impl AppView {
         let Some(popover) = self.image_popover.as_ref() else {
             return;
         };
-        let width = ((popover.natural.0 as f32) * percent as f32 / 100.0).round().max(1.0) as u32;
-        let height = ((popover.natural.1 as f32) * percent as f32 / 100.0).round().max(1.0) as u32;
+        let width = ((popover.visible.0 as f32) * percent as f32 / 100.0).round().max(1.0) as u32;
+        let height = ((popover.visible.1 as f32) * percent as f32 / 100.0).round().max(1.0) as u32;
         if let Some(popover) = self.image_popover.as_mut() {
             popover.width.set_text(width.to_string());
             popover.height.set_text(height.to_string());
@@ -2630,5 +2680,34 @@ fn paint_annotation_paths(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn viewer_starts_fitted_by_the_larger_side() {
+        assert_eq!(fit_scale((4000, 2000), (2000.0, 1000.0)), 0.5);
+        assert_eq!(fit_scale((2000, 4000), (2000.0, 1000.0)), 0.25);
+        assert_eq!(fit_scale((800, 400), (2000.0, 1000.0)), 1.0);
+    }
+
+    #[test]
+    fn locked_size_uses_the_edited_field() {
+        let visible = (800, 400);
+        assert_eq!(
+            locked_display_size(SizeField::Width, Some(300), Some(200), visible),
+            (Some(300), None)
+        );
+        assert_eq!(
+            locked_display_size(SizeField::Height, Some(300), Some(100), visible),
+            (Some(200), None)
+        );
+        assert_eq!(
+            locked_display_size(SizeField::Height, Some(300), None, visible),
+            (Some(300), None)
+        );
     }
 }
