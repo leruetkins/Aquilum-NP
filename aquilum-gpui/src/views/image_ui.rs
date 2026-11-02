@@ -486,38 +486,48 @@ impl AppView {
         // A fixed-height slot holds either the static caption or the editor.
         // Its whole area is clickable, so the hitbox is taller than one text
         // line and the reserved room never reflows when the editor opens.
-        let mut caption_box = div()
-            .id(gpui::ElementId::Name(SharedString::from(format!(
-                "image-caption-slot-{}",
-                line_idx
-            ))))
-            .w(px(width))
-            .h(px(caption_slot_h))
-            .flex()
-            .flex_col()
-            .items_center()
-            .flex_shrink_0()
-            .when(caption_above_side, |d| d.justify_end())
-            .when(!caption_above_side, |d| d.justify_start());
-        if caption_editing {
-            caption_box = caption_box
-                .child(self.render_caption_inline_editor(image, line_idx, theme, window, cx));
-        } else if let Some(text) = caption_text.clone() {
-            let holder = image.clone();
-            caption_box = caption_box
-                .cursor_pointer()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
-                        cx.stop_propagation();
-                        this.open_caption_editor(line_idx, &holder, window, cx);
-                    }),
-                )
-                .child(self.render_image_caption(text, width, theme, line_idx, image, cx));
-        }
-        let mut caption_box = Some(caption_box);
+        let mut caption_box = if image.show_original {
+            None
+        } else {
+            let mut caption_box = div()
+                .id(gpui::ElementId::Name(SharedString::from(format!(
+                    "image-caption-slot-{}",
+                    line_idx
+                ))))
+                .w(px(width))
+                .h(px(caption_slot_h))
+                .flex()
+                .flex_col()
+                .items_center()
+                .flex_shrink_0()
+                .when(caption_above_side, |d| {
+                    d.justify_end().mb(px(crate::images::CAPTION_SEPARATION))
+                })
+                .when(!caption_above_side, |d| {
+                    d.justify_start().mt(px(crate::images::CAPTION_SEPARATION))
+                });
+            if caption_editing {
+                caption_box = caption_box
+                    .child(self.render_caption_inline_editor(image, line_idx, theme, window, cx));
+            } else if let Some(text) = caption_text.clone() {
+                let holder = image.clone();
+                caption_box = caption_box
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.open_caption_editor(line_idx, &holder, window, cx);
+                        }),
+                    )
+                    .child(self.render_image_caption(text, width, theme, line_idx, image, cx));
+            }
+            Some(caption_box)
+        };
         if caption_above_side {
-            block = block.child(caption_box.take().unwrap());
+            if let Some(caption_box) = caption_box.take() {
+                block = block.child(caption_box);
+            }
         }
         let mut area = div()
             .relative()
@@ -540,7 +550,9 @@ impl AppView {
         }
         block = block.child(area);
         if !caption_above_side {
-            block = block.child(caption_box.take().unwrap());
+            if let Some(caption_box) = caption_box.take() {
+                block = block.child(caption_box);
+            }
         }
         block.into_any_element()
     }
@@ -560,8 +572,8 @@ impl AppView {
             .w(px(width))
             .flex()
             .justify_center()
-            .text_size(px(12.0))
-            .line_height(px(16.0))
+            .text_size(px(13.0))
+            .line_height(px(18.0))
             .text_center()
             .text_color(theme.text_secondary)
             .cursor_pointer()

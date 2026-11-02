@@ -879,7 +879,7 @@ pub fn caption_height(edit: &ImageEdit, display_width: f32) -> f32 {
     let char_w = 6.2_f32;
     let per_line = (display_width.max(80.0) / char_w).floor().max(1.0);
     let lines = (caption.text.chars().count() as f32 / per_line).ceil().max(1.0);
-    lines * 16.0 + 6.0
+    lines * 18.0 + 6.0
 }
 
 // ───────────────────────────── Edit sidecar ─────────────────────────────
@@ -1223,7 +1223,7 @@ pub fn block_height(
         // The caption slot is always at least as tall as the inline editor, so
         // opening it never moves the picture or the text below.
         let content = (caption_height(&edit, width) - 6.0).max(0.0);
-        content.max(CAPTION_SLOT_H) + 6.0
+        content.max(CAPTION_SLOT_H) + 6.0 + CAPTION_SEPARATION
     };
     Some((height + caption + BLOCK_PADDING * 2.0 + TOOLBAR_RESERVE).max(MIN_BLOCK_HEIGHT))
 }
@@ -1233,6 +1233,8 @@ pub const CAPTION_EDITOR_H: f32 = 40.0;
 /// The caption slot always reserves this much room below/above the picture, so
 /// switching between the static caption and the editor does not reflow.
 pub const CAPTION_SLOT_H: f32 = CAPTION_EDITOR_H;
+/// Extra distance between the picture and its caption (on top of the flex gap).
+pub const CAPTION_SEPARATION: f32 = 4.0;
 
 /// Vertical room around the image inside its row.
 pub const BLOCK_PADDING: f32 = 8.0;
