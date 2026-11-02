@@ -441,11 +441,15 @@ impl AppView {
             wrapper = wrapper.child(self.render_crop_frame_overlay(image, line_idx, theme, cx));
         }
 
+        // Pictures are centered in the note column; the toolbar band and the
+        // caption slot share the same width, so they move together.
+        let center_margin = ((image.max_width - width) / 2.0).max(0.0);
         let mut block = div()
             .id(gpui::ElementId::Name(SharedString::from(format!(
                 "image-block-body-{}",
                 line_idx
             ))))
+            .ml(px(center_margin))
             .flex()
             .flex_col()
             .items_center()
@@ -480,7 +484,19 @@ impl AppView {
             .h(px(crate::images::TOOLBAR_BAND))
             .flex_shrink_0();
         if show_toolbar && editing.is_none() {
-            band = band.child(self.render_image_toolbar(image, line_idx, theme, cx));
+            // Center the bar on the same axis as the picture/page instead of
+            // pinning it to the picture's right edge; narrow pictures then
+            // still show a centered toolbar.
+            band = band.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(self.render_image_toolbar(image, line_idx, theme, cx)),
+            );
         }
         block = block.child(band);
         // A fixed-height slot holds either the static caption or the editor.
@@ -614,9 +630,6 @@ impl AppView {
 
         let mut bar = div()
             .id(("image-toolbar", line_idx))
-            .absolute()
-            .top(px(0.0))
-            .right(px(0.0))
             .on_hover(cx.listener(move |this, hovered, _, cx| {
                 if *hovered && this.hovered_image_line != Some(line_idx) {
                     this.hovered_image_line = Some(line_idx);
@@ -624,6 +637,7 @@ impl AppView {
                 }
             }))
             .h(px(crate::images::TOOLBAR_H))
+            .flex_shrink_0()
             .flex()
             .flex_row()
             .items_center()

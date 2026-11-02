@@ -10781,10 +10781,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     (None, None)
                 };
                 let show_image_toolbar = image_block.is_some()
-                    && ((self.hovered_image_line == Some(v.line_idx)
-                        && self.hovered_image_doc == Some(doc.id))
-                        || (self.selected_image_line == Some(v.line_idx)
-                            && self.selected_image_doc == Some(doc.id))
+                    && ((self.selected_image_line == Some(v.line_idx)
+                        && self.selected_image_doc == Some(doc.id))
                         || self.image_popover.as_ref().map_or(false, |p| p.line == v.line_idx));
                 let row_h = if grid_tbl.is_some() || image_block.is_some() {
                     height_index_arc.height_of(v_idx)
@@ -12123,8 +12121,10 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                                     + row_doc_top as f32
                                                     + crate::images::BLOCK_PADDING
                                                     + crate::images::TOOLBAR_RESERVE;
+                                                let center_margin =
+                                                    ((image.max_width - image.width) / 2.0).max(0.0);
                                                 editor.rect.set((
-                                                    text_start_x,
+                                                    text_start_x + center_margin,
                                                     screen_y,
                                                     image.width,
                                                     image.height,
