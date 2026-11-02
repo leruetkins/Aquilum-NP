@@ -117,11 +117,19 @@ pub(crate) fn load_cursor(style: CursorStyle) -> Option<HCURSOR> {
     static HAND: OnceLock<SafeCursor> = OnceLock::new();
     static SIZEWE: OnceLock<SafeCursor> = OnceLock::new();
     static SIZENS: OnceLock<SafeCursor> = OnceLock::new();
+    static SIZENWSE: OnceLock<SafeCursor> = OnceLock::new();
+    static SIZENESW: OnceLock<SafeCursor> = OnceLock::new();
     static NO: OnceLock<SafeCursor> = OnceLock::new();
     let (lock, name) = match style {
         CursorStyle::IBeam | CursorStyle::IBeamCursorForVerticalLayout => (&IBEAM, IDC_IBEAM),
         CursorStyle::Crosshair => (&CROSS, IDC_CROSS),
         CursorStyle::PointingHand | CursorStyle::DragLink => (&HAND, IDC_HAND),
+        // Since Win32 cursors represent the "up-down" axis of the shape, the
+        // NW-SE arrow (`\`) is IDC_SIZENWSE and NE-SW (`/`) is IDC_SIZENESW.
+        // Without these arms both diagonal resize styles fell back to Arrow,
+        // which made corner resize handles look non-resizable on Windows.
+        CursorStyle::ResizeUpLeftDownRight => (&SIZENWSE, IDC_SIZENWSE),
+        CursorStyle::ResizeUpRightDownLeft => (&SIZENESW, IDC_SIZENESW),
         CursorStyle::ResizeLeft
         | CursorStyle::ResizeRight
         | CursorStyle::ResizeLeftRight

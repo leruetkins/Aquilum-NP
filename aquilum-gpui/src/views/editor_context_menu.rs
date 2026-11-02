@@ -43,9 +43,11 @@ pub struct ContextMenuState {
     /// Hovered path of item indices indicating active submenus at each depth
     pub active_path: Vec<usize>,
     pub table_target: Option<(crate::table::TableBlock, usize, usize)>,
+    /// Line of the image block the menu was opened on, if any.
+    pub image_target: Option<usize>,
 }
 
-fn separator(id: &str) -> ContextMenuItem {
+pub(crate) fn separator(id: &str) -> ContextMenuItem {
     ContextMenuItem {
         id: id.to_string(),
         title: String::new(),
@@ -60,7 +62,7 @@ fn separator(id: &str) -> ContextMenuItem {
     }
 }
 
-fn item(id: &str, title: String, icon: &str, disabled: bool) -> ContextMenuItem {
+pub(crate) fn item(id: &str, title: String, icon: &str, disabled: bool) -> ContextMenuItem {
     ContextMenuItem {
         id: id.to_string(),
         title,
@@ -115,6 +117,13 @@ impl AppView {
         self.ribbon_context_menu.is_open = false;
         self.more_options_menu.is_open = false;
         self.close_tabs_popup(cx);
+        self.image_popover = None;
+
+        // Right-click on an image block gets the image menu, not the text one.
+        if let Some(line) = self.image_line_at_window_pos(y) {
+            self.open_image_context_menu(line, x, y, cx);
+            return;
+        }
 
         // If cursor is within a markdown table, open the specialized table context menu
         let cursor_table = self.state.active_view().and_then(|view| {
@@ -250,6 +259,7 @@ impl AppView {
 
         // Submenu: Insert
         let insert_items = vec![
+            item("editor-insert-image", if is_ru { "Изображение…".to_string() } else { "Image…".to_string() }, "image", false),
             item("editor-insert-callout", if is_ru { "Блок примечания (Callout)".to_string() } else { "Callout block".to_string() }, "type", false),
             item("editor-insert-codeblock", if is_ru { "Блок кода".to_string() } else { "Code block".to_string() }, "code", false),
             item("editor-insert-table", if is_ru { "Таблица".to_string() } else { "Table".to_string() }, "type", false),
@@ -359,6 +369,7 @@ impl AppView {
             items,
             active_path: Vec::new(),
             table_target: None,
+            image_target: None,
         };
 
         cx.notify();
@@ -469,6 +480,7 @@ impl AppView {
             items,
             active_path: Vec::new(),
             table_target: Some((tbl, row, col)),
+            image_target: None,
         };
 
         cx.notify();
@@ -552,10 +564,85 @@ impl AppView {
         let action_id = item.id.clone();
         let owner = item.owner_plugin.clone();
         let table_target = self.editor_context_menu.table_target.clone();
+        let image_target = self.editor_context_menu.image_target;
+        let menu_x = self.editor_context_menu.position_x;
+        let menu_y = self.editor_context_menu.position_y;
 
         self.close_editor_context_menu(cx);
 
         match action_id.as_str() {
+            "image-copy" => {
+                if let Some(line) = image_target {
+                    self.copy_image_to_clipboard(line, cx);
+                }
+            }
+            "image-copy-link" => {
+                if let Some(line) = image_target {
+                    self.copy_image_link(line, cx);
+                }
+            }
+            "image-save-as" => {
+                if let Some(line) = image_target {
+                    self.save_image_as(line, cx);
+                }
+            }
+            "image-size" => {
+                if let Some(line) = image_target {
+                    self.open_image_popover_at_line(
+                        crate::views::image_ui::ImagePopoverKind::Size,
+                        line,
+                        menu_x,
+                        menu_y,
+                        _window,
+                        cx,
+                    );
+                }
+            }
+            "image-radius" => {
+                if let Some(line) = image_target {
+                    self.open_image_popover_at_line(
+                        crate::views::image_ui::ImagePopoverKind::Radius,
+                        line,
+                        menu_x,
+                        menu_y,
+                        _window,
+                        cx,
+                    );
+                }
+            }
+            "image-crop" | "image-open-original" => {
+                if let Some(line) = image_target {
+                    self.open_image_editor_at_line(
+                        crate::views::image_editor::ImageEditorMode::Crop,
+                        line,
+                        cx,
+                    );
+                }
+            }
+            "image-annotate" => {
+                if let Some(line) = image_target {
+                    self.open_image_editor_at_line(
+                        crate::views::image_editor::ImageEditorMode::Annotate,
+                        line,
+                        cx,
+                    );
+                }
+            }
+            "image-caption" => {
+                if let Some(line) = image_target {
+                    self.open_caption_editor_at_line(line, menu_x, menu_y, _window, cx);
+                }
+            }
+            "image-compress" => {
+                if let Some(line) = image_target {
+                    self.open_compress_dialog_at_line(line, _window, cx);
+                }
+            }
+            "image-delete" => {
+                if let Some(line) = image_target {
+                    self.delete_image_at_line(line, cx);
+                }
+            }
             "editor-cut" => {
                 if let Some(text) = self.state.active_selected_text() {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
@@ -653,6 +740,9 @@ impl AppView {
             "editor-paragraph-number" => self.prefix_editor_selection("1. ", cx),
             "editor-paragraph-task" => self.prefix_editor_selection("- [ ] ", cx),
             "editor-paragraph-quote" => self.prefix_editor_selection("> ", cx),
+            "editor-insert-image" => {
+                self.open_image_file_dialog(cx);
+            }
             "editor-insert-callout" => {
                 self.state.active_replace_selection("\n> [!NOTE]\n> \n");
                 self.state.save_active_note();

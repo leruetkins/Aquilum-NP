@@ -70,6 +70,9 @@ pub fn classify(result: notify::Result<Event>, root: &Path) -> Option<FsBatch> {
                 if is_hidden(root, &path) {
                     continue;
                 }
+                if !is_note(&path) {
+                    batch.attachments_touched = true;
+                }
                 batch.deleted.push(path);
             }
         }
@@ -82,6 +85,8 @@ pub fn classify(result: notify::Result<Event>, root: &Path) -> Option<FsBatch> {
                     }
                     if is_note(&path) {
                         batch.modified.push(path);
+                    } else {
+                        batch.attachments_touched = true;
                     }
                 }
             }
@@ -97,6 +102,9 @@ pub fn classify(result: notify::Result<Event>, root: &Path) -> Option<FsBatch> {
                     } else if looks_like_folder(&to) {
                         return Some(FsBatch::rescan());
                     } else {
+                        if !is_note(&to) {
+                            batch.attachments_touched = true;
+                        }
                         batch.renamed.push((from, to));
                     }
                 }
@@ -105,6 +113,9 @@ pub fn classify(result: notify::Result<Event>, root: &Path) -> Option<FsBatch> {
                 for path in event.paths {
                     if is_hidden(root, &path) {
                         continue;
+                    }
+                    if !is_note(&path) {
+                        batch.attachments_touched = true;
                     }
                     batch.deleted.push(path);
                 }
@@ -128,6 +139,9 @@ pub fn classify(result: notify::Result<Event>, root: &Path) -> Option<FsBatch> {
                         } else if looks_like_folder(&to) {
                             return Some(FsBatch::rescan());
                         } else {
+                            if !is_note(&to) {
+                                batch.attachments_touched = true;
+                            }
                             batch.renamed.push((from, to));
                         }
                     }
@@ -142,10 +156,14 @@ pub fn classify(result: notify::Result<Event>, root: &Path) -> Option<FsBatch> {
         },
         EventKind::Modify(_) => {
             for path in event.paths {
-                if is_hidden(root, &path) || !is_note(&path) {
+                if is_hidden(root, &path) {
                     continue;
                 }
-                batch.modified.push(path);
+                if is_note(&path) {
+                    batch.modified.push(path);
+                } else {
+                    batch.attachments_touched = true;
+                }
             }
         }
         // Access/Other are filtered above; Any carries no reliable structure,
@@ -189,11 +207,13 @@ mod tests {
     }
 
     #[test]
-    fn a_write_to_a_note_is_a_modification_and_an_image_is_ignored() {
+    fn a_write_to_a_note_is_a_modification_and_an_image_touches_attachments() {
         let batch = classify(written(&["заметка.md"]), Path::new("")).unwrap();
         assert_eq!(batch.modified, vec![PathBuf::from("заметка.md")]);
 
-        assert!(classify(written(&["cover.png"]), Path::new("")).is_none());
+        let image = classify(written(&["cover.png"]), Path::new("")).unwrap();
+        assert!(image.modified.is_empty());
+        assert!(image.attachments_touched);
     }
 
     #[test]

@@ -404,18 +404,54 @@ impl Default for TemplateSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
+pub struct ImagesSettings {
+    /// Default corner radius, percent of the shorter visible side (0–50).
+    pub corner_radius: u32,
+    /// `{n}` is the figure number, `{text}` the caption text.
+    pub caption_template: String,
+    /// `below` or `above`.
+    pub caption_position: String,
+    pub caption_numbered: bool,
+    /// Open the image editor right after an import.
+    pub open_editor_after_insert: bool,
+    /// Above this size the import toast suggests compression.
+    pub large_file_mb: u32,
+    /// Attachment trash retention.
+    pub trash_days: u32,
+}
+
+impl Default for ImagesSettings {
+    fn default() -> Self {
+        Self {
+            corner_radius: 0,
+            caption_template: "Рис. {n}. {text}".to_string(),
+            caption_position: "below".to_string(),
+            caption_numbered: true,
+            open_editor_after_insert: false,
+            large_file_mb: 20,
+            trash_days: 30,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct FilesSettings {
     pub folder: String,
     pub close_deleted_tabs: bool,
     pub keep_modified_on_delete: bool,
+    /// Show the attachment folder as a regular node in the file explorer.
+    /// Off by default: the folder is storage, not a note folder.
+    pub show_attachments_folder: bool,
 }
 
 impl Default for FilesSettings {
     fn default() -> Self {
         Self {
-            folder: "Files".to_string(),
+            folder: "attachments".to_string(),
             close_deleted_tabs: true,
             keep_modified_on_delete: true,
+            show_attachments_folder: false,
         }
     }
 }
@@ -458,6 +494,7 @@ pub struct AppConfig {
     pub ui: UiSettings,
     pub templates: TemplateSettings,
     pub files: FilesSettings,
+    pub images: ImagesSettings,
     pub updates: UpdateSettings,
     pub community_plugins: CommunityPluginSettings,
 }

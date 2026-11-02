@@ -20,6 +20,9 @@ pub struct FsBatch {
     pub renamed: Vec<(PathBuf, PathBuf)>,
     pub modified: Vec<PathBuf>,
     pub rescan: bool,
+    /// A non-note file (an image attachment) was created, deleted or renamed.
+    /// The editor drops its attachment resolution caches and repaints.
+    pub attachments_touched: bool,
 }
 
 impl FsBatch {
@@ -32,6 +35,7 @@ impl FsBatch {
 
     pub fn is_empty(&self) -> bool {
         !self.rescan
+            && !self.attachments_touched
             && self.deleted.is_empty()
             && self.renamed.is_empty()
             && self.modified.is_empty()
@@ -39,6 +43,7 @@ impl FsBatch {
 
     pub fn absorb(&mut self, other: FsBatch) {
         self.rescan |= other.rescan;
+        self.attachments_touched |= other.attachments_touched;
         self.deleted.extend(other.deleted);
         self.renamed.extend(other.renamed);
         self.modified.extend(other.modified);

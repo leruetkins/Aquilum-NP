@@ -156,6 +156,9 @@ pub struct DocumentBuffer {
     /// Cheap pre-hash check: file `(len, mtime)` at load/last-write time.
     /// Unchanged stamp skips the hashing entirely.
     pub disk_stamp: Option<(u64, std::time::SystemTime)>,
+    /// Attachment names referenced by the last saved/loaded version. The save
+    /// hook diffs it to move removed attachments to the trash.
+    pub attachment_refs: std::cell::RefCell<std::collections::HashSet<String>>,
 }
 
 impl DocumentBuffer {
@@ -166,6 +169,7 @@ impl DocumentBuffer {
 
     pub fn from_rope(id: DocumentId, path: PathBuf, title: String, rope: crop::Rope, version: u64) -> Self {
         let line_index = LineIndex::new_from_rope(&rope);
+        let attachment_refs = crate::images::references_in_rope(&rope);
         Self {
             id,
             path,
@@ -181,6 +185,7 @@ impl DocumentBuffer {
             table_index: std::cell::RefCell::new(crate::table::TableIndex::new()),
             disk_hash: None,
             disk_stamp: None,
+            attachment_refs: std::cell::RefCell::new(attachment_refs),
         }
     }
 
@@ -537,6 +542,7 @@ impl DocumentBuffer {
         self.code_checkpoints = CodeCheckpoints::new();
         self.history = History::new();
         self.table_index.borrow_mut().scan_rope(self.version, &self.rope);
+        *self.attachment_refs.borrow_mut() = crate::images::references_in_rope(&self.rope);
         // The buffer now matches the disk version it was reloaded from.
         self.disk_hash = Some(crate::save_manager::hash_rope(&self.rope));
         self.disk_stamp = crate::save_manager::file_stamp(&self.path);

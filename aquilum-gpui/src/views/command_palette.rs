@@ -315,6 +315,15 @@ impl AppView {
                 }
                 self.schedule_auto_save(cx);
             }
+            "editor:insert-image" => {
+                self.open_image_file_dialog(cx);
+            }
+            "editor:unused-attachments" => {
+                self.open_unused_attachments(cx);
+            }
+            "note:export-md" => {
+                self.open_export_dialog(None, cx);
+            }
             "editor:attach-file" => {
                 if self.state.active_apply_formatting(&crate::formatting::FormattingOp::AttachFile(None)) {
                     cx.notify();

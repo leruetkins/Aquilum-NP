@@ -2584,12 +2584,18 @@ impl VisualRowHeightIndex {
         headings: Option<&crate::settings::HeadingsSettings>,
         source_mode: bool,
         table_row_info: impl Fn(usize, &str) -> Option<TableRowVisualKind>,
+        image_row_height: impl Fn(usize, &str) -> Option<f32>,
     ) -> Self {
         let mut heights = Vec::with_capacity(visual_rows.len());
 
         for v in visual_rows {
             let line_str = lines.get(v.line_idx).map(|s| s.as_ref()).unwrap_or("");
-            heights.push(visual_row_height(line_str, headings, source_mode, table_row_info(v.line_idx, line_str)));
+            // An image block owns its whole row: its height is the scaled
+            // picture height, not the text line height.
+            let height = image_row_height(v.line_idx, line_str)
+                .filter(|_| !source_mode)
+                .unwrap_or_else(|| visual_row_height(line_str, headings, source_mode, table_row_info(v.line_idx, line_str)));
+            heights.push(height);
         }
 
         Self::new(heights)
@@ -2601,7 +2607,7 @@ impl VisualRowHeightIndex {
         headings: Option<&crate::settings::HeadingsSettings>,
         source_mode: bool,
     ) -> Self {
-        Self::from_rows_with_tables(lines, visual_rows, headings, source_mode, |_, _| None)
+        Self::from_rows_with_tables(lines, visual_rows, headings, source_mode, |_, _| None, |_, _| None)
     }
 
     pub fn len(&self) -> usize {

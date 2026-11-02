@@ -77,6 +77,17 @@ fn unique_trash_destination(root: &Path, rel_path: &str) -> PathBuf {
     }
 }
 
+fn note_content(path: &Path) -> Option<String> {
+    let is_note = matches!(
+        path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase()).as_deref(),
+        Some("md") | Some("markdown") | Some("txt")
+    );
+    if !is_note {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
+}
+
 /// Ядро vault без зависимости от GPUI.
 /// Управляет файловой структурой заметки, проверкой путей и данными плагинов.
 pub struct VaultCore {
@@ -286,7 +297,17 @@ impl VaultCore {
         if !abs.exists() {
             return Err(VaultError::NotFound(rel_path.to_string()));
         }
+        let note_content = note_content(&abs);
         std::fs::remove_file(&abs).map_err(|e| VaultError::Io(e.to_string()))?;
+        if let Some(content) = note_content {
+            crate::images::trash_note_attachments(
+                &self.root,
+                &abs,
+                &content,
+                &crate::images::folder(),
+                &[abs.as_path()],
+            );
+        }
         self.invalidate_markdown_cache();
         Ok(())
     }
@@ -299,11 +320,21 @@ impl VaultCore {
         if !abs.exists() {
             return Err(VaultError::NotFound(rel_path.to_string()));
         }
+        let note_content = note_content(&abs);
         let dest = unique_trash_destination(&self.root, rel_path);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| VaultError::Io(e.to_string()))?;
         }
         std::fs::rename(&abs, &dest).map_err(|e| VaultError::Io(e.to_string()))?;
+        if let Some(content) = note_content {
+            crate::images::trash_note_attachments(
+                &self.root,
+                &abs,
+                &content,
+                &crate::images::folder(),
+                &[abs.as_path()],
+            );
+        }
         self.invalidate_markdown_cache();
         Ok(())
     }
@@ -321,7 +352,16 @@ impl VaultCore {
         if let Some(parent) = new_abs.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
+        let is_note = note_content(&old_abs).is_some();
         std::fs::rename(&old_abs, &new_abs).map_err(|e| VaultError::Io(e.to_string()))?;
+        if is_note {
+            crate::images::move_note_attachments(
+                &self.root,
+                &old_abs,
+                &new_abs,
+                &crate::images::folder(),
+            );
+        }
         self.invalidate_markdown_cache();
         Ok(new_abs)
     }

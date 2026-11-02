@@ -452,6 +452,7 @@ impl EditorWindow {
         source_mode: bool,
         initial: crate::markdown::CodeScanState,
         table_row_info: impl Fn(usize, &str) -> Option<crate::markdown::TableRowVisualKind>,
+        image_row_height: impl Fn(usize, &str) -> Option<f32>,
     ) -> Self {
         let lines_total = end_line.max(start_line);
         if lines_total == 0 || start_line >= end_line {
@@ -476,6 +477,7 @@ impl EditorWindow {
             |idx| {
                 let text = line_refs.get(idx).copied().unwrap_or("");
                 table_row_info(start_line + idx, text).is_some()
+                    || image_row_height(start_line + idx, text).is_some()
             },
         );
         let height_index = VisualRowHeightIndex::from_rows_with_tables(
@@ -484,6 +486,7 @@ impl EditorWindow {
             headings,
             source_mode,
             |idx, text| table_row_info(start_line + idx, text),
+            |idx, text| image_row_height(start_line + idx, text),
         );
         for row in &mut visual_rows {
             row.line_idx += start_line;
@@ -526,6 +529,7 @@ impl EditorWindow {
             headings,
             false,
             initial,
+            |_, _| None,
             |_, _| None,
         )
     }
@@ -814,6 +818,7 @@ mod tests {
             false,
             crate::markdown::CodeScanState::default(),
             table_kind,
+            |_, _| None,
         );
         let rows_of = |w: &EditorWindow, line: usize| w.visual_rows.iter().filter(|r| r.line_idx == line).count();
         assert_eq!(rows_of(&w, 3), 1, "a table row must never wrap");

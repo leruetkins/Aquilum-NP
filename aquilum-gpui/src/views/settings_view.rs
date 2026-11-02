@@ -2858,6 +2858,68 @@ impl SettingsView {
     }
 
     /// Renders an interactive toggle switch widget.
+    fn image_stepper(
+        &self,
+        id: &'static str,
+        value: String,
+        minus_enabled: bool,
+        plus_enabled: bool,
+        cx: &Context<Self>,
+        minus: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        plus: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+    ) -> gpui::Div {
+        let theme = &self.theme;
+        let button = |suffix: &'static str, label: &'static str, enabled: bool| {
+            let full_id = format!("{}-{}", id, suffix);
+            div()
+                .id(gpui::ElementId::Name(full_id.into()))
+                .w(px(22.0))
+                .h(px(24.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_sm()
+                .bg(theme.bg_sidebar)
+                .border_1()
+                .border_color(theme.border)
+                .text_xs()
+                .text_color(if enabled { theme.text_secondary } else { theme.text_muted })
+                .cursor_pointer()
+                .child(label)
+        };
+        let minus_button = button("minus", "-", minus_enabled).when(minus_enabled, |d| {
+            d.on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    minus(this, cx);
+                }),
+            )
+        });
+        let plus_button = button("plus", "+", plus_enabled).when(plus_enabled, |d| {
+            d.on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    plus(this, cx);
+                }),
+            )
+        });
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .child(minus_button)
+            .child(
+                div()
+                    .min_w(px(44.0))
+                    .text_xs()
+                    .text_center()
+                    .text_color(theme.text_primary)
+                    .child(value),
+            )
+            .child(plus_button)
+    }
+
     fn render_toggle_switch(&self, checked: bool) -> gpui::Div {
         let theme = &self.theme;
         let track_bg = if checked { theme.accent } else { theme.border };
@@ -4679,6 +4741,212 @@ impl SettingsView {
                     .text_xs()
                     .text_color(theme.text_primary)
                     .child(config.files.folder.clone()),
+            ),
+            self.render_setting_row(
+                &self.t("settings.files.show_attachments_folder"),
+                Some(&self.t("settings.files.show_attachments_folder_desc")),
+                div()
+                    .id("row-show-attachments-folder")
+                    .cursor_pointer()
+                    .child(self.render_toggle_switch(config.files.show_attachments_folder))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.config.files.show_attachments_folder = !this.config.files.show_attachments_folder;
+                        this.save_settings(cx);
+                        if let Some(app) = this.weak_app.upgrade() {
+                            app.update(cx, |app, cx| {
+                                app.state.reload_file_tree();
+                                cx.notify();
+                            });
+                        }
+                        cx.notify();
+                    })),
+            ),
+            self.render_setting_row(
+                &self.t("editor.image.images_radius"),
+                Some(&self.t("editor.image.images_radius_desc")),
+                self.image_stepper(
+                    "row-image-radius",
+                    format!("{}%", config.images.corner_radius),
+                    config.images.corner_radius > 0,
+                    config.images.corner_radius < 50,
+                    cx,
+                    |this, cx| {
+                        this.config.images.corner_radius =
+                            this.config.images.corner_radius.saturating_sub(1);
+                        this.save_settings(cx);
+                    },
+                    |this, cx| {
+                        this.config.images.corner_radius =
+                            (this.config.images.corner_radius + 1).min(50);
+                        this.save_settings(cx);
+                    },
+                ),
+            ),
+            self.render_setting_row(
+                &self.t("editor.image.caption_template"),
+                Some(&self.t("editor.image.caption_template_desc")),
+                {
+                    let current = config.images.caption_template.clone();
+                    div()
+                        .id("row-caption-template")
+                        .px_3()
+                        .py_1()
+                        .bg(theme.bg_sidebar)
+                        .border_1()
+                        .border_color(theme.border)
+                        .rounded_md()
+                        .text_xs()
+                        .text_color(theme.text_primary)
+                        .cursor_pointer()
+                        .child(current.clone())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            const PRESETS: [&str; 3] = ["Рис. {n}. {text}", "Fig. {n}. {text}", "{text}"];
+                            let current = this.config.images.caption_template.clone();
+                            let index = PRESETS.iter().position(|preset| *preset == current).unwrap_or(0);
+                            this.config.images.caption_template = PRESETS[(index + 1) % PRESETS.len()].to_string();
+                            this.save_settings(cx);
+                        }))
+                },
+            ),
+            self.render_setting_row(
+                &self.t("editor.image.caption_position_default"),
+                Some(&self.t("editor.image.caption_position_default_desc")),
+                {
+                    let position = config.images.caption_position.clone();
+                    let button = |id: &'static str, label: String, selected: bool, value: &'static str| {
+                        div()
+                            .id(gpui::ElementId::Name(id.into()))
+                            .h(px(24.0))
+                            .px(px(9.0))
+                            .flex()
+                            .items_center()
+                            .rounded_sm()
+                            .bg(if selected { theme.bg_selected } else { theme.bg_sidebar })
+                            .border_1()
+                            .border_color(if selected { theme.accent } else { theme.border })
+                            .text_xs()
+                            .text_color(if selected { theme.accent } else { theme.text_secondary })
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.config.images.caption_position = value.to_string();
+                                    this.save_settings(cx);
+                                }),
+                            )
+                            .child(label)
+                    };
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_1()
+                        .child(button(
+                            "row-caption-above",
+                            self.t("editor.image.above"),
+                            position == "above",
+                            "above",
+                        ))
+                        .child(button(
+                            "row-caption-below",
+                            self.t("editor.image.below"),
+                            position != "above",
+                            "below",
+                        ))
+                },
+            ),
+            self.render_setting_row(
+                &self.t("editor.image.caption_numbered_default"),
+                Some(&self.t("editor.image.caption_numbered_default_desc")),
+                div()
+                    .id("row-caption-numbered")
+                    .cursor_pointer()
+                    .child(self.render_toggle_switch(config.images.caption_numbered))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.config.images.caption_numbered = !this.config.images.caption_numbered;
+                        this.save_settings(cx);
+                    })),
+            ),
+            self.render_setting_row(
+                &self.t("editor.image.open_editor_after_insert"),
+                Some(&self.t("editor.image.open_editor_after_insert_desc")),
+                div()
+                    .id("row-open-image-editor")
+                    .cursor_pointer()
+                    .child(self.render_toggle_switch(config.images.open_editor_after_insert))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.config.images.open_editor_after_insert = !this.config.images.open_editor_after_insert;
+                        this.save_settings(cx);
+                    })),
+            ),
+            self.render_setting_row(
+                &self.t("editor.image.large_file_mb"),
+                Some(&self.t("editor.image.large_file_mb_desc")),
+                self.image_stepper(
+                    "row-large-file",
+                    format!("{} MB", config.images.large_file_mb),
+                    config.images.large_file_mb > 5,
+                    config.images.large_file_mb < 200,
+                    cx,
+                    |this, cx| {
+                        this.config.images.large_file_mb =
+                            this.config.images.large_file_mb.saturating_sub(5).max(5);
+                        this.save_settings(cx);
+                    },
+                    |this, cx| {
+                        this.config.images.large_file_mb =
+                            (this.config.images.large_file_mb + 5).min(200);
+                        this.save_settings(cx);
+                    },
+                ),
+            ),
+            self.render_setting_row(
+                &self.t("editor.image.trash_days"),
+                Some(&self.t("editor.image.trash_days_desc")),
+                self.image_stepper(
+                    "row-trash-days",
+                    format!("{}", config.images.trash_days),
+                    config.images.trash_days > 1,
+                    config.images.trash_days < 365,
+                    cx,
+                    |this, cx| {
+                        this.config.images.trash_days =
+                            this.config.images.trash_days.saturating_sub(1).max(1);
+                        this.save_settings(cx);
+                    },
+                    |this, cx| {
+                        this.config.images.trash_days =
+                            (this.config.images.trash_days + 1).min(365);
+                        this.save_settings(cx);
+                    },
+                ),
+            ),
+            self.render_setting_row(
+                &self.t("editor.image.clear_trash"),
+                Some(&self.t("editor.image.clear_trash_desc")),
+                div()
+                    .id("row-clear-image-trash")
+                    .px_3()
+                    .py_1()
+                    .bg(theme.bg_sidebar)
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded_md()
+                    .text_xs()
+                    .text_color(theme.text_primary)
+                    .cursor_pointer()
+                    .child(self.t("editor.image.clear"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(app) = this.weak_app.upgrade() {
+                            app.update(cx, |app, _| {
+                                if let Some(root) = app.state.workspace_path.clone() {
+                                    let folder = app.config.files.folder.clone();
+                                    crate::images::clear_trash(&root, &folder);
+                                    crate::images::invalidate_resolution();
+                                }
+                            });
+                        }
+                        cx.notify();
+                    })),
             ),
             self.render_setting_row(
                 &self.t("settings.files.close_deleted_tabs"),

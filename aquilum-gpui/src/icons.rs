@@ -113,6 +113,22 @@ pub const INLINE_CODE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox
 pub const CODE_BLOCK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="black" stroke="none"><path d="M20 3H4c-1.103 0-2 .897-2 2v14c0 1.103.897 2 2 2h16c1.103 0 2-.897 2-2V5c0-1.103-.897-2-2-2zM4 19V7h16l.002 12H4z"/><path d="M9.293 9.293L5.586 13l3.707 3.707l1.414-1.414L8.414 13l2.293-2.293zm5.414 0l-1.414 1.414L15.586 13l-2.293 2.293l1.414 1.414L18.414 13z"/></svg>"#;
 pub const PILCROW: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 12h1"/><path d="M18 12h1"/><path d="M20 7H9a5 5 0 0 0 0 10h4"/><path d="M19 3v18"/><path d="M15 3v18"/></svg>"#;
 
+
+pub const IMAGE_CROP: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2v9h9M2 5h9v9"/></svg>"#;
+pub const IMAGE_RESIZE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2h5v5M7 14H2V9M14 2L9 7M2 14l5-5"/></svg>"#;
+pub const IMAGE_ROUND: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 14V8a6 6 0 0 1 6-6h6"/></svg>"#;
+pub const IMAGE_COMPRESS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v5M5.5 4.5L8 7l2.5-2.5M8 14V9M5.5 11.5L8 9l2.5 2.5M2 8h12"/></svg>"#;
+pub const IMAGE_ANNOTATE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13L13 3M7 3h6v6"/></svg>"#;
+pub const IMAGE_CAPTION: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 11h12M2 14h8M5 3h6M8 3v5"/></svg>"#;
+pub const IMAGE_DELETE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10M6 4.5V3h4v1.5M4.5 4.5l.5 9h6l.5-9"/></svg>"#;
+
+pub const ICON_IMAGE_CROP: &str = "icons/image_crop.svg";
+pub const ICON_IMAGE_RESIZE: &str = "icons/image_resize.svg";
+pub const ICON_IMAGE_ROUND: &str = "icons/image_round.svg";
+pub const ICON_IMAGE_COMPRESS: &str = "icons/image_compress.svg";
+pub const ICON_IMAGE_ANNOTATE: &str = "icons/image_annotate.svg";
+pub const ICON_IMAGE_CAPTION: &str = "icons/image_caption.svg";
+pub const ICON_IMAGE_DELETE: &str = "icons/image_delete.svg";
 pub const ICON_ARROW_LEFT: &str = "icons/arrow_left.svg";
 pub const ICON_ARROW_RIGHT: &str = "icons/arrow_right.svg";
 pub const ICON_MORE_VERTICAL: &str = "icons/more_vertical.svg";
@@ -275,6 +291,13 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_CIRCLE_ALERT => Some(CIRCLE_ALERT),
             ICON_QUOTE => Some(QUOTE),
             ICON_TERMINAL => Some(TERMINAL),
+            ICON_IMAGE_CROP => Some(IMAGE_CROP),
+            ICON_IMAGE_RESIZE => Some(IMAGE_RESIZE),
+            ICON_IMAGE_ROUND => Some(IMAGE_ROUND),
+            ICON_IMAGE_COMPRESS => Some(IMAGE_COMPRESS),
+            ICON_IMAGE_ANNOTATE => Some(IMAGE_ANNOTATE),
+            ICON_IMAGE_CAPTION => Some(IMAGE_CAPTION),
+            ICON_IMAGE_DELETE => Some(IMAGE_DELETE),
             ICON_ARROW_LEFT => Some(ARROW_LEFT),
             ICON_ARROW_RIGHT => Some(ARROW_RIGHT),
             ICON_MORE_VERTICAL => Some(MORE_VERTICAL),
@@ -396,6 +419,13 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_CIRCLE_ALERT.into(),
             ICON_QUOTE.into(),
             ICON_TERMINAL.into(),
+            ICON_IMAGE_CROP.into(),
+            ICON_IMAGE_RESIZE.into(),
+            ICON_IMAGE_ROUND.into(),
+            ICON_IMAGE_COMPRESS.into(),
+            ICON_IMAGE_ANNOTATE.into(),
+            ICON_IMAGE_CAPTION.into(),
+            ICON_IMAGE_DELETE.into(),
             ICON_ARROW_LEFT.into(),
             ICON_ARROW_RIGHT.into(),
             ICON_MORE_VERTICAL.into(),
@@ -483,6 +513,7 @@ pub fn map_obsidian_icon(name: &str) -> &'static str {
         "refresh" | "reload" => ICON_REFRESH,
         "eye" | "preview" => ICON_EYE,
         "paperclip" | "attachment" => ICON_PAPERCLIP,
+        "image" | "photo" | "picture" | "gallery" => ICON_CANVAS,
         "link" => ICON_LINK,
         "external-link" => ICON_EXTERNAL_LINK,
         "copy" | "clipboard" | "clipboard-list" => ICON_COPY,

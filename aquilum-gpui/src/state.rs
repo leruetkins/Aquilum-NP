@@ -45,6 +45,9 @@ pub enum FsChangeEvent {
     /// Watcher error or removed folder: reconcile with the disk (tree reload,
     /// cache invalidation, open-path check).
     Rescan,
+    /// A non-note file (an image attachment) was deleted or renamed on disk;
+    /// the editor's attachment resolution caches must be dropped.
+    AttachmentsTouched,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2154,7 +2157,9 @@ impl AppState {
             let mut renamed: Vec<(PathBuf, PathBuf)> = Vec::new();
             let mut modified: Vec<PathBuf> = Vec::new();
             let mut rescan = false;
+            let mut attachments_touched = false;
             while let Ok(batch) = rx.try_recv() {
+                attachments_touched |= batch.attachments_touched;
                 deleted.extend(batch.deleted);
                 renamed.extend(batch.renamed);
                 modified.extend(batch.modified);
@@ -2184,6 +2189,9 @@ impl AppState {
             }
             if rescan {
                 events.push(FsChangeEvent::Rescan);
+            }
+            if attachments_touched {
+                events.push(FsChangeEvent::AttachmentsTouched);
             }
         }
 
@@ -2490,6 +2498,8 @@ impl AppState {
         self.workspace_path = Some(path.clone());
         self.session.workspace_path = Some(path.clone());
         self.vault = Some(vault);
+        crate::images::set_vault_root(Some(path.clone()));
+        crate::images::set_folder(&self.settings.get_config().files.folder);
         self.attach_fs_watcher();
         // Search worker follows the vault: relative-path base and body cache.
         self.search_worker.reset(Some(path.clone()));
@@ -2561,7 +2571,12 @@ impl AppState {
             return;
         };
         if self.fs_watcher.watched_root().as_deref() == Some(root.as_path()) {
-            return;
+            if self.fs_events_rx.is_some() {
+                return;
+            }
+            // The watcher is still alive but its receiver was replaced by a
+            // later open of the same root; restart it on the fresh channel.
+            self.fs_watcher.stop();
         }
         let (tx, rx) = std::sync::mpsc::channel();
         match self.fs_watcher.watch(&root, tx) {
@@ -2585,8 +2600,32 @@ impl AppState {
     /// The only mutation is the assignment plus the status text.
     pub fn apply_file_tree(&mut self, tree: Vec<FileNode>) {
         self.file_tree = tree;
+        crate::images::invalidate_resolution();
+        self.hide_attachment_folder_in_tree();
         self.status_text = format!("Vault: {}", self.workspace_name);
         self.sync_search_worker_files();
+    }
+
+    /// The attachments folder holds storage, not notes; by default it is not
+    /// part of the file explorer.
+    fn hide_attachment_folder_in_tree(&mut self) {
+        let config = self.settings.get_config();
+        if config.files.show_attachments_folder {
+            return;
+        }
+        let folder = config.files.folder;
+        Self::retain_without_folder(&mut self.file_tree, &folder);
+    }
+
+    fn retain_without_folder(nodes: &mut Vec<FileNode>, folder: &str) {
+        for node in nodes.iter_mut() {
+            if let FileNode::Folder { children, .. } = node {
+                Self::retain_without_folder(children, folder);
+            }
+        }
+        nodes.retain(|node| {
+            !matches!(node, FileNode::Folder { name, .. } if name.eq_ignore_ascii_case(folder))
+        });
     }
 
     /// Pushes the current scan list to the search worker (up to
@@ -2733,6 +2772,8 @@ impl AppState {
             return;
         };
         self.file_tree = Self::build_tree(ws);
+        crate::images::invalidate_resolution();
+        self.hide_attachment_folder_in_tree();
         // Every UI path that mutates the vault (create/rename/delete from the
         // sidebar, plugin operations) converges here; the plugin file list must
         // follow or plugins keep seeing the pre-mutation set.
@@ -3238,6 +3279,34 @@ impl AppState {
                     doc.disk_hash = Some(hash);
                     doc.disk_stamp = crate::save_manager::file_stamp(&doc.path);
                     doc.mark_clean();
+                    // Attachment lifecycle follows the saved text: a removed
+                    // reference goes to the trash unless another note uses it,
+                    // and a restored reference comes back from the trash.
+                    let new_refs = crate::images::references_in_rope(doc.rope());
+                    let previous = doc.attachment_refs.replace(new_refs.clone());
+                    let note_path = doc.path.clone();
+                    if let (Some(root), Some(vault_root)) = (self.workspace_path.clone(), self.workspace_path.clone()) {
+                        let _ = root;
+                        let folder = crate::images::folder();
+                        let exclude = [note_path.as_path()];
+                        for name in previous.difference(&new_refs) {
+                            crate::images::defer_removed_reference(
+                                &vault_root,
+                                &note_path,
+                                &folder,
+                                name,
+                                &exclude,
+                            );
+                        }
+                        for name in &new_refs {
+                            crate::images::restore_if_trashed(
+                                &vault_root,
+                                &note_path,
+                                &folder,
+                                name,
+                            );
+                        }
+                    }
                     if let Some(meta) = self.doc_meta.get_mut(&doc_id) {
                         meta.is_dirty = false;
                     }
@@ -3654,6 +3723,34 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attachment_folder_is_hidden_from_the_explorer_by_default() {
+        let mk_file = |name: &str| FileNode::File {
+            name: name.to_string(),
+            path: std::path::PathBuf::from(name),
+        };
+        let mut nodes = vec![
+            FileNode::Folder {
+                name: "attachments".to_string(),
+                path: std::path::PathBuf::from("attachments"),
+                children: vec![],
+            },
+            FileNode::Folder {
+                name: "Notes".to_string(),
+                path: std::path::PathBuf::from("Notes"),
+                children: vec![FileNode::Folder {
+                    name: "Attachments".to_string(),
+                    path: std::path::PathBuf::from("Notes/Attachments"),
+                    children: vec![],
+                }],
+            },
+            mk_file("Note.md"),
+        ];
+        AppState::retain_without_folder(&mut nodes, "attachments");
+        assert_eq!(nodes.len(), 2, "attachment folder nodes are removed at any depth");
+        assert!(matches!(&nodes[0], FileNode::Folder { name, .. } if name == "Notes"));
+    }
 
     #[test]
     fn empty_tab_sentinel_roundtrip() {

@@ -354,6 +354,33 @@ pub fn register_builtin_commands(registry: &CommandRegistry) {
     });
 
     registry.register(Command {
+        id: "editor:insert-image".into(),
+        name: "Insert image…".into(),
+        owner: None,
+        hotkey: None,
+        icon: Some("image".into()),
+        callback: Arc::new(|| {}),
+    });
+
+    registry.register(Command {
+        id: "editor:unused-attachments".into(),
+        name: "Find unused attachments".into(),
+        owner: None,
+        hotkey: None,
+        icon: Some("paperclip".into()),
+        callback: Arc::new(|| {}),
+    });
+
+    registry.register(Command {
+        id: "note:export-md".into(),
+        name: "Export note to Markdown zip".into(),
+        owner: None,
+        hotkey: None,
+        icon: Some("download".into()),
+        callback: Arc::new(|| {}),
+    });
+
+    registry.register(Command {
         id: "editor:attach-file".into(),
         name: "Attach file or link".into(),
         owner: None,

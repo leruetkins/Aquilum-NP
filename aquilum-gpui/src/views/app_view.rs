@@ -143,6 +143,35 @@ pub struct AppView {
     pub ctrl_held: bool,
     pub hovered_link_id: Option<String>,
     pub hovered_tag: bool,
+    /// Image block under the pointer (its line) — the hover toolbar follows it.
+    pub hovered_image_line: Option<usize>,
+    /// Image block clicked without moving the caret; keeps the toolbar open.
+    pub selected_image_line: Option<usize>,
+    /// Floating size/radius editor for the selected image.
+    pub image_popover: Option<crate::views::image_ui::ImagePopoverState>,
+    pub size_drag: Option<crate::views::image_ui::SizeDrag>,
+    /// Document the selected image line belongs to, so switching notes does
+    /// not leave a selection frame on an unrelated line.
+    pub selected_image_doc: Option<crate::document_buffer::DocumentId>,
+    pub hovered_image_doc: Option<crate::document_buffer::DocumentId>,
+    /// In-place crop/annotation editor for one image block.
+    pub image_editor: Option<crate::views::image_editor::ImageEditorState>,
+    pub caption_editor: Option<crate::views::image_editor::CaptionEditorState>,
+    pub compress_dialog: Option<crate::views::image_compress::CompressDialogState>,
+    pub export_dialog: Option<crate::views::export_dialog::ExportDialogState>,
+    pub unused_attachments: Option<crate::views::unused_attachments::UnusedAttachmentsState>,
+    /// Last painted image rectangle in window coordinates, for the editor
+    /// panels that float next to it.
+    pub image_editor_rect: Cell<Option<(f32, f32, f32, f32)>>,
+    /// Caption numbers for the current document version (figure numbering).
+    pub caption_numbers_cache: std::cell::RefCell<
+        Option<(
+            crate::document_buffer::DocumentId,
+            u64,
+            u64,
+            std::sync::Arc<std::collections::HashMap<usize, u32>>,
+        )>,
+    >,
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
     pub is_resizing_sidebar: bool,
@@ -464,6 +493,19 @@ impl AppView {
             ctrl_held: false,
             hovered_link_id: None,
             hovered_tag: false,
+            hovered_image_line: None,
+            selected_image_line: None,
+            image_popover: None,
+            size_drag: None,
+            selected_image_doc: None,
+            hovered_image_doc: None,
+            image_editor: None,
+            caption_editor: None,
+            compress_dialog: None,
+            export_dialog: None,
+            unused_attachments: None,
+            image_editor_rect: Cell::new(None),
+            caption_numbers_cache: std::cell::RefCell::new(None),
             sidebar_width,
             sidebar_collapsed: false,
             is_resizing_sidebar: false,
@@ -1315,6 +1357,7 @@ impl AppView {
         if !changes.is_empty() {
             let config = self.state.settings.get_config();
             let mut any_handled = false;
+            let mut images_touched = false;
 
             for change in changes {
                 match change {
@@ -1348,7 +1391,11 @@ impl AppView {
                             any_handled = true;
                         }
                     }
+                    crate::state::FsChangeEvent::AttachmentsTouched => {
+                        images_touched = true;
+                    }
                     crate::state::FsChangeEvent::Rescan => {
+                        images_touched = true;
                         // Reconcile against the disk: the tree reload and the
                         // vault cache reset happen inside; deletion of open
                         // notes is still debounced through the normal path by
@@ -1363,6 +1410,27 @@ impl AppView {
                         any_handled = true;
                     }
                 }
+            }
+
+            if images_touched {
+                crate::images::invalidate_resolution();
+                for view in self.state.views.values_mut() {
+                    view.visual_cache_dirty = true;
+                }
+                let word_wrap = self.word_wrap;
+                let wrap_cols = self.last_wrap_cols;
+                let headings = self.config.editor.headings.clone();
+                if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
+                    view.ensure_visual_cache_with_headings(
+                        doc,
+                        word_wrap,
+                        wrap_cols,
+                        Some(&headings),
+                        view.viewport.offset,
+                        true,
+                    );
+                }
+                cx.notify();
             }
 
             if any_handled {
@@ -1443,6 +1511,11 @@ impl AppView {
                 }
             } else if changed {
                 this.resume_cursor_blinks(cx);
+                // Reactivating the window must put the keyboard back into the
+                // editor: a deactivated window drops its focused element.
+                if window.focused(cx).is_none() {
+                    window.focus(&this.focus_handle);
+                }
             }
         });
         self.window_activation_subscription = Some(sub);
@@ -2804,7 +2877,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
     /// Asynchronously exports the active note (or note at target_path) to PDF using Typst.
     pub(crate) fn export_note_to_pdf(&mut self, target_path: Option<PathBuf>, cx: &mut Context<Self>) {
-        let (title, content, initial_dir) = if let Some(ref path) = target_path {
+        let (title, content, initial_dir, note_path) = if let Some(ref path) = target_path {
             let title = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Note".to_string());
             let content = if let Some(doc) = self.state.active_document().filter(|d| &d.path == path) {
                 doc.content().to_string()
@@ -2816,12 +2889,12 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 std::fs::read_to_string(path).unwrap_or_default()
             };
             let dir = path.parent().map(|p| p.to_path_buf());
-            (title, content, dir)
+            (title, content, dir, Some(path.clone()))
         } else if let Some(doc) = self.state.active_document() {
             let title = doc.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Note".to_string());
             let content = doc.content().to_string();
             let dir = doc.path.parent().map(|p| p.to_path_buf());
-            (title, content, dir)
+            (title, content, dir, Some(doc.path.clone()))
         } else {
             eprintln!("[PDF Export] ERROR: No active document or target path found to export.");
             return;
@@ -2841,6 +2914,10 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         }
 
         let headings_config = self.config.editor.headings.clone();
+        let vault_root = self.state.workspace_path.clone();
+        let folder = self.config.files.folder.clone();
+        let caption_template = self.config.images.caption_template.clone();
+        let default_radius = self.config.images.corner_radius as f32;
         let bg = cx.background_executor().clone();
         cx.foreground_executor().spawn(async move {
             println!("[PDF Export] Native file save dialog opened...");
@@ -2862,8 +2939,26 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
                 let title_clone = title.clone();
                 let headings_clone = headings_config.clone();
+                let images = note_path
+                    .as_deref()
+                    .map(|path| {
+                        crate::pdf_export::build_pdf_images(
+                            path,
+                            &content,
+                            vault_root.as_deref(),
+                            &folder,
+                            &caption_template,
+                            default_radius,
+                        )
+                    })
+                    .unwrap_or_default();
                 let pdf_res = bg.spawn(async move {
-                    crate::pdf_export::export_markdown_to_pdf(&title_clone, &content, Some(&headings_clone))
+                    crate::pdf_export::export_markdown_to_pdf_with_images(
+                        &title_clone,
+                        &content,
+                        Some(&headings_clone),
+                        images,
+                    )
                 }).await;
 
                 let _ = entity.update(&mut async_cx, |this, cx| {
@@ -4249,6 +4344,128 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         layout
     }
 
+    /// Figure numbers for every captioned image in the document. Rebuilt only
+    /// when the text or an `.edit.json` changes; the scan is allocation-light
+    /// and only called when a captioned image is actually on screen.
+    fn caption_numbers_for(
+        &self,
+        doc: &crate::document_buffer::DocumentBuffer,
+    ) -> std::sync::Arc<std::collections::HashMap<usize, u32>> {
+        let generation = crate::images::edit_generation();
+        if let Some((doc_id, version, cached_generation, numbers)) =
+            self.caption_numbers_cache.borrow().as_ref()
+        {
+            if *doc_id == doc.id && *version == doc.version && *cached_generation == generation {
+                return std::sync::Arc::clone(numbers);
+            }
+        }
+        let root = crate::images::vault_root();
+        let folder = crate::images::folder();
+        let mut numbers = std::collections::HashMap::new();
+        let mut current = 0u32;
+        for (line_idx, line) in doc.rope.lines().enumerate() {
+            let mut chars = line.chars().skip_while(|c| c.is_whitespace());
+            if chars.next() != Some('!') {
+                continue;
+            }
+            if chars.next() != Some('[') || chars.next() != Some('[') {
+                continue;
+            }
+            let text = line.to_string();
+            let Some(reference) = crate::images::parse_image_reference(&text) else {
+                continue;
+            };
+            let Some(path) = crate::images::resolve_attachment(
+                root.as_deref(),
+                &doc.path,
+                &folder,
+                &reference.target,
+            ) else {
+                continue;
+            };
+            let edit = crate::images::load_edit(&path);
+            let Some(caption) = edit.caption else {
+                continue;
+            };
+            if caption.text.trim().is_empty() || !caption.numbered {
+                continue;
+            }
+            current += 1;
+            numbers.insert(line_idx, current);
+        }
+        let numbers = std::sync::Arc::new(numbers);
+        *self.caption_numbers_cache.borrow_mut() =
+            Some((doc.id, doc.version, generation, std::sync::Arc::clone(&numbers)));
+        numbers
+    }
+
+    pub(crate) fn select_image_line(&mut self, line: usize) {
+        // Selecting a picture is an object selection: a leftover text
+        // selection or anchor would keep a highlight and a caret around while
+        // the picture owns the focus of attention.
+        if let Some(view) = self.state.active_view_mut() {
+            view.selection_anchor = None;
+        }
+        self.is_mouse_selecting = false;
+        self.mouse_down_pos = None;
+        self.selected_image_line = Some(line);
+        self.selected_image_doc = self.state.active_doc_id();
+    }
+
+    pub(crate) fn clear_image_selection(&mut self) {
+        self.selected_image_line = None;
+        self.selected_image_doc = None;
+    }
+
+    fn attachment_clipboard_metadata(
+        &self,
+        text: &str,
+        cut: bool,
+    ) -> Option<serde_json::Value> {
+        let trimmed = text.trim();
+        if trimmed.lines().count() != 1 {
+            return None;
+        }
+        let reference = crate::images::parse_image_reference(trimmed)?;
+        if !reference.wiki {
+            return None;
+        }
+        let doc = self.state.active_document()?;
+        let root = crate::images::vault_root();
+        crate::images::resolve_attachment(
+            root.as_deref(),
+            &doc.path,
+            &self.config.files.folder,
+            &reference.target,
+        )?;
+        Some(serde_json::json!({
+            "vibecodiumAttachment": {
+                "name": reference.target,
+                "note": doc.path.to_string_lossy(),
+                "cut": cut
+            }
+        }))
+    }
+
+    /// Line of the image block under a window-space Y, if any. Used by the
+    /// context menu, which must not move the caret just to find its target.
+    pub(crate) fn image_line_at_window_pos(&self, y: f32) -> Option<usize> {
+        let view = self.state.active_view()?;
+        if view.window.is_empty() {
+            return None;
+        }
+        let rel_y = f64::from(y) - f64::from(self.editor_rows_top_y())
+            + self.current_scroll_top_f64();
+        if rel_y < 0.0 {
+            return None;
+        }
+        let v_idx = view.local_v_idx_at_doc_y(rel_y);
+        let v = view.window.visual_rows.get(v_idx)?;
+        let text = view.window.lines.get(v.line_idx)?;
+        crate::images::parse_image_reference(text)?;
+        Some(v.line_idx)
+    }
+
     fn handle_editor_mouse_down(&mut self, click_x: f32, click_y: f32, shift: bool, alt: bool, click_count: usize, window: &Window, cx: &mut Context<Self>) {
         self.mouse_down_pos = Some((click_x, click_y));
         self.mouse_drag_started = false;
@@ -4294,6 +4511,30 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
         let v = &visual_rows[target_v_idx];
         let v_len = v.char_end.saturating_sub(v.char_start);
+
+        // An image block does not take the caret on a single click: it becomes
+        // selected (the toolbar stays) and the picture stays visible. A second
+        // click falls through to the markup-revealing path.
+        if !self.source_mode && self.edit_mode && !self.ctrl_preview_selection && click_count == 1 {
+            let is_image = view
+                .window
+                .lines
+                .get(v.line_idx)
+                .is_some_and(|text| crate::images::parse_image_reference(text).is_some());
+            if is_image {
+                self.selected_image_line = Some(v.line_idx);
+                self.selected_image_doc = Some(doc.id);
+                self.hovered_image_line = Some(v.line_idx);
+                self.hovered_image_doc = Some(doc.id);
+                self.is_mouse_selecting = false;
+                self.mouse_down_pos = None;
+                return;
+            }
+        }
+        self.selected_image_line = None;
+        self.selected_image_doc = None;
+        self.hovered_image_line = None;
+        self.hovered_image_doc = None;
 
         let (cursor_line, cursor_col) = view.line_col(doc);
         let selection_range = view.selection_range(doc.len());
@@ -5852,9 +6093,90 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         None
     }
 
-    fn handle_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn handle_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.image_editor.is_some() {
+            self.handle_image_editor_key(event, _window, cx);
+            return;
+        }
+        if self.caption_editor.is_some() {
+            self.handle_caption_editor_key(event, _window, cx);
+            return;
+        }
+        if self.compress_dialog.is_some() {
+            self.handle_compress_dialog_key(event, _window, cx);
+            return;
+        }
+        if self.export_dialog.is_some() {
+            self.handle_export_dialog_key(event, _window, cx);
+            return;
+        }
+        if self.unused_attachments.is_some() {
+            self.handle_unused_attachments_key(event, _window, cx);
+            return;
+        }
         if self.active_plugin_input.is_some() {
             self.handle_plugin_input_key(event, cx);
+            return;
+        }
+
+        // Esc closes the topmost layer: a popover, then the context menu.
+        if event.keystroke.key == "escape" && self.editor_context_menu.is_open {
+            self.close_editor_context_menu(cx);
+            return;
+        }
+
+        // The image size/radius editor owns the keyboard while it is open.
+        if self.image_popover.is_some() {
+            let key = event.keystroke.key.as_str();
+            if key == "escape" {
+                self.close_image_popover(_window, cx);
+                return;
+            }
+            let kind = self.image_popover.as_ref().map(|popover| popover.kind);
+            if key == "enter" {
+                if kind == Some(crate::views::image_ui::ImagePopoverKind::Size) {
+                    self.apply_image_size(cx);
+                }
+                self.close_image_popover(_window, cx);
+                return;
+            }
+            if kind == Some(crate::views::image_ui::ImagePopoverKind::Size) {
+                if key == "tab" {
+                    if let Some(popover) = self.image_popover.as_mut() {
+                        popover.active = match popover.active {
+                            crate::views::image_ui::SizeField::Width => crate::views::image_ui::SizeField::Height,
+                            crate::views::image_ui::SizeField::Height => crate::views::image_ui::SizeField::Width,
+                        };
+                        popover.active_input_mut().select_all();
+                        let handle = popover.active_input().focus_handle.clone();
+                        if let Some(handle) = handle {
+                            _window.focus(&handle);
+                        }
+                    }
+                    cx.notify();
+                    return;
+                }
+                if let Some(popover) = self.image_popover.as_mut() {
+                    let changed = popover.active_input_mut().handle_key_down(event, cx);
+                    let _ = changed;
+                }
+                return;
+            }
+            // Radius: arrows nudge the value, everything else is swallowed.
+            let step = if event.keystroke.modifiers.shift { 5.0 } else { 1.0 };
+            let delta = match key {
+                "left" | "down" => Some(-step),
+                "right" | "up" => Some(step),
+                _ => None,
+            };
+            if let Some(delta) = delta {
+                let current = self
+                    .image_popover
+                    .as_ref()
+                    .map(|popover| crate::images::load_edit(&popover.path).corner_radius.unwrap_or(0.0))
+                    .unwrap_or(0.0);
+                self.set_image_radius((current + delta).clamp(0.0, 50.0), cx);
+            }
             return;
         }
 
@@ -6119,6 +6441,12 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 } else {
                     text
                 };
+                if !strip_tags {
+                    if let Some(meta) = self.attachment_clipboard_metadata(&to_copy, false) {
+                        cx.write_to_clipboard(ClipboardItem::new_string_with_json_metadata(to_copy, meta));
+                        return;
+                    }
+                }
                 cx.write_to_clipboard(ClipboardItem::new_string(to_copy));
                 return;
             }
@@ -6127,7 +6455,17 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         // Ctrl + X (Вырезать)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("x") || keystroke.key == "ч" || keystroke.key == "Ч") {
             if let Some(text) = self.state.active_selected_text() {
-                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                let meta = if self.edit_mode && !self.ctrl_preview_selection {
+                    self.attachment_clipboard_metadata(&text, true)
+                } else {
+                    None
+                };
+                match meta {
+                    Some(meta) => cx.write_to_clipboard(
+                        ClipboardItem::new_string_with_json_metadata(text, meta),
+                    ),
+                    None => cx.write_to_clipboard(ClipboardItem::new_string(text)),
+                }
                 self.state.active_delete_selection();
                 cx.notify();
             }
@@ -6151,8 +6489,50 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
         // Ctrl + V (Вставить)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("v") || keystroke.key == "м" || keystroke.key == "М") {
+            // A raster on the clipboard is an image, even when the same payload
+            // also carries text (browsers, Paint). GPUI sees only its own
+            // registered PNG/GIF/JFIF formats; CF_DIB (screenshots) is read by
+            // the platform adapter instead.
+            let raster = cx
+                .read_from_clipboard()
+                .and_then(|item| {
+                    item.entries().iter().find_map(|entry| match entry {
+                        gpui::ClipboardEntry::Image(image) => {
+                            Some((image.bytes().to_vec(), image.format()))
+                        }
+                        _ => None,
+                    })
+                })
+                .or_else(crate::images::clipboard_raster);
+            if let Some((bytes, format)) = raster {
+                if self.import_clipboard_image(bytes, format, cx) {
+                    return;
+                }
+            }
+            if let Some(paths) = crate::images::clipboard_file_paths() {
+                if self.import_clipboard_files(paths, cx) {
+                    return;
+                }
+            }
             if let Some(item) = cx.read_from_clipboard() {
                 if let Some(text) = item.text() {
+                    if let Some(meta) = item
+                        .metadata()
+                        .and_then(|meta| serde_json::from_str::<serde_json::Value>(meta).ok())
+                        .and_then(|value| value.get("vibecodiumAttachment").cloned())
+                    {
+                        if self.copy_pasted_references(&text, Some(&meta), cx) {
+                            return;
+                        }
+                    }
+                    if let Some(paths) = AppView::clipboard_image_files(&text) {
+                        if self.import_image_files(paths, cx) {
+                            return;
+                        }
+                    }
+                    if text.contains("![[") && self.copy_pasted_references(&text, None, cx) {
+                        return;
+                    }
                     let text = crate::document_buffer::normalize_newlines(&text).into_owned();
                     enum PasteAction {
                         ApplyEdit(crate::table::LineEdit, Option<(usize, usize)>),
@@ -7138,6 +7518,10 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             .advance(font_id, px(14.0), 'x')
             .map(|s| f32::from(s.width))
             .unwrap_or(7.7);
+        // Image blocks are measured while a visual window is built, where the
+        // text system is not reachable. Publishing the advance keeps the height
+        // index and the painted picture the same width.
+        crate::images::set_char_width(line_char_width);
 
         let leaf_info: Vec<(crate::workspace::LeafId, crate::workspace::TabId, crate::document_buffer::DocumentId, usize)> = self
             .state
@@ -7270,6 +7654,11 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             line_text,
                             Some(headings),
                         )
+                    },
+                    |line, line_text| {
+                        let show_original = crate::images::parse_image_reference(line_text)
+                            .is_some_and(|reference| view.shows_original_image(line, &reference.target));
+                        crate::images::block_height(&doc.path, line_text, wrap_cols, show_original)
                     },
                 );
                 view.above_lines = new_window.start_line;
@@ -9247,6 +9636,10 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             .map(|s| f32::from(s.width))
             .unwrap_or(7.7);
 
+        crate::images::set_char_width(line_char_width);
+        crate::images::set_folder(&self.config.files.folder);
+        crate::images::set_default_corner_radius(self.config.images.corner_radius as f32);
+
         let pixel_scale = window.scale_factor();
         let window_h = f32::from(window.bounds().size.height);
 
@@ -9781,6 +10174,7 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
             title_box = title_box.child(title_input);
 
+            let image_drag_bg = theme.bg_hover;
             let mut editor_container = div()
                 .id(gpui::ElementId::from(("note-editor-container", lid_tag)))
                 .relative()
@@ -9801,6 +10195,36 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                             cx.stop_propagation();
                         })
                     })
+                    // Files from Explorer: import images next to the note and
+                    // insert the reference where the pointer was released.
+                    .drag_over::<std::sync::Arc<Vec<PathBuf>>>(move |style, _, _, _| {
+                        style.bg(image_drag_bg)
+                    })
+                    .on_drop::<std::sync::Arc<Vec<PathBuf>>>(
+                        cx.listener(|this, paths: &std::sync::Arc<Vec<PathBuf>>, window, cx| {
+                            let position = window.mouse_position();
+                            let x: f32 = position.x.into();
+                            let y: f32 = position.y.into();
+                            this.is_mouse_selecting = false;
+                            this.handle_editor_mouse_down(x, y, false, false, 1, window, cx);
+                            let files: Vec<PathBuf> = paths
+                                .iter()
+                                .filter(|path| crate::images::is_image_path(path))
+                                .cloned()
+                                .collect();
+                            if files.is_empty() {
+                                this.push_notification(
+                                    crate::views::notification::NotificationType::Info,
+                                    None,
+                                    crate::i18n::t("editor.image.drop_not_image", &this.config.ui.language),
+                                    Some(5000),
+                                    cx,
+                                );
+                            } else {
+                                this.import_image_files(files, cx);
+                            }
+                        }),
+                    )
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
                         if this.is_resizing_any() {
                             return;
@@ -10228,7 +10652,12 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                         sel.end > line_start && sel.start < line_end
                     }
                 });
-                let is_current = (self.edit_mode || !is_leaf_active) && (v_idx == active_v_idx);
+                // A selected picture owns the caret visual: keeping the text
+                // caret blinking next to the picture reads as two active
+                // cursors at once.
+                let is_current = self.selected_image_line.is_none()
+                    && (self.edit_mode || !is_leaf_active)
+                    && (v_idx == active_v_idx);
                 let show_current_line_highlight = is_current && !(hide_current_line_on_selection && has_selection);
                 let is_in_active_block = code_states_arc[v.line_idx]
                     .as_ref()
@@ -10315,7 +10744,45 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 // Table row heights come from the row geometry itself: a row
                 // is as tall as the wrapped lines of its tallest cell, and the
                 // height index measured exactly that.
-                let row_h = if grid_tbl.is_some() {
+                // A line holding nothing but an image reference paints the
+                // picture instead of the markup while the caret is elsewhere.
+                // Its height comes from the height index, which measured the
+                // scaled picture when the window was built.
+                let reference = crate::images::parse_image_reference(line);
+                let show_original = reference
+                    .as_ref()
+                    .is_some_and(|reference| view.shows_original_image(v.line_idx, &reference.target));
+                let editing_this = reference
+                    .as_ref()
+                    .is_some_and(|reference| self.image_editor_matches(v.line_idx, &reference.target));
+                let (image_block, broken_image) = if (!self.source_mode
+                    && !is_active_line
+                    && grid_tbl.is_none()
+                    && v.sub_idx == 0
+                    && v.is_last_sub)
+                    || editing_this
+                {
+                    match crate::images::resolve_for_note(
+                        &doc.path,
+                        line,
+                        view.window.wrap_cols,
+                        show_original,
+                    ) {
+                        Some(image) => (Some(image), None),
+                        // A reference whose file is gone stays a block: it is
+                        // shown as broken instead of silently turning into text.
+                        None => (None, reference),
+                    }
+                } else {
+                    (None, None)
+                };
+                let show_image_toolbar = image_block.is_some()
+                    && ((self.hovered_image_line == Some(v.line_idx)
+                        && self.hovered_image_doc == Some(doc.id))
+                        || (self.selected_image_line == Some(v.line_idx)
+                            && self.selected_image_doc == Some(doc.id))
+                        || self.image_popover.as_ref().map_or(false, |p| p.line == v.line_idx));
+                let row_h = if grid_tbl.is_some() || image_block.is_some() {
                     height_index_arc.height_of(v_idx)
                 } else {
                     h_metrics_row_h
@@ -10929,6 +11396,8 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     }
                 };
 
+                let row_image_target = crate::images::parse_image_reference(line)
+                    .map(|reference| reference.target);
                 let mut row_div = div()
                     .id(gpui::ElementId::Name(format!("v-row-{}-{}", lid_tag, v_idx).into()))
                     .relative()
@@ -11021,9 +11490,25 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                     row_div = row_div
                         .cursor(gpui::CursorStyle::IBeam)
                         .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            if row_image_target
+                                .as_deref()
+                                .is_some_and(|target| this.image_editor_matches(v_line_idx, target))
+                            {
+                                cx.stop_propagation();
+                                return;
+                            }
                             cx.stop_propagation();
                             if this.is_resizing_any() {
                                 return;
+                            }
+                            // Clicking text leaves the picture mode entirely:
+                            // the frame, its handles and the floating toolbar
+                            // must not outlive the selection they belong to.
+                            if row_image_target.is_none() {
+                                this.selected_image_line = None;
+                                this.selected_image_doc = None;
+                                this.hovered_image_line = None;
+                                this.hovered_image_doc = None;
                             }
                             let ctrl_held = event.modifiers.control || event.modifiers.platform;
                             this.ctrl_preview_selection = ctrl_held;
@@ -11586,7 +12071,101 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                     .when(grid_tbl.is_none(), |d| d.items_center())
                                     .when(grid_tbl.is_some(), |d| d.items_start())
                                     .whitespace_nowrap()
-                                    .child(render_live_styled_row(
+                                    .child(match image_block.as_ref() {
+                                        Some(image) => {
+                                            let editing = self.image_editor.as_ref().filter(|editor| {
+                                                editor.line == v_line_idx
+                                                    && editor.target == image.reference.target
+                                            });
+                                            let caption = if editing.is_some() {
+                                                None
+                                            } else {
+                                                image
+                                                    .edit
+                                                    .caption
+                                                    .as_ref()
+                                                    .filter(|caption| !caption.text.trim().is_empty())
+                                                    .map(|caption| {
+                                                        let position = if caption.position.is_empty() {
+                                                            self.config.images.caption_position.clone()
+                                                        } else {
+                                                            caption.position.clone()
+                                                        };
+                                                        let number = if caption.numbered {
+                                                            self.caption_numbers_for(doc)
+                                                                .get(&v_line_idx)
+                                                                .copied()
+                                                        } else {
+                                                            None
+                                                        };
+                                                        (
+                                                            crate::images::format_caption(
+                                                                &self.config.images.caption_template,
+                                                                number,
+                                                                &caption.text,
+                                                                caption.numbered,
+                                                            ),
+                                                            position,
+                                                        )
+                                                    })
+                                            };
+                                            if let Some(editor) = editing {
+                                                let screen_y = f32::from(self.editor_rows_top_y())
+                                                    - self.current_scroll_top_f64() as f32
+                                                    + row_doc_top as f32
+                                                    + crate::images::BLOCK_PADDING;
+                                                editor.rect.set((
+                                                    text_start_x,
+                                                    screen_y,
+                                                    image.width,
+                                                    image.height,
+                                                ));
+                                                editor.scale.set(
+                                                    image.width / image.visible.0.max(1) as f32,
+                                                );
+                                                let mut working = (**image).clone();
+                                                working.edit = editor.edit.clone();
+                                                working.crop = None;
+                                                working.show_original = true;
+                                                working.visible = working.natural;
+                                                let (w, h) = working.reference.display_size(
+                                                    working.natural,
+                                                    crate::images::text_width(view.window.wrap_cols),
+                                                );
+                                                working.width = w;
+                                                working.height = h;
+                                                self.render_image_block(
+                                                    &working,
+                                                    v_line_idx,
+                                                    false,
+                                                    true,
+                                                    false,
+                                                    None,
+                                                    theme,
+                                                    cx,
+                                                )
+                                            } else {
+                                                self.render_image_block(
+                                                    image,
+                                                    v_line_idx,
+                                                    show_image_toolbar && is_leaf_active,
+                                                    is_leaf_active,
+                                                    self.selected_image_line == Some(v_line_idx)
+                                                        && self.selected_image_doc == Some(doc.id),
+                                                    caption,
+                                                    theme,
+                                                    cx,
+                                                )
+                                            }
+                                        }
+                                        None if broken_image.is_some() => {
+                                            let target = broken_image
+                                                .as_ref()
+                                                .map(|reference| reference.target.as_str())
+                                                .unwrap_or("");
+                                            self.render_broken_image(target, theme)
+                                        }
+                                        None => render_live_styled_row(
                                         line,
                                         &effective_classified,
                                         v_char_start,
@@ -11617,7 +12196,9 @@ fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                                         guide_columns,
                                         callout,
                                         self.config.ui.language.as_str(),
-                                    )),
+                                    )
+                                    .into_any_element(),
+                                    }),
                             )
                             .children(tag_overlays)
                             .when(raw_btn.is_some(), |s| s.child(raw_btn.unwrap()))
@@ -13741,6 +14322,40 @@ impl Render for AppView {
             // ================= RIBBON CONTEXT MENU (Obsidian-style) =================
             .when(self.ribbon_context_menu.is_open, |d| {
                 d.child(self.render_ribbon_context_menu(theme, window, cx))
+            })
+            // ================= IMAGE SIZE / RADIUS POPOVER =================
+            .when(self.image_popover.is_some(), |d| {
+                d.child(self.render_image_popover(theme, window, cx))
+            })
+            // A resize that started on a handle must keep receiving the move
+            // and release even when the Size popover is closed.
+            .when(
+                self.size_drag.is_some()
+                    && !self
+                        .image_popover
+                        .as_ref()
+                        .is_some_and(|popover| popover.kind == crate::views::image_ui::ImagePopoverKind::Size),
+                |d| d.child(self.render_image_size_drag_capture(cx)),
+            )
+            // ================= IN-PLACE IMAGE EDITOR =================
+            .when(self.image_editor.is_some(), |d| {
+                d.child(self.render_image_editor_overlay(theme, window, cx))
+            })
+            // ================= IMAGE CAPTION POPOVER =================
+            .when(self.caption_editor.is_some(), |d| {
+                d.child(self.render_caption_editor_popover(theme, window, cx))
+            })
+            // ================= IMAGE COMPRESSION DIALOG =================
+            .when(self.compress_dialog.is_some(), |d| {
+                d.child(self.render_compress_dialog(theme, cx))
+            })
+            // ================= EXPORT MD DIALOG =================
+            .when(self.export_dialog.is_some(), |d| {
+                d.child(self.render_export_dialog(theme, cx))
+            })
+            // ================= UNUSED ATTACHMENTS =================
+            .when(self.unused_attachments.is_some(), |d| {
+                d.child(self.render_unused_attachments(theme, cx))
             })
             // ================= EDITOR CONTEXT MENU =================
             .when(self.editor_context_menu.is_open, |d| {
@@ -18064,6 +18679,7 @@ mod tests {
                     Some(crate::markdown::TableRowVisualKind::LastRow { lines: 1 })
                 }
             },
+            |_, _| None,
         );
 
         assert_eq!(height_index.height_of(0), 42.0, "header row height must be 42.0 (28.0 + 14.0 mt)");

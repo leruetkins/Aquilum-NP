@@ -331,10 +331,128 @@ fn push_typst_text(out: &mut String, text: &str, replacements: &[String]) {
 }
 
 /// Converts Markdown text into a fully styled Typst document markup.
+#[derive(Debug, Clone)]
+pub struct PdfImage {
+    /// Reference target as written in the note (`name.png`).
+    pub target: String,
+    /// Path inside the virtual Typst filesystem (`attachments/name.png`).
+    pub path: String,
+    pub bytes: Vec<u8>,
+    pub width_px: Option<u32>,
+    pub height_px: Option<u32>,
+    /// Percent of the shorter side, 0–50.
+    pub radius_pct: Option<f32>,
+    /// Fully formatted caption text (with its figure number) or `None`.
+    pub caption: Option<String>,
+    pub position: String,
+}
+
+fn preprocess_pdf_images(markdown: &str, images: &[PdfImage]) -> (String, HashMap<String, usize>) {
+    let mut by_target = HashMap::new();
+    for (index, image) in images.iter().enumerate() {
+        by_target.insert(image.target.as_str(), index);
+    }
+    let mut dest_map = HashMap::new();
+    let mut out = String::with_capacity(markdown.len() + 64);
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+        if let Some(reference) = crate::images::parse_image_reference(trimmed) {
+            if let Some(index) = by_target.get(reference.target.as_str()).copied() {
+                let image = &images[index];
+                let alt = image
+                    .caption
+                    .as_deref()
+                    .unwrap_or("")
+                    .replace(']', "")
+                    .replace('[', "");
+                let title = image
+                    .caption
+                    .as_deref()
+                    .unwrap_or("")
+                    .replace('"', "'");
+                out.push_str(&format!("![{}]({} \"{}\")", alt, image.path, title));
+                dest_map.insert(image.path.clone(), index);
+                out.push('\n');
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    (out, dest_map)
+}
+
+fn typst_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn image_to_typst(image: &PdfImage) -> String {
+    let width = match image.width_px {
+        Some(width) => format!("{:.1}pt", width as f32 * 0.75),
+        None => "80%".to_string(),
+    };
+    let inner = format!(
+        "image(\"{}\", width: {})",
+        typst_string(&image.path),
+        width
+    );
+    let inner = match image.radius_pct.filter(|radius| *radius > 0.5) {
+        Some(percent) => {
+            let display_width = image
+                .width_px
+                .map(|width| width as f32 * 0.75)
+                .unwrap_or(374.0);
+            let ratio = match (image.width_px, image.height_px) {
+                (Some(width), Some(height)) if width > 0 => height as f32 / width as f32,
+                _ => 0.75,
+            };
+            let display_height = display_width * ratio;
+            let radius = percent / 100.0 * display_width.min(display_height);
+            format!("block(clip: true, radius: {radius:.1}pt, {inner})")
+        }
+        None => inner,
+    };
+    let caption = image.caption.as_deref().unwrap_or("");
+    if !caption.is_empty() {
+        let caption = escape_typst_text(caption);
+        if image.position == "above" {
+            format!(
+                "#align(center)[#text(size: 9pt, style: \"italic\")[{caption}]]\n#block(width: 100%, align(center, {inner}))\n\n"
+            )
+        } else {
+            format!(
+                "#block(width: 100%, align(center, {inner}))\n#align(center)[#text(size: 9pt, style: \"italic\")[{caption}]]\n\n"
+            )
+        }
+    } else {
+        format!("#block(width: 100%, align(center, {inner}))\n\n")
+    }
+}
+
+pub fn markdown_to_typst_with_images(
+    title: &str,
+    markdown: &str,
+    headings: Option<&crate::settings::HeadingsSettings>,
+    images: &[PdfImage],
+) -> String {
+    let (markdown, by_dest) = preprocess_pdf_images(markdown, images);
+    markdown_to_typst_inner(title, &markdown, headings, images, &by_dest)
+}
+
 pub fn markdown_to_typst(
     title: &str,
     markdown: &str,
     headings: Option<&crate::settings::HeadingsSettings>,
+) -> String {
+    markdown_to_typst_inner(title, markdown, headings, &[], &HashMap::new())
+}
+
+fn markdown_to_typst_inner(
+    title: &str,
+    markdown: &str,
+    headings: Option<&crate::settings::HeadingsSettings>,
+    images: &[PdfImage],
+    by_dest: &HashMap<String, usize>,
 ) -> String {
     let (preprocessed, replacements) = preprocess_markdown(markdown);
 
@@ -383,6 +501,15 @@ pub fn markdown_to_typst(
     let mut out = String::new();
 
     // Typst document configuration & styling
+    if !images.is_empty() {
+        out.push_str(
+            r##"
+#set figure(supplement: [Рис.])
+#set figure.caption(separator: [. ])
+#show figure.caption: set text(size: 9pt, style: "italic")
+"##,
+        );
+    }
     out.push_str(&format!(
         r##"
 #set page(
@@ -559,6 +686,7 @@ pub fn markdown_to_typst(
     let mut code_block_content = String::new();
     let mut list_stack: Vec<bool> = Vec::new(); // true = ordered (numbered), false = unordered (bullet)
 
+    let mut in_image = false;
     for event in parser {
         match event {
             Event::Start(Tag::Paragraph) => {
@@ -755,7 +883,9 @@ pub fn markdown_to_typst(
                 out.push_str(marker);
             }
             Event::Text(txt) => {
-                if in_code_block {
+                if in_image {
+                    // Alt text belongs to the image's caption, not the body.
+                } else if in_code_block {
                     code_block_content.push_str(&txt);
                 } else if let Some(ref mut ts) = table_state {
                     push_typst_text(&mut ts.current_cell, &txt, &replacements);
@@ -805,6 +935,17 @@ pub fn markdown_to_typst(
             Event::FootnoteReference(name) => {
                 out.push_str(&format!("#super[{}]", escape_typst_text(&name)));
             }
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                in_image = true;
+                if let Some(index) = by_dest.get(dest_url.as_ref()) {
+                    out.push_str(&image_to_typst(&images[*index]));
+                } else {
+                    out.push_str(&format!("\"{}\"", escape_typst_text(&dest_url)));
+                }
+            }
+            Event::End(TagEnd::Image) => {
+                in_image = false;
+            }
             _ => {}
         }
     }
@@ -814,7 +955,20 @@ pub fn markdown_to_typst(
 
 /// Compile a raw Typst document string into PDF bytes.
 pub fn compile_typst_to_pdf(typst_source: &str) -> Result<Vec<u8>, String> {
-    let world = MemoryWorld::new(typst_source.to_string());
+    compile_typst_to_pdf_with_files(typst_source, &[])
+}
+
+fn compile_typst_to_pdf_with_files(
+    typst_source: &str,
+    files: &[(String, Vec<u8>)],
+) -> Result<Vec<u8>, String> {
+    let mut world = MemoryWorld::new(typst_source.to_string());
+    for (path, bytes) in files {
+        if let Ok(vpath) = VirtualPath::new(path) {
+            let id = FileId::new(RootedPath::new(VirtualRoot::Project, vpath));
+            world.files.insert(id, Bytes::new(bytes.clone()));
+        }
+    }
     let warned = typst::compile::<PagedDocument>(&world);
     let document = warned.output.map_err(|diagnostics| {
         let mut msg = String::new();
@@ -852,6 +1006,129 @@ pub fn export_markdown_to_pdf(
             Err(err)
         }
     }
+}
+
+/// Collects every image reference in the note, bakes crop/annotations into
+/// PNG copies, and formats captions with the same numbering as the editor.
+pub fn build_pdf_images(
+    note_path: &std::path::Path,
+    content: &str,
+    vault_root: Option<&std::path::Path>,
+    folder: &str,
+    caption_template: &str,
+    default_radius: f32,
+) -> Vec<PdfImage> {
+    let mut images: Vec<PdfImage> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut number = 0u32;
+    for line in content.lines() {
+        let Some(reference) = crate::images::parse_image_reference(line.trim()) else {
+            continue;
+        };
+        if !seen.insert(reference.target.clone()) {
+            continue;
+        }
+        let Some(path) = crate::images::resolve_attachment(
+            vault_root,
+            note_path,
+            folder,
+            &reference.target,
+        ) else {
+            continue;
+        };
+        if !crate::images::is_image_path(&path) {
+            continue;
+        }
+        let edit = crate::images::load_edit(&path);
+        let caption = edit.caption.clone().filter(|caption| !caption.text.trim().is_empty());
+        let formatted_caption = caption.as_ref().map(|caption| {
+            if caption.numbered {
+                number += 1;
+                crate::images::format_caption(
+                    caption_template,
+                    Some(number),
+                    &caption.text,
+                    true,
+                )
+            } else {
+                crate::images::format_caption(caption_template, None, &caption.text, false)
+            }
+        });
+        let position = caption
+            .as_ref()
+            .map(|caption| {
+                if caption.position.is_empty() {
+                    "below".to_string()
+                } else {
+                    caption.position.clone()
+                }
+            })
+            .unwrap_or_else(|| "below".to_string());
+        let radius = edit
+            .corner_radius
+            .unwrap_or(default_radius)
+            .clamp(0.0, 50.0);
+        let needs_bake = edit.crop.is_some() || !edit.annotations.is_empty();
+        let (archive_name, bytes) = if needs_bake {
+            let options = crate::image_render::BakeOptions {
+                apply_crop: true,
+                apply_corner_radius: false,
+                caption: None,
+                caption_background: None,
+            };
+            let baked = match crate::image_render::bake_rgba(&path, &edit, &options) {
+                Ok(baked) => baked,
+                Err(_) => continue,
+            };
+            let stem = path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let name = format!("{stem}.png");
+            match crate::image_render::encode_rgba(
+                &baked,
+                crate::image_render::EncodedFormat::Png,
+                92,
+            ) {
+                Ok(bytes) => (name, bytes),
+                Err(_) => continue,
+            }
+        } else {
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| reference.target.clone());
+            match std::fs::read(&path) {
+                Ok(bytes) => (name, bytes),
+                Err(_) => continue,
+            }
+        };
+        images.push(PdfImage {
+            target: reference.target,
+            path: format!("attachments/{archive_name}"),
+            bytes,
+            width_px: reference.width,
+            height_px: reference.height,
+            radius_pct: (radius > 0.5).then_some(radius),
+            caption: formatted_caption,
+            position,
+        });
+    }
+    images
+}
+
+pub fn export_markdown_to_pdf_with_images(
+    title: &str,
+    markdown: &str,
+    headings: Option<&crate::settings::HeadingsSettings>,
+    images: Vec<PdfImage>,
+) -> Result<Vec<u8>, String> {
+    let markup = markdown_to_typst_with_images(title, markdown, headings, &images);
+    let files: Vec<(String, Vec<u8>)> = images
+        .iter()
+        .map(|image| (image.path.clone(), image.bytes.clone()))
+        .collect();
+    compile_typst_to_pdf_with_files(&markup, &files)
 }
 
 #[cfg(test)]
@@ -944,6 +1221,30 @@ mod tests {
 "##;
         let res = compile_typst_to_pdf(typst_markup);
         assert!(res.is_ok(), "Typst compile failed: {:?}", res.err());
+    }
+
+    #[test]
+    fn an_image_reference_becomes_a_typst_image_block() {
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(8, 4, image::Rgba([20, 40, 60, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let images = vec![PdfImage {
+            target: "a.png".to_string(),
+            path: "attachments/a.png".to_string(),
+            bytes: png,
+            width_px: None,
+            height_px: None,
+            radius_pct: Some(10.0),
+            caption: Some("Рис. 1. Схема".to_string()),
+            position: "below".to_string(),
+        }];
+        let markup = markdown_to_typst_with_images("Note", "![[a.png]]", None, &images);
+        assert!(markup.contains("block(clip: true, radius:"));
+        assert!(markup.contains("attachments/a.png"));
+        assert!(markup.contains("Рис. 1. Схема"));
+        let pdf = export_markdown_to_pdf_with_images("Note", "![[a.png]]", None, images);
+        assert!(pdf.is_ok(), "Err: {:?}", pdf.err());
     }
 
     #[test]

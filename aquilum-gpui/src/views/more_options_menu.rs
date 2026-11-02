@@ -680,6 +680,25 @@ impl AppView {
                         theme,
                         cx,
                     ))
+                    // 12b. Экспорт MD в zip
+                    .child(self.render_more_options_item(
+                        11,
+                        "more-item-export-md",
+                        icons::ICON_DOWNLOAD,
+                        if is_ru { "Экспорт MD в zip".to_string() } else { "Export MD to zip".to_string() },
+                        false,
+                        false,
+                        ActiveSubmenu::None,
+                        {
+                            let p = target_path.clone();
+                            Box::new(move |this, _, cx| {
+                                this.close_more_options_menu(cx);
+                                this.open_export_dialog(p.clone(), cx);
+                            })
+                        },
+                        theme,
+                        cx,
+                    ))
                     // Divider 3
                     .child(self.render_menu_divider(theme))
                     // --- GROUP 4: SEARCH & REPLACE ---
@@ -974,6 +993,22 @@ impl AppView {
                                 }
                             })
                         },
+                        theme,
+                        cx,
+                    ))
+                    // 26. Неиспользуемые вложения
+                    .child(self.render_more_options_item(
+                        25,
+                        "more-item-unused-attachments",
+                        icons::ICON_PAPERCLIP,
+                        if is_ru { "Неиспользуемые вложения".to_string() } else { "Unused attachments".to_string() },
+                        false,
+                        false,
+                        ActiveSubmenu::None,
+                        Box::new(|this, _, cx| {
+                            this.close_more_options_menu(cx);
+                            this.open_unused_attachments(cx);
+                        }),
                         theme,
                         cx,
                     )),

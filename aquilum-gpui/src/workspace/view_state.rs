@@ -295,6 +295,10 @@ pub struct TabSession {
     /// Line whose markdown is fully revealed by Alt+click. Only honoured while the caret
     /// stays on that line; clicking another line or Escape clears it.
     pub reveal_all_line: Option<usize>,
+    /// Image block temporarily expanded to the whole original (crop editing or
+    /// "Show original"). Stored with the target name so a line move does not
+    /// apply it to another picture.
+    pub image_show_original: Option<(usize, String)>,
     pub cache: ViewCache,
 }
 
@@ -333,6 +337,7 @@ impl TabSession {
             title_input: None,
             measured_viewport_h: None,
             reveal_all_line: None,
+            image_show_original: None,
             cache: ViewCache::default(),
         }
     }
@@ -352,6 +357,19 @@ impl TabSession {
 
     pub fn cancel_title_edit(&mut self) {
         self.title_input = None;
+    }
+
+    pub fn shows_original_image(&self, line: usize, target: &str) -> bool {
+        self.image_show_original
+            .as_ref()
+            .is_some_and(|(shown_line, shown_target)| *shown_line == line && shown_target == target)
+    }
+
+    pub fn set_image_show_original(&mut self, value: Option<(usize, String)>) {
+        if self.image_show_original != value {
+            self.image_show_original = value;
+            self.cache.visual_cache_dirty = true;
+        }
     }
 
     #[inline]
@@ -901,6 +919,19 @@ impl TabSession {
             return false;
         }
 
+        // An image block's height is the picture height, which the in-place
+        // update cannot measure (it has no note path or window width). A line
+        // that is or becomes an image reference takes the full rebuild.
+        let old_is_image = self
+            .window
+            .lines
+            .get(edit_line)
+            .is_some_and(|text| crate::images::parse_image_reference(text).is_some());
+        let new_is_image = crate::images::parse_image_reference(&doc.line_text(edit_line)).is_some();
+        if old_is_image || new_is_image {
+            return false;
+        }
+
         // The guard above proved the line is in no table block, so its kind is
         // `None`; `update_single_line` only asks for the edited line. The
         // closure must not capture `self` (it is passed into a
@@ -1228,6 +1259,14 @@ impl TabSession {
                     line_text,
                     headings,
                 )
+            },
+            |line, line_text| {
+                if self.source_mode {
+                    return None;
+                }
+                let show_original = crate::images::parse_image_reference(line_text)
+                    .is_some_and(|reference| self.shows_original_image(line, &reference.target));
+                crate::images::block_height(&doc.path, line_text, wrap_cols, show_original)
             },
         );
 
