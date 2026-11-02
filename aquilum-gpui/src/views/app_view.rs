@@ -1162,13 +1162,18 @@ impl AppView {
                         }
                     }
                     if let Some((note_path, previous)) = reconcile {
-                        crate::images::reconcile_saved_references(
-                            this.state.workspace_path.as_deref(),
-                            &note_path,
-                            &crate::images::folder(),
-                            &previous,
-                            &saved_refs,
-                        );
+                        let ws = this.state.workspace_path.clone();
+                        let folder = crate::images::folder();
+                        let current = saved_refs.clone();
+                        background.spawn(async move {
+                            crate::images::reconcile_saved_references(
+                                ws.as_deref(),
+                                &note_path,
+                                &folder,
+                                &previous,
+                                &current,
+                            );
+                        }).detach();
                     }
                     if let Some((notif_type, title, msg, duration)) = notif_to_push {
                         this.push_notification(notif_type, title, msg, Some(duration), cx);

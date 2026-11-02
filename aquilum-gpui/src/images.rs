@@ -1531,6 +1531,42 @@ mod tests {
         assert!(edit_path(&target).is_file());
         assert!(!source.exists());
     }
+
+    #[test]
+    fn referenced_elsewhere_streams_files_and_ignores_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let note1 = root.join("Note1.md");
+        let note2 = root.join("Note2.md");
+        let huge = root.join("Huge.md");
+
+        std::fs::write(&note1, "# Title\nSome text\n![[Target.PNG]]\nMore text").unwrap();
+        std::fs::write(&note2, "# Other\n![[other.png]]").unwrap();
+
+        // Simulate a large file (> 256KB) filled with filler lines to ensure
+        // buffer boundary traversal works properly and does not read whole files.
+        let mut filler = String::with_capacity(300 * 1024);
+        for i in 0..10_000 {
+            filler.push_str("ordinary line of text without any image references\n");
+            if i == 5000 {
+                filler.push_str("![[shared.png]]\n");
+            }
+        }
+        std::fs::write(&huge, &filler).unwrap();
+
+        // 1. Found in Note1 (case-insensitive)
+        assert!(referenced_elsewhere(root, "target.png", &[]));
+        assert!(referenced_elsewhere(root, "Target.PNG", &[]));
+
+        // 2. Excluded note is skipped
+        assert!(!referenced_elsewhere(root, "target.png", &[&note1]));
+
+        // 3. Found deep inside a large file across chunks
+        assert!(referenced_elsewhere(root, "shared.png", &[]));
+
+        // 4. Non-existent reference is not found
+        assert!(!referenced_elsewhere(root, "nonexistent.png", &[]));
+    }
 }
 
 // ─────────────────────── Platform clipboard ───────────────────────
@@ -2013,9 +2049,146 @@ fn walk_markdown(root: &Path, dir: &Path, depth: usize, out: &mut Vec<PathBuf>) 
         if path.is_dir() {
             walk_markdown(root, &path, depth + 1, out);
         } else if path.starts_with(root) && is_note_file(&path) {
-            out.push(path);
+            // Skip binary/oversized files (> 50 MB, matching vault.rs BINARY_LIMIT).
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            if size <= 50 * 1024 * 1024 {
+                out.push(path);
+            }
         }
     }
+}
+
+fn is_image_reference_at(buf: &[u8], pos: usize, needle_len: usize) -> bool {
+    // 1. Boundary check: character immediately preceding needle cannot be part of the filename
+    if pos > 0 {
+        let prev = buf[pos - 1];
+        if prev.is_ascii_alphanumeric() || prev == b'_' || prev == b'-' || prev == b'.' {
+            return false;
+        }
+    }
+    // 2. Boundary check: character immediately following needle cannot be part of the filename
+    let end_pos = pos + needle_len;
+    if end_pos < buf.len() {
+        let next = buf[end_pos];
+        if next.is_ascii_alphanumeric() || next == b'_' || next == b'-' || next == b'.' {
+            return false;
+        }
+    }
+
+    // 3. Look backwards up to 1024 bytes for `![` on the same line
+    let lookback_start = pos.saturating_sub(1024);
+    let prefix = &buf[lookback_start..pos];
+    let Some(bang_bracket_idx) = memchr::memmem::rfind(prefix, b"![") else {
+        return false;
+    };
+    let between = &prefix[bang_bracket_idx + 2..];
+    // No newlines allowed between `![` and the reference name
+    if memchr::memchr(b'\n', between).is_some() || memchr::memchr(b'\r', between).is_some() {
+        return false;
+    }
+
+    // 4. Look forwards up to 512 bytes on the same line for closing `]` or `)`
+    let lookahead_end = (end_pos + 512).min(buf.len());
+    let suffix = &buf[end_pos..lookahead_end];
+    let suffix = if let Some(newline_idx) = memchr::memchr(b'\n', suffix) {
+        &suffix[..newline_idx]
+    } else {
+        suffix
+    };
+
+    suffix.contains(&b']') || suffix.contains(&b')')
+}
+
+/// Checks whether a single markdown file references `name`, without loading
+/// the whole file into memory, using streaming SIMD scanning.
+pub fn note_references_attachment(path: &Path, name: &str) -> bool {
+    let needle = name.as_bytes();
+    if needle.is_empty() {
+        return false;
+    }
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+
+    let mut needle_lower = needle.to_vec();
+    needle_lower.make_ascii_lowercase();
+    let finder = memchr::memmem::Finder::new(&needle_lower);
+
+    let mut buf = [0u8; 64 * 1024];
+    let mut lower_buf = [0u8; 64 * 1024];
+    let min_overlap = 2048.max(needle.len() + 64);
+    if min_overlap >= buf.len() {
+        return false;
+    }
+    let mut overlap = 0;
+
+    loop {
+        let read = match std::io::Read::read(&mut file, &mut buf[overlap..]) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        let valid = overlap + read;
+        if valid >= needle.len() {
+            // An attachment in a note is always referenced via `![` (markdown or wikilink).
+            // If the buffer does not even contain `![`, it cannot contain any image references.
+            if memchr::memmem::find(&buf[..valid], b"![").is_some() {
+                lower_buf[..valid].copy_from_slice(&buf[..valid]);
+                lower_buf[..valid].make_ascii_lowercase();
+
+                let mut search_from = 0;
+                while search_from + needle.len() <= valid {
+                    if let Some(rel_pos) = finder.find(&lower_buf[search_from..valid]) {
+                        let pos = search_from + rel_pos;
+                        if is_image_reference_at(&lower_buf[..valid], pos, needle.len()) {
+                            return true;
+                        }
+                        search_from = pos + 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            overlap = min_overlap.min(valid);
+            buf.copy_within(valid - overlap..valid, 0);
+        } else {
+            overlap = valid;
+        }
+    }
+    false
+}
+
+/// Collects every image reference from a markdown file without loading the
+/// whole file into memory.
+pub fn references_in_file(path: &Path, out: &mut std::collections::HashSet<String>) {
+    let Ok(file) = std::fs::File::open(path) else {
+        return;
+    };
+    use std::io::BufRead;
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = String::new();
+    while let Ok(n) = reader.read_line(&mut line) {
+        if n == 0 {
+            break;
+        }
+        if line.len() <= 4096 && (line.contains("![[") || line.contains("![")) {
+            scan_references(line.chars(), out);
+        }
+        line.clear();
+    }
+}
+
+fn is_excluded_note(path: &Path, exclude: &[&Path]) -> bool {
+    exclude.iter().any(|excluded| {
+        #[cfg(windows)]
+        {
+            excluded.as_os_str().eq_ignore_ascii_case(path.as_os_str())
+        }
+        #[cfg(not(windows))]
+        {
+            *excluded == path
+        }
+    })
 }
 
 /// True when some other note in the vault references `name`.
@@ -2023,13 +2196,10 @@ pub fn referenced_elsewhere(vault_root: &Path, name: &str, exclude: &[&Path]) ->
     let mut notes = Vec::new();
     walk_markdown(vault_root, vault_root, 0, &mut notes);
     for path in notes {
-        if exclude.iter().any(|excluded| *excluded == path.as_path()) {
+        if is_excluded_note(&path, exclude) {
             continue;
         }
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        if references_in_text(&content).iter().any(|reference| reference == name) {
+        if note_references_attachment(&path, name) {
             return true;
         }
     }
@@ -2118,16 +2288,18 @@ pub fn move_note_attachments(
     new_note: &Path,
     folder: &str,
 ) -> usize {
-    let Ok(content) = std::fs::read_to_string(new_note) else {
+    let mut names = std::collections::HashSet::new();
+    references_in_file(new_note, &mut names);
+    if names.is_empty() {
         return 0;
-    };
+    }
     let old_dir = attachments_dir(old_note, folder);
     let new_dir = attachments_dir(new_note, folder);
     if old_dir == new_dir {
         return 0;
     }
     let mut moved = 0;
-    for name in references_in_text(&content) {
+    for name in names {
         let source = old_dir.join(&name);
         if !source.is_file() {
             continue;
@@ -2176,9 +2348,7 @@ pub fn unused_attachments(vault_root: &Path, folder: &str) -> Vec<PathBuf> {
     walk_markdown(vault_root, vault_root, 0, &mut notes);
     let mut used = std::collections::HashSet::new();
     for path in notes {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            used.extend(references_in_text(&content));
-        }
+        references_in_file(&path, &mut used);
     }
     let mut files = Vec::new();
     let mut dirs = vec![vault_root.join(folder_name(folder))];
