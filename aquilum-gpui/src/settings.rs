@@ -443,6 +443,9 @@ pub struct FilesSettings {
     /// Show the attachment folder as a regular node in the file explorer.
     /// Off by default: the folder is storage, not a note folder.
     pub show_attachments_folder: bool,
+    /// Automatically move attachments to trash when their references are removed from notes.
+    #[serde(default = "default_true")]
+    pub auto_trash_attachments: bool,
 }
 
 impl Default for FilesSettings {
@@ -452,6 +455,7 @@ impl Default for FilesSettings {
             close_deleted_tabs: true,
             keep_modified_on_delete: true,
             show_attachments_folder: false,
+            auto_trash_attachments: true,
         }
     }
 }
@@ -895,8 +899,21 @@ pub static SETTINGS: &[SettingDescriptor] = &[
         aliases: &[],
         setting_type: SettingType::U32,
     },
+
+    SettingDescriptor {
+        id: "files.autoTrashAttachments",
+        tab_id: "files",
+        title_ru: "Авто-корзина для вложений",
+        title_en: "Auto-Trash Attachments",
+        desc_ru: "Автоматически перемещать изображения в корзину при удалении ссылок из заметки",
+        desc_en: "Automatically move attachments to trash when references are removed from notes",
+        keywords: &["attachments", "trash", "auto", "вложения", "корзина", "изображения", "удаление"],
+        aliases: &["files.autoTrash"],
+        setting_type: SettingType::Bool,
+    },
 ];
 
+// Lookup
 pub fn get_setting_by_id(id_or_alias: &str) -> Option<&'static SettingDescriptor> {
     SETTINGS.iter().find(|s| {
         s.id.eq_ignore_ascii_case(id_or_alias)
@@ -1162,3 +1179,4 @@ mod tests {
         assert!(serialized.contains(r#""titleAlign":"editor_center""#));
     }
 }
+

@@ -371,6 +371,8 @@ impl VaultCore {
         if let Ok(mut cache) = self.markdown_files_cache.lock() {
             *cache = None;
         }
+        crate::images::invalidate_ref_index();
+
     }
 
     /// Cached list of all markdown files for `Snapshot`, shared by `Arc` so

@@ -1165,6 +1165,7 @@ impl AppView {
                         let ws = this.state.workspace_path.clone();
                         let folder = crate::images::folder();
                         let current = saved_refs.clone();
+                        let auto_trash = this.config.files.auto_trash_attachments;
                         background.spawn(async move {
                             crate::images::reconcile_saved_references(
                                 ws.as_deref(),
@@ -1172,6 +1173,7 @@ impl AppView {
                                 &folder,
                                 &previous,
                                 &current,
+                                auto_trash,
                             );
                         }).detach();
                     }

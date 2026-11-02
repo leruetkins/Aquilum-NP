@@ -331,6 +331,7 @@ pub fn invalidate_index() {
     invalidate_resolution();
     invalidate_resolved_images();
     invalidate_dimensions();
+    invalidate_ref_index();
 }
 
 /// Pixel dimensions change when a file is cropped, compressed or replaced on
@@ -1288,8 +1289,11 @@ fn folder_cell() -> &'static Mutex<String> {
 pub fn set_vault_root(root: Option<PathBuf>) {
     *vault_cell()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = root;
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = root.clone();
     invalidate_index();
+    if let Some(r) = root {
+        warm_ref_index(r);
+    }
 }
 
 pub fn vault_root() -> Option<PathBuf> {
@@ -1500,12 +1504,39 @@ mod tests {
             "Files",
             &previous,
             &std::collections::HashSet::new(),
+            true,
         );
 
         assert!(!source.exists());
         let trashed = trash_dir(root, "Files").join("pic.png");
         assert_eq!(std::fs::read(&trashed).unwrap(), b"pixels");
         assert!(edit_path(&trashed).is_file());
+    }
+
+    #[test]
+    fn saving_without_a_reference_keeps_the_pair_when_auto_trash_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let note = root.join("Test").join("test2.md");
+        std::fs::create_dir_all(note.parent().unwrap()).unwrap();
+        std::fs::write(&note, "").unwrap();
+        let source_dir = attachments_dir(&note, "Files");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("pic2.png");
+        std::fs::write(&source, b"pixels").unwrap();
+
+        let mut previous = std::collections::HashSet::new();
+        previous.insert("pic2.png".to_string());
+        reconcile_saved_references(
+            Some(root),
+            &note,
+            "Files",
+            &previous,
+            &std::collections::HashSet::new(),
+            false,
+        );
+
+        assert!(source.exists(), "Attachment should not be trashed when auto_trash is disabled");
     }
 
     #[test]
@@ -1566,6 +1597,38 @@ mod tests {
 
         // 4. Non-existent reference is not found
         assert!(!referenced_elsewhere(root, "nonexistent.png", &[]));
+    }
+
+    #[test]
+    fn attachment_ref_index_updates_and_tracks_references_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let note_a = root.join("A.md");
+        let note_b = root.join("B.md");
+
+        std::fs::write(&note_a, "![[photo.png]]").unwrap();
+        std::fs::write(&note_b, "no attachments").unwrap();
+
+        // 1. Initial indexing
+        assert!(referenced_elsewhere(root, "photo.png", &[]));
+        assert!(!referenced_elsewhere(root, "photo.png", &[&note_a]));
+
+        // 2. Note B adds reference to photo.png in memory
+        let mut b_refs = std::collections::HashSet::new();
+        b_refs.insert("photo.png".to_string());
+        update_note_references(&note_b, &b_refs);
+
+        // Now photo.png is referenced by Note B too
+        assert!(referenced_elsewhere(root, "photo.png", &[&note_a]));
+
+        // 3. Note A removes its reference
+        update_note_references(&note_a, &std::collections::HashSet::new());
+        assert!(!referenced_elsewhere(root, "photo.png", &[&note_b]));
+        assert!(referenced_elsewhere(root, "photo.png", &[&note_a]));
+
+        // 4. Note B deleted
+        remove_note_from_ref_index(&note_b);
+        assert!(!referenced_elsewhere(root, "photo.png", &[]));
     }
 }
 
@@ -2159,8 +2222,13 @@ pub fn note_references_attachment(path: &Path, name: &str) -> bool {
 }
 
 /// Collects every image reference from a markdown file without loading the
-/// whole file into memory.
+/// whole file into memory. Files larger than 50MB are skipped for safety.
 pub fn references_in_file(path: &Path, out: &mut std::collections::HashSet<String>) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.len() > 50 * 1024 * 1024 {
+            return;
+        }
+    }
     let Ok(file) = std::fs::File::open(path) else {
         return;
     };
@@ -2171,36 +2239,266 @@ pub fn references_in_file(path: &Path, out: &mut std::collections::HashSet<Strin
         if n == 0 {
             break;
         }
-        if line.len() <= 4096 && (line.contains("![[") || line.contains("![")) {
+        if (line.contains("![[") || line.contains("![")) && line.len() <= 65536 {
             scan_references(line.chars(), out);
         }
         line.clear();
     }
 }
 
+fn is_same_path(a: &Path, b: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
+    }
+    #[cfg(not(windows))]
+    {
+        a == b
+    }
+}
+
 fn is_excluded_note(path: &Path, exclude: &[&Path]) -> bool {
-    exclude.iter().any(|excluded| {
-        #[cfg(windows)]
-        {
-            excluded.as_os_str().eq_ignore_ascii_case(path.as_os_str())
+    exclude.iter().any(|excluded| is_same_path(path, excluded))
+}
+
+// ────────────────────── In-memory Attachment Reference Index ──────────────────────
+
+#[derive(Default)]
+struct AttachmentRefIndex {
+    vault_root: Option<PathBuf>,
+    note_to_attachments: std::collections::HashMap<PathBuf, std::collections::HashSet<String>>,
+    attachment_to_notes: std::collections::HashMap<String, std::collections::HashSet<PathBuf>>,
+    ready: bool,
+}
+
+static REF_INDEX: OnceLock<Mutex<AttachmentRefIndex>> = OnceLock::new();
+
+fn ref_index() -> &'static Mutex<AttachmentRefIndex> {
+    REF_INDEX.get_or_init(|| Mutex::new(AttachmentRefIndex::default()))
+}
+
+pub fn invalidate_ref_index() {
+    let mut guard = ref_index().lock().unwrap_or_else(|p| p.into_inner());
+    guard.ready = false;
+    guard.vault_root = None;
+    guard.note_to_attachments.clear();
+    guard.attachment_to_notes.clear();
+}
+
+pub fn warm_ref_index(vault_root: PathBuf) {
+    std::thread::Builder::new()
+        .name("attachment-ref-index".into())
+        .spawn(move || {
+            ensure_ref_index(&vault_root);
+        })
+        .ok();
+}
+
+pub fn ensure_ref_index(vault_root: &Path) {
+    {
+        let guard = ref_index().lock().unwrap_or_else(|p| p.into_inner());
+        if guard.ready && guard.vault_root.as_deref() == Some(vault_root) {
+            return;
         }
-        #[cfg(not(windows))]
-        {
-            *excluded == path
+    }
+
+    let mut notes = Vec::new();
+    walk_markdown(vault_root, vault_root, 0, &mut notes);
+    let mut note_to_attachments = std::collections::HashMap::new();
+    let mut attachment_to_notes: std::collections::HashMap<String, std::collections::HashSet<PathBuf>> =
+        std::collections::HashMap::new();
+
+    for path in notes {
+        let mut refs = std::collections::HashSet::new();
+        references_in_file(&path, &mut refs);
+        for r in &refs {
+            let key = r.to_lowercase();
+            attachment_to_notes
+                .entry(key.clone())
+                .or_default()
+                .insert(path.clone());
+            if let Some(file_name) = std::path::Path::new(r).file_name().and_then(|s| s.to_str()) {
+                let file_key = file_name.to_lowercase();
+                if file_key != key {
+                    attachment_to_notes
+                        .entry(file_key)
+                        .or_default()
+                        .insert(path.clone());
+                }
+            }
         }
-    })
+        note_to_attachments.insert(path, refs);
+    }
+
+    let mut guard = ref_index().lock().unwrap_or_else(|p| p.into_inner());
+    if guard.ready && guard.vault_root.as_deref() == Some(vault_root) {
+        return;
+    }
+    for (note, new_refs) in guard.note_to_attachments.drain() {
+        for r in &new_refs {
+            let key = r.to_lowercase();
+            attachment_to_notes
+                .entry(key.clone())
+                .or_default()
+                .insert(note.clone());
+            if let Some(file_name) = std::path::Path::new(&r).file_name().and_then(|s| s.to_str()) {
+                let file_key = file_name.to_lowercase();
+                if file_key != key {
+                    attachment_to_notes
+                        .entry(file_key)
+                        .or_default()
+                        .insert(note.clone());
+                }
+            }
+        }
+        note_to_attachments.insert(note, new_refs);
+    }
+
+    guard.vault_root = Some(vault_root.to_path_buf());
+    guard.note_to_attachments = note_to_attachments;
+    guard.attachment_to_notes = attachment_to_notes;
+    guard.ready = true;
+}
+
+pub fn update_note_references(note_path: &Path, current_refs: &std::collections::HashSet<String>) {
+    let mut guard = ref_index().lock().unwrap_or_else(|p| p.into_inner());
+    let existing_key = guard
+        .note_to_attachments
+        .keys()
+        .find(|k| is_same_path(k, note_path))
+        .cloned();
+
+    let old_refs = if let Some(key) = existing_key {
+        guard.note_to_attachments.remove(&key)
+    } else {
+        None
+    };
+
+    if let Some(old_refs) = old_refs {
+        for old in old_refs {
+            let key = old.to_lowercase();
+            if let Some(notes) = guard.attachment_to_notes.get_mut(&key) {
+                notes.retain(|p| !is_same_path(p, note_path));
+                if notes.is_empty() {
+                    guard.attachment_to_notes.remove(&key);
+                }
+            }
+            if let Some(file_name) = std::path::Path::new(&old).file_name().and_then(|s| s.to_str()) {
+                let file_key = file_name.to_lowercase();
+                if file_key != key {
+                    if let Some(notes) = guard.attachment_to_notes.get_mut(&file_key) {
+                        notes.retain(|p| !is_same_path(p, note_path));
+                        if notes.is_empty() {
+                            guard.attachment_to_notes.remove(&file_key);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for r in current_refs {
+        let key = r.to_lowercase();
+        guard
+            .attachment_to_notes
+            .entry(key.clone())
+            .or_default()
+            .insert(note_path.to_path_buf());
+        if let Some(file_name) = std::path::Path::new(r).file_name().and_then(|s| s.to_str()) {
+            let file_key = file_name.to_lowercase();
+            if file_key != key {
+                guard
+                    .attachment_to_notes
+                    .entry(file_key)
+                    .or_default()
+                    .insert(note_path.to_path_buf());
+            }
+        }
+    }
+
+    guard
+        .note_to_attachments
+        .insert(note_path.to_path_buf(), current_refs.clone());
+}
+
+pub fn remove_note_from_ref_index(note_path: &Path) {
+    let mut guard = ref_index().lock().unwrap_or_else(|p| p.into_inner());
+    let existing_key = guard
+        .note_to_attachments
+        .keys()
+        .find(|k| is_same_path(k, note_path))
+        .cloned();
+
+    if let Some(key) = existing_key {
+        if let Some(old_refs) = guard.note_to_attachments.remove(&key) {
+            for old in old_refs {
+                let key = old.to_lowercase();
+                if let Some(notes) = guard.attachment_to_notes.get_mut(&key) {
+                    notes.retain(|p| !is_same_path(p, note_path));
+                    if notes.is_empty() {
+                        guard.attachment_to_notes.remove(&key);
+                    }
+                }
+                if let Some(file_name) = std::path::Path::new(&old).file_name().and_then(|s| s.to_str()) {
+                    let file_key = file_name.to_lowercase();
+                    if file_key != key {
+                        if let Some(notes) = guard.attachment_to_notes.get_mut(&file_key) {
+                            notes.retain(|p| !is_same_path(p, note_path));
+                            if notes.is_empty() {
+                                guard.attachment_to_notes.remove(&file_key);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn rename_note_in_ref_index(old_path: &Path, new_path: &Path) {
+    let mut guard = ref_index().lock().unwrap_or_else(|p| p.into_inner());
+    let existing_key = guard
+        .note_to_attachments
+        .keys()
+        .find(|k| is_same_path(k, old_path))
+        .cloned();
+
+    if let Some(key) = existing_key {
+        if let Some(refs) = guard.note_to_attachments.remove(&key) {
+            for r in &refs {
+                let key = r.to_lowercase();
+                if let Some(notes) = guard.attachment_to_notes.get_mut(&key) {
+                    notes.retain(|p| !is_same_path(p, old_path));
+                    notes.insert(new_path.to_path_buf());
+                }
+                if let Some(file_name) = std::path::Path::new(r).file_name().and_then(|s| s.to_str()) {
+                    let file_key = file_name.to_lowercase();
+                    if file_key != key {
+                        if let Some(notes) = guard.attachment_to_notes.get_mut(&file_key) {
+                            notes.retain(|p| !is_same_path(p, old_path));
+                            notes.insert(new_path.to_path_buf());
+                        }
+                    }
+                }
+            }
+            guard
+                .note_to_attachments
+                .insert(new_path.to_path_buf(), refs);
+        }
+    }
 }
 
 /// True when some other note in the vault references `name`.
+/// Checks the in-memory reference index in O(1) time with zero disk reads.
 pub fn referenced_elsewhere(vault_root: &Path, name: &str, exclude: &[&Path]) -> bool {
-    let mut notes = Vec::new();
-    walk_markdown(vault_root, vault_root, 0, &mut notes);
-    for path in notes {
-        if is_excluded_note(&path, exclude) {
-            continue;
-        }
-        if note_references_attachment(&path, name) {
-            return true;
+    ensure_ref_index(vault_root);
+    let guard = ref_index().lock().unwrap_or_else(|p| p.into_inner());
+    let key = name.to_lowercase();
+    if let Some(notes) = guard.attachment_to_notes.get(&key) {
+        for path in notes {
+            if !is_excluded_note(path, exclude) {
+                return true;
+            }
         }
     }
     false
@@ -2260,20 +2558,24 @@ pub fn defer_removed_reference(
 
 /// Applies the attachment lifecycle after a successful save: references that
 /// disappeared from the saved text go to the trash (unless another note still
-/// uses them), and references that came back are restored from the trash.
+/// uses them or auto_trash is disabled), and references that came back are restored from the trash.
 pub fn reconcile_saved_references(
     vault_root: Option<&Path>,
     note_path: &Path,
     folder: &str,
     previous: &std::collections::HashSet<String>,
     current: &std::collections::HashSet<String>,
+    auto_trash: bool,
 ) {
     let Some(vault_root) = vault_root else {
         return;
     };
+    update_note_references(note_path, current);
     let exclude = [note_path];
-    for name in previous.difference(current) {
-        defer_removed_reference(vault_root, note_path, folder, name, &exclude);
+    if auto_trash {
+        for name in previous.difference(current) {
+            defer_removed_reference(vault_root, note_path, folder, name, &exclude);
+        }
     }
     for name in current {
         restore_if_trashed(vault_root, note_path, folder, name);
@@ -2325,6 +2627,7 @@ pub fn move_note_attachments(
     }
     if moved > 0 {
         invalidate_index();
+        rename_note_in_ref_index(old_note, new_note);
     }
     moved
 }
@@ -2340,16 +2643,13 @@ pub fn trash_note_attachments(
     for name in references_in_text(content) {
         defer_removed_reference(vault_root, note_path, folder, &name, exclude_notes);
     }
+    remove_note_from_ref_index(note_path);
 }
 
 /// Attachment files in the vault that no note references.
 pub fn unused_attachments(vault_root: &Path, folder: &str) -> Vec<PathBuf> {
-    let mut notes = Vec::new();
-    walk_markdown(vault_root, vault_root, 0, &mut notes);
-    let mut used = std::collections::HashSet::new();
-    for path in notes {
-        references_in_file(&path, &mut used);
-    }
+    ensure_ref_index(vault_root);
+    let guard = ref_index().lock().unwrap_or_else(|p| p.into_inner());
     let mut files = Vec::new();
     let mut dirs = vec![vault_root.join(folder_name(folder))];
     scan_attachment_dirs(vault_root, vault_root, &folder_name(folder), 0, &mut dirs);
@@ -2366,7 +2666,8 @@ pub fn unused_attachments(vault_root: &Path, folder: &str) -> Vec<PathBuf> {
             if name.ends_with(".edit.json") {
                 continue;
             }
-            if is_image_path(&path) && !used.contains(&name) {
+            let key = name.to_lowercase();
+            if is_image_path(&path) && !guard.attachment_to_notes.contains_key(&key) {
                 files.push(path);
             }
         }

@@ -4972,6 +4972,18 @@ impl SettingsView {
                         this.save_settings(cx);
                     })),
             ),
+            self.render_setting_row(
+                &self.t("settings.files.auto_trash_attachments"),
+                Some(&self.t("settings.files.auto_trash_attachments_desc")),
+                div()
+                    .id("row-auto-trash-attachments")
+                    .cursor_pointer()
+                    .child(self.render_toggle_switch(config.files.auto_trash_attachments))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.config.files.auto_trash_attachments = !this.config.files.auto_trash_attachments;
+                        this.save_settings(cx);
+                    })),
+            ),
         ];
 
         div()

@@ -3285,12 +3285,14 @@ impl AppState {
                     // and a restored reference comes back from the trash.
                     let new_refs = crate::images::references_in_rope(doc.rope());
                     let previous = doc.attachment_refs.replace(new_refs.clone());
+                    let auto_trash = self.settings.get_config().files.auto_trash_attachments;
                     crate::images::reconcile_saved_references(
                         self.workspace_path.as_deref(),
                         &doc.path,
                         &crate::images::folder(),
                         &previous,
                         &new_refs,
+                        auto_trash,
                     );
                     if let Some(meta) = self.doc_meta.get_mut(&doc_id) {
                         meta.is_dirty = false;
