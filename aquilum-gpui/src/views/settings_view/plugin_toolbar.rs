@@ -274,7 +274,6 @@ impl SettingsView {
     /// Renders the complete settings and customization view for the Editor Toolbar plugin.
     pub(super) fn render_editor_toolbar_settings(&self, window: &Window, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
-        let is_ru = self.config.ui.language.starts_with("ru");
 
         let vault_root = self
             .weak_app
@@ -301,7 +300,7 @@ impl SettingsView {
                     .text_xs()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.text_primary)
-                    .child(if is_ru { "Назад к модулям" } else { "Back to core plugins" }),
+                    .child(self.t("settings.toolbar.back")),
             )
             .on_click(cx.listener(|this, _, _, cx| {
                 this.settings_tab = SettingsTab::CorePlugins;
@@ -318,17 +317,13 @@ impl SettingsView {
                     .text_lg()
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(theme.text_primary)
-                    .child(if is_ru { "Панель инструментов редактора" } else { "Editor Toolbar" }),
+                    .child(self.t("settings.toolbar.title")),
             )
             .child(
                 div()
                     .text_xs()
                     .text_color(theme.text_muted)
-                    .child(if is_ru {
-                        "Настройка кнопок форматирования Markdown над редактором, вложенных выпадающих списков и разделителей."
-                    } else {
-                        "Customize formatting buttons, nested dropdown groups, and separators above the editor."
-                    }),
+                    .child(self.t("settings.toolbar.desc")),
             );
 
         // Status banner
@@ -363,7 +358,7 @@ impl SettingsView {
                     .text_xs()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.text_on_accent)
-                    .child(if is_ru { "+ Кнопка" } else { "+ Button" })
+                    .child(self.t("settings.toolbar.add_button"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toolbar_add_button_open = !this.toolbar_add_button_open;
                         this.toolbar_add_dropdown_open = false;
@@ -390,7 +385,7 @@ impl SettingsView {
                     .text_xs()
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.text_primary)
-                    .child(if is_ru { "+ Группа ▾" } else { "+ Dropdown ▾" })
+                    .child(self.t("settings.toolbar.add_dropdown"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toolbar_add_dropdown_open = !this.toolbar_add_dropdown_open;
                         this.toolbar_add_button_open = false;
@@ -412,7 +407,7 @@ impl SettingsView {
                     .text_xs()
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.text_primary)
-                    .child(if is_ru { "+ Разделитель" } else { "+ Separator" })
+                    .child(self.t("settings.toolbar.add_separator"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         let sep = crate::toolbar::ToolbarItem::separator();
                         this.toolbar_add_item_at_target(sep, cx);
@@ -430,7 +425,7 @@ impl SettingsView {
                     .text_xs()
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.text_secondary)
-                    .child(if is_ru { "Сбросить по умолчанию" } else { "Reset to defaults" })
+                    .child(self.t("settings.toolbar.reset"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toolbar_reset_defaults(cx);
                     }))
@@ -447,7 +442,7 @@ impl SettingsView {
                     .text_xs()
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.text_secondary)
-                    .child(if is_ru { "Экспорт JSON" } else { "Export JSON" })
+                    .child(self.t("settings.toolbar.export"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toolbar_export_json(cx);
                     }))
@@ -464,7 +459,7 @@ impl SettingsView {
                     .text_xs()
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.text_secondary)
-                    .child(if is_ru { "Импорт JSON" } else { "Import JSON" })
+                    .child(self.t("settings.toolbar.import"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toolbar_import_json(cx);
                     }))
@@ -534,7 +529,6 @@ impl SettingsView {
         cx: &Context<Self>,
     ) -> gpui::Div {
         let theme = &self.theme;
-        let is_ru = self.config.ui.language.starts_with("ru");
 
         let path_vec = path.to_vec();
         let path_move_up = path_vec.clone();
@@ -612,7 +606,7 @@ impl SettingsView {
                         div()
                             .text_xs()
                             .text_color(theme.text_muted)
-                            .child("──────── (разделитель)"),
+                            .child(self.t("settings.toolbar.separator")),
                     )
                     .child(
                         div()
@@ -695,7 +689,9 @@ impl SettingsView {
             }
             crate::toolbar::ToolbarItemKind::Dropdown { icon, tooltip, command, items: sub_items } => {
                 let icon_asset = icons::resolve_toolbar_icon(icon);
-                let title = tooltip.clone().unwrap_or_else(|| "Dropdown".to_string());
+                let title = tooltip
+                    .clone()
+                    .unwrap_or_else(|| self.t("settings.toolbar.dropdown_fallback"));
                 let target_dd_id = item.id.clone();
                 let split_type_icon = command.as_ref().map(|cmd_id| {
                     let is_plugin = self
@@ -718,7 +714,7 @@ impl SettingsView {
                     .hover(|h| h.bg(theme.border))
                     .text_xs()
                     .text_color(theme.accent)
-                    .child(if is_ru { "+ внутрь" } else { "+ add inside" })
+                    .child(self.t("settings.toolbar.add_inside"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.toolbar_target_dropdown_id = Some(target_dd_id.clone());
                         this.toolbar_add_button_open = true;
@@ -775,12 +771,11 @@ impl SettingsView {
                                 div()
                                     .text_xs()
                                     .text_color(theme.text_muted)
-                                    .child(format!(
-                                        "({} {}){}",
-                                        sub_items.len(),
-                                        if is_ru { "элементов" } else { "items" },
-                                        if let Some(cmd) = command { format!(" [split: {}]", cmd) } else { "".to_string() }
-                                    )),
+                        .child(format!(
+                            "({}){}",
+                            self.t_fmt("settings.toolbar.items", &[&sub_items.len().to_string()]),
+                            if let Some(cmd) = command { format!(" [split: {}]", cmd) } else { "".to_string() }
+                        )),
                             ),
                     )
                     .child(
@@ -835,7 +830,6 @@ impl SettingsView {
             .map(|a| a.read(cx).state.commands.all())
             .unwrap_or_default();
 
-        let is_ru = self.config.ui.language.starts_with("ru");
         let active_ix = self
             .toolbar_selected_command
             .as_ref()
@@ -861,7 +855,7 @@ impl SettingsView {
 
         let theme = self.theme.clone();
         let max_rows = all_commands.len().clamp(1, 8) as f32;
-        let search_placeholder = if is_ru { "Поиск..." } else { "Search..." };
+        let search_placeholder = self.t("settings.toolbar.search");
         let popup = cx.new(|cx| {
             TabListPopup::new(
                 tabs,
@@ -933,7 +927,6 @@ impl SettingsView {
             "bookmark", "link", "external-link", "eye", "copy",
         ];
 
-        let is_ru = self.config.ui.language.starts_with("ru");
         let active_ix = self
             .toolbar_selected_icon
             .as_ref()
@@ -955,7 +948,7 @@ impl SettingsView {
 
         let theme = self.theme.clone();
         let max_rows = available_icons.len().clamp(1, 10) as f32;
-        let search_placeholder = if is_ru { "Поиск..." } else { "Search..." };
+        let search_placeholder = self.t("settings.toolbar.search");
         let popup = cx.new(|cx| {
             TabListPopup::new(
                 tabs,
@@ -1011,7 +1004,6 @@ impl SettingsView {
     /// Renders inline form to add a new button.
     pub(super) fn render_toolbar_add_button_form(&self, _window: &Window, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
-        let is_ru = self.config.ui.language.starts_with("ru");
 
         let all_commands = self
             .weak_app
@@ -1086,7 +1078,7 @@ impl SettingsView {
                             )
                     } else {
                         div().text_color(theme.text_muted).child(
-                            if is_ru { "Выберите команду..." } else { "Select command..." },
+                            self.t("settings.toolbar.select_command"),
                         )
                     }),
             )
@@ -1172,7 +1164,7 @@ impl SettingsView {
                     } else {
                         div()
                             .text_color(theme.text_muted)
-                            .child(if is_ru { "Выберите значок..." } else { "Select icon..." })
+                            .child(self.t("settings.toolbar.select_icon"))
                     }),
             )
             .child(
@@ -1230,7 +1222,7 @@ impl SettingsView {
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .child(if is_ru { "1. Команда:" } else { "1. Command:" })
+                            .child(self.t("settings.toolbar.step_command"))
                     )
                     .child(
                         div()
@@ -1279,7 +1271,7 @@ impl SettingsView {
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .child(if is_ru { "2. Значок:" } else { "2. Icon:" })
+                            .child(self.t("settings.toolbar.step_icon"))
                     ),
             )
             .child(
@@ -1365,7 +1357,7 @@ impl SettingsView {
                     })
                     .text_xs()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(if is_ru { "Сохранить кнопку" } else { "Save Button" }),
+                    .child(self.t("settings.toolbar.save_button")),
             )
             .child(
                 div()
@@ -1378,7 +1370,7 @@ impl SettingsView {
                     .hover(|h| h.bg(theme.border))
                     .text_xs()
                     .text_color(theme.text_secondary)
-                    .child(if is_ru { "Отмена" } else { "Cancel" })
+                    .child(self.t("common.cancel"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toolbar_add_button_open = false;
                         this.toolbar_selected_command = None;
@@ -1404,7 +1396,7 @@ impl SettingsView {
                     .text_sm()
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(theme.text_primary)
-                    .child(if is_ru { "Добавить кнопку форматирования" } else { "Add Formatting Button" }),
+                    .child(self.t("settings.toolbar.add_formatting_button")),
             )
             .child(columns_row)
             .child(actions_row)
@@ -1413,7 +1405,6 @@ impl SettingsView {
     /// Renders inline form to add a new dropdown group.
     pub(super) fn render_toolbar_add_dropdown_form(&self, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
-        let is_ru = self.config.ui.language.starts_with("ru");
 
         let available_icons = [
             "heading-n", "type", "list-bullet", "align-left", "message-square", "more-horizontal",
@@ -1461,13 +1452,13 @@ impl SettingsView {
                     .text_sm()
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(theme.text_primary)
-                    .child(if is_ru { "Создать группу (выпадающий список)" } else { "Create Dropdown Group" }),
+                    .child(self.t("settings.toolbar.create_group_title")),
             )
             .child(
                 div()
                     .text_xs()
                     .text_color(theme.text_secondary)
-                    .child(if is_ru { "Выберите значок группы:" } else { "Select group icon:" }),
+                    .child(self.t("settings.toolbar.select_group_icon")),
             )
             .child(icon_grid)
             .child(
@@ -1488,12 +1479,13 @@ impl SettingsView {
                             .text_xs()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(theme.text_on_accent)
-                            .child(if is_ru { "Создать группу" } else { "Create Group" })
+                            .child(self.t("settings.toolbar.create_group"))
                             .on_click(cx.listener(|this, _, _, cx| {
+                                let group_name = this.t("settings.toolbar.default_group");
                                 let new_dropdown = crate::toolbar::ToolbarItem::dropdown(
                                     format!("tb-grp-{}", uuid::Uuid::new_v4().simple()),
                                     this.toolbar_selected_icon.clone().unwrap_or_else(|| "heading-n".to_string()),
-                                    Some("Новая группа"),
+                                    Some(&group_name),
                                     None,
                                     Vec::new(),
                                 );
@@ -1514,7 +1506,7 @@ impl SettingsView {
                             .hover(|h| h.bg(theme.border))
                             .text_xs()
                             .text_color(theme.text_secondary)
-                            .child(if is_ru { "Отмена" } else { "Cancel" })
+                            .child(self.t("common.cancel"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.toolbar_add_dropdown_open = false;
                                 this.toolbar_selected_icon = None;
@@ -1631,7 +1623,8 @@ impl SettingsView {
             let _ = crate::plugins::editor_toolbar::reset_toolbar_config(root);
         }
         let defaults = crate::plugins::editor_toolbar::default_toolbar_items();
-        self.toolbar_save_and_sync(defaults, Some("Сброшено на настройки по умолчанию"), cx);
+        let msg = self.t("settings.toolbar.status.reset_done");
+        self.toolbar_save_and_sync(defaults, Some(&msg), cx);
     }
 
     /// Exports current toolbar configuration as JSON to clipboard.
@@ -1649,7 +1642,7 @@ impl SettingsView {
 
         if let Ok(json_str) = serde_json::to_string_pretty(&cfg) {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(json_str));
-            self.toolbar_status_msg = Some("Конфигурация скопирована в буфер обмена".to_string());
+            self.toolbar_status_msg = Some(self.t("settings.toolbar.status.copied"));
             cx.notify();
         }
     }
@@ -1658,7 +1651,7 @@ impl SettingsView {
     pub(super) fn toolbar_import_json(&mut self, cx: &mut Context<Self>) {
         let clip_text = cx.read_from_clipboard().and_then(|item| item.text());
         let Some(text) = clip_text else {
-            self.toolbar_status_msg = Some("Буфер обмена пуст".to_string());
+            self.toolbar_status_msg = Some(self.t("settings.toolbar.status.clipboard_empty"));
             cx.notify();
             return;
         };
@@ -1671,9 +1664,10 @@ impl SettingsView {
 
         if let Some(items) = parsed_items {
             let validated = crate::toolbar::validate_and_prune_items(items, 1);
-            self.toolbar_save_and_sync(validated, Some("Конфигурация успешно импортирована!"), cx);
+            let msg = self.t("settings.toolbar.status.import_done");
+            self.toolbar_save_and_sync(validated, Some(&msg), cx);
         } else {
-            self.toolbar_status_msg = Some("Ошибка: не удалось распознать JSON".to_string());
+            self.toolbar_status_msg = Some(self.t("settings.toolbar.status.import_error"));
             cx.notify();
         }
     }

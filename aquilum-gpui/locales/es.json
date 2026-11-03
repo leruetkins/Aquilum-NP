@@ -34,7 +34,11 @@
       "history": "Historial",
       "trash": "Papelera",
       "system": "Sistema",
-      "shortcuts": "Atajos"
+      "shortcuts": "Atajos",
+      "core_plugins": "Complementos principales",
+      "community_plugins": "Complementos comunitarios",
+      "plugin_settings": "Configuración del complemento",
+      "editor_toolbar": "Barra de herramientas del editor"
     },
     "ui": {
       "title": "Ajustes de interfaz",
@@ -58,7 +62,9 @@
       "sidebar_smart_scroll": "Desplazamiento inteligente de la lista de archivos",
       "sidebar_smart_scroll_desc": "Mantenga presionada la tecla Ctrl para que la posición del cursor controle la lista de archivos, como la ventana emergente de pestañas abiertas. La rueda queda desactivada mientras se sostiene.",
       "swap_tab_bar_buttons": "Intercambiar botones de creación de barra de pestañas",
-      "swap_tab_bar_buttons_desc": "Botón de nueva pestaña '+' a la izquierda (abre la pestaña en el extremo izquierdo) y botón de nueva nota a la derecha (abre la pestaña en el extremo derecho)."
+      "swap_tab_bar_buttons_desc": "Botón de nueva pestaña '+' a la izquierda (abre la pestaña en el extremo izquierdo) y botón de nueva nota a la derecha (abre la pestaña en el extremo derecho).",
+      "font_weight_semibold": "Seminegrita",
+      "font_weight_regular": "Regular"
     },
     "editor": {
       "title": "Editor de rebajas",
@@ -233,6 +239,227 @@
       "quick_open": "Ir a Archivo (Apertura Rápida)",
       "search_files": "Buscar archivos",
       "open_command_palette": "Abrir paleta de comandos"
+    },
+    "nav": {
+      "search_placeholder": "Configuración de búsqueda...",
+      "search_empty": "No se encontraron configuraciones"
+    },
+    "units": {
+      "px": "{} píxeles",
+      "ch": "{} canal",
+      "percent": "{}%",
+      "mb": "{} megabytes"
+    },
+    "plugins": {
+      "core": {
+        "title": "Complementos principales de la aplicación",
+        "status_updated": "Complemento principal '{plugin}' actualizado",
+        "command_palette": {
+          "name": "paleta de comandos",
+          "desc": "Busque y ejecute rápidamente acciones de aplicaciones (Ctrl+Shift+P)"
+        },
+        "word_counter": {
+          "name": "Contador de palabras",
+          "desc": "Muestra el recuento de caracteres y palabras en la barra de estado."
+        },
+        "editor_toolbar": {
+          "name": "Barra de herramientas del editor",
+          "desc": "Barra de herramientas de formato Markdown encima del editor con botones personalizables"
+        },
+        "file_recovery": {
+          "name": "Recuperación de archivos",
+          "desc": "Instantáneas locales automáticas para proteger contra la pérdida de datos"
+        }
+      },
+      "community": {
+        "title": "Complementos comunitarios",
+        "safe_mode": "Modo seguro",
+        "safe_mode_desc": "Bloquea la ejecución de complementos de la comunidad para la estabilidad del sistema y la protección de datos.",
+        "browse": "Explorar complementos de la comunidad",
+        "catalog": "Catálogo de complementos de la comunidad",
+        "catalog_desc": "Descubra, instale y actualice complementos creados por la comunidad",
+        "compat_full": "100% compatibles",
+        "compat_score": "{}% Compatible",
+        "incompatible": "Incompatible",
+        "compat_unknown": "Compatibilidad desconocida",
+        "installed": "Complementos instalados ({})"
+      },
+      "detail": {
+        "back": "Volver a complementos",
+        "enable": "Permitir",
+        "disable": "Desactivar",
+        "reload": "Recargar",
+        "open_folder": "Abrir carpeta",
+        "enabled": "Activado",
+        "disabled": "Desactivado",
+        "author": "Por {}"
+      },
+      "metadata": {
+        "title": "Metadatos",
+        "name": "Nombre del complemento",
+        "id": "ID del complemento",
+        "version": "Versión",
+        "min_app_version": "Versión mínima de la aplicación",
+        "author": "Autor",
+        "author_url": "URL del autor",
+        "desktop_only": "Solo escritorio",
+        "desktop_only_true": "verdadero (solo escritorio)",
+        "desktop_only_false": "falso (multiplataforma)",
+        "install_path": "Ruta de instalación"
+      },
+      "readme": {
+        "title": "INFORMACIÓN DEL COMPLEMENTO",
+        "missing": "No se encontró ningún archivo README.md",
+        "hint": "No existe ningún archivo de documentación en el directorio de complementos. Agregue un archivo README.md para mostrar las instrucciones aquí."
+      },
+      "config": {
+        "title": "CONFIGURACIÓN DEL COMPLEMENTO",
+        "store": "Almacén de configuración (.vault/plugins/<id>/data.json)",
+        "card": "Configuración del complemento (data.json)",
+        "card_short": "Ajustes"
+      },
+      "edit_title": "Editar"
+    },
+    "toolbar": {
+      "back": "Volver a los complementos principales",
+      "title": "Barra de herramientas del editor",
+      "desc": "Personalice los botones de formato, los grupos desplegables anidados y los separadores encima del editor.",
+      "add_button": "+ Botón",
+      "add_dropdown": "+ Menú desplegable ▾",
+      "add_separator": "+ Separador",
+      "reset": "Restablecer los valores predeterminados",
+      "export": "Exportar JSON",
+      "import": "Importar JSON",
+      "separator": "──────── (separador)",
+      "dropdown_fallback": "Menú desplegable",
+      "add_inside": "+ agregar dentro",
+      "items": "{} elementos",
+      "search": "Buscar...",
+      "select_command": "Seleccionar comando...",
+      "select_icon": "Seleccionar icono...",
+      "step_command": "1. Comando:",
+      "step_icon": "2. Icono:",
+      "save_button": "Botón Guardar",
+      "add_formatting_button": "Botón Agregar formato",
+      "create_group_title": "Crear grupo desplegable",
+      "select_group_icon": "Seleccionar icono de grupo:",
+      "create_group": "Crear grupo",
+      "default_group": "Nuevo grupo",
+      "status": {
+        "reset_done": "Restablecer los valores predeterminados",
+        "copied": "Configuración copiada al portapapeles",
+        "clipboard_empty": "El portapapeles está vacío.",
+        "import_done": "¡Configuración importada exitosamente!",
+        "import_error": "Error: no se pudo analizar JSON"
+      }
+    },
+    "registry": {
+      "ui": {
+        "theme": {
+          "title": "Tema de apariencia",
+          "desc": "Tema de color para la interfaz de usuario: sistema, oscuro o claro"
+        },
+        "language": {
+          "title": "Idioma de la interfaz",
+          "desc": "Idioma de localización de la interfaz (ru / en)"
+        },
+        "primaryColor": {
+          "title": "Color de acento primario",
+          "desc": "Color de acento de marca personalizado para botones, selecciones y pestañas activas"
+        },
+        "sidebarSmartScroll": {
+          "title": "Desplazamiento inteligente de la barra lateral",
+          "desc": "Centrar automáticamente el archivo activo en el árbol de la barra lateral al cambiar de nota"
+        },
+        "swapTabBarButtons": {
+          "title": "Intercambiar botones de creación de barra de pestañas",
+          "desc": "Botón de nueva pestaña '+' a la izquierda (abre la pestaña en el extremo izquierdo), botón de nueva nota a la derecha (abre la pestaña en el extremo derecho)"
+        }
+      },
+      "editor": {
+        "fontSizeBase": {
+          "title": "Tamaño de fuente del editor",
+          "desc": "Tamaño de fuente base en la ventana gráfica del editor de notas (px)"
+        },
+        "fontFamily": {
+          "title": "Familia de fuentes del editor",
+          "desc": "Familia tipográfica para mostrar y editar contenidos de notas"
+        },
+        "wordWrap": {
+          "title": "Ajuste de palabras",
+          "desc": "Ajusta las líneas largas con elegancia en el borde de la ventana gráfica del editor."
+        },
+        "liveTabs": {
+          "title": "Recuento de pestañas en vivo",
+          "desc": "Número máximo de pestañas del editor retenidas activas en la memoria"
+        },
+        "hideCurrentLineOnSelection": {
+          "title": "Ocultar resaltado de línea actual en la selección",
+          "desc": "Ocultar resaltado de línea actual cuando se selecciona un rango de texto"
+        },
+        "wheelSmoothScroll": {
+          "title": "Desplazamiento suave de la rueda (90 ms de facilidad)",
+          "desc": "Animación de rueda corta con un aterrizaje brusco en lugar de pasos instantáneos. Apagado significa que el texto se detiene en seco"
+        },
+        "scrollbarRuler": {
+          "title": "Marcas de regla de barra de desplazamiento",
+          "desc": "Línea delgada del cursor y extensión de selección sobre el pulgar de la barra de desplazamiento del editor"
+        },
+        "wideScrollbar": {
+          "title": "Barra de desplazamiento ancha (estilo Zed)",
+          "desc": "Carril ancho de 16 px con una pista visible y un pulgar cuadrado de ancho completo en lugar de la pastilla estrecha"
+        },
+        "noteWidth": {
+          "title": "Ancho de columna de nota",
+          "desc": "Ancho de la columna de contenido de la nota como porcentaje de la ventana (0-100%)"
+        },
+        "noteAlign": {
+          "title": "Alineación de notas",
+          "desc": "Alineación horizontal de la columna de notas: centrada o alineada a la izquierda"
+        },
+        "titleAlign": {
+          "title": "Alineación del título de la nota (ventana)",
+          "desc": "Posición del título del archivo en relación con la ventana: izquierda o centrada"
+        },
+        "titleAlignEditor": {
+          "title": "Alineación del título de la nota (Editor)",
+          "desc": "Posición del título del archivo en relación con la columna de notas: borde izquierdo o centrado"
+        }
+      },
+      "reader": {
+        "lineHeight": {
+          "title": "Altura de la línea del lector",
+          "desc": "Multiplicador de altura de línea para un modo de lectura cómodo"
+        },
+        "maxWidthCh": {
+          "title": "Ancho máximo de columna del lector",
+          "desc": "Ancho máximo de columna del contenedor de texto en caracteres (ch)"
+        }
+      },
+      "communityPlugins": {
+        "safeMode": {
+          "title": "Modo seguro de complementos comunitarios",
+          "desc": "Bloquea la ejecución de complementos de la comunidad para la estabilidad del sistema y la protección de datos."
+        }
+      },
+      "mcp": {
+        "enabled": {
+          "title": "Habilitar el servidor MCP local",
+          "desc": "Servidor Model Context Protocol para la integración con asistentes de codificación de IA externos"
+        }
+      },
+      "trash": {
+        "retentionDays": {
+          "title": "Días de retención de basura",
+          "desc": "Número de días que las notas eliminadas permanecen en la papelera antes de ser eliminadas"
+        }
+      },
+      "files": {
+        "autoTrashAttachments": {
+          "title": "Archivos adjuntos de basura automática",
+          "desc": "Mover automáticamente los archivos adjuntos a la papelera cuando se eliminan referencias de las notas"
+        }
+      }
     }
   },
   "sidebar": {

@@ -34,7 +34,11 @@
       "history": "Tarih",
       "trash": "Çöp",
       "system": "Sistem",
-      "shortcuts": "Kısayollar"
+      "shortcuts": "Kısayollar",
+      "core_plugins": "Çekirdek eklentiler",
+      "community_plugins": "Topluluk eklentileri",
+      "plugin_settings": "Eklenti ayarları",
+      "editor_toolbar": "Düzenleyici Araç Çubuğu"
     },
     "ui": {
       "title": "Arayüz Ayarları",
@@ -58,7 +62,9 @@
       "sidebar_smart_scroll": "Akıllı dosya listesi kaydırma",
       "sidebar_smart_scroll_desc": "İmleç konumu, açık sekmeler açılır penceresi gibi dosya listesini yönlendirecek şekilde Ctrl tuşunu basılı tutun. Basılı tutulduğunda tekerlek devre dışı bırakılır.",
       "swap_tab_bar_buttons": "Sekme çubuğu oluşturma düğmelerini değiştirme",
-      "swap_tab_bar_buttons_desc": "Soldaki yeni sekme düğmesi '+' (en soldaki sekmeyi açar) ve sağdaki yeni not düğmesi (en sağdaki sekmeyi açar)."
+      "swap_tab_bar_buttons_desc": "Soldaki yeni sekme düğmesi '+' (en soldaki sekmeyi açar) ve sağdaki yeni not düğmesi (en sağdaki sekmeyi açar).",
+      "font_weight_semibold": "Yarı kalın",
+      "font_weight_regular": "Düzenli"
     },
     "editor": {
       "title": "İşaretleme Düzenleyicisi",
@@ -233,6 +239,227 @@
       "quick_open": "Dosyaya Git (Hızlı Açma)",
       "search_files": "Dosyaları Ara",
       "open_command_palette": "Komut Paletini Aç"
+    },
+    "nav": {
+      "search_placeholder": "Arama ayarları...",
+      "search_empty": "Hiçbir ayar bulunamadı"
+    },
+    "units": {
+      "px": "{} piksel",
+      "ch": "{} kanal",
+      "percent": "%{}",
+      "mb": "{} MB"
+    },
+    "plugins": {
+      "core": {
+        "title": "Uygulama Temel Eklentileri",
+        "status_updated": "Çekirdek eklentisi '{plugin}' güncellendi",
+        "command_palette": {
+          "name": "Komut paleti",
+          "desc": "Uygulama eylemlerini hızla arayın ve yürütün (Ctrl+Shift+P)"
+        },
+        "word_counter": {
+          "name": "Kelime sayacı",
+          "desc": "Durum çubuğunda karakter ve kelime sayısını görüntüler"
+        },
+        "editor_toolbar": {
+          "name": "Düzenleyici araç çubuğu",
+          "desc": "Düzenleyicinin üzerinde özelleştirilebilir düğmelere sahip Markdown biçimlendirme araç çubuğu"
+        },
+        "file_recovery": {
+          "name": "Dosya kurtarma",
+          "desc": "Veri kaybına karşı koruma sağlamak için otomatik yerel anlık görüntü alma"
+        }
+      },
+      "community": {
+        "title": "Topluluk Eklentileri",
+        "safe_mode": "Güvenli Mod",
+        "safe_mode_desc": "Sistem kararlılığı ve veri koruması için topluluk eklentilerinin yürütülmesini engeller",
+        "browse": "Topluluk eklentilerine göz atın",
+        "catalog": "Topluluk eklentileri kataloğu",
+        "catalog_desc": "Topluluk tarafından oluşturulan eklentileri keşfedin, yükleyin ve güncelleyin",
+        "compat_full": "%100 Uyumlu",
+        "compat_score": "{}% Uyumlu",
+        "incompatible": "Uyumsuz",
+        "compat_unknown": "Uyumluluk bilinmiyor",
+        "installed": "Yüklü eklentiler ({})"
+      },
+      "detail": {
+        "back": "Eklentilere geri dön",
+        "enable": "Olanak vermek",
+        "disable": "Devre dışı bırakmak",
+        "reload": "Yeniden yükle",
+        "open_folder": "Klasörü aç",
+        "enabled": "Etkinleştirilmiş",
+        "disabled": "Engelli",
+        "author": "İle {}"
+      },
+      "metadata": {
+        "title": "Meta veriler",
+        "name": "Eklenti Adı",
+        "id": "Eklenti Kimliği",
+        "version": "Sürüm",
+        "min_app_version": "Minimum Uygulama Sürümü",
+        "author": "Yazar",
+        "author_url": "Yazar URL'si",
+        "desktop_only": "Yalnızca Masaüstü",
+        "desktop_only_true": "doğru (yalnızca masaüstü)",
+        "desktop_only_false": "yanlış (platformlar arası)",
+        "install_path": "Kurulum yolu"
+      },
+      "readme": {
+        "title": "Eklenti Bilgileri",
+        "missing": "README.md dosyası bulunamadı",
+        "hint": "Eklenti dizininde dokümantasyon dosyası mevcut değil. Talimatları burada görüntülemek için bir README.md dosyası ekleyin."
+      },
+      "config": {
+        "title": "EKLENTİ AYARLARI",
+        "store": "Yapılandırma deposu (.vault/plugins/<id>/data.json)",
+        "card": "Eklenti ayarları (data.json)",
+        "card_short": "Ayarlar"
+      },
+      "edit_title": "Düzenlemek"
+    },
+    "toolbar": {
+      "back": "Temel eklentilere geri dön",
+      "title": "Düzenleyici Araç Çubuğu",
+      "desc": "Düzenleyicinin üzerindeki biçimlendirme düğmelerini, iç içe açılır grupları ve ayırıcıları özelleştirin.",
+      "add_button": "+ Düğmesi",
+      "add_dropdown": "+ Açılır menü ▾",
+      "add_separator": "+ Ayırıcı",
+      "reset": "Varsayılanlara sıfırla",
+      "export": "JSON'u dışa aktar",
+      "import": "JSON'u içe aktar",
+      "separator": "──────── (ayırıcı)",
+      "dropdown_fallback": "Yıkılmak",
+      "add_inside": "+ içine ekle",
+      "items": "{} öğeler",
+      "search": "Aramak...",
+      "select_command": "Komutu seç...",
+      "select_icon": "Simge seç...",
+      "step_command": "1. Komut:",
+      "step_icon": "2. Simge:",
+      "save_button": "Kaydet Düğmesi",
+      "add_formatting_button": "Biçimlendirme Ekle Düğmesi",
+      "create_group_title": "Açılır Grup Oluştur",
+      "select_group_icon": "Grup simgesini seçin:",
+      "create_group": "Grup Oluştur",
+      "default_group": "Yeni grup",
+      "status": {
+        "reset_done": "Varsayılanlara sıfırla",
+        "copied": "Yapılandırma panoya kopyalandı",
+        "clipboard_empty": "Pano boş",
+        "import_done": "Yapılandırma başarıyla içe aktarıldı!",
+        "import_error": "Hata: JSON ayrıştırılamadı"
+      }
+    },
+    "registry": {
+      "ui": {
+        "theme": {
+          "title": "Görünüm Teması",
+          "desc": "Kullanıcı arayüzü için renk teması: sistem, koyu veya açık"
+        },
+        "language": {
+          "title": "Arayüz Dili",
+          "desc": "Arayüz yerelleştirme dili (ru / en)"
+        },
+        "primaryColor": {
+          "title": "Birincil Vurgu Rengi",
+          "desc": "Düğmeler, seçimler ve etkin sekmeler için özel marka vurgu rengi"
+        },
+        "sidebarSmartScroll": {
+          "title": "Kenar Çubuğu Akıllı Kaydırma",
+          "desc": "Notlar arasında geçiş yaparken etkin dosyayı kenar çubuğu ağacında otomatik olarak ortalayın"
+        },
+        "swapTabBarButtons": {
+          "title": "Sekme Çubuğu Oluşturma Düğmelerini Değiştir",
+          "desc": "Soldaki yeni sekme düğmesi '+' (en soldaki sekmeyi açar), sağdaki yeni not düğmesi (en sağdaki sekmeyi açar)"
+        }
+      },
+      "editor": {
+        "fontSizeBase": {
+          "title": "Düzenleyici Yazı Tipi Boyutu",
+          "desc": "Not düzenleyici görünüm penceresindeki temel yazı tipi boyutu (px)"
+        },
+        "fontFamily": {
+          "title": "Düzenleyici Yazı Tipi Ailesi",
+          "desc": "Not içeriklerini görüntülemek ve düzenlemek için yazı tipi ailesi"
+        },
+        "wordWrap": {
+          "title": "Kelime Kaydırma",
+          "desc": "Düzenleyici görünüm alanının kenarında uzun çizgileri zarif bir şekilde sarın"
+        },
+        "liveTabs": {
+          "title": "Canlı Sekme Sayısı",
+          "desc": "Bellekte etkin olarak tutulan maksimum düzenleyici sekme sayısı"
+        },
+        "hideCurrentLineOnSelection": {
+          "title": "Seçimdeki Geçerli Satır Vurgusunu Gizle",
+          "desc": "Bir metin aralığı seçildiğinde geçerli satır vurgusunu gizle"
+        },
+        "wheelSmoothScroll": {
+          "title": "Düzgün Tekerlek Kaydırma (90 ms kolaylık)",
+          "desc": "Anlık adımlar yerine sert iniş içeren kısa tekerlek animasyonu. Kapalı, metnin durduğu anlamına gelir"
+        },
+        "scrollbarRuler": {
+          "title": "Kaydırma Çubuğu Cetvel İşaretleri",
+          "desc": "Düzenleyici kaydırma çubuğu başparmağının üzerinde ince imleç çizgisi ve seçim aralığı"
+        },
+        "wideScrollbar": {
+          "title": "Geniş Kaydırma Çubuğu (Zed stili)",
+          "desc": "Görünür bir iz ve dar hap yerine tam genişlikte kare başparmak bulunan 16 piksellik geniş şerit"
+        },
+        "noteWidth": {
+          "title": "Not Sütunu Genişliği",
+          "desc": "Pencerenin yüzdesi olarak not içeriği sütununun genişliği (%0-100)"
+        },
+        "noteAlign": {
+          "title": "Not Hizalaması",
+          "desc": "Not sütununun yatay hizalaması: ortalanmış veya sola hizalanmış"
+        },
+        "titleAlign": {
+          "title": "Not Başlığı Hizalama (Pencere)",
+          "desc": "Dosya başlığının pencereye göre konumu: sol veya orta"
+        },
+        "titleAlignEditor": {
+          "title": "Not Başlığı Hizalama (Düzenleyici)",
+          "desc": "Dosya başlığının not sütununa göre konumu: sol kenar veya ortalanmış"
+        }
+      },
+      "reader": {
+        "lineHeight": {
+          "title": "Okuyucu Satır Yüksekliği",
+          "desc": "Rahat okuma modu için satır yüksekliği çarpanı"
+        },
+        "maxWidthCh": {
+          "title": "Okuyucu Maksimum Sütun Genişliği",
+          "desc": "Karakter cinsinden maksimum metin kabı sütun genişliği (ch)"
+        }
+      },
+      "communityPlugins": {
+        "safeMode": {
+          "title": "Topluluk Eklentileri Güvenli Mod",
+          "desc": "Sistem kararlılığı ve veri koruması için topluluk eklentilerinin yürütülmesini engeller"
+        }
+      },
+      "mcp": {
+        "enabled": {
+          "title": "Yerel MCP Sunucusunu Etkinleştir",
+          "desc": "Harici AI kodlama asistanlarıyla entegrasyon için Model Bağlam Protokolü sunucusu"
+        }
+      },
+      "trash": {
+        "retentionDays": {
+          "title": "Çöp Tutma Günleri",
+          "desc": "Silinen notların temizleme işleminden önce çöp kutusunda kaldığı gün sayısı"
+        }
+      },
+      "files": {
+        "autoTrashAttachments": {
+          "title": "Ekleri Otomatik Çöp Kutusuna Atma",
+          "desc": "Referanslar notlardan kaldırıldığında ekleri otomatik olarak çöp kutusuna taşıyın"
+        }
+      }
     }
   },
   "sidebar": {

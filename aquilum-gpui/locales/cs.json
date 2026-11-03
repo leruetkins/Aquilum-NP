@@ -34,7 +34,11 @@
       "history": "Dějiny",
       "trash": "Odpadky",
       "system": "Systém",
-      "shortcuts": "Zkratky"
+      "shortcuts": "Zkratky",
+      "core_plugins": "Základní pluginy",
+      "community_plugins": "Komunitní pluginy",
+      "plugin_settings": "Nastavení pluginu",
+      "editor_toolbar": "Panel nástrojů editoru"
     },
     "ui": {
       "title": "Nastavení rozhraní",
@@ -58,7 +62,9 @@
       "sidebar_smart_scroll": "Inteligentní posouvání seznamu souborů",
       "sidebar_smart_scroll_desc": "Podržte klávesu Ctrl, aby pozice kurzoru řídila seznam souborů, jako je vyskakovací okno s otevřenými kartami. Při držení je kolo deaktivováno.",
       "swap_tab_bar_buttons": "Vyměňte tlačítka vytváření lišty karet",
-      "swap_tab_bar_buttons_desc": "Tlačítko nové karty '+' vlevo (otevře kartu zcela vlevo) a tlačítko nové poznámky vpravo (otevře kartu zcela vpravo)."
+      "swap_tab_bar_buttons_desc": "Tlačítko nové karty '+' vlevo (otevře kartu zcela vlevo) a tlačítko nové poznámky vpravo (otevře kartu zcela vpravo).",
+      "font_weight_semibold": "Polotučný",
+      "font_weight_regular": "Pravidelný"
     },
     "editor": {
       "title": "Editor Markdown",
@@ -233,6 +239,227 @@
       "quick_open": "Přejít na soubor (rychlé otevření)",
       "search_files": "Hledat soubory",
       "open_command_palette": "Otevřete paletu příkazů"
+    },
+    "nav": {
+      "search_placeholder": "Nastavení vyhledávání...",
+      "search_empty": "Nebyla nalezena žádná nastavení"
+    },
+    "units": {
+      "px": "{} px",
+      "ch": "{} kap",
+      "percent": "{} %",
+      "mb": "{} MB"
+    },
+    "plugins": {
+      "core": {
+        "title": "Zásuvné moduly pro jádro aplikace",
+        "status_updated": "Základní plugin '{plugin}' aktualizován",
+        "command_palette": {
+          "name": "Paleta příkazů",
+          "desc": "Rychlé vyhledávání a provádění akcí aplikace (Ctrl+Shift+P)"
+        },
+        "word_counter": {
+          "name": "Počítadlo slov",
+          "desc": "Zobrazuje počet znaků a slov ve stavovém řádku"
+        },
+        "editor_toolbar": {
+          "name": "Panel nástrojů editoru",
+          "desc": "Panel nástrojů pro formátování Markdown nad editorem s přizpůsobitelnými tlačítky"
+        },
+        "file_recovery": {
+          "name": "Obnova souboru",
+          "desc": "Automatické lokální snímkování pro ochranu před ztrátou dat"
+        }
+      },
+      "community": {
+        "title": "Komunitní pluginy",
+        "safe_mode": "Nouzový režim",
+        "safe_mode_desc": "Blokuje spouštění komunitních pluginů pro stabilitu systému a ochranu dat",
+        "browse": "Procházet komunitní pluginy",
+        "catalog": "Katalog komunitních pluginů",
+        "catalog_desc": "Objevte, nainstalujte a aktualizujte pluginy vytvořené komunitou",
+        "compat_full": "100% kompatibilní",
+        "compat_score": "{}% kompatibilní",
+        "incompatible": "Nekompatibilní",
+        "compat_unknown": "Kompatibilita neznámá",
+        "installed": "Nainstalované pluginy ({})"
+      },
+      "detail": {
+        "back": "Zpět k pluginům",
+        "enable": "Umožnit",
+        "disable": "Zakázat",
+        "reload": "Znovu načíst",
+        "open_folder": "Otevřete složku",
+        "enabled": "Povoleno",
+        "disabled": "Zakázáno",
+        "author": "Autor: {}"
+      },
+      "metadata": {
+        "title": "Metadata",
+        "name": "Název pluginu",
+        "id": "ID pluginu",
+        "version": "Verze",
+        "min_app_version": "Minimální verze aplikace",
+        "author": "Autor",
+        "author_url": "Adresa URL autora",
+        "desktop_only": "Pouze pro stolní počítače",
+        "desktop_only_true": "pravda (pouze počítač)",
+        "desktop_only_false": "nepravda (mezi platformami)",
+        "install_path": "Instalační cesta"
+      },
+      "readme": {
+        "title": "INFORMACE O ZÁSUVKU",
+        "missing": "Nebyl nalezen žádný soubor README.md",
+        "hint": "V adresáři pluginu neexistuje žádný soubor dokumentace. Chcete-li zde zobrazit pokyny, přidejte soubor README.md."
+      },
+      "config": {
+        "title": "NASTAVENÍ PLUGINU",
+        "store": "Konfigurační úložiště (.vault/plugins/<id>/data.json)",
+        "card": "Nastavení pluginu (data.json)",
+        "card_short": "Nastavení"
+      },
+      "edit_title": "Upravit"
+    },
+    "toolbar": {
+      "back": "Zpět k hlavním pluginům",
+      "title": "Panel nástrojů editoru",
+      "desc": "Přizpůsobte tlačítka formátování, vnořené rozevírací skupiny a oddělovače nad editorem.",
+      "add_button": "+ Tlačítko",
+      "add_dropdown": "+ Rozbalovací nabídka ▾",
+      "add_separator": "+ Separátor",
+      "reset": "Obnovit výchozí nastavení",
+      "export": "Exportujte JSON",
+      "import": "Importujte JSON",
+      "separator": "──────── (oddělovač)",
+      "dropdown_fallback": "Rozbalovací nabídka",
+      "add_inside": "+ přidat dovnitř",
+      "items": "{} položek",
+      "search": "Vyhledávání...",
+      "select_command": "Vyberte příkaz...",
+      "select_icon": "Vyberte ikonu...",
+      "step_command": "1. Příkaz:",
+      "step_icon": "2. Ikona:",
+      "save_button": "Tlačítko Uložit",
+      "add_formatting_button": "Přidat tlačítko formátování",
+      "create_group_title": "Vytvořit rozevírací skupinu",
+      "select_group_icon": "Vyberte ikonu skupiny:",
+      "create_group": "Vytvořit skupinu",
+      "default_group": "Nová skupina",
+      "status": {
+        "reset_done": "Obnovit výchozí nastavení",
+        "copied": "Konfigurace zkopírována do schránky",
+        "clipboard_empty": "Schránka je prázdná",
+        "import_done": "Konfigurace úspěšně importována!",
+        "import_error": "Chyba: Nepodařilo se analyzovat JSON"
+      }
+    },
+    "registry": {
+      "ui": {
+        "theme": {
+          "title": "Vzhled Téma",
+          "desc": "Barevný motiv pro uživatelské rozhraní: systémový, tmavý nebo světlý"
+        },
+        "language": {
+          "title": "Jazyk rozhraní",
+          "desc": "Jazyk lokalizace rozhraní (ru / en)"
+        },
+        "primaryColor": {
+          "title": "Barva primárního zvýraznění",
+          "desc": "Vlastní barva zvýraznění značky pro tlačítka, výběry a aktivní karty"
+        },
+        "sidebarSmartScroll": {
+          "title": "Inteligentní posouvání postranního panelu",
+          "desc": "Při přepínání poznámek automaticky vycentrovat aktivní soubor ve stromu postranního panelu"
+        },
+        "swapTabBarButtons": {
+          "title": "Vyměňte tlačítka pro vytvoření panelu záložek",
+          "desc": "Tlačítko nové karty „+“ vlevo (otevře kartu zcela vlevo), tlačítko nové poznámky vpravo (otevře kartu zcela vpravo)"
+        }
+      },
+      "editor": {
+        "fontSizeBase": {
+          "title": "Velikost písma editoru",
+          "desc": "Základní velikost písma ve výřezu editoru poznámek (px)"
+        },
+        "fontFamily": {
+          "title": "Rodina písem editoru",
+          "desc": "Rodina písem pro zobrazení a úpravu obsahu poznámky"
+        },
+        "wordWrap": {
+          "title": "Zalomení slov",
+          "desc": "Elegantně zalomte dlouhé čáry na okraji výřezu editoru"
+        },
+        "liveTabs": {
+          "title": "Počet aktivních karet",
+          "desc": "Maximální počet karet editoru ponechaných aktivních v paměti"
+        },
+        "hideCurrentLineOnSelection": {
+          "title": "Skrýt aktuální řádek Zvýraznění výběru",
+          "desc": "Skrýt zvýraznění aktuálního řádku, když je vybrán rozsah textu"
+        },
+        "wheelSmoothScroll": {
+          "title": "Plynulé rolování kolečkem (lehkost 90 ms)",
+          "desc": "Krátká animace kola s tvrdým přistáním namísto okamžitých kroků. Vypnuto znamená, že text přestane fungovat"
+        },
+        "scrollbarRuler": {
+          "title": "Značky pravítka posuvníku",
+          "desc": "Tenká čára kurzoru a rozsah výběru přes palec posuvníku editoru"
+        },
+        "wideScrollbar": {
+          "title": "Široký posuvník (ve stylu Zed)",
+          "desc": "Široký pruh o velikosti 16 pixelů s viditelnou stopou a čtvercovým palcem v plné šířce namísto úzké pilulky"
+        },
+        "noteWidth": {
+          "title": "Poznámka: Šířka sloupce",
+          "desc": "Šířka sloupce obsahu poznámky jako procento okna (0–100 %)"
+        },
+        "noteAlign": {
+          "title": "Poznámka Zarovnání",
+          "desc": "Horizontální zarovnání sloupce poznámky: zarovnáno na střed nebo doleva"
+        },
+        "titleAlign": {
+          "title": "Zarovnání názvu poznámky (okno)",
+          "desc": "Poloha názvu souboru vzhledem k oknu: vlevo nebo na střed"
+        },
+        "titleAlignEditor": {
+          "title": "Zarovnání názvu poznámky (editor)",
+          "desc": "Poloha názvu souboru vzhledem ke sloupci poznámky: levý okraj nebo střed"
+        }
+      },
+      "reader": {
+        "lineHeight": {
+          "title": "Výška řádku čtečky",
+          "desc": "Násobič výšky řádku pro pohodlný režim čtení"
+        },
+        "maxWidthCh": {
+          "title": "Maximální šířka sloupce čtečky",
+          "desc": "Maximální šířka sloupce textového kontejneru ve znacích (ch)"
+        }
+      },
+      "communityPlugins": {
+        "safeMode": {
+          "title": "Komunitní pluginy v nouzovém režimu",
+          "desc": "Blokuje spouštění komunitních pluginů pro stabilitu systému a ochranu dat"
+        }
+      },
+      "mcp": {
+        "enabled": {
+          "title": "Povolit místní server MCP",
+          "desc": "Model Context Protocol server pro integraci s externími asistenty kódování AI"
+        }
+      },
+      "trash": {
+        "retentionDays": {
+          "title": "Dny zadržování odpadků",
+          "desc": "Počet dní, po které smazané poznámky zůstanou v koši před vymazáním"
+        }
+      },
+      "files": {
+        "autoTrashAttachments": {
+          "title": "Automaticky vyhazovat přílohy",
+          "desc": "Automaticky přesouvat přílohy do koše, když jsou odkazy odstraněny z poznámek"
+        }
+      }
     }
   },
   "sidebar": {

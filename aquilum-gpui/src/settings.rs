@@ -633,10 +633,8 @@ pub enum SettingType {
 pub struct SettingDescriptor {
     pub id: &'static str,
     pub tab_id: &'static str,
-    pub title_ru: &'static str,
-    pub title_en: &'static str,
-    pub desc_ru: &'static str,
-    pub desc_en: &'static str,
+    pub title_key: &'static str,
+    pub desc_key: &'static str,
     pub keywords: &'static [&'static str],
     pub aliases: &'static [&'static str],
     pub setting_type: SettingType,
@@ -647,12 +645,12 @@ impl SettingDescriptor {
         format!("{}://settings/{}", APP_URL_SCHEME, self.id)
     }
 
-    pub fn title(&self, is_ru: bool) -> &'static str {
-        if is_ru { self.title_ru } else { self.title_en }
+    pub fn title(&self, lang: &str) -> String {
+        crate::i18n::t(self.title_key, lang)
     }
 
-    pub fn description(&self, is_ru: bool) -> &'static str {
-        if is_ru { self.desc_ru } else { self.desc_en }
+    pub fn description(&self, lang: &str) -> String {
+        crate::i18n::t(self.desc_key, lang)
     }
 }
 
@@ -660,10 +658,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "ui.theme",
         tab_id: "ui",
-        title_ru: "Тема оформления",
-        title_en: "Appearance Theme",
-        desc_ru: "Выбор цветовой темы интерфейса: системная, тёмная или светлая",
-        desc_en: "Color theme for the user interface: system, dark, or light",
+        title_key: "settings.registry.ui.theme.title",
+        desc_key: "settings.registry.ui.theme.desc",
         keywords: &["theme", "dark", "light", "тема", "тёмная", "светлая"],
         aliases: &["appearance.theme"],
         setting_type: SettingType::String,
@@ -671,10 +667,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "ui.language",
         tab_id: "ui",
-        title_ru: "Язык интерфейса",
-        title_en: "Interface Language",
-        desc_ru: "Язык локализации интерфейса приложения (ru / en)",
-        desc_en: "Interface localization language (ru / en)",
+        title_key: "settings.registry.ui.language.title",
+        desc_key: "settings.registry.ui.language.desc",
         keywords: &["language", "locale", "язык", "локализация", "русский", "english"],
         aliases: &["system.language"],
         setting_type: SettingType::String,
@@ -682,10 +676,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "ui.primaryColor",
         tab_id: "ui",
-        title_ru: "Основной акцентный цвет",
-        title_en: "Primary Accent Color",
-        desc_ru: "Пользовательский акцентный цвет для кнопок, выделений и активных вкладок",
-        desc_en: "Custom brand accent color for buttons, selections, and active tabs",
+        title_key: "settings.registry.ui.primaryColor.title",
+        desc_key: "settings.registry.ui.primaryColor.desc",
         keywords: &["color", "accent", "цвет", "акцент", "hex"],
         aliases: &["appearance.accent"],
         setting_type: SettingType::String,
@@ -693,10 +685,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "ui.sidebarSmartScroll",
         tab_id: "ui",
-        title_ru: "Умная прокрутка сайдбара",
-        title_en: "Sidebar Smart Scroll",
-        desc_ru: "Автоматически центрировать активный файл в проводнике при переключении заметок",
-        desc_en: "Automatically center the active file in the sidebar tree when switching notes",
+        title_key: "settings.registry.ui.sidebarSmartScroll.title",
+        desc_key: "settings.registry.ui.sidebarSmartScroll.desc",
         keywords: &["sidebar", "scroll", "сайдбар", "прокрутка", "проводник"],
         aliases: &[],
         setting_type: SettingType::Bool,
@@ -704,10 +694,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "ui.swapTabBarButtons",
         tab_id: "ui",
-        title_ru: "Поменять местами кнопки на панели вкладок",
-        title_en: "Swap Tab Bar Creation Buttons",
-        desc_ru: "Кнопка «+» слева (создает вкладку крайней слева), а кнопка новой заметки справа (создает заметку крайней справа)",
-        desc_en: "New tab button '+' on the left (opens tab at far left), new note button on the right (opens tab at far right)",
+        title_key: "settings.registry.ui.swapTabBarButtons.title",
+        desc_key: "settings.registry.ui.swapTabBarButtons.desc",
         keywords: &["tabs", "buttons", "swap", "вкладки", "кнопки", "плюс", "заметка"],
         aliases: &[],
         setting_type: SettingType::Bool,
@@ -715,10 +703,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "editor.fontSizeBase",
         tab_id: "editor",
-        title_ru: "Размер шрифта редактора",
-        title_en: "Editor Font Size",
-        desc_ru: "Базовый кегль шрифта в окне редактирования заметок (px)",
-        desc_en: "Base font size in the note editor viewport (px)",
+        title_key: "settings.registry.editor.fontSizeBase.title",
+        desc_key: "settings.registry.editor.fontSizeBase.desc",
         keywords: &["font", "size", "editor", "шрифт", "размер", "кегль"],
         aliases: &["editor.font.font_size_base"],
         setting_type: SettingType::U32,
@@ -726,10 +712,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "editor.fontFamily",
         tab_id: "editor",
-        title_ru: "Семейство шрифта редактора",
-        title_en: "Editor Font Family",
-        desc_ru: "Гарнитура шрифта для отображения и редактирования заметок",
-        desc_en: "Typeface family for displaying and editing note contents",
+        title_key: "settings.registry.editor.fontFamily.title",
+        desc_key: "settings.registry.editor.fontFamily.desc",
         keywords: &["font", "family", "гарнитура", "моноширинный", "monospace"],
         aliases: &["editor.font.font_family"],
         setting_type: SettingType::String,
@@ -737,10 +721,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "editor.wordWrap",
         tab_id: "editor",
-        title_ru: "Перенос строк по словам",
-        title_en: "Word Wrap",
-        desc_ru: "Мягкий перенос длинных строк по границе видимой области редактора",
-        desc_en: "Wrap long lines gracefully at the editor viewport edge",
+        title_key: "settings.registry.editor.wordWrap.title",
+        desc_key: "settings.registry.editor.wordWrap.desc",
         keywords: &["wrap", "word", "lines", "перенос", "строки"],
         aliases: &["editor.wrap"],
         setting_type: SettingType::Bool,
@@ -748,10 +730,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "editor.liveTabs",
         tab_id: "editor",
-        title_ru: "Количество активных вкладок",
-        title_en: "Live Tabs Count",
-        desc_ru: "Максимальное число одновременно удерживаемых в памяти вкладок редактора",
-        desc_en: "Maximum number of editor tabs retained active in memory",
+        title_key: "settings.registry.editor.liveTabs.title",
+        desc_key: "settings.registry.editor.liveTabs.desc",
         keywords: &["tabs", "live", "вкладки", "память"],
         aliases: &[],
         setting_type: SettingType::Usize,
@@ -759,10 +739,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "editor.hideCurrentLineOnSelection",
         tab_id: "editor",
-        title_ru: "Скрывать подсветку строки при выделении",
-        title_en: "Hide Current Line Highlight on Selection",
-        desc_ru: "Не подсвечивать текущую строку, когда выделен диапазон текста",
-        desc_en: "Hide current line highlight when a text range is selected",
+        title_key: "settings.registry.editor.hideCurrentLineOnSelection.title",
+        desc_key: "settings.registry.editor.hideCurrentLineOnSelection.desc",
         keywords: &["selection", "highlight", "выделение", "подсветка"],
         aliases: &[],
         setting_type: SettingType::Bool,
@@ -770,10 +748,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "editor.wheelSmoothScroll",
         tab_id: "editor",
-        title_ru: "Плавная прокрутка колесом (ease 90 мс)",
-        title_en: "Smooth Wheel Scroll (90 ms ease)",
-        desc_ru: "Короткая анимация колеса с жёсткой посадкой вместо мгновенных шагов. Выкл — текст останавливается сразу",
-        desc_en: "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead",
+        title_key: "settings.registry.editor.wheelSmoothScroll.title",
+        desc_key: "settings.registry.editor.wheelSmoothScroll.desc",
         keywords: &["scroll", "smooth", "wheel", "прокрутка", "плавная", "колесо", "ease"],
         aliases: &[],
         setting_type: SettingType::Bool,
@@ -781,10 +757,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "editor.scrollbarRuler",
         tab_id: "editor",
-        title_ru: "Метки курсора и выделения на скроллбаре",
-        title_en: "Scrollbar Ruler Marks",
-        desc_ru: "Тонкая линия курсора и область выделения поверх ползунка редактора",
-        desc_en: "Thin cursor line and selection span over the editor scrollbar thumb",
+        title_key: "settings.registry.editor.scrollbarRuler.title",
+        desc_key: "settings.registry.editor.scrollbarRuler.desc",
         keywords: &["scrollbar", "ruler", "cursor", "selection", "скроллбар", "курсор", "выделение", "метки"],
         aliases: &[],
         setting_type: SettingType::Bool,
@@ -792,10 +766,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "editor.wideScrollbar",
         tab_id: "editor",
-        title_ru: "Широкий скроллбар (как в Zed)",
-        title_en: "Wide Scrollbar (Zed-style)",
-        desc_ru: "Широкая лента 16 px с видимым треком и квадратным ползунком на всю ширину вместо узкой пилюли",
-        desc_en: "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill",
+        title_key: "settings.registry.editor.wideScrollbar.title",
+        desc_key: "settings.registry.editor.wideScrollbar.desc",
         keywords: &["scrollbar", "wide", "zed", "скроллбар", "широкий", "ползунок"],
         aliases: &[],
         setting_type: SettingType::Bool,
@@ -803,10 +775,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "editor.noteWidth",
         tab_id: "ui",
-        title_ru: "Ширина заметки",
-        title_en: "Note Column Width",
-        desc_ru: "Ширина текстовой колонки заметки в процентах от ширины окна (0–100%)",
-        desc_en: "Width of the note content column as a percentage of the window (0-100%)",
+        title_key: "settings.registry.editor.noteWidth.title",
+        desc_key: "settings.registry.editor.noteWidth.desc",
         keywords: &["width", "note", "slider", "ширина", "заметка", "ползунок"],
         aliases: &["ui.noteWidth"],
         setting_type: SettingType::U32,
@@ -814,10 +784,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "editor.noteAlign",
         tab_id: "ui",
-        title_ru: "Выравнивание заметки",
-        title_en: "Note Alignment",
-        desc_ru: "Горизонтальное выравнивание колонки заметки: по центру или по левому краю",
-        desc_en: "Horizontal alignment of the note column: centered or left-aligned",
+        title_key: "settings.registry.editor.noteAlign.title",
+        desc_key: "settings.registry.editor.noteAlign.desc",
         keywords: &["align", "center", "left", "выравнивание", "центр", "левый край"],
         aliases: &["ui.noteAlign"],
         setting_type: SettingType::String,
@@ -825,10 +793,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "editor.titleAlign",
         tab_id: "ui",
-        title_ru: "Положение заголовка (по окну)",
-        title_en: "Note Title Alignment (Window)",
-        desc_ru: "Положение имени файла по ширине окна: слева или по центру",
-        desc_en: "Position of the file title relative to the window: left or centered",
+        title_key: "settings.registry.editor.titleAlign.title",
+        desc_key: "settings.registry.editor.titleAlign.desc",
         keywords: &["title", "align", "filename", "заголовок", "имя файла", "окно"],
         aliases: &["ui.titleAlign", "editor.titleAlignWindow"],
         setting_type: SettingType::String,
@@ -836,10 +802,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "editor.titleAlignEditor",
         tab_id: "ui",
-        title_ru: "Положение заголовка (по редактору)",
-        title_en: "Note Title Alignment (Editor)",
-        desc_ru: "Положение имени файла по ширине заметки: по левому краю или по середине",
-        desc_en: "Position of the file title relative to the note column: left edge or centered",
+        title_key: "settings.registry.editor.titleAlignEditor.title",
+        desc_key: "settings.registry.editor.titleAlignEditor.desc",
         keywords: &["title", "align", "editor", "заметка", "редактор", "колонка"],
         aliases: &["ui.titleAlignEditor"],
         setting_type: SettingType::String,
@@ -847,10 +811,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "reader.lineHeight",
         tab_id: "reader",
-        title_ru: "Высота строки в режиме чтения",
-        title_en: "Reader Line Height",
-        desc_ru: "Межстрочный интервал текста в режиме комфортного чтения",
-        desc_en: "Line height multiplier for comfortable reading mode",
+        title_key: "settings.registry.reader.lineHeight.title",
+        desc_key: "settings.registry.reader.lineHeight.desc",
         keywords: &["reader", "line", "height", "чтение", "интервал"],
         aliases: &[],
         setting_type: SettingType::F32,
@@ -858,10 +820,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "reader.maxWidthCh",
         tab_id: "reader",
-        title_ru: "Максимальная ширина колонки чтения",
-        title_en: "Reader Max Column Width",
-        desc_ru: "Ограничение ширины текстового блока в символах (ch)",
-        desc_en: "Maximum text container column width in characters (ch)",
+        title_key: "settings.registry.reader.maxWidthCh.title",
+        desc_key: "settings.registry.reader.maxWidthCh.desc",
         keywords: &["width", "reader", "ширина", "колонка", "символы"],
         aliases: &[],
         setting_type: SettingType::U32,
@@ -869,10 +829,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "communityPlugins.safeMode",
         tab_id: "community-plugins",
-        title_ru: "Безопасный режим сторонних плагинов",
-        title_en: "Community Plugins Safe Mode",
-        desc_ru: "Блокирует загрузку и выполнение сторонних плагинов для защиты системы",
-        desc_en: "Blocks community plugins execution for system stability and data protection",
+        title_key: "settings.registry.communityPlugins.safeMode.title",
+        desc_key: "settings.registry.communityPlugins.safeMode.desc",
         keywords: &["safe", "mode", "plugins", "безопасный", "режим", "плагины"],
         aliases: &[],
         setting_type: SettingType::Bool,
@@ -880,10 +838,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "mcp.enabled",
         tab_id: "mcp",
-        title_ru: "Включить локальный MCP сервер",
-        title_en: "Enable Local MCP Server",
-        desc_ru: "Model Context Protocol сервер для интеграции с внешними AI-агентами",
-        desc_en: "Model Context Protocol server for integration with external AI coding assistants",
+        title_key: "settings.registry.mcp.enabled.title",
+        desc_key: "settings.registry.mcp.enabled.desc",
         keywords: &["mcp", "ai", "server", "сервер", "агенты"],
         aliases: &[],
         setting_type: SettingType::Bool,
@@ -891,10 +847,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "trash.retentionDays",
         tab_id: "trash",
-        title_ru: "Срок хранения файлов в корзине",
-        title_en: "Trash Retention Days",
-        desc_ru: "Количество дней хранения удалённых заметок до окончательной очистки",
-        desc_en: "Number of days deleted notes remain in trash before purge",
+        title_key: "settings.registry.trash.retentionDays.title",
+        desc_key: "settings.registry.trash.retentionDays.desc",
         keywords: &["trash", "retention", "days", "корзина", "дни", "очистка"],
         aliases: &[],
         setting_type: SettingType::U32,
@@ -903,10 +857,8 @@ pub static SETTINGS: &[SettingDescriptor] = &[
     SettingDescriptor {
         id: "files.autoTrashAttachments",
         tab_id: "files",
-        title_ru: "Авто-корзина для вложений",
-        title_en: "Auto-Trash Attachments",
-        desc_ru: "Автоматически перемещать изображения в корзину при удалении ссылок из заметки",
-        desc_en: "Automatically move attachments to trash when references are removed from notes",
+        title_key: "settings.registry.files.autoTrashAttachments.title",
+        desc_key: "settings.registry.files.autoTrashAttachments.desc",
         keywords: &["attachments", "trash", "auto", "вложения", "корзина", "изображения", "удаление"],
         aliases: &["files.autoTrash"],
         setting_type: SettingType::Bool,
@@ -961,7 +913,12 @@ pub fn is_setting_modified(config: &AppConfig, path: &str) -> bool {
     cur != def
 }
 
-pub fn search_settings(query: &str) -> Vec<&'static SettingDescriptor> {
+/// Finds settings matching `query` for the settings search box.
+///
+/// Titles and descriptions are matched in the requested language plus the
+/// English and Russian translations, so a query typed in either language is
+/// still found when the interface uses a third one.
+pub fn search_settings(query: &str, lang: &str) -> Vec<&'static SettingDescriptor> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return Vec::new();
@@ -983,25 +940,25 @@ pub fn search_settings(query: &str) -> Vec<&'static SettingDescriptor> {
 
     for setting in SETTINGS {
         let id_lower = setting.id.to_lowercase();
-        let title_ru = setting.title_ru.to_lowercase();
-        let title_en = setting.title_en.to_lowercase();
-        let desc_ru = setting.desc_ru.to_lowercase();
-        let desc_en = setting.desc_en.to_lowercase();
+        let mut titles = Vec::with_capacity(3);
+        let mut descs = Vec::with_capacity(3);
+        for code in [lang, "en", "ru"] {
+            titles.push(crate::i18n::t(setting.title_key, code).to_lowercase());
+            descs.push(crate::i18n::t(setting.desc_key, code).to_lowercase());
+        }
 
         let mut score = 0i32;
 
-        if id_lower == q || title_ru == q || title_en == q {
+        if id_lower == q || titles.iter().any(|title| title == &q) {
             score += 1000;
-        } else if id_lower.contains(&q) || title_ru.contains(&q) || title_en.contains(&q) {
+        } else if id_lower.contains(&q) || titles.iter().any(|title| title.contains(&q)) {
             score += 500;
         }
 
         let all_matched = terms.iter().all(|term| {
             id_lower.contains(term)
-                || title_ru.contains(term)
-                || title_en.contains(term)
-                || desc_ru.contains(term)
-                || desc_en.contains(term)
+                || titles.iter().any(|title| title.contains(term))
+                || descs.iter().any(|desc| desc.contains(term))
                 || setting.keywords.iter().any(|kw| kw.to_lowercase().contains(term))
                 || setting.aliases.iter().any(|al| al.to_lowercase().contains(term))
         });
@@ -1009,9 +966,9 @@ pub fn search_settings(query: &str) -> Vec<&'static SettingDescriptor> {
         if all_matched {
             for term in &terms {
                 if id_lower.contains(term) { score += 50; }
-                if title_ru.contains(term) || title_en.contains(term) { score += 40; }
+                if titles.iter().any(|title| title.contains(term)) { score += 40; }
                 if setting.keywords.iter().any(|kw| kw.to_lowercase().contains(term)) { score += 30; }
-                if desc_ru.contains(term) || desc_en.contains(term) { score += 10; }
+                if descs.iter().any(|desc| desc.contains(term)) { score += 10; }
             }
             matches.push((score, setting));
         }

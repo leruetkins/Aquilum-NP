@@ -181,7 +181,7 @@ impl SettingsView {
                 Some(&self.t("settings.editor.note_width_desc")),
                 self.render_stepper(
                     "ui-note-width",
-                    &format!("{}%", config.editor.editor_width_pct),
+                    &self.t_fmt("settings.units.percent", &[&config.editor.editor_width_pct.to_string()]),
                     |this: &mut SettingsView, cx| {
                         if this.config.editor.editor_width_pct > 0 {
                             this.config.editor.editor_width_pct = this.config.editor.editor_width_pct.saturating_sub(5);
@@ -356,14 +356,18 @@ impl SettingsView {
             self.render_setting_row(
                 &self.t("settings.ui.font_weight"),
                 Some(&self.t("settings.ui.font_weight_desc")),
-                self.render_select_pill(if config.ui.font.font_weight >= 600 { "Semibold" } else { "Regular" }),
+                self.render_select_pill(&self.t(if config.ui.font.font_weight >= 600 {
+                    "settings.ui.font_weight_semibold"
+                } else {
+                    "settings.ui.font_weight_regular"
+                })),
             ),
             self.render_setting_row(
                 &self.t("settings.ui.font_size"),
                 Some(&self.t("settings.ui.font_size_desc")),
                 self.render_stepper(
                     "ui-font-size",
-                    &format!("{} px", config.ui.font.font_size_base),
+                    &self.t_fmt("settings.units.px", &[&config.ui.font.font_size_base.to_string()]),
                     |this: &mut SettingsView, cx| {
                         if this.config.ui.font.font_size_base > 11 {
                             this.config.ui.font.font_size_base -= 1;
@@ -409,7 +413,7 @@ impl SettingsView {
                     .gap_3()
                     .child(self.render_stepper(
                         "h1-size",
-                        &format!("{} px", config.editor.headings.h1.font_size),
+                        &self.t_fmt("settings.units.px", &[&config.editor.headings.h1.font_size.to_string()]),
                         |this, cx| {
                             if this.config.editor.headings.h1.font_size > 14 {
                                 this.config.editor.headings.h1.font_size -= 1;
@@ -454,7 +458,7 @@ impl SettingsView {
                     .gap_3()
                     .child(self.render_stepper(
                         "h2-size",
-                        &format!("{} px", config.editor.headings.h2.font_size),
+                        &self.t_fmt("settings.units.px", &[&config.editor.headings.h2.font_size.to_string()]),
                         |this, cx| {
                             if this.config.editor.headings.h2.font_size > 13 {
                                 this.config.editor.headings.h2.font_size -= 1;
@@ -499,7 +503,7 @@ impl SettingsView {
                     .gap_3()
                     .child(self.render_stepper(
                         "h3-size",
-                        &format!("{} px", config.editor.headings.h3.font_size),
+                        &self.t_fmt("settings.units.px", &[&config.editor.headings.h3.font_size.to_string()]),
                         |this, cx| {
                             if this.config.editor.headings.h3.font_size > 12 {
                                 this.config.editor.headings.h3.font_size -= 1;
@@ -544,7 +548,7 @@ impl SettingsView {
                     .gap_3()
                     .child(self.render_stepper(
                         "h4-size",
-                        &format!("{} px", config.editor.headings.h4.font_size),
+                        &self.t_fmt("settings.units.px", &[&config.editor.headings.h4.font_size.to_string()]),
                         |this, cx| {
                             if this.config.editor.headings.h4.font_size > 11 {
                                 this.config.editor.headings.h4.font_size -= 1;
@@ -589,7 +593,7 @@ impl SettingsView {
                     .gap_3()
                     .child(self.render_stepper(
                         "h5-size",
-                        &format!("{} px", config.editor.headings.h5.font_size),
+                        &self.t_fmt("settings.units.px", &[&config.editor.headings.h5.font_size.to_string()]),
                         |this, cx| {
                             if this.config.editor.headings.h5.font_size > 10 {
                                 this.config.editor.headings.h5.font_size -= 1;
@@ -634,7 +638,7 @@ impl SettingsView {
                     .gap_3()
                     .child(self.render_stepper(
                         "h6-size",
-                        &format!("{} px", config.editor.headings.h6.font_size),
+                        &self.t_fmt("settings.units.px", &[&config.editor.headings.h6.font_size.to_string()]),
                         |this, cx| {
                             if this.config.editor.headings.h6.font_size > 9 {
                                 this.config.editor.headings.h6.font_size -= 1;
@@ -715,7 +719,7 @@ impl SettingsView {
                 Some(&self.t("settings.editor.font_size_desc")),
                 self.render_stepper(
                     "editor-font-size",
-                    &format!("{} px", config.editor.font.font_size_base),
+                    &self.t_fmt("settings.units.px", &[&config.editor.font.font_size_base.to_string()]),
                     |this: &mut SettingsView, cx| {
                         if this.config.editor.font.font_size_base > 12 {
                             this.config.editor.font.font_size_base -= 1;
@@ -762,7 +766,7 @@ impl SettingsView {
                 Some(&self.t("settings.editor.note_width_desc")),
                 self.render_stepper(
                     "editor-note-width",
-                    &format!("{}%", config.editor.editor_width_pct),
+                    &self.t_fmt("settings.units.percent", &[&config.editor.editor_width_pct.to_string()]),
                     |this: &mut SettingsView, cx| {
                         if this.config.editor.editor_width_pct > 0 {
                             this.config.editor.editor_width_pct = this.config.editor.editor_width_pct.saturating_sub(5);
@@ -931,7 +935,7 @@ impl SettingsView {
                 Some(&self.t("settings.editor.max_width_desc")),
                 self.render_stepper(
                     "editor-max-width",
-                    &format!("{} ch", config.editor.max_width_ch),
+                    &self.t_fmt("settings.units.ch", &[&config.editor.max_width_ch.to_string()]),
                     |this: &mut SettingsView, cx| {
                         if this.config.editor.max_width_ch > 40 {
                             this.config.editor.max_width_ch -= 5;
@@ -1316,7 +1320,7 @@ impl SettingsView {
                 Some(&self.t("editor.image.images_radius_desc")),
                 self.image_stepper(
                     "row-image-radius",
-                    format!("{}%", config.images.corner_radius),
+                    self.t_fmt("settings.units.percent", &[&config.images.corner_radius.to_string()]),
                     config.images.corner_radius > 0,
                     config.images.corner_radius < 50,
                     cx,
@@ -1350,6 +1354,7 @@ impl SettingsView {
                         .cursor_pointer()
                         .child(current.clone())
                         .on_click(cx.listener(move |this, _, _, cx| {
+                            // i18n-allow: caption template presets are document content, not UI chrome
                             const PRESETS: [&str; 3] = ["Рис. {n}. {text}", "Fig. {n}. {text}", "{text}"];
                             let current = this.config.images.caption_template.clone();
                             let index = PRESETS.iter().position(|preset| *preset == current).unwrap_or(0);
@@ -1433,7 +1438,7 @@ impl SettingsView {
                 Some(&self.t("editor.image.large_file_mb_desc")),
                 self.image_stepper(
                     "row-large-file",
-                    format!("{} MB", config.images.large_file_mb),
+                    self.t_fmt("settings.units.mb", &[&config.images.large_file_mb.to_string()]),
                     config.images.large_file_mb > 5,
                     config.images.large_file_mb < 200,
                     cx,
@@ -1767,7 +1772,7 @@ impl SettingsView {
                     .text_xs()
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(theme.accent)
-                    .child("v0.1.0 GPUI Native DirectX 120 FPS"),
+                    .child(format!("v{} GPUI Native DirectX 120 FPS", env!("CARGO_PKG_VERSION"))),
             ),
             self.render_setting_row(
                 &self.t("settings.system.storage"),
@@ -1855,38 +1860,32 @@ impl SettingsView {
     /// Renders the Core Plugins settings tab (Obsidian-style built-in tools).
     pub(super) fn render_core_plugins_tab(&self, cx: &Context<Self>) -> gpui::Div {
         let _theme = &self.theme;
-        let is_ru = self.config.ui.language.starts_with("ru");
-
-        let header_title = if is_ru {
-            "Встроенные модули приложения"
-        } else {
-            "Application Core Plugins"
-        };
+        let header_title = self.t("settings.plugins.core.title");
 
         // Built-in modules list
         let plugins = vec![
             (
                 "command-palette",
-                if is_ru { "Палитра команд" } else { "Command palette" },
-                if is_ru { "Быстрый поиск и выполнение команд приложения (Ctrl+Shift+P)" } else { "Quickly search and execute application actions (Ctrl+Shift+P)" },
+                self.t("settings.plugins.core.command_palette.name"),
+                self.t("settings.plugins.core.command_palette.desc"),
                 true, // Command palette is always on
             ),
             (
                 "word-counter",
-                if is_ru { "Подсчёт слов" } else { "Word counter" },
-                if is_ru { "Отображает количество слов и символов в строке состояния" } else { "Displays character and word count in the status bar" },
+                self.t("settings.plugins.core.word_counter.name"),
+                self.t("settings.plugins.core.word_counter.desc"),
                 true,
             ),
             (
                 "editor-toolbar",
-                if is_ru { "Панель инструментов редактора" } else { "Editor toolbar" },
-                if is_ru { "Панель форматирования Markdown над редактором с настраиваемыми кнопками" } else { "Markdown formatting toolbar above the editor with customizable buttons" },
+                self.t("settings.plugins.core.editor_toolbar.name"),
+                self.t("settings.plugins.core.editor_toolbar.desc"),
                 true,
             ),
             (
                 "file-recovery",
-                if is_ru { "Восстановление файлов" } else { "File recovery" },
-                if is_ru { "Создание регулярных локальных снэпшотов для защиты от потери данных" } else { "Automatic local snapshotting to protect against data loss" },
+                self.t("settings.plugins.core.file_recovery.name"),
+                self.t("settings.plugins.core.file_recovery.desc"),
                 false,
             ),
         ];
@@ -1915,6 +1914,7 @@ impl SettingsView {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(app) = this.weak_app.upgrade() {
                             let tid = toggle_id.clone();
+                            let lang = this.config.ui.language.clone();
                             app.update(cx, |app, cx| {
                                 if let Some(vault) = &app.state.vault {
                                     if is_enabled {
@@ -1925,7 +1925,11 @@ impl SettingsView {
                                     if tid == "editor-toolbar" {
                                         crate::plugins::editor_toolbar::sync_editor_toolbar_with_vault(&app.state, Some(vault));
                                     }
-                                    app.state.status_text = format!("Core plugin '{}' updated", tid);
+                                    app.state.status_text = crate::i18n::t_args(
+                                        "settings.plugins.core.status_updated",
+                                        &lang,
+                                        &[("plugin", tid.as_str())],
+                                    );
                                     cx.notify();
                                 }
                             });
@@ -1950,7 +1954,7 @@ impl SettingsView {
                     div().child(toggle)
                 };
 
-                self.render_setting_row(name, Some(desc), action_container)
+                self.render_setting_row(&name, Some(&desc), action_container)
             })
             .collect();
 
@@ -1958,19 +1962,14 @@ impl SettingsView {
             .flex()
             .flex_col()
             .gap_5()
-            .child(self.render_settings_card(header_title, rows))
+            .child(self.render_settings_card(&header_title, rows))
     }
 
     /// Renders the Community Plugins settings tab (Obsidian-style third-party plugins management).
     pub(super) fn render_community_plugins_tab(&self, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
-        let is_ru = self.config.ui.language.starts_with("ru");
 
-        let header_title = if is_ru {
-            "Сторонние плагины (Community Plugins)"
-        } else {
-            "Community Plugins"
-        };
+        let header_title = self.t("settings.plugins.community.title");
 
         let safe_mode_enabled = self.config.community_plugins.safe_mode;
         let safe_mode_toggle = div()
@@ -1990,12 +1989,8 @@ impl SettingsView {
             }));
 
         let safe_mode_row = self.render_setting_row(
-            if is_ru { "Безопасный режим (Safe Mode)" } else { "Safe Mode" },
-            Some(if is_ru {
-                "Блокирует выполнение сторонних плагинов для защиты данных и стабильности"
-            } else {
-                "Blocks community plugins execution for system stability and data protection"
-            }),
+            &self.t("settings.plugins.community.safe_mode"),
+            Some(&self.t("settings.plugins.community.safe_mode_desc")),
             safe_mode_toggle,
         );
 
@@ -2015,15 +2010,15 @@ impl SettingsView {
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(if safe_mode_enabled { theme.text_muted } else { theme.text_on_accent })
-                    .child(if is_ru { "Обзор каталога плагинов" } else { "Browse community plugins" }),
+                    .child(self.t("settings.plugins.community.browse")),
             )
             .on_click(cx.listener(|this, _, window, cx| {
                 this.open_plugin_catalog(window, cx);
             }));
 
         let browse_row = self.render_setting_row(
-            if is_ru { "Каталог плагинов" } else { "Community plugins catalog" },
-            Some(if is_ru { "Поиск, установка и обновление плагинов от сообщества" } else { "Discover, install and update community-created plugins" }),
+            &self.t("settings.plugins.community.catalog"),
+            Some(&self.t("settings.plugins.community.catalog_desc")),
             browse_btn,
         );
 
@@ -2105,22 +2100,25 @@ impl SettingsView {
                 crate::plugins::compat::CompatibilityStatus::Full => (
                     rgba(0x2ea44f22),
                     rgba(0x3fb950ff),
-                    if is_ru { "100% Совместим".to_string() } else { "100% Compatible".to_string() },
+                    self.t("settings.plugins.community.compat_full"),
                 ),
                 crate::plugins::compat::CompatibilityStatus::Partial(score) => (
                     rgba(0xdbab0922),
                     rgba(0xd29922ff),
-                    if is_ru { format!("{:.0}% Совместим", score * 100.0) } else { format!("{:.0}% Compatible", score * 100.0) },
+                    self.t_fmt(
+                        "settings.plugins.community.compat_score",
+                        &[&format!("{:.0}", score * 100.0)],
+                    ),
                 ),
                 crate::plugins::compat::CompatibilityStatus::Incompatible => (
                     rgba(0xf8514922),
                     rgba(0xf85149ff),
-                    if is_ru { "Не поддерживается".to_string() } else { "Incompatible".to_string() },
+                    self.t("settings.plugins.community.incompatible"),
                 ),
                 crate::plugins::compat::CompatibilityStatus::Unknown => (
                     rgba(0x8b949e22),
                     rgba(0x8b949eff),
-                    if is_ru { "Совместимость неизвестна".to_string() } else { "Compatibility unknown".to_string() },
+                    self.t("settings.plugins.community.compat_unknown"),
                 ),
             };
 
@@ -2207,17 +2205,16 @@ impl SettingsView {
             plugin_rows.push(row);
         }
 
-        let installed_card_title = if is_ru {
-            format!("Установленные плагины ({})", installed_plugins.len())
-        } else {
-            format!("Installed plugins ({})", installed_plugins.len())
-        };
+        let installed_card_title = self.t_fmt(
+            "settings.plugins.community.installed",
+            &[&installed_plugins.len().to_string()],
+        );
 
         div()
             .flex()
             .flex_col()
             .gap_5()
-            .child(self.render_settings_card(header_title, vec![safe_mode_row, browse_row]))
+            .child(self.render_settings_card(&header_title, vec![safe_mode_row, browse_row]))
             .when(!plugin_rows.is_empty(), |this| {
                 this.child(self.render_settings_card(&installed_card_title, plugin_rows))
             })
@@ -2673,7 +2670,6 @@ impl SettingsView {
         }
 
         let theme = &self.theme;
-        let is_ru = self.config.ui.language.starts_with("ru");
 
         // Back button to Community Plugins list
         let back_btn = div()
@@ -2694,7 +2690,7 @@ impl SettingsView {
                     .text_xs()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.text_primary)
-                    .child(if is_ru { "Назад к списку плагинов" } else { "Back to plugins" }),
+                    .child(self.t("settings.plugins.detail.back")),
             )
             .on_click(cx.listener(|this, _, _, cx| {
                 this.settings_tab = SettingsTab::CommunityPlugins;
@@ -2824,9 +2820,9 @@ impl SettingsView {
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(if is_enabled { theme.text_primary } else { theme.text_on_accent })
                     .child(if is_enabled {
-                        if is_ru { "Отключить" } else { "Disable" }
+                        self.t("settings.plugins.detail.disable")
                     } else {
-                        if is_ru { "Включить" } else { "Enable" }
+                        self.t("settings.plugins.detail.enable")
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.toggle_community_plugin(&toggle_id, cx);
@@ -2853,7 +2849,7 @@ impl SettingsView {
                             div()
                                 .text_xs()
                                 .text_color(theme.text_primary)
-                                .child(if is_ru { "Перезагрузить" } else { "Reload" }),
+                                .child(self.t("settings.plugins.detail.reload")),
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.load_installed_plugins_for_vault(cx);
@@ -2896,7 +2892,7 @@ impl SettingsView {
                             div()
                                 .text_xs()
                                 .text_color(theme.text_primary)
-                                .child(if is_ru { "Открыть папку" } else { "Open folder" }),
+                                .child(self.t("settings.plugins.detail.open_folder")),
                         )
                         .on_click(cx.listener(move |_this, _, _, _cx| {
                             let _ = std::process::Command::new("explorer").arg(&p_dir).spawn();
@@ -2925,7 +2921,7 @@ impl SettingsView {
                             .text_xs()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgba(0xea4335ff))
-                            .child(if is_ru { "Удалить" } else { "Delete" }),
+                            .child(self.t("common.delete")),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.uninstall_plugin_from_catalog(&uninstall_id, cx);
@@ -2986,9 +2982,9 @@ impl SettingsView {
                             .bg(if is_enabled { rgba(0x34a85322) } else { theme.bg_hover })
                             .text_color(if is_enabled { rgba(0x34a853ff) } else { theme.text_muted })
                             .child(if is_enabled {
-                                if is_ru { "Активен" } else { "Enabled" }
+                                self.t("settings.plugins.detail.enabled")
                             } else {
-                                if is_ru { "Отключен" } else { "Disabled" }
+                                self.t("settings.plugins.detail.disabled")
                             }),
                     ),
             )
@@ -2997,7 +2993,7 @@ impl SettingsView {
                     div()
                         .text_xs()
                         .text_color(theme.text_muted)
-                        .child(format!("{} {}", if is_ru { "Автор:" } else { "By" }, author_str)),
+                        .child(self.t_fmt("settings.plugins.detail.author", &[author_str.as_str()])),
                 )
             })
             .when(!desc_str.is_empty(), |parent| {
@@ -3012,27 +3008,27 @@ impl SettingsView {
         // Technical metadata card: show all manifest fields
         let mut meta_rows = vec![
             self.render_setting_row(
-                if is_ru { "Название плагина (name)" } else { "Plugin Name" },
+                &self.t("settings.plugins.metadata.name"),
                 None,
                 div().text_xs().font_weight(gpui::FontWeight::SEMIBOLD).text_color(theme.text_primary).child(display_name),
             ),
             self.render_setting_row(
-                if is_ru { "Идентификатор (id)" } else { "Plugin ID" },
+                &self.t("settings.plugins.metadata.id"),
                 None,
                 div().text_xs().font_family(self.editor_font_family()).text_color(theme.text_secondary).child(actual_manifest_id),
             ),
             self.render_setting_row(
-                if is_ru { "Версия (version)" } else { "Version" },
+                &self.t("settings.plugins.metadata.version"),
                 None,
                 div().text_xs().text_color(theme.text_secondary).child(version_str),
             ),
             self.render_setting_row(
-                if is_ru { "Совместимость (minAppVersion)" } else { "Minimum App Version" },
+                &self.t("settings.plugins.metadata.min_app_version"),
                 None,
                 div().text_xs().text_color(theme.text_secondary).child(format!(">= {}", min_app)),
             ),
             self.render_setting_row(
-                if is_ru { "Автор (author)" } else { "Author" },
+                &self.t("settings.plugins.metadata.author"),
                 None,
                 div().text_xs().text_color(theme.text_secondary).child(if author_str.is_empty() { "—".to_string() } else { author_str }),
             ),
@@ -3041,7 +3037,7 @@ impl SettingsView {
         if let Some(author_url) = author_url_str {
             let author_url_click = author_url.clone();
             meta_rows.push(self.render_setting_row(
-                if is_ru { "Сайт автора (authorUrl)" } else { "Author URL" },
+                &self.t("settings.plugins.metadata.author_url"),
                 None,
                 div()
                     .id("author-url-btn")
@@ -3058,18 +3054,18 @@ impl SettingsView {
 
         if let Some(desktop_only) = is_desktop_only_opt {
             meta_rows.push(self.render_setting_row(
-                if is_ru { "Только для десктопа (isDesktopOnly)" } else { "Desktop Only" },
+                &self.t("settings.plugins.metadata.desktop_only"),
                 None,
                 div().text_xs().text_color(theme.text_secondary).child(if desktop_only {
-                    if is_ru { "true (только для десктопа)" } else { "true" }
+                    self.t("settings.plugins.metadata.desktop_only_true")
                 } else {
-                    if is_ru { "false (кроссплатформенный)" } else { "false" }
+                    self.t("settings.plugins.metadata.desktop_only_false")
                 }),
             ));
         }
 
         meta_rows.push(self.render_setting_row(
-            if is_ru { "Каталог на диске" } else { "Installation path" },
+            &self.t("settings.plugins.metadata.install_path"),
             None,
             div()
                 .text_xs()
@@ -3117,7 +3113,7 @@ impl SettingsView {
                         .text_xs()
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_color(theme.text_secondary)
-                        .child(if is_ru { "ИНФОРМАЦИЯ О ПЛАГИНЕ" } else { "PLUGIN INFORMATION" }),
+                        .child(self.t("settings.plugins.readme.title")),
                 )
                 .child(
                     div()
@@ -3137,17 +3133,13 @@ impl SettingsView {
                                 .text_sm()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(theme.text_primary)
-                                .child(if is_ru { "Файл README.md отсутствует" } else { "No README.md file found" }),
+                                .child(self.t("settings.plugins.readme.missing")),
                         )
                         .child(
                             div()
                                 .text_xs()
                                 .text_color(theme.text_muted)
-                                .child(if is_ru {
-                                    "В каталоге плагина не найден файл документации. Вы можете добавить README.md для отображения руководства."
-                                } else {
-                                    "No documentation file exists in plugin directory. Add a README.md file to display instructions here."
-                                }),
+                                .child(self.t("settings.plugins.readme.hint")),
                         ),
                 )
         };
@@ -3182,7 +3174,7 @@ impl SettingsView {
                         .text_xs()
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_color(theme.text_secondary)
-                        .child(if is_ru { "ПАРАМЕТРЫ ПЛАГИНА" } else { "PLUGIN SETTINGS" }),
+                        .child(self.t("settings.plugins.config.title")),
                 )
                 .child(
                     div()
@@ -3209,11 +3201,7 @@ impl SettingsView {
                 .unwrap_or(serde_json::json!({}));
 
             let data_str = serde_json::to_string_pretty(&current_data).unwrap_or_else(|_| "{}".to_string());
-            let info_hint = if is_ru {
-                "Хранилище параметров (.vault/plugins/<id>/data.json)"
-            } else {
-                "Configuration store (.vault/plugins/<id>/data.json)"
-            };
+            let info_hint = self.t("settings.plugins.config.store");
 
             let json_preview = div()
                 .flex()
@@ -3232,13 +3220,13 @@ impl SettingsView {
                 );
 
             let row = self.render_setting_row(
-                if is_ru { "Параметры плагина (data.json)" } else { "Plugin settings (data.json)" },
-                Some(info_hint),
+                &self.t("settings.plugins.config.card"),
+                Some(&info_hint),
                 json_preview,
             );
 
             self.render_settings_card(
-                if is_ru { "Параметры" } else { "Settings" },
+                &self.t("settings.plugins.config.card_short"),
                 vec![row],
             )
         };
@@ -3249,7 +3237,7 @@ impl SettingsView {
             .gap_5()
             .child(top_action_bar)
             .child(details_header)
-            .child(self.render_settings_card(if is_ru { "Метаданные" } else { "Metadata" }, meta_rows))
+            .child(self.render_settings_card(&self.t("settings.plugins.metadata.title"), meta_rows))
             .child(content_section)
             .child(settings_section)
     }

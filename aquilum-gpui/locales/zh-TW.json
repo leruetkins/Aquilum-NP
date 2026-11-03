@@ -34,7 +34,11 @@
       "history": "歷史",
       "trash": "垃圾",
       "system": "系統",
-      "shortcuts": "快速方式"
+      "shortcuts": "快速方式",
+      "core_plugins": "核心插件",
+      "community_plugins": "社群插件",
+      "plugin_settings": "插件設定",
+      "editor_toolbar": "編輯器工具列"
     },
     "ui": {
       "title": "介面設定",
@@ -58,7 +62,9 @@
       "sidebar_smart_scroll": "智慧型文件列表滾動",
       "sidebar_smart_scroll_desc": "按住 Ctrl 鍵，遊標位置將驅動文件列表，就像打開的選項卡彈出視窗一樣。按住時滾輪將被停用。",
       "swap_tab_bar_buttons": "交換標籤列建立按鈕",
-      "swap_tab_bar_buttons_desc": "左側的新選項卡按鈕“+”（在最左側開啟選項卡），右側的新註釋按鈕（在最右側開啟選項卡）。"
+      "swap_tab_bar_buttons_desc": "左側的新選項卡按鈕“+”（在最左側開啟選項卡），右側的新註釋按鈕（在最右側開啟選項卡）。",
+      "font_weight_semibold": "半粗體",
+      "font_weight_regular": "常規的"
     },
     "editor": {
       "title": "降價編輯器",
@@ -233,6 +239,227 @@
       "quick_open": "轉到文件（快速開啟）",
       "search_files": "搜尋文件",
       "open_command_palette": "打開命令面板"
+    },
+    "nav": {
+      "search_placeholder": "搜尋設定...",
+      "search_empty": "沒有找到設定"
+    },
+    "units": {
+      "px": "{} 像素",
+      "ch": "{} 頻道",
+      "percent": "{}%",
+      "mb": "{} MB"
+    },
+    "plugins": {
+      "core": {
+        "title": "應用程式核心插件",
+        "status_updated": "",
+        "command_palette": {
+          "name": "命令面板",
+          "desc": ""
+        },
+        "word_counter": {
+          "name": "",
+          "desc": "在狀態列中顯示字元和字數"
+        },
+        "editor_toolbar": {
+          "name": "編輯器工具列",
+          "desc": "編輯器上方的 Markdown 格式工具列附有可自訂按鈕"
+        },
+        "file_recovery": {
+          "name": "文件恢復",
+          "desc": ""
+        }
+      },
+      "community": {
+        "title": "社群插件",
+        "safe_mode": "安全模式",
+        "safe_mode_desc": "阻止社群插件執行以確保系統穩定性和資料保護",
+        "browse": "",
+        "catalog": "社群插件目錄",
+        "catalog_desc": "",
+        "compat_full": "",
+        "compat_score": "{}% 相容的",
+        "incompatible": "不相容",
+        "compat_unknown": "相容性未知",
+        "installed": "已安裝的插件 ({})"
+      },
+      "detail": {
+        "back": "",
+        "enable": "使能夠",
+        "disable": "停用",
+        "reload": "重新載入",
+        "open_folder": "打開資料夾",
+        "enabled": "啟用",
+        "disabled": "殘障人士",
+        "author": "經過 {}"
+      },
+      "metadata": {
+        "title": "元數據",
+        "name": "插件名稱",
+        "id": "插件ID",
+        "version": "版本",
+        "min_app_version": "",
+        "author": "作者",
+        "author_url": "",
+        "desktop_only": "",
+        "desktop_only_true": "",
+        "desktop_only_false": "",
+        "install_path": ""
+      },
+      "readme": {
+        "title": "插件資訊",
+        "missing": "",
+        "hint": "插件目錄中不存在文檔檔案。新增 README.md 檔案以在此處顯示說明。"
+      },
+      "config": {
+        "title": "插件設定",
+        "store": "配置儲存（.vault/plugins/<id>/data.json）",
+        "card": "插件設定（data.json）",
+        "card_short": "設定"
+      },
+      "edit_title": "編輯"
+    },
+    "toolbar": {
+      "back": "",
+      "title": "編輯器工具列",
+      "desc": "自訂編輯器上方的格式化按鈕、巢狀下拉群組和分隔符號。",
+      "add_button": "+ 按鈕",
+      "add_dropdown": "+ 下拉式選單 ▾",
+      "add_separator": "+ 分隔符",
+      "reset": "重設為預設值",
+      "export": "導出 JSON",
+      "import": "導入 JSON",
+      "separator": "────────（分隔符號）",
+      "dropdown_fallback": "下拉式選單",
+      "add_inside": "+ 加裡面",
+      "items": "{} 專案",
+      "search": "搜尋...",
+      "select_command": "選擇命令...",
+      "select_icon": "選擇圖示...",
+      "step_command": "1.命令：",
+      "step_icon": "2. 圖標：",
+      "save_button": "儲存按鈕",
+      "add_formatting_button": "新增格式按鈕",
+      "create_group_title": "建立下拉組",
+      "select_group_icon": "選擇群組圖示：",
+      "create_group": "建立群組",
+      "default_group": "新組",
+      "status": {
+        "reset_done": "重設為預設值",
+        "copied": "配置已複製到剪貼簿",
+        "clipboard_empty": "剪貼簿為空",
+        "import_done": "配置導入成功！",
+        "import_error": "錯誤：無法解析 JSON"
+      }
+    },
+    "registry": {
+      "ui": {
+        "theme": {
+          "title": "外觀主題",
+          "desc": ""
+        },
+        "language": {
+          "title": "介面語言",
+          "desc": "介面本地化語言（俄語/英語）"
+        },
+        "primaryColor": {
+          "title": "主要強調色",
+          "desc": "按鈕、選擇和活動標籤的自訂品牌強調色"
+        },
+        "sidebarSmartScroll": {
+          "title": "側邊欄智慧滾動",
+          "desc": "切換筆記時自動將活動檔案置於側邊欄樹中央"
+        },
+        "swapTabBarButtons": {
+          "title": "交換選項卡欄建立按鈕",
+          "desc": "左側的新選項卡按鈕“+”（在最左側開啟選項卡），右側的新註釋按鈕（在最右側開啟選項卡）"
+        }
+      },
+      "editor": {
+        "fontSizeBase": {
+          "title": "編輯器字體大小",
+          "desc": "筆記編輯器視窗中的基本字體大小 (px)"
+        },
+        "fontFamily": {
+          "title": "編輯字體系列",
+          "desc": "用於顯示和編輯筆記內容的字體系列"
+        },
+        "wordWrap": {
+          "title": "自動換行",
+          "desc": "在編輯器視窗邊緣優雅地包裹長線"
+        },
+        "liveTabs": {
+          "title": "即時標籤計數",
+          "desc": "記憶體中保留活動的編輯器標籤的最大數量"
+        },
+        "hideCurrentLineOnSelection": {
+          "title": "隱藏所選內容的目前行突出顯示",
+          "desc": "選擇文字範圍時隱藏目前行突出顯示"
+        },
+        "wheelSmoothScroll": {
+          "title": "平滑滾輪滾動（90 毫秒輕鬆）",
+          "desc": "短輪動畫，硬著陸而不是即時步驟。關閉意味著文字停止"
+        },
+        "scrollbarRuler": {
+          "title": "捲軸標尺標記",
+          "desc": "編輯器滾動條拇指上的細光標線和選擇範圍"
+        },
+        "wideScrollbar": {
+          "title": "寬滾動條（Zed 風格）",
+          "desc": "寬 16 像素通道，具有可見軌道和全寬方形拇指，而不是狹窄的藥丸"
+        },
+        "noteWidth": {
+          "title": "注意列寬",
+          "desc": "註釋內容列的寬度佔視窗的百分比 (0-100%)"
+        },
+        "noteAlign": {
+          "title": "注意對齊",
+          "desc": "註解欄的水平對齊方式：居中或左對齊"
+        },
+        "titleAlign": {
+          "title": "註釋標題對齊（視窗）",
+          "desc": "文件標題相對於視窗的位置：左側或居中"
+        },
+        "titleAlignEditor": {
+          "title": "註釋標題對齊（編輯器）",
+          "desc": "文件標題相對於註解列的位置：左邊緣或居中"
+        }
+      },
+      "reader": {
+        "lineHeight": {
+          "title": "",
+          "desc": ""
+        },
+        "maxWidthCh": {
+          "title": "讀卡器最大列寬",
+          "desc": "最大文字容器列寬度（以字元 (ch) 為單位）"
+        }
+      },
+      "communityPlugins": {
+        "safeMode": {
+          "title": "社群外掛安全模式",
+          "desc": "阻止社群插件執行以確保系統穩定性和資料保護"
+        }
+      },
+      "mcp": {
+        "enabled": {
+          "title": "",
+          "desc": "用於與外部 AI 編碼助理整合的模型上下文協定伺服器"
+        }
+      },
+      "trash": {
+        "retentionDays": {
+          "title": "垃圾保留天數",
+          "desc": "清除之前已刪除筆記保留在垃圾箱中的天數"
+        }
+      },
+      "files": {
+        "autoTrashAttachments": {
+          "title": "自動刪除附件",
+          "desc": "從筆記中刪除引用後，自動將附件移至垃圾箱"
+        }
+      }
     }
   },
   "sidebar": {

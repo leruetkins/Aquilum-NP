@@ -6,6 +6,19 @@
         assert_eq!(comm_tab.key(), "settings.tabs.community_plugins");
         assert_eq!(comm_tab.title("ru"), "Сторонние плагины");
         assert_eq!(comm_tab.title("en"), "Community plugins");
+        assert_eq!(comm_tab.title("de"), "Community plugins");
+
+        let core_tab = SettingsTab::CorePlugins;
+        assert_eq!(core_tab.key(), "settings.tabs.core_plugins");
+        assert_eq!(core_tab.title("ru"), "Встроенные плагины");
+        assert_eq!(core_tab.title("en"), "Core plugins");
+
+        let toolbar_tab = SettingsTab::PluginSettings("editor-toolbar".to_string());
+        assert_eq!(toolbar_tab.title("ru"), "Панель инструментов");
+        assert_eq!(toolbar_tab.title("en"), "Editor Toolbar");
+
+        let unnamed_tab = SettingsTab::PluginSettings(String::new());
+        assert_eq!(unnamed_tab.title("en"), "Plugin settings");
 
         let custom_plugin_tab = SettingsTab::PluginSettings("obsidian-new-note-np".to_string());
         assert_eq!(custom_plugin_tab.key(), "settings.tabs.plugin_settings");
@@ -184,4 +197,91 @@
         // Fallback heuristic for unknown owner
         assert!(is_plugin_command("obsidian-git:pull", None));
         assert!(!is_plugin_command("editor:toggle-source", None));
+    }
+
+    /// Returns the string literals on a source line, ignoring comments.
+    fn string_literals(line: &str) -> Vec<&str> {
+        let bytes = line.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'/' if bytes.get(i + 1) == Some(&b'/') => break,
+                b'"' => {
+                    let start = i + 1;
+                    let mut end = start;
+                    while end < bytes.len() && bytes[end] != b'"' {
+                        if bytes[end] == b'\\' {
+                            end += 1;
+                        }
+                        end += 1;
+                    }
+                    out.push(&line[start..end.min(line.len())]);
+                    i = end + 1;
+                }
+                _ => i += 1,
+            }
+        }
+        out
+    }
+
+    fn has_cyrillic_word(literal: &str) -> bool {
+        literal.chars().count() > 1 && literal.chars().any(|c| ('\u{0400}'..='\u{04FF}').contains(&c))
+    }
+
+    #[test]
+    fn settings_module_has_no_hardcoded_ui_text() {
+        let sources = [
+            ("tab.rs", include_str!("tab.rs")),
+            ("tabs.rs", include_str!("tabs.rs")),
+            ("ui.rs", include_str!("ui.rs")),
+            ("plugin_toolbar.rs", include_str!("plugin_toolbar.rs")),
+        ];
+
+        for (name, src) in sources {
+            let mut allow_next_line = false;
+            for (index, line) in src.lines().enumerate() {
+                if allow_next_line {
+                    allow_next_line = false;
+                    continue;
+                }
+                if line.contains("i18n-allow") {
+                    allow_next_line = true;
+                    continue;
+                }
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                for literal in string_literals(line) {
+                    assert!(
+                        !has_cyrillic_word(literal),
+                        "{name}:{} has hardcoded UI text: {literal:?}",
+                        index + 1
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn settings_module_has_no_russian_only_switch() {
+        let sources = [
+            ("tab.rs", include_str!("tab.rs")),
+            ("tabs.rs", include_str!("tabs.rs")),
+            ("ui.rs", include_str!("ui.rs")),
+            ("plugin_toolbar.rs", include_str!("plugin_toolbar.rs")),
+        ];
+
+        for (name, src) in sources {
+            for (index, line) in src.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                assert!(
+                    !line.contains("starts_with(\"ru\")"),
+                    "{name}:{} must not branch on the Russian locale",
+                    index + 1
+                );
+            }
+        }
     }

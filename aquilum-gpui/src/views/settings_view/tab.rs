@@ -85,31 +85,13 @@ impl SettingsTab {
     /// Returns the user-facing localized display title for the tab.
     pub fn title(&self, lang: &str) -> String {
         match self {
-            Self::CorePlugins => {
-                if lang.starts_with("ru") {
-                    "Встроенные плагины".to_string()
-                } else {
-                    "Core plugins".to_string()
-                }
+            Self::PluginSettings(name) if name.is_empty() => {
+                crate::i18n::t("settings.tabs.plugin_settings", lang)
             }
-            Self::CommunityPlugins => {
-                if lang.starts_with("ru") {
-                    "Сторонние плагины".to_string()
-                } else {
-                    "Community plugins".to_string()
-                }
+            Self::PluginSettings(name) if name == "editor-toolbar" => {
+                crate::i18n::t("settings.tabs.editor_toolbar", lang)
             }
-            Self::PluginSettings(name) => {
-                if name == "editor-toolbar" {
-                    if lang.starts_with("ru") {
-                        "Панель инструментов".to_string()
-                    } else {
-                        "Editor Toolbar".to_string()
-                    }
-                } else {
-                    name.clone()
-                }
-            }
+            Self::PluginSettings(name) => name.clone(),
             _ => crate::i18n::t(self.key(), lang),
         }
     }

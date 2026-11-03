@@ -34,7 +34,11 @@
       "history": "Verlauf",
       "trash": "Papierkorb",
       "system": "System",
-      "shortcuts": "Tastenkürzel"
+      "shortcuts": "Tastenkürzel",
+      "core_plugins": "Kern-Plugins",
+      "community_plugins": "Community-Plugins",
+      "plugin_settings": "Plugin-Einstellungen",
+      "editor_toolbar": "Editor-Symbolleiste"
     },
     "ui": {
       "title": "Oberflächen-Einstellungen",
@@ -58,7 +62,9 @@
       "sidebar_smart_scroll": "Intelligentes Scrollen in der Dateiliste",
       "sidebar_smart_scroll_desc": "Halten Sie die Strg-Taste gedrückt, damit die Cursorposition die Dateiliste steuert, wie das Popup mit geöffneten Tabs. Das Rad ist deaktiviert, solange es gehalten wird.",
       "swap_tab_bar_buttons": "Tauschen Sie die Schaltflächen zum Erstellen der Tab-Leiste aus",
-      "swap_tab_bar_buttons_desc": "Neue Tab-Schaltfläche „+“ links (öffnet Tab ganz links) und neue Notiz-Schaltfläche rechts (öffnet Tab ganz rechts)."
+      "swap_tab_bar_buttons_desc": "Neue Tab-Schaltfläche „+“ links (öffnet Tab ganz links) und neue Notiz-Schaltfläche rechts (öffnet Tab ganz rechts).",
+      "font_weight_semibold": "Halbfett",
+      "font_weight_regular": "Regulär"
     },
     "editor": {
       "title": "Markdown-Editor",
@@ -233,6 +239,227 @@
       "quick_open": "Gehe zu Datei (Schnellöffnen)",
       "search_files": "Dateien durchsuchen",
       "open_command_palette": "Öffnen Sie die Befehlspalette"
+    },
+    "nav": {
+      "search_placeholder": "Sucheinstellungen...",
+      "search_empty": "Keine Einstellungen gefunden"
+    },
+    "units": {
+      "px": "{} px",
+      "ch": "{} Kap",
+      "percent": "{}%",
+      "mb": "{} MB"
+    },
+    "plugins": {
+      "core": {
+        "title": "Anwendungskern-Plugins",
+        "status_updated": "Kern-Plugin „{plugin}“ aktualisiert",
+        "command_palette": {
+          "name": "Befehlspalette",
+          "desc": "Anwendungsaktionen schnell suchen und ausführen (Strg+Umschalt+P)"
+        },
+        "word_counter": {
+          "name": "Wortzähler",
+          "desc": "Zeigt die Anzahl der Zeichen und Wörter in der Statusleiste an"
+        },
+        "editor_toolbar": {
+          "name": "Editor-Symbolleiste",
+          "desc": "Markdown-Formatierungssymbolleiste über dem Editor mit anpassbaren Schaltflächen"
+        },
+        "file_recovery": {
+          "name": "Dateiwiederherstellung",
+          "desc": "Automatische lokale Snapshots zum Schutz vor Datenverlust"
+        }
+      },
+      "community": {
+        "title": "Community-Plugins",
+        "safe_mode": "Abgesicherter Modus",
+        "safe_mode_desc": "Blockiert die Ausführung von Community-Plugins für Systemstabilität und Datenschutz",
+        "browse": "Durchsuchen Sie Community-Plugins",
+        "catalog": "Katalog der Community-Plugins",
+        "catalog_desc": "Entdecken, installieren und aktualisieren Sie von der Community erstellte Plugins",
+        "compat_full": "100 % kompatibel",
+        "compat_score": "{}% kompatibel",
+        "incompatible": "Unvereinbar",
+        "compat_unknown": "Kompatibilität unbekannt",
+        "installed": "Installierte Plugins ({})"
+      },
+      "detail": {
+        "back": "Zurück zu Plugins",
+        "enable": "Aktivieren",
+        "disable": "Deaktivieren",
+        "reload": "Neu laden",
+        "open_folder": "Ordner öffnen",
+        "enabled": "Ermöglicht",
+        "disabled": "Deaktiviert",
+        "author": "Von {}"
+      },
+      "metadata": {
+        "title": "Metadaten",
+        "name": "Plugin-Name",
+        "id": "Plugin-ID",
+        "version": "Version",
+        "min_app_version": "Mindest-App-Version",
+        "author": "Autor",
+        "author_url": "Autoren-URL",
+        "desktop_only": "Nur Desktop",
+        "desktop_only_true": "true (nur Desktop)",
+        "desktop_only_false": "false (plattformübergreifend)",
+        "install_path": "Installationspfad"
+      },
+      "readme": {
+        "title": "Plugin-Informationen",
+        "missing": "Keine README.md-Datei gefunden",
+        "hint": "Im Plugin-Verzeichnis ist keine Dokumentationsdatei vorhanden. Fügen Sie eine README.md-Datei hinzu, um hier Anweisungen anzuzeigen."
+      },
+      "config": {
+        "title": "PLUGIN-EINSTELLUNGEN",
+        "store": "Konfigurationsspeicher (.vault/plugins/<id>/data.json)",
+        "card": "Plugin-Einstellungen (data.json)",
+        "card_short": "Einstellungen"
+      },
+      "edit_title": "Bearbeiten"
+    },
+    "toolbar": {
+      "back": "Zurück zu den Kern-Plugins",
+      "title": "Editor-Symbolleiste",
+      "desc": "Passen Sie Formatierungsschaltflächen, verschachtelte Dropdown-Gruppen und Trennzeichen über dem Editor an.",
+      "add_button": "+-Taste",
+      "add_dropdown": "+ Dropdown ▾",
+      "add_separator": "+ Trennzeichen",
+      "reset": "Auf Standardeinstellungen zurücksetzen",
+      "export": "JSON exportieren",
+      "import": "JSON importieren",
+      "separator": "──────── (Trennzeichen)",
+      "dropdown_fallback": "Runterfallen",
+      "add_inside": "+ innen hinzufügen",
+      "items": "{} Artikel",
+      "search": "Suchen...",
+      "select_command": "Befehl auswählen...",
+      "select_icon": "Symbol auswählen...",
+      "step_command": "1. Befehl:",
+      "step_icon": "2. Symbol:",
+      "save_button": "Schaltfläche „Speichern“.",
+      "add_formatting_button": "Schaltfläche „Formatierung hinzufügen“.",
+      "create_group_title": "Erstellen Sie eine Dropdown-Gruppe",
+      "select_group_icon": "Gruppensymbol auswählen:",
+      "create_group": "Gruppe erstellen",
+      "default_group": "Neue Gruppe",
+      "status": {
+        "reset_done": "Auf Standardeinstellungen zurücksetzen",
+        "copied": "Konfiguration in die Zwischenablage kopiert",
+        "clipboard_empty": "Die Zwischenablage ist leer",
+        "import_done": "Konfiguration erfolgreich importiert!",
+        "import_error": "Fehler: JSON konnte nicht analysiert werden"
+      }
+    },
+    "registry": {
+      "ui": {
+        "theme": {
+          "title": "Erscheinungsthema",
+          "desc": "Farbthema für die Benutzeroberfläche: System, dunkel oder hell"
+        },
+        "language": {
+          "title": "Schnittstellensprache",
+          "desc": "Schnittstellenlokalisierungssprache (ru / en)"
+        },
+        "primaryColor": {
+          "title": "Primäre Akzentfarbe",
+          "desc": "Benutzerdefinierte Markenakzentfarbe für Schaltflächen, Auswahlmöglichkeiten und aktive Registerkarten"
+        },
+        "sidebarSmartScroll": {
+          "title": "Smart Scroll in der Seitenleiste",
+          "desc": "Zentrieren Sie die aktive Datei automatisch im Seitenleistenbaum, wenn Sie zwischen Notizen wechseln"
+        },
+        "swapTabBarButtons": {
+          "title": "Schaltflächen zum Erstellen der Tab-Leiste austauschen",
+          "desc": "Neue Tab-Schaltfläche „+“ links (öffnet Tab ganz links), neue Notiz-Schaltfläche rechts (öffnet Tab ganz rechts)"
+        }
+      },
+      "editor": {
+        "fontSizeBase": {
+          "title": "Schriftgröße des Editors",
+          "desc": "Basisschriftgröße im Ansichtsfenster des Notizeditors (px)"
+        },
+        "fontFamily": {
+          "title": "Editor-Schriftfamilie",
+          "desc": "Schriftfamilie zur Darstellung und Bearbeitung von Notizinhalten"
+        },
+        "wordWrap": {
+          "title": "Zeilenumbruch",
+          "desc": "Wickeln Sie lange Linien elegant am Rand des Editor-Ansichtsfensters um"
+        },
+        "liveTabs": {
+          "title": "Anzahl der Live-Tabs",
+          "desc": "Maximale Anzahl der Editor-Registerkarten, die im Speicher aktiv bleiben"
+        },
+        "hideCurrentLineOnSelection": {
+          "title": "Aktuelle Zeilenhervorhebung bei Auswahl ausblenden",
+          "desc": "Blendet die Hervorhebung der aktuellen Zeile aus, wenn ein Textbereich ausgewählt ist"
+        },
+        "wheelSmoothScroll": {
+          "title": "Smooth Wheel Scroll (90 ms Leichtigkeit)",
+          "desc": "Kurze Radanimation mit harter Landung statt sofortigen Schritten. Aus bedeutet, dass der Text nicht mehr angezeigt wird"
+        },
+        "scrollbarRuler": {
+          "title": "Linealmarkierungen der Bildlaufleiste",
+          "desc": "Die dünne Cursorlinie und die Auswahl erstrecken sich über den Daumen der Bildlaufleiste des Editors"
+        },
+        "wideScrollbar": {
+          "title": "Breite Bildlaufleiste (Zed-Stil)",
+          "desc": "Breite 16-Pixel-Spur mit sichtbarer Spur und einem quadratischen Daumen in voller Breite anstelle der schmalen Pille"
+        },
+        "noteWidth": {
+          "title": "Beachten Sie die Spaltenbreite",
+          "desc": "Breite der Notizinhaltsspalte als Prozentsatz des Fensters (0-100 %)"
+        },
+        "noteAlign": {
+          "title": "Beachten Sie die Ausrichtung",
+          "desc": "Horizontale Ausrichtung der Notizspalte: zentriert oder linksbündig"
+        },
+        "titleAlign": {
+          "title": "Ausrichtung des Notiztitels (Fenster)",
+          "desc": "Position des Dateititels relativ zum Fenster: links oder zentriert"
+        },
+        "titleAlignEditor": {
+          "title": "Ausrichtung des Notiztitels (Editor)",
+          "desc": "Position des Dateititels relativ zur Notizspalte: linker Rand oder zentriert"
+        }
+      },
+      "reader": {
+        "lineHeight": {
+          "title": "Leserzeilenhöhe",
+          "desc": "Zeilenhöhenmultiplikator für komfortablen Lesemodus"
+        },
+        "maxWidthCh": {
+          "title": "Maximale Spaltenbreite des Readers",
+          "desc": "Maximale Spaltenbreite des Textcontainers in Zeichen (ch)"
+        }
+      },
+      "communityPlugins": {
+        "safeMode": {
+          "title": "Abgesicherter Modus für Community-Plugins",
+          "desc": "Blockiert die Ausführung von Community-Plugins für Systemstabilität und Datenschutz"
+        }
+      },
+      "mcp": {
+        "enabled": {
+          "title": "Aktivieren Sie den lokalen MCP-Server",
+          "desc": "Model Context Protocol-Server zur Integration mit externen KI-Codierungsassistenten"
+        }
+      },
+      "trash": {
+        "retentionDays": {
+          "title": "Tage der Müllaufbewahrung",
+          "desc": "Anzahl der Tage, die gelöschte Notizen im Papierkorb verbleiben, bevor sie gelöscht werden"
+        }
+      },
+      "files": {
+        "autoTrashAttachments": {
+          "title": "Anhänge automatisch in den Papierkorb werfen",
+          "desc": "Verschieben Sie Anhänge automatisch in den Papierkorb, wenn Referenzen aus Notizen entfernt werden"
+        }
+      }
     }
   },
   "sidebar": {

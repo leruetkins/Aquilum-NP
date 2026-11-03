@@ -34,7 +34,11 @@
       "history": "História",
       "trash": "Lixo",
       "system": "Sistema",
-      "shortcuts": "Atalhos"
+      "shortcuts": "Atalhos",
+      "core_plugins": "Plug-ins principais",
+      "community_plugins": "Plug-ins da comunidade",
+      "plugin_settings": "Configurações do plug-in",
+      "editor_toolbar": "Barra de ferramentas do editor"
     },
     "ui": {
       "title": "Configurações de interface",
@@ -58,7 +62,9 @@
       "sidebar_smart_scroll": "Rolagem inteligente da lista de arquivos",
       "sidebar_smart_scroll_desc": "Segure Ctrl para que a posição do cursor direcione a lista de arquivos, como o pop-up de guias abertas. A roda é desativada enquanto segurada.",
       "swap_tab_bar_buttons": "Trocar botões de criação da barra de guias",
-      "swap_tab_bar_buttons_desc": "Botão de nova guia '+' à esquerda (abre a guia na extremidade esquerda) e botão de nova nota à direita (abre a guia na extremidade direita)."
+      "swap_tab_bar_buttons_desc": "Botão de nova guia '+' à esquerda (abre a guia na extremidade esquerda) e botão de nova nota à direita (abre a guia na extremidade direita).",
+      "font_weight_semibold": "Seminegrito",
+      "font_weight_regular": "Regular"
     },
     "editor": {
       "title": "Editor de redução",
@@ -233,6 +239,227 @@
       "quick_open": "Vá para arquivo (abertura rápida)",
       "search_files": "Pesquisar arquivos",
       "open_command_palette": "Abrir paleta de comandos"
+    },
+    "nav": {
+      "search_placeholder": "Configurações de pesquisa...",
+      "search_empty": "Nenhuma configuração encontrada"
+    },
+    "units": {
+      "px": "{} pixels",
+      "ch": "{} capítulo",
+      "percent": "{}%",
+      "mb": "{}MB"
+    },
+    "plugins": {
+      "core": {
+        "title": "Plug-ins principais do aplicativo",
+        "status_updated": "Plug-in principal '{plugin}' atualizado",
+        "command_palette": {
+          "name": "Paleta de comandos",
+          "desc": "Pesquise e execute ações de aplicativos rapidamente (Ctrl+Shift+P)"
+        },
+        "word_counter": {
+          "name": "Contador de palavras",
+          "desc": "Exibe contagem de caracteres e palavras na barra de status"
+        },
+        "editor_toolbar": {
+          "name": "Barra de ferramentas do editor",
+          "desc": "Barra de ferramentas de formatação Markdown acima do editor com botões personalizáveis"
+        },
+        "file_recovery": {
+          "name": "Recuperação de arquivos",
+          "desc": "Instantâneo local automático para proteção contra perda de dados"
+        }
+      },
+      "community": {
+        "title": "Plug-ins da comunidade",
+        "safe_mode": "Modo de segurança",
+        "safe_mode_desc": "Bloqueia a execução de plug-ins da comunidade para estabilidade do sistema e proteção de dados",
+        "browse": "Procure plug-ins da comunidade",
+        "catalog": "Catálogo de plug-ins da comunidade",
+        "catalog_desc": "Descubra, instale e atualize plug-ins criados pela comunidade",
+        "compat_full": "100% compatível",
+        "compat_score": "{}% Compatível",
+        "incompatible": "Incompatível",
+        "compat_unknown": "Compatibilidade desconhecida",
+        "installed": "Plug-ins instalados ({})"
+      },
+      "detail": {
+        "back": "Voltar aos plug-ins",
+        "enable": "Habilitar",
+        "disable": "Desativar",
+        "reload": "Recarregar",
+        "open_folder": "Abrir pasta",
+        "enabled": "Habilitado",
+        "disabled": "Desabilitado",
+        "author": "Por {}"
+      },
+      "metadata": {
+        "title": "Metadados",
+        "name": "Nome do plug-in",
+        "id": "ID do plug-in",
+        "version": "Versão",
+        "min_app_version": "Versão mínima do aplicativo",
+        "author": "Autor",
+        "author_url": "URL do autor",
+        "desktop_only": "Somente área de trabalho",
+        "desktop_only_true": "verdadeiro (somente desktop)",
+        "desktop_only_false": "falso (plataforma cruzada)",
+        "install_path": "Caminho de instalação"
+      },
+      "readme": {
+        "title": "INFORMAÇÕES DO PLUGIN",
+        "missing": "Nenhum arquivo README.md encontrado",
+        "hint": "Nenhum arquivo de documentação existe no diretório do plugin. Adicione um arquivo README.md para exibir instruções aqui."
+      },
+      "config": {
+        "title": "CONFIGURAÇÕES DO PLUG-IN",
+        "store": "Armazenamento de configuração (.vault/plugins/<id>/data.json)",
+        "card": "Configurações do plug-in (data.json)",
+        "card_short": "Configurações"
+      },
+      "edit_title": "Editar"
+    },
+    "toolbar": {
+      "back": "Voltar aos plug-ins principais",
+      "title": "Barra de ferramentas do editor",
+      "desc": "Personalize botões de formatação, grupos suspensos aninhados e separadores acima do editor.",
+      "add_button": "+ Botão",
+      "add_dropdown": "+ Menu suspenso ▾",
+      "add_separator": "+ Separador",
+      "reset": "Redefinir para os padrões",
+      "export": "Exportar JSON",
+      "import": "Importar JSON",
+      "separator": "──────── (separador)",
+      "dropdown_fallback": "Suspenso",
+      "add_inside": "+ adicionar dentro",
+      "items": "{} Unid",
+      "search": "Procurar...",
+      "select_command": "Selecione o comando...",
+      "select_icon": "Selecione o ícone...",
+      "step_command": "1. Comando:",
+      "step_icon": "2. Ícone:",
+      "save_button": "Botão Salvar",
+      "add_formatting_button": "Adicionar botão de formatação",
+      "create_group_title": "Criar grupo suspenso",
+      "select_group_icon": "Selecione o ícone do grupo:",
+      "create_group": "Criar grupo",
+      "default_group": "Novo grupo",
+      "status": {
+        "reset_done": "Redefinir para os padrões",
+        "copied": "Configuração copiada para a área de transferência",
+        "clipboard_empty": "A área de transferência está vazia",
+        "import_done": "Configuração importada com sucesso!",
+        "import_error": "Erro: falha ao analisar JSON"
+      }
+    },
+    "registry": {
+      "ui": {
+        "theme": {
+          "title": "Tema de aparência",
+          "desc": "Tema de cores para a interface do usuário: sistema, escuro ou claro"
+        },
+        "language": {
+          "title": "Idioma da interface",
+          "desc": "Idioma de localização da interface (ru/en)"
+        },
+        "primaryColor": {
+          "title": "Cor de destaque primária",
+          "desc": "Cor de destaque da marca personalizada para botões, seleções e guias ativas"
+        },
+        "sidebarSmartScroll": {
+          "title": "Rolagem inteligente da barra lateral",
+          "desc": "Centralize automaticamente o arquivo ativo na árvore da barra lateral ao alternar notas"
+        },
+        "swapTabBarButtons": {
+          "title": "Botões de criação da barra de troca de guias",
+          "desc": "Botão de nova guia '+' à esquerda (abre a guia na extremidade esquerda), botão de nova nota à direita (abre a guia na extremidade direita)"
+        }
+      },
+      "editor": {
+        "fontSizeBase": {
+          "title": "Tamanho da fonte do editor",
+          "desc": "Tamanho base da fonte na janela de visualização do editor de notas (px)"
+        },
+        "fontFamily": {
+          "title": "Família de fontes do editor",
+          "desc": "Família de fontes para exibir e editar o conteúdo das notas"
+        },
+        "wordWrap": {
+          "title": "Quebra de palavra",
+          "desc": "Envolva linhas longas graciosamente na borda da janela de visualização do editor"
+        },
+        "liveTabs": {
+          "title": "Contagem de guias ativas",
+          "desc": "Número máximo de guias do editor mantidas ativas na memória"
+        },
+        "hideCurrentLineOnSelection": {
+          "title": "Ocultar o destaque da linha atual na seleção",
+          "desc": "Ocultar o destaque da linha atual quando um intervalo de texto for selecionado"
+        },
+        "wheelSmoothScroll": {
+          "title": "Rolagem suave da roda (facilidade de 90 ms)",
+          "desc": "Animação de roda curta com pouso forçado em vez de passos instantâneos. Desligado significa que o texto para de funcionar"
+        },
+        "scrollbarRuler": {
+          "title": "Marcas de régua da barra de rolagem",
+          "desc": "Linha fina do cursor e extensão de seleção sobre o polegar da barra de rolagem do editor"
+        },
+        "wideScrollbar": {
+          "title": "Barra de rolagem ampla (estilo Zed)",
+          "desc": "Faixa larga de 16 px com uma trilha visível e um polegar quadrado de largura total em vez da pílula estreita"
+        },
+        "noteWidth": {
+          "title": "Observe a largura da coluna",
+          "desc": "Largura da coluna de conteúdo da nota como porcentagem da janela (0-100%)"
+        },
+        "noteAlign": {
+          "title": "Alinhamento de notas",
+          "desc": "Alinhamento horizontal da coluna da nota: centralizado ou alinhado à esquerda"
+        },
+        "titleAlign": {
+          "title": "Alinhamento do título da nota (janela)",
+          "desc": "Posição do título do arquivo em relação à janela: esquerda ou centralizado"
+        },
+        "titleAlignEditor": {
+          "title": "Alinhamento do título da nota (Editor)",
+          "desc": "Posição do título do arquivo em relação à coluna da nota: borda esquerda ou centralizado"
+        }
+      },
+      "reader": {
+        "lineHeight": {
+          "title": "Altura da linha do leitor",
+          "desc": "Multiplicador de altura de linha para modo de leitura confortável"
+        },
+        "maxWidthCh": {
+          "title": "Largura máxima da coluna do leitor",
+          "desc": "Largura máxima da coluna do contêiner de texto em caracteres (ch)"
+        }
+      },
+      "communityPlugins": {
+        "safeMode": {
+          "title": "Modo de segurança de plug-ins da comunidade",
+          "desc": "Bloqueia a execução de plug-ins da comunidade para estabilidade do sistema e proteção de dados"
+        }
+      },
+      "mcp": {
+        "enabled": {
+          "title": "Habilitar servidor MCP local",
+          "desc": "Servidor Model Context Protocol para integração com assistentes externos de codificação de IA"
+        }
+      },
+      "trash": {
+        "retentionDays": {
+          "title": "Dias de retenção de lixo",
+          "desc": "Número de dias que as notas excluídas permanecem na lixeira antes da eliminação"
+        }
+      },
+      "files": {
+        "autoTrashAttachments": {
+          "title": "Anexos de lixo automático",
+          "desc": "Mover anexos automaticamente para a lixeira quando as referências forem removidas das notas"
+        }
+      }
     }
   },
   "sidebar": {

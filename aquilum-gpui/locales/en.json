@@ -34,7 +34,11 @@
       "history": "History",
       "trash": "Trash",
       "system": "System",
-      "shortcuts": "Shortcuts"
+      "shortcuts": "Shortcuts",
+      "core_plugins": "Core plugins",
+      "community_plugins": "Community plugins",
+      "plugin_settings": "Plugin settings",
+      "editor_toolbar": "Editor Toolbar"
     },
     "ui": {
       "title": "Interface Settings",
@@ -58,7 +62,9 @@
       "sidebar_smart_scroll": "Smart file list scrolling",
       "sidebar_smart_scroll_desc": "Hold Ctrl so the cursor position drives the file list, like the open tabs popup. Wheel is disabled while held.",
       "swap_tab_bar_buttons": "Swap tab bar creation buttons",
-      "swap_tab_bar_buttons_desc": "New tab button '+' on the left (opens tab at far left), and new note button on the right (opens tab at far right)."
+      "swap_tab_bar_buttons_desc": "New tab button '+' on the left (opens tab at far left), and new note button on the right (opens tab at far right).",
+      "font_weight_semibold": "Semibold",
+      "font_weight_regular": "Regular"
     },
     "editor": {
       "title": "Markdown Editor",
@@ -233,6 +239,213 @@
       "quick_open": "Go to File (Quick Open)",
       "search_files": "Search Files",
       "open_command_palette": "Open Command Palette"
+    },
+    "nav": {
+      "search_placeholder": "Search settings...",
+      "search_empty": "No settings found"
+    },
+    "units": {
+      "px": "{} px",
+      "ch": "{} ch",
+      "percent": "{}%",
+      "mb": "{} MB"
+    },
+    "plugins": {
+      "core": {
+        "title": "Application Core Plugins",
+        "status_updated": "Core plugin '{plugin}' updated",
+        "command_palette": {
+          "name": "Command palette",
+          "desc": "Quickly search and execute application actions (Ctrl+Shift+P)"
+        },
+        "word_counter": {
+          "name": "Word counter",
+          "desc": "Displays character and word count in the status bar"
+        },
+        "editor_toolbar": {
+          "name": "Editor toolbar",
+          "desc": "Markdown formatting toolbar above the editor with customizable buttons"
+        },
+        "file_recovery": {
+          "name": "File recovery",
+          "desc": "Automatic local snapshotting to protect against data loss"
+        }
+      },
+      "community": {
+        "title": "Community Plugins",
+        "safe_mode": "Safe Mode",
+        "safe_mode_desc": "Blocks community plugins execution for system stability and data protection",
+        "browse": "Browse community plugins",
+        "catalog": "Community plugins catalog",
+        "catalog_desc": "Discover, install and update community-created plugins",
+        "compat_full": "100% Compatible",
+        "compat_score": "{}% Compatible",
+        "incompatible": "Incompatible",
+        "compat_unknown": "Compatibility unknown",
+        "installed": "Installed plugins ({})"
+      },
+      "detail": {
+        "back": "Back to plugins",
+        "enable": "Enable",
+        "disable": "Disable",
+        "reload": "Reload",
+        "open_folder": "Open folder",
+        "enabled": "Enabled",
+        "disabled": "Disabled",
+        "author": "By {}"
+      },
+      "metadata": {
+        "title": "Metadata",
+        "name": "Plugin Name",
+        "id": "Plugin ID",
+        "version": "Version",
+        "min_app_version": "Minimum App Version",
+        "author": "Author",
+        "author_url": "Author URL",
+        "desktop_only": "Desktop Only",
+        "desktop_only_true": "true (desktop only)",
+        "desktop_only_false": "false (cross-platform)",
+        "install_path": "Installation path"
+      },
+      "readme": {
+        "title": "PLUGIN INFORMATION",
+        "missing": "No README.md file found",
+        "hint": "No documentation file exists in plugin directory. Add a README.md file to display instructions here."
+      },
+      "config": {
+        "title": "PLUGIN SETTINGS",
+        "store": "Configuration store (.vault/plugins/<id>/data.json)",
+        "card": "Plugin settings (data.json)",
+        "card_short": "Settings"
+      },
+      "edit_title": "Edit"
+    },
+    "toolbar": {
+      "back": "Back to core plugins",
+      "title": "Editor Toolbar",
+      "desc": "Customize formatting buttons, nested dropdown groups, and separators above the editor.",
+      "add_button": "+ Button",
+      "add_dropdown": "+ Dropdown ▾",
+      "add_separator": "+ Separator",
+      "reset": "Reset to defaults",
+      "export": "Export JSON",
+      "import": "Import JSON",
+      "separator": "──────── (separator)",
+      "dropdown_fallback": "Dropdown",
+      "add_inside": "+ add inside",
+      "items": "{} items",
+      "search": "Search...",
+      "select_command": "Select command...",
+      "select_icon": "Select icon...",
+      "step_command": "1. Command:",
+      "step_icon": "2. Icon:",
+      "save_button": "Save Button",
+      "add_formatting_button": "Add Formatting Button",
+      "create_group_title": "Create Dropdown Group",
+      "select_group_icon": "Select group icon:",
+      "create_group": "Create Group",
+      "default_group": "New group",
+      "status": {
+        "reset_done": "Reset to defaults",
+        "copied": "Configuration copied to clipboard",
+        "clipboard_empty": "Clipboard is empty",
+        "import_done": "Configuration imported successfully!",
+        "import_error": "Error: failed to parse JSON"
+      }
+    },
+    "registry": {
+      "ui.theme": {
+        "title": "Appearance Theme",
+        "desc": "Color theme for the user interface: system, dark, or light"
+      },
+      "ui.language": {
+        "title": "Interface Language",
+        "desc": "Interface localization language (ru / en)"
+      },
+      "ui.primaryColor": {
+        "title": "Primary Accent Color",
+        "desc": "Custom brand accent color for buttons, selections, and active tabs"
+      },
+      "ui.sidebarSmartScroll": {
+        "title": "Sidebar Smart Scroll",
+        "desc": "Automatically center the active file in the sidebar tree when switching notes"
+      },
+      "ui.swapTabBarButtons": {
+        "title": "Swap Tab Bar Creation Buttons",
+        "desc": "New tab button '+' on the left (opens tab at far left), new note button on the right (opens tab at far right)"
+      },
+      "editor.fontSizeBase": {
+        "title": "Editor Font Size",
+        "desc": "Base font size in the note editor viewport (px)"
+      },
+      "editor.fontFamily": {
+        "title": "Editor Font Family",
+        "desc": "Typeface family for displaying and editing note contents"
+      },
+      "editor.wordWrap": {
+        "title": "Word Wrap",
+        "desc": "Wrap long lines gracefully at the editor viewport edge"
+      },
+      "editor.liveTabs": {
+        "title": "Live Tabs Count",
+        "desc": "Maximum number of editor tabs retained active in memory"
+      },
+      "editor.hideCurrentLineOnSelection": {
+        "title": "Hide Current Line Highlight on Selection",
+        "desc": "Hide current line highlight when a text range is selected"
+      },
+      "editor.wheelSmoothScroll": {
+        "title": "Smooth Wheel Scroll (90 ms ease)",
+        "desc": "Short wheel animation with a hard landing instead of instant steps. Off means the text stops dead"
+      },
+      "editor.scrollbarRuler": {
+        "title": "Scrollbar Ruler Marks",
+        "desc": "Thin cursor line and selection span over the editor scrollbar thumb"
+      },
+      "editor.wideScrollbar": {
+        "title": "Wide Scrollbar (Zed-style)",
+        "desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill"
+      },
+      "editor.noteWidth": {
+        "title": "Note Column Width",
+        "desc": "Width of the note content column as a percentage of the window (0-100%)"
+      },
+      "editor.noteAlign": {
+        "title": "Note Alignment",
+        "desc": "Horizontal alignment of the note column: centered or left-aligned"
+      },
+      "editor.titleAlign": {
+        "title": "Note Title Alignment (Window)",
+        "desc": "Position of the file title relative to the window: left or centered"
+      },
+      "editor.titleAlignEditor": {
+        "title": "Note Title Alignment (Editor)",
+        "desc": "Position of the file title relative to the note column: left edge or centered"
+      },
+      "reader.lineHeight": {
+        "title": "Reader Line Height",
+        "desc": "Line height multiplier for comfortable reading mode"
+      },
+      "reader.maxWidthCh": {
+        "title": "Reader Max Column Width",
+        "desc": "Maximum text container column width in characters (ch)"
+      },
+      "communityPlugins.safeMode": {
+        "title": "Community Plugins Safe Mode",
+        "desc": "Blocks community plugins execution for system stability and data protection"
+      },
+      "mcp.enabled": {
+        "title": "Enable Local MCP Server",
+        "desc": "Model Context Protocol server for integration with external AI coding assistants"
+      },
+      "trash.retentionDays": {
+        "title": "Trash Retention Days",
+        "desc": "Number of days deleted notes remain in trash before purge"
+      },
+      "files.autoTrashAttachments": {
+        "title": "Auto-Trash Attachments",
+        "desc": "Automatically move attachments to trash when references are removed from notes"
+      }
     }
   },
   "sidebar": {

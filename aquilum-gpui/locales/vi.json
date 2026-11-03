@@ -34,7 +34,11 @@
       "history": "Lịch sử",
       "trash": "Rác",
       "system": "Hệ thống",
-      "shortcuts": "Phím tắt"
+      "shortcuts": "Phím tắt",
+      "core_plugins": "Plugin cốt lõi",
+      "community_plugins": "Plugin cộng đồng",
+      "plugin_settings": "Cài đặt plugin",
+      "editor_toolbar": "Thanh công cụ soạn thảo"
     },
     "ui": {
       "title": "Cài đặt giao diện",
@@ -58,7 +62,9 @@
       "sidebar_smart_scroll": "Cuộn danh sách tập tin thông minh",
       "sidebar_smart_scroll_desc": "Giữ Ctrl để vị trí con trỏ điều khiển danh sách tệp, giống như cửa sổ bật lên của các tab đang mở. Bánh xe bị vô hiệu hóa khi được giữ.",
       "swap_tab_bar_buttons": "Hoán đổi nút tạo thanh tab",
-      "swap_tab_bar_buttons_desc": "Nút tab mới '+' ở bên trái (tab mở ở ngoài cùng bên trái) và nút ghi chú mới ở bên phải (tab mở ở ngoài cùng bên phải)."
+      "swap_tab_bar_buttons_desc": "Nút tab mới '+' ở bên trái (tab mở ở ngoài cùng bên trái) và nút ghi chú mới ở bên phải (tab mở ở ngoài cùng bên phải).",
+      "font_weight_semibold": "nửa đậm",
+      "font_weight_regular": "Thường xuyên"
     },
     "editor": {
       "title": "Trình chỉnh sửa đánh dấu",
@@ -233,6 +239,227 @@
       "quick_open": "Đi tới Tệp (Mở nhanh)",
       "search_files": "Tìm kiếm tập tin",
       "open_command_palette": "Mở bảng lệnh"
+    },
+    "nav": {
+      "search_placeholder": "Cài đặt tìm kiếm...",
+      "search_empty": "Không tìm thấy cài đặt nào"
+    },
+    "units": {
+      "px": "{} px",
+      "ch": "{} ch",
+      "percent": "{}%",
+      "mb": "{} MB"
+    },
+    "plugins": {
+      "core": {
+        "title": "Plugin lõi ứng dụng",
+        "status_updated": "Đã cập nhật plugin cốt lõi '{plugin}'",
+        "command_palette": {
+          "name": "Bảng lệnh",
+          "desc": "Nhanh chóng tìm kiếm và thực hiện các hành động của ứng dụng (Ctrl+Shift+P)"
+        },
+        "word_counter": {
+          "name": "bộ đếm từ",
+          "desc": "Hiển thị số ký tự và số từ trên thanh trạng thái"
+        },
+        "editor_toolbar": {
+          "name": "Thanh công cụ soạn thảo",
+          "desc": "Thanh công cụ định dạng Markdown phía trên trình chỉnh sửa với các nút tùy chỉnh"
+        },
+        "file_recovery": {
+          "name": "Phục hồi tập tin",
+          "desc": "Tự động chụp nhanh cục bộ để bảo vệ khỏi mất dữ liệu"
+        }
+      },
+      "community": {
+        "title": "Plugin cộng đồng",
+        "safe_mode": "Chế độ an toàn",
+        "safe_mode_desc": "Chặn thực thi plugin cộng đồng để ổn định hệ thống và bảo vệ dữ liệu",
+        "browse": "Duyệt các plugin cộng đồng",
+        "catalog": "Danh mục plugin cộng đồng",
+        "catalog_desc": "Khám phá, cài đặt và cập nhật các plugin do cộng đồng tạo",
+        "compat_full": "Tương thích 100%",
+        "compat_score": "{}% Tương thích",
+        "incompatible": "Không tương thích",
+        "compat_unknown": "Khả năng tương thích không xác định",
+        "installed": "Các plugin đã cài đặt ({})"
+      },
+      "detail": {
+        "back": "Quay lại plugin",
+        "enable": "Cho phép",
+        "disable": "Vô hiệu hóa",
+        "reload": "Tải lại",
+        "open_folder": "Mở thư mục",
+        "enabled": "Đã bật",
+        "disabled": "Tàn tật",
+        "author": "Qua {}"
+      },
+      "metadata": {
+        "title": "Siêu dữ liệu",
+        "name": "Tên plugin",
+        "id": "Mã plugin",
+        "version": "Phiên bản",
+        "min_app_version": "Phiên bản ứng dụng tối thiểu",
+        "author": "Tác giả",
+        "author_url": "URL tác giả",
+        "desktop_only": "Chỉ dành cho máy tính để bàn",
+        "desktop_only_true": "đúng (chỉ dành cho máy tính để bàn)",
+        "desktop_only_false": "sai (đa nền tảng)",
+        "install_path": "Đường dẫn cài đặt"
+      },
+      "readme": {
+        "title": "THÔNG TIN PLUGIN",
+        "missing": "Không tìm thấy tệp README.md",
+        "hint": "Không có tệp tài liệu nào tồn tại trong thư mục plugin. Thêm tệp README.md để hiển thị hướng dẫn tại đây."
+      },
+      "config": {
+        "title": "CÀI ĐẶT PLUGIN",
+        "store": "Kho cấu hình (.vault/plugins/<id>/data.json)",
+        "card": "Cài đặt plugin (data.json)",
+        "card_short": "Cài đặt"
+      },
+      "edit_title": "Biên tập"
+    },
+    "toolbar": {
+      "back": "Quay lại các plugin cốt lõi",
+      "title": "Thanh công cụ soạn thảo",
+      "desc": "Tùy chỉnh các nút định dạng, nhóm thả xuống lồng nhau và dấu phân cách phía trên trình chỉnh sửa.",
+      "add_button": "+ Nút",
+      "add_dropdown": "+ Thả xuống ▾",
+      "add_separator": "+ Dấu phân cách",
+      "reset": "Đặt lại về mặc định",
+      "export": "Xuất JSON",
+      "import": "Nhập JSON",
+      "separator": "──────── (dấu phân cách)",
+      "dropdown_fallback": "Thả xuống",
+      "add_inside": "+ thêm vào bên trong",
+      "items": "{} mặt hàng",
+      "search": "Tìm kiếm...",
+      "select_command": "Chọn lệnh...",
+      "select_icon": "Chọn biểu tượng...",
+      "step_command": "1. Lệnh:",
+      "step_icon": "2. Biểu tượng:",
+      "save_button": "Nút lưu",
+      "add_formatting_button": "Thêm nút định dạng",
+      "create_group_title": "Tạo nhóm thả xuống",
+      "select_group_icon": "Chọn biểu tượng nhóm:",
+      "create_group": "Tạo nhóm",
+      "default_group": "Nhóm mới",
+      "status": {
+        "reset_done": "Đặt lại về mặc định",
+        "copied": "Đã sao chép cấu hình vào bảng nhớ tạm",
+        "clipboard_empty": "Bảng tạm trống",
+        "import_done": "Cấu hình được nhập thành công!",
+        "import_error": "Lỗi: không phân tích được JSON"
+      }
+    },
+    "registry": {
+      "ui": {
+        "theme": {
+          "title": "Chủ đề ngoại hình",
+          "desc": "Chủ đề màu sắc cho giao diện người dùng: hệ thống, tối hoặc sáng"
+        },
+        "language": {
+          "title": "Ngôn ngữ giao diện",
+          "desc": "Ngôn ngữ bản địa hóa giao diện (ru/en)"
+        },
+        "primaryColor": {
+          "title": "Màu nhấn chính",
+          "desc": "Màu nhấn thương hiệu tùy chỉnh cho các nút, lựa chọn và tab hoạt động"
+        },
+        "sidebarSmartScroll": {
+          "title": "Thanh bên cuộn thông minh",
+          "desc": "Tự động căn giữa tệp đang hoạt động trong cây thanh bên khi chuyển ghi chú"
+        },
+        "swapTabBarButtons": {
+          "title": "Hoán đổi các nút tạo thanh tab",
+          "desc": "Nút tab mới '+' ở bên trái (mở tab ở ngoài cùng bên trái), nút ghi chú mới ở bên phải (mở tab ở ngoài cùng bên phải)"
+        }
+      },
+      "editor": {
+        "fontSizeBase": {
+          "title": "Cỡ chữ của trình soạn thảo",
+          "desc": "Kích thước phông chữ cơ bản trong khung nhìn của trình soạn thảo ghi chú (px)"
+        },
+        "fontFamily": {
+          "title": "Họ phông chữ soạn thảo",
+          "desc": "Họ kiểu chữ để hiển thị và chỉnh sửa nội dung ghi chú"
+        },
+        "wordWrap": {
+          "title": "Gói từ",
+          "desc": "Quấn các dòng dài một cách duyên dáng ở cạnh khung nhìn của trình chỉnh sửa"
+        },
+        "liveTabs": {
+          "title": "Số lượng tab trực tiếp",
+          "desc": "Số lượng tab soạn thảo tối đa được giữ lại hoạt động trong bộ nhớ"
+        },
+        "hideCurrentLineOnSelection": {
+          "title": "Ẩn đánh dấu dòng hiện tại trên vùng chọn",
+          "desc": "Ẩn đánh dấu dòng hiện tại khi chọn phạm vi văn bản"
+        },
+        "wheelSmoothScroll": {
+          "title": "Cuộn bánh xe mượt mà (dễ dàng 90 ms)",
+          "desc": "Hoạt hình bánh xe ngắn với cú hạ cánh khó khăn thay vì bước đi tức thì. Tắt có nghĩa là văn bản dừng lại"
+        },
+        "scrollbarRuler": {
+          "title": "Dấu thước của thanh cuộn",
+          "desc": "Dòng con trỏ mỏng và khoảng lựa chọn trên ngón tay cái của thanh cuộn trình soạn thảo"
+        },
+        "wideScrollbar": {
+          "title": "Thanh cuộn rộng (kiểu Zed)",
+          "desc": "Làn đường rộng 16 px với đường đi có thể nhìn thấy và ngón tay cái hình vuông có chiều rộng tối đa thay vì viên thuốc hẹp"
+        },
+        "noteWidth": {
+          "title": "Chiều rộng cột ghi chú",
+          "desc": "Chiều rộng của cột nội dung ghi chú tính theo phần trăm của cửa sổ (0-100%)"
+        },
+        "noteAlign": {
+          "title": "Căn chỉnh ghi chú",
+          "desc": "Căn chỉnh theo chiều ngang của cột ghi chú: căn giữa hoặc căn trái"
+        },
+        "titleAlign": {
+          "title": "Lưu ý Căn chỉnh tiêu đề (Cửa sổ)",
+          "desc": "Vị trí của tiêu đề file so với cửa sổ: trái hoặc giữa"
+        },
+        "titleAlignEditor": {
+          "title": "Lưu ý Căn chỉnh tiêu đề (Trình chỉnh sửa)",
+          "desc": "Vị trí của tiêu đề file so với cột ghi chú: cạnh trái hoặc chính giữa"
+        }
+      },
+      "reader": {
+        "lineHeight": {
+          "title": "Chiều cao dòng đầu đọc",
+          "desc": "Hệ số chiều cao dòng cho chế độ đọc thoải mái"
+        },
+        "maxWidthCh": {
+          "title": "Độ rộng cột tối đa của đầu đọc",
+          "desc": "Độ rộng cột vùng chứa văn bản tối đa tính bằng ký tự (ch)"
+        }
+      },
+      "communityPlugins": {
+        "safeMode": {
+          "title": "Chế độ an toàn của plugin cộng đồng",
+          "desc": "Chặn thực thi plugin cộng đồng để ổn định hệ thống và bảo vệ dữ liệu"
+        }
+      },
+      "mcp": {
+        "enabled": {
+          "title": "Kích hoạt máy chủ MCP cục bộ",
+          "desc": "Máy chủ Giao thức bối cảnh mô hình để tích hợp với các trợ lý mã hóa AI bên ngoài"
+        }
+      },
+      "trash": {
+        "retentionDays": {
+          "title": "Số ngày lưu giữ rác",
+          "desc": "Số ngày ghi chú đã xóa vẫn còn trong thùng rác trước khi thanh lọc"
+        }
+      },
+      "files": {
+        "autoTrashAttachments": {
+          "title": "Tệp đính kèm tự động chuyển vào thùng rác",
+          "desc": "Tự động di chuyển tệp đính kèm vào thùng rác khi tham chiếu bị xóa khỏi ghi chú"
+        }
+      }
     }
   },
   "sidebar": {

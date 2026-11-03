@@ -34,7 +34,11 @@
       "history": "Historia",
       "trash": "Skräp",
       "system": "System",
-      "shortcuts": "Genvägar"
+      "shortcuts": "Genvägar",
+      "core_plugins": "Kärnplugins",
+      "community_plugins": "Community plugins",
+      "plugin_settings": "Plugin-inställningar",
+      "editor_toolbar": "Editor Toolbar"
     },
     "ui": {
       "title": "Gränssnittsinställningar",
@@ -58,7 +62,9 @@
       "sidebar_smart_scroll": "Smart fillista rullning",
       "sidebar_smart_scroll_desc": "Håll ned Ctrl så att markörpositionen driver fillistan, som popupen med öppna flikar. Hjulet är inaktiverat när det hålls.",
       "swap_tab_bar_buttons": "Byt knappar för att skapa flikfält",
-      "swap_tab_bar_buttons_desc": "Ny flikknapp '+' till vänster (öppnar fliken längst till vänster) och ny anteckningsknapp till höger (öppnar fliken längst till höger)."
+      "swap_tab_bar_buttons_desc": "Ny flikknapp '+' till vänster (öppnar fliken längst till vänster) och ny anteckningsknapp till höger (öppnar fliken längst till höger).",
+      "font_weight_semibold": "Halvfet",
+      "font_weight_regular": "Regelbunden"
     },
     "editor": {
       "title": "Markdown Editor",
@@ -233,6 +239,227 @@
       "quick_open": "Gå till fil (snabböppning)",
       "search_files": "Sök efter filer",
       "open_command_palette": "Öppna kommandopalett"
+    },
+    "nav": {
+      "search_placeholder": "Sökinställningar...",
+      "search_empty": "Inga inställningar hittades"
+    },
+    "units": {
+      "px": "{} px",
+      "ch": "{} kap",
+      "percent": "{} %",
+      "mb": "{} MB"
+    },
+    "plugins": {
+      "core": {
+        "title": "Application Core Plugins",
+        "status_updated": "Kärnplugin '{plugin}' har uppdaterats",
+        "command_palette": {
+          "name": "Kommandopalett",
+          "desc": "Sök och kör snabbt programåtgärder (Ctrl+Skift+P)"
+        },
+        "word_counter": {
+          "name": "Ordräknare",
+          "desc": "Visar antal tecken och ord i statusfältet"
+        },
+        "editor_toolbar": {
+          "name": "Redigerarens verktygsfält",
+          "desc": "Markdown-formateringsverktygsfält ovanför redigeraren med anpassningsbara knappar"
+        },
+        "file_recovery": {
+          "name": "Filåterställning",
+          "desc": "Automatisk lokal ögonblicksbild för att skydda mot dataförlust"
+        }
+      },
+      "community": {
+        "title": "Community Plugins",
+        "safe_mode": "Säkert läge",
+        "safe_mode_desc": "Blockerar körning av community-plugins för systemstabilitet och dataskydd",
+        "browse": "Bläddra i community-plugins",
+        "catalog": "Katalog för community plugins",
+        "catalog_desc": "Upptäck, installera och uppdatera plugins som skapats av communityn",
+        "compat_full": "100% kompatibel",
+        "compat_score": "{}% kompatibel",
+        "incompatible": "Oförenlig",
+        "compat_unknown": "Kompatibilitet okänd",
+        "installed": "Installerade plugins ({})"
+      },
+      "detail": {
+        "back": "Tillbaka till plugins",
+        "enable": "Aktivera",
+        "disable": "Inaktivera",
+        "reload": "Ladda om",
+        "open_folder": "Öppna mappen",
+        "enabled": "Aktiverad",
+        "disabled": "Inaktiverad",
+        "author": "Av {}"
+      },
+      "metadata": {
+        "title": "Metadata",
+        "name": "Pluginnamn",
+        "id": "Plugin-ID",
+        "version": "Version",
+        "min_app_version": "Minsta appversion",
+        "author": "Författare",
+        "author_url": "Författarens URL",
+        "desktop_only": "Endast skrivbord",
+        "desktop_only_true": "sant (endast skrivbord)",
+        "desktop_only_false": "falsk (plattformsoberoende)",
+        "install_path": "Installationsväg"
+      },
+      "readme": {
+        "title": "PLUGININFORMATION",
+        "missing": "Ingen README.md-fil hittades",
+        "hint": "Ingen dokumentationsfil finns i plugin-katalogen. Lägg till en README.md-fil för att visa instruktioner här."
+      },
+      "config": {
+        "title": "PLUGININSTÄLLNINGAR",
+        "store": "Konfigurationsarkiv (.vault/plugins/<id>/data.json)",
+        "card": "Plugin-inställningar (data.json)",
+        "card_short": "Inställningar"
+      },
+      "edit_title": "Redigera"
+    },
+    "toolbar": {
+      "back": "Tillbaka till kärnplugins",
+      "title": "Editor Toolbar",
+      "desc": "Anpassa formateringsknappar, kapslade rullgardinsgrupper och separatorer ovanför redigeraren.",
+      "add_button": "+-knapp",
+      "add_dropdown": "+ Dropdown ▾",
+      "add_separator": "+ Separator",
+      "reset": "Återställ till standardinställningar",
+      "export": "Exportera JSON",
+      "import": "Importera JSON",
+      "separator": "──────── (separator)",
+      "dropdown_fallback": "Dropdown",
+      "add_inside": "+ lägg till inuti",
+      "items": "{} objekt",
+      "search": "Söka...",
+      "select_command": "Välj kommando...",
+      "select_icon": "Välj ikon...",
+      "step_command": "1. Kommando:",
+      "step_icon": "2. Ikon:",
+      "save_button": "Spara-knappen",
+      "add_formatting_button": "Lägg till formateringsknapp",
+      "create_group_title": "Skapa rullgardinsgrupp",
+      "select_group_icon": "Välj gruppikon:",
+      "create_group": "Skapa grupp",
+      "default_group": "Ny grupp",
+      "status": {
+        "reset_done": "Återställ till standardinställningar",
+        "copied": "Konfigurationen har kopierats till urklipp",
+        "clipboard_empty": "Urklipp är tomt",
+        "import_done": "Konfigurationen har importerats!",
+        "import_error": "Fel: misslyckades med att tolka JSON"
+      }
+    },
+    "registry": {
+      "ui": {
+        "theme": {
+          "title": "Utseendetema",
+          "desc": "Färgtema för användargränssnittet: system, mörkt eller ljust"
+        },
+        "language": {
+          "title": "Gränssnittsspråk",
+          "desc": "Språk för gränssnittslokalisering (ru / sv)"
+        },
+        "primaryColor": {
+          "title": "Primär accentfärg",
+          "desc": "Anpassad varumärkesaccentfärg för knappar, val och aktiva flikar"
+        },
+        "sidebarSmartScroll": {
+          "title": "Sidebar Smart Scroll",
+          "desc": "Centrera automatiskt den aktiva filen i sidofältsträdet när du byter anteckningar"
+        },
+        "swapTabBarButtons": {
+          "title": "Byt knappar för att skapa flikfält",
+          "desc": "Ny flikknapp '+' till vänster (öppnar flik längst till vänster), ny anteckningsknapp till höger (öppnar flik längst till höger)"
+        }
+      },
+      "editor": {
+        "fontSizeBase": {
+          "title": "Editor teckenstorlek",
+          "desc": "Basteckensnittsstorlek i anteckningsredigerarens vyport (px)"
+        },
+        "fontFamily": {
+          "title": "Editor Font Family",
+          "desc": "Typsnittsfamilj för att visa och redigera anteckningsinnehåll"
+        },
+        "wordWrap": {
+          "title": "Word Wrap",
+          "desc": "Linda långa rader graciöst vid redigeringsfönstrets kant"
+        },
+        "liveTabs": {
+          "title": "Antal flikar live",
+          "desc": "Maximalt antal redigeringsflikar som behålls aktiva i minnet"
+        },
+        "hideCurrentLineOnSelection": {
+          "title": "Dölj aktuell linjemarkering vid val",
+          "desc": "Dölj aktuell radmarkering när ett textområde är markerat"
+        },
+        "wheelSmoothScroll": {
+          "title": "Smooth Wheel Scroll (90 ms lätt)",
+          "desc": "Kort hjulanimation med hård landning istället för omedelbara steg. Av betyder att texten slutar dö"
+        },
+        "scrollbarRuler": {
+          "title": "Rullningslist Linjalmärken",
+          "desc": "Tunn markörlinje och markering sträcker sig över redigerarens rullningslisttumme"
+        },
+        "wideScrollbar": {
+          "title": "Bred rullningslist (Zed-stil)",
+          "desc": "Bred 16 px fil med ett synligt spår och en fyrkantig tumme i full bredd istället för det smala pillret"
+        },
+        "noteWidth": {
+          "title": "Notera kolumnbredd",
+          "desc": "Bredden på kolumnen för anteckningsinnehåll i procent av fönstret (0-100 %)"
+        },
+        "noteAlign": {
+          "title": "Notera justering",
+          "desc": "Horisontell justering av anteckningskolumnen: centrerad eller vänsterjusterad"
+        },
+        "titleAlign": {
+          "title": "Anteckningstiteljustering (fönster)",
+          "desc": "Placering av filtiteln i förhållande till fönstret: vänster eller centrerad"
+        },
+        "titleAlignEditor": {
+          "title": "Anteckningstiteljustering (redigerare)",
+          "desc": "Placering av filtiteln i förhållande till anteckningskolumnen: vänsterkant eller centrerad"
+        }
+      },
+      "reader": {
+        "lineHeight": {
+          "title": "Läsarradshöjd",
+          "desc": "Linjehöjdsmultiplikator för bekvämt läsläge"
+        },
+        "maxWidthCh": {
+          "title": "Läsare Max kolumnbredd",
+          "desc": "Maximal textbehållare kolumnbredd i tecken (ch)"
+        }
+      },
+      "communityPlugins": {
+        "safeMode": {
+          "title": "Community Plugins i felsäkert läge",
+          "desc": "Blockerar körning av community-plugins för systemstabilitet och dataskydd"
+        }
+      },
+      "mcp": {
+        "enabled": {
+          "title": "Aktivera lokal MCP-server",
+          "desc": "Model Context Protocol-server för integration med externa AI-kodningsassistenter"
+        }
+      },
+      "trash": {
+        "retentionDays": {
+          "title": "Trash Retention Days",
+          "desc": "Antal dagar borttagna anteckningar ligger kvar i papperskorgen innan rensningen"
+        }
+      },
+      "files": {
+        "autoTrashAttachments": {
+          "title": "Auto-Trash Bilagor",
+          "desc": "Flytta automatiskt bilagor till papperskorgen när referenser tas bort från anteckningar"
+        }
+      }
     }
   },
   "sidebar": {

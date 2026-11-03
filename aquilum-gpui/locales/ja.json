@@ -34,7 +34,11 @@
       "history": "歴史",
       "trash": "ごみ",
       "system": "システム",
-      "shortcuts": "ショートカット"
+      "shortcuts": "ショートカット",
+      "core_plugins": "コアプラグイン",
+      "community_plugins": "コミュニティプラグイン",
+      "plugin_settings": "プラグイン設定",
+      "editor_toolbar": "エディタツールバー"
     },
     "ui": {
       "title": "インターフェース設定",
@@ -58,7 +62,9 @@
       "sidebar_smart_scroll": "ファイルリストのスマートスクロール",
       "sidebar_smart_scroll_desc": "Ctrl キーを押したままにすると、開いているタブのポップアップのように、カーソルの位置によってファイル リストが表示されます。ホイールを保持している間は無効になります。",
       "swap_tab_bar_buttons": "タブバー作成ボタンを入れ替える",
-      "swap_tab_bar_buttons_desc": "左側に新しいタブ ボタン「+」(一番左のタブが開きます)、右側に新しいノート ボタン(一番右のタブが開きます)。"
+      "swap_tab_bar_buttons_desc": "左側に新しいタブ ボタン「+」(一番左のタブが開きます)、右側に新しいノート ボタン(一番右のタブが開きます)。",
+      "font_weight_semibold": "半太字",
+      "font_weight_regular": "通常"
     },
     "editor": {
       "title": "マークダウンエディター",
@@ -233,6 +239,227 @@
       "quick_open": "ファイルに移動 (クイックオープン)",
       "search_files": "ファイルの検索",
       "open_command_palette": "コマンドパレットを開く"
+    },
+    "nav": {
+      "search_placeholder": "検索設定...",
+      "search_empty": "設定が見つかりません"
+    },
+    "units": {
+      "px": "{} ピクセル",
+      "ch": "{} チャンネル",
+      "percent": "{}%",
+      "mb": "{}MB"
+    },
+    "plugins": {
+      "core": {
+        "title": "アプリケーションコアプラグイン",
+        "status_updated": "コアプラグイン「{plugin}」が更新されました",
+        "command_palette": {
+          "name": "コマンドパレット",
+          "desc": "アプリケーションアクションを素早く検索して実行します (Ctrl+Shift+P)"
+        },
+        "word_counter": {
+          "name": "ワードカウンター",
+          "desc": "ステータスバーに文字数と単語数を表示します"
+        },
+        "editor_toolbar": {
+          "name": "エディタツールバー",
+          "desc": "カスタマイズ可能なボタンを備えたエディターの上のマークダウン書式設定ツールバー"
+        },
+        "file_recovery": {
+          "name": "ファイルの回復",
+          "desc": "データ損失を防ぐための自動ローカルスナップショット"
+        }
+      },
+      "community": {
+        "title": "コミュニティプラグイン",
+        "safe_mode": "セーフモード",
+        "safe_mode_desc": "システムの安定性とデータ保護のためにコミュニティ プラグインの実行をブロックします。",
+        "browse": "コミュニティプラグインを参照する",
+        "catalog": "コミュニティプラグインカタログ",
+        "catalog_desc": "コミュニティ作成のプラグインを検出、インストール、更新する",
+        "compat_full": "100%互換性あり",
+        "compat_score": "{}％ 互換性がある",
+        "incompatible": "互換性がありません",
+        "compat_unknown": "互換性は不明",
+        "installed": "インストールされているプラ​​グイン ({})"
+      },
+      "detail": {
+        "back": "プラグインに戻る",
+        "enable": "有効にする",
+        "disable": "無効にする",
+        "reload": "リロード",
+        "open_folder": "フォルダーを開く",
+        "enabled": "有効",
+        "disabled": "無効",
+        "author": "による {}"
+      },
+      "metadata": {
+        "title": "メタデータ",
+        "name": "プラグイン名",
+        "id": "プラグインID",
+        "version": "バージョン",
+        "min_app_version": "アプリの最小バージョン",
+        "author": "著者",
+        "author_url": "著者のURL",
+        "desktop_only": "デスクトップのみ",
+        "desktop_only_true": "true (デスクトップのみ)",
+        "desktop_only_false": "false (クロスプラットフォーム)",
+        "install_path": "インストールパス"
+      },
+      "readme": {
+        "title": "プラグイン情報",
+        "missing": "README.md ファイルが見つかりません",
+        "hint": "プラグインディレクトリにドキュメントファイルが存在しません。ここに手順を表示するには、README.md ファイルを追加します。"
+      },
+      "config": {
+        "title": "プラグイン設定",
+        "store": "構成ストア (.vault/plugins/<id>/data.json)",
+        "card": "プラグイン設定（data.json）",
+        "card_short": "設定"
+      },
+      "edit_title": "編集"
+    },
+    "toolbar": {
+      "back": "コアプラグインに戻る",
+      "title": "エディタツールバー",
+      "desc": "エディター上の書式設定ボタン、ネストされたドロップダウン グループ、区切り文字をカスタマイズします。",
+      "add_button": "+ボタン",
+      "add_dropdown": "+ ドロップダウン ▾",
+      "add_separator": "+ セパレータ",
+      "reset": "デフォルトにリセットする",
+      "export": "JSONのエクスポート",
+      "import": "JSONをインポートする",
+      "separator": "─────（区切り文字）",
+      "dropdown_fallback": "落ちる",
+      "add_inside": "+内側に追加",
+      "items": "{} 個のアイテム",
+      "search": "検索...",
+      "select_command": "コマンドを選択...",
+      "select_icon": "アイコンを選択...",
+      "step_command": "1. コマンド:",
+      "step_icon": "2. アイコン:",
+      "save_button": "保存ボタン",
+      "add_formatting_button": "書式設定ボタンを追加",
+      "create_group_title": "ドロップダウングループの作成",
+      "select_group_icon": "グループアイコンを選択します:",
+      "create_group": "グループの作成",
+      "default_group": "新しいグループ",
+      "status": {
+        "reset_done": "デフォルトにリセットする",
+        "copied": "設定がクリップボードにコピーされました",
+        "clipboard_empty": "クリップボードが空です",
+        "import_done": "設定が正常にインポートされました。",
+        "import_error": "エラー: JSON の解析に失敗しました"
+      }
+    },
+    "registry": {
+      "ui": {
+        "theme": {
+          "title": "登場テーマ",
+          "desc": "ユーザー インターフェイスのカラー テーマ: システム、ダーク、またはライト"
+        },
+        "language": {
+          "title": "インターフェース言語",
+          "desc": "インターフェースのローカリゼーション言語 (ru / en)"
+        },
+        "primaryColor": {
+          "title": "メインのアクセントカラー",
+          "desc": "ボタン、選択範囲、アクティブなタブのカスタム ブランド アクセント カラー"
+        },
+        "sidebarSmartScroll": {
+          "title": "サイドバーのスマートスクロール",
+          "desc": "ノートを切り替えるときに、アクティブなファイルを自動的にサイドバーツリーの中央に配置します"
+        },
+        "swapTabBarButtons": {
+          "title": "スワップタブバー作成ボタン",
+          "desc": "左側に新しいタブ ボタン「+」(一番左のタブが開きます)、右側に新しいノート ボタン(一番右のタブが開きます)"
+        }
+      },
+      "editor": {
+        "fontSizeBase": {
+          "title": "エディターのフォントサイズ",
+          "desc": "ノートエディターのビューポートの基本フォントサイズ (px)"
+        },
+        "fontFamily": {
+          "title": "エディターのフォントファミリー",
+          "desc": "メモの内容を表示および編集するための書体ファミリー"
+        },
+        "wordWrap": {
+          "title": "ワードラップ",
+          "desc": "長い行をエディタのビューポートの端で丁寧に折り返す"
+        },
+        "liveTabs": {
+          "title": "ライブタブ数",
+          "desc": "メモリ内でアクティブに保持されるエディタ タブの最大数"
+        },
+        "hideCurrentLineOnSelection": {
+          "title": "現在の行の選択部分のハイライトを非表示にする",
+          "desc": "テキスト範囲が選択されているときに現在の行のハイライトを非表示にする"
+        },
+        "wheelSmoothScroll": {
+          "title": "スムーズなホイール スクロール (90 ミリ秒の軽さ)",
+          "desc": "インスタントステップではなくハードランディングを伴うショートホイールアニメーション。オフはテキストが停止することを意味します"
+        },
+        "scrollbarRuler": {
+          "title": "スクロールバー定規マーク",
+          "desc": "細いカーソル線と選択範囲がエディターのスクロールバーのサムにまたがる"
+        },
+        "wideScrollbar": {
+          "title": "ワイド スクロールバー (Zed スタイル)",
+          "desc": "目に見えるトラックと狭いピルの代わりに全幅の正方形のサムを備えた幅の広い 16 ピクセルのレーン"
+        },
+        "noteWidth": {
+          "title": "注記の列幅",
+          "desc": "ウィンドウに対するメモ内容列の幅 (0 ～ 100%)"
+        },
+        "noteAlign": {
+          "title": "音符の配置",
+          "desc": "注記列の水平方向の配置: 中央揃えまたは左揃え"
+        },
+        "titleAlign": {
+          "title": "ノートのタイトルの配置（ウィンドウ）",
+          "desc": "ウィンドウに対するファイル タイトルの位置: 左または中央"
+        },
+        "titleAlignEditor": {
+          "title": "ノートのタイトルの配置（エディタ）",
+          "desc": "注記列に対するファイル タイトルの位置: 左端または中央"
+        }
+      },
+      "reader": {
+        "lineHeight": {
+          "title": "リーダーの行の高さ",
+          "desc": "快適な読書モードのための行の高さの乗数"
+        },
+        "maxWidthCh": {
+          "title": "リーダーの最大列幅",
+          "desc": "テキスト コンテナ列の最大幅 (文字数) (ch)"
+        }
+      },
+      "communityPlugins": {
+        "safeMode": {
+          "title": "コミュニティプラグインのセーフモード",
+          "desc": "システムの安定性とデータ保護のためにコミュニティ プラグインの実行をブロックします。"
+        }
+      },
+      "mcp": {
+        "enabled": {
+          "title": "ローカル MCP サーバーを有効にする",
+          "desc": "外部 AI コーディング アシスタントと統合するための Model Context Protocol サーバー"
+        }
+      },
+      "trash": {
+        "retentionDays": {
+          "title": "ゴミの保管日",
+          "desc": "削除されたメモがパージされるまでゴミ箱に残る日数"
+        }
+      },
+      "files": {
+        "autoTrashAttachments": {
+          "title": "添付ファイルを自動ゴミ箱に入れる",
+          "desc": "参照がノートから削除されると、添付ファイルが自動的にゴミ箱に移動されます"
+        }
+      }
     }
   },
   "sidebar": {

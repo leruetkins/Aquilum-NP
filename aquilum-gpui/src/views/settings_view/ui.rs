@@ -838,7 +838,6 @@ impl SettingsView {
                         return None;
                     }
                 }
-                let is_ru = self.config.ui.language.starts_with("ru");
                 let modal_title = if let crate::plugins::ui::UiNode::Column { ref children, .. } = modal_tree {
                     children.iter().find_map(|c| {
                         if let crate::plugins::ui::UiNode::Text { value, style: crate::plugins::ui::TextStyle::Heading, .. } = c {
@@ -850,7 +849,7 @@ impl SettingsView {
                     })
                 } else {
                     None
-                }.unwrap_or_else(|| if is_ru { "Редактирование".to_string() } else { "Edit".to_string() });
+                }.unwrap_or_else(|| self.t("settings.plugins.edit_title"));
 
                 let rendered_modal = crate::plugins::ui::render_ui_node(
                     &modal_tree,
@@ -1018,12 +1017,7 @@ impl SettingsView {
     pub(super) fn render_titlebar(&self, window: &Window, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
         let is_maximized = window.is_maximized();
-        let is_ru = self.config.ui.language.starts_with("ru");
-        let title = if is_ru {
-            "Настройки — Vibecodium"
-        } else {
-            "Settings — Vibecodium"
-        };
+        let title = format!("{} — Vibecodium", self.t("settings.title"));
 
         div()
             .flex()
@@ -1310,7 +1304,7 @@ impl SettingsView {
         // Enter key (navigate to first match if any)
         if key == "enter" {
             let query = self.search_query.trim();
-            let results = search_settings(query);
+            let results = search_settings(query, &self.config.ui.language);
             if let Some(first) = results.first() {
                 let id = first.id;
                 self.navigate_to_setting(id, cx);
@@ -1477,8 +1471,7 @@ impl SettingsView {
         let theme = &self.theme;
         let is_search_focused = self.search_focus_handle.is_focused(window);
         let pixel_scale = window.scale_factor();
-        let is_ru = self.config.ui.language.starts_with("ru");
-        let placeholder = if is_ru { "Поиск параметров..." } else { "Search settings..." };
+        let placeholder = self.t("settings.nav.search_placeholder");
 
         div()
             .id("settings-search-box")
@@ -1728,10 +1721,9 @@ impl SettingsView {
     pub(super) fn render_settings_nav(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
         let active_tab = &self.settings_tab;
-        let is_ru = self.config.ui.language.starts_with("ru");
         let query = self.search_query.trim();
         let search_results = if !query.is_empty() {
-            search_settings(query)
+            search_settings(query, &self.config.ui.language)
         } else {
             Vec::new()
         };
@@ -1772,7 +1764,7 @@ impl SettingsView {
                                     .p_3()
                                     .text_xs()
                                     .text_color(theme.text_muted)
-                                    .child(if is_ru { "Ничего не найдено" } else { "No settings found" })
+                                    .child(self.t("settings.nav.search_empty"))
                             )
                         } else {
                             this.children(search_results.into_iter().enumerate().map(|(idx, setting)| {
@@ -1814,7 +1806,7 @@ impl SettingsView {
                                             .text_xs()
                                             .font_weight(gpui::FontWeight::MEDIUM)
                                             .text_color(text_color)
-                                            .child(setting.title(is_ru))
+                                            .child(setting.title(&self.config.ui.language))
                                     )
                                     .child(
                                         div()

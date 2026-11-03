@@ -34,7 +34,11 @@
       "history": "历史记录",
       "trash": "回收站",
       "system": "系统",
-      "shortcuts": "快捷键"
+      "shortcuts": "快捷键",
+      "core_plugins": "核心插件",
+      "community_plugins": "社区插件",
+      "plugin_settings": "插件设置",
+      "editor_toolbar": "编辑器工具栏"
     },
     "ui": {
       "title": "界面设置",
@@ -58,7 +62,9 @@
       "sidebar_smart_scroll": "智能文件列表滚动",
       "sidebar_smart_scroll_desc": "按住 Ctrl 键，光标位置将驱动文件列表，就像打开的选项卡弹出窗口一样。按住时滚轮将被禁用。",
       "swap_tab_bar_buttons": "交换标签栏创建按钮",
-      "swap_tab_bar_buttons_desc": "左侧的新选项卡按钮“+”（在最左侧打开选项卡），右侧的新注释按钮（在最右侧打开选项卡）。"
+      "swap_tab_bar_buttons_desc": "左侧的新选项卡按钮“+”（在最左侧打开选项卡），右侧的新注释按钮（在最右侧打开选项卡）。",
+      "font_weight_semibold": "半粗体",
+      "font_weight_regular": "常规的"
     },
     "editor": {
       "title": "降价编辑器",
@@ -233,6 +239,227 @@
       "quick_open": "转到文件（快速打开）",
       "search_files": "搜索文件",
       "open_command_palette": "打开命令面板"
+    },
+    "nav": {
+      "search_placeholder": "搜索设置...",
+      "search_empty": "没有找到设置"
+    },
+    "units": {
+      "px": "{} 像素",
+      "ch": "{} 频道",
+      "percent": "{}%",
+      "mb": "{} MB"
+    },
+    "plugins": {
+      "core": {
+        "title": "应用程序核心插件",
+        "status_updated": "核心插件“{plugin}”已更新",
+        "command_palette": {
+          "name": "命令面板",
+          "desc": "快速搜索并执行应用程序操作（Ctrl+Shift+P）"
+        },
+        "word_counter": {
+          "name": "字数计数器",
+          "desc": "在状态栏中显示字符和字数"
+        },
+        "editor_toolbar": {
+          "name": "编辑器工具栏",
+          "desc": "编辑器上方的 Markdown 格式化工具栏带有可自定义按钮"
+        },
+        "file_recovery": {
+          "name": "文件恢复",
+          "desc": "自动本地快照以防止数据丢失"
+        }
+      },
+      "community": {
+        "title": "社区插件",
+        "safe_mode": "安全模式",
+        "safe_mode_desc": "阻止社区插件执行以保证系统稳定性和数据保护",
+        "browse": "浏览社区插件",
+        "catalog": "社区插件目录",
+        "catalog_desc": "发现、安装和更新社区创建的插件",
+        "compat_full": "100%兼容",
+        "compat_score": "{}％ 兼容的",
+        "incompatible": "不相容",
+        "compat_unknown": "兼容性未知",
+        "installed": "已安装的插件 ({})"
+      },
+      "detail": {
+        "back": "返回插件",
+        "enable": "使能够",
+        "disable": "禁用",
+        "reload": "重新加载",
+        "open_folder": "打开文件夹",
+        "enabled": "启用",
+        "disabled": "残疾人",
+        "author": "经过 {}"
+      },
+      "metadata": {
+        "title": "元数据",
+        "name": "插件名称",
+        "id": "插件ID",
+        "version": "版本",
+        "min_app_version": "最低应用程序版本",
+        "author": "作者",
+        "author_url": "作者网址",
+        "desktop_only": "仅限桌面版",
+        "desktop_only_true": "true（仅限桌面）",
+        "desktop_only_false": "false（跨平台）",
+        "install_path": "安装路径"
+      },
+      "readme": {
+        "title": "插件信息",
+        "missing": "找不到 README.md 文件",
+        "hint": "插件目录中不存在文档文件。添加 README.md 文件以在此处显示说明。"
+      },
+      "config": {
+        "title": "插件设置",
+        "store": "配置存储（.vault/plugins/<id>/data.json）",
+        "card": "插件设置（data.json）",
+        "card_short": "设置"
+      },
+      "edit_title": "编辑"
+    },
+    "toolbar": {
+      "back": "回到核心插件",
+      "title": "编辑器工具栏",
+      "desc": "自定义编辑器上方的格式化按钮、嵌套下拉组和分隔符。",
+      "add_button": "+ 按钮",
+      "add_dropdown": "+ 下拉菜单 ▾",
+      "add_separator": "+ 分隔符",
+      "reset": "重置为默认值",
+      "export": "导出 JSON",
+      "import": "导入 JSON",
+      "separator": "────────（分隔符）",
+      "dropdown_fallback": "下拉菜单",
+      "add_inside": "+ 添加里面",
+      "items": "{} 项目",
+      "search": "搜索...",
+      "select_command": "选择命令...",
+      "select_icon": "选择图标...",
+      "step_command": "1.命令：",
+      "step_icon": "2. 图标：",
+      "save_button": "保存按钮",
+      "add_formatting_button": "添加格式按钮",
+      "create_group_title": "创建下拉组",
+      "select_group_icon": "选择组图标：",
+      "create_group": "创建群组",
+      "default_group": "新组",
+      "status": {
+        "reset_done": "重置为默认值",
+        "copied": "配置已复制到剪贴板",
+        "clipboard_empty": "剪贴板为空",
+        "import_done": "配置导入成功！",
+        "import_error": "错误：无法解析 JSON"
+      }
+    },
+    "registry": {
+      "ui": {
+        "theme": {
+          "title": "外观主题",
+          "desc": ""
+        },
+        "language": {
+          "title": "界面语言",
+          "desc": "界面本地化语言（俄语/英语）"
+        },
+        "primaryColor": {
+          "title": "主要强调色",
+          "desc": "按钮、选择和活动选项卡的自定义品牌强调色"
+        },
+        "sidebarSmartScroll": {
+          "title": "侧边栏智能滚动",
+          "desc": "切换笔记时自动将活动文件置于侧边栏树中央"
+        },
+        "swapTabBarButtons": {
+          "title": "交换选项卡栏创建按钮",
+          "desc": "左侧的新选项卡按钮“+”（在最左侧打开选项卡），右侧的新注释按钮（在最右侧打开选项卡）"
+        }
+      },
+      "editor": {
+        "fontSizeBase": {
+          "title": "编辑器字体大小",
+          "desc": "笔记编辑器视口中的基本字体大小 (px)"
+        },
+        "fontFamily": {
+          "title": "编辑字体系列",
+          "desc": "用于显示和编辑笔记内容的字体系列"
+        },
+        "wordWrap": {
+          "title": "自动换行",
+          "desc": "在编辑器视口边缘优雅地包裹长线"
+        },
+        "liveTabs": {
+          "title": "实时标签计数",
+          "desc": "内存中保留活动的编辑器选项卡的最大数量"
+        },
+        "hideCurrentLineOnSelection": {
+          "title": "隐藏所选内容的当前行突出显示",
+          "desc": "选择文本范围时隐藏当前行突出显示"
+        },
+        "wheelSmoothScroll": {
+          "title": "平滑滚轮滚动（90 毫秒轻松）",
+          "desc": "短轮动画，硬着陆而不是即时步骤。关闭意味着文本停止"
+        },
+        "scrollbarRuler": {
+          "title": "滚动条标尺标记",
+          "desc": "编辑器滚动条拇指上的细光标线和选择范围"
+        },
+        "wideScrollbar": {
+          "title": "宽滚动条（Zed 风格）",
+          "desc": "宽 16 像素通道，带有可见轨道和全宽方形拇指，而不是狭窄的药丸"
+        },
+        "noteWidth": {
+          "title": "注意列宽",
+          "desc": "注释内容列的宽度占窗口的百分比 (0-100%)"
+        },
+        "noteAlign": {
+          "title": "注意对齐",
+          "desc": "注释栏的水平对齐方式：居中或左对齐"
+        },
+        "titleAlign": {
+          "title": "注释标题对齐（窗口）",
+          "desc": "文件标题相对于窗口的位置：左侧或居中"
+        },
+        "titleAlignEditor": {
+          "title": "注释标题对齐（编辑器）",
+          "desc": "文件标题相对于注释列的位置：左边缘或居中"
+        }
+      },
+      "reader": {
+        "lineHeight": {
+          "title": "读卡器行高",
+          "desc": "行高倍增器提供舒适的阅读模式"
+        },
+        "maxWidthCh": {
+          "title": "读卡器最大列宽",
+          "desc": "最大文本容器列宽度（以字符 (ch) 为单位）"
+        }
+      },
+      "communityPlugins": {
+        "safeMode": {
+          "title": "",
+          "desc": "阻止社区插件执行以保证系统稳定性和数据保护"
+        }
+      },
+      "mcp": {
+        "enabled": {
+          "title": "启用本地 MCP 服务器",
+          "desc": "用于与外部 AI 编码助手集成的模型上下文协议服务器"
+        }
+      },
+      "trash": {
+        "retentionDays": {
+          "title": "垃圾保留天数",
+          "desc": "清除之前已删除笔记保留在垃圾箱中的天数"
+        }
+      },
+      "files": {
+        "autoTrashAttachments": {
+          "title": "自动删除附件",
+          "desc": "从笔记中删除引用后，自动将附件移至垃圾箱"
+        }
+      }
     }
   },
   "sidebar": {

@@ -34,7 +34,11 @@
       "history": "Geschiedenis",
       "trash": "Afval",
       "system": "Systeem",
-      "shortcuts": "Snelkoppelingen"
+      "shortcuts": "Snelkoppelingen",
+      "core_plugins": "Kernplug-ins",
+      "community_plugins": "Community-plug-ins",
+      "plugin_settings": "Plugin-instellingen",
+      "editor_toolbar": "Editor-werkbalk"
     },
     "ui": {
       "title": "Interface-instellingen",
@@ -58,7 +62,9 @@
       "sidebar_smart_scroll": "Slim bladeren door de bestandslijst",
       "sidebar_smart_scroll_desc": "Houd Ctrl ingedrukt zodat de cursorpositie de bestandenlijst aandrijft, zoals de pop-up met geopende tabbladen. Het wiel is uitgeschakeld terwijl het wordt vastgehouden.",
       "swap_tab_bar_buttons": "Wissel knoppen voor het maken van tabbladen om",
-      "swap_tab_bar_buttons_desc": "Knop '+' voor nieuw tabblad aan de linkerkant (opent tabblad uiterst links) en knop voor nieuwe notities aan de rechterkant (opent tabblad uiterst rechts)."
+      "swap_tab_bar_buttons_desc": "Knop '+' voor nieuw tabblad aan de linkerkant (opent tabblad uiterst links) en knop voor nieuwe notities aan de rechterkant (opent tabblad uiterst rechts).",
+      "font_weight_semibold": "Halfvet",
+      "font_weight_regular": "Normaal"
     },
     "editor": {
       "title": "Markdown-editor",
@@ -233,6 +239,227 @@
       "quick_open": "Ga naar bestand (snel openen)",
       "search_files": "Zoek bestanden",
       "open_command_palette": "Open het opdrachtenpalet"
+    },
+    "nav": {
+      "search_placeholder": "Zoekinstellingen...",
+      "search_empty": "Geen instellingen gevonden"
+    },
+    "units": {
+      "px": "{} px",
+      "ch": "{} k",
+      "percent": "{}%",
+      "mb": "{} MB"
+    },
+    "plugins": {
+      "core": {
+        "title": "Applicatie-kernplug-ins",
+        "status_updated": "Kernplug-in '{plugin}' bijgewerkt",
+        "command_palette": {
+          "name": "Commandopalet",
+          "desc": "Snel toepassingsacties zoeken en uitvoeren (Ctrl+Shift+P)"
+        },
+        "word_counter": {
+          "name": "Woordenteller",
+          "desc": "Geeft het aantal tekens en woorden weer in de statusbalk"
+        },
+        "editor_toolbar": {
+          "name": "Werkbalk Editor",
+          "desc": "Markdown-opmaakwerkbalk boven de editor met aanpasbare knoppen"
+        },
+        "file_recovery": {
+          "name": "Bestandsherstel",
+          "desc": "Automatische lokale momentopnamen ter bescherming tegen gegevensverlies"
+        }
+      },
+      "community": {
+        "title": "Community-plug-ins",
+        "safe_mode": "Veilige modus",
+        "safe_mode_desc": "Blokkeert de uitvoering van community-plug-ins voor systeemstabiliteit en gegevensbescherming",
+        "browse": "Blader door community-plug-ins",
+        "catalog": "Catalogus met community-plug-ins",
+        "catalog_desc": "Ontdek, installeer en update door de community gemaakte plug-ins",
+        "compat_full": "100% compatibel",
+        "compat_score": "{}% Verenigbaar",
+        "incompatible": "Onverenigbaar",
+        "compat_unknown": "Compatibiliteit onbekend",
+        "installed": "Geïnstalleerde plug-ins ({})"
+      },
+      "detail": {
+        "back": "Terug naar plug-ins",
+        "enable": "Inschakelen",
+        "disable": "Uitzetten",
+        "reload": "Herladen",
+        "open_folder": "Map openen",
+        "enabled": "Ingeschakeld",
+        "disabled": "Gehandicapt",
+        "author": "Door {}"
+      },
+      "metadata": {
+        "title": "Metagegevens",
+        "name": "Naam van plug-in",
+        "id": "Plug-in-ID",
+        "version": "Versie",
+        "min_app_version": "Minimale app-versie",
+        "author": "Auteur",
+        "author_url": "Auteur-URL",
+        "desktop_only": "Alleen bureaublad",
+        "desktop_only_true": "waar (alleen desktop)",
+        "desktop_only_false": "false (platformonafhankelijk)",
+        "install_path": "Installatiepad"
+      },
+      "readme": {
+        "title": "PLUGIN-INFORMATIE",
+        "missing": "Geen README.md-bestand gevonden",
+        "hint": "Er bestaat geen documentatiebestand in de plug-inmap. Voeg een README.md-bestand toe om hier instructies weer te geven."
+      },
+      "config": {
+        "title": "PLUGIN-INSTELLINGEN",
+        "store": "Configuratiearchief (.vault/plugins/<id>/data.json)",
+        "card": "Plugin-instellingen (data.json)",
+        "card_short": "Instellingen"
+      },
+      "edit_title": "Bewerking"
+    },
+    "toolbar": {
+      "back": "Terug naar de kernplug-ins",
+      "title": "Editor-werkbalk",
+      "desc": "Pas opmaakknoppen, geneste vervolgkeuzegroepen en scheidingstekens boven de editor aan.",
+      "add_button": "+ Knop",
+      "add_dropdown": "+ Vervolgkeuzelijst ▾",
+      "add_separator": "+ Scheidingsteken",
+      "reset": "Resetten naar standaardwaarden",
+      "export": "JSON exporteren",
+      "import": "JSON importeren",
+      "separator": "──────── (scheidingsteken)",
+      "dropdown_fallback": "Dropdownmenu",
+      "add_inside": "+ voeg binnen toe",
+      "items": "{} artikelen",
+      "search": "Zoekopdracht...",
+      "select_command": "Commando selecteren...",
+      "select_icon": "Pictogram selecteren...",
+      "step_command": "1. Commando:",
+      "step_icon": "2. Icoon:",
+      "save_button": "Knop Opslaan",
+      "add_formatting_button": "Opmaakknop toevoegen",
+      "create_group_title": "Maak een vervolgkeuzegroep",
+      "select_group_icon": "Groepspictogram selecteren:",
+      "create_group": "Groep aanmaken",
+      "default_group": "Nieuwe groep",
+      "status": {
+        "reset_done": "Resetten naar standaardwaarden",
+        "copied": "Configuratie gekopieerd naar klembord",
+        "clipboard_empty": "Klembord is leeg",
+        "import_done": "Configuratie succesvol geïmporteerd!",
+        "import_error": "Fout: kan JSON niet parseren"
+      }
+    },
+    "registry": {
+      "ui": {
+        "theme": {
+          "title": "Uiterlijk Thema",
+          "desc": "Kleurthema voor de gebruikersinterface: systeem, donker of licht"
+        },
+        "language": {
+          "title": "Interfacetaal",
+          "desc": "Interfacelokalisatietaal (ru / en)"
+        },
+        "primaryColor": {
+          "title": "Primaire accentkleur",
+          "desc": "Aangepaste merkaccentkleur voor knoppen, selecties en actieve tabbladen"
+        },
+        "sidebarSmartScroll": {
+          "title": "Zijbalk Slim scrollen",
+          "desc": "Centreer het actieve bestand automatisch in de zijbalkboom wanneer u van notitie wisselt"
+        },
+        "swapTabBarButtons": {
+          "title": "Knoppen voor het maken van tabbladen wisselen",
+          "desc": "Knop voor nieuw tabblad '+' aan de linkerkant (opent tabblad uiterst links), knop voor nieuwe notities aan de rechterkant (opent tabblad uiterst rechts)"
+        }
+      },
+      "editor": {
+        "fontSizeBase": {
+          "title": "Lettergrootte van editor",
+          "desc": "Basislettergrootte in het weergavevenster van de notitie-editor (px)"
+        },
+        "fontFamily": {
+          "title": "Editor-lettertypefamilie",
+          "desc": "Lettertypefamilie voor het weergeven en bewerken van notitie-inhoud"
+        },
+        "wordWrap": {
+          "title": "Woordomslag",
+          "desc": "Wikkel lange lijnen sierlijk langs de rand van het editorvenster"
+        },
+        "liveTabs": {
+          "title": "Live tabbladen tellen",
+          "desc": "Maximaal aantal editortabbladen dat actief blijft in het geheugen"
+        },
+        "hideCurrentLineOnSelection": {
+          "title": "Huidige lijnmarkering op selectie verbergen",
+          "desc": "Verberg de huidige regelmarkering wanneer een tekstbereik is geselecteerd"
+        },
+        "wheelSmoothScroll": {
+          "title": "Soepele wielscroll (gemak van 90 ms)",
+          "desc": "Korte wielanimatie met een harde landing in plaats van directe stappen. Uit betekent dat de tekst dood blijft"
+        },
+        "scrollbarRuler": {
+          "title": "Schuifbalkliniaalmarkeringen",
+          "desc": "Dunne cursorlijn en selectie over de duim van de editorschuifbalk"
+        },
+        "wideScrollbar": {
+          "title": "Brede schuifbalk (Zed-stijl)",
+          "desc": "Brede 16 px-baan met een zichtbare track en een vierkante duim over de volledige breedte in plaats van de smalle pil"
+        },
+        "noteWidth": {
+          "title": "Opmerking Kolombreedte",
+          "desc": "Breedte van de kolom met notitie-inhoud als percentage van het venster (0-100%)"
+        },
+        "noteAlign": {
+          "title": "Opmerking Uitlijning",
+          "desc": "Horizontale uitlijning van de notitiekolom: gecentreerd of links uitgelijnd"
+        },
+        "titleAlign": {
+          "title": "Opmerking Titeluitlijning (venster)",
+          "desc": "Positie van de bestandstitel ten opzichte van het venster: links of gecentreerd"
+        },
+        "titleAlignEditor": {
+          "title": "Opmerking Titeluitlijning (Editor)",
+          "desc": "Positie van de bestandstitel ten opzichte van de notitiekolom: linkerrand of gecentreerd"
+        }
+      },
+      "reader": {
+        "lineHeight": {
+          "title": "Lijnhoogte lezer",
+          "desc": "Lijnhoogtevermenigvuldiger voor een comfortabele leesmodus"
+        },
+        "maxWidthCh": {
+          "title": "Lezer maximale kolombreedte",
+          "desc": "Maximale kolombreedte voor tekstcontainers in tekens (ch)"
+        }
+      },
+      "communityPlugins": {
+        "safeMode": {
+          "title": "Community-plug-ins Veilige modus",
+          "desc": "Blokkeert de uitvoering van community-plug-ins voor systeemstabiliteit en gegevensbescherming"
+        }
+      },
+      "mcp": {
+        "enabled": {
+          "title": "Schakel lokale MCP-server in",
+          "desc": "Model Context Protocol-server voor integratie met externe AI-coderingsassistenten"
+        }
+      },
+      "trash": {
+        "retentionDays": {
+          "title": "Dagen voor het bewaren van afval",
+          "desc": "Aantal dagen dat verwijderde notities in de prullenbak blijven staan ​​voordat ze worden opgeschoond"
+        }
+      },
+      "files": {
+        "autoTrashAttachments": {
+          "title": "Bijlagen voor automatische prullenbak",
+          "desc": "Verplaats bijlagen automatisch naar de prullenbak wanneer verwijzingen uit notities worden verwijderd"
+        }
+      }
     }
   },
   "sidebar": {

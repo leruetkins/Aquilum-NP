@@ -115,7 +115,6 @@
         "disable": "Disable",
         "reload": "Reload",
         "open_folder": "Open folder",
-        "uninstall": "Delete",
         "enabled": "Enabled",
         "disabled": "Disabled",
         "author": "By {}"
@@ -196,8 +195,7 @@
 Переиспользуем существующее вместо новых ключей:
 
 - `common.cancel` — «Отмена» в `plugin_toolbar.rs:1381,1517`;
-- `common.delete` — «Удалить» в `tabs.rs:2928` (ключ `settings.plugins.detail.uninstall`
-  тогда не нужен, оставлен в схеме как fallback-имя на случай расхождения формулировок);
+- `common.delete` — «Удалить» в `tabs.rs:2928`;
 - `settings.title` — заголовок окна: `format!("{} — Vibecodium", self.t("settings.title"))`
   (сейчас `settings.title` в локалях есть, но не используется);
 - `editor.live_tabs_unit`, `editor.debounce_unit` — уже существующие единицы.

@@ -41,25 +41,29 @@
     #[test]
     fn test_search_settings() {
         // Direct ID and URL match
-        let res_id = search_settings("editor.wordWrap");
+        let res_id = search_settings("editor.wordWrap", "ru");
         assert_eq!(res_id.len(), 1);
         assert_eq!(res_id[0].id, "editor.wordWrap");
 
-        let res_url = search_settings(&format!("{}://settings/editor.wordWrap", APP_URL_SCHEME));
+        let res_url = search_settings(&format!("{}://settings/editor.wordWrap", APP_URL_SCHEME), "en");
         assert_eq!(res_url.len(), 1);
         assert_eq!(res_url[0].id, "editor.wordWrap");
 
         // Russian keyword search
-        let res_ru = search_settings("перенос");
+        let res_ru = search_settings("перенос", "ru");
         assert!(res_ru.iter().any(|s| s.id == "editor.wordWrap"));
 
         // English keyword search
-        let res_en = search_settings("wrap");
+        let res_en = search_settings("wrap", "en");
         assert!(res_en.iter().any(|s| s.id == "editor.wordWrap"));
 
         // Multi-keyword search
-        let res_font = search_settings("шрифт размер");
+        let res_font = search_settings("шрифт размер", "ru");
         assert!(res_font.iter().any(|s| s.id == "editor.fontSizeBase"));
+
+        // A Russian query still matches while the interface is in another language
+        let res_ru_in_de = search_settings("перенос", "de");
+        assert!(res_ru_in_de.iter().any(|s| s.id == "editor.wordWrap"));
     }
 
     #[test]

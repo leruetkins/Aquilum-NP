@@ -34,7 +34,11 @@
       "history": "Historia",
       "trash": "Kosz",
       "system": "System",
-      "shortcuts": "Skróty klawiszowe"
+      "shortcuts": "Skróty klawiszowe",
+      "core_plugins": "Podstawowe wtyczki",
+      "community_plugins": "Wtyczki społecznościowe",
+      "plugin_settings": "Ustawienia wtyczki",
+      "editor_toolbar": "Pasek narzędzi edytora"
     },
     "ui": {
       "title": "Ustawienia interfejsu",
@@ -58,7 +62,9 @@
       "sidebar_smart_scroll": "Inteligentne przewijanie listy plików",
       "sidebar_smart_scroll_desc": "Przytrzymaj klawisz Ctrl, aby pozycja kursora sterowała listą plików, podobnie jak wyskakujące okienko otwartych kart. Koło jest wyłączone, gdy jest przytrzymywane.",
       "swap_tab_bar_buttons": "Zamień przyciski tworzenia paska zakładek",
-      "swap_tab_bar_buttons_desc": "Przycisk nowej karty „+” po lewej stronie (otwiera kartę po lewej stronie) i przycisk nowej notatki po prawej stronie (otwiera kartę po prawej stronie)."
+      "swap_tab_bar_buttons_desc": "Przycisk nowej karty „+” po lewej stronie (otwiera kartę po lewej stronie) i przycisk nowej notatki po prawej stronie (otwiera kartę po prawej stronie).",
+      "font_weight_semibold": "Półpogrubiony",
+      "font_weight_regular": "Regularny"
     },
     "editor": {
       "title": "Edytor Markdownów",
@@ -233,6 +239,227 @@
       "quick_open": "Przejdź do pliku (szybkie otwieranie)",
       "search_files": "Wyszukaj pliki",
       "open_command_palette": "Otwórz paletę poleceń"
+    },
+    "nav": {
+      "search_placeholder": "Ustawienia wyszukiwania...",
+      "search_empty": "Nie znaleziono ustawień"
+    },
+    "units": {
+      "px": "{} pikseli",
+      "ch": "{} rozdz",
+      "percent": "{}%",
+      "mb": "{}MB"
+    },
+    "plugins": {
+      "core": {
+        "title": "Wtyczki rdzenia aplikacji",
+        "status_updated": "Zaktualizowano podstawową wtyczkę „{plugin}”.",
+        "command_palette": {
+          "name": "Paleta poleceń",
+          "desc": "Szybkie wyszukiwanie i wykonywanie akcji aplikacji (Ctrl+Shift+P)"
+        },
+        "word_counter": {
+          "name": "Licznik słów",
+          "desc": "Wyświetla liczbę znaków i słów na pasku stanu"
+        },
+        "editor_toolbar": {
+          "name": "Pasek narzędzi edytora",
+          "desc": "Pasek narzędzi formatowania Markdown nad edytorem z konfigurowalnymi przyciskami"
+        },
+        "file_recovery": {
+          "name": "Odzyskiwanie plików",
+          "desc": "Automatyczne lokalne migawki w celu ochrony przed utratą danych"
+        }
+      },
+      "community": {
+        "title": "Wtyczki społecznościowe",
+        "safe_mode": "Tryb awaryjny",
+        "safe_mode_desc": "Blokuje wykonywanie wtyczek społeczności w celu zapewnienia stabilności systemu i ochrony danych",
+        "browse": "Przeglądaj wtyczki społecznościowe",
+        "catalog": "Katalog wtyczek społeczności",
+        "catalog_desc": "Odkrywaj, instaluj i aktualizuj wtyczki stworzone przez społeczność",
+        "compat_full": "100% kompatybilny",
+        "compat_score": "{}% Kompatybilny",
+        "incompatible": "Niezgodny",
+        "compat_unknown": "Kompatybilność nieznana",
+        "installed": "Zainstalowane wtyczki ({})"
+      },
+      "detail": {
+        "back": "Wracając do wtyczek",
+        "enable": "Włączać",
+        "disable": "Wyłączyć",
+        "reload": "Przeładować",
+        "open_folder": "Otwórz folder",
+        "enabled": "Włączony",
+        "disabled": "Wyłączony",
+        "author": "Przez {}"
+      },
+      "metadata": {
+        "title": "Metadane",
+        "name": "Nazwa wtyczki",
+        "id": "Identyfikator wtyczki",
+        "version": "Wersja",
+        "min_app_version": "Minimalna wersja aplikacji",
+        "author": "Autor",
+        "author_url": "Adres URL autora",
+        "desktop_only": "Tylko komputer stacjonarny",
+        "desktop_only_true": "prawda (tylko komputer stacjonarny)",
+        "desktop_only_false": "false (wieloplatformowe)",
+        "install_path": "Ścieżka instalacji"
+      },
+      "readme": {
+        "title": "INFORMACJE O WTYCZKACH",
+        "missing": "Nie znaleziono pliku README.md",
+        "hint": "W katalogu wtyczki nie ma pliku dokumentacji. Dodaj plik README.md, aby wyświetlić tutaj instrukcje."
+      },
+      "config": {
+        "title": "USTAWIENIA WTYCZEK",
+        "store": "Magazyn konfiguracji (.vault/plugins/<id>/data.json)",
+        "card": "Ustawienia wtyczki (data.json)",
+        "card_short": "Ustawienia"
+      },
+      "edit_title": "Redagować"
+    },
+    "toolbar": {
+      "back": "Powrót do podstawowych wtyczek",
+      "title": "Pasek narzędzi edytora",
+      "desc": "Dostosuj przyciski formatowania, zagnieżdżone grupy rozwijane i separatory nad edytorem.",
+      "add_button": "+ Przycisk",
+      "add_dropdown": "+ Lista rozwijana ▾",
+      "add_separator": "+ Separator",
+      "reset": "Przywróć ustawienia domyślne",
+      "export": "Eksportuj JSON",
+      "import": "Importuj JSON",
+      "separator": "──────── (separator)",
+      "dropdown_fallback": "Lista rozwijana",
+      "add_inside": "+ dodaj do środka",
+      "items": "{} rzeczy",
+      "search": "Szukaj...",
+      "select_command": "Wybierz polecenie...",
+      "select_icon": "Wybierz ikonę...",
+      "step_command": "1. Polecenie:",
+      "step_icon": "2. Ikona:",
+      "save_button": "Przycisk Zapisz",
+      "add_formatting_button": "Dodaj przycisk formatowania",
+      "create_group_title": "Utwórz grupę rozwijaną",
+      "select_group_icon": "Wybierz ikonę grupy:",
+      "create_group": "Utwórz grupę",
+      "default_group": "Nowa grupa",
+      "status": {
+        "reset_done": "Przywróć ustawienia domyślne",
+        "copied": "Konfiguracja skopiowana do schowka",
+        "clipboard_empty": "Schowek jest pusty",
+        "import_done": "Konfiguracja została zaimportowana pomyślnie!",
+        "import_error": "Błąd: nie udało się przeanalizować formatu JSON"
+      }
+    },
+    "registry": {
+      "ui": {
+        "theme": {
+          "title": "Motyw wyglądu",
+          "desc": "Motyw kolorystyczny interfejsu użytkownika: systemowy, ciemny lub jasny"
+        },
+        "language": {
+          "title": "Język interfejsu",
+          "desc": "Język lokalizacji interfejsu (ru / en)"
+        },
+        "primaryColor": {
+          "title": "Podstawowy kolor akcentu",
+          "desc": "Niestandardowy kolor akcentujący markę dla przycisków, opcji i aktywnych zakładek"
+        },
+        "sidebarSmartScroll": {
+          "title": "Inteligentne przewijanie paska bocznego",
+          "desc": "Automatycznie wyśrodkuj aktywny plik w drzewie paska bocznego podczas przełączania notatek"
+        },
+        "swapTabBarButtons": {
+          "title": "Przyciski tworzenia paska zakładek Zamień",
+          "desc": "Przycisk nowej karty „+” po lewej stronie (otwiera kartę po lewej stronie), przycisk nowej notatki po prawej stronie (otwiera kartę po prawej stronie)"
+        }
+      },
+      "editor": {
+        "fontSizeBase": {
+          "title": "Rozmiar czcionki edytora",
+          "desc": "Podstawowy rozmiar czcionki w rzutni edytora notatek (px)"
+        },
+        "fontFamily": {
+          "title": "Rodzina czcionek edytora",
+          "desc": "Rodzina krojów pisma do wyświetlania i edytowania treści notatek"
+        },
+        "wordWrap": {
+          "title": "Zawijanie słów",
+          "desc": "Zawijaj długie linie z wdziękiem na krawędzi rzutni edytora"
+        },
+        "liveTabs": {
+          "title": "Liczba zakładek na żywo",
+          "desc": "Maksymalna liczba zakładek edytora, które pozostają aktywne w pamięci"
+        },
+        "hideCurrentLineOnSelection": {
+          "title": "Ukryj bieżące wyróżnienie linii po zaznaczeniu",
+          "desc": "Ukryj bieżące wyróżnienie linii, gdy zaznaczony jest zakres tekstu"
+        },
+        "wheelSmoothScroll": {
+          "title": "Płynne przewijanie kółkiem (łatwość 90 ms)",
+          "desc": "Krótka animacja koła z twardym lądowaniem zamiast natychmiastowych kroków. Wyłączone oznacza, że ​​tekst przestaje być wyświetlany"
+        },
+        "scrollbarRuler": {
+          "title": "Znaki linijki paska przewijania",
+          "desc": "Cienka linia kursora i zakres zaznaczenia nad kciukiem paska przewijania edytora"
+        },
+        "wideScrollbar": {
+          "title": "Szeroki pasek przewijania (w stylu Zeda)",
+          "desc": "Szeroki pas o rozdzielczości 16 pikseli z widoczną ścieżką i kwadratowym kciukiem o pełnej szerokości zamiast wąskiej pigułki"
+        },
+        "noteWidth": {
+          "title": "Uwaga Szerokość kolumny",
+          "desc": "Szerokość kolumny treści notatki jako procent okna (0-100%)"
+        },
+        "noteAlign": {
+          "title": "Uwaga wyrównanie",
+          "desc": "Poziome wyrównanie kolumny notatki: wyśrodkowane lub wyrównane do lewej"
+        },
+        "titleAlign": {
+          "title": "Wyrównanie tytułu notatki (okno)",
+          "desc": "Pozycja tytułu pliku względem okna: lewa lub wyśrodkowana"
+        },
+        "titleAlignEditor": {
+          "title": "Wyrównanie tytułu notatki (edytor)",
+          "desc": "Pozycja tytułu pliku względem kolumny notatki: lewa krawędź lub wyśrodkowana"
+        }
+      },
+      "reader": {
+        "lineHeight": {
+          "title": "Wysokość linii czytnika",
+          "desc": "Mnożnik wysokości linii dla wygodnego trybu czytania"
+        },
+        "maxWidthCh": {
+          "title": "Maksymalna szerokość kolumny czytnika",
+          "desc": "Maksymalna szerokość kolumny kontenera tekstu w znakach (ch)"
+        }
+      },
+      "communityPlugins": {
+        "safeMode": {
+          "title": "Wtyczki społecznościowe w trybie awaryjnym",
+          "desc": "Blokuje wykonywanie wtyczek społeczności w celu zapewnienia stabilności systemu i ochrony danych"
+        }
+      },
+      "mcp": {
+        "enabled": {
+          "title": "Włącz lokalny serwer MCP",
+          "desc": "Modelowy serwer protokołu kontekstowego do integracji z zewnętrznymi asystentami kodowania AI"
+        }
+      },
+      "trash": {
+        "retentionDays": {
+          "title": "Dni przechowywania śmieci",
+          "desc": "Liczba dni, w których usunięte notatki pozostają w koszu przed usunięciem"
+        }
+      },
+      "files": {
+        "autoTrashAttachments": {
+          "title": "Automatyczne usuwanie załączników",
+          "desc": "Automatycznie przenoś załączniki do kosza, gdy odniesienia zostaną usunięte z notatek"
+        }
+      }
     }
   },
   "sidebar": {

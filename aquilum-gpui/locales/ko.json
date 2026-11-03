@@ -34,7 +34,11 @@
       "history": "역사",
       "trash": "쓰레기",
       "system": "체계",
-      "shortcuts": "단축키"
+      "shortcuts": "단축키",
+      "core_plugins": "핵심 플러그인",
+      "community_plugins": "커뮤니티 플러그인",
+      "plugin_settings": "플러그인 설정",
+      "editor_toolbar": "에디터 툴바"
     },
     "ui": {
       "title": "인터페이스 설정",
@@ -58,7 +62,9 @@
       "sidebar_smart_scroll": "스마트 파일 목록 스크롤",
       "sidebar_smart_scroll_desc": "열린 탭 팝업과 같이 커서 위치가 파일 목록을 구동하도록 Ctrl 키를 누르고 있습니다. 누르고 있는 동안에는 휠이 비활성화됩니다.",
       "swap_tab_bar_buttons": "탭바 생성 버튼 교체",
-      "swap_tab_bar_buttons_desc": "왼쪽의 새 탭 버튼 '+'(맨 왼쪽에서 탭 열기), 오른쪽의 새 노트 버튼(맨 오른쪽에서 탭 열기)."
+      "swap_tab_bar_buttons_desc": "왼쪽의 새 탭 버튼 '+'(맨 왼쪽에서 탭 열기), 오른쪽의 새 노트 버튼(맨 오른쪽에서 탭 열기).",
+      "font_weight_semibold": "세미볼드",
+      "font_weight_regular": "정기적인"
     },
     "editor": {
       "title": "마크다운 편집기",
@@ -233,6 +239,227 @@
       "quick_open": "파일로 이동(빠른 열기)",
       "search_files": "파일 검색",
       "open_command_palette": "명령 팔레트 열기"
+    },
+    "nav": {
+      "search_placeholder": "검색 설정...",
+      "search_empty": "설정을 찾을 수 없습니다."
+    },
+    "units": {
+      "px": "{}픽셀",
+      "ch": "{} 채널",
+      "percent": "{}%",
+      "mb": "{}MB"
+    },
+    "plugins": {
+      "core": {
+        "title": "애플리케이션 핵심 플러그인",
+        "status_updated": "핵심 플러그인 '{plugin}'이 업데이트되었습니다.",
+        "command_palette": {
+          "name": "명령 팔레트",
+          "desc": "애플리케이션 작업을 빠르게 검색하고 실행합니다(Ctrl+Shift+P)."
+        },
+        "word_counter": {
+          "name": "워드 카운터",
+          "desc": "상태 표시줄에 문자 및 단어 수를 표시합니다."
+        },
+        "editor_toolbar": {
+          "name": "에디터 툴바",
+          "desc": "사용자 정의 가능한 버튼이 있는 편집기 위의 마크다운 서식 도구 모음"
+        },
+        "file_recovery": {
+          "name": "파일 복구",
+          "desc": "데이터 손실을 방지하기 위한 자동 로컬 스냅샷"
+        }
+      },
+      "community": {
+        "title": "커뮤니티 플러그인",
+        "safe_mode": "안전 모드",
+        "safe_mode_desc": "시스템 안정성 및 데이터 보호를 위해 커뮤니티 플러그인 실행을 차단합니다.",
+        "browse": "커뮤니티 플러그인 찾아보기",
+        "catalog": "커뮤니티 플러그인 카탈로그",
+        "catalog_desc": "커뮤니티가 만든 플러그인을 검색, 설치 및 업데이트하세요.",
+        "compat_full": "100% 호환",
+        "compat_score": "{}% 호환 가능",
+        "incompatible": "호환되지 않음",
+        "compat_unknown": "호환성을 알 수 없음",
+        "installed": "설치된 플러그인({})"
+      },
+      "detail": {
+        "back": "플러그인으로 돌아가기",
+        "enable": "할 수 있게 하다",
+        "disable": "장애를 입히다",
+        "reload": "새로고침",
+        "open_folder": "폴더 열기",
+        "enabled": "활성화됨",
+        "disabled": "장애가 있는",
+        "author": "에 의해 {}"
+      },
+      "metadata": {
+        "title": "메타데이터",
+        "name": "플러그인 이름",
+        "id": "플러그인 ID",
+        "version": "버전",
+        "min_app_version": "최소 앱 버전",
+        "author": "작가",
+        "author_url": "작성자 URL",
+        "desktop_only": "데스크톱 전용",
+        "desktop_only_true": "true(데스크톱에만 해당)",
+        "desktop_only_false": "false(크로스 플랫폼)",
+        "install_path": "설치 경로"
+      },
+      "readme": {
+        "title": "플러그인 정보",
+        "missing": "README.md 파일을 찾을 수 없습니다.",
+        "hint": "플러그인 디렉토리에 문서 파일이 없습니다. 여기에 지침을 표시하려면 README.md 파일을 추가하세요."
+      },
+      "config": {
+        "title": "플러그인 설정",
+        "store": "구성 저장소(.vault/plugins/<id>/data.json)",
+        "card": "플러그인 설정(data.json)",
+        "card_short": "설정"
+      },
+      "edit_title": "편집하다"
+    },
+    "toolbar": {
+      "back": "핵심 플러그인으로 돌아가기",
+      "title": "에디터 툴바",
+      "desc": "서식 지정 버튼, 중첩된 드롭다운 그룹, 편집기 위의 구분 기호를 맞춤설정하세요.",
+      "add_button": "+ 버튼",
+      "add_dropdown": "+ 드롭다운 ▾",
+      "add_separator": "+ 구분 기호",
+      "reset": "기본값으로 재설정",
+      "export": "JSON 내보내기",
+      "import": "JSON 가져오기",
+      "separator": "──────── (구분 기호)",
+      "dropdown_fallback": "드롭다운",
+      "add_inside": "+ 안에 추가",
+      "items": "{} 항목",
+      "search": "찾다...",
+      "select_command": "명령 선택...",
+      "select_icon": "아이콘 선택...",
+      "step_command": "1. 명령:",
+      "step_icon": "2. 아이콘:",
+      "save_button": "저장 버튼",
+      "add_formatting_button": "서식 추가 버튼",
+      "create_group_title": "드롭다운 그룹 만들기",
+      "select_group_icon": "그룹 아이콘 선택:",
+      "create_group": "그룹 만들기",
+      "default_group": "새 그룹",
+      "status": {
+        "reset_done": "기본값으로 재설정",
+        "copied": "구성이 클립보드에 복사되었습니다.",
+        "clipboard_empty": "클립보드가 비어 있습니다.",
+        "import_done": "구성을 성공적으로 가져왔습니다!",
+        "import_error": "오류: JSON을 구문 분석하지 못했습니다."
+      }
+    },
+    "registry": {
+      "ui": {
+        "theme": {
+          "title": "외관 테마",
+          "desc": "사용자 인터페이스의 색상 테마: 시스템, 어두움 또는 밝음"
+        },
+        "language": {
+          "title": "인터페이스 언어",
+          "desc": "인터페이스 현지화 언어(ru/en)"
+        },
+        "primaryColor": {
+          "title": "기본 강조 색상",
+          "desc": "버튼, 선택 항목, 활성 탭에 대한 맞춤형 브랜드 강조 색상"
+        },
+        "sidebarSmartScroll": {
+          "title": "사이드바 스마트 스크롤",
+          "desc": "노트를 전환할 때 사이드바 트리의 활성 파일을 자동으로 중앙에 배치합니다."
+        },
+        "swapTabBarButtons": {
+          "title": "탭 표시줄 생성 버튼 교체",
+          "desc": "왼쪽의 새 탭 버튼 '+'(맨 왼쪽에서 탭 열기), 오른쪽의 새 노트 버튼(맨 오른쪽에서 탭 열기)"
+        }
+      },
+      "editor": {
+        "fontSizeBase": {
+          "title": "편집기 글꼴 크기",
+          "desc": "노트 편집기 뷰포트의 기본 글꼴 크기(px)"
+        },
+        "fontFamily": {
+          "title": "편집기 글꼴 모음",
+          "desc": "노트 내용 표시 및 편집을 위한 서체 모음"
+        },
+        "wordWrap": {
+          "title": "단어 줄 바꿈",
+          "desc": "에디터 뷰포트 가장자리에서 긴 선을 우아하게 감싸세요"
+        },
+        "liveTabs": {
+          "title": "라이브 탭 수",
+          "desc": "메모리에 활성 상태로 유지되는 최대 편집기 탭 수"
+        },
+        "hideCurrentLineOnSelection": {
+          "title": "선택 항목에서 현재 줄 강조 표시 숨기기",
+          "desc": "텍스트 범위가 선택되면 현재 줄 강조 표시 숨기기"
+        },
+        "wheelSmoothScroll": {
+          "title": "부드러운 휠 스크롤(90ms 용이성)",
+          "desc": "즉각적인 단계 대신 경착륙이 포함된 짧은 바퀴 애니메이션입니다. 꺼짐은 텍스트가 중단되었음을 의미합니다."
+        },
+        "scrollbarRuler": {
+          "title": "스크롤바 눈금자 표시",
+          "desc": "편집기 스크롤 막대 썸 위의 얇은 커서 선과 선택 범위"
+        },
+        "wideScrollbar": {
+          "title": "넓은 스크롤바(Zed 스타일)",
+          "desc": "눈에 보이는 트랙과 좁은 알약 대신 전폭 정사각형 엄지손가락이 있는 넓은 16픽셀 레인"
+        },
+        "noteWidth": {
+          "title": "참고 열 너비",
+          "desc": "창의 백분율로 나타낸 메모 내용 열의 너비(0-100%)"
+        },
+        "noteAlign": {
+          "title": "노트 정렬",
+          "desc": "메모 열의 가로 정렬: 가운데 정렬 또는 왼쪽 정렬"
+        },
+        "titleAlign": {
+          "title": "노트 제목 정렬(창)",
+          "desc": "창을 기준으로 한 파일 제목 위치: 왼쪽 또는 가운데"
+        },
+        "titleAlignEditor": {
+          "title": "노트 제목 정렬(편집기)",
+          "desc": "메모 열을 기준으로 한 파일 제목 위치: 왼쪽 가장자리 또는 중앙"
+        }
+      },
+      "reader": {
+        "lineHeight": {
+          "title": "리더 라인 높이",
+          "desc": "편안한 읽기 모드를 위한 줄 높이 승수"
+        },
+        "maxWidthCh": {
+          "title": "리더 최대 열 너비",
+          "desc": "최대 텍스트 컨테이너 열 너비(문자)(ch)"
+        }
+      },
+      "communityPlugins": {
+        "safeMode": {
+          "title": "커뮤니티 플러그인 안전 모드",
+          "desc": "시스템 안정성 및 데이터 보호를 위해 커뮤니티 플러그인 실행을 차단합니다."
+        }
+      },
+      "mcp": {
+        "enabled": {
+          "title": "로컬 MCP 서버 활성화",
+          "desc": "외부 AI 코딩 도우미와의 통합을 위한 모델 컨텍스트 프로토콜 서버"
+        }
+      },
+      "trash": {
+        "retentionDays": {
+          "title": "쓰레기 보관 일수",
+          "desc": "삭제된 메모가 삭제되기 전까지 휴지통에 남아 있는 일수"
+        }
+      },
+      "files": {
+        "autoTrashAttachments": {
+          "title": "자동 휴지통 첨부 파일",
+          "desc": "노트에서 참조가 제거되면 첨부 파일을 자동으로 휴지통으로 이동합니다."
+        }
+      }
     }
   },
   "sidebar": {

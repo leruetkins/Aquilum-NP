@@ -34,7 +34,11 @@
       "history": "Storia",
       "trash": "Spazzatura",
       "system": "Sistema",
-      "shortcuts": "Scorciatoie"
+      "shortcuts": "Scorciatoie",
+      "core_plugins": "Plugin principali",
+      "community_plugins": "Plugin della comunità",
+      "plugin_settings": "Impostazioni del plugin",
+      "editor_toolbar": "Barra degli strumenti dell'editor"
     },
     "ui": {
       "title": "Impostazioni dell'interfaccia",
@@ -58,7 +62,9 @@
       "sidebar_smart_scroll": "Scorrimento intelligente dell'elenco dei file",
       "sidebar_smart_scroll_desc": "Tieni premuto Ctrl in modo che la posizione del cursore guidi l'elenco dei file, come il popup delle schede aperte. La ruota è disabilitata mentre viene trattenuta.",
       "swap_tab_bar_buttons": "Scambia i pulsanti di creazione della barra delle schede",
-      "swap_tab_bar_buttons_desc": "Pulsante Nuova scheda \"+\" a sinistra (apre la scheda all'estrema sinistra) e nuovo pulsante nota a destra (apre la scheda all'estrema destra)."
+      "swap_tab_bar_buttons_desc": "Pulsante Nuova scheda \"+\" a sinistra (apre la scheda all'estrema sinistra) e nuovo pulsante nota a destra (apre la scheda all'estrema destra).",
+      "font_weight_semibold": "Semigrassetto",
+      "font_weight_regular": "Regolare"
     },
     "editor": {
       "title": "Editor Markdown",
@@ -233,6 +239,227 @@
       "quick_open": "Vai a File (Apertura rapida)",
       "search_files": "Cerca file",
       "open_command_palette": "Apri la tavolozza dei comandi"
+    },
+    "nav": {
+      "search_placeholder": "Cerca impostazioni...",
+      "search_empty": "Nessuna impostazione trovata"
+    },
+    "units": {
+      "px": "{}px",
+      "ch": "{} cap",
+      "percent": "{}%",
+      "mb": "{}MB"
+    },
+    "plugins": {
+      "core": {
+        "title": "Plugin principali dell'applicazione",
+        "status_updated": "Plugin principale '{plugin}' aggiornato",
+        "command_palette": {
+          "name": "Tavolozza dei comandi",
+          "desc": "Cerca ed esegui rapidamente le azioni dell'applicazione (Ctrl+Shift+P)"
+        },
+        "word_counter": {
+          "name": "Contatore di parole",
+          "desc": "Visualizza il conteggio dei caratteri e delle parole nella barra di stato"
+        },
+        "editor_toolbar": {
+          "name": "Barra degli strumenti dell'editor",
+          "desc": "Barra degli strumenti di formattazione Markdown sopra l'editor con pulsanti personalizzabili"
+        },
+        "file_recovery": {
+          "name": "Recupero file",
+          "desc": "Snapshot locale automatico per proteggere dalla perdita di dati"
+        }
+      },
+      "community": {
+        "title": "Plugin della comunità",
+        "safe_mode": "Modalità provvisoria",
+        "safe_mode_desc": "Blocca l'esecuzione dei plugin della community per la stabilità del sistema e la protezione dei dati",
+        "browse": "Sfoglia i plugin della community",
+        "catalog": "Catalogo dei plugin della community",
+        "catalog_desc": "Scopri, installa e aggiorna i plugin creati dalla community",
+        "compat_full": "Compatibile al 100%.",
+        "compat_score": "{}% compatibile",
+        "incompatible": "Incompatibile",
+        "compat_unknown": "Compatibilità sconosciuta",
+        "installed": "Plug-in installati ({})"
+      },
+      "detail": {
+        "back": "Torniamo ai plugin",
+        "enable": "Abilitare",
+        "disable": "Disabilita",
+        "reload": "Ricaricare",
+        "open_folder": "Apri cartella",
+        "enabled": "Abilitato",
+        "disabled": "Disabilitato",
+        "author": "Di {}"
+      },
+      "metadata": {
+        "title": "Metadati",
+        "name": "Nome del plug-in",
+        "id": "ID del plug-in",
+        "version": "Versione",
+        "min_app_version": "Versione minima dell'app",
+        "author": "Autore",
+        "author_url": "URL dell'autore",
+        "desktop_only": "Solo desktop",
+        "desktop_only_true": "vero (solo desktop)",
+        "desktop_only_false": "falso (multipiattaforma)",
+        "install_path": "Percorso di installazione"
+      },
+      "readme": {
+        "title": "INFORMAZIONI SUL PLUG",
+        "missing": "Nessun file README.md trovato",
+        "hint": "Nessun file di documentazione esiste nella directory del plugin. Aggiungi un file README.md per visualizzare le istruzioni qui."
+      },
+      "config": {
+        "title": "IMPOSTAZIONI DEL PLUG",
+        "store": "Archivio di configurazione (.vault/plugins/<id>/data.json)",
+        "card": "Impostazioni del plugin (data.json)",
+        "card_short": "Impostazioni"
+      },
+      "edit_title": "Modificare"
+    },
+    "toolbar": {
+      "back": "Torniamo ai plugin principali",
+      "title": "Barra degli strumenti dell'editor",
+      "desc": "Personalizza i pulsanti di formattazione, i gruppi a discesa nidificati e i separatori sopra l'editor.",
+      "add_button": "+Pulsante",
+      "add_dropdown": "+ Menu a discesa ▾",
+      "add_separator": "+ Separatore",
+      "reset": "Ripristina le impostazioni predefinite",
+      "export": "Esporta JSON",
+      "import": "Importa JSON",
+      "separator": "──────── (separatore)",
+      "dropdown_fallback": "Cadere in picchiata",
+      "add_inside": "+ aggiungi all'interno",
+      "items": "{} elementi",
+      "search": "Ricerca...",
+      "select_command": "Seleziona comando...",
+      "select_icon": "Seleziona l'icona...",
+      "step_command": "1. Comando:",
+      "step_icon": "2. Icona:",
+      "save_button": "Pulsante Salva",
+      "add_formatting_button": "Aggiungi pulsante di formattazione",
+      "create_group_title": "Crea gruppo a discesa",
+      "select_group_icon": "Seleziona l'icona del gruppo:",
+      "create_group": "Crea gruppo",
+      "default_group": "Nuovo gruppo",
+      "status": {
+        "reset_done": "Ripristina le impostazioni predefinite",
+        "copied": "Configurazione copiata negli appunti",
+        "clipboard_empty": "Gli appunti sono vuoti",
+        "import_done": "Configurazione importata con successo!",
+        "import_error": "Errore: impossibile analizzare JSON"
+      }
+    },
+    "registry": {
+      "ui": {
+        "theme": {
+          "title": "Tema dell'aspetto",
+          "desc": "Tema colore per l'interfaccia utente: sistema, scuro o chiaro"
+        },
+        "language": {
+          "title": "Linguaggio dell'interfaccia",
+          "desc": "Lingua di localizzazione dell'interfaccia (ru / en)"
+        },
+        "primaryColor": {
+          "title": "Colore accento primario",
+          "desc": "Colore distintivo del marchio personalizzato per pulsanti, selezioni e schede attive"
+        },
+        "sidebarSmartScroll": {
+          "title": "Scorrimento intelligente della barra laterale",
+          "desc": "Centra automaticamente il file attivo nell'albero della barra laterale quando si cambiano le note"
+        },
+        "swapTabBarButtons": {
+          "title": "Scambia i pulsanti di creazione della barra delle schede",
+          "desc": "Pulsante nuova scheda \"+\" a sinistra (apre la scheda all'estrema sinistra), pulsante nuova nota a destra (apre la scheda all'estrema destra)"
+        }
+      },
+      "editor": {
+        "fontSizeBase": {
+          "title": "Dimensione carattere dell'editor",
+          "desc": "Dimensione base del carattere nella finestra dell'editor delle note (px)"
+        },
+        "fontFamily": {
+          "title": "Famiglia di caratteri dell'editor",
+          "desc": "Famiglia di caratteri tipografici per visualizzare e modificare il contenuto delle note"
+        },
+        "wordWrap": {
+          "title": "A capo automatico",
+          "desc": "Avvolgi le linee lunghe con grazia sul bordo della finestra dell'editor"
+        },
+        "liveTabs": {
+          "title": "Conteggio delle schede in tempo reale",
+          "desc": "Numero massimo di schede dell'editor mantenute attive in memoria"
+        },
+        "hideCurrentLineOnSelection": {
+          "title": "Nascondi l'evidenziazione della linea corrente alla selezione",
+          "desc": "Nascondi l'evidenziazione della riga corrente quando viene selezionato un intervallo di testo"
+        },
+        "wheelSmoothScroll": {
+          "title": "Scorrimento fluido della rotella (facilità di 90 ms)",
+          "desc": "Animazione breve della ruota con un atterraggio duro invece di passi istantanei. Spento significa che il testo si interrompe completamente"
+        },
+        "scrollbarRuler": {
+          "title": "Segni del righello della barra di scorrimento",
+          "desc": "La sottile linea del cursore e la selezione si estendono sulla miniatura della barra di scorrimento dell'editor"
+        },
+        "wideScrollbar": {
+          "title": "Barra di scorrimento ampia (stile Zed)",
+          "desc": "Corsia ampia da 16 px con traccia visibile e pollice quadrato a larghezza intera invece della pillola stretta"
+        },
+        "noteWidth": {
+          "title": "Nota Larghezza colonna",
+          "desc": "Larghezza della colonna del contenuto della nota come percentuale della finestra (0-100%)"
+        },
+        "noteAlign": {
+          "title": "Nota Allineamento",
+          "desc": "Allineamento orizzontale della colonna delle note: centrato o allineato a sinistra"
+        },
+        "titleAlign": {
+          "title": "Allineamento del titolo della nota (finestra)",
+          "desc": "Posizione del titolo del file rispetto alla finestra: sinistra o centrata"
+        },
+        "titleAlignEditor": {
+          "title": "Allineamento del titolo della nota (editor)",
+          "desc": "Posizione del titolo del file rispetto alla colonna della nota: bordo sinistro o centrato"
+        }
+      },
+      "reader": {
+        "lineHeight": {
+          "title": "Altezza della riga del lettore",
+          "desc": "Moltiplicatore dell'altezza della linea per una comoda modalità di lettura"
+        },
+        "maxWidthCh": {
+          "title": "Larghezza massima della colonna del lettore",
+          "desc": "Larghezza massima della colonna del contenitore di testo in caratteri (ch)"
+        }
+      },
+      "communityPlugins": {
+        "safeMode": {
+          "title": "Modalità provvisoria dei plugin della community",
+          "desc": "Blocca l'esecuzione dei plugin della community per la stabilità del sistema e la protezione dei dati"
+        }
+      },
+      "mcp": {
+        "enabled": {
+          "title": "Abilita il server MCP locale",
+          "desc": "Server Model Context Protocol per l'integrazione con assistenti di codifica AI esterni"
+        }
+      },
+      "trash": {
+        "retentionDays": {
+          "title": "Giorni di conservazione dei rifiuti",
+          "desc": "Numero di giorni per cui le note eliminate rimangono nel cestino prima dell'eliminazione"
+        }
+      },
+      "files": {
+        "autoTrashAttachments": {
+          "title": "Allegati nel cestino automatico",
+          "desc": "Sposta automaticamente gli allegati nel cestino quando i riferimenti vengono rimossi dalle note"
+        }
+      }
     }
   },
   "sidebar": {
