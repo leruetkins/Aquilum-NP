@@ -36,9 +36,9 @@
       "system": "System",
       "shortcuts": "Genvägar",
       "core_plugins": "Kärnplugins",
-      "community_plugins": "Community plugins",
+      "community_plugins": "Community-tillägg",
       "plugin_settings": "Plugin-inställningar",
-      "editor_toolbar": "Editor Toolbar"
+      "editor_toolbar": "Redigerarens verktygsfält"
     },
     "ui": {
       "title": "Gränssnittsinställningar",
@@ -67,8 +67,8 @@
       "font_weight_regular": "Regelbunden"
     },
     "editor": {
-      "title": "Markdown Editor",
-      "font_family": "Editor Font",
+      "title": "Markdown-redigerare",
+      "font_family": "Redigerartypsnitt",
       "font_family_desc": "Monospace eller proportionellt teckensnitt",
       "font_size": "Editor teckenstorlek",
       "font_size_desc": "Teckenstorlek för läsning och redigering",
@@ -76,7 +76,7 @@
       "line_height_desc": "Radavstånd i editor",
       "line_numbers": "Radnummer",
       "line_numbers_desc": "Visa radnummer i kod och text",
-      "word_wrap": "Word Wrap",
+      "word_wrap": "Ordlindning",
       "word_wrap_desc": "Radbryt automatiskt text vid fönstergränsen",
       "smooth_scroll": "Smidig rullning",
       "smooth_scroll_desc": "Rulla animation för stora dokument",
@@ -89,7 +89,7 @@
       "max_width": "Maximal textbredd",
       "max_width_desc": "Bredd på textkolumn (0 = full bredd)",
       "headings_card": "Rubrikstilar (H1-H6)",
-      "font_card": "Editor Font",
+      "font_card": "Redigerartypsnitt",
       "layout_card": "Layout & Linjer",
       "input_card": "Inmatning & markör",
       "h1_title": "H1 — Huvudrubrik",
@@ -141,7 +141,7 @@
     },
     "reader": {
       "title": "Läsarläge",
-      "font_family": "Reader Font",
+      "font_family": "Läsartypsnitt",
       "font_family_desc": "Typsnitt för artikelläsning",
       "font_size": "Läsarens teckensnittsstorlek",
       "font_size_desc": "Teckenstorlek i visningsläge",
@@ -252,7 +252,7 @@
     },
     "plugins": {
       "core": {
-        "title": "Application Core Plugins",
+        "title": "Applikationens kärntillägg",
         "status_updated": "Kärnplugin '{plugin}' har uppdaterats",
         "command_palette": {
           "name": "Kommandopalett",
@@ -272,7 +272,7 @@
         }
       },
       "community": {
-        "title": "Community Plugins",
+        "title": "Community-tillägg",
         "safe_mode": "Säkert läge",
         "safe_mode_desc": "Blockerar körning av community-plugins för systemstabilitet och dataskydd",
         "browse": "Bläddra i community-plugins",
@@ -322,16 +322,16 @@
     },
     "toolbar": {
       "back": "Tillbaka till kärnplugins",
-      "title": "Editor Toolbar",
+      "title": "Redigerarens verktygsfält",
       "desc": "Anpassa formateringsknappar, kapslade rullgardinsgrupper och separatorer ovanför redigeraren.",
       "add_button": "+-knapp",
-      "add_dropdown": "+ Dropdown ▾",
-      "add_separator": "+ Separator",
+      "add_dropdown": "+ Rullgardinsmeny ▾",
+      "add_separator": "+ Avgränsare",
       "reset": "Återställ till standardinställningar",
       "export": "Exportera JSON",
       "import": "Importera JSON",
-      "separator": "──────── (separator)",
-      "dropdown_fallback": "Dropdown",
+      "separator": "──────── (avgränsare)",
+      "dropdown_fallback": "Rullgardinsmeny",
       "add_inside": "+ lägg till inuti",
       "items": "{} objekt",
       "search": "Söka...",
@@ -368,7 +368,7 @@
           "desc": "Anpassad varumärkesaccentfärg för knappar, val och aktiva flikar"
         },
         "sidebarSmartScroll": {
-          "title": "Sidebar Smart Scroll",
+          "title": "Smart rullning i sidofältet",
           "desc": "Centrera automatiskt den aktiva filen i sidofältsträdet när du byter anteckningar"
         },
         "swapTabBarButtons": {
@@ -382,11 +382,11 @@
           "desc": "Basteckensnittsstorlek i anteckningsredigerarens vyport (px)"
         },
         "fontFamily": {
-          "title": "Editor Font Family",
+          "title": "Redigerarens typsnittsfamilj",
           "desc": "Typsnittsfamilj för att visa och redigera anteckningsinnehåll"
         },
         "wordWrap": {
-          "title": "Word Wrap",
+          "title": "Ordlindning",
           "desc": "Linda långa rader graciöst vid redigeringsfönstrets kant"
         },
         "liveTabs": {
@@ -450,7 +450,7 @@
       },
       "trash": {
         "retentionDays": {
-          "title": "Trash Retention Days",
+          "title": "Kvarhållningsdagar för papperskorgen",
           "desc": "Antal dagar borttagna anteckningar ligger kvar i papperskorgen innan rensningen"
         }
       },
@@ -681,12 +681,12 @@
       "tool_line": "Linje",
       "tool_rect": "Rektangel",
       "tool_ellipse": "Ellips",
-      "tool_highlight": "Highlighter",
+      "tool_highlight": "Överstrykningspenna",
       "tool_pencil": "Penna",
       "tool_text": "Text",
       "tool_label": "Numrerad etikett",
       "tool_blur": "Fläck",
-      "tool_pixelate": "Pixelate",
+      "tool_pixelate": "Pixla",
       "annotate_title": "Anteckningar",
       "layers": "Lager",
       "flatten": "Platta till lager",

@@ -1,0 +1,34 @@
+{
+  "cs": {
+    "Storage Engine": "Úložný modul"
+  },
+  "de": {
+    "Paste": "Einfügen"
+  },
+  "sv": {
+    "+ Dropdown ▾": "+ Rullgardinsmeny ▾",
+    "+ Separator": "+ Avgränsare",
+    "──────── (separator)": "──────── (avgränsare)",
+    "Application Core Plugins": "Applikationens kärntillägg",
+    "Community Plugins": "Community-tillägg",
+    "Community plugins": "Community-tillägg",
+    "Dropdown": "Rullgardinsmeny",
+    "Editor Font": "Redigerartypsnitt",
+    "Editor Font Family": "Redigerarens typsnittsfamilj",
+    "Editor Toolbar": "Redigerarens verktygsfält",
+    "Highlighter": "Överstrykningspenna",
+    "Markdown Editor": "Markdown-redigerare",
+    "Pixelate": "Pixla",
+    "Reader Font": "Läsartypsnitt",
+    "Sidebar Smart Scroll": "Smart rullning i sidofältet",
+    "Trash Retention Days": "Kvarhållningsdagar för papperskorgen",
+    "Word Wrap": "Ordlindning"
+  },
+  "uk": {
+    "Custom": "Довільний",
+    "Pin": "Закріпити"
+  },
+  "vi": {
+    "tab...": "thẻ..."
+  }
+}

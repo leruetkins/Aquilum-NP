@@ -5,7 +5,8 @@
 
 PURPOSE:
     Automatically finds untranslated strings (matching en.json values)
-    across all 19 supported target languages and translates them via Google Translate API.
+    across 18 machine-translated languages and translates them via Google Translate API.
+    ru.json is authored manually and is not processed by this script.
 
 KEY FEATURES:
     1. Incremental Mode:
@@ -21,8 +22,14 @@ KEY FEATURES:
          (BM25F, JSON, Consolas, JetBrains Mono) verbatim.
     4. Rate-Limit Resilience:
        - Uses stable Chrome dict client endpoint with automatic fallback to gtx.
-       - Built-in exponential backoff retry for network errors and 429 throttling.
-    5. Clean UTF-8 console output safe on Windows (cp1251 terminal friendly).
+       - Built-in exponential backoff retry for network errors, 429 throttling,
+         and empty responses (an empty result is never saved).
+    5. Curated Overrides:
+       - scripts/translate_overrides.json maps
+         { "<locale>": { "<english>": "<translation>" } } and is applied before
+         any network request. The service returns short capitalized UI phrases
+         unchanged, so such terms are fixed there once.
+    6. Clean UTF-8 console output safe on Windows (cp1251 terminal friendly).
 
 USAGE:
     python scripts/translate_all.py
@@ -77,6 +84,18 @@ SHORTCUT_KEYS = {
     "Alt + Z", "Ctrl + B", "Ctrl + I", "Ctrl + A", "Ctrl + C", "Ctrl + X",
     "Ctrl + V", "Ctrl + Z", "Ctrl + Y", "Home / End"
 }
+
+# Curated translations that win over the machine service. The service treats
+# short capitalized UI phrases as proper nouns and returns them unchanged.
+OVERRIDES: dict = {}
+
+
+def load_overrides() -> dict:
+    path = Path(__file__).resolve().parent / "translate_overrides.json"
+    if not path.exists():
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def log(msg: str):
@@ -137,6 +156,10 @@ def fetch_translation(text: str, target_lang: str) -> str:
 
 
 def translate_text(text: str, target_lang: str) -> str:
+    override = OVERRIDES.get(target_lang, {}).get(text)
+    if override:
+        return override
+
     if text in DO_NOT_TRANSLATE or text in SHORTCUT_KEYS:
         return text
 
@@ -148,9 +171,13 @@ def translate_text(text: str, target_lang: str) -> str:
     for attempt in range(5):
         try:
             res = fetch_translation(temp_text, target_lang)
-            for i, ph in enumerate(placeholders):
-                res = re.sub(rf"__\s*PH_{i}\s*__", ph, res, flags=re.IGNORECASE)
-            return res
+            if res and res.strip():
+                for i, ph in enumerate(placeholders):
+                    res = re.sub(rf"__\s*PH_{i}\s*__", ph, res, flags=re.IGNORECASE)
+                return res
+            wait_sec = 2.0 * (attempt + 1)
+            log(f"   [Empty] Empty translation for '{text}', retry {attempt + 1}/5...")
+            time.sleep(wait_sec)
         except urllib.error.HTTPError as he:
             wait_sec = 4.0 * (attempt + 1)
             log(f"   [HTTP {he.code}] Sleeping {wait_sec:.0f}s before retry {attempt + 1}/5...")
@@ -169,6 +196,11 @@ def main():
         en_data = json.load(f)
 
     en_flat = flatten_keys(en_data)
+
+    global OVERRIDES
+    OVERRIDES = load_overrides()
+    if OVERRIDES:
+        log(f"Loaded {sum(len(v) for v in OVERRIDES.values())} curated overrides.")
 
     log("=" * 60)
     log("Aquilum i18n Translation Runner")
@@ -199,6 +231,8 @@ def main():
         log(f"\n>>> [{code}.json] Found {total_keys} untranslated strings -> Translating to [{tl_code}]...")
 
         count = 0
+        changed = 0
+        dirty = False
         unsaved = 0
         for idx, k in enumerate(keys_to_translate, 1):
             orig = en_flat[k]
@@ -208,17 +242,28 @@ def main():
             unsaved += 1
 
             preview_orig = (orig[:25] + "..") if len(orig) > 25 else orig
-            preview_trans = (trans[:25] + "..") if len(trans) > 25 else trans
-            log(f"  [{code}] ({idx}/{total_keys}) {k}: '{preview_orig}' -> '{preview_trans}'")
+            if trans.strip() == orig.strip():
+                log(f"  [{code}] ({idx}/{total_keys}) {k}: [Same] '{preview_orig}'")
+            else:
+                changed += 1
+                dirty = True
+                preview_trans = (trans[:25] + "..") if len(trans) > 25 else trans
+                log(f"  [{code}] ({idx}/{total_keys}) {k}: '{preview_orig}' -> '{preview_trans}'")
 
             if unsaved >= 10:
-                save_locale(path, target_flat)
+                if dirty:
+                    save_locale(path, target_flat)
+                    dirty = False
                 unsaved = 0
 
             time.sleep(0.15)
 
-        save_locale(path, target_flat)
-        log(f"[{code}.json] Successfully completed and saved! ({count} keys translated)\n")
+        if dirty:
+            save_locale(path, target_flat)
+        if changed:
+            log(f"[{code}.json] Successfully completed and saved! ({count} keys processed, {changed} translated)\n")
+        else:
+            log(f"[{code}.json] No changes ({count} keys checked).\n")
 
     log("=" * 60)
     log("All localization files processed successfully!")

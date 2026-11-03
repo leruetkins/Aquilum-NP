@@ -11,13 +11,14 @@ FEATURES:
     1. Detects missing keys across all 20 supported languages.
     2. Identifies obsolete / extra keys present in translations but removed from en.json.
     3. Finds empty string translations ("").
-    4. Supports automatic backfilling (--fix) with English values as fallback.
+    4. Supports automatic backfilling (--fix) with English values for missing
+       and empty entries.
 
 USAGE:
     1. Standard check (validation):
        python scripts/check_i18n.py
 
-    2. Auto-fill missing keys in all locales with English values:
+    2. Auto-fill missing and empty keys in all locales with English values:
        python scripts/check_i18n.py --fix
 
     3. Specify custom locales folder:
@@ -137,14 +138,24 @@ def main():
                 for em in empty[:5]:
                     print(f"             * {em}")
 
-        if args.fix and missing:
+        if args.fix and (missing or empty):
+            fixed_empty = 0
             for m in missing:
                 flat[m] = en_flat[m]
+            for em in empty:
+                if em in en_flat:
+                    flat[em] = en_flat[em]
+                    fixed_empty += 1
             rebuilt = unflatten_keys(flat)
             with open(loc_file, "w", encoding="utf-8") as out_f:
                 json.dump(rebuilt, out_f, ensure_ascii=False, indent=2)
                 out_f.write("\n")
-            print(f"         => Auto-filled {len(missing)} missing keys with English values.")
+            if missing:
+                print(f"         => Auto-filled {len(missing)} missing keys with English values.")
+            if fixed_empty:
+                print(f"         => Auto-filled {fixed_empty} empty keys with English values.")
+            total_missing -= len(missing)
+            total_empty -= fixed_empty
 
     print("\n" + "=" * 50)
     if total_missing == 0 and total_extra == 0 and total_empty == 0:

@@ -117,7 +117,7 @@
       "hide_current_line_on_selection_desc": "有選取文字時停用游標所在行突顯 (Zed 風格)",
       "wheel_smooth_scroll": "平滑滾輪滾動（90 毫秒輕鬆）",
       "wheel_smooth_scroll_desc": "短輪動畫，硬著陸而不是即時步驟。關閉意味著文字停止",
-      "scrollbar_ruler": "",
+      "scrollbar_ruler": "捲軸標尺標記",
       "scrollbar_ruler_desc": "編輯器滾動條拇指上的細光標線和選擇範圍",
       "wide_scrollbar": "寬滾動條（Zed 風格）",
       "wide_scrollbar_desc": "寬 16 像素通道，具有可見軌道和全寬方形拇指，而不是狹窄的藥丸",
@@ -175,7 +175,7 @@
       "close_deleted_tabs": "關閉已刪除檔案的選項卡",
       "close_deleted_tabs_desc": "當磁碟上或外掛程式刪除檔案時，自動關閉所有相關選項卡並釋放資源",
       "keep_modified_on_delete": "如果修改，則在刪除時保持選項卡打開",
-      "keep_modified_on_delete_desc": "",
+      "keep_modified_on_delete_desc": "如果文件有未儲存的編輯，則在刪除文件時保持選項卡打開",
       "auto_trash_attachments": "將刪除的附件移入資源回收筒",
       "auto_trash_attachments_desc": "刪除最後一個參照後，檔案會移入資源回收筒"
     },
@@ -253,13 +253,13 @@
     "plugins": {
       "core": {
         "title": "應用程式核心插件",
-        "status_updated": "",
+        "status_updated": "核心插件“{plugin}”已更新",
         "command_palette": {
           "name": "命令面板",
-          "desc": ""
+          "desc": "快速搜尋並執行應用程式操作（Ctrl+Shift+P）"
         },
         "word_counter": {
-          "name": "",
+          "name": "字數計數器",
           "desc": "在狀態列中顯示字元和字數"
         },
         "editor_toolbar": {
@@ -268,24 +268,24 @@
         },
         "file_recovery": {
           "name": "文件恢復",
-          "desc": ""
+          "desc": "自動本地快照以防止資料遺失"
         }
       },
       "community": {
         "title": "社群插件",
         "safe_mode": "安全模式",
         "safe_mode_desc": "阻止社群插件執行以確保系統穩定性和資料保護",
-        "browse": "",
+        "browse": "瀏覽社群插件",
         "catalog": "社群插件目錄",
-        "catalog_desc": "",
-        "compat_full": "",
+        "catalog_desc": "發現、安裝和更新社群創建的插件",
+        "compat_full": "100%相容",
         "compat_score": "{}% 相容的",
         "incompatible": "不相容",
         "compat_unknown": "相容性未知",
         "installed": "已安裝的插件 ({})"
       },
       "detail": {
-        "back": "",
+        "back": "返回插件",
         "enable": "使能夠",
         "disable": "停用",
         "reload": "重新載入",
@@ -299,17 +299,17 @@
         "name": "插件名稱",
         "id": "插件ID",
         "version": "版本",
-        "min_app_version": "",
+        "min_app_version": "最低應用程式版本",
         "author": "作者",
-        "author_url": "",
-        "desktop_only": "",
-        "desktop_only_true": "",
-        "desktop_only_false": "",
-        "install_path": ""
+        "author_url": "作者網址",
+        "desktop_only": "限桌面版",
+        "desktop_only_true": "true（僅限桌面）",
+        "desktop_only_false": "false（跨平台）",
+        "install_path": "安裝路徑"
       },
       "readme": {
         "title": "插件資訊",
-        "missing": "",
+        "missing": "找不到 README.md 文件",
         "hint": "插件目錄中不存在文檔檔案。新增 README.md 檔案以在此處顯示說明。"
       },
       "config": {
@@ -321,7 +321,7 @@
       "edit_title": "編輯"
     },
     "toolbar": {
-      "back": "",
+      "back": "回到核心插件",
       "title": "編輯器工具列",
       "desc": "自訂編輯器上方的格式化按鈕、巢狀下拉群組和分隔符號。",
       "add_button": "+ 按鈕",
@@ -357,7 +357,7 @@
       "ui": {
         "theme": {
           "title": "外觀主題",
-          "desc": ""
+          "desc": "使用者介面的顏色主題：系統、深色或淺色"
         },
         "language": {
           "title": "介面語言",
@@ -428,8 +428,8 @@
       },
       "reader": {
         "lineHeight": {
-          "title": "",
-          "desc": ""
+          "title": "讀卡機行高",
+          "desc": "行高倍增器提供舒適的閱讀模式"
         },
         "maxWidthCh": {
           "title": "讀卡器最大列寬",
@@ -444,7 +444,7 @@
       },
       "mcp": {
         "enabled": {
-          "title": "",
+          "title": "啟用本地 MCP 伺服器",
           "desc": "用於與外部 AI 編碼助理整合的模型上下文協定伺服器"
         }
       },
@@ -603,7 +603,7 @@
       "saved_image": "圖像已儲存",
       "save_failed": "無法儲存影像",
       "images_radius": "預設圓角半徑",
-      "images_radius_desc": "",
+      "images_radius_desc": "短邊的百分比 (0–50)",
       "caption_template": "標題模板",
       "caption_template_desc": "{n} 是數字，{text} 是標題",
       "caption_position_default": "標題位置",
@@ -611,7 +611,7 @@
       "caption_numbered_default": "數位標題",
       "caption_numbered_default_desc": "新標題預設編號",
       "open_editor_after_insert": "插入後打開圖像編輯器",
-      "open_editor_after_insert_desc": "",
+      "open_editor_after_insert_desc": "貼上後立即裁剪或註釋",
       "large_file_mb": "大影像閾值",
       "large_file_mb_desc": "建議壓縮至此大小以上",
       "trash_days": "附件垃圾保留",
@@ -727,7 +727,7 @@
       "error_io": "無法儲存影像",
       "broken": "找不到圖片",
       "large_file": "原樣插入大圖像",
-      "drop_not_image": ""
+      "drop_not_image": "只能插入圖像文件"
     },
     "create_note": "建立註釋",
     "open_file": "轉到文件",

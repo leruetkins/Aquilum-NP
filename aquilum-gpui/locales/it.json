@@ -765,7 +765,7 @@
     "no_results": "Niente trovato",
     "create_hint": "Maiusc+Invio: crea una nota",
     "no_folder": "Nessuna cartella aperta",
-    "no_folder_hint": "",
+    "no_folder_hint": "Apri una cartella della knowledge base per eseguire la ricerca",
     "hint_navigate": "navigare",
     "hint_open": "aprire",
     "hint_create": "creare",

@@ -19,7 +19,8 @@ aquilum-gpui/
 ├── scripts/                 # Automation & validation scripts
 │   ├── README.md            # This documentation file
 │   ├── check_i18n.py        # Key parity validator and missing key detector
-│   └── translate_all.py     # Incremental auto-translator via Google Translate API
+│   ├── translate_all.py     # Incremental auto-translator via Google Translate API
+│   └── translate_overrides.json # Curated translations that win over the machine service
 └── src/
     └── i18n.rs              # Rust localization manager + parity unit tests
 ```
@@ -42,7 +43,8 @@ Compares all locale JSON files against the baseline `locales/en.json`.
 # Standard validation check (outputs [OK] or missing/extra keys report)
 python scripts/check_i18n.py
 
-# Automatically copy missing keys from en.json as fallback values:
+# Automatically copy missing keys from en.json as fallback values,
+# and replace empty ("") translations with the English text:
 python scripts/check_i18n.py --fix
 ```
 
@@ -54,7 +56,7 @@ python scripts/check_i18n.py --fix
 
 ### 2. `scripts/translate_all.py` — Automated Incremental Translator
 
-Translates missing or newly added strings into all other 19 target languages.
+Translates missing or newly added strings into 18 target languages. `ru.json` is authored manually and is not machine-translated.
 
 #### Key Features:
 * **Incremental**: Automatically skips strings that are already translated. Only translates strings matching the English baseline.
@@ -62,6 +64,15 @@ Translates missing or newly added strings into all other 19 target languages.
 * **Token Protection**:
   * Format placeholders (`{0}`, `{1}`, `{:?}`) are tokenized and protected from alteration.
   * Keyboard shortcuts (`Ctrl + O`, `Alt + Z`), system fonts, and technical terms (`JSON`, `BM25F`, `Consolas`) are preserved verbatim.
+* **Curated Overrides**: `scripts/translate_overrides.json` maps
+  `{ "<locale>": { "<english text>": "<translation>" } }`. An override is applied
+  before any network request, so established UI terminology stays consistent.
+  The service often returns short capitalized phrases (for example `Word Wrap`)
+  unchanged; add such terms to the overrides file once.
+* **Honest Logging**: When the service returns the source unchanged, the run prints
+  `[Same] ...`, and the per-file summary reports processed vs. actually translated counts.
+* **Empty Responses**: An empty service response is retried; if it keeps failing,
+  the source text is kept instead of saving `""`.
 * **Live Progress**: Prints real-time log entries showing the file, index, source text, and translated result.
 
 #### Command:
@@ -87,7 +98,7 @@ python scripts/translate_all.py
 
 2. **Sync & Auto-Translate**:
    ```powershell
-   # Option A: Auto-populate and auto-translate all 19 other languages
+   # Option A: Auto-populate and auto-translate the 18 machine-translated languages
    python scripts/check_i18n.py --fix
    python scripts/translate_all.py
 

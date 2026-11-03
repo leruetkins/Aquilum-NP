@@ -357,7 +357,7 @@
       "ui": {
         "theme": {
           "title": "外观主题",
-          "desc": ""
+          "desc": "用户界面的颜色主题：系统、深色或浅色"
         },
         "language": {
           "title": "界面语言",
@@ -438,7 +438,7 @@
       },
       "communityPlugins": {
         "safeMode": {
-          "title": "",
+          "title": "社区插件安全模式",
           "desc": "阻止社区插件执行以保证系统稳定性和数据保护"
         }
       },

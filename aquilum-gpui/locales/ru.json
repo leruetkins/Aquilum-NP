@@ -63,8 +63,8 @@
       "sidebar_smart_scroll_desc": "Удерживайте Ctrl, чтобы положение курсора управляло списком файлов, как в списке открытых вкладок. Колесо при этом отключено.",
       "swap_tab_bar_buttons": "Поменять местами кнопки на панели вкладок",
       "swap_tab_bar_buttons_desc": "Кнопка «+» слева (создает вкладку крайней слева), а кнопка новой заметки справа (создает заметку крайней справа).",
-      "font_weight_semibold": "Semibold",
-      "font_weight_regular": "Regular"
+      "font_weight_semibold": "Полужирный",
+      "font_weight_regular": "Обычный"
     },
     "editor": {
       "title": "Редактор Markdown",
@@ -221,7 +221,7 @@
       "global_header": "Глобальные сочетания",
       "editing_header": "Редактирование текста",
       "open_folder": "Открыть папку базы знаний",
-      "new_note": "New Tab",
+      "new_note": "Новая вкладка",
       "save_note": "Сохранить заметку",
       "quick_search": "Быстрый поиск по базе",
       "settings": "Окно настроек",
@@ -236,8 +236,8 @@
       "undo": "Отменить действие (Undo)",
       "redo": "Повторить действие (Redo)",
       "home_end": "Переход в начало / конец строки",
-      "quick_open": "Go to File (Quick Open)",
-      "search_files": "Search Files",
+      "quick_open": "Перейти к файлу (быстрый переход)",
+      "search_files": "Поиск по файлам",
       "open_command_palette": "Открыть палитру команд"
     },
     "nav": {
@@ -331,7 +331,7 @@
       "export": "Экспорт JSON",
       "import": "Импорт JSON",
       "separator": "──────── (разделитель)",
-      "dropdown_fallback": "Dropdown",
+      "dropdown_fallback": "Выпадающий список",
       "add_inside": "+ внутрь",
       "items": "{} элементов",
       "search": "Поиск...",
@@ -613,7 +613,7 @@
       "export_title": "Экспорт заметки в Markdown",
       "export_caption_format": "Формат подписей",
       "export_caption_italic": "Курсивная строка",
-      "export_caption_html": "HTML figure",
+      "export_caption_html": "HTML-рисунок",
       "export_caption_alt": "Только alt-текст",
       "export_embed_caption": "Вшить подпись в изображение",
       "export_round_corners": "Скруглять углы изображений",

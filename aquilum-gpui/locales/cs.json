@@ -213,7 +213,7 @@
       "title": "O a systému",
       "version": "Verze aplikace",
       "arch": "Kompilovaná architektura nativního klienta",
-      "storage": "Storage Engine",
+      "storage": "Úložný modul",
       "storage_desc": "Lokální databáze metadat a index odkazů"
     },
     "shortcuts": {
