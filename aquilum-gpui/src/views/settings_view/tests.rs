@@ -6,7 +6,9 @@
         assert_eq!(comm_tab.key(), "settings.tabs.community_plugins");
         assert_eq!(comm_tab.title("ru"), "Сторонние плагины");
         assert_eq!(comm_tab.title("en"), "Community plugins");
-        assert_eq!(comm_tab.title("de"), "Community plugins");
+        let de_title = comm_tab.title("de");
+        assert_ne!(de_title, "settings.tabs.community_plugins");
+        assert!(!de_title.is_empty());
 
         let core_tab = SettingsTab::CorePlugins;
         assert_eq!(core_tab.key(), "settings.tabs.core_plugins");

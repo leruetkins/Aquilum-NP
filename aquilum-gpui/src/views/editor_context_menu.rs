@@ -162,19 +162,18 @@ impl AppView {
             .active_selected_text()
             .unwrap_or_default();
 
-        let is_ru = self.config.ui.language.starts_with("ru");
         let mut items = Vec::new();
 
         // 1. Link Group
         items.push(item(
             "editor-insert-link",
-            if is_ru { "Вставить ссылку".to_string() } else { "Insert link".to_string() },
+            self.t("editor.context.insert_link"),
             "link",
             false,
         ));
         items.push(item(
             "editor-insert-external-link",
-            if is_ru { "Вставить внешнюю ссылку".to_string() } else { "Insert external link".to_string() },
+            self.t("editor.context.insert_external_link"),
             "external-link",
             false,
         ));
@@ -189,9 +188,9 @@ impl AppView {
             } else {
                 selected_text.clone()
             };
-            if is_ru { format!("Искать \"{}\"", snippet) } else { format!("Search for \"{}\"", snippet) }
+            self.t_fmt("editor.context.search_for", &[snippet.as_str()])
         } else {
-            if is_ru { "Искать...".to_string() } else { "Search...".to_string() }
+            self.t("editor.context.search")
         };
 
         items.push(item(
@@ -202,7 +201,7 @@ impl AppView {
         ));
         items.push(item(
             "editor-extract-selection",
-            if is_ru { "Извлечь текущее выделение...".to_string() } else { "Extract current selection...".to_string() },
+            self.t("editor.context.extract_selection"),
             "note",
             !has_selection,
         ));
@@ -223,52 +222,52 @@ impl AppView {
 
         // Submenu: Formatting
         let formatting_items = vec![
-            item("editor-format-bold", if is_ru { "Жирный".to_string() } else { "Bold".to_string() }, "type", false),
-            item("editor-format-italic", if is_ru { "Курсив".to_string() } else { "Italic".to_string() }, "type", false),
-            item("editor-format-strikethrough", if is_ru { "Зачеркнутый".to_string() } else { "Strikethrough".to_string() }, "type", false),
-            item("editor-format-highlight", if is_ru { "Выделенный".to_string() } else { "Highlight".to_string() }, "pencil", false),
-            item("editor-format-code", if is_ru { "Встроенный код".to_string() } else { "Inline code".to_string() }, "code", false),
+            item("editor-format-bold", self.t("editor.context.bold"), "type", false),
+            item("editor-format-italic", self.t("editor.context.italic"), "type", false),
+            item("editor-format-strikethrough", self.t("editor.context.strikethrough"), "type", false),
+            item("editor-format-highlight", self.t("editor.context.highlight"), "pencil", false),
+            item("editor-format-code", self.t("editor.context.inline_code"), "code", false),
         ];
         items.push(submenu(
             "editor-submenu-formatting",
-            if is_ru { "Форматирование".to_string() } else { "Formatting".to_string() },
+            self.t("editor.context.formatting"),
             "pencil",
             formatting_items,
         ));
 
         // Submenu: Paragraph
         let paragraph_items = vec![
-            item("editor-paragraph-h1", if is_ru { "Заголовок 1".to_string() } else { "Heading 1".to_string() }, "hash", false),
-            item("editor-paragraph-h2", if is_ru { "Заголовок 2".to_string() } else { "Heading 2".to_string() }, "hash", false),
-            item("editor-paragraph-h3", if is_ru { "Заголовок 3".to_string() } else { "Heading 3".to_string() }, "hash", false),
-            item("editor-paragraph-h4", if is_ru { "Заголовок 4".to_string() } else { "Heading 4".to_string() }, "hash", false),
-            item("editor-paragraph-h5", if is_ru { "Заголовок 5".to_string() } else { "Heading 5".to_string() }, "hash", false),
-            item("editor-paragraph-h6", if is_ru { "Заголовок 6".to_string() } else { "Heading 6".to_string() }, "hash", false),
+            item("editor-paragraph-h1", self.t("editor.context.heading_1"), "hash", false),
+            item("editor-paragraph-h2", self.t("editor.context.heading_2"), "hash", false),
+            item("editor-paragraph-h3", self.t("editor.context.heading_3"), "hash", false),
+            item("editor-paragraph-h4", self.t("editor.context.heading_4"), "hash", false),
+            item("editor-paragraph-h5", self.t("editor.context.heading_5"), "hash", false),
+            item("editor-paragraph-h6", self.t("editor.context.heading_6"), "hash", false),
             separator("sep-para"),
-            item("editor-paragraph-bullet", if is_ru { "Маркированный список".to_string() } else { "Bullet list".to_string() }, "list", false),
-            item("editor-paragraph-number", if is_ru { "Нумерованный список".to_string() } else { "Numbered list".to_string() }, "list", false),
-            item("editor-paragraph-task", if is_ru { "Список задач".to_string() } else { "Task list".to_string() }, "check", false),
-            item("editor-paragraph-quote", if is_ru { "Цитата".to_string() } else { "Quote".to_string() }, "type", false),
+            item("editor-paragraph-bullet", self.t("editor.context.bullet_list"), "list", false),
+            item("editor-paragraph-number", self.t("editor.context.numbered_list"), "list", false),
+            item("editor-paragraph-task", self.t("editor.context.task_list"), "check", false),
+            item("editor-paragraph-quote", self.t("editor.context.quote"), "type", false),
         ];
         items.push(submenu(
             "editor-submenu-paragraph",
-            if is_ru { "Абзац".to_string() } else { "Paragraph".to_string() },
+            self.t("editor.context.paragraph"),
             "type",
             paragraph_items,
         ));
 
         // Submenu: Insert
         let insert_items = vec![
-            item("editor-insert-image", if is_ru { "Изображение…".to_string() } else { "Image…".to_string() }, "image", false),
-            item("editor-insert-callout", if is_ru { "Блок примечания (Callout)".to_string() } else { "Callout block".to_string() }, "type", false),
-            item("editor-insert-codeblock", if is_ru { "Блок кода".to_string() } else { "Code block".to_string() }, "code", false),
-            item("editor-insert-table", if is_ru { "Таблица".to_string() } else { "Table".to_string() }, "type", false),
-            item("editor-insert-math", if is_ru { "Математическая формула".to_string() } else { "Math formula".to_string() }, "type", false),
-            item("editor-insert-footnote", if is_ru { "Сноска".to_string() } else { "Footnote".to_string() }, "file-text", false),
+            item("editor-insert-image", self.t("editor.context.insert_image"), "image", false),
+            item("editor-insert-callout", self.t("editor.context.insert_callout"), "type", false),
+            item("editor-insert-codeblock", self.t("editor.context.insert_code_block"), "code", false),
+            item("editor-insert-table", self.t("editor.context.insert_table"), "type", false),
+            item("editor-insert-math", self.t("editor.context.insert_math"), "type", false),
+            item("editor-insert-footnote", self.t("editor.context.insert_footnote"), "file-text", false),
         ];
         items.push(submenu(
             "editor-submenu-insert",
-            if is_ru { "Вставка".to_string() } else { "Insert".to_string() },
+            self.t("editor.context.insert"),
             "plus",
             insert_items,
         ));
@@ -279,31 +278,31 @@ impl AppView {
         // 3. Clipboard Group
         items.push(item(
             "editor-cut",
-            if is_ru { "Вырезать".to_string() } else { "Cut".to_string() },
+            self.t("editor.context.cut"),
             "scissors",
             !has_selection,
         ));
         items.push(item(
             "editor-copy",
-            if is_ru { "Копировать".to_string() } else { "Copy".to_string() },
+            self.t("editor.context.copy"),
             "copy",
             !has_selection,
         ));
         items.push(item(
             "editor-paste",
-            if is_ru { "Вставить".to_string() } else { "Paste".to_string() },
+            self.t("editor.context.paste"),
             "clipboard",
             false,
         ));
         items.push(item(
             "editor-paste-plain",
-            if is_ru { "Вставить как обычный текст".to_string() } else { "Paste as plain text".to_string() },
+            self.t("editor.context.paste_plain"),
             "clipboard-list",
             false,
         ));
         items.push(item(
             "editor-select-all",
-            if is_ru { "Выбрать всё".to_string() } else { "Select all".to_string() },
+            self.t("editor.context.select_all"),
             "check",
             false,
         ));
@@ -313,28 +312,28 @@ impl AppView {
 
         // 4. Tools Group
         let text_tools_items = vec![
-            item("editor-text-upper", if is_ru { "В ВЕРХНИЙ РЕГИСТР".to_string() } else { "UPPERCASE".to_string() }, "type", !has_selection),
-            item("editor-text-lower", if is_ru { "в нижний регистр".to_string() } else { "lowercase".to_string() }, "type", !has_selection),
-            item("editor-text-title", if is_ru { "Первая Заглавная".to_string() } else { "Title Case".to_string() }, "type", !has_selection),
+            item("editor-text-upper", self.t("editor.context.uppercase"), "type", !has_selection),
+            item("editor-text-lower", self.t("editor.context.lowercase"), "type", !has_selection),
+            item("editor-text-title", self.t("editor.context.title_case"), "type", !has_selection),
             separator("sep-text-sort"),
-            item("editor-text-sort", if is_ru { "Сортировать строки".to_string() } else { "Sort lines".to_string() }, "list", !has_selection),
+            item("editor-text-sort", self.t("editor.context.sort_lines"), "list", !has_selection),
         ];
         items.push(submenu(
             "editor-submenu-text-tools",
-            if is_ru { "Текстовые инструменты".to_string() } else { "Text tools".to_string() },
+            self.t("editor.context.text_tools"),
             "type",
             text_tools_items,
         ));
 
         let ai_tools_items = vec![
-            item("editor-ai-explain", if is_ru { "Объяснить".to_string() } else { "Explain".to_string() }, "bolt", !has_selection),
-            item("editor-ai-improve", if is_ru { "Улучшить текст".to_string() } else { "Improve writing".to_string() }, "bolt", !has_selection),
-            item("editor-ai-grammar", if is_ru { "Исправить грамматику".to_string() } else { "Fix grammar".to_string() }, "bolt", !has_selection),
-            item("editor-ai-summary", if is_ru { "Сделать резюме".to_string() } else { "Summarize".to_string() }, "bolt", !has_selection),
+            item("editor-ai-explain", self.t("editor.context.ai_explain"), "bolt", !has_selection),
+            item("editor-ai-improve", self.t("editor.context.ai_improve"), "bolt", !has_selection),
+            item("editor-ai-grammar", self.t("editor.context.ai_grammar"), "bolt", !has_selection),
+            item("editor-ai-summary", self.t("editor.context.ai_summarize"), "bolt", !has_selection),
         ];
         items.push(submenu(
             "editor-submenu-ai-tools",
-            if is_ru { "AI-инструменты".to_string() } else { "AI tools".to_string() },
+            self.t("editor.context.ai_tools"),
             "sparkles",
             ai_tools_items,
         ));
@@ -343,7 +342,7 @@ impl AppView {
         items.push(separator("sep-invisibles"));
         items.push(check_item(
             "editor-toggle-invisibles",
-            if is_ru { "Показывать непечатаемые знаки".to_string() } else { "Show non-printable characters".to_string() },
+            self.t("editor.context.show_invisibles"),
             "pilcrow",
             self.show_invisibles,
             false,
@@ -397,13 +396,12 @@ impl AppView {
             .unwrap_or_default()
             .as_millis() as u64;
 
-        let is_ru = self.config.ui.language.starts_with("ru");
         let mut items = Vec::new();
 
         // 1. Copy table
         items.push(item(
             "table-copy",
-            if is_ru { "Копировать таблицу".to_string() } else { "Copy table".to_string() },
+            self.t("editor.context.table_copy"),
             "copy",
             false,
         ));
@@ -411,7 +409,7 @@ impl AppView {
         // 2. Merge cells (disabled in GFM)
         items.push(item(
             "table-merge-cells",
-            if is_ru { "Объединить ячейки".to_string() } else { "Merge cells".to_string() },
+            self.t("editor.context.table_merge_cells"),
             "table-merge-cells",
             true,
         ));
@@ -419,7 +417,7 @@ impl AppView {
         // 3. Split cells (disabled in GFM)
         items.push(item(
             "table-split-cells",
-            if is_ru { "Разъединить ячейки".to_string() } else { "Split cells".to_string() },
+            self.t("editor.context.table_split_cells"),
             "table-split-cells",
             true,
         ));
@@ -427,7 +425,7 @@ impl AppView {
         // 4. Align left
         items.push(item(
             "table-align-left",
-            if is_ru { "Выровнять влево".to_string() } else { "Align left".to_string() },
+            self.t("editor.context.table_align_left"),
             "align-left",
             false,
         ));
@@ -435,7 +433,7 @@ impl AppView {
         // 5. Align center
         items.push(item(
             "table-align-center",
-            if is_ru { "По центру".to_string() } else { "Center".to_string() },
+            self.t("editor.context.table_align_center"),
             "align-center",
             false,
         ));
@@ -443,7 +441,7 @@ impl AppView {
         // 6. Align right
         items.push(item(
             "table-align-right",
-            if is_ru { "Выровнять вправо".to_string() } else { "Align right".to_string() },
+            self.t("editor.context.table_align_right"),
             "align-right",
             false,
         ));
@@ -451,7 +449,7 @@ impl AppView {
         // 7. Delete row (disabled for header row 0)
         items.push(item(
             "table-delete-row",
-            if is_ru { "Удалить строку".to_string() } else { "Delete row".to_string() },
+            self.t("editor.context.table_delete_row"),
             "table-delete-row",
             row == 0,
         ));
@@ -459,7 +457,7 @@ impl AppView {
         // 8. Delete column (disabled if only 1 column remains)
         items.push(item(
             "table-delete-col",
-            if is_ru { "Удалить столбец".to_string() } else { "Delete column".to_string() },
+            self.t("editor.context.table_delete_column"),
             "table-delete-col",
             tbl.col_count() <= 1,
         ));
@@ -467,7 +465,7 @@ impl AppView {
         // 9. Delete table
         items.push(item(
             "table-delete-table",
-            if is_ru { "Удалить таблицу".to_string() } else { "Delete table".to_string() },
+            self.t("editor.context.table_delete_table"),
             "trash",
             false,
         ));
@@ -772,8 +770,8 @@ impl AppView {
                 cx.notify();
             }
             "editor-insert-table" => {
-                let table = "\n| Заголовок 1 | Заголовок 2 |\n| --- | --- |\n| Текст 1 | Текст 2 |\n";
-                self.state.active_replace_selection(table);
+                let table = self.t("editor.context.table_template");
+                self.state.active_replace_selection(&table);
                 self.state.save_active_note();
                 cx.notify();
             }

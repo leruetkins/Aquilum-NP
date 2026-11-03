@@ -22,3 +22,6 @@ pub mod tabs_menu;
 pub mod text_input;
 pub mod toolbar_view;
 pub mod unused_attachments;
+
+#[cfg(test)]
+mod menu_i18n_tests;

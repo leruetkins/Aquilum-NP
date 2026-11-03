@@ -1,9 +1,18 @@
 {
   "cs": {
-    "Storage Engine": "Úložný modul"
+    "Storage Engine": "Úložný modul",
+    "Bold": "Tučné",
+    "Table": "Tabulka",
+    "Title Case": "Každé Slovo Velké",
+    "AI tools": "Nástroje AI"
   },
   "de": {
-    "Paste": "Einfügen"
+    "Paste": "Einfügen",
+    "Bold": "Fett",
+    "Table": "Tabelle",
+    "Title Case": "Jedes Wort Groß",
+    "Bullet list": "Aufzählungsliste",
+    "Graph view": "Graph-Ansicht"
   },
   "sv": {
     "+ Dropdown ▾": "+ Rullgardinsmeny ▾",
@@ -22,13 +31,106 @@
     "Reader Font": "Läsartypsnitt",
     "Sidebar Smart Scroll": "Smart rullning i sidofältet",
     "Trash Retention Days": "Kvarhållningsdagar för papperskorgen",
-    "Word Wrap": "Ordlindning"
+    "Word Wrap": "Ordlindning",
+    "Bold": "Fet",
+    "Table": "Tabell",
+    "Title Case": "Varje ord med versal",
+    "Bullet list": "Punktlista",
+    "Callout block": "Callout-block"
   },
   "uk": {
     "Custom": "Довільний",
-    "Pin": "Закріпити"
+    "Pin": "Закріпити",
+    "Bold": "Жирний",
+    "Table": "Таблиця",
+    "Title Case": "Кожне слово з великої",
+    "Graph view": "Вигляд графа"
   },
   "vi": {
-    "tab...": "thẻ..."
+    "tab...": "thẻ...",
+    "Bold": "Đậm",
+    "Table": "Bảng",
+    "Title Case": "Viết Hoa Đầu Từ",
+    "AI tools": "Công cụ AI",
+    "Graph view": "Chế độ xem đồ thị"
+  },
+  "es": {
+    "Bold": "Negrita",
+    "Table": "Tabla",
+    "Title Case": "Tipo título",
+    "Bullet list": "Lista de viñetas",
+    "AI tools": "Herramientas de IA",
+    "Callout block": "Bloque de aviso",
+    "lowercase": "minúsculas",
+    "Graph view": "Vista de grafo"
+  },
+  "fr": {
+    "Bold": "Gras",
+    "Table": "Tableau",
+    "Title Case": "Majuscule Initiale",
+    "Callout block": "Bloc d'encadré"
+  },
+  "hi": {
+    "Bold": "मोटा",
+    "Table": "तालिका",
+    "Title Case": "प्रत्येक शब्द का पहला अक्षर बड़ा"
+  },
+  "ja": {
+    "Bold": "太字",
+    "Table": "テーブル",
+    "Title Case": "各単語の先頭を大文字"
+  },
+  "ko": {
+    "Bold": "굵게",
+    "Table": "표",
+    "Title Case": "각 단어 첫 글자 대문자",
+    "Image…": "이미지…"
+  },
+  "pt": {
+    "Bold": "Negrito",
+    "Table": "Tabela",
+    "Title Case": "Capitalização de Título",
+    "Callout block": "Bloco de destaque",
+    "lowercase": "minúsculas",
+    "Graph view": "Visão de grafo"
+  },
+  "tr": {
+    "Bold": "Kalın",
+    "Table": "Tablo",
+    "Title Case": "Her Kelimenin İlk Harfi Büyük"
+  },
+  "zh-CN": {
+    "Bold": "加粗",
+    "Table": "表格",
+    "Title Case": "每个单词首字母大写",
+    "Graph view": "图谱视图"
+  },
+  "zh-TW": {
+    "Bold": "粗體",
+    "Table": "表格",
+    "Title Case": "每個單字首字母大寫",
+    "Graph view": "圖譜檢視"
+  },
+  "ar": {
+    "Bold": "عريض",
+    "Table": "جدول",
+    "Title Case": "كل كلمة بحرف كبير"
+  },
+  "it": {
+    "Bold": "Grassetto",
+    "Table": "Tabella",
+    "Title Case": "Iniziali Maiuscole",
+    "Graph view": "Vista grafo"
+  },
+  "nl": {
+    "Bold": "Vetgedrukt",
+    "Table": "Tabel",
+    "Title Case": "Elk Woord Met Hoofdletter"
+  },
+  "pl": {
+    "Bold": "Pogrubiony",
+    "Table": "Tabela",
+    "Title Case": "Każde Słowo Wielką Literą",
+    "Graph view": "Widok grafu"
   }
 }

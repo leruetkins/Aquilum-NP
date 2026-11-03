@@ -28,20 +28,19 @@ pub struct RibbonItem {
 impl AppView {
     /// Returns the localized title for built-in ribbon items.
     fn builtin_ribbon_title(&self, id: &str) -> String {
-        let is_ru = self.config.ui.language.starts_with("ru");
         match id {
-            "ribbon-quick-switcher" => if is_ru { "Меню быстрого перехода" } else { "Quick switcher" },
-            "ribbon-graph" => if is_ru { "Граф" } else { "Graph view" },
-            "ribbon-canvas" => if is_ru { "Создать новый холст" } else { "New canvas" },
-            "ribbon-new-note" => if is_ru { "Новая заметка" } else { "New note" },
-            "ribbon-calendar" => if is_ru { "Сегодняшняя заметка" } else { "Daily note" },
-            "ribbon-template" => if is_ru { "Вставить шаблон" } else { "Insert template" },
-            "ribbon-commands" => if is_ru { "Открыть палитру команд" } else { "Open command palette" },
-            "ribbon-drawing" => if is_ru { "Создать новый чертеж" } else { "New drawing" },
-            "ribbon-refresh" => if is_ru { "Синхронизировать / Обновить" } else { "Sync / Reload" },
-            "ribbon-trash" => if is_ru { "Корзина" } else { "Trash" },
-            _ => id,
-        }.to_string()
+            "ribbon-quick-switcher" => self.t("app.ribbon.quick_switcher"),
+            "ribbon-graph" => self.t("app.ribbon.graph"),
+            "ribbon-canvas" => self.t("app.ribbon.new_canvas"),
+            "ribbon-new-note" => self.t("app.ribbon.new_note"),
+            "ribbon-calendar" => self.t("app.ribbon.daily_note"),
+            "ribbon-template" => self.t("app.ribbon.insert_template"),
+            "ribbon-commands" => self.t("app.ribbon.command_palette"),
+            "ribbon-drawing" => self.t("app.ribbon.new_drawing"),
+            "ribbon-refresh" => self.t("app.ribbon.sync_reload"),
+            "ribbon-trash" => self.t("app.ribbon.trash"),
+            _ => id.to_string(),
+        }
     }
 
     /// Returns the list of all ribbon items (both built-in and plugin-contributed) with current visibility.
@@ -104,12 +103,7 @@ impl AppView {
                 self.open_search_dialog(window, cx);
             }
             "ribbon-graph" => {
-                let is_ru = self.config.ui.language.starts_with("ru");
-                self.state.status_text = if is_ru {
-                    "Граф заметок".to_string()
-                } else {
-                    "Graph view".to_string()
-                };
+                self.state.status_text = self.t("app.ribbon.graph_status");
                 cx.notify();
             }
             "ribbon-canvas" => {
@@ -386,12 +380,7 @@ impl AppView {
             self.ribbon_context_menu.position_y.max(10.0)
         };
 
-        let is_ru = self.config.ui.language.starts_with("ru");
-        let hide_panel_label = if is_ru {
-            "Скрыть вертикальную панель"
-        } else {
-            "Hide vertical panel"
-        };
+        let hide_panel_label = self.t("app.ribbon.hide_panel");
 
         div()
             .id("ribbon-context-backdrop")

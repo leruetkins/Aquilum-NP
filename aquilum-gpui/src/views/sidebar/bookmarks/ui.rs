@@ -76,12 +76,7 @@ impl AppView {
             self.commit_bookmark_rename(cx);
         }
 
-        let untitled = self.t("sidebar.untitled_group");
-        let default_title = if untitled.is_empty() || untitled == "sidebar.untitled_group" {
-            "Группа без названия".to_string()
-        } else {
-            untitled
-        };
+        let default_title = self.t("sidebar.untitled_group");
 
         let new_group_title = self.state.bookmarks.create_group(&default_title);
         let group_idx = self.state.bookmarks.items.len().saturating_sub(1);
@@ -517,12 +512,7 @@ impl AppView {
             }));
 
         if self.state.bookmarks.is_empty() {
-            let empty_text = self.t("sidebar.no_bookmarks");
-            let display_text = if empty_text.is_empty() || empty_text == "sidebar.no_bookmarks" {
-                "Нет закладок"
-            } else {
-                &empty_text
-            };
+            let display_text = self.t("sidebar.no_bookmarks");
 
             return div()
                 .id("sidebar-bookmarks-empty")
