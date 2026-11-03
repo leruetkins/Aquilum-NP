@@ -232,7 +232,7 @@ impl AppView {
                         0,
                         "menu-item-open-new-tab",
                         icons::ICON_NOTE_CREATE,
-                        self.t("tabs.open_in_new_tab"),
+                        self.t("sidebar.open_in_new_tab"),
                         false,
                         {
                             let p = target_path.clone();

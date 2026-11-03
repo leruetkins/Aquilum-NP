@@ -560,7 +560,16 @@
     "sort_alpha_desc": "排序：Z 到 A",
     "no_recent_files": "沒有最近的文件",
     "remove_from_recent": "從最近刪除",
-    "yesterday": "昨天"
+    "yesterday": "昨天",
+    "link_to_parent": "連結到父資料夾",
+    "change_icon_label": "更改圖示",
+    "check_stats": "檢查文件統計訊息",
+    "collect_attachments": "收集文件中的附件",
+    "as_obsidian_url": "作為 Obsidian URL",
+    "find_orphaned": "尋找孤立文件",
+    "create_folder_note": "建立資料夾筆記",
+    "move_attachments": "將附件移至正確的資料夾",
+    "no_matches": "沒有匹配項"
   },
   "tabs": {
     "fold_tabs": "折疊標籤",

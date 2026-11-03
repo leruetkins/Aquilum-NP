@@ -560,7 +560,16 @@
     "sort_alpha_desc": "Sắp xếp: Z đến A",
     "no_recent_files": "Không có tập tin gần đây",
     "remove_from_recent": "Xóa khỏi gần đây",
-    "yesterday": "Hôm qua"
+    "yesterday": "Hôm qua",
+    "link_to_parent": "Liên kết tới thư mục cha",
+    "change_icon_label": "Thay đổi biểu tượng",
+    "check_stats": "Kiểm tra số liệu thống kê tập tin",
+    "collect_attachments": "Thu thập tệp đính kèm trong tập tin",
+    "as_obsidian_url": "dưới dạng URL Obsidian",
+    "find_orphaned": "Tìm tập tin mồ côi",
+    "create_folder_note": "Tạo ghi chú thư mục",
+    "move_attachments": "Di chuyển tệp đính kèm vào thư mục thích hợp",
+    "no_matches": "Không có kết quả phù hợp"
   },
   "tabs": {
     "fold_tabs": "Tab gấp",

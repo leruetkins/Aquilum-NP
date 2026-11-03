@@ -560,7 +560,16 @@
     "sort_alpha_desc": "क्रमबद्ध करें: Z से A",
     "no_recent_files": "कोई हाल की फ़ाइल नहीं",
     "remove_from_recent": "हाल से हटाएँ",
-    "yesterday": "कल"
+    "yesterday": "कल",
+    "link_to_parent": "पेरेंट फ़ोल्डर से लिंक करें",
+    "change_icon_label": "आइकन बदलें",
+    "check_stats": "फ़ाइल आँकड़े जाँचें",
+    "collect_attachments": "फ़ाइल में अनुलग्नक एकत्रित करें",
+    "as_obsidian_url": "Obsidian URL के रूप में",
+    "find_orphaned": "अनाथ फ़ाइलें ढूंढें",
+    "create_folder_note": "फ़ोल्डर नोट बनाएँ",
+    "move_attachments": "अनुलग्नक को उचित फ़ोल्डर में ले जाएं",
+    "no_matches": "कोई मेल नहीं"
   },
   "tabs": {
     "fold_tabs": "टैब मोड़ें",

@@ -546,7 +546,16 @@
     "foldername_cannot_be_empty": "Folder name cannot be empty",
     "vaults_title": "Knowledge bases",
     "open_folder": "Open Folder",
-    "no_vaults": "No vaults yet"
+    "no_vaults": "No vaults yet",
+    "link_to_parent": "Link to Parent Folder",
+    "change_icon_label": "Change icon",
+    "check_stats": "Check file stats",
+    "collect_attachments": "Collect attachments in file",
+    "as_obsidian_url": "as Obsidian URL",
+    "find_orphaned": "Find orphaned files",
+    "create_folder_note": "Create Folder Note",
+    "move_attachments": "Move attachment to proper folder",
+    "no_matches": "No matches"
   },
   "tabs": {
     "fold_tabs": "Fold Tabs",

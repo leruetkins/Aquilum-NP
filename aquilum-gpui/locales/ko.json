@@ -560,7 +560,16 @@
     "sort_alpha_desc": "정렬: Z에서 A로",
     "no_recent_files": "최근 파일 없음",
     "remove_from_recent": "최근 항목에서 삭제",
-    "yesterday": "어제"
+    "yesterday": "어제",
+    "link_to_parent": "상위 폴더에 대한 링크",
+    "change_icon_label": "아이콘 변경",
+    "check_stats": "파일 통계 확인",
+    "collect_attachments": "파일의 첨부파일 수집",
+    "as_obsidian_url": "Obsidian URL로",
+    "find_orphaned": "고아 파일 찾기",
+    "create_folder_note": "폴더 노트 생성",
+    "move_attachments": "첨부 파일을 적절한 폴더로 이동",
+    "no_matches": "일치하는 항목 없음"
   },
   "tabs": {
     "fold_tabs": "접이식 탭",

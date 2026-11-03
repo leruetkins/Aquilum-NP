@@ -4,7 +4,16 @@
     "Bold": "Tučné",
     "Table": "Tabulka",
     "Title Case": "Každé Slovo Velké",
-    "AI tools": "Nástroje AI"
+    "AI tools": "Nástroje AI",
+    "Link to Parent Folder": "Odkaz na nadřazenou složku",
+    "Change icon": "Změnit ikonu",
+    "Check file stats": "Zkontrolovat statistiky souborů",
+    "Collect attachments in file": "Shromáždit přílohy do souboru",
+    "as Obsidian URL": "jako URL Obsidian",
+    "Find orphaned files": "Najít osiřelé soubory",
+    "Create Folder Note": "Vytvořit poznámku ke složce",
+    "Move attachment to proper folder": "Přesunout přílohu do správné složky",
+    "No matches": "Žádné shody"
   },
   "de": {
     "Paste": "Einfügen",
@@ -12,7 +21,16 @@
     "Table": "Tabelle",
     "Title Case": "Jedes Wort Groß",
     "Bullet list": "Aufzählungsliste",
-    "Graph view": "Graph-Ansicht"
+    "Graph view": "Graph-Ansicht",
+    "Link to Parent Folder": "Link zum übergeordneten Ordner",
+    "Change icon": "Symbol ändern",
+    "Check file stats": "Dateistatistik prüfen",
+    "Collect attachments in file": "Anhänge in Datei sammeln",
+    "as Obsidian URL": "als Obsidian-URL",
+    "Find orphaned files": "Verwaiste Dateien finden",
+    "Create Folder Note": "Ordnernotiz erstellen",
+    "Move attachment to proper folder": "Anhang in den richtigen Ordner verschieben",
+    "No matches": "Keine Übereinstimmungen"
   },
   "sv": {
     "+ Dropdown ▾": "+ Rullgardinsmeny ▾",
@@ -36,7 +54,16 @@
     "Table": "Tabell",
     "Title Case": "Varje ord med versal",
     "Bullet list": "Punktlista",
-    "Callout block": "Callout-block"
+    "Callout block": "Callout-block",
+    "Link to Parent Folder": "Länk till föräldramappen",
+    "Change icon": "Ändra ikon",
+    "Check file stats": "Kontrollera filstatistik",
+    "Collect attachments in file": "Samla bilagor i fil",
+    "as Obsidian URL": "som Obsidian URL",
+    "Find orphaned files": "Hitta föräldralösa filer",
+    "Create Folder Note": "Skapa mappnotering",
+    "Move attachment to proper folder": "Flytta bilagan till rätt mapp",
+    "No matches": "Inga matchningar"
   },
   "uk": {
     "Custom": "Довільний",
@@ -44,7 +71,16 @@
     "Bold": "Жирний",
     "Table": "Таблиця",
     "Title Case": "Кожне слово з великої",
-    "Graph view": "Вигляд графа"
+    "Graph view": "Вигляд графа",
+    "Link to Parent Folder": "Посилання на батьківську папку",
+    "Change icon": "Змінити значок",
+    "Check file stats": "Перевірити статистику файлів",
+    "Collect attachments in file": "Зібрати вкладення у файл",
+    "as Obsidian URL": "як URL-адресу Obsidian",
+    "Find orphaned files": "Знайти файли-сироти",
+    "Create Folder Note": "Створити нотатку папки",
+    "Move attachment to proper folder": "Перемістити вкладення у відповідну папку",
+    "No matches": "Немає збігів"
   },
   "vi": {
     "tab...": "thẻ...",
@@ -52,7 +88,16 @@
     "Table": "Bảng",
     "Title Case": "Viết Hoa Đầu Từ",
     "AI tools": "Công cụ AI",
-    "Graph view": "Chế độ xem đồ thị"
+    "Graph view": "Chế độ xem đồ thị",
+    "Link to Parent Folder": "Liên kết tới thư mục cha",
+    "Change icon": "Thay đổi biểu tượng",
+    "Check file stats": "Kiểm tra số liệu thống kê tập tin",
+    "Collect attachments in file": "Thu thập tệp đính kèm trong tập tin",
+    "as Obsidian URL": "dưới dạng URL Obsidian",
+    "Find orphaned files": "Tìm tập tin mồ côi",
+    "Create Folder Note": "Tạo ghi chú thư mục",
+    "Move attachment to proper folder": "Di chuyển tệp đính kèm vào thư mục thích hợp",
+    "No matches": "Không có kết quả phù hợp"
   },
   "es": {
     "Bold": "Negrita",
@@ -62,29 +107,74 @@
     "AI tools": "Herramientas de IA",
     "Callout block": "Bloque de aviso",
     "lowercase": "minúsculas",
-    "Graph view": "Vista de grafo"
+    "Graph view": "Vista de grafo",
+    "Link to Parent Folder": "Enlace a la carpeta padre",
+    "Change icon": "Cambiar icono",
+    "Check file stats": "Consultar estadísticas de archivos",
+    "Collect attachments in file": "Recopilar archivos adjuntos en el archivo",
+    "as Obsidian URL": "como URL de Obsidian",
+    "Find orphaned files": "Buscar archivos huérfanos",
+    "Create Folder Note": "Crear nota de carpeta",
+    "Move attachment to proper folder": "Mover el archivo adjunto a la carpeta adecuada",
+    "No matches": "No hay coincidencias"
   },
   "fr": {
     "Bold": "Gras",
     "Table": "Tableau",
     "Title Case": "Majuscule Initiale",
-    "Callout block": "Bloc d'encadré"
+    "Callout block": "Bloc d'encadré",
+    "Link to Parent Folder": "Lien vers le dossier parent",
+    "Change icon": "Changer d'icône",
+    "Check file stats": "Vérifier les statistiques du fichier",
+    "Collect attachments in file": "Collecter les pièces jointes dans un fichier",
+    "as Obsidian URL": "comme URL Obsidian",
+    "Find orphaned files": "Rechercher des fichiers orphelins",
+    "Create Folder Note": "Créer une note de dossier",
+    "Move attachment to proper folder": "Déplacer la pièce jointe dans le dossier approprié",
+    "No matches": "Aucune correspondance"
   },
   "hi": {
     "Bold": "मोटा",
     "Table": "तालिका",
-    "Title Case": "प्रत्येक शब्द का पहला अक्षर बड़ा"
+    "Title Case": "प्रत्येक शब्द का पहला अक्षर बड़ा",
+    "Link to Parent Folder": "पेरेंट फ़ोल्डर से लिंक करें",
+    "Change icon": "आइकन बदलें",
+    "Check file stats": "फ़ाइल आँकड़े जाँचें",
+    "Collect attachments in file": "फ़ाइल में अनुलग्नक एकत्रित करें",
+    "as Obsidian URL": "Obsidian URL के रूप में",
+    "Find orphaned files": "अनाथ फ़ाइलें ढूंढें",
+    "Create Folder Note": "फ़ोल्डर नोट बनाएँ",
+    "Move attachment to proper folder": "अनुलग्नक को उचित फ़ोल्डर में ले जाएं",
+    "No matches": "कोई मेल नहीं"
   },
   "ja": {
     "Bold": "太字",
     "Table": "テーブル",
-    "Title Case": "各単語の先頭を大文字"
+    "Title Case": "各単語の先頭を大文字",
+    "Link to Parent Folder": "親フォルダーへのリンク",
+    "Change icon": "アイコンの変更",
+    "Check file stats": "ファイルの統計を確認する",
+    "Collect attachments in file": "添付ファイルをファイルに収集する",
+    "as Obsidian URL": "Obsidian URL として",
+    "Find orphaned files": "孤立したファイルを見つける",
+    "Create Folder Note": "フォルダーノートを作成",
+    "Move attachment to proper folder": "添付ファイルを適切なフォルダーに移動する",
+    "No matches": "一致する項目はありません"
   },
   "ko": {
     "Bold": "굵게",
     "Table": "표",
     "Title Case": "각 단어 첫 글자 대문자",
-    "Image…": "이미지…"
+    "Image…": "이미지…",
+    "Link to Parent Folder": "상위 폴더에 대한 링크",
+    "Change icon": "아이콘 변경",
+    "Check file stats": "파일 통계 확인",
+    "Collect attachments in file": "파일의 첨부파일 수집",
+    "as Obsidian URL": "Obsidian URL로",
+    "Find orphaned files": "고아 파일 찾기",
+    "Create Folder Note": "폴더 노트 생성",
+    "Move attachment to proper folder": "첨부 파일을 적절한 폴더로 이동",
+    "No matches": "일치하는 항목 없음"
   },
   "pt": {
     "Bold": "Negrito",
@@ -92,45 +182,117 @@
     "Title Case": "Capitalização de Título",
     "Callout block": "Bloco de destaque",
     "lowercase": "minúsculas",
-    "Graph view": "Visão de grafo"
+    "Graph view": "Visão de grafo",
+    "Link to Parent Folder": "Link para pasta pai",
+    "Change icon": "Alterar ícone",
+    "Check file stats": "Verificar as estatísticas do arquivo",
+    "Collect attachments in file": "Coletar anexos em arquivo",
+    "as Obsidian URL": "como URL do Obsidian",
+    "Find orphaned files": "Encontrar arquivos órfãos",
+    "Create Folder Note": "Criar nota de pasta",
+    "Move attachment to proper folder": "Mover o anexo para a pasta adequada",
+    "No matches": "Nenhuma correspondência"
   },
   "tr": {
     "Bold": "Kalın",
     "Table": "Tablo",
-    "Title Case": "Her Kelimenin İlk Harfi Büyük"
+    "Title Case": "Her Kelimenin İlk Harfi Büyük",
+    "Link to Parent Folder": "Ana Klasöre Bağlantı",
+    "Change icon": "Simgeyi değiştir",
+    "Check file stats": "Dosya istatistiklerini kontrol edin",
+    "Collect attachments in file": "Ekleri dosyada topla",
+    "as Obsidian URL": "Obsidian URL'si olarak",
+    "Find orphaned files": "Artık dosyaları bul",
+    "Create Folder Note": "Klasör Notu Oluştur",
+    "Move attachment to proper folder": "Eki uygun klasöre taşı",
+    "No matches": "Eşleşme yok"
   },
   "zh-CN": {
     "Bold": "加粗",
     "Table": "表格",
     "Title Case": "每个单词首字母大写",
-    "Graph view": "图谱视图"
+    "Graph view": "图谱视图",
+    "Link to Parent Folder": "链接到父文件夹",
+    "Change icon": "更改图标",
+    "Check file stats": "检查文件统计信息",
+    "Collect attachments in file": "收集文件中的附件",
+    "as Obsidian URL": "作为 Obsidian URL",
+    "Find orphaned files": "查找孤立文件",
+    "Create Folder Note": "创建文件夹笔记",
+    "Move attachment to proper folder": "将附件移动到正确的文件夹",
+    "No matches": "没有匹配项"
   },
   "zh-TW": {
     "Bold": "粗體",
     "Table": "表格",
     "Title Case": "每個單字首字母大寫",
-    "Graph view": "圖譜檢視"
+    "Graph view": "圖譜檢視",
+    "Link to Parent Folder": "連結到父資料夾",
+    "Change icon": "更改圖示",
+    "Check file stats": "檢查文件統計訊息",
+    "Collect attachments in file": "收集文件中的附件",
+    "as Obsidian URL": "作為 Obsidian URL",
+    "Find orphaned files": "尋找孤立文件",
+    "Create Folder Note": "建立資料夾筆記",
+    "Move attachment to proper folder": "將附件移至正確的資料夾",
+    "No matches": "沒有匹配項"
   },
   "ar": {
     "Bold": "عريض",
     "Table": "جدول",
-    "Title Case": "كل كلمة بحرف كبير"
+    "Title Case": "كل كلمة بحرف كبير",
+    "Link to Parent Folder": "رابط إلى المجلد الأصل",
+    "Change icon": "تغيير الرمز",
+    "Check file stats": "التحقق من إحصائيات الملف",
+    "Collect attachments in file": "جمع المرفقات في الملف",
+    "as Obsidian URL": "كـ URL Obsidian",
+    "Find orphaned files": "البحث عن الملفات المعزولة",
+    "Create Folder Note": "إنشاء ملاحظة المجلد",
+    "Move attachment to proper folder": "انقل المرفق إلى المجلد المناسب",
+    "No matches": "لا توجد نتائج مطابقة"
   },
   "it": {
     "Bold": "Grassetto",
     "Table": "Tabella",
     "Title Case": "Iniziali Maiuscole",
-    "Graph view": "Vista grafo"
+    "Graph view": "Vista grafo",
+    "Link to Parent Folder": "Collegamento alla cartella padre",
+    "Change icon": "Cambia icona",
+    "Check file stats": "Controlla le statistiche del file",
+    "Collect attachments in file": "Raccogli gli allegati in un file",
+    "as Obsidian URL": "come URL Obsidian",
+    "Find orphaned files": "Trova file orfani",
+    "Create Folder Note": "Crea nota cartella",
+    "Move attachment to proper folder": "Sposta l'allegato nella cartella corretta",
+    "No matches": "Nessuna corrispondenza"
   },
   "nl": {
     "Bold": "Vetgedrukt",
     "Table": "Tabel",
-    "Title Case": "Elk Woord Met Hoofdletter"
+    "Title Case": "Elk Woord Met Hoofdletter",
+    "Link to Parent Folder": "Link naar bovenliggende map",
+    "Change icon": "Pictogram wijzigen",
+    "Check file stats": "Controleer bestandsstatistieken",
+    "Collect attachments in file": "Verzamel bijlagen in het bestand",
+    "as Obsidian URL": "als Obsidian-URL",
+    "Find orphaned files": "Zoek verweesde bestanden",
+    "Create Folder Note": "Mapnotitie maken",
+    "Move attachment to proper folder": "Verplaats de bijlage naar de juiste map",
+    "No matches": "Geen overeenkomsten"
   },
   "pl": {
     "Bold": "Pogrubiony",
     "Table": "Tabela",
     "Title Case": "Każde Słowo Wielką Literą",
-    "Graph view": "Widok grafu"
+    "Graph view": "Widok grafu",
+    "Link to Parent Folder": "Link do folderu nadrzędnego",
+    "Change icon": "Zmień ikonę",
+    "Check file stats": "Sprawdź statystyki plików",
+    "Collect attachments in file": "Zbierz załączniki w pliku",
+    "as Obsidian URL": "jako adres URL Obsidian",
+    "Find orphaned files": "Znajdź osierocone pliki",
+    "Create Folder Note": "Utwórz notatkę folderu",
+    "Move attachment to proper folder": "Przenieś załącznik do odpowiedniego folderu",
+    "No matches": "Brak dopasowań"
   }
 }

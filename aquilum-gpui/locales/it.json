@@ -560,7 +560,16 @@
     "sort_alpha_desc": "Ordina: dalla Z alla A",
     "no_recent_files": "Nessun file recente",
     "remove_from_recent": "Rimuovi da recenti",
-    "yesterday": "Ieri"
+    "yesterday": "Ieri",
+    "link_to_parent": "Collegamento alla cartella padre",
+    "change_icon_label": "Cambia icona",
+    "check_stats": "Controlla le statistiche del file",
+    "collect_attachments": "Raccogli gli allegati in un file",
+    "as_obsidian_url": "come URL Obsidian",
+    "find_orphaned": "Trova file orfani",
+    "create_folder_note": "Crea nota cartella",
+    "move_attachments": "Sposta l'allegato nella cartella corretta",
+    "no_matches": "Nessuna corrispondenza"
   },
   "tabs": {
     "fold_tabs": "Piega le linguette",

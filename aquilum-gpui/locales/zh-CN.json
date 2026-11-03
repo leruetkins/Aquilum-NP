@@ -560,7 +560,16 @@
     "sort_alpha_desc": "排序：Z 到 A",
     "no_recent_files": "没有最近的文件",
     "remove_from_recent": "从最近删除",
-    "yesterday": "昨天"
+    "yesterday": "昨天",
+    "link_to_parent": "链接到父文件夹",
+    "change_icon_label": "更改图标",
+    "check_stats": "检查文件统计信息",
+    "collect_attachments": "收集文件中的附件",
+    "as_obsidian_url": "作为 Obsidian URL",
+    "find_orphaned": "查找孤立文件",
+    "create_folder_note": "创建文件夹笔记",
+    "move_attachments": "将附件移动到正确的文件夹",
+    "no_matches": "没有匹配项"
   },
   "tabs": {
     "fold_tabs": "折叠标签",

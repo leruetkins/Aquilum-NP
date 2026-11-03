@@ -560,7 +560,16 @@
     "sort_alpha_desc": "Classificar: Z a A",
     "no_recent_files": "Nenhum arquivo recente",
     "remove_from_recent": "Remover dos recentes",
-    "yesterday": "Ontem"
+    "yesterday": "Ontem",
+    "link_to_parent": "Link para pasta pai",
+    "change_icon_label": "Alterar ícone",
+    "check_stats": "Verificar as estatísticas do arquivo",
+    "collect_attachments": "Coletar anexos em arquivo",
+    "as_obsidian_url": "como URL do Obsidian",
+    "find_orphaned": "Encontrar arquivos órfãos",
+    "create_folder_note": "Criar nota de pasta",
+    "move_attachments": "Mover o anexo para a pasta adequada",
+    "no_matches": "Nenhuma correspondência"
   },
   "tabs": {
     "fold_tabs": "Dobrar abas",

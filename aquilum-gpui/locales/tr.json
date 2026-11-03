@@ -560,7 +560,16 @@
     "sort_alpha_desc": "Sırala: Z'den A'ya",
     "no_recent_files": "Yeni dosya yok",
     "remove_from_recent": "Son kullanılanlardan kaldır",
-    "yesterday": "Dün"
+    "yesterday": "Dün",
+    "link_to_parent": "Ana Klasöre Bağlantı",
+    "change_icon_label": "Simgeyi değiştir",
+    "check_stats": "Dosya istatistiklerini kontrol edin",
+    "collect_attachments": "Ekleri dosyada topla",
+    "as_obsidian_url": "Obsidian URL'si olarak",
+    "find_orphaned": "Artık dosyaları bul",
+    "create_folder_note": "Klasör Notu Oluştur",
+    "move_attachments": "Eki uygun klasöre taşı",
+    "no_matches": "Eşleşme yok"
   },
   "tabs": {
     "fold_tabs": "Sekmeleri Katla",

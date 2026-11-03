@@ -560,7 +560,16 @@
     "sort_alpha_desc": "Sortierung: Z bis A",
     "no_recent_files": "Keine zuletzt verwendeten Dateien",
     "remove_from_recent": "Aus zuletzt verwendeten entfernen",
-    "yesterday": "Gestern"
+    "yesterday": "Gestern",
+    "link_to_parent": "Link zum übergeordneten Ordner",
+    "change_icon_label": "Symbol ändern",
+    "check_stats": "Dateistatistik prüfen",
+    "collect_attachments": "Anhänge in Datei sammeln",
+    "as_obsidian_url": "als Obsidian-URL",
+    "find_orphaned": "Verwaiste Dateien finden",
+    "create_folder_note": "Ordnernotiz erstellen",
+    "move_attachments": "Anhang in den richtigen Ordner verschieben",
+    "no_matches": "Keine Übereinstimmungen"
   },
   "tabs": {
     "fold_tabs": "Tabs falten",

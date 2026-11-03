@@ -560,7 +560,16 @@
     "sort_alpha_desc": "Sorteer: Z tot A",
     "no_recent_files": "Geen recente bestanden",
     "remove_from_recent": "Verwijderen uit recent",
-    "yesterday": "Gisteren"
+    "yesterday": "Gisteren",
+    "link_to_parent": "Link naar bovenliggende map",
+    "change_icon_label": "Pictogram wijzigen",
+    "check_stats": "Controleer bestandsstatistieken",
+    "collect_attachments": "Verzamel bijlagen in het bestand",
+    "as_obsidian_url": "als Obsidian-URL",
+    "find_orphaned": "Zoek verweesde bestanden",
+    "create_folder_note": "Mapnotitie maken",
+    "move_attachments": "Verplaats de bijlage naar de juiste map",
+    "no_matches": "Geen overeenkomsten"
   },
   "tabs": {
     "fold_tabs": "Vouw tabbladen",

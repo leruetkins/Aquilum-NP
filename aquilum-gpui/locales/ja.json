@@ -560,7 +560,16 @@
     "sort_alpha_desc": "並べ替え: Z から A まで",
     "no_recent_files": "最近のファイルはありません",
     "remove_from_recent": "最近のものから削除",
-    "yesterday": "昨日"
+    "yesterday": "昨日",
+    "link_to_parent": "親フォルダーへのリンク",
+    "change_icon_label": "アイコンの変更",
+    "check_stats": "ファイルの統計を確認する",
+    "collect_attachments": "添付ファイルをファイルに収集する",
+    "as_obsidian_url": "Obsidian URL として",
+    "find_orphaned": "孤立したファイルを見つける",
+    "create_folder_note": "フォルダーノートを作成",
+    "move_attachments": "添付ファイルを適切なフォルダーに移動する",
+    "no_matches": "一致する項目はありません"
   },
   "tabs": {
     "fold_tabs": "タブを折りたたむ",

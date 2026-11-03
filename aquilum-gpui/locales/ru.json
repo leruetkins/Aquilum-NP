@@ -546,7 +546,16 @@
     "foldername_cannot_be_empty": "Имя папки не может быть пустым",
     "vaults_title": "Базы знаний",
     "open_folder": "Открыть папку",
-    "no_vaults": "Пока нет баз знаний"
+    "no_vaults": "Пока нет баз знаний",
+    "link_to_parent": "Связать с родительской папкой",
+    "change_icon_label": "Сменить значок",
+    "check_stats": "Проверить статистику файла",
+    "collect_attachments": "Собрать вложения в файл",
+    "as_obsidian_url": "как URL Obsidian",
+    "find_orphaned": "Найти осиротевшие файлы",
+    "create_folder_note": "Создать заметку папки",
+    "move_attachments": "Переместить вложения в нужную папку",
+    "no_matches": "Нет совпадений"
   },
   "tabs": {
     "fold_tabs": "Сложить вкладки",

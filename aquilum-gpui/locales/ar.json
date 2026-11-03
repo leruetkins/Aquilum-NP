@@ -560,7 +560,16 @@
     "sort_alpha_desc": "الترتيب: ي إلى أ",
     "no_recent_files": "لا توجد ملفات حديثة",
     "remove_from_recent": "إزالة من الأخيرة",
-    "yesterday": "أمس"
+    "yesterday": "أمس",
+    "link_to_parent": "رابط إلى المجلد الأصل",
+    "change_icon_label": "تغيير الرمز",
+    "check_stats": "التحقق من إحصائيات الملف",
+    "collect_attachments": "جمع المرفقات في الملف",
+    "as_obsidian_url": "كـ URL Obsidian",
+    "find_orphaned": "البحث عن الملفات المعزولة",
+    "create_folder_note": "إنشاء ملاحظة المجلد",
+    "move_attachments": "انقل المرفق إلى المجلد المناسب",
+    "no_matches": "لا توجد نتائج مطابقة"
   },
   "tabs": {
     "fold_tabs": "أضعاف علامات التبويب",

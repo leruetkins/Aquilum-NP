@@ -560,7 +560,16 @@
     "sort_alpha_desc": "Sortera: Ö till A",
     "no_recent_files": "Inga nya filer",
     "remove_from_recent": "Ta bort från senaste",
-    "yesterday": "I går"
+    "yesterday": "I går",
+    "link_to_parent": "Länk till föräldramappen",
+    "change_icon_label": "Ändra ikon",
+    "check_stats": "Kontrollera filstatistik",
+    "collect_attachments": "Samla bilagor i fil",
+    "as_obsidian_url": "som Obsidian URL",
+    "find_orphaned": "Hitta föräldralösa filer",
+    "create_folder_note": "Skapa mappnotering",
+    "move_attachments": "Flytta bilagan till rätt mapp",
+    "no_matches": "Inga matchningar"
   },
   "tabs": {
     "fold_tabs": "Vik flikar",

@@ -560,7 +560,16 @@
     "sort_alpha_desc": "Сортування: Я — А",
     "no_recent_files": "Немає нещодавніх файлів",
     "remove_from_recent": "Видалити з нещодавніх",
-    "yesterday": "Вчора"
+    "yesterday": "Вчора",
+    "link_to_parent": "Посилання на батьківську папку",
+    "change_icon_label": "Змінити значок",
+    "check_stats": "Перевірити статистику файлів",
+    "collect_attachments": "Зібрати вкладення у файл",
+    "as_obsidian_url": "як URL-адресу Obsidian",
+    "find_orphaned": "Знайти файли-сироти",
+    "create_folder_note": "Створити нотатку папки",
+    "move_attachments": "Перемістити вкладення у відповідну папку",
+    "no_matches": "Немає збігів"
   },
   "tabs": {
     "fold_tabs": "Складні вкладки",

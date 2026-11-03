@@ -560,7 +560,16 @@
     "sort_alpha_desc": "Seřadit: Z do A",
     "no_recent_files": "Žádné nedávné soubory",
     "remove_from_recent": "Odebrat z posledních",
-    "yesterday": "Včera"
+    "yesterday": "Včera",
+    "link_to_parent": "Odkaz na nadřazenou složku",
+    "change_icon_label": "Změnit ikonu",
+    "check_stats": "Zkontrolovat statistiky souborů",
+    "collect_attachments": "Shromáždit přílohy do souboru",
+    "as_obsidian_url": "jako URL Obsidian",
+    "find_orphaned": "Najít osiřelé soubory",
+    "create_folder_note": "Vytvořit poznámku ke složce",
+    "move_attachments": "Přesunout přílohu do správné složky",
+    "no_matches": "Žádné shody"
   },
   "tabs": {
     "fold_tabs": "Skládací záložky",
