@@ -23,12 +23,23 @@ impl Default for ToolbarPlacement {
     }
 }
 
+/// Horizontal alignment of the items inside a toolbar strip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolbarAlignment {
+    #[default]
+    Left,
+    Center,
+}
+
 /// Specification for a complete toolbar registered by core or a plugin.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolbarSpec {
     pub id: String,
     #[serde(default)]
     pub placement: ToolbarPlacement,
+    #[serde(default)]
+    pub alignment: ToolbarAlignment,
     pub items: Vec<ToolbarItem>,
     #[serde(skip)]
     pub owner: Option<String>,
@@ -429,6 +440,7 @@ mod tests {
         let spec = ToolbarSpec {
             id: "test-tb".into(),
             placement: ToolbarPlacement::Top,
+            alignment: ToolbarAlignment::Left,
             items: vec![ToolbarItem::button("btn1", "editor:bold", "bold", None)],
             owner: Some("my-plugin".into()),
         };

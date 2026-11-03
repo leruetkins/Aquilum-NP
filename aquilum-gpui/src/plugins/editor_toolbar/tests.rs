@@ -67,6 +67,7 @@
         let cfg = ToolbarConfigFile {
             version: 1,
             items: items.clone(),
+            alignment: crate::toolbar::ToolbarAlignment::Center,
         };
 
         let json = serde_json::to_string_pretty(&cfg).expect("Serialization failed");

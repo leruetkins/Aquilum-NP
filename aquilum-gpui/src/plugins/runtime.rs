@@ -6208,6 +6208,7 @@ fn parse_js_api_request(kind: &str, payload: serde_json::Value) -> ApiRequest {
                 crate::toolbar::ToolbarSpec {
                     id: "default-toolbar".to_string(),
                     placement: crate::toolbar::ToolbarPlacement::Top,
+                    alignment: crate::toolbar::ToolbarAlignment::default(),
                     items: Vec::new(),
                     owner: None,
                 }

@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use crate::toolbar::{
-    validate_and_prune_items, ToolbarItem, ToolbarPlacement, ToolbarSpec,
+    validate_and_prune_items, ToolbarAlignment, ToolbarItem, ToolbarPlacement, ToolbarSpec,
 };
 use crate::vault::VaultCore;
 
@@ -19,6 +19,8 @@ pub struct ToolbarConfigFile {
     #[serde(default = "default_config_version")]
     pub version: u32,
     pub items: Vec<ToolbarItem>,
+    #[serde(default)]
+    pub alignment: ToolbarAlignment,
 }
 
 fn default_config_version() -> u32 {
@@ -131,50 +133,60 @@ pub fn get_config_path(vault_root: &Path) -> PathBuf {
         .join("data.json")
 }
 
-/// Reads the toolbar config from vault disk, or returns default items.
-/// Catches and recovers from corrupted JSON without crashing.
-pub fn load_toolbar_config(vault_root: Option<&Path>) -> Vec<ToolbarItem> {
+/// Reads the toolbar config from vault disk, falling back to the defaults on any problem.
+pub fn load_toolbar_config_file(vault_root: Option<&Path>) -> ToolbarConfigFile {
+    let fallback = || ToolbarConfigFile {
+        version: default_config_version(),
+        items: default_toolbar_items(),
+        alignment: ToolbarAlignment::Left,
+    };
     let Some(root) = vault_root else {
-        return default_toolbar_items();
+        return fallback();
     };
 
     let path = get_config_path(root);
-    if !path.exists() {
-        return default_toolbar_items();
-    }
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return fallback();
+    };
 
-    match std::fs::read_to_string(&path) {
-        Ok(content) => match serde_json::from_str::<ToolbarConfigFile>(&content) {
-            Ok(config) => {
-                let validated = validate_and_prune_items(config.items, 1);
-                if validated.is_empty() {
-                    eprintln!("[editor-toolbar] Config in {:?} contained no valid items, falling back to defaults", path);
-                    default_toolbar_items()
-                } else {
-                    validated
-                }
-            }
-            Err(e) => {
+    match serde_json::from_str::<ToolbarConfigFile>(&content) {
+        Ok(mut config) => {
+            config.items = validate_and_prune_items(config.items, 1);
+            if config.items.is_empty() {
                 eprintln!(
-                    "[editor-toolbar] Failed to parse config file {:?}: {}. Falling back to default configuration.",
-                    path, e
+                    "[editor-toolbar] Config in {:?} contained no valid items, falling back to defaults",
+                    path
                 );
-                default_toolbar_items()
+                config.items = default_toolbar_items();
             }
-        },
+            config
+        }
         Err(e) => {
             eprintln!(
-                "[editor-toolbar] Failed to read config file {:?}: {}. Using defaults.",
+                "[editor-toolbar] Failed to parse config file {:?}: {}. Falling back to default configuration.",
                 path, e
             );
-            default_toolbar_items()
+            fallback()
         }
     }
 }
 
-/// Persists the toolbar items to `.vault/plugins/editor-toolbar/data.json`.
-pub fn save_toolbar_config(vault_root: &Path, items: &[ToolbarItem]) -> Result<(), String> {
-    let path = get_config_path(vault_root);
+/// Reads the toolbar config from vault disk, or returns default items.
+pub fn load_toolbar_config(vault_root: Option<&Path>) -> Vec<ToolbarItem> {
+    load_toolbar_config_file(vault_root).items
+}
+
+/// Reads the persisted toolbar alignment (defaults to left).
+pub fn load_toolbar_alignment(vault_root: Option<&Path>) -> ToolbarAlignment {
+    load_toolbar_config_file(vault_root).alignment
+}
+
+fn write_toolbar_config(
+    root: &Path,
+    items: &[ToolbarItem],
+    alignment: ToolbarAlignment,
+) -> Result<(), String> {
+    let path = get_config_path(root);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -182,10 +194,27 @@ pub fn save_toolbar_config(vault_root: &Path, items: &[ToolbarItem]) -> Result<(
     let config = ToolbarConfigFile {
         version: 1,
         items: items.to_vec(),
+        alignment,
     };
 
     let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+/// Persists the toolbar items to `.vault/plugins/editor-toolbar/data.json`,
+/// keeping the current alignment.
+pub fn save_toolbar_config(vault_root: &Path, items: &[ToolbarItem]) -> Result<(), String> {
+    let alignment = load_toolbar_config_file(Some(vault_root)).alignment;
+    write_toolbar_config(vault_root, items, alignment)
+}
+
+/// Persists the toolbar alignment, keeping the current items.
+pub fn save_toolbar_alignment(
+    vault_root: &Path,
+    alignment: ToolbarAlignment,
+) -> Result<(), String> {
+    let items = load_toolbar_config(Some(vault_root));
+    write_toolbar_config(vault_root, &items, alignment)
 }
 
 /// Resets the toolbar configuration back to defaults and saves it to disk.
@@ -200,9 +229,15 @@ pub fn register_or_update_bundled_toolbar(
     state: &crate::state::AppState,
     items: Vec<ToolbarItem>,
 ) {
+    let root = state
+        .vault
+        .as_ref()
+        .map(|vault| vault.root.as_path())
+        .or(state.workspace_path.as_deref());
     let spec = ToolbarSpec {
         id: TOOLBAR_PLUGIN_ID.to_string(),
         placement: ToolbarPlacement::Top,
+        alignment: load_toolbar_alignment(root),
         items,
         owner: Some(TOOLBAR_PLUGIN_ID.to_string()),
     };

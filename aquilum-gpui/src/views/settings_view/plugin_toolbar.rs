@@ -325,6 +325,77 @@ impl SettingsView {
             .upgrade()
             .and_then(|a| a.read(cx).state.vault.as_ref().map(|v| v.root.clone()));
         let items = crate::plugins::editor_toolbar::load_toolbar_config(vault_root.as_deref());
+        let alignment =
+            crate::plugins::editor_toolbar::load_toolbar_alignment(vault_root.as_deref());
+        // Segmented control matching the `editor.noteAlign` setting in Interface/Editor
+        // settings, placed in a regular settings card like the rest of the app.
+        let alignment_control = div()
+            .flex()
+            .flex_row()
+            .gap_1()
+            .bg(theme.bg_sidebar)
+            .p_0p5()
+            .rounded_md()
+            .border_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .id("tb-cfg-align-left")
+                    .px_2p5()
+                    .py_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .when(
+                        alignment == crate::toolbar::ToolbarAlignment::Left,
+                        |s| s.bg(theme.accent).text_color(theme.text_on_accent),
+                    )
+                    .when(
+                        alignment != crate::toolbar::ToolbarAlignment::Left,
+                        |s| {
+                            s.text_color(theme.text_muted)
+                                .hover(|h| h.bg(theme.bg_hover))
+                        },
+                    )
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(self.t("settings.toolbar.align_left"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toolbar_set_alignment(crate::toolbar::ToolbarAlignment::Left, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id("tb-cfg-align-center")
+                    .px_2p5()
+                    .py_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .when(
+                        alignment == crate::toolbar::ToolbarAlignment::Center,
+                        |s| s.bg(theme.accent).text_color(theme.text_on_accent),
+                    )
+                    .when(
+                        alignment != crate::toolbar::ToolbarAlignment::Center,
+                        |s| {
+                            s.text_color(theme.text_muted)
+                                .hover(|h| h.bg(theme.bg_hover))
+                        },
+                    )
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(self.t("settings.toolbar.align_center"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toolbar_set_alignment(crate::toolbar::ToolbarAlignment::Center, cx);
+                    })),
+            );
+        let alignment_card = self.render_settings_card(
+            &self.t("settings.toolbar.alignment"),
+            vec![self.render_setting_row(
+                &self.t("settings.toolbar.title"),
+                None,
+                alignment_control,
+            )],
+        );
 
         // Back button to Core Plugins
         let back_btn = div()
@@ -391,6 +462,7 @@ impl SettingsView {
             .flex_wrap()
             .items_center()
             .gap_2()
+            .py_3()
             .child(
                 div()
                     .id("tb-cfg-add-btn")
@@ -510,6 +582,11 @@ impl SettingsView {
                     }))
             );
 
+        let actions_card = self.render_settings_card(
+            &self.t("settings.toolbar.actions"),
+            vec![actions_bar],
+        );
+
         // Add Forms
         let add_button_form = if self.toolbar_add_button_open {
             Some(self.render_toolbar_add_button_form(window, cx))
@@ -529,11 +606,7 @@ impl SettingsView {
             .flex()
             .flex_col()
             .gap_1p5()
-            .p_4()
-            .rounded_lg()
-            .bg(theme.bg_card)
-            .border_1()
-            .border_color(theme.border_subtle)
+            .py_2()
             // A drag released over a button or a gap still drops at the highlighted
             // slot; releases inside a row are handled by the row itself.
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
@@ -578,11 +651,15 @@ impl SettingsView {
             let row = self.render_toolbar_item_row(it, &[i], i, total_items, cx);
             items_container = items_container.child(row);
         }
+        let items_card = self.render_settings_card(
+            &self.t("settings.toolbar.items_section"),
+            vec![div().child(items_container)],
+        );
 
         let mut content = div()
             .flex()
             .flex_col()
-            .gap_4()
+            .gap_5()
             .child(back_btn)
             .child(header);
 
@@ -590,7 +667,7 @@ impl SettingsView {
             content = content.child(banner);
         }
 
-        content = content.child(actions_bar);
+        content = content.child(alignment_card).child(actions_card);
 
         if let Some(form) = add_button_form {
             content = content.child(form);
@@ -599,8 +676,7 @@ impl SettingsView {
             content = content.child(form);
         }
 
-        content = content.child(items_container);
-        content
+        content.child(items_card)
     }
 
     /// Renders an item row with Move Up, Move Down, Delete, and recursive sub-items.
@@ -1764,10 +1840,13 @@ impl SettingsView {
             .upgrade()
             .and_then(|a| a.read(cx).state.vault.as_ref().map(|v| v.root.clone()));
         let items = crate::plugins::editor_toolbar::load_toolbar_config(vault_root.as_deref());
+        let alignment =
+            crate::plugins::editor_toolbar::load_toolbar_alignment(vault_root.as_deref());
 
         let cfg = crate::plugins::editor_toolbar::ToolbarConfigFile {
             version: 1,
             items,
+            alignment,
         };
 
         if let Ok(json_str) = serde_json::to_string_pretty(&cfg) {
@@ -1800,6 +1879,36 @@ impl SettingsView {
             self.toolbar_status_msg = Some(self.t("settings.toolbar.status.import_error"));
             cx.notify();
         }
+    }
+
+    /// Persists and applies the horizontal alignment of the editor toolbar.
+    pub(super) fn toolbar_set_alignment(
+        &mut self,
+        alignment: crate::toolbar::ToolbarAlignment,
+        cx: &mut Context<Self>,
+    ) {
+        let vault_root = self.weak_app.upgrade().and_then(|a| {
+            let app = a.read(cx);
+            app.state
+                .vault
+                .as_ref()
+                .map(|vault| vault.root.clone())
+                .or_else(|| app.state.workspace_path.clone())
+        });
+        if let Some(ref root) = vault_root {
+            let _ = crate::plugins::editor_toolbar::save_toolbar_alignment(root, alignment);
+        }
+        let items = crate::plugins::editor_toolbar::load_toolbar_config(vault_root.as_deref());
+        if let Some(app) = self.weak_app.upgrade() {
+            app.update(cx, |app, cx| {
+                crate::plugins::editor_toolbar::register_or_update_bundled_toolbar(
+                    &app.state,
+                    items,
+                );
+                cx.notify();
+            });
+        }
+        cx.notify();
     }
 
     /// Saves items to vault disk and live-updates toolbar registry in state.

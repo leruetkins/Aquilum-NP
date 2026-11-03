@@ -8,7 +8,10 @@ use gpui::{
 use crate::formatting::ActiveFormatting;
 use crate::icons;
 use crate::theme::Theme;
-use crate::toolbar::{ToolbarItem, ToolbarItemKind, ToolbarPlacement, ToolbarSpec, MAX_TOOLBAR_DROPDOWN_DEPTH};
+use crate::toolbar::{
+    ToolbarAlignment, ToolbarItem, ToolbarItemKind, ToolbarPlacement, ToolbarSpec,
+    MAX_TOOLBAR_DROPDOWN_DEPTH,
+};
 use crate::views::app_view::AppView;
 
 /// Dropdown state for toolbar popups.
@@ -483,6 +486,25 @@ impl AppView {
             }
         }
 
+        // Center the row when the toolbar is configured that way. The same offset is used
+        // for tooltips, dropdown anchors and drag slots so they stay aligned with the
+        // actual flex layout.
+        let content_width = visible_widths.iter().sum::<f32>()
+            + 3.0 * (visible_widths.len().saturating_sub(1) as f32)
+            + if overflow_items.is_empty() {
+                0.0
+            } else if visible_items.is_empty() {
+                overflow_btn_w
+            } else {
+                3.0 + overflow_btn_w
+            };
+        let inner_width = (available_w - 16.0).max(0.0);
+        let content_offset = if spec.alignment == ToolbarAlignment::Center {
+            8.0 + ((inner_width - content_width) / 2.0).max(0.0)
+        } else {
+            8.0
+        };
+
         // Drag state for this strip: the source and the icon under the pointer. The
         // insertion line is drawn between icons and the order changes only on release.
         let drag = self
@@ -506,7 +528,7 @@ impl AppView {
             _ => None,
         };
         let indicator_x = drop_boundary.map(|boundary| {
-            8.0 + visible_widths[..boundary].iter().sum::<f32>()
+            content_offset + visible_widths[..boundary].iter().sum::<f32>()
                 + 3.0 * boundary as f32
                 - 1.5
         });
@@ -518,6 +540,9 @@ impl AppView {
             .flex()
             .flex_row()
             .items_center()
+            .when(spec.alignment == ToolbarAlignment::Center, |d| {
+                d.justify_center()
+            })
             .h(px(40.0))
             .px(px(8.0))
             .gap(px(3.0))
@@ -527,7 +552,7 @@ impl AppView {
         let mut item_slots: Vec<(f32, f32, String, bool)> = Vec::new();
 
         // Render visible items with accurate accumulated X positions in window coordinates
-        let mut current_item_x = origin_x + 8.0;
+        let mut current_item_x = origin_x + content_offset;
         for (i, item) in visible_items.iter().enumerate() {
             let item_w = visible_widths[i];
             item_slots.push((
