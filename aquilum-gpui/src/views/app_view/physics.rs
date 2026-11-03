@@ -1,7 +1,3 @@
-/// Px one wheel "line" is worth. 24 = the editor row height, so a notch (three
-/// lines on Windows) moves three rows of text.
-pub(super) const WHEEL_LINE_PX: f32 = 24.0;
-
 /// Duration bounds of the optional wheel glide, seconds. A notch gets
 /// `2 × mean interval of the last three notches`, clamped to this band: a
 /// sustained spin shortens the glide so the next notch keeps the motion

@@ -1,6 +1,47 @@
     use super::*;
     use crate::markdown::{classify_line, row_painted_text, VisualRow};
 
+    /// Reference metrics (14 px text, 24 px rows) carrying the given headings.
+    fn test_typography(headings: &crate::settings::HeadingsSettings) -> crate::settings::EditorTypography {
+        let editor = crate::settings::EditorSettings {
+            line_height: 24.0 / crate::settings::REFERENCE_FONT_SIZE,
+            headings: headings.clone(),
+            font: crate::settings::FontSettings {
+                font_size_base: crate::settings::REFERENCE_FONT_SIZE as u32,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        crate::settings::EditorTypography::from_editor(&editor)
+    }
+
+    /// Body metrics follow the configured size; headings keep the scaled sizes.
+    #[test]
+    fn row_metrics_use_the_configured_font_size() {
+        let editor = crate::settings::EditorSettings {
+            line_height: 1.8,
+            font: crate::settings::FontSettings {
+                font_size_base: 18,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let typography = crate::settings::EditorTypography::from_editor(&editor);
+
+        let body = classify_line("plain text", None);
+        let (row_h, char_w, font_size, _, _) =
+            AppView::heading_typography_metrics_with_widths(&body, &typography, 8.0, None);
+        assert_eq!(row_h, 32.0);
+        assert_eq!(font_size, 18.0);
+        assert_eq!(char_w, 8.0, "body rows keep the measured cell width");
+
+        let heading = classify_line("# heading", None);
+        let (heading_row_h, _, heading_size, _, _) =
+            AppView::heading_typography_metrics_with_widths(&heading, &typography, 8.0, None);
+        assert_eq!(heading_size, typography.headings.h1.font_size as f32);
+        assert!(heading_row_h >= row_h);
+    }
+
     /// Dotted and dash-dot marks are separate shapes a few device pixels tall, so
     /// a mark that lands between device pixels loses half of its edge. Every mark
     /// must sit on the device grid, stay inside its member and inside the row,
@@ -103,7 +144,6 @@
             crate::fonts::register_embedded_fonts(cx);
             let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
                 let font_family: SharedString = "Droid Sans Mono".into();
-                let headings = crate::settings::HeadingsSettings::default();
                 let font_id = window.text_system().resolve_font(&gpui::font(font_family.clone()));
                 let cell_w = window
                     .text_system()
@@ -120,7 +160,7 @@
                         char_end: line.chars().count(),
                     };
                     let kind = classify_line(line, None);
-                    let layout = shape_row(window.text_system(), line, &kind, &v, false, &crate::markdown::InlineReveal::None, &headings, &font_family, cell_w);
+                    let layout = shape_row(window.text_system(), line, &kind, &v, false, &crate::markdown::InlineReveal::None, &crate::settings::EditorTypography::reference(), &font_family, cell_w);
                     let columns = layout.columns();
                     let end_x = layout.x_for_column(columns);
 
@@ -194,7 +234,7 @@
                         char_end: line.chars().count(),
                     };
                     let kind = classify_line(line, None);
-                    let layout = shape_row(window.text_system(), line, &kind, &v, false, &crate::markdown::InlineReveal::None, &headings, &font_family, cell_w);
+                    let layout = shape_row(window.text_system(), line, &kind, &v, false, &crate::markdown::InlineReveal::None, &crate::settings::EditorTypography::reference(), &font_family, cell_w);
 
                     // Independently shape the very same painted text and read the glyph
                     // positions straight out of the layout.
@@ -281,7 +321,6 @@
             crate::fonts::register_embedded_fonts(cx);
             let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
                 let font_family: SharedString = "Droid Sans Mono".into();
-                let headings = crate::settings::HeadingsSettings::default();
                 let font_id = window.text_system().resolve_font(&gpui::font(font_family.clone()));
                 let cell_w = window
                     .text_system()
@@ -309,7 +348,7 @@
                         &v,
                         false,
                         &crate::markdown::InlineReveal::None,
-                        &headings,
+                        &crate::settings::EditorTypography::reference(),
                         &font_family,
                         cell_w,
                     );
@@ -349,7 +388,6 @@
             crate::fonts::register_embedded_fonts(cx);
             let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
                 let font_family: SharedString = "Droid Sans Mono".into();
-                let headings = crate::settings::HeadingsSettings::default();
                 let font_id = window.text_system().resolve_font(&gpui::font(font_family.clone()));
                 let cell_w = window
                     .text_system()
@@ -366,7 +404,7 @@
                         char_end: line.chars().count(),
                     };
                     let kind = classify_line(line, None);
-                    let layout = shape_row(window.text_system(), line, &kind, &v, false, &crate::markdown::InlineReveal::None, &headings, &font_family, cell_w);
+                    let layout = shape_row(window.text_system(), line, &kind, &v, false, &crate::markdown::InlineReveal::None, &crate::settings::EditorTypography::reference(), &font_family, cell_w);
                     let columns = layout.columns();
                     let end_x = layout.x_for_column(columns);
 
@@ -493,7 +531,8 @@
                 headings.h1.font_size = 40;
                 headings.h1.bold = true;
                 headings.h1.italic = false;
-                let geom = shape_row(window.text_system(), line, &kind, &v, true, &crate::markdown::InlineReveal::All, &headings, &font_family, 24.0);
+                let typography = test_typography(&headings);
+                let geom = shape_row(window.text_system(), line, &kind, &v, true, &crate::markdown::InlineReveal::All, &typography, &font_family, 24.0);
                 // Column 0 is the upright "# " marker, column 3 the first italic char.
                 let up_cell = geom.x_for_column(1) - geom.x_for_column(0);
                 let it_cell = geom.x_for_column(4) - geom.x_for_column(3);
@@ -997,6 +1036,7 @@
             line_chars: vec![2, 3, 4, 5, 8, 9, 10, 11],
             code_ranges: Vec::new(),
             tag_ranges: Vec::new(),
+            line_h: 20.0,
         };
 
         // Click past the end of cell 0 text (e.g. at x = 80.0):
@@ -1079,7 +1119,7 @@
                 // A narrow long column forces the text to wrap.
                 let manual = vec![60.0, 200.0];
                 let layout =
-                    compute_table_layout(window.text_system(), &get_line, &block, &font, Some(&manual), 7.7, 720.0);
+                    compute_table_layout(window.text_system(), &get_line, &block, &font, Some(&manual), 7.7, 720.0, 14.0, 20.0);
                 let col_chars = layout.col_chars.clone();
                 assert!(col_chars[1] >= 4 && col_chars[1] <= 26, "budget {:?}", col_chars);
 
@@ -1099,7 +1139,7 @@
                 // Row height is exactly the wrapped height, edges included.
                 let kind = crate::markdown::TableRowVisualKind::LastRow { lines: n };
                 assert_eq!(
-                    kind.height(),
+                    kind.height(20.0),
                     n as f32 * crate::markdown::TABLE_LINE_H + 2.0 * crate::markdown::TABLE_PAD_Y
                         + crate::markdown::TABLE_EDGE_MARGIN
                 );
@@ -1184,7 +1224,7 @@
                 let manual = vec![150.0, 200.0]; // previously had 2 columns resized
                 let font = gpui::SharedString::from("Consolas");
 
-                let layout = compute_table_layout(window.text_system(), &get_line, &block, &font, Some(&manual), 7.7, 720.0);
+                let layout = compute_table_layout(window.text_system(), &get_line, &block, &font, Some(&manual), 7.7, 720.0, 14.0, 20.0);
                 assert_eq!(layout.col_widths.len(), 3);
                 assert_eq!(layout.col_widths[0], 150.0, "col 0 must keep manual width 150.0");
                 assert_eq!(layout.col_widths[1], 200.0, "col 1 must keep manual width 200.0");
@@ -1278,7 +1318,6 @@
             crate::fonts::register_embedded_fonts(cx);
             let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
                 let font_family: SharedString = "Roboto Mono".into();
-                let headings = crate::settings::HeadingsSettings::default();
                 let font_id = window.text_system().resolve_font(&gpui::font(font_family.clone()));
                 let cell_w = window
                     .text_system()
@@ -1359,7 +1398,7 @@
                             &v,
                             active,
                             &reveal,
-                            &headings,
+                            &crate::settings::EditorTypography::reference(),
                             &font_family,
                             cell_w,
                         );

@@ -199,9 +199,10 @@ impl TabSession {
     pub(super) fn sync_line_paints(
         &mut self,
         doc: &DocumentBuffer,
-        headings: Option<&crate::settings::HeadingsSettings>,
+        typography: Option<&crate::settings::EditorTypography>,
         suppress_selection_reveal: bool,
     ) {
+        let headings = typography.map(|typography| &typography.headings);
         if self.window.is_empty() || self.source_mode {
             self.line_paints.clear();
             return;
@@ -289,7 +290,7 @@ impl TabSession {
 
         for ((line, spec), kind) in changed.into_iter().zip(kinds) {
             let paint = spec.as_ref().unwrap_or(&canonical);
-            self.window.rewrap_line(line, paint, headings, |_, _| kind);
+            self.window.rewrap_line(line, paint, typography, |_, _| kind);
         }
         let anchor_after = self.doc_y_of_line(lines_total, anchor);
         let shift = anchor_after - anchor_before;
@@ -591,12 +592,12 @@ impl TabSession {
         // `None`; `update_single_line` only asks for the edited line. The
         // closure must not capture `self` (it is passed into a
         // `&mut self.window` call).
-        let headings = self.headings_cache.clone();
+        let typography = self.typography_cache.clone();
         let updated = self.window.update_single_line(
             edit_line,
             doc.line_text(edit_line),
             delta,
-            Some(&headings),
+            Some(&typography),
             |_, _| None,
         );
         if !updated {

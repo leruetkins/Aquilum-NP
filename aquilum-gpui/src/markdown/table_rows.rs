@@ -19,17 +19,17 @@ pub enum TableRowVisualKind {
 
 impl TableRowVisualKind {
     /// Total height of the row in logical pixels, margins included.
-    pub fn height(&self) -> f32 {
+    pub fn height(&self, line_h: f32) -> f32 {
         match self {
             Self::Delimiter => 1.0,
-            Self::Header { lines } => self.cell_height(*lines) + TABLE_EDGE_MARGIN,
-            Self::Body { lines } => self.cell_height(*lines),
-            Self::LastRow { lines } => self.cell_height(*lines) + TABLE_EDGE_MARGIN,
+            Self::Header { lines } => self.cell_height(*lines, line_h) + TABLE_EDGE_MARGIN,
+            Self::Body { lines } => self.cell_height(*lines, line_h),
+            Self::LastRow { lines } => self.cell_height(*lines, line_h) + TABLE_EDGE_MARGIN,
         }
     }
 
-    fn cell_height(&self, lines: usize) -> f32 {
-        (lines.max(1) as f32) * TABLE_LINE_H + 2.0 * TABLE_PAD_Y
+    fn cell_height(&self, lines: usize, line_h: f32) -> f32 {
+        (lines.max(1) as f32) * line_h + 2.0 * TABLE_PAD_Y
     }
 }
 

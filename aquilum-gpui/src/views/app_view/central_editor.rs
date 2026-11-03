@@ -12,12 +12,8 @@ impl AppView {
         cx: &Context<Self>,
     ) -> gpui::Stateful<Div> {
         let editor_font = self.editor_font_family();
-        let font_id = cx.text_system().resolve_font(&gpui::font(editor_font.clone()));
-        let line_char_width = cx
-            .text_system()
-            .advance(font_id, px(14.0), 'x')
-            .map(|s| f32::from(s.width))
-            .unwrap_or(7.7);
+        let typography = self.editor_typography();
+        let line_char_width = self.editor_char_width(cx);
 
         crate::images::set_char_width(line_char_width);
         crate::images::set_folder(&self.config.files.folder);
@@ -772,8 +768,8 @@ impl AppView {
                     }));
             }
 
-            let headings = &self.config.editor.headings;
-            let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, headings, line_char_width);
+            let headings = &typography.headings;
+            let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &typography, line_char_width);
             let text_system = window.text_system().clone();
             let hide_current_line_on_selection = self.config.editor.hide_current_line_on_selection;
             let has_selection = selection_range.as_ref().map_or(false, |sel| sel.start < sel.end);
@@ -868,7 +864,7 @@ impl AppView {
                     crate::markdown::InlineReveal::None
                 };
                 let (_, row_char_w, _, _, _) =
-                    Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths));
+                    Self::heading_typography_metrics_with_widths(&classified, &typography, line_char_width, Some(&heading_widths));
                 let row_layout = if let Some(tbl) = view.grid_table_at(doc, &tables, line_idx, cursor_line, self.ctrl_preview_selection || !self.edit_mode) {
                     let table_layout = Self::get_or_compute_table_layout(
                         &self.table_layouts,
@@ -879,14 +875,15 @@ impl AppView {
                         self.manual_table_col_widths.get(&tbl.first_line).map(|w| w.as_slice()),
                         line_char_width,
                         Self::table_room_px(view, line_char_width),
+                        &typography,
                     );
                     let cursor_col = if is_act_line && line_idx == cursor_line { Some(active_col_in_row) } else { None };
-                    shape_table_row(window.text_system(), line, tbl, line_idx, cursor_col, &table_layout, headings, &editor_font, row_char_w)
+                    shape_table_row(window.text_system(), line, tbl, line_idx, cursor_col, &table_layout, &typography.headings, &editor_font, row_char_w)
                 } else {
                     let raw_row = tables
                         .at(line_idx)
                         .map_or(false, |t| view.table_raw_now(doc, t, cursor_line, self.ctrl_preview_selection || !self.edit_mode));
-                    shape_row(&text_system, line, &classified, v, is_act_line || raw_row, &reveal, headings, &editor_font, row_char_w)
+                    shape_row(&text_system, line, &classified, v, is_act_line || raw_row, &reveal, &typography, &editor_font, row_char_w)
                 };
 
                 if line.is_empty() {
@@ -949,6 +946,7 @@ impl AppView {
                                 self.manual_table_col_widths.get(&tbl.first_line).map(|w| w.as_slice()),
                                 line_char_width,
                                 Self::table_room_px(view, line_char_width),
+                                &typography,
                             );
                             let col_x = table_layout.col_x.get(col_min).copied().unwrap_or(0.0);
                             let col_w = if let Some(&max_x) = table_layout.col_x.get(col_max) {
@@ -1102,9 +1100,9 @@ impl AppView {
                 let row_len = v.char_end.saturating_sub(v.char_start);
 
                 let (h_metrics_row_h, row_char_w, _row_font_size, _cursor_h, _cursor_top) = if self.source_mode {
-                    (24.0, line_char_width, 14.0, 18.0, 3.0)
+                    (typography.row_height, line_char_width, typography.base_font_size, 18.0, 3.0)
                 } else {
-                    Self::heading_typography_metrics_with_widths(&classified, headings, 24.0, line_char_width, Some(&heading_widths))
+                    Self::heading_typography_metrics_with_widths(&classified, &typography, line_char_width, Some(&heading_widths))
                 };
                 let grid_tbl = if self.source_mode {
                     None
@@ -1121,6 +1119,7 @@ impl AppView {
                         self.manual_table_col_widths.get(&tbl.first_line).map(|w| w.as_slice()),
                         line_char_width,
                         Self::table_room_px(view, line_char_width),
+                        &typography,
                     )
                 });
                 let is_tbl_sep = grid_tbl.map_or(false, |tbl| v.line_idx == tbl.sep_line());
@@ -1180,15 +1179,15 @@ impl AppView {
                 };
                 let row_layout: Arc<RowShapedLayout> = if let Some(tbl) = grid_tbl {
                     let cursor_col = if is_active_line && v.line_idx == cursor_line { Some(active_col_in_row) } else { None };
-                    Arc::new(shape_table_row(window.text_system(), line, tbl, v.line_idx, cursor_col, table_layout.as_ref().unwrap(), headings, &editor_font, row_char_w))
+                    Arc::new(shape_table_row(window.text_system(), line, tbl, v.line_idx, cursor_col, table_layout.as_ref().unwrap(), &typography.headings, &editor_font, row_char_w))
                 } else {
-                    Self::get_or_shape_row(&self.row_shape_cache, &text_system, line, &effective_classified, v, is_active_line, &reveal, headings, &editor_font, row_char_w)
+                    Self::get_or_shape_row(&self.row_shape_cache, &text_system, line, &effective_classified, v, is_active_line, &reveal, &typography, &editor_font, row_char_w)
                 };
                 let row_layout_down = row_layout.clone();
                 let row_layout_move = row_layout.clone();
                 let v_down = v.clone();
                 let reveal_down = reveal.clone();
-                let headings_down = headings.clone();
+                let typography_down = typography.clone();
                 let editor_font_down = editor_font.clone();
                 let edit_mode_down = self.edit_mode;
                 let is_active_down = is_active_line;
@@ -1197,11 +1196,11 @@ impl AppView {
                     row_layout.clone()
                 } else if is_active_line {
                     if let Some(tbl) = grid_tbl {
-                        Arc::new(shape_table_row(window.text_system(), line, tbl, v.line_idx, None, table_layout.as_ref().unwrap(), headings, &editor_font, row_char_w))
+                        Arc::new(shape_table_row(window.text_system(), line, tbl, v.line_idx, None, table_layout.as_ref().unwrap(), &typography.headings, &editor_font, row_char_w))
                     } else {
                         // The preview variant (markers hidden) is hashed as a fully
                         // hidden reveal — a separate cache entry.
-                        Self::get_or_shape_row(&self.row_shape_cache, &text_system, line, &classified, v, false, &crate::markdown::InlineReveal::None, headings, &editor_font, row_char_w)
+                        Self::get_or_shape_row(&self.row_shape_cache, &text_system, line, &classified, v, false, &crate::markdown::InlineReveal::None, &typography, &editor_font, row_char_w)
                     }
                 } else {
                     row_layout.clone()
@@ -1329,7 +1328,7 @@ impl AppView {
                 };
 
                 let chip_cell_h = if grid_tbl.is_some() {
-                    crate::markdown::TABLE_LINE_H
+                    typography.table_line_height
                 } else {
                     row_h
                 };
@@ -1634,7 +1633,7 @@ impl AppView {
                     let sel_h = if image_text_band {
                         h_metrics_row_h
                     } else if grid_tbl.is_some() {
-                        crate::markdown::TABLE_LINE_H
+                        typography.table_line_height
                     } else {
                         row_h
                     };
@@ -1711,7 +1710,7 @@ impl AppView {
                         let match_h = if image_text_band {
                             h_metrics_row_h
                         } else if grid_tbl.is_some() && !is_tbl_sep {
-                            crate::markdown::TABLE_LINE_H
+                            typography.table_line_height
                         } else {
                             row_h
                         };
@@ -1834,7 +1833,7 @@ impl AppView {
                         } else {
                             0.0
                         };
-                        (row_h - hl_top - edge_bottom).max(crate::markdown::TABLE_LINE_H)
+                        (row_h - hl_top - edge_bottom).max(typography.table_line_height)
                     } else {
                         row_h
                     };
@@ -1997,7 +1996,7 @@ impl AppView {
                                                 &v_down,
                                                 true,
                                                 &new_reveal,
-                                                &headings_down,
+                                                &typography_down,
                                                 &editor_font_down,
                                                 row_char_w,
                                             );
@@ -2118,7 +2117,7 @@ impl AppView {
                             } else {
                                 let total_w = table_layout.as_ref().map(|l| l.total_width).unwrap_or(0.0);
                                 let content_h = (row_h - crate::markdown::TABLE_EDGE_MARGIN)
-                                    .max(crate::markdown::TABLE_LINE_H);
+                                    .max(typography.table_line_height);
                                 (total_w + 20.0, crate::markdown::TABLE_EDGE_MARGIN + (content_h - btn_h) / 2.0)
                             };
                             let tbl_first_line = tbl.first_line;
@@ -2191,7 +2190,7 @@ impl AppView {
                                     &crate::markdown::InlineReveal::None,
                                     headings,
                                 );
-                                let content = n as f32 * crate::markdown::TABLE_LINE_H
+                                let content = n as f32 * typography.table_line_height
                                     + 2.0 * crate::markdown::TABLE_PAD_Y;
                                 if l == tbl.first_line || l == tbl.last_line {
                                     content + crate::markdown::TABLE_EDGE_MARGIN
@@ -2285,7 +2284,7 @@ impl AppView {
                                     .group(group_name.clone())
                                     .absolute()
                                     .left_0()
-                                    .top(px((row_h - crate::markdown::TABLE_EDGE_MARGIN).max(crate::markdown::TABLE_LINE_H) - 1.0))
+                                    .top(px((row_h - crate::markdown::TABLE_EDGE_MARGIN).max(typography.table_line_height) - 1.0))
                                     .w(px(total_w))
                                     .h(px(13.0))
                                     .cursor_pointer()
@@ -2366,7 +2365,7 @@ impl AppView {
                     } else {
                         0.0
                     };
-                    (row_h - line_num_top - edge_bottom).max(crate::markdown::TABLE_LINE_H)
+                    (row_h - line_num_top - edge_bottom).max(typography.table_line_height)
                 } else {
                     row_h
                 };
@@ -2452,7 +2451,7 @@ impl AppView {
                             })
                             .py_0()
                             .font_family(editor_font.clone())
-                            .text_sm()
+                            .text_size(px(typography.base_font_size))
                             .cursor(gpui::CursorStyle::IBeam)
                             // The current-line highlight is a child of the row, so a
                             // block wash over the content box would paint on top of
@@ -2606,7 +2605,7 @@ impl AppView {
                                         is_active_line,
                                         &reveal,
                                         self.source_mode || is_in_active_block,
-                                        headings,
+                                        &typography.headings,
                                         theme,
                                         &editor_font,
                                         custom_ui_node,
@@ -2661,7 +2660,7 @@ impl AppView {
                                     let line_top = row_layout.top_for_column(
                                         row_layout.column_for_line_char(v_char_start + active_col_in_row),
                                     );
-                                    (edge + line_top, crate::markdown::TABLE_LINE_H)
+                                    (edge + line_top, typography.table_line_height)
                                 } else {
                                     (0.0, row_h)
                                 };

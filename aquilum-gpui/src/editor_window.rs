@@ -378,7 +378,7 @@ impl EditorWindow {
         end_line: usize,
         word_wrap: bool,
         wrap_cols: usize,
-        headings: Option<&crate::settings::HeadingsSettings>,
+        typography: Option<&crate::settings::EditorTypography>,
         initial: crate::markdown::CodeScanState,
     ) -> Self {
         let lines_total = line_index.lines();
@@ -412,7 +412,7 @@ impl EditorWindow {
             &code_states,
             word_wrap,
             wrap_cols,
-            headings,
+            typography.map(|typography| &typography.headings),
             false,
             |_| false,
         );
@@ -420,7 +420,7 @@ impl EditorWindow {
         // to be built while `line_idx` still counts from the window's first
         // line. It is only after this that rows are lifted to document
         // coordinates.
-        let height_index = VisualRowHeightIndex::from_rows(&lines, &visual_rows, headings, false);
+        let height_index = VisualRowHeightIndex::from_rows(&lines, &visual_rows, typography, false);
         for row in &mut visual_rows {
             row.line_idx += start_line;
         }
@@ -448,7 +448,7 @@ impl EditorWindow {
         end_byte: usize,
         word_wrap: bool,
         wrap_cols: usize,
-        headings: Option<&crate::settings::HeadingsSettings>,
+        typography: Option<&crate::settings::EditorTypography>,
         source_mode: bool,
         initial: crate::markdown::CodeScanState,
         table_row_info: impl Fn(usize, &str) -> Option<crate::markdown::TableRowVisualKind>,
@@ -472,7 +472,7 @@ impl EditorWindow {
             &code_states,
             word_wrap,
             wrap_cols,
-            headings,
+            typography.map(|typography| &typography.headings),
             source_mode,
             |idx| {
                 let text = line_refs.get(idx).copied().unwrap_or("");
@@ -483,7 +483,7 @@ impl EditorWindow {
         let height_index = VisualRowHeightIndex::from_rows_with_tables(
             &lines,
             &visual_rows,
-            headings,
+            typography,
             source_mode,
             |idx, text| table_row_info(start_line + idx, text),
             |idx, text| image_row_height(start_line + idx, text),
@@ -515,7 +515,7 @@ impl EditorWindow {
         end_byte: usize,
         word_wrap: bool,
         wrap_cols: usize,
-        headings: Option<&crate::settings::HeadingsSettings>,
+        typography: Option<&crate::settings::EditorTypography>,
         initial: crate::markdown::CodeScanState,
     ) -> Self {
         Self::build_from_slice_with_tables(
@@ -526,7 +526,7 @@ impl EditorWindow {
             end_byte,
             word_wrap,
             wrap_cols,
-            headings,
+            typography,
             false,
             initial,
             |_, _| None,
@@ -548,7 +548,7 @@ impl EditorWindow {
         line: usize,
         new_line_text: String,
         delta: isize,
-        headings: Option<&crate::settings::HeadingsSettings>,
+        typography: Option<&crate::settings::EditorTypography>,
         table_row_info: impl Fn(usize, &str) -> Option<markdown::TableRowVisualKind>,
     ) -> bool {
         if !self.covers_line(line) {
@@ -558,6 +558,15 @@ impl EditorWindow {
         if local_line >= self.lines.lines.len() {
             return false;
         }
+
+        let default_typography;
+        let typography = match typography {
+            Some(typography) => typography,
+            None => {
+                default_typography = crate::settings::EditorTypography::reference();
+                &default_typography
+            }
+        };
 
         let old_is_fence = self.lines.lines[local_line].trim_start().starts_with("```");
         let new_is_fence = new_line_text.trim_start().starts_with("```");
@@ -575,7 +584,7 @@ impl EditorWindow {
         // changed: there is nothing to re-wrap and no height to recompute
         // (R18, N9).
         if let Some(kind) = table_kind {
-            let expected_h = kind.height();
+            let expected_h = kind.height(typography.table_line_height);
             if let Some(first) = self.first_row_of_line(line) {
                 let last = self.visual_rows.iter().rposition(|r| r.line_idx == line).unwrap_or(first);
                 if first == last && self.height_index.height_of(first) == expected_h {
@@ -592,7 +601,7 @@ impl EditorWindow {
         }
 
         let new_rows = {
-            let ranges = self.wrap_ranges_for(line, &new_line_text, None, headings, table_kind);
+            let ranges = self.wrap_ranges_for(line, &new_line_text, None, typography, table_kind);
             Self::rows_from_ranges(line, &ranges)
         };
 
@@ -612,7 +621,7 @@ impl EditorWindow {
         // Every sub-row of one line carries the same height: it derives from the
         // line text and the table kind only, exactly as the full rebuild computes
         // it in `VisualRowHeightIndex::from_rows_with_tables`.
-        let row_h = markdown::visual_row_height(&new_line_text, headings, false, table_kind);
+        let row_h = markdown::visual_row_height(&new_line_text, Some(typography), false, table_kind);
         let new_heights = vec![row_h; adjusted_new_rows.len()];
 
         vrows_mut.splice(first_row..=last_row, adjusted_new_rows);
@@ -635,7 +644,7 @@ impl EditorWindow {
         line: usize,
         text: &str,
         paint: Option<&markdown::PaintedLineSpec>,
-        headings: Option<&crate::settings::HeadingsSettings>,
+        typography: &crate::settings::EditorTypography,
         table_kind: Option<markdown::TableRowVisualKind>,
     ) -> Vec<(usize, usize)> {
         let char_count = text.chars().count();
@@ -651,10 +660,8 @@ impl EditorWindow {
             Some(p) => (p.active, p.reveal.clone()),
             None => (false, markdown::InlineReveal::None),
         };
-        let default_headings = crate::settings::HeadingsSettings::default();
-        let h_settings = headings.unwrap_or(&default_headings);
         let metrics =
-            markdown::painted_line_metrics(text, &classified, active, &reveal, h_settings);
+            markdown::painted_line_metrics(text, &classified, active, &reveal, &typography.headings);
         markdown::wrap_line_ranges_painted(text, &metrics, self.wrap_cols)
     }
 
@@ -682,15 +689,23 @@ impl EditorWindow {
         &mut self,
         line: usize,
         paint: &markdown::PaintedLineSpec,
-        headings: Option<&crate::settings::HeadingsSettings>,
+        typography: Option<&crate::settings::EditorTypography>,
         table_row_info: impl Fn(usize, &str) -> Option<markdown::TableRowVisualKind>,
     ) -> Option<(usize, usize)> {
         if !self.covers_line(line) {
             return None;
         }
+        let default_typography;
+        let typography = match typography {
+            Some(typography) => typography,
+            None => {
+                default_typography = crate::settings::EditorTypography::reference();
+                &default_typography
+            }
+        };
         let text = self.lines.get(line)?.to_string();
         let table_kind = table_row_info(line, &text);
-        let ranges = self.wrap_ranges_for(line, &text, Some(paint), headings, table_kind);
+        let ranges = self.wrap_ranges_for(line, &text, Some(paint), typography, table_kind);
         let new_rows = Self::rows_from_ranges(line, &ranges);
 
         let vrows_mut = Arc::make_mut(&mut self.visual_rows);
@@ -700,7 +715,7 @@ impl EditorWindow {
         if old_count == new_rows.len() && vrows_mut[first_row..=last_row] == new_rows[..] {
             return Some((old_count, old_count));
         }
-        let row_h = markdown::visual_row_height(&text, headings, false, table_kind);
+        let row_h = markdown::visual_row_height(&text, Some(typography), false, table_kind);
         let new_count = new_rows.len();
         vrows_mut.splice(first_row..=last_row, new_rows);
         let heights = vec![row_h; new_count];

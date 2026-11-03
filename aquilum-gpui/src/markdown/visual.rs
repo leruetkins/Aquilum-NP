@@ -428,22 +428,29 @@ pub fn heading_row_height(h_size: f32, base_line_h: f32) -> f32 {
 }
 
 /// Height of the visual row(s) of one line: fixed heights for table rows,
-/// otherwise the heading height or the plain 24 px line. Used both when
+/// otherwise the heading height or the editor's row height. Used both when
 /// building a window from scratch and when updating a single line in place.
 pub fn visual_row_height(
     line_str: &str,
-    headings: Option<&crate::settings::HeadingsSettings>,
+    typography: Option<&crate::settings::EditorTypography>,
     source_mode: bool,
     table_kind: Option<TableRowVisualKind>,
 ) -> f32 {
+    let fallback;
+    let typography = match typography {
+        Some(typography) => typography,
+        None => {
+            fallback = crate::settings::EditorTypography::reference();
+            &fallback
+        }
+    };
     if source_mode {
-        return 24.0;
+        return typography.row_height;
     }
     if let Some(kind) = table_kind {
-        return kind.height();
+        return kind.height(typography.table_line_height);
     }
-    let default_headings = crate::settings::HeadingsSettings::default();
-    let h_settings = headings.unwrap_or(&default_headings);
+    let h_settings = &typography.headings;
     let classified = classify_line(line_str, None);
     let h_size = match classified {
         LineKind::Heading1(_) => h_settings.h1.font_size as f32,
@@ -452,7 +459,7 @@ pub fn visual_row_height(
         LineKind::Heading4(_) => h_settings.h4.font_size as f32,
         LineKind::Heading5(_) => h_settings.h5.font_size as f32,
         LineKind::Heading6(_) => h_settings.h6.font_size as f32,
-        _ => 14.0,
+        _ => typography.base_font_size,
     };
     if matches!(
         classified,
@@ -463,9 +470,9 @@ pub fn visual_row_height(
             | LineKind::Heading5(_)
             | LineKind::Heading6(_)
     ) {
-        heading_row_height(h_size, 24.0)
+        heading_row_height(h_size, typography.row_height)
     } else {
-        24.0
+        typography.row_height
     }
 }
 
@@ -511,7 +518,7 @@ impl VisualRowHeightIndex {
     pub fn from_rows_with_tables(
         lines: &[impl AsRef<str>],
         visual_rows: &[VisualRow],
-        headings: Option<&crate::settings::HeadingsSettings>,
+        typography: Option<&crate::settings::EditorTypography>,
         source_mode: bool,
         table_row_info: impl Fn(usize, &str) -> Option<TableRowVisualKind>,
         image_row_height: impl Fn(usize, &str) -> Option<f32>,
@@ -524,7 +531,7 @@ impl VisualRowHeightIndex {
             // picture height, not the text line height.
             let height = image_row_height(v.line_idx, line_str)
                 .filter(|_| !source_mode)
-                .unwrap_or_else(|| visual_row_height(line_str, headings, source_mode, table_row_info(v.line_idx, line_str)));
+                .unwrap_or_else(|| visual_row_height(line_str, typography, source_mode, table_row_info(v.line_idx, line_str)));
             heights.push(height);
         }
 
@@ -534,10 +541,10 @@ impl VisualRowHeightIndex {
     pub fn from_rows(
         lines: &[impl AsRef<str>],
         visual_rows: &[VisualRow],
-        headings: Option<&crate::settings::HeadingsSettings>,
+        typography: Option<&crate::settings::EditorTypography>,
         source_mode: bool,
     ) -> Self {
-        Self::from_rows_with_tables(lines, visual_rows, headings, source_mode, |_, _| None, |_, _| None)
+        Self::from_rows_with_tables(lines, visual_rows, typography, source_mode, |_, _| None, |_, _| None)
     }
 
     pub fn len(&self) -> usize {

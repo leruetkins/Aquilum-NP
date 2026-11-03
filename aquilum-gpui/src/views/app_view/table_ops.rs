@@ -7,6 +7,7 @@ impl AppView {
             .collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn get_or_compute_table_layout<'a>(
         table_layouts: &std::cell::RefCell<std::collections::HashMap<usize, (u64, Arc<TableLayout>)>>,
         text_system: &gpui::WindowTextSystem,
@@ -16,6 +17,7 @@ impl AppView {
         manual_widths: Option<&[f32]>,
         char_width: f32,
         room_px: f32,
+        typography: &crate::settings::EditorTypography,
     ) -> Arc<TableLayout> {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -33,6 +35,8 @@ impl AppView {
         // resize of the pane or a font change must not reuse an old layout.
         char_width.to_bits().hash(&mut hasher);
         room_px.to_bits().hash(&mut hasher);
+        typography.base_font_size.to_bits().hash(&mut hasher);
+        typography.table_line_height.to_bits().hash(&mut hasher);
         let content_hash = hasher.finish();
 
         if let Ok(layouts) = table_layouts.try_borrow() {
@@ -51,6 +55,8 @@ impl AppView {
             manual_widths,
             char_width,
             room_px,
+            typography.base_font_size,
+            typography.table_line_height,
         ));
         if let Ok(mut layouts) = table_layouts.try_borrow_mut() {
             layouts.insert(block.first_line, (content_hash, layout.clone()));
@@ -74,7 +80,7 @@ impl AppView {
         v: &crate::markdown::VisualRow,
         is_active_line: bool,
         reveal: &crate::markdown::InlineReveal,
-        headings: &crate::settings::HeadingsSettings,
+        typography: &crate::settings::EditorTypography,
         font_family: &SharedString,
         cell_w: f32,
     ) -> Arc<RowShapedLayout> {
@@ -90,7 +96,8 @@ impl AppView {
         reveal.hash(&mut hasher);
         font_family.hash(&mut hasher);
         cell_w.to_bits().hash(&mut hasher);
-        headings_cache_key(headings).hash(&mut hasher);
+        typography.base_font_size.to_bits().hash(&mut hasher);
+        headings_cache_key(&typography.headings).hash(&mut hasher);
         let key = hasher.finish();
 
         if let Ok(cache) = row_cache.try_borrow() {
@@ -102,7 +109,7 @@ impl AppView {
             }
         }
 
-        let layout = Arc::new(shape_row(text_system, line, classified, v, is_active_line, reveal, headings, font_family, cell_w));
+        let layout = Arc::new(shape_row(text_system, line, classified, v, is_active_line, reveal, typography, font_family, cell_w));
         if let Ok(mut cache) = row_cache.try_borrow_mut() {
             // Bounded the same way a frame is: the visible row set. A large
             // vault scroll leaves stale entries behind; drop the whole cache

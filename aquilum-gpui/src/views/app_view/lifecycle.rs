@@ -200,6 +200,25 @@ impl AppView {
         }
     }
 
+    pub fn editor_typography(&self) -> crate::settings::EditorTypography {
+        crate::settings::EditorTypography::from_editor(&self.config.editor)
+    }
+
+    /// Advance of one editor cell at the configured font size.
+    ///
+    /// Every path that maps between columns and pixels must measure this the
+    /// same way, or the caret and the painted glyphs drift apart.
+    pub fn editor_char_width(&self, cx: &gpui::App) -> f32 {
+        let font_size = self.editor_typography().base_font_size;
+        let font_id = cx
+            .text_system()
+            .resolve_font(&gpui::font(self.editor_font_family()));
+        cx.text_system()
+            .advance(font_id, gpui::px(font_size), 'x')
+            .map(|size| f32::from(size.width))
+            .unwrap_or(font_size * 7.7 / crate::settings::REFERENCE_FONT_SIZE)
+    }
+
     pub fn hex_selection_range(&self) -> Option<(usize, usize)> {
         if let Some(anchor) = self.hex_selection_anchor {
             let pos = self.hex_cursor_pos;
@@ -692,13 +711,13 @@ impl AppView {
                 }
                 let word_wrap = self.word_wrap;
                 let wrap_cols = self.last_wrap_cols;
-                let headings = self.config.editor.headings.clone();
+                let typography = self.editor_typography();
                 if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
                     view.ensure_visual_cache_with_headings(
                         doc,
                         word_wrap,
                         wrap_cols,
-                        Some(&headings),
+                        Some(&typography),
                         view.viewport.offset,
                         true,
                     );

@@ -66,10 +66,11 @@ impl TabSession {
         doc: &mut DocumentBuffer,
         word_wrap: bool,
         wrap_cols: usize,
-        headings: Option<&crate::settings::HeadingsSettings>,
+        typography: Option<&crate::settings::EditorTypography>,
         anchor_line: usize,
         suppress_selection_reveal: bool,
     ) {
+        let headings = typography.map(|typography| &typography.headings);
         let basis_stale = self.window.is_empty()
             || self.window.word_wrap != word_wrap
             || self.window.wrap_cols != wrap_cols;
@@ -152,7 +153,7 @@ impl TabSession {
             end_byte,
             word_wrap,
             wrap_cols,
-            headings,
+            typography,
             self.source_mode,
             initial,
             |line, line_text| {
@@ -205,8 +206,8 @@ impl TabSession {
         // The rebuild wrote canonical rows for every line; the exceptions are
         // re-applied by `sync_line_paints` on the same call.
         self.line_paints.clear();
-        if let Some(h) = headings {
-            self.headings_cache = h.clone();
+        if let Some(typography) = typography {
+            self.typography_cache = typography.clone();
         }
         if basis_stale {
             self.refresh_estimate_basis();
@@ -294,7 +295,7 @@ impl TabSession {
         doc: &mut DocumentBuffer,
         word_wrap: bool,
         wrap_cols: usize,
-        headings: Option<&crate::settings::HeadingsSettings>,
+        typography: Option<&crate::settings::EditorTypography>,
         anchor_line: usize,
         suppress_selection_reveal: bool,
     ) {
@@ -360,14 +361,14 @@ impl TabSession {
                 doc,
                 word_wrap,
                 wrap_cols,
-                headings,
+                typography,
                 anchor_line,
                 suppress_selection_reveal,
             );
         }
         // Runs on every ensure: the caret may have moved without rebuilding the
         // window, and only the lines it left or entered need a new wrap.
-        self.sync_line_paints(doc, headings, suppress_selection_reveal);
+        self.sync_line_paints(doc, typography, suppress_selection_reveal);
     }
 
     pub fn rebuild_visual_cache(

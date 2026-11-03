@@ -7,12 +7,8 @@ impl AppView {
         let active_leaf_id = self.state.workspace.active_leaf;
         let viewport_w: f32 = window.viewport_size().width.into();
         let editor_font = self.editor_font_family();
-        let font_id = cx.text_system().resolve_font(&gpui::font(editor_font.clone()));
-        let line_char_width = cx
-            .text_system()
-            .advance(font_id, px(14.0), 'x')
-            .map(|s| f32::from(s.width))
-            .unwrap_or(7.7);
+        let typography = self.editor_typography();
+        let line_char_width = self.editor_char_width(cx);
         // Image blocks are measured while a visual window is built, where the
         // text system is not reachable. Publishing the advance keeps the height
         // index and the painted picture the same width.
@@ -80,13 +76,14 @@ impl AppView {
                         &self.manual_table_col_widths,
                         line_char_width,
                         (wrap_cols as f32 * line_char_width).max(160.0),
+                        &typography,
                     ))
                 })();
                 (leaf_id, tab_id, doc_id, wrap_cols, cols)
             })
             .collect();
 
-        let headings = &self.config.editor.headings;
+        let headings = &typography.headings;
 
         let crate::state::AppState {
             ref mut documents,
@@ -130,7 +127,7 @@ impl AppView {
                     end_byte,
                     word_wrap,
                     wrap_cols,
-                    Some(headings),
+                    Some(&typography),
                     false,
                     initial,
                     |line, line_text| {
@@ -173,7 +170,7 @@ impl AppView {
                 view.below_h = view.below_lines as f64 * rows_per_line * row_h;
                 let wrap_changed = view.window.wrap_cols != wrap_cols;
                 view.window = new_window;
-                view.headings_cache = headings.clone();
+                view.typography_cache = typography.clone();
                 view.visual_cache_dirty = false;
                 if wrap_changed {
                     if let Some(first_v_idx) = view.window.first_row_of_line(view.viewport.offset) {
@@ -190,7 +187,7 @@ impl AppView {
                     doc,
                     word_wrap,
                     wrap_cols,
-                    Some(headings),
+                    Some(&typography),
                     view.viewport.offset,
                     true,
                 );
@@ -275,6 +272,7 @@ impl AppView {
             let current_scroll = self.current_scroll_top();
             self.state.snapshot_active_note_settings(current_scroll, self.edit_mode, self.word_wrap, self.source_mode);
             let current_scroll_f64 = self.current_scroll_top_f64();
+            let typography = self.editor_typography();
             if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
                 let lines_total = doc.line_index.lines();
                 view.scroll_top = current_scroll_f64;
@@ -288,7 +286,7 @@ impl AppView {
                     doc,
                     view.word_wrap,
                     view.window.wrap_cols,
-                    Some(&self.config.editor.headings),
+                    Some(&typography),
                     view.viewport.offset,
                     true,
                 );
@@ -318,15 +316,10 @@ impl AppView {
                     crate::workspace::TabContent::Document { id } => {
                         let doc_id = *id;
                         let viewport_w: f32 = window.viewport_size().width.into();
-                        let editor_font = self.editor_font_family();
-                        let font_id = cx.text_system().resolve_font(&gpui::font(editor_font));
-                        let line_char_width = cx
-                            .text_system()
-                            .advance(font_id, px(14.0), 'x')
-                            .map(|s| f32::from(s.width))
-                            .unwrap_or(7.7);
+                        let line_char_width = self.editor_char_width(cx);
                         let target_wrap_cols = self.compute_wrap_cols_for_leaf(Some(leaf_id), viewport_w, line_char_width);
                         self.last_wrap_cols = target_wrap_cols;
+                        let typography = self.editor_typography();
 
                         if let Some(doc) = self.state.documents.get_mut(&doc_id) {
                             let doc_path = doc.path.clone();
@@ -335,7 +328,7 @@ impl AppView {
                             let restore_y = {
                                 let view = self.state.views.entry(tab.id).or_insert_with(|| crate::workspace::EditorViewState::new(tab.id, doc_id));
 
-                                view.ensure_visual_cache_with_headings(doc, self.word_wrap, target_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
+                                view.ensure_visual_cache_with_headings(doc, self.word_wrap, target_wrap_cols, Some(&typography), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
                                 if view.window.wrap_cols == target_wrap_cols {
                                     view.scroll_top
                                 } else {

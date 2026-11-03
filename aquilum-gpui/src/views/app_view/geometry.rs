@@ -171,6 +171,7 @@ impl AppView {
     /// that can — hands it these numbers. They are the same `TableLayout`
     /// values the visible rows are painted from, which is what makes a wrapped
     /// cell and the height the row claims the same thing.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn collect_table_cell_cols(
         table_layouts: &std::cell::RefCell<std::collections::HashMap<usize, (u64, Arc<TableLayout>)>>,
         text_system: &gpui::WindowTextSystem,
@@ -179,6 +180,7 @@ impl AppView {
         font: &SharedString,
         manual: &HashMap<usize, Vec<f32>>,
         char_width: f32,
+        typography: &crate::settings::EditorTypography,
     ) -> HashMap<usize, Vec<usize>> {
         if view.window.is_empty() {
             return HashMap::new();
@@ -193,6 +195,7 @@ impl AppView {
             manual,
             char_width,
             Self::table_room_px(view, char_width),
+            typography,
         )
     }
 
@@ -207,6 +210,7 @@ impl AppView {
         manual: &HashMap<usize, Vec<f32>>,
         char_width: f32,
         room: f32,
+        typography: &crate::settings::EditorTypography,
     ) -> HashMap<usize, Vec<usize>> {
         let mut out = HashMap::new();
         let tables = doc.ensure_table_index_for_window(start, end);
@@ -229,6 +233,7 @@ impl AppView {
                 manual.get(&t.first_line).map(|w| w.as_slice()),
                 char_width,
                 room,
+                typography,
             );
             out.insert(t.first_line, layout.col_chars.clone());
         }
@@ -285,13 +290,8 @@ impl AppView {
         self.refresh_monitor_width(window, cx);
         self.config.editor.editor_width_pct = clamped;
         let viewport_w: f32 = window.viewport_size().width.into();
-        let editor_font = self.editor_font_family();
-        let font_id = cx.text_system().resolve_font(&gpui::font(editor_font));
-        let line_char_width = cx
-            .text_system()
-            .advance(font_id, px(14.0), 'x')
-            .map(|s| f32::from(s.width))
-            .unwrap_or(7.7);
+        let typography = self.editor_typography();
+        let line_char_width = self.editor_char_width(cx);
 
         for (leaf_id, leaf) in self.state.leaves.iter() {
             if let Some(tab) = leaf.active_tab() {
@@ -304,7 +304,7 @@ impl AppView {
                                 doc,
                                 self.word_wrap,
                                 wrap_cols,
-                                Some(&self.config.editor.headings),
+                                Some(&typography),
                                 view.viewport.offset,
                                 self.ctrl_preview_selection || !self.edit_mode,
                             );
@@ -459,10 +459,11 @@ impl AppView {
     }
 
     pub(super) fn move_cursor_up_visual(&mut self, shift: bool) {
+        let typography = self.editor_typography();
         let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
         };
-        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&typography), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
         let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
@@ -521,10 +522,11 @@ impl AppView {
     }
 
     pub(super) fn move_cursor_down_visual(&mut self, shift: bool) {
+        let typography = self.editor_typography();
         let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
         };
-        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&typography), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
         let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
@@ -583,10 +585,11 @@ impl AppView {
     }
 
     pub(super) fn move_cursor_home_visual(&mut self, shift: bool) {
+        let typography = self.editor_typography();
         let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
         };
-        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&typography), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
         let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
@@ -612,10 +615,11 @@ impl AppView {
     }
 
     pub(super) fn move_cursor_end_visual(&mut self, shift: bool) {
+        let typography = self.editor_typography();
         let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
         };
-        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&typography), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
         let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
@@ -648,20 +652,19 @@ impl AppView {
 
     pub fn heading_typography_metrics(
         classified: &crate::markdown::LineKind<'_>,
-        headings: &crate::settings::HeadingsSettings,
-        base_line_h: f32,
+        typography: &crate::settings::EditorTypography,
         base_char_w: f32,
     ) -> (f32, f32, f32, f32, f32) {
-        Self::heading_typography_metrics_with_widths(classified, headings, base_line_h, base_char_w, None)
+        Self::heading_typography_metrics_with_widths(classified, typography, base_char_w, None)
     }
 
     pub fn heading_typography_metrics_with_widths(
         classified: &crate::markdown::LineKind<'_>,
-        headings: &crate::settings::HeadingsSettings,
-        base_line_h: f32,
+        typography: &crate::settings::EditorTypography,
         base_char_w: f32,
         heading_char_widths: Option<&[f32; 6]>,
     ) -> (f32, f32, f32, f32, f32) {
+        let headings = &typography.headings;
         let (h_size, is_heading, h_idx) = match classified {
             crate::markdown::LineKind::Heading1(_) => (headings.h1.font_size as f32, true, 0),
             crate::markdown::LineKind::Heading2(_) => (headings.h2.font_size as f32, true, 1),
@@ -669,27 +672,34 @@ impl AppView {
             crate::markdown::LineKind::Heading4(_) => (headings.h4.font_size as f32, true, 3),
             crate::markdown::LineKind::Heading5(_) => (headings.h5.font_size as f32, true, 4),
             crate::markdown::LineKind::Heading6(_) => (headings.h6.font_size as f32, true, 5),
-            _ => (14.0, false, 0),
+            _ => (typography.base_font_size, false, 0),
         };
         if is_heading {
-            let row_h = crate::markdown::heading_row_height(h_size, base_line_h);
+            let row_h = crate::markdown::heading_row_height(h_size, typography.row_height);
             let char_w = heading_char_widths
                 .and_then(|w| w.get(h_idx).copied())
-                .unwrap_or_else(|| base_char_w * (h_size / 14.0));
+                .unwrap_or_else(|| base_char_w * (h_size / typography.base_font_size));
             let cursor_h = (h_size * 0.88).round().max(16.0);
             let cursor_top = ((row_h - cursor_h) / 2.0).round().max(2.0);
             (row_h, char_w, h_size, cursor_h, cursor_top)
         } else {
-            (base_line_h, base_char_w, 14.0, 16.0, 4.0)
+            (
+                typography.row_height,
+                base_char_w,
+                typography.base_font_size,
+                16.0,
+                4.0,
+            )
         }
     }
 
     pub fn resolve_heading_char_widths(
         text_system: &gpui::TextSystem,
         editor_font: &gpui::SharedString,
-        headings: &crate::settings::HeadingsSettings,
+        typography: &crate::settings::EditorTypography,
         base_char_w: f32,
     ) -> [f32; 6] {
+        let headings = &typography.headings;
         let heading_configs = [
             (&headings.h1, 0),
             (&headings.h2, 1),
@@ -712,7 +722,7 @@ impl AppView {
             let char_w = text_system
                 .advance(font_id, gpui::px(h_size), 'x')
                 .map(|s| f32::from(s.width))
-                .unwrap_or(base_char_w * (h_size / 14.0));
+                .unwrap_or(base_char_w * (h_size / typography.base_font_size));
             widths[idx] = char_w;
         }
         widths
@@ -752,6 +762,7 @@ pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
     // Row geometry of the target row, in document coordinates. Scoped so the
     // note borrow ends before the scroll position is read and written through
     // `self`.
+    let typography = self.editor_typography();
     let geometry = {
         let word_wrap = self.word_wrap;
         let wrap_cols = self.last_wrap_cols;
@@ -769,7 +780,7 @@ pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             doc,
             word_wrap,
             wrap_cols,
-            Some(&self.config.editor.headings),
+            Some(&typography),
             anchor,
             self.ctrl_preview_selection || !self.edit_mode,
         );
@@ -824,6 +835,7 @@ pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
     /// moved without an edit (e.g. inside a table), so table navigation follows
     /// the same path as ordinary cursor movement.
     pub(super) fn refresh_view_after_cursor_move(&mut self) {
+        let typography = self.editor_typography();
         if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
             let (cursor_line, _) = view.line_col(doc);
             let anchor = if view.window.covers_line(cursor_line) && view.window.covers_line(view.viewport.offset) {
@@ -834,7 +846,7 @@ pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
             };
             let word_wrap = self.word_wrap;
             let wrap_cols = self.last_wrap_cols;
-            view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&self.config.editor.headings), anchor, self.ctrl_preview_selection || !self.edit_mode);
+            view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&typography), anchor, self.ctrl_preview_selection || !self.edit_mode);
         }
         self.scroll_cursor_into_view();
     }
@@ -889,7 +901,7 @@ pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
                 if l.y == 0.0 {
                     return;
                 }
-                let delta = -f64::from(l.y) * f64::from(WHEEL_LINE_PX);
+                let delta = -f64::from(l.y) * f64::from(self.editor_typography().row_height);
                 if !self.config.editor.wheel_smooth_scroll {
                     let next = (current + delta).clamp(0.0, max_scroll);
                     self.set_editor_scroll_top_f64(next);
@@ -1153,11 +1165,12 @@ pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         } else {
             132.0
         };
+        let typography = self.editor_typography();
         let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return None;
         };
         let wrap_cols = if self.last_wrap_cols > 0 { self.last_wrap_cols } else { 80 };
-        view.ensure_visual_cache_with_headings(doc, self.word_wrap, wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, wrap_cols, Some(&typography), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
         let total = view.total_height();
         let max_scroll = (total - f64::from(viewport_h)).max(0.0);
         if max_scroll <= 1.0 {
@@ -1327,10 +1340,11 @@ pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         if !self.is_dragging_scrollbar {
             return;
         }
+        let typography = self.editor_typography();
         let Some((view, doc)) = self.state.active_view_and_doc_mut() else {
             return;
         };
-        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
+        view.ensure_visual_cache_with_headings(doc, self.word_wrap, self.last_wrap_cols, Some(&typography), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
         let total_content_h = view.total_height();
         let window_h = f32::from(window.bounds().size.height);
         let (_, viewport_h, max_scroll_content, _) = self.editor_scroll_metrics(total_content_h, window_h);

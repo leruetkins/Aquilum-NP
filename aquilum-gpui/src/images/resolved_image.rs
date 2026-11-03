@@ -69,7 +69,7 @@ impl ResolvedImage {
     }
 }
 
-type ResolvedKey = (PathBuf, String, usize, bool);
+type ResolvedKey = (PathBuf, String, usize, u32, bool);
 
 fn resolved_images() -> &'static Mutex<HashMap<ResolvedKey, std::sync::Arc<ResolvedImage>>> {
     static CACHE: OnceLock<Mutex<HashMap<ResolvedKey, std::sync::Arc<ResolvedImage>>>> = OnceLock::new();
@@ -90,7 +90,17 @@ pub fn resolve_for_note(
     wrap_cols: usize,
     show_original: bool,
 ) -> Option<std::sync::Arc<ResolvedImage>> {
-    let key = (note_path.to_path_buf(), line.to_string(), wrap_cols, show_original);
+    // The same column budget yields a different pixel width after a font-size
+    // change, so the measured max width is part of the key (the advance is
+    // published process-wide by `set_char_width`).
+    let max_width = text_width(wrap_cols);
+    let key = (
+        note_path.to_path_buf(),
+        line.to_string(),
+        wrap_cols,
+        max_width.to_bits(),
+        show_original,
+    );
     if let Ok(cache) = resolved_images().lock() {
         if let Some(image) = cache.get(&key) {
             return Some(image.clone());
@@ -103,7 +113,6 @@ pub fn resolve_for_note(
     let edit = load_edit(&path);
     let crop = if show_original { None } else { visible_crop(&edit, natural) };
     let visible = crop.map_or(natural, |crop| crop.visible_size());
-    let max_width = text_width(wrap_cols);
     let (width, height) = reference.display_size(visible, max_width);
     let image = std::sync::Arc::new(ResolvedImage {
         path,

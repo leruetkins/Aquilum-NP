@@ -37,22 +37,56 @@
     #[test]
     fn table_row_height_grows_with_wrapped_lines() {
         assert_eq!(
-            TableRowVisualKind::Body { lines: 1 }.height(),
+            TableRowVisualKind::Body { lines: 1 }.height(20.0),
             28.0
         );
         assert_eq!(
-            TableRowVisualKind::Body { lines: 3 }.height(),
+            TableRowVisualKind::Body { lines: 3 }.height(20.0),
             68.0
         );
         assert_eq!(
-            TableRowVisualKind::Header { lines: 2 }.height(),
+            TableRowVisualKind::Header { lines: 2 }.height(20.0),
             62.0
         );
         assert_eq!(
-            TableRowVisualKind::LastRow { lines: 4 }.height(),
+            TableRowVisualKind::LastRow { lines: 4 }.height(20.0),
             102.0
         );
-        assert_eq!(TableRowVisualKind::Delimiter.height(), 1.0);
+        assert_eq!(TableRowVisualKind::Delimiter.height(20.0), 1.0);
+    }
+
+    #[test]
+    fn visual_row_height_follows_the_configured_typography() {
+        let editor = crate::settings::EditorSettings {
+            line_height: 1.8,
+            font: crate::settings::FontSettings {
+                font_size_base: 18,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let typography = crate::settings::EditorTypography::from_editor(&editor);
+
+        assert_eq!(
+            visual_row_height("plain line", Some(&typography), false, None),
+            32.0,
+            "a body row must use the configured row height"
+        );
+        assert_eq!(
+            visual_row_height("plain line", Some(&typography), true, None),
+            32.0,
+            "source mode uses the same row height"
+        );
+        let h1_size = typography.headings.h1.font_size as f32;
+        assert_eq!(
+            visual_row_height("# heading", Some(&typography), false, None),
+            heading_row_height(h1_size, typography.row_height)
+        );
+        assert_eq!(
+            visual_row_height("plain line", None, false, None),
+            24.0,
+            "without typography the reference geometry stays in force"
+        );
     }
 
     #[test]

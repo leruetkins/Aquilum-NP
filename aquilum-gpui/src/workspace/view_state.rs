@@ -58,10 +58,10 @@ pub struct ViewCache {
     pub est_rows_per_line: f64,
     pub est_row_h: f64,
     pub visual_cache_dirty: bool,
-    /// Heading settings the current window heights were built with. Same-line
+    /// Editor metrics the current window heights were built with. Same-line
     /// edits recompute row heights against this snapshot instead of a rebuild;
     /// kept in sync by every full rebuild.
-    pub headings_cache: crate::settings::HeadingsSettings,
+    pub typography_cache: crate::settings::EditorTypography,
     pub raw_table: bool,
     pub raw_tables: std::collections::HashSet<usize>,
     /// Tables (first lines) a mouse selection has already revealed as source

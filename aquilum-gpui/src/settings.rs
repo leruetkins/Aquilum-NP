@@ -4,6 +4,9 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
+mod typography;
+pub use typography::*;
+
 // =========================================================================
 // Settings Models
 // =========================================================================

@@ -31,6 +31,10 @@ pub(crate) struct TableLayout {
     /// The row geometry wraps cells with these exact budgets, so the height a
     /// row claims always matches the grid painted over it.
     pub col_chars: Vec<usize>,
+    /// Font size cells are shaped and painted at.
+    pub font_size: f32,
+    /// Height of one painted line inside a cell, at this font size.
+    pub line_h: f32,
 }
 
 /// One wrapped sub-line of a table cell, shaped on its own.
@@ -165,6 +169,8 @@ pub(crate) struct TableRowLayout {
     pub line_chars: Vec<usize>,
     pub code_ranges: Vec<(usize, usize)>,
     pub tag_ranges: Vec<(usize, usize, String)>,
+    /// Height of one painted line inside a cell.
+    pub line_h: f32,
 }
 
 impl TableRowLayout {
@@ -185,8 +191,8 @@ impl TableRowLayout {
     }
 
     /// Vertical position of a sub-line inside the row content box.
-    pub fn line_top(line: usize) -> f32 {
-        crate::markdown::TABLE_PAD_Y + line as f32 * crate::markdown::TABLE_LINE_H
+    pub fn line_top(&self, line: usize) -> f32 {
+        crate::markdown::TABLE_PAD_Y + line as f32 * self.line_h
     }
 
     pub fn x_for_column(&self, col: usize, cell_w: f32) -> f32 {
@@ -223,7 +229,7 @@ impl TableRowLayout {
         match cell {
             Some(cell) => {
                 let (line_idx, _) = cell.line_col(col.saturating_sub(cell.cell_start_col));
-                Self::line_top(line_idx)
+                self.line_top(line_idx)
             }
             None => 0.0,
         }
@@ -247,7 +253,7 @@ impl TableRowLayout {
             let line_idx = if y <= crate::markdown::TABLE_PAD_Y {
                 0
             } else {
-                (((y - crate::markdown::TABLE_PAD_Y) / crate::markdown::TABLE_LINE_H).floor()
+                (((y - crate::markdown::TABLE_PAD_Y) / self.line_h).floor()
                     as usize)
                     .min(cell.lines.len() - 1)
             };
@@ -319,7 +325,7 @@ impl TableRowLayout {
                     let x0 = line.glyph_x(s - line_start);
                     let x1 = line.glyph_x(e - line_start);
                     if x1 > x0 {
-                        rects.push((x0, x1 - x0, Self::line_top(line_idx)));
+                        rects.push((x0, x1 - x0, self.line_top(line_idx)));
                     }
                 }
                 offset += line.columns;
@@ -358,6 +364,7 @@ pub(crate) fn fit_table_columns(natural: &[f32], room: f32) -> Vec<f32> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compute_table_layout<'a>(
     text_system: &gpui::WindowTextSystem,
     get_line: &dyn Fn(usize) -> Option<&'a str>,
@@ -366,6 +373,8 @@ pub(crate) fn compute_table_layout<'a>(
     manual_widths: Option<&[f32]>,
     char_width: f32,
     room_px: f32,
+    font_size: f32,
+    line_h: f32,
 ) -> TableLayout {
     const PADDING_X: f32 = 8.0;
     const MIN_COL_WIDTH: f32 = 80.0;
@@ -422,7 +431,7 @@ pub(crate) fn compute_table_layout<'a>(
                 underline: None,
                 strikethrough: None,
             };
-            let l = text_system.layout_line(content, px(14.0), &[run], None);
+            let l = text_system.layout_line(content, px(font_size), &[run], None);
             let w = f32::from(l.width);
             if w > max_widths[c_idx] {
                 max_widths[c_idx] = w;
@@ -479,6 +488,8 @@ pub(crate) fn compute_table_layout<'a>(
         total_width: cur_x,
         aligns: block.aligns.clone(),
         col_chars,
+        font_size,
+        line_h,
     }
 }
 
@@ -499,7 +510,7 @@ pub(crate) fn shape_table_row(
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if line_idx == block.sep_line() {
         let dummy_text: SharedString = "".into();
-        let dummy_layout = text_system.layout_line("", px(14.0), &[], None);
+        let dummy_layout = text_system.layout_line("", px(table_layout.font_size), &[], None);
         let table_row = Arc::new(TableRowLayout {
             is_delimiter: true,
             cells: Vec::new(),
@@ -508,6 +519,7 @@ pub(crate) fn shape_table_row(
             line_chars: vec![0, line.chars().count()],
             code_ranges: Vec::new(),
             tag_ranges: Vec::new(),
+            line_h: table_layout.line_h,
         });
         return RowShapedLayout {
             layout: dummy_layout,
@@ -645,7 +657,7 @@ pub(crate) fn shape_table_row(
 
             let text_shared: SharedString = text.into();
             let line_layout =
-                text_system.layout_line(text_shared.as_ref(), px(14.0), &runs, None);
+                text_system.layout_line(text_shared.as_ref(), px(table_layout.font_size), &runs, None);
             let text_w = f32::from(line_layout.width);
             let extra_space = (avail_w - text_w).max(0.0);
             let align_offset = match table_layout.aligns.get(c).copied().unwrap_or_default() {
@@ -726,7 +738,7 @@ pub(crate) fn shape_table_row(
         cur_col_offset += cell_columns + 1;
     }
 
-    let dummy_layout = text_system.layout_line("", px(14.0), &[], None);
+    let dummy_layout = text_system.layout_line("", px(table_layout.font_size), &[], None);
     let table_row = Arc::new(TableRowLayout {
         is_delimiter: false,
         cells,
@@ -735,6 +747,7 @@ pub(crate) fn shape_table_row(
         line_chars: flat_line_chars.clone(),
         code_ranges: flat_code_ranges.clone(),
         tag_ranges: flat_tag_ranges.clone(),
+        line_h: table_layout.line_h,
     });
 
     RowShapedLayout {

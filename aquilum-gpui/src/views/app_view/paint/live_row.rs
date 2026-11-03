@@ -77,7 +77,7 @@ pub(crate) fn render_live_styled_row(
         } else {
             0.0
         };
-        let content_h = (row_h - edge_margin).max(crate::markdown::TABLE_LINE_H);
+        let content_h = (row_h - edge_margin).max(table_layout.line_h);
         let mut row_div = div().flex().flex_row().items_center()
             .when(is_header, |d| d.h(px(content_h)).mt(px(crate::markdown::TABLE_EDGE_MARGIN)))
             .when(is_last_row, |d| d.h(px(content_h)).mb(px(crate::markdown::TABLE_EDGE_MARGIN)))
@@ -184,8 +184,8 @@ pub(crate) fn render_live_styled_row(
                 let line_spans = crate::markdown::slice_visible_spans(&spans, s, e);
                 let mut line_div = div()
                     .w_full()
-                    .h(px(crate::markdown::TABLE_LINE_H))
-                    .line_height(px(crate::markdown::TABLE_LINE_H))
+                    .h(px(table_layout.line_h))
+                    .line_height(px(table_layout.line_h))
                     .flex()
                     .flex_row()
                     .items_center()

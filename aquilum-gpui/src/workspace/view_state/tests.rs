@@ -736,6 +736,42 @@ Middle";
     }
 
     #[test]
+    fn incremental_edit_keeps_the_configured_row_height() {
+        let text = "one\ntwo\nthree\n";
+        let mut doc = DocumentBuffer::new(
+            DocumentId::new(),
+            std::path::PathBuf::from("test.md"),
+            "test".to_string(),
+            text.to_string(),
+            1,
+        );
+        let mut view = TabSession::new(TabId::new(), doc.id);
+        let editor = crate::settings::EditorSettings {
+            line_height: 1.8,
+            font: crate::settings::FontSettings {
+                font_size_base: 18,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let typography = crate::settings::EditorTypography::from_editor(&editor);
+        assert_eq!(typography.row_height, 32.0);
+        view.rebuild_visual_cache_with_headings(&mut doc, true, 80, Some(&typography), 0, false);
+
+        // The same-line path must recompute heights against the snapshot the
+        // window was built with, not against a default typography.
+        let cached = view.typography_cache.clone();
+        assert!(view.window.update_single_line(1, "two!".to_string(), 1, Some(&cached), |_, _| None));
+        for row in 0..view.window.visual_rows.len() {
+            assert_eq!(
+                view.window.height_index.height_of(row),
+                32.0,
+                "row {row} lost the configured height"
+            );
+        }
+    }
+
+    #[test]
     fn source_mode_disables_markdown_formatting_and_keeps_uniform_heights() {
         let text = "# Heading 1\n| col 1 | col 2 |\n| --- | --- |\n| val 1 | val 2 |\n```rust\nfn main() {}\n```\n- [ ] Task\n> [!NOTE]\n> Callout\n";
         let mut doc = DocumentBuffer::new(
@@ -747,8 +783,8 @@ Middle";
         );
         let mut view = TabSession::new(TabId::new(), doc.id);
         view.source_mode = true;
-        let default_headings = crate::settings::HeadingsSettings::default();
-        view.rebuild_visual_cache_with_headings(&mut doc, true, 80, Some(&default_headings), 0, false);
+        let typography = crate::settings::EditorTypography::reference();
+        view.rebuild_visual_cache_with_headings(&mut doc, true, 80, Some(&typography), 0, false);
 
         // Every row in the window must have height 24.0 in source mode
         for i in 0..view.window.visual_rows.len() {

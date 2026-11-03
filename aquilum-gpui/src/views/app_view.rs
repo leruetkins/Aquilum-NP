@@ -39,7 +39,7 @@ pub(crate) use self::table_layout::*;
 pub(crate) use self::row_shape::{shape_row, RowShapedLayout};
 use self::row_shape::{headings_cache_key, selection_chars_in_line, LineKindTag};
 use self::paint::*;
-use self::physics::{editor_middle_cursor_target, wheel_glide_duration_secs, WHEEL_LINE_PX, WIDE_THUMB_H};
+use self::physics::{editor_middle_cursor_target, wheel_glide_duration_secs, WIDE_THUMB_H};
 #[cfg(test)]
 use self::physics::{cubic_bezier, WHEEL_GLIDE_MAX_SECS, WHEEL_GLIDE_MIN_SECS};
 

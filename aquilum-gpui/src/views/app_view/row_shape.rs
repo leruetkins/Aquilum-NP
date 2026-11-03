@@ -242,7 +242,7 @@ pub(crate) fn shape_row(
     v: &crate::markdown::VisualRow,
     is_active_line: bool,
     reveal: &crate::markdown::InlineReveal,
-    headings: &crate::settings::HeadingsSettings,
+    typography: &crate::settings::EditorTypography,
     font_family: &SharedString,
     cell_w: f32,
 ) -> RowShapedLayout {
@@ -253,11 +253,11 @@ pub(crate) fn shape_row(
         .shape_calls
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let painted =
-        crate::markdown::row_painted_text(line, classified, v, is_active_line, reveal, headings);
+        crate::markdown::row_painted_text(line, classified, v, is_active_line, reveal, &typography.headings);
     let code_ranges = painted.code_ranges();
     let tag_ranges = painted.tag_ranges();
     let grammar_ranges = painted.grammar_ranges();
-    let (_, _, font_size, _, _) = AppView::heading_typography_metrics_with_widths(classified, headings, 24.0, cell_w, None);
+    let (_, _, font_size, _, _) = AppView::heading_typography_metrics_with_widths(classified, typography, cell_w, None);
 
     let mut text = String::new();
     let mut runs = Vec::new();

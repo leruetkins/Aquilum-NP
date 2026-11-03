@@ -18,12 +18,8 @@ impl AppView {
         let rel_y = f64::from(click_y) - f64::from(editor_rows_top_y) + current_scroll_y;
 
         let editor_font = self.editor_font_family();
-        let font_id = cx.text_system().resolve_font(&gpui::font(&editor_font));
-        let line_char_width = cx
-            .text_system()
-            .advance(font_id, px(14.0), 'x')
-            .map(|s| f32::from(s.width))
-            .unwrap_or(7.7);
+        let typography = self.editor_typography();
+        let line_char_width = self.editor_char_width(cx);
         let text_start_x = self.pane_text_start_x(None, window);
         let word_wrap = self.word_wrap;
         let wrap_cols = self.last_wrap_cols;
@@ -32,7 +28,7 @@ impl AppView {
             return;
         };
 
-        view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
+        view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&typography), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
         let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
@@ -103,8 +99,8 @@ impl AppView {
         let is_active_line = Self::is_active_editor_line(self.edit_mode && !self.ctrl_preview_selection, v.line_idx, cursor_line, is_line_in_selection, is_in_active_block);
         let code_state = view.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
         let classified = crate::markdown::classify_line(line, code_state);
-        let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &self.config.editor.headings, line_char_width);
-        let (_, row_char_w, _, _, _) = Self::heading_typography_metrics_with_widths(&classified, &self.config.editor.headings, 24.0, line_char_width, Some(&heading_widths));
+        let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &typography, line_char_width);
+        let (_, row_char_w, _, _, _) = Self::heading_typography_metrics_with_widths(&classified, &typography, line_char_width, Some(&heading_widths));
 
         // Hit-test against the layout that is on screen right now: this row's reveal is
         // the one the previous frame painted, so the click cannot shift the geometry it
@@ -136,6 +132,7 @@ impl AppView {
                     self.manual_table_col_widths.get(&tbl.first_line).map(|w| w.as_slice()),
                     line_char_width,
                     Self::table_room_px(view, line_char_width),
+                    &typography,
                 );
                 let cursor_col = if !self.ctrl_preview_selection && v.line_idx == cursor_line {
                     let (_, col) = view.line_col(doc);
@@ -150,7 +147,7 @@ impl AppView {
                     v.line_idx,
                     cursor_col,
                     &table_layout,
-                    &self.config.editor.headings,
+                    &typography.headings,
                     &editor_font,
                     row_char_w,
                 )
@@ -165,7 +162,7 @@ impl AppView {
                     v,
                     is_active_line || raw_row,
                     &reveal,
-                    &self.config.editor.headings,
+                    &typography,
                     &editor_font,
                     row_char_w,
                 )
@@ -215,7 +212,7 @@ impl AppView {
                         v,
                         true,
                         &new_reveal,
-                        &self.config.editor.headings,
+                        &typography,
                         &editor_font,
                         row_char_w,
                     );
@@ -311,12 +308,8 @@ impl AppView {
         let rel_y = f64::from(pos_y) - f64::from(editor_rows_top_y) + current_scroll_y;
 
         let editor_font = self.editor_font_family();
-        let font_id = cx.text_system().resolve_font(&gpui::font(&editor_font));
-        let line_char_width = cx
-            .text_system()
-            .advance(font_id, px(14.0), 'x')
-            .map(|s| f32::from(s.width))
-            .unwrap_or(7.7);
+        let typography = self.editor_typography();
+        let line_char_width = self.editor_char_width(cx);
         let text_start_x = self.pane_text_start_x(None, window);
         let word_wrap = self.word_wrap;
         let wrap_cols = self.last_wrap_cols;
@@ -325,7 +318,7 @@ impl AppView {
             return;
         };
 
-        view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&self.config.editor.headings), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
+        view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&typography), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
         let visual_rows = Arc::clone(&view.window.visual_rows);
         if visual_rows.is_empty() {
             return;
@@ -372,8 +365,8 @@ impl AppView {
         let is_active_line = Self::is_active_editor_line(self.edit_mode && !self.ctrl_preview_selection, v.line_idx, cursor_line, is_line_in_selection, is_in_active_block);
         let code_state = view.window.code_states.get(v.line_idx).and_then(|s| s.as_ref()).map(|s| (s.kind, s.lang.as_deref()));
         let classified = crate::markdown::classify_line(line, code_state);
-        let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &self.config.editor.headings, line_char_width);
-        let (_, row_char_w, _, _, _) = Self::heading_typography_metrics_with_widths(&classified, &self.config.editor.headings, 24.0, line_char_width, Some(&heading_widths));
+        let heading_widths = Self::resolve_heading_char_widths(cx.text_system(), &editor_font, &typography, line_char_width);
+        let (_, row_char_w, _, _, _) = Self::heading_typography_metrics_with_widths(&classified, &typography, line_char_width, Some(&heading_widths));
 
         let reveal = if self.edit_mode && !self.ctrl_preview_selection {
             crate::markdown::inline_reveal(
@@ -399,6 +392,7 @@ impl AppView {
                     self.manual_table_col_widths.get(&tbl.first_line).map(|w| w.as_slice()),
                     line_char_width,
                     Self::table_room_px(view, line_char_width),
+                    &typography,
                 );
                 let cursor_col = if !self.ctrl_preview_selection && v.line_idx == cursor_line {
                     let (_, col) = view.line_col(doc);
@@ -413,7 +407,7 @@ impl AppView {
                     v.line_idx,
                     cursor_col,
                     &table_layout,
-                    &self.config.editor.headings,
+                    &typography.headings,
                     &editor_font,
                     row_char_w,
                 )
@@ -428,7 +422,7 @@ impl AppView {
                     v,
                     is_active_line || raw_row,
                     &reveal,
-                    &self.config.editor.headings,
+                    &typography,
                     &editor_font,
                     row_char_w,
                 )

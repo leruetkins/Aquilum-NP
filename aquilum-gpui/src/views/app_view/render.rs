@@ -127,12 +127,8 @@ impl Render for AppView {
         // borrows `self`: the reveal may re-place the editor window on the caret,
         // and that needs the note mutably.
         let editor_font = self.editor_font_family();
-        let font_id = cx.text_system().resolve_font(&gpui::font(editor_font.clone()));
-        let line_char_width = cx
-            .text_system()
-            .advance(font_id, px(14.0), 'x')
-            .map(|s| f32::from(s.width))
-            .unwrap_or(7.7);
+        let typography = self.editor_typography();
+        let line_char_width = self.editor_char_width(cx);
 
         let viewport_w: f32 = window.viewport_size().width.into();
         let wrap_cols = self.compute_wrap_cols(viewport_w, line_char_width);
@@ -150,6 +146,7 @@ impl Render for AppView {
                 &editor_font,
                 &self.manual_table_col_widths,
                 line_char_width,
+                &typography,
             )),
             _ => None,
         };
@@ -166,7 +163,7 @@ impl Render for AppView {
             let old_above_h = view.above_h;
             let old_wrap_cols = view.window.wrap_cols;
 
-            view.ensure_visual_cache_with_headings(doc, self.word_wrap, wrap_cols, Some(&self.config.editor.headings), anchor_line, self.ctrl_preview_selection || !self.edit_mode);
+            view.ensure_visual_cache_with_headings(doc, self.word_wrap, wrap_cols, Some(&typography), anchor_line, self.ctrl_preview_selection || !self.edit_mode);
 
             // A caret or selection line reflow moves every row below it. When
             // that happens above the anchor line, the anchor's document Y

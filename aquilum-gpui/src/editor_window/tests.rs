@@ -60,6 +60,38 @@
         assert_eq!(w.first_row_of_line(2600), None);
     }
 
+    /// Row heights come from the configured typography, so a larger editor
+    /// font gives every body row the same taller height.
+    #[test]
+    fn window_heights_follow_the_configured_typography() {
+        let text = doc(10);
+        let index = LineIndex::new(&text);
+        let editor = crate::settings::EditorSettings {
+            line_height: 1.8,
+            font: crate::settings::FontSettings {
+                font_size_base: 18,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let typography = crate::settings::EditorTypography::from_editor(&editor);
+        assert_eq!(typography.row_height, 32.0);
+
+        let w = EditorWindow::build(
+            &text,
+            &index,
+            0,
+            10,
+            false,
+            0,
+            Some(&typography),
+            crate::markdown::CodeScanState::default(),
+        );
+        assert_eq!(w.height_index.len(), 10);
+        assert_eq!(w.height_index.top_of(1), 32.0);
+        assert_eq!(w.height_index.total(), 10.0 * 32.0);
+    }
+
     /// Wrapping is measured inside the window only, and rows of one line stay
     /// contiguous so `find_visual_row_for_cursor` still works on global lines.
     #[test]
