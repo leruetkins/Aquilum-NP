@@ -508,6 +508,7 @@
     "folder_deleted": "تم حذف المجلد '{}'",
     "error_deleting": "خطأ في الحذف: {}",
     "folder_moved": "تم نقل المجلد بنجاح",
+    "file_moved": "تم نقل الملف بنجاح",
     "error_moving": "خطأ في النقل: {}",
     "rename_folder": "إعادة تسمية المجلد",
     "delete_folder": "حذف المجلد",

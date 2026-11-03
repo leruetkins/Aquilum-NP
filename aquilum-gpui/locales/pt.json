@@ -508,6 +508,7 @@
     "folder_deleted": "Pasta '{}' excluída",
     "error_deleting": "Erro ao excluir: {}",
     "folder_moved": "Pasta movida com sucesso",
+    "file_moved": "Arquivo movido com sucesso",
     "error_moving": "Erro ao mover: {}",
     "rename_folder": "Renomear pasta",
     "delete_folder": "Excluir pasta",

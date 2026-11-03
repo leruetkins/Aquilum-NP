@@ -508,6 +508,7 @@
     "folder_deleted": "フォルダ「{}」が削除されました",
     "error_deleting": "削除エラー: {}",
     "folder_moved": "フォルダは正常に移動されました",
+    "file_moved": "ファイルは正常に移動されました",
     "error_moving": "移動エラー: {}",
     "rename_folder": "フォルダー名の変更",
     "delete_folder": "フォルダーの削除",

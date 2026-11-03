@@ -508,6 +508,7 @@
     "folder_deleted": "Složka '{}' byla smazána",
     "error_deleting": "Chyba při mazání: {}",
     "folder_moved": "Složka byla úspěšně přesunuta",
+    "file_moved": "Soubor byl úspěšně přesunut",
     "error_moving": "Chyba při přesunu: {}",
     "rename_folder": "Přejmenovat složku",
     "delete_folder": "Smazat složku",

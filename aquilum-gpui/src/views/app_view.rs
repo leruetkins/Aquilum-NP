@@ -321,6 +321,8 @@ pub struct AppView {
     /// Drag state of the search panel results overlay scrollbar.
     pub panel_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag,
     pub bookmark_drag: Option<crate::views::sidebar::bookmarks::BookmarkDragState>,
+    /// Drag state of the file explorer tree (moving files/folders into other folders).
+    pub sidebar_tree_drag: Option<crate::views::sidebar::tree::SidebarTreeDragState>,
     pub expanded_bookmark_groups: std::collections::HashSet<String>,
     pub bookmark_context_menu: Option<crate::views::sidebar::bookmarks::BookmarkContextMenuState>,
     pub bookmark_rename: Option<crate::views::sidebar::bookmarks::BookmarkRenameState>,
@@ -576,6 +578,7 @@ impl AppView {
             panel_scroll_handle: ScrollHandle::new(),
             panel_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
             bookmark_drag: None,
+            sidebar_tree_drag: None,
             expanded_bookmark_groups: std::collections::HashSet::new(),
             bookmark_context_menu: None,
             bookmark_rename: None,

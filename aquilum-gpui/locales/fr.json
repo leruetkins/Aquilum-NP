@@ -508,6 +508,7 @@
     "folder_deleted": "Dossier '{}' supprimé",
     "error_deleting": "Erreur de suppression : {}",
     "folder_moved": "Dossier déplacé avec succès",
+    "file_moved": "Fichier déplacé avec succès",
     "error_moving": "Erreur de déplacement : {}",
     "rename_folder": "Renommer le dossier",
     "delete_folder": "Supprimer le dossier",

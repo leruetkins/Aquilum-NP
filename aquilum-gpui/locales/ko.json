@@ -508,6 +508,7 @@
     "folder_deleted": "'{}' 폴더가 삭제되었습니다.",
     "error_deleting": "삭제 오류: {}",
     "folder_moved": "폴더가 성공적으로 이동되었습니다",
+    "file_moved": "파일이 성공적으로 이동되었습니다",
     "error_moving": "이동 중 오류 발생: {}",
     "rename_folder": "폴더 이름 바꾸기",
     "delete_folder": "폴더 삭제",

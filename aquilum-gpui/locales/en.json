@@ -521,6 +521,7 @@
     "folder_deleted": "Folder '{}' deleted",
     "error_deleting": "Error deleting: {}",
     "folder_moved": "Folder successfully moved",
+    "file_moved": "File successfully moved",
     "error_moving": "Error moving: {}",
     "rename_folder": "Rename Folder",
     "delete_folder": "Delete Folder",

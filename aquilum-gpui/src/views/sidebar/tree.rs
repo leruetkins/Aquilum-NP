@@ -7,10 +7,10 @@
 //! intersect the viewport — bracketed by two spacers that keep the scrollable content as
 //! tall as the whole list, so the scrollbar stays proportional.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::{
-    canvas, div, point, prelude::*, px, AnyElement, Context, DispatchPhase, MouseButton,
+    canvas, div, point, prelude::*, px, rgba, AnyElement, Context, DispatchPhase, MouseButton,
     MouseDownEvent, MouseMoveEvent, Pixels, ScrollWheelEvent, SharedString, Window,
 };
 
@@ -171,6 +171,45 @@ struct SidebarRow {
     depth: usize,
 }
 
+/// Active drag of an entry inside the sidebar file tree.
+///
+/// Mirrors the bookmarks drag ([`crate::views::sidebar::bookmarks::BookmarkDragState`]):
+/// the pointer has to travel past a small threshold before the gesture counts as a drag,
+/// so a plain click keeps opening notes and toggling folders.
+#[derive(Clone, Debug)]
+pub struct SidebarTreeDragState {
+    /// Entry being dragged.
+    pub source_path: PathBuf,
+    /// Folders are moved with `move_folder`, files with `move_file`.
+    pub is_folder: bool,
+    /// Y position of the mouse-down that started the gesture, in window coordinates.
+    pub start_y: f32,
+    /// Current pointer position in window coordinates; drives the drag ghost.
+    pub pointer_x: f32,
+    pub pointer_y: f32,
+    /// Set once the pointer moved past the drag threshold.
+    pub is_dragging: bool,
+    /// Folder currently highlighted as the drop destination.
+    pub target: Option<PathBuf>,
+}
+
+/// Distance in pixels the pointer must travel before a press turns into a drag.
+const SIDEBAR_DRAG_THRESHOLD: f32 = 4.0;
+
+/// Whether dropping the dragged entry into `dest_folder` would move anything.
+///
+/// Dropping on the current parent (for files and folders alike) or into the dragged
+/// folder itself/its descendants is a no-op. The tree uses this both to skip the move and
+/// to avoid highlighting a target the entry cannot actually move to.
+fn sidebar_drop_moves(drag: &SidebarTreeDragState, dest_folder: &Path) -> bool {
+    let same_parent = drag
+        .source_path
+        .parent()
+        .map(|parent| parent == dest_folder)
+        .unwrap_or(false);
+    !same_parent && !(drag.is_folder && dest_folder.starts_with(&drag.source_path))
+}
+
 impl AppView {
     /// Renders the scrollable, virtualized file tree.
     ///
@@ -291,6 +330,40 @@ impl AppView {
             }
         }
 
+        // One rounded highlight for the whole destination folder block. It is drawn as a
+        // single rectangle behind the rows: per-row backgrounds leave visible seams at the
+        // row boundaries. The rect is clamped to the visible part of the virtual list.
+        let drop_block_range = self
+            .sidebar_tree_drag
+            .as_ref()
+            .filter(|drag| drag.is_dragging)
+            .and_then(|drag| {
+                drag.target.as_deref().filter(|target| {
+                    sidebar_drop_moves(drag, target)
+                        && self.state.workspace_path.as_deref() != Some(*target)
+                })
+            })
+            .and_then(|target| {
+                let start = sidebar_rows
+                    .iter()
+                    .position(|row| row.path.starts_with(target))?;
+                let len = sidebar_rows[start..]
+                    .iter()
+                    .take_while(|row| row.path.starts_with(target))
+                    .count();
+                Some((start, start + len))
+            });
+        let drop_block_rect = drop_block_range.and_then(|(start, end)| {
+            let clip_height = {
+                let measured = f32::from(self.sidebar_scroll_handle.bounds().size.height);
+                if measured > 0.0 { measured } else { sidebar_viewport_h }
+            };
+            let top = (height_index.top_of(start) as f32 - sidebar_scroll_top).max(0.0);
+            let bottom =
+                (height_index.top_of(end) as f32 - sidebar_scroll_top).min(clip_height);
+            (bottom > top).then_some((top, bottom - top))
+        });
+
         let visible_rows = height_index.visible_range(
             sidebar_scroll_top as f64,
             sidebar_viewport_h as f64,
@@ -327,6 +400,19 @@ impl AppView {
             );
         }
 
+        // While an entry is dragged, the end of the list becomes a drop zone for the
+        // workspace root — the same way the bookmarks list lets a note leave its group.
+        let is_dragging_active = self
+            .sidebar_tree_drag
+            .as_ref()
+            .map(|drag| drag.is_dragging)
+            .unwrap_or(false);
+        if is_dragging_active {
+            if let Some(root) = self.state.workspace_path.clone() {
+                tree_elements.push(self.render_sidebar_root_drop_zone(root, theme, cx));
+            }
+        }
+
         let scroll_container = div()
             .id("sidebar-tree-scroll")
             .track_scroll(&self.sidebar_scroll_handle)
@@ -345,8 +431,51 @@ impl AppView {
             .flex()
             .flex_col()
             .flex_1()
-            .min_h_0()
-            .child(scroll_container);
+            .min_h_0();
+        // Painted before the scroll container, so the rows (transparent inside the block)
+        // show one continuous rounded highlight with a frame around the destination folder.
+        if let Some((top, height)) = drop_block_rect {
+            viewport = viewport.child(
+                div()
+                    .id("sidebar-tree-drop-block")
+                    .absolute()
+                    .left(px(0.0))
+                    .right(px(SIDEBAR_ROW_SCROLLBAR_GAP))
+                    .top(px(top))
+                    .h(px(height))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme.accent)
+                    .bg(theme.selection_bg),
+            );
+        }
+        viewport = viewport
+            .child(scroll_container)
+            // Keeps the drag ghost glued to the pointer even over spacers and gaps
+            // between rows, where no row listener runs.
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if let Some(ref mut drag) = this.sidebar_tree_drag {
+                    drag.pointer_x = event.position.x.into();
+                    drag.pointer_y = event.position.y.into();
+                    if drag.is_dragging {
+                        cx.notify();
+                    }
+                }
+            }))
+            // A drag released over empty space (not a row, not the root zone) has no
+            // destination: drop the state instead of leaving the gesture armed. Rows run
+            // first in the bubble phase and take the state themselves, so this only sees
+            // gestures that ended outside every drop target.
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if this.sidebar_tree_drag.take().is_some() {
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if this.sidebar_tree_drag.take().is_some() {
+                    cx.notify();
+                }
+            }));
 
         // Cursor-driven ("smart") scrolling: Ctrl/Cmd mode (`smart`) plus
         // middle-button mode (always available while the middle button is
@@ -615,9 +744,197 @@ impl AppView {
         }
     }
 
+    /// Moves the dragged tree entry into its highlighted drop folder.
+    ///
+    /// Reuses the same filesystem helpers as the tree's context menu (`move_file` /
+    /// `move_folder`) and the same bookkeeping as the "Move to..." modal, so open tabs,
+    /// session state and the plugin snapshot follow the file.
+    fn execute_sidebar_tree_move(&mut self, drag: SidebarTreeDragState, cx: &mut Context<Self>) {
+        if !drag.is_dragging {
+            return;
+        }
+        let Some(dest_folder) = drag.target.clone() else {
+            cx.notify();
+            return;
+        };
+
+        // Dropping on the current parent (or into itself) is a no-op, not an error.
+        if !sidebar_drop_moves(&drag, &dest_folder) {
+            cx.notify();
+            return;
+        }
+        let source = drag.source_path;
+
+        let result = if drag.is_folder {
+            crate::views::sidebar::folder_actions::move_folder(&source, &dest_folder)
+        } else {
+            crate::views::sidebar::file_actions::move_file(&source, &dest_folder)
+        };
+
+        match result {
+            Ok(new_path) => {
+                self.state.handle_file_renamed(&source, &new_path);
+                self.state.expanded_folders.remove(&source);
+                self.state.expanded_folders.insert(dest_folder.clone());
+                self.state.expanded_folders.insert(new_path);
+                self.state.reload_file_tree();
+                self.state.publish_snapshot();
+                self.state.status_text = if drag.is_folder {
+                    self.t("sidebar.folder_moved")
+                } else {
+                    self.t("sidebar.file_moved")
+                };
+            }
+            Err(e) => {
+                let msg = self.t_fmt("sidebar.error_moving", &[&e]);
+                self.push_notification(
+                    crate::views::notification::NotificationType::Error,
+                    None,
+                    msg,
+                    Some(6000),
+                    cx,
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    /// Drop zone at the end of the tree that moves the dragged entry to the workspace root.
+    fn render_sidebar_root_drop_zone(
+        &self,
+        root: PathBuf,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let is_hovered = self
+            .sidebar_tree_drag
+            .as_ref()
+            .filter(|drag| drag.is_dragging)
+            .and_then(|drag| {
+                drag.target
+                    .as_deref()
+                    .map(|target| target == root.as_path() && sidebar_drop_moves(drag, target))
+            })
+            .unwrap_or(false);
+
+        div()
+            .id("sidebar-tree-root-drop-zone")
+            .h(px(40.0))
+            .w_full()
+            .flex_shrink_0()
+            .rounded_md()
+            .border_1()
+            .when(is_hovered, |d| {
+                d.border_color(theme.accent).bg(theme.bg_hover)
+            })
+            .when(!is_hovered, |d| d.border_color(rgba(0x00000000)))
+            .on_mouse_move(cx.listener({
+                let root = root.clone();
+                move |this, _, _, cx| {
+                    if let Some(ref mut drag) = this.sidebar_tree_drag {
+                        if drag.is_dragging {
+                            drag.target = Some(root.clone());
+                            cx.notify();
+                        }
+                    }
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if let Some(drag) = this.sidebar_tree_drag.take() {
+                    this.execute_sidebar_tree_move(drag, cx);
+                }
+            }))
+            .into_any_element()
+    }
+
+    /// Floating preview of the dragged entry, drawn at the pointer so the gesture has a
+    /// visible "ghost" even when the source row scrolls out of view.
+    pub(crate) fn render_sidebar_drag_ghost(&self, theme: &Theme) -> Option<AnyElement> {
+        let drag = self
+            .sidebar_tree_drag
+            .as_ref()
+            .filter(|drag| drag.is_dragging)?;
+
+        let file_name = drag
+            .source_path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let display_name = if drag.is_folder {
+            file_name
+        } else {
+            file_name
+                .strip_suffix(".md")
+                .unwrap_or(&file_name)
+                .to_string()
+        };
+        let icon = if drag.is_folder {
+            icons::ICON_FOLDER
+        } else {
+            icons::ICON_FILE_TEXT
+        };
+
+        Some(
+            div()
+                .absolute()
+                .left(px(drag.pointer_x + 14.0))
+                .top(px(drag.pointer_y + 10.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1p5()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .bg(theme.bg_card)
+                .border_1()
+                .border_color(theme.accent)
+                .shadow_lg()
+                .opacity(0.92)
+                .child(icons::icon(icon, 13.0, theme.accent))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.text_primary)
+                        .child(display_name),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Renders a single flattened sidebar row. Row height is fixed ([`SIDEBAR_ROW_H`]) so
     /// the caller can place it from the row index alone.
     fn render_sidebar_row(&self, row: &SidebarRow, theme: &Theme, cx: &Context<Self>) -> AnyElement {
+        let drag = self
+            .sidebar_tree_drag
+            .as_ref()
+            .filter(|drag| drag.is_dragging);
+        let is_drag_active = drag.is_some();
+        // Only a destination that would really move the entry gets highlighted, so the
+        // row under the pointer does not promise a drop that is a no-op.
+        let effective_target = drag
+            .filter(|drag| {
+                drag.target
+                    .as_deref()
+                    .map(|target| {
+                        sidebar_drop_moves(drag, target)
+                            // The root is not a row in the tree; it has its own drop zone
+                            // at the end of the list and must not tint the whole tree.
+                            && self.state.workspace_path.as_deref() != Some(target)
+                    })
+                    .unwrap_or(false)
+            })
+            .and_then(|drag| drag.target.as_deref());
+        let is_dragged = drag
+            .map(|drag| drag.source_path == row.path)
+            .unwrap_or(false);
+        // The target folder's whole visible subtree is tinted as one solid block: a folder
+        // with subfolders and many files would otherwise look like its single header row
+        // is the only place the entry could land.
+        let is_drop_block = effective_target
+            .map(|target| row.path.starts_with(target))
+            .unwrap_or(false);
+
         if row.is_folder {
             let is_folder_selected = (self.folder_context_menu.is_open && self.folder_context_menu.folder_path == row.path)
                 || row.is_selected;
@@ -633,7 +950,11 @@ impl AppView {
                 icons::icon(icons::ICON_FOLDER, 14.0, theme.accent)
             };
             let indent = (row.depth * 14) as f32 + 4.0;
-            let label_color = if is_folder_selected { theme.accent } else { theme.text_primary };
+            let label_color = if is_folder_selected || is_dragged {
+                theme.accent
+            } else {
+                theme.text_primary
+            };
 
             let label = crate::views::sidebar::highlight_matches(
                 &row.name,
@@ -643,7 +964,6 @@ impl AppView {
                 theme,
             );
 
-            let folder_path = row.path.clone();
             let folder_path_context = row.path.clone();
 
             div()
@@ -660,18 +980,26 @@ impl AppView {
                 .rounded_md()
                 .cursor_pointer()
                 .when(is_folder_selected, |s| {
-                    s.bg(theme.bg_selected)
+                    s.when(!is_drop_block, |s| s.bg(theme.bg_selected))
                         .text_color(theme.accent)
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                 })
                 .when(!is_folder_selected, |s| {
                     s.when(
-                        !self.folder_context_menu.is_open
+                        !is_drag_active
+                            && !self.folder_context_menu.is_open
                             && !self.file_context_menu.is_open
                             && !self.sidebar_scrollbar_drag.active,
                         |d| d.hover(|h| h.bg(theme.bg_hover)),
                     )
                     .text_color(theme.text_primary)
+                })
+                // The grabbed row keeps an accent frame while the ghost follows the
+                // pointer; the destination folder block is the filled highlight.
+                .when(is_dragged, |s| {
+                    s.border_1()
+                        .border_color(theme.accent)
+                        .text_color(theme.accent)
                 })
                 .child(chevron)
                 .child(folder_svg)
@@ -682,10 +1010,58 @@ impl AppView {
                         .truncate()
                         .child(label),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.selected_sidebar_folder = Some(folder_path.clone());
-                    this.state.toggle_folder(folder_path.clone());
-                    cx.notify();
+                // Left mouse down only arms the drag; a plain click is resolved on mouse up,
+                // after the drag threshold had a chance to engage (same as bookmarks).
+                .on_mouse_down(MouseButton::Left, cx.listener({
+                    let path = row.path.clone();
+                    move |this, event: &MouseDownEvent, _, cx| {
+                        if this.folder_context_menu.is_open || this.file_context_menu.is_open {
+                            return;
+                        }
+                        this.sidebar_tree_drag = Some(SidebarTreeDragState {
+                            source_path: path.clone(),
+                            is_folder: true,
+                            start_y: event.position.y.into(),
+                            pointer_x: event.position.x.into(),
+                            pointer_y: event.position.y.into(),
+                            is_dragging: false,
+                            target: None,
+                        });
+                        cx.notify();
+                    }
+                }))
+                .on_mouse_move(cx.listener({
+                    let path = row.path.clone();
+                    move |this, event: &MouseMoveEvent, _, cx| {
+                        let Some(ref mut drag) = this.sidebar_tree_drag else {
+                            return;
+                        };
+                        let cur_y: f32 = event.position.y.into();
+                        if !drag.is_dragging
+                            && (cur_y - drag.start_y).abs() > SIDEBAR_DRAG_THRESHOLD
+                        {
+                            drag.is_dragging = true;
+                        }
+                        if drag.is_dragging {
+                            drag.target = Some(path.clone());
+                            cx.notify();
+                        }
+                    }
+                }))
+                .on_mouse_up(MouseButton::Left, cx.listener({
+                    let path = row.path.clone();
+                    move |this, _, _, cx| {
+                        let Some(drag) = this.sidebar_tree_drag.take() else {
+                            return;
+                        };
+                        if drag.is_dragging {
+                            this.execute_sidebar_tree_move(drag, cx);
+                        } else if drag.source_path == path {
+                            this.selected_sidebar_folder = Some(path.clone());
+                            this.state.toggle_folder(path.clone());
+                            cx.notify();
+                        }
+                    }
                 }))
                 .on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
                     cx.stop_propagation();
@@ -698,7 +1074,11 @@ impl AppView {
             let is_selected = row.is_selected;
             let indent = (row.depth * 14 + 18) as f32 + 4.0;
             let display_name = row.name.strip_suffix(".md").unwrap_or(&row.name).to_string();
-            let base_color = if is_selected { theme.accent } else { theme.text_secondary };
+            let base_color = if is_selected || is_dragged {
+                theme.accent
+            } else {
+                theme.text_secondary
+            };
 
             let label = crate::views::sidebar::highlight_matches(
                 &display_name,
@@ -711,10 +1091,17 @@ impl AppView {
             let file_svg = icons::icon(
                 icons::ICON_FILE_TEXT,
                 13.0,
-                if is_selected { theme.accent } else { theme.text_muted },
+                if is_selected || is_dragged {
+                    theme.accent
+                } else {
+                    theme.text_muted
+                },
             );
 
-            let file_path = row.path.clone();
+            let drop_parent = row
+                .path
+                .parent()
+                .map(|parent| parent.to_path_buf());
 
             div()
                 .id(SharedString::from(format!("fil-{}", row.path.to_string_lossy())))
@@ -730,18 +1117,27 @@ impl AppView {
                 .rounded_md()
                 .cursor_pointer()
                 .when(is_selected, |s| {
-                    s.bg(theme.bg_selected)
+                    s.when(!is_drop_block, |s| s.bg(theme.bg_selected))
                         .text_color(theme.accent)
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                 })
                 .when(!is_selected, |s| {
                     s.when(
-                        !self.folder_context_menu.is_open
+                        !is_drag_active
+                            && !self.folder_context_menu.is_open
                             && !self.file_context_menu.is_open
                             && !self.sidebar_scrollbar_drag.active,
                         |d| d.hover(|h| h.bg(theme.bg_hover)),
                     )
                     .text_color(theme.text_primary)
+                })
+                // Transparent inside the destination block: the single highlight drawn
+                // behind the rows shows through without per-row stripes. The grabbed row
+                // itself is marked with a frame.
+                .when(is_dragged, |s| {
+                    s.border_1()
+                        .border_color(theme.accent)
+                        .text_color(theme.accent)
                 })
                 .child(file_svg)
                 .child(
@@ -750,8 +1146,62 @@ impl AppView {
                         .truncate()
                         .child(label),
                 )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.select_note(file_path.clone(), false, window, cx);
+                .on_mouse_down(MouseButton::Left, cx.listener({
+                    let path = row.path.clone();
+                    move |this, event: &MouseDownEvent, _, cx| {
+                        if this.folder_context_menu.is_open || this.file_context_menu.is_open {
+                            return;
+                        }
+                        this.sidebar_tree_drag = Some(SidebarTreeDragState {
+                            source_path: path.clone(),
+                            is_folder: false,
+                            start_y: event.position.y.into(),
+                            pointer_x: event.position.x.into(),
+                            pointer_y: event.position.y.into(),
+                            is_dragging: false,
+                            target: None,
+                        });
+                        cx.notify();
+                    }
+                }))
+                // Hovering a file while dragging targets its containing folder, so dropping
+                // next to an existing note moves the entry there (same as a file manager).
+                .on_mouse_move(cx.listener({
+                    let drop_parent = drop_parent.clone();
+                    move |this, event: &MouseMoveEvent, _, cx| {
+                        let Some(ref mut drag) = this.sidebar_tree_drag else {
+                            return;
+                        };
+                        let cur_y: f32 = event.position.y.into();
+                        if !drag.is_dragging
+                            && (cur_y - drag.start_y).abs() > SIDEBAR_DRAG_THRESHOLD
+                        {
+                            drag.is_dragging = true;
+                        }
+                        if drag.is_dragging {
+                            // A top-level file's parent is the workspace root, which has
+                            // its own drop zone at the end of the list; making it a
+                            // per-row target would tint the whole tree.
+                            drag.target = drop_parent.clone().filter(|parent| {
+                                this.state.workspace_path.as_deref()
+                                    != Some(parent.as_path())
+                            });
+                            cx.notify();
+                        }
+                    }
+                }))
+                .on_mouse_up(MouseButton::Left, cx.listener({
+                    let path = row.path.clone();
+                    move |this, _, window, cx| {
+                        let Some(drag) = this.sidebar_tree_drag.take() else {
+                            return;
+                        };
+                        if drag.is_dragging {
+                            this.execute_sidebar_tree_move(drag, cx);
+                        } else if drag.source_path == path {
+                            this.select_note(path.clone(), false, window, cx);
+                        }
+                    }
                 }))
                 .on_mouse_down(MouseButton::Right, cx.listener({
                     let file_path = row.path.clone();

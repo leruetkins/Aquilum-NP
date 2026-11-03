@@ -508,6 +508,7 @@
     "folder_deleted": "Map '{}' verwijderd",
     "error_deleting": "Fout bij verwijderen: {}",
     "folder_moved": "Map succesvol verplaatst",
+    "file_moved": "Bestand succesvol verplaatst",
     "error_moving": "Fout bij verplaatsen: {}",
     "rename_folder": "Hernoem map",
     "delete_folder": "Map verwijderen",

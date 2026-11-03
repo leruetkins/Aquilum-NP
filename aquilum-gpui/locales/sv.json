@@ -508,6 +508,7 @@
     "folder_deleted": "Mappen '{}' har tagits bort",
     "error_deleting": "Fel vid borttagning av: {}",
     "folder_moved": "Mappen har flyttats",
+    "file_moved": "Filen har flyttats",
     "error_moving": "Det gick inte att flytta: {}",
     "rename_folder": "Byt namn på mapp",
     "delete_folder": "Ta bort mapp",

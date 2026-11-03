@@ -508,6 +508,7 @@
     "folder_deleted": "文件夹“{}”已删除",
     "error_deleting": "删除时出错：{}",
     "folder_moved": "文件夹移动成功",
+    "file_moved": "文件移动成功",
     "error_moving": "移动时出错：{}",
     "rename_folder": "重命名文件夹",
     "delete_folder": "删除文件夹",

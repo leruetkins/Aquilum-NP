@@ -508,6 +508,7 @@
     "folder_deleted": "Cartella '{}' eliminata",
     "error_deleting": "Errore durante l'eliminazione: {}",
     "folder_moved": "Cartella spostata con successo",
+    "file_moved": "File spostato con successo",
     "error_moving": "Errore durante lo spostamento: {}",
     "rename_folder": "Rinomina cartella",
     "delete_folder": "Elimina cartella",

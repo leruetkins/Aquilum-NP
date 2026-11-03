@@ -522,6 +522,7 @@
     "folder_deleted": "Folder „{}” został usunięty",
     "error_deleting": "Błąd podczas usuwania: {}",
     "folder_moved": "Folder został pomyślnie przeniesiony",
+    "file_moved": "Plik został pomyślnie przeniesiony",
     "error_moving": "Błąd podczas przenoszenia: {}",
     "rename_folder": "Zmień nazwę folderu",
     "delete_folder": "Usuń folder",

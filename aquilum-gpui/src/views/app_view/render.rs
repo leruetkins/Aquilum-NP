@@ -1660,6 +1660,10 @@ if let Some(new_scroll) = new_active_scroll {
             .when(self.file_context_menu.is_open, |d| {
                 d.child(self.render_file_context_menu(theme, window, cx))
             })
+            // ================= SIDEBAR FILE-TREE DRAG GHOST =================
+            .when_some(self.render_sidebar_drag_ghost(theme), |d, ghost| {
+                d.child(ghost)
+            })
             // ================= TAB CONTEXT MENU (Obsidian-style) =================
             .when(self.tab_context_menu.is_open, |d| {
                 d.child(self.render_tab_context_menu(theme, window, cx))

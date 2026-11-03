@@ -508,6 +508,7 @@
     "folder_deleted": "Carpeta '{}' eliminada",
     "error_deleting": "Error al eliminar: {}",
     "folder_moved": "Carpeta movida exitosamente",
+    "file_moved": "Archivo movido exitosamente",
     "error_moving": "Error al mover: {}",
     "rename_folder": "Cambiar nombre de carpeta",
     "delete_folder": "Eliminar carpeta",

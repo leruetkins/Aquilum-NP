@@ -508,6 +508,7 @@
     "folder_deleted": "Đã xóa thư mục '{}'",
     "error_deleting": "Lỗi xóa: {}",
     "folder_moved": "Đã di chuyển thư mục thành công",
+    "file_moved": "Đã di chuyển tệp thành công",
     "error_moving": "Lỗi di chuyển: {}",
     "rename_folder": "Đổi tên thư mục",
     "delete_folder": "Xóa thư mục",

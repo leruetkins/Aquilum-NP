@@ -508,6 +508,7 @@
     "folder_deleted": "'{}' klasörü silindi",
     "error_deleting": "Silinirken hata oluştu: {}",
     "folder_moved": "Klasör başarıyla taşındı",
+    "file_moved": "Dosya başarıyla taşındı",
     "error_moving": "Taşıma hatası: {}",
     "rename_folder": "Klasörü Yeniden Adlandır",
     "delete_folder": "Klasörü Sil",

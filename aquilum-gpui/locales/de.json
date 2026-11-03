@@ -508,6 +508,7 @@
     "folder_deleted": "Ordner „{}“ gelöscht",
     "error_deleting": "Fehler beim Löschen: {}",
     "folder_moved": "Ordner erfolgreich verschoben",
+    "file_moved": "Datei erfolgreich verschoben",
     "error_moving": "Fehler beim Verschieben: {}",
     "rename_folder": "Ordner umbenennen",
     "delete_folder": "Ordner löschen",
