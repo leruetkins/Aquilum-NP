@@ -390,10 +390,12 @@ impl SettingsView {
             );
         let alignment_card = self.render_settings_card(
             &self.t("settings.toolbar.alignment"),
-            vec![self.render_setting_row(
+            vec![self.render_setting_row_with_id(
+                Some("editorToolbar.alignment"),
                 &self.t("settings.toolbar.title"),
                 None,
                 alignment_control,
+                cx,
             )],
         );
 

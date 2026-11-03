@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "Файли та медіа",
+      "attachments_section": "Вкладення",
+      "images_section": "Зображення",
+      "deletion_section": "Видалення файлів",
       "attachments_folder": "Папка вкладень",
       "attachments_folder_desc": "Де зберігаються вставлені зображення, відео та документи",
       "show_attachments_folder": "Показати папку вкладень",

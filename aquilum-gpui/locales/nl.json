@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "Bestanden en media",
+      "attachments_section": "Bijlagen",
+      "images_section": "Afbeeldingen",
+      "deletion_section": "Bestanden verwijderen",
       "attachments_folder": "Bijlagen map",
       "attachments_folder_desc": "Waar geplakte afbeeldingen, video's en documenten worden opgeslagen",
       "show_attachments_folder": "Map met bijlagen tonen",

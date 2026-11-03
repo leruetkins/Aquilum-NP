@@ -1336,26 +1336,20 @@ impl SettingsView {
     // =========================================================================
 
     /// Renders file attachment paths and storage configuration tab.
-    pub(super) fn render_files_tab(&self, cx: &Context<Self>) -> gpui::Div {
+    pub(super) fn render_files_tab(&self, window: &Window, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
         let config = &self.config;
 
-        let file_rows = vec![
-            self.render_setting_row(
+        let attachment_rows = vec![
+            self.render_setting_row_with_id(
+                Some("files.attachmentsFolder"),
                 &self.t("settings.files.attachments_folder"),
                 Some(&self.t("settings.files.attachments_folder_desc")),
-                div()
-                    .px_3()
-                    .py_1()
-                    .bg(theme.bg_sidebar)
-                    .border_1()
-                    .border_color(theme.border)
-                    .rounded_md()
-                    .text_xs()
-                    .text_color(theme.text_primary)
-                    .child(config.files.folder.clone()),
+                self.render_files_folder_input(window, cx),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("files.showAttachmentsFolder"),
                 &self.t("settings.files.show_attachments_folder"),
                 Some(&self.t("settings.files.show_attachments_folder_desc")),
                 div()
@@ -1373,8 +1367,27 @@ impl SettingsView {
                         }
                         cx.notify();
                     })),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("files.autoTrashAttachments"),
+                &self.t("settings.files.auto_trash_attachments"),
+                Some(&self.t("settings.files.auto_trash_attachments_desc")),
+                div()
+                    .id("row-auto-trash-attachments")
+                    .cursor_pointer()
+                    .child(self.render_toggle_switch(config.files.auto_trash_attachments))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.config.files.auto_trash_attachments = !this.config.files.auto_trash_attachments;
+                        this.save_settings(cx);
+                    })),
+                cx,
+            ),
+        ];
+
+        let image_rows = vec![
+            self.render_setting_row_with_id(
+                Some("images.cornerRadius"),
                 &self.t("editor.image.images_radius"),
                 Some(&self.t("editor.image.images_radius_desc")),
                 self.image_stepper(
@@ -1394,14 +1407,20 @@ impl SettingsView {
                         this.save_settings(cx);
                     },
                 ),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("images.captionTemplate"),
                 &self.t("editor.image.caption_template"),
                 Some(&self.t("editor.image.caption_template_desc")),
                 {
                     let current = config.images.caption_template.clone();
                     div()
                         .id("row-caption-template")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
                         .px_3()
                         .py_1()
                         .bg(theme.bg_sidebar)
@@ -1412,6 +1431,11 @@ impl SettingsView {
                         .text_color(theme.text_primary)
                         .cursor_pointer()
                         .child(current.clone())
+                        .child(crate::icons::icon(
+                            crate::icons::ICON_CHEVRON_DOWN,
+                            12.0,
+                            theme.text_muted,
+                        ))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             // i18n-allow: caption template presets are document content, not UI chrome
                             const PRESETS: [&str; 3] = ["Рис. {n}. {text}", "Fig. {n}. {text}", "{text}"];
@@ -1421,8 +1445,10 @@ impl SettingsView {
                             this.save_settings(cx);
                         }))
                 },
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("images.captionPosition"),
                 &self.t("editor.image.caption_position_default"),
                 Some(&self.t("editor.image.caption_position_default_desc")),
                 {
@@ -1430,30 +1456,34 @@ impl SettingsView {
                     let button = |id: &'static str, label: String, selected: bool, value: &'static str| {
                         div()
                             .id(gpui::ElementId::Name(id.into()))
-                            .h(px(24.0))
-                            .px(px(9.0))
-                            .flex()
-                            .items_center()
+                            .px_2p5()
+                            .py_1()
                             .rounded_sm()
-                            .bg(if selected { theme.bg_selected } else { theme.bg_sidebar })
-                            .border_1()
-                            .border_color(if selected { theme.accent } else { theme.border })
-                            .text_xs()
-                            .text_color(if selected { theme.accent } else { theme.text_secondary })
                             .cursor_pointer()
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.config.images.caption_position = value.to_string();
-                                    this.save_settings(cx);
-                                }),
-                            )
+                            .when(selected, |s| {
+                                s.bg(theme.accent).text_color(theme.text_on_accent)
+                            })
+                            .when(!selected, |s| {
+                                s.text_color(theme.text_muted)
+                                    .hover(|h| h.bg(theme.bg_hover))
+                            })
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.config.images.caption_position = value.to_string();
+                                this.save_settings(cx);
+                            }))
                             .child(label)
                     };
                     div()
                         .flex()
                         .flex_row()
                         .gap_1()
+                        .bg(theme.bg_sidebar)
+                        .p_0p5()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(theme.border)
                         .child(button(
                             "row-caption-above",
                             self.t("editor.image.above"),
@@ -1467,8 +1497,10 @@ impl SettingsView {
                             "below",
                         ))
                 },
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("images.captionNumbered"),
                 &self.t("editor.image.caption_numbered_default"),
                 Some(&self.t("editor.image.caption_numbered_default_desc")),
                 div()
@@ -1479,8 +1511,10 @@ impl SettingsView {
                         this.config.images.caption_numbered = !this.config.images.caption_numbered;
                         this.save_settings(cx);
                     })),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("images.openEditorAfterInsert"),
                 &self.t("editor.image.open_editor_after_insert"),
                 Some(&self.t("editor.image.open_editor_after_insert_desc")),
                 div()
@@ -1491,8 +1525,10 @@ impl SettingsView {
                         this.config.images.open_editor_after_insert = !this.config.images.open_editor_after_insert;
                         this.save_settings(cx);
                     })),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("images.largeFileMb"),
                 &self.t("editor.image.large_file_mb"),
                 Some(&self.t("editor.image.large_file_mb_desc")),
                 self.image_stepper(
@@ -1512,8 +1548,10 @@ impl SettingsView {
                         this.save_settings(cx);
                     },
                 ),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("images.trashDays"),
                 &self.t("editor.image.trash_days"),
                 Some(&self.t("editor.image.trash_days_desc")),
                 self.image_stepper(
@@ -1533,8 +1571,10 @@ impl SettingsView {
                         this.save_settings(cx);
                     },
                 ),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("images.clearTrash"),
                 &self.t("editor.image.clear_trash"),
                 Some(&self.t("editor.image.clear_trash_desc")),
                 div()
@@ -1561,8 +1601,13 @@ impl SettingsView {
                         }
                         cx.notify();
                     })),
+                cx,
             ),
-            self.render_setting_row(
+        ];
+
+        let deletion_rows = vec![
+            self.render_setting_row_with_id(
+                Some("files.closeDeletedTabs"),
                 &self.t("settings.files.close_deleted_tabs"),
                 Some(&self.t("settings.files.close_deleted_tabs_desc")),
                 div()
@@ -1573,8 +1618,10 @@ impl SettingsView {
                         this.config.files.close_deleted_tabs = !this.config.files.close_deleted_tabs;
                         this.save_settings(cx);
                     })),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("files.keepModifiedOnDelete"),
                 &self.t("settings.files.keep_modified_on_delete"),
                 Some(&self.t("settings.files.keep_modified_on_delete_desc")),
                 div()
@@ -1585,18 +1632,7 @@ impl SettingsView {
                         this.config.files.keep_modified_on_delete = !this.config.files.keep_modified_on_delete;
                         this.save_settings(cx);
                     })),
-            ),
-            self.render_setting_row(
-                &self.t("settings.files.auto_trash_attachments"),
-                Some(&self.t("settings.files.auto_trash_attachments_desc")),
-                div()
-                    .id("row-auto-trash-attachments")
-                    .cursor_pointer()
-                    .child(self.render_toggle_switch(config.files.auto_trash_attachments))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.files.auto_trash_attachments = !this.config.files.auto_trash_attachments;
-                        this.save_settings(cx);
-                    })),
+                cx,
             ),
         ];
 
@@ -1604,7 +1640,18 @@ impl SettingsView {
             .flex()
             .flex_col()
             .gap_5()
-            .child(self.render_settings_card(&self.t("settings.files.title"), file_rows))
+            .child(self.render_settings_card(
+                &self.t("settings.files.attachments_section"),
+                attachment_rows,
+            ))
+            .child(self.render_settings_card(
+                &self.t("settings.files.images_section"),
+                image_rows,
+            ))
+            .child(self.render_settings_card(
+                &self.t("settings.files.deletion_section"),
+                deletion_rows,
+            ))
     }
 
     // =========================================================================

@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "文件和媒體",
+      "attachments_section": "附件",
+      "images_section": "圖片",
+      "deletion_section": "檔案刪除",
       "attachments_folder": "附件資料夾",
       "attachments_folder_desc": "貼上的圖像、影片和文件的儲存位置",
       "show_attachments_folder": "顯示附件資料夾",

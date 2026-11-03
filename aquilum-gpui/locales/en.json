@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "Files & Media",
+      "attachments_section": "Attachments",
+      "images_section": "Images",
+      "deletion_section": "File deletion",
       "attachments_folder": "Attachments Folder",
       "attachments_folder_desc": "Where pasted images, videos and documents are stored",
       "show_attachments_folder": "Show Attachments Folder",

@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "文件和媒体",
+      "attachments_section": "附件",
+      "images_section": "图片",
+      "deletion_section": "文件删除",
       "attachments_folder": "附件文件夹",
       "attachments_folder_desc": "粘贴的图像、视频和文档的存储位置",
       "show_attachments_folder": "显示附件文件夹",

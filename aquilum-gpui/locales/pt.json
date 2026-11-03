@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "Arquivos e mídia",
+      "attachments_section": "Anexos",
+      "images_section": "Imagens",
+      "deletion_section": "Exclusão de arquivos",
       "attachments_folder": "Pasta de anexos",
       "attachments_folder_desc": "Onde imagens, vídeos e documentos colados são armazenados",
       "show_attachments_folder": "Mostrar pasta de anexos",

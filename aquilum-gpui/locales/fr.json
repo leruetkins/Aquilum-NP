@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "Fichiers et médias",
+      "attachments_section": "Pièces jointes",
+      "images_section": "Images",
+      "deletion_section": "Suppression de fichiers",
       "attachments_folder": "Dossier des pièces jointes",
       "attachments_folder_desc": "Où sont stockés les images, vidéos et documents collés",
       "show_attachments_folder": "Afficher le dossier des pièces jointes",

@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "Dateien und Medien",
+      "attachments_section": "Anhänge",
+      "images_section": "Bilder",
+      "deletion_section": "Dateilöschung",
       "attachments_folder": "Ordner „Anhänge“.",
       "attachments_folder_desc": "Wo eingefügte Bilder, Videos und Dokumente gespeichert werden",
       "show_attachments_folder": "Ordner „Anhänge“ anzeigen",

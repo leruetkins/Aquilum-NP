@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "الملفات والوسائط",
+      "attachments_section": "المرفقات",
+      "images_section": "الصور",
+      "deletion_section": "حذف الملفات",
       "attachments_folder": "مجلد المرفقات",
       "attachments_folder_desc": "حيث يتم تخزين الصور ومقاطع الفيديو والمستندات الملصقة",
       "show_attachments_folder": "إظهار مجلد المرفقات",

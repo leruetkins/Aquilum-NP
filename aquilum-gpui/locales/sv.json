@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "Filer och media",
+      "attachments_section": "Bilagor",
+      "images_section": "Bilder",
+      "deletion_section": "Filborttagning",
       "attachments_folder": "Mapp Bilagor",
       "attachments_folder_desc": "Där inklistrade bilder, videor och dokument lagras",
       "show_attachments_folder": "Visa mappen Bilagor",

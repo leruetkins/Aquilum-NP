@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "फ़ाइलें और मीडिया",
+      "attachments_section": "अनुलग्नक",
+      "images_section": "छवियाँ",
+      "deletion_section": "फ़ाइल हटाना",
       "attachments_folder": "अनुलग्नक फ़ोल्डर",
       "attachments_folder_desc": "जहां चिपकाई गई छवियां, वीडियो और दस्तावेज़ संग्रहीत किए जाते हैं",
       "show_attachments_folder": "अनुलग्नक फ़ोल्डर दिखाएँ",

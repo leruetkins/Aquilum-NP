@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "Dosyalar ve Medya",
+      "attachments_section": "Ekler",
+      "images_section": "Görseller",
+      "deletion_section": "Dosya silme",
       "attachments_folder": "Ekler Klasörü",
       "attachments_folder_desc": "Yapıştırılan görsellerin, videoların ve belgelerin saklandığı yer",
       "show_attachments_folder": "Ekler Klasörünü Göster",

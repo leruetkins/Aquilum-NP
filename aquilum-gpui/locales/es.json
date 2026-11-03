@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "Archivos y medios",
+      "attachments_section": "Adjuntos",
+      "images_section": "Imágenes",
+      "deletion_section": "Eliminación de archivos",
       "attachments_folder": "Carpeta de archivos adjuntos",
       "attachments_folder_desc": "Dónde se almacenan las imágenes, vídeos y documentos pegados",
       "show_attachments_folder": "Mostrar carpeta de archivos adjuntos",

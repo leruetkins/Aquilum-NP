@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "Tập tin & Phương tiện",
+      "attachments_section": "Tệp đính kèm",
+      "images_section": "Hình ảnh",
+      "deletion_section": "Xóa tệp",
       "attachments_folder": "Thư mục đính kèm",
       "attachments_folder_desc": "Nơi lưu trữ hình ảnh, video và tài liệu đã dán",
       "show_attachments_folder": "Hiển thị thư mục đính kèm",

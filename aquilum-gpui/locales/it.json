@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "File e contenuti multimediali",
+      "attachments_section": "Allegati",
+      "images_section": "Immagini",
+      "deletion_section": "Eliminazione file",
       "attachments_folder": "Cartella Allegati",
       "attachments_folder_desc": "Dove vengono archiviati immagini, video e documenti incollati",
       "show_attachments_folder": "Mostra la cartella degli allegati",

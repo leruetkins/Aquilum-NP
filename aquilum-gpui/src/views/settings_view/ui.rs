@@ -15,6 +15,10 @@ impl SettingsView {
             match event {
                 SettingsEvent::ConfigChanged => {
                     this.config = model.read(cx).config.clone();
+                    if !this.files_folder_editing {
+                        this.files_folder_input
+                            .set_text(this.config.files.folder.clone());
+                    }
                     cx.notify();
                 }
                 SettingsEvent::ThemeChanged => {
@@ -30,6 +34,11 @@ impl SettingsView {
             }
         });
         model_sub.detach();
+
+        let files_folder_focus_handle = cx.focus_handle();
+        let mut files_folder_input =
+            crate::views::text_input::TextInput::new(files_folder_focus_handle.clone());
+        files_folder_input.set_text(config.files.folder.clone());
 
         Self {
             model,
@@ -93,6 +102,10 @@ impl SettingsView {
             toolbar_icon_popup: None,
             toolbar_icon_popup_subscription: None,
             toolbar_drag: None,
+            files_folder_input,
+            files_folder_focus_handle,
+            files_folder_edit_origin: String::new(),
+            files_folder_editing: false,
         }
     }
 
@@ -121,6 +134,8 @@ impl SettingsView {
     /// Must be used for every programmatic close inside SettingsView:
     /// `remove_window()` alone does not trigger `on_window_should_close`.
     pub fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Commit an in-progress folder name before the window goes away.
+        self.commit_files_folder_if_editing(cx);
         if let Some(app) = self.weak_app.upgrade() {
             let _ = app.update(cx, |this, cx| {
                 this.is_settings_open = false;
@@ -165,6 +180,7 @@ impl SettingsView {
     }
 
     pub fn navigate_to_setting(&mut self, setting_id: &str, cx: &mut Context<Self>) {
+        self.commit_files_folder_if_editing(cx);
         if let Some(setting) = get_setting_by_id(setting_id) {
             match setting.tab_id {
                 "ui" => self.settings_tab = SettingsTab::Ui,
@@ -1086,6 +1102,34 @@ impl SettingsView {
             .text_color(theme.text_primary)
             .font_family("Segoe UI")
             .cursor(gpui::CursorStyle::Arrow)
+            // Continue the folder-input selection drag outside its small box, the same
+            // way the sidebar quick filter does from the app root.
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                if this.files_folder_input.is_mouse_selecting {
+                    let before = this.files_folder_input.cursor_pos;
+                    this.files_folder_input
+                        .handle_mouse_move(event, window, 12.0, "Segoe UI");
+                    if this.files_folder_input.cursor_pos != before {
+                        this.files_folder_input.pause_and_show(
+                            |s: &mut SettingsView| &mut s.files_folder_input.blink,
+                            cx,
+                        );
+                    }
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if this.files_folder_input.is_mouse_selecting {
+                    this.files_folder_input.handle_mouse_up();
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if this.files_folder_input.is_mouse_selecting {
+                    this.files_folder_input.handle_mouse_up();
+                    cx.notify();
+                }
+            }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 cx.stop_propagation();
                 this.handle_window_key(event, window, cx);
@@ -1940,6 +1984,7 @@ impl SettingsView {
                                         .child(tab.title(&self.config.ui.language)),
                                 )
                                 .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.commit_files_folder_if_editing(cx);
                                     this.settings_tab = tab_clone.clone();
                                     cx.notify();
                                 }))
@@ -1995,7 +2040,7 @@ impl SettingsView {
                 SettingsTab::Reader => self.render_reader_tab(cx),
                 SettingsTab::Search => self.render_search_tab(cx),
                 SettingsTab::Templates => self.render_templates_tab(cx),
-                SettingsTab::Files => self.render_files_tab(cx),
+                SettingsTab::Files => self.render_files_tab(window, cx),
                 SettingsTab::Analysis => self.render_analysis_tab(cx),
                 SettingsTab::Mcp => self.render_mcp_tab(cx),
                 SettingsTab::History => self.render_history_tab(cx),
@@ -2229,55 +2274,192 @@ impl SettingsView {
         plus: impl Fn(&mut Self, &mut Context<Self>) + 'static,
     ) -> gpui::Div {
         let theme = &self.theme;
+        // Same look as the standard `render_stepper`, plus a disabled state at the
+        // bounds.
         let button = |suffix: &'static str, label: &'static str, enabled: bool| {
             let full_id = format!("{}-{}", id, suffix);
             div()
                 .id(gpui::ElementId::Name(full_id.into()))
-                .w(px(22.0))
-                .h(px(24.0))
                 .flex()
                 .items_center()
                 .justify_center()
+                .w(px(24.0))
+                .h(px(24.0))
                 .rounded_sm()
-                .bg(theme.bg_sidebar)
-                .border_1()
-                .border_color(theme.border)
-                .text_xs()
-                .text_color(if enabled { theme.text_secondary } else { theme.text_muted })
-                .cursor_pointer()
-                .child(label)
+                .when(enabled, |d| {
+                    d.cursor_pointer().hover(|h| h.bg(theme.bg_hover))
+                })
+                .when(!enabled, |d| d.opacity(0.35).cursor_not_allowed())
+                .child(div().text_sm().text_color(theme.text_secondary).child(label))
         };
-        let minus_button = button("minus", "-", minus_enabled).when(minus_enabled, |d| {
-            d.on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
+        let minus_button = button("minus", "−", minus_enabled).on_click(cx.listener(
+            move |this, _, _, cx| {
+                if minus_enabled {
                     minus(this, cx);
-                }),
-            )
-        });
-        let plus_button = button("plus", "+", plus_enabled).when(plus_enabled, |d| {
-            d.on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
+                }
+            },
+        ));
+        let plus_button = button("plus", "+", plus_enabled).on_click(cx.listener(
+            move |this, _, _, cx| {
+                if plus_enabled {
                     plus(this, cx);
-                }),
-            )
-        });
+                }
+            },
+        ));
         div()
             .flex()
             .flex_row()
             .items_center()
             .gap_1()
+            .bg(theme.bg_sidebar)
+            .border_1()
+            .border_color(theme.border)
+            .rounded_md()
+            .p_0p5()
             .child(minus_button)
             .child(
                 div()
-                    .min_w(px(44.0))
+                    .w(px(56.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .text_xs()
-                    .text_center()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.text_primary)
                     .child(value),
             )
             .child(plus_button)
+    }
+
+    /// Renders the editable attachments/images folder name field.
+    pub(super) fn render_files_folder_input(
+        &self,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let theme = &self.theme;
+        let focused = self.files_folder_focus_handle.is_focused(window);
+        let input = self.files_folder_input.render(
+            "",
+            theme,
+            window,
+            window.scale_factor(),
+            12.0,
+            "Segoe UI",
+        );
+
+        div()
+            .id("files-folder-input")
+            .track_focus(&self.files_folder_focus_handle)
+            .flex()
+            .flex_row()
+            .items_center()
+            .w(px(220.0))
+            .h(px(28.0))
+            .px_2()
+            .bg(theme.bg_sidebar)
+            .border_1()
+            .border_color(if focused { theme.accent } else { theme.border })
+            .rounded_md()
+            .cursor(gpui::CursorStyle::IBeam)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    window.focus(&this.files_folder_focus_handle);
+                    this.files_folder_editing = true;
+                    this.files_folder_edit_origin = this.config.files.folder.clone();
+                    this.files_folder_input.handle_mouse_down(event, window, 12.0, "Segoe UI");
+                    this.files_folder_input.enable_blink(
+                        |s: &mut SettingsView| &mut s.files_folder_input.blink,
+                        cx,
+                    );
+                    this.files_folder_input.pause_and_show(
+                        |s: &mut SettingsView| &mut s.files_folder_input.blink,
+                        cx,
+                    );
+                    cx.notify();
+                }),
+            )
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                cx.stop_propagation();
+                let key = event.keystroke.key.as_str();
+                if key == "enter" {
+                    this.commit_files_folder(cx);
+                    window.focus(&this.focus_handle);
+                    return;
+                }
+                if key == "escape" {
+                    let origin = this.files_folder_edit_origin.clone();
+                    this.config.files.folder = origin.clone();
+                    this.files_folder_input.set_text(origin);
+                    this.files_folder_input.selection_anchor = None;
+                    this.files_folder_input.is_mouse_selecting = false;
+                    this.files_folder_input.disable_blink(cx);
+                    this.files_folder_editing = false;
+                    this.save_settings(cx);
+                    window.focus(&this.focus_handle);
+                    cx.notify();
+                    return;
+                }
+                if this.files_folder_input.handle_key_down(event, cx) {
+                    this.files_folder_input.pause_and_show(
+                        |s: &mut SettingsView| &mut s.files_folder_input.blink,
+                        cx,
+                    );
+                }
+                cx.notify();
+            }))
+            .child(input)
+    }
+
+    /// A folder name must be a single, non-empty path segment.
+    fn files_folder_name_is_valid(name: &str) -> bool {
+        !name.is_empty()
+            && name != "."
+            && name != ".."
+            && !name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
+    }
+
+    /// Commits the folder field before leaving the Files section or closing settings.
+    pub(super) fn commit_files_folder_if_editing(&mut self, cx: &mut Context<Self>) {
+        if self.files_folder_editing {
+            self.commit_files_folder(cx);
+        }
+    }
+
+    /// Commits the folder-name input. Invalid names fall back to the saved value.
+    pub(super) fn commit_files_folder(&mut self, cx: &mut Context<Self>) {
+        self.files_folder_editing = false;
+        self.files_folder_input.selection_anchor = None;
+        self.files_folder_input.is_mouse_selecting = false;
+        self.files_folder_input.disable_blink(cx);
+        let name = self.files_folder_input.text().trim().to_string();
+
+        if !Self::files_folder_name_is_valid(&name) {
+            self.files_folder_input
+                .set_text(self.config.files.folder.clone());
+            cx.notify();
+            return;
+        }
+
+        if self.config.files.folder != name {
+            self.config.files.folder = name.clone();
+            self.save_settings(cx);
+        }
+
+        if let Some(app) = self.weak_app.upgrade() {
+            let root = app.read(cx).state.workspace_path.clone();
+            if let Some(root) = root {
+                let _ = std::fs::create_dir_all(root.join(&name));
+            }
+            app.update(cx, |app, cx| {
+                app.state.reload_file_tree();
+                cx.notify();
+            });
+        }
+        self.files_folder_input.set_text(name);
+        cx.notify();
     }
 
     pub(super) fn render_toggle_switch(&self, checked: bool) -> gpui::Div {

@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "ファイルとメディア",
+      "attachments_section": "添付ファイル",
+      "images_section": "画像",
+      "deletion_section": "ファイルの削除",
       "attachments_folder": "添付ファイルフォルダー",
       "attachments_folder_desc": "貼り付けた画像、ビデオ、ドキュメントの保存場所",
       "show_attachments_folder": "添付ファイルフォルダーを表示",

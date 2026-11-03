@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "Soubory a média",
+      "attachments_section": "Přílohy",
+      "images_section": "Obrázky",
+      "deletion_section": "Mazání souborů",
       "attachments_folder": "Složka příloh",
       "attachments_folder_desc": "Kde jsou uloženy vložené obrázky, videa a dokumenty",
       "show_attachments_folder": "Zobrazit složku Přílohy",

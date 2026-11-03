@@ -143,7 +143,12 @@ impl AppView {
                     v
                 });
 
+                let view_for_close = view.downgrade();
+
                 window.on_window_should_close(cx, move |window, cx| {
+                    if let Some(view) = view_for_close.upgrade() {
+                        view.update(cx, |view, cx| view.commit_files_folder_if_editing(cx));
+                    }
                     let is_maximized = window.is_maximized();
                     let bounds = window.bounds();
                     let mut state = crate::state::WindowState::load_file(&save_path);
@@ -256,6 +261,7 @@ impl SettingsWindowManager {
             if existing
                 .update(cx, |view, window, cx| {
                     window.activate_window();
+                    view.commit_files_folder_if_editing(cx);
                     if let Some(tab) = target_tab {
                         view.settings_tab = tab;
                     }
@@ -312,7 +318,12 @@ impl SettingsWindowManager {
                 v
             });
 
+            let view_for_close = view.downgrade();
+
             window.on_window_should_close(cx, move |window, cx| {
+                if let Some(view) = view_for_close.upgrade() {
+                    view.update(cx, |view, cx| view.commit_files_folder_if_editing(cx));
+                }
                 let is_maximized = window.is_maximized();
                 let bounds = window.bounds();
                 let mut state = crate::state::WindowState::load_file(&save_path);
@@ -351,7 +362,8 @@ impl SettingsWindowManager {
 
     pub fn close_if_open(&mut self, cx: &mut App) {
         if let Some(handle) = self.window.take() {
-            let _ = handle.update(cx, |_view, window, _cx| {
+            let _ = handle.update(cx, |view, window, cx| {
+                view.commit_files_folder_if_editing(cx);
                 window.remove_window();
             });
         }
@@ -454,6 +466,12 @@ pub struct SettingsView {
     pub toolbar_icon_popup_subscription: Option<Subscription>,
     /// Drag state of the editor-toolbar item list (reorder by dragging a row).
     pub toolbar_drag: Option<plugin_toolbar::SettingsToolbarDragState>,
+    /// Inline editor for the attachments/images folder name (`config.files.folder`).
+    pub files_folder_input: crate::views::text_input::TextInput,
+    pub files_folder_focus_handle: FocusHandle,
+    /// Folder name at the moment editing started, so Escape can restore it.
+    pub files_folder_edit_origin: String,
+    pub files_folder_editing: bool,
 }
 
 /// Encapsulates the complete state of the settings search input (based on quick_filter.rs).

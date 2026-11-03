@@ -173,6 +173,9 @@
     },
     "files": {
       "title": "Pliki i multimedia",
+      "attachments_section": "Załączniki",
+      "images_section": "Obrazy",
+      "deletion_section": "Usuwanie plików",
       "attachments_folder": "Folder Załączniki",
       "attachments_folder_desc": "Miejsce przechowywania wklejonych obrazów, filmów i dokumentów",
       "show_attachments_folder": "Pokaż folder załączników",
