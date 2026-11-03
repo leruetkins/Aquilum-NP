@@ -323,6 +323,7 @@
     "toolbar": {
       "back": "Zpět k hlavním pluginům",
       "title": "Panel nástrojů editoru",
+      "open_settings": "Přizpůsobit",
       "desc": "Přizpůsobte tlačítka formátování, vnořené rozevírací skupiny a oddělovače nad editorem.",
       "add_button": "+ Tlačítko",
       "add_dropdown": "+ Rozbalovací nabídka ▾",

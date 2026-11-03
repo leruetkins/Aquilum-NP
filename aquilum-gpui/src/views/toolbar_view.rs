@@ -33,6 +33,14 @@ pub struct ToolbarViewState {
     pub hovered_tooltip: Option<ToolbarTooltipInfo>,
 }
 
+/// Context menu opened by right-clicking the empty part of a toolbar strip.
+#[derive(Clone, Debug, Default)]
+pub struct ToolbarContextMenuState {
+    pub is_open: bool,
+    pub position_x: f32,
+    pub position_y: f32,
+}
+
 /// Active drag of a toolbar icon.
 #[derive(Clone, Debug)]
 pub struct ToolbarDragState {
@@ -95,6 +103,25 @@ impl AppView {
     pub fn close_toolbar_dropdown(&mut self, cx: &mut Context<Self>) {
         if self.toolbar_view.open_dropdown.is_some() {
             self.toolbar_view.open_dropdown = None;
+            cx.notify();
+        }
+    }
+
+    /// Opens the toolbar context menu at window coordinates.
+    pub fn open_toolbar_context_menu(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
+        self.close_toolbar_dropdown(cx);
+        self.toolbar_context_menu = ToolbarContextMenuState {
+            is_open: true,
+            position_x: x,
+            position_y: y,
+        };
+        cx.notify();
+    }
+
+    /// Closes the toolbar context menu.
+    pub fn close_toolbar_context_menu(&mut self, cx: &mut Context<Self>) {
+        if self.toolbar_context_menu.is_open {
+            self.toolbar_context_menu.is_open = false;
             cx.notify();
         }
     }
@@ -284,6 +311,99 @@ impl AppView {
         Some(container)
     }
 
+    /// Renders the context menu shown by right-clicking the empty toolbar area.
+    pub fn render_toolbar_context_menu(
+        &self,
+        theme: &Theme,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let menu_w = 240.0;
+        let menu_h = 44.0;
+        let bounds = window.bounds();
+        let win_w = f32::from(bounds.size.width);
+        let win_h = f32::from(bounds.size.height);
+        let menu_x = self
+            .toolbar_context_menu
+            .position_x
+            .clamp(8.0, (win_w - menu_w - 8.0).max(8.0));
+        let menu_y = self
+            .toolbar_context_menu
+            .position_y
+            .clamp(8.0, (win_h - menu_h - 8.0).max(8.0));
+        let label = self.t("settings.toolbar.open_settings");
+
+        div()
+            .id("toolbar-context-overlay")
+            .absolute()
+            .inset_0()
+            .cursor(gpui::CursorStyle::Arrow)
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.close_toolbar_context_menu(cx);
+            }))
+            .on_mouse_down(MouseButton::Right, cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.close_toolbar_context_menu(cx);
+            }))
+            .on_mouse_move(|_, _, cx| cx.stop_propagation())
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .id("toolbar-context-panel")
+                    .absolute()
+                    .left(px(menu_x))
+                    .top(px(menu_y))
+                    .w(px(menu_w))
+                    .bg(theme.bg_sidebar)
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded_lg()
+                    .shadow_xl()
+                    .p_1()
+                    .flex()
+                    .flex_col()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_move(|_, _, cx| cx.stop_propagation())
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .id("toolbar-context-settings")
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .px_2p5()
+                            .py_1p5()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(|h| h.bg(theme.bg_hover))
+                            .child(icons::icon(
+                                icons::ICON_SETTINGS,
+                                14.0,
+                                theme.text_secondary,
+                            ))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.text_primary)
+                                    .child(label),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.close_toolbar_context_menu(cx);
+                                this.open_settings(
+                                    Some(crate::views::settings_view::SettingsTab::PluginSettings(
+                                        crate::plugins::editor_toolbar::TOOLBAR_PLUGIN_ID
+                                            .to_string(),
+                                    )),
+                                    cx,
+                                );
+                            })),
+                    ),
+            )
+    }
+
     /// Renders a single horizontal toolbar strip with overflow support.
     fn render_single_toolbar_strip(
         &self,
@@ -366,6 +486,7 @@ impl AppView {
         let mut strip = div()
             .id(SharedString::from(format!("toolbar-strip-{}", toolbar_id)))
             .relative()
+            .w_full()
             .flex()
             .flex_row()
             .items_center()
@@ -555,6 +676,23 @@ impl AppView {
                         cx.notify();
                     }
                 }
+            }
+        }));
+
+        // Right-click on the empty part of the strip opens the toolbar menu. Clicks on an
+        // icon keep their normal behaviour.
+        strip = strip.on_mouse_down(MouseButton::Right, cx.listener({
+            let slots = item_slots.clone();
+            move |this, event: &gpui::MouseDownEvent, _, cx| {
+                let x: f32 = event.position.x.into();
+                if slots.iter().any(|(left, right, _, _)| x >= *left && x < *right) {
+                    return;
+                }
+                this.open_toolbar_context_menu(
+                    event.position.x.into(),
+                    event.position.y.into(),
+                    cx,
+                );
             }
         }));
 

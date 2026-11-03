@@ -323,6 +323,7 @@
     "toolbar": {
       "back": "Zurück zu den Kern-Plugins",
       "title": "Editor-Symbolleiste",
+      "open_settings": "Anpassen",
       "desc": "Passen Sie Formatierungsschaltflächen, verschachtelte Dropdown-Gruppen und Trennzeichen über dem Editor an.",
       "add_button": "+-Taste",
       "add_dropdown": "+ Dropdown ▾",

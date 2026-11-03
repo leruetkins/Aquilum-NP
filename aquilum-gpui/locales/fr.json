@@ -323,6 +323,7 @@
     "toolbar": {
       "back": "Retour aux plugins principaux",
       "title": "Barre d'outils de l'éditeur",
+      "open_settings": "Personnaliser",
       "desc": "Personnalisez les boutons de mise en forme, les groupes déroulants imbriqués et les séparateurs au-dessus de l'éditeur.",
       "add_button": "+ Bouton",
       "add_dropdown": "+ Liste déroulante ▾",

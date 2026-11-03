@@ -1668,6 +1668,10 @@ if let Some(new_scroll) = new_active_scroll {
             .when_some(self.render_ribbon_drag_ghost(theme), |d, ghost| {
                 d.child(ghost)
             })
+            // ================= TOOLBAR CONTEXT MENU =================
+            .when(self.toolbar_context_menu.is_open, |d| {
+                d.child(self.render_toolbar_context_menu(theme, window, cx))
+            })
             // ================= TOOLBAR DRAG GHOST =================
             .when_some(self.render_toolbar_drag_ghost(theme), |d, ghost| {
                 d.child(ghost)

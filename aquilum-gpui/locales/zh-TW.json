@@ -323,6 +323,7 @@
     "toolbar": {
       "back": "回到核心插件",
       "title": "編輯器工具列",
+      "open_settings": "自訂",
       "desc": "自訂編輯器上方的格式化按鈕、巢狀下拉群組和分隔符號。",
       "add_button": "+ 按鈕",
       "add_dropdown": "+ 下拉式選單 ▾",

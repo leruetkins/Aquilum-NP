@@ -323,6 +323,7 @@
     "toolbar": {
       "back": "Temel eklentilere geri dön",
       "title": "Düzenleyici Araç Çubuğu",
+      "open_settings": "Özelleştir",
       "desc": "Düzenleyicinin üzerindeki biçimlendirme düğmelerini, iç içe açılır grupları ve ayırıcıları özelleştirin.",
       "add_button": "+ Düğmesi",
       "add_dropdown": "+ Açılır menü ▾",

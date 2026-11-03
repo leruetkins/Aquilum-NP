@@ -323,6 +323,7 @@
     "toolbar": {
       "back": "Tillbaka till kärnplugins",
       "title": "Redigerarens verktygsfält",
+      "open_settings": "Anpassa",
       "desc": "Anpassa formateringsknappar, kapslade rullgardinsgrupper och separatorer ovanför redigeraren.",
       "add_button": "+-knapp",
       "add_dropdown": "+ Rullgardinsmeny ▾",

@@ -323,6 +323,7 @@
     "toolbar": {
       "back": "Volver a los complementos principales",
       "title": "Barra de herramientas del editor",
+      "open_settings": "Personalizar",
       "desc": "Personalice los botones de formato, los grupos desplegables anidados y los separadores encima del editor.",
       "add_button": "+ Botón",
       "add_dropdown": "+ Menú desplegable ▾",

@@ -323,6 +323,7 @@
     "toolbar": {
       "back": "Torniamo ai plugin principali",
       "title": "Barra degli strumenti dell'editor",
+      "open_settings": "Personalizza",
       "desc": "Personalizza i pulsanti di formattazione, i gruppi a discesa nidificati e i separatori sopra l'editor.",
       "add_button": "+Pulsante",
       "add_dropdown": "+ Menu a discesa ▾",

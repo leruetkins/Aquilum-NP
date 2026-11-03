@@ -323,6 +323,7 @@
     "toolbar": {
       "back": "Voltar aos plug-ins principais",
       "title": "Barra de ferramentas do editor",
+      "open_settings": "Personalizar",
       "desc": "Personalize botões de formatação, grupos suspensos aninhados e separadores acima do editor.",
       "add_button": "+ Botão",
       "add_dropdown": "+ Menu suspenso ▾",

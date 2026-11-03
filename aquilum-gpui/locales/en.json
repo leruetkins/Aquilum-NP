@@ -323,6 +323,7 @@
     "toolbar": {
       "back": "Back to core plugins",
       "title": "Editor Toolbar",
+      "open_settings": "Customize",
       "desc": "Customize formatting buttons, nested dropdown groups, and separators above the editor.",
       "add_button": "+ Button",
       "add_dropdown": "+ Dropdown ▾",

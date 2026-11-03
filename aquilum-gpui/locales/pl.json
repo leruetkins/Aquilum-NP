@@ -323,6 +323,7 @@
     "toolbar": {
       "back": "Powrót do podstawowych wtyczek",
       "title": "Pasek narzędzi edytora",
+      "open_settings": "Dostosuj",
       "desc": "Dostosuj przyciski formatowania, zagnieżdżone grupy rozwijane i separatory nad edytorem.",
       "add_button": "+ Przycisk",
       "add_dropdown": "+ Lista rozwijana ▾",

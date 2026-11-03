@@ -323,6 +323,7 @@
     "toolbar": {
       "back": "Terug naar de kernplug-ins",
       "title": "Editor-werkbalk",
+      "open_settings": "Aanpassen",
       "desc": "Pas opmaakknoppen, geneste vervolgkeuzegroepen en scheidingstekens boven de editor aan.",
       "add_button": "+ Knop",
       "add_dropdown": "+ Vervolgkeuzelijst ▾",
