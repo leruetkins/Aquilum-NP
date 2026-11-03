@@ -130,7 +130,7 @@
       "debounce_desc": "Prodleva po zápisu před uložením na disk",
       "debounce_unit": "{} ms",
       "note_width": "Šířka poznámky",
-      "note_width_desc": "Šířka sloupce poznámky v procentech šířky okna (0–100%)",
+      "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
       "note_align": "Zarovnání poznámky",
       "note_align_desc": "Vodorovné zarovnání sloupce poznámky: na střed nebo vlevo",
       "align_center": "Na střed",
@@ -788,7 +788,7 @@
       "example": "Příklad",
       "quote": "Citace"
     },
-    "note_width": "Šířka poznámky: {}%",
+    "note_width": "Šířka poznámky: {} px",
     "note_width_reset": "Obnovit šířku poznámky (100%)",
     "context": {
       "insert_link": "Vložit odkaz",

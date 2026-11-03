@@ -130,7 +130,7 @@
       "debounce_desc": "Wartezeit nach Texteingabe vor dem Schreiben auf Festplatte",
       "debounce_unit": "{} MS",
       "note_width": "Notizspaltenbreite",
-      "note_width_desc": "Breite der Notizspalte in Prozent der Fensterbreite (0–100%)",
+      "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
       "note_align": "Notizausrichtung",
       "note_align_desc": "Horizontale Ausrichtung der Notizspalte: zentriert oder linksbündig",
       "align_center": "Zentriert",
@@ -788,7 +788,7 @@
       "example": "Beispiel",
       "quote": "Zitat"
     },
-    "note_width": "Notizbreite: {}%",
+    "note_width": "Notizbreite: {} px",
     "note_width_reset": "Notizbreite zurücksetzen (100%)",
     "context": {
       "insert_link": "Link einfügen",

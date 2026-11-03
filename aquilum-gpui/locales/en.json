@@ -132,7 +132,7 @@
       "debounce_desc": "Timeout after typing before saving to disk",
       "debounce_unit": "{} ms",
       "note_width": "Note Column Width",
-      "note_width_desc": "Width of the note content column as a percentage of the window (0-100%)",
+      "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
       "note_align": "Note Alignment",
       "note_align_desc": "Horizontal alignment of the note column: centered or left-aligned",
       "align_center": "Center",
@@ -774,7 +774,7 @@
       "example": "Example",
       "quote": "Quote"
     },
-    "note_width": "Note width: {}%",
+    "note_width": "Note width: {} px",
     "note_width_reset": "Reset note width (100%)",
     "context": {
       "insert_link": "Insert link",

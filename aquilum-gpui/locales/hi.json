@@ -130,7 +130,7 @@
       "debounce_desc": "टाइप करने के बाद डिस्क पर लिखने से पहले विलंब",
       "debounce_unit": "{} मिलीसेकंड",
       "note_width": "नोट की चौड़ाई",
-      "note_width_desc": "विंडो की चौड़ाई के प्रतिशत के रूप में नोट कॉलम की चौड़ाई (0-100%)",
+      "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
       "note_align": "नोट संरेखण",
       "note_align_desc": "नोट कॉलम का क्षैतिज संरेखण: केंद्र या बाएँ",
       "align_center": "केंद्र",
@@ -788,7 +788,7 @@
       "example": "उदाहरण",
       "quote": "उद्धरण"
     },
-    "note_width": "नोट की चौड़ाई: {}%",
+    "note_width": "नोट की चौड़ाई: {} px",
     "note_width_reset": "नोट की चौड़ाई रीसेट करें (100%)",
     "context": {
       "insert_link": "लिंक डालें",

@@ -130,7 +130,7 @@
       "debounce_desc": "Wachttijd na typen alvorens op te slaan naar schijf",
       "debounce_unit": "{} ms",
       "note_width": "Notitiebreedte",
-      "note_width_desc": "Breedte van de notitiekolom in procenten van het venster (0-100%)",
+      "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
       "note_align": "Notitie-uitlijning",
       "note_align_desc": "Horizontale uitlijning van de notitiekolom: gecentreerd of links",
       "align_center": "Gecentreerd",
@@ -788,7 +788,7 @@
       "example": "Voorbeeld",
       "quote": "Citaat"
     },
-    "note_width": "Notitiebreedte: {}%",
+    "note_width": "Notitiebreedte: {} px",
     "note_width_reset": "Notitiebreedte resetten (100%)",
     "context": {
       "insert_link": "Link invoegen",

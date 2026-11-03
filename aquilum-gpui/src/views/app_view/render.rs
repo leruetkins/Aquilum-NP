@@ -3,6 +3,8 @@ use super::*;
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         log_fps_tick();
+        self.window_width_px = f32::from(window.viewport_size().width);
+        self.refresh_monitor_width(window, cx);
         self.ensure_inactive_views_built(window, cx);
 
         // Advance the optional wheel ease before anything else touches the

@@ -1,6 +1,17 @@
 use super::*;
 
 impl SettingsView {
+    /// Pixels the editor will use at the current slider position in the main
+    /// window, so the settings stepper matches the status bar.
+    fn note_width_preview_px(&self, cx: &Context<Self>) -> u32 {
+        self.weak_app
+            .upgrade()
+            .map(|app| {
+                let app = app.read(cx);
+                app.active_note_width_px(self.config.editor.editor_width_pct, app.window_width_px)
+            })
+            .unwrap_or(1700)
+    }
 
     // =========================================================================
     // 1. Interface (Ui) Tab
@@ -240,7 +251,7 @@ impl SettingsView {
                 Some(&self.t("settings.editor.note_width_desc")),
                 self.render_stepper(
                     "ui-note-width",
-                    &self.t_fmt("settings.units.percent", &[&config.editor.editor_width_pct.to_string()]),
+                    &self.t_fmt("settings.units.px", &[&self.note_width_preview_px(cx).to_string()]),
                     |this: &mut SettingsView, cx| {
                         if this.config.editor.editor_width_pct > 0 {
                             this.config.editor.editor_width_pct = this.config.editor.editor_width_pct.saturating_sub(5);
@@ -849,7 +860,7 @@ impl SettingsView {
                 Some(&self.t("settings.editor.note_width_desc")),
                 self.render_stepper(
                     "editor-note-width",
-                    &self.t_fmt("settings.units.percent", &[&config.editor.editor_width_pct.to_string()]),
+                    &self.t_fmt("settings.units.px", &[&self.note_width_preview_px(cx).to_string()]),
                     |this: &mut SettingsView, cx| {
                         if this.config.editor.editor_width_pct > 0 {
                             this.config.editor.editor_width_pct = this.config.editor.editor_width_pct.saturating_sub(5);

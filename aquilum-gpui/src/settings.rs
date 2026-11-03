@@ -193,6 +193,58 @@ impl TitleAlignment {
     }
 }
 
+/// The note column is 500 px at slider position 0. Positions 1..=98
+/// interpolate linearly towards the display-dependent maximum; position 99 is
+/// that maximum; position 100 takes the window's full editor width.
+pub const NOTE_WIDTH_MIN_PX: u32 = 500;
+
+/// Slider-99 maximum on a display whose logical width is
+/// [`NOTE_WIDTH_REFERENCE_PX`] or narrower.
+pub const NOTE_WIDTH_MAX_AT_REFERENCE_PX: u32 = 1700;
+pub const NOTE_WIDTH_REFERENCE_PX: f32 = 1920.0;
+pub const NOTE_WIDTH_EXTRA_RATIO: f32 = 0.25;
+pub const NOTE_WIDTH_EXTRA_CAP_PX: f32 = 400.0;
+
+/// Slider positions the status-bar badge cycles through on click.
+pub const NOTE_WIDTH_PRESETS: [u32; 4] = [30, 45, 80, 100];
+
+/// Slider-99 width for this display. The width is logical (physical resolution
+/// divided by the OS scale), so 4K at 175 % behaves like a 2194 px display.
+/// Ultrawide and other wide displays get `(logical_width - 1920) * 0.25` extra
+/// pixels, capped at 400.
+pub fn note_width_max_px(display_width: f32) -> u32 {
+    let extra = ((display_width - NOTE_WIDTH_REFERENCE_PX).max(0.0) * NOTE_WIDTH_EXTRA_RATIO)
+        .min(NOTE_WIDTH_EXTRA_CAP_PX)
+        .round() as u32;
+    NOTE_WIDTH_MAX_AT_REFERENCE_PX + extra
+}
+
+/// `display_width` is the logical width of the monitor; `window_max_width` is
+/// the slider-100 width for the current window (measured from the window, not
+/// from a split pane).
+pub fn note_width_px(slider: u32, display_width: f32, window_max_width: f32) -> u32 {
+    let slider = slider.min(100);
+    let table_max = note_width_max_px(display_width);
+    if slider == 100 {
+        return (window_max_width.round() as u32).max(table_max);
+    }
+    if slider == 99 {
+        return table_max;
+    }
+    let min = NOTE_WIDTH_MIN_PX as f32;
+    (min + (table_max as f32 - min) * slider as f32 / 100.0).round() as u32
+}
+
+/// Next preset in the click cycle. A position that is not a preset (set by
+/// dragging or scrolling the slider) snaps back to the first preset.
+pub fn next_note_width_preset(current: u32) -> u32 {
+    NOTE_WIDTH_PRESETS
+        .iter()
+        .position(|&preset| preset == current)
+        .map(|index| NOTE_WIDTH_PRESETS[(index + 1) % NOTE_WIDTH_PRESETS.len()])
+        .unwrap_or(NOTE_WIDTH_PRESETS[0])
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct EditorSettings {
@@ -231,7 +283,9 @@ pub struct EditorSettings {
     /// Off by default.
     #[serde(default)]
     pub show_invisibles: bool,
-    /// Note content width percentage (0..=100, where 100 is full width). Default is 100.
+    /// Status-bar slider position (0..=100). Positions 1..=98 follow the
+    /// display-dependent table, 99 is its maximum, and 100 takes the window's
+    /// full editor width. Default is 100.
     pub editor_width_pct: u32,
     /// Note alignment inside the editor pane (Center or Left). Default is Center.
     pub note_align: NoteAlignment,

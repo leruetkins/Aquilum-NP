@@ -130,7 +130,7 @@
       "debounce_desc": "Délai d'inactivité après la saisie avant l'enregistrement sur disque",
       "debounce_unit": "{} MS",
       "note_width": "Largeur de la note",
-      "note_width_desc": "Largeur de la colonne de note en pourcentage de la fenêtre (0-100%)",
+      "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
       "note_align": "Alignement de la note",
       "note_align_desc": "Alignement horizontal de la note : centré ou à gauche",
       "align_center": "Centré",
@@ -788,7 +788,7 @@
       "example": "Exemple",
       "quote": "Citation"
     },
-    "note_width": "Largeur de la note : {}%",
+    "note_width": "Largeur de la note : {} px",
     "note_width_reset": "Réinitialiser la largeur de la note (100%)",
     "context": {
       "insert_link": "Insérer un lien",

@@ -130,7 +130,7 @@
       "debounce_desc": "Tempo di attesa dopo la digitazione prima del salvataggio su disco",
       "debounce_unit": "{} SM",
       "note_width": "Larghezza della nota",
-      "note_width_desc": "Larghezza della colonna della nota in percentuale della finestra (0-100%)",
+      "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
       "note_align": "Allineamento della nota",
       "note_align_desc": "Allineamento orizzontale della nota: al centro o a sinistra",
       "align_center": "Al centro",
@@ -788,7 +788,7 @@
       "example": "Esempio",
       "quote": "Citazione"
     },
-    "note_width": "Larghezza della nota: {}%",
+    "note_width": "Larghezza della nota: {} px",
     "note_width_reset": "Reimposta larghezza nota (100%)",
     "context": {
       "insert_link": "Inserisci collegamento",

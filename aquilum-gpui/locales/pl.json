@@ -130,7 +130,7 @@
       "debounce_desc": "Czas oczekiwania po wpisaniu tekstu przed zapisaniem na dysk",
       "debounce_unit": "{} SM",
       "note_width": "Szerokość notatki",
-      "note_width_desc": "Szerokość kolumny notatki w procentach szerokości okna (0–100%)",
+      "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
       "note_align": "Wyrównanie notatki",
       "note_align_desc": "Wyrównanie poziome kolumny notatki: do środka lub do lewej",
       "align_center": "Środek",
@@ -788,7 +788,7 @@
       "example": "Przykład",
       "quote": "Cytat"
     },
-    "note_width": "Szerokość notatki: {}%",
+    "note_width": "Szerokość notatki: {} px",
     "note_width_reset": "Zresetuj szerokość notatki (100%)",
     "context": {
       "insert_link": "Wstaw link",

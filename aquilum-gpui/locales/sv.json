@@ -130,7 +130,7 @@
       "debounce_desc": "Tidsgräns efter inmatning innan skrivning till disk",
       "debounce_unit": "{} ms",
       "note_width": "Anteckningsbredd",
-      "note_width_desc": "Anteckningskolumnens bredd som en procentandel av fönstret (0–100 %)",
+      "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
       "note_align": "Anteckningsjustering",
       "note_align_desc": "Horisontell justering av anteckningskolumnen: centrerad eller vänsterställd",
       "align_center": "Centrerad",
@@ -788,7 +788,7 @@
       "example": "Exempel",
       "quote": "Citat"
     },
-    "note_width": "Anteckningsbredd: {}%",
+    "note_width": "Anteckningsbredd: {} px",
     "note_width_reset": "Återställ anteckningsbredd (100%)",
     "context": {
       "insert_link": "Infoga länk",

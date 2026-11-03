@@ -103,6 +103,41 @@
     }
 
     #[test]
+    fn test_note_width_px_scale_and_presets() {
+        // Table values: 500 at 0, linear up to the display maximum at 99.
+        assert_eq!(crate::settings::note_width_px(0, 1920.0, 1794.0), 500);
+        assert_eq!(crate::settings::note_width_px(30, 1920.0, 1794.0), 860);
+        assert_eq!(crate::settings::note_width_px(45, 1920.0, 1794.0), 1040);
+        assert_eq!(crate::settings::note_width_px(80, 1920.0, 1794.0), 1460);
+        assert_eq!(crate::settings::note_width_px(99, 1920.0, 1794.0), 1700);
+        assert_eq!(crate::settings::note_width_px(100, 1920.0, 1794.0), 1794);
+
+        assert_eq!(crate::settings::note_width_px(30, 2560.0, 2434.0), 908);
+        assert_eq!(crate::settings::note_width_px(45, 2560.0, 2434.0), 1112);
+        assert_eq!(crate::settings::note_width_px(80, 2560.0, 2434.0), 1588);
+        assert_eq!(crate::settings::note_width_px(99, 2560.0, 2434.0), 1860);
+
+        assert_eq!(crate::settings::note_width_px(45, 3440.0, 3314.0), 1211);
+        assert_eq!(crate::settings::note_width_px(99, 3440.0, 3314.0), 2080);
+        assert_eq!(crate::settings::note_width_px(99, 5120.0, 4994.0), 2100);
+
+        // 4K at 175 % is 2194 logical px, so its maximum is 1700 + 69.
+        assert_eq!(crate::settings::note_width_px(99, 2194.0, 2068.0), 1769);
+        assert_eq!(crate::settings::note_width_px(100, 2194.0, 2068.0), 2068);
+
+        // 100 takes the window width but never drops below the slider-99 max.
+        assert_eq!(crate::settings::note_width_px(100, 1920.0, 1200.0), 1700);
+        assert_eq!(crate::settings::note_width_px(150, 1920.0, 1794.0), 1794);
+
+        assert_eq!(crate::settings::next_note_width_preset(30), 45);
+        assert_eq!(crate::settings::next_note_width_preset(45), 80);
+        assert_eq!(crate::settings::next_note_width_preset(80), 100);
+        assert_eq!(crate::settings::next_note_width_preset(100), 30);
+        // Positions outside the presets (slider drag / wheel) snap to the first.
+        assert_eq!(crate::settings::next_note_width_preset(63), 30);
+    }
+
+    #[test]
     fn test_editor_width_pct_default_and_serde() {
         let default_settings = EditorSettings::default();
         assert_eq!(default_settings.editor_width_pct, 100);
@@ -112,7 +147,7 @@
         let parsed: EditorSettings = serde_json::from_str(json_empty).unwrap();
         assert_eq!(parsed.editor_width_pct, 100);
 
-        // Deserializing with custom percentage (e.g. 45 from slider)
+        // Deserializing with a custom slider position (e.g. 45 from the status bar)
         let json_custom = r#"{"editorWidthPct": 45}"#;
         let parsed_custom: EditorSettings = serde_json::from_str(json_custom).unwrap();
         assert_eq!(parsed_custom.editor_width_pct, 45);

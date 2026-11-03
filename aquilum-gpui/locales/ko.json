@@ -130,7 +130,7 @@
       "debounce_desc": "입력 후 디스크에 저장하기 전의 대기 시간",
       "debounce_unit": "{}밀리초",
       "note_width": "노트 열 너비",
-      "note_width_desc": "창 너비 대비 노트 열 너비 비율 (0~100%)",
+      "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
       "note_align": "노트 정렬",
       "note_align_desc": "노트 열의 가로 정렬: 가운데 또는 왼쪽 정렬",
       "align_center": "가운데",
@@ -788,7 +788,7 @@
       "example": "예시",
       "quote": "인용"
     },
-    "note_width": "노트 너비: {}%",
+    "note_width": "노트 너비: {} px",
     "note_width_reset": "노트 너비 초기화 (100%)",
     "context": {
       "insert_link": "링크 삽입",

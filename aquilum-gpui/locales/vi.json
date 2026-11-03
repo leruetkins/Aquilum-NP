@@ -130,7 +130,7 @@
       "debounce_desc": "Thời gian chờ sau khi nhập trước khi ghi vào đĩa",
       "debounce_unit": "{} bệnh đa xơ cứng",
       "note_width": "Độ rộng cột ghi chú",
-      "note_width_desc": "Độ rộng cột ghi chú theo tỷ lệ phần trăm cửa sổ (0-100%)",
+      "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
       "note_align": "Căn chỉnh ghi chú",
       "note_align_desc": "Căn chỉnh ngang của cột ghi chú: căn giữa hoặc sang trái",
       "align_center": "Giữa",
@@ -788,7 +788,7 @@
       "example": "Ví dụ",
       "quote": "Trích dẫn"
     },
-    "note_width": "Chiều rộng ghi chú: {}%",
+    "note_width": "Chiều rộng ghi chú: {} px",
     "note_width_reset": "Đặt lại chiều rộng ghi chú (100%)",
     "context": {
       "insert_link": "Chèn liên kết",

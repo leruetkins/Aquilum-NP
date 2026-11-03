@@ -130,7 +130,7 @@
       "debounce_desc": "Yazdıktan sonra diske kaydedilmeden önceki bekleme süresi",
       "debounce_unit": "{} ms",
       "note_width": "Not Genişliği",
-      "note_width_desc": "Pencere genişliğinin yüzdesi olarak not sütunu genişliği (%0-100)",
+      "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
       "note_align": "Not Hizalama",
       "note_align_desc": "Not sütununun yatay hizalaması: ortalı veya sola hizalı",
       "align_center": "Ortala",
@@ -788,7 +788,7 @@
       "example": "Örnek",
       "quote": "Alıntı"
     },
-    "note_width": "Not genişliği: %{}",
+    "note_width": "Not genişliği: {} px",
     "note_width_reset": "Not genişliğini sıfırla (%100)",
     "context": {
       "insert_link": "Bağlantı ekle",

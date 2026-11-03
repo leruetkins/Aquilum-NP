@@ -1488,29 +1488,17 @@
         config.editor.editor_width_pct = 100;
 
         let max_w = 1200.0f32;
-        let pct = config.editor.editor_width_pct;
-        let content_w = if pct >= 100 {
-            max_w
-        } else {
-            let min_w = 400.0f32.min(max_w);
-            (min_w + (max_w - min_w) * (pct as f32 / 100.0)).clamp(min_w, max_w)
-        };
+        let content_w = (crate::settings::note_width_px(config.editor.editor_width_pct, 1920.0, 1700.0) as f32).min(max_w);
         assert_eq!(content_w, 1200.0);
         let margin_left = ((max_w - content_w) / 2.0).round();
         assert_eq!(margin_left, 0.0);
 
-        // At 45%, note width scales proportionally and margin centers it
+        // 45 maps to 1040 px on a 1920 px logical display.
         config.editor.editor_width_pct = 45;
-        let pct = config.editor.editor_width_pct;
-        let content_w_45 = if pct >= 100 {
-            max_w
-        } else {
-            let min_w = 400.0f32.min(max_w);
-            (min_w + (max_w - min_w) * (pct as f32 / 100.0)).clamp(min_w, max_w)
-        };
-        assert_eq!(content_w_45, 760.0);
+        let content_w_45 = (crate::settings::note_width_px(config.editor.editor_width_pct, 1920.0, 1700.0) as f32).min(max_w);
+        assert_eq!(content_w_45, 1040.0);
         let margin_left_45 = ((max_w - content_w_45) / 2.0).round();
-        assert_eq!(margin_left_45, 220.0);
+        assert_eq!(margin_left_45, 80.0);
         assert_eq!(margin_left_45 + content_w_45 + margin_left_45, max_w);
 
         // Alignment: Center splits extra space equally
@@ -1519,8 +1507,8 @@
             crate::settings::NoteAlignment::Left => (0.0, extra_space),
             crate::settings::NoteAlignment::Center => (extra_space / 2.0, extra_space / 2.0),
         };
-        assert_eq!(margin_left_center, 220.0);
-        assert_eq!(margin_right_center, 220.0);
+        assert_eq!(margin_left_center, 80.0);
+        assert_eq!(margin_right_center, 80.0);
         assert_eq!(margin_left_center + content_w_45 + margin_right_center, max_w);
 
         // Alignment: Left puts zero margin on left and full extra space on right
@@ -1529,11 +1517,11 @@
             crate::settings::NoteAlignment::Center => (extra_space / 2.0, extra_space / 2.0),
         };
         assert_eq!(margin_left_left, 0.0);
-        assert_eq!(margin_right_left, 440.0);
+        assert_eq!(margin_right_left, 160.0);
         assert_eq!(margin_left_left + content_w_45 + margin_right_left, max_w);
 
         // Title alignment:
-        // WindowLeft: starts at 48.0 px regardless of 45% or 100% width
+        // WindowLeft: starts at 48.0 px regardless of the slider position
         let title_w = 200.0f32;
         let title_win_left = match crate::settings::TitleAlignment::WindowLeft {
             crate::settings::TitleAlignment::WindowLeft => 48.0f32,
@@ -1552,16 +1540,16 @@
         };
         assert_eq!(title_win_center, 500.0);
 
-        // EditorLeft: aligned to the left edge of the editor note column (48 + 220 = 268)
+        // EditorLeft: aligned to the left edge of the editor note column (48 + 80 = 128)
         let title_ed_left = match crate::settings::TitleAlignment::EditorLeft {
             crate::settings::TitleAlignment::WindowLeft => 48.0f32,
             crate::settings::TitleAlignment::WindowCenter => ((max_w - title_w) / 2.0).max(48.0).round(),
             crate::settings::TitleAlignment::EditorLeft => 48.0 + margin_left_45,
             crate::settings::TitleAlignment::EditorCenter => 48.0 + margin_left_45 + ((content_w_45 - title_w) / 2.0).round(),
         };
-        assert_eq!(title_ed_left, 268.0);
+        assert_eq!(title_ed_left, 128.0);
 
-        // EditorCenter: centered across the editor note column 48 + 220 + (760 - 200) / 2 = 548
+        // EditorCenter: centered across the editor note column 48 + 80 + (1040 - 200) / 2 = 548
         let title_ed_center = match crate::settings::TitleAlignment::EditorCenter {
             crate::settings::TitleAlignment::WindowLeft => 48.0f32,
             crate::settings::TitleAlignment::WindowCenter => ((max_w - title_w) / 2.0).max(48.0).round(),
@@ -1579,11 +1567,11 @@
         // Since margin_left == margin_right, note_center is 600.0, so find bar is at (1200 - 620) / 2 = 290.0
         assert_eq!(find_bar_left_center, 290.0);
 
-        // In Left alignment, margin_left is 0.0, margin_right is 440.0
+        // In Left alignment, margin_left is 0.0, margin_right is 160.0
         let note_center_left = (max_w + margin_left_left - margin_right_left) / 2.0;
         let find_bar_left_left = (note_center_left - bar_w / 2.0).clamp(16.0, max_w - 16.0 - bar_w).round();
-        // 380 - 310 = 70.0
-        assert_eq!(find_bar_left_left, 70.0);
+        // 520 - 310 = 210.0
+        assert_eq!(find_bar_left_left, 210.0);
     }
 
     #[test]

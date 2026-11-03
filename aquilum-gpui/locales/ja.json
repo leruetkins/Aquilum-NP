@@ -130,7 +130,7 @@
       "debounce_desc": "入力完了からディスク書き込みまでの待機時間",
       "debounce_unit": "{} MS",
       "note_width": "ノートの幅",
-      "note_width_desc": "ウィンドウ幅に対するノート列の幅の割合 (0〜100%)",
+      "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
       "note_align": "ノートの配置",
       "note_align_desc": "ノート列の水平配置: 中央揃えまたは左揃え",
       "align_center": "中央揃え",
@@ -788,7 +788,7 @@
       "example": "例",
       "quote": "引用"
     },
-    "note_width": "ノート幅: {}%",
+    "note_width": "ノート幅: {} px",
     "note_width_reset": "ノート幅をリセット (100%)",
     "context": {
       "insert_link": "リンクを挿入",

@@ -203,6 +203,10 @@ pub struct AppView {
     pub scrollbar_drag_start_scroll_y: f64,
     pub is_dragging_note_width_slider: bool,
     pub note_width_slider_origin_x: Rc<Cell<f32>>,
+    /// Logical width of the window the editor lives in.
+    pub window_width_px: f32,
+    /// Logical width of the monitor (physical resolution divided by OS scale).
+    pub monitor_width_px: f32,
     /// Whether the pointer is over the editor scrollbar track. While hovered
     /// the overview-ruler marks stretch across the full track width; otherwise
     /// they collapse into a thin pill centered like the thumb.
@@ -521,6 +525,8 @@ impl AppView {
             scrollbar_drag_start_scroll_y: 0.0,
             is_dragging_note_width_slider: false,
             note_width_slider_origin_x: Rc::new(Cell::new(0.0)),
+            window_width_px: 1920.0,
+            monitor_width_px: 1920.0,
             is_hovering_editor_scrollbar: false,
             is_hovering_editor_thumb: false,
             sidebar_scrollbar_drag: ScrollbarDrag::default(),

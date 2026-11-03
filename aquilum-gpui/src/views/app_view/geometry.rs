@@ -1,14 +1,63 @@
 use super::*;
 
 impl AppView {
-    pub(crate) fn note_content_width(&self, max_content_w: f32) -> f32 {
-        let pct = self.config.editor.editor_width_pct;
-        if pct >= 100 {
-            max_content_w
-        } else {
-            let min_w = 400.0f32.min(max_content_w);
-            (min_w + (max_content_w - min_w) * (pct as f32 / 100.0)).clamp(min_w, max_content_w)
+    pub(crate) fn refresh_monitor_width(&mut self, window: &Window, cx: &gpui::App) {
+        if let Some(display) = window.display(cx) {
+            let width = f32::from(display.bounds().size.width);
+            if width > 0.0 {
+                self.monitor_width_px = width;
+            }
         }
+    }
+
+    fn editor_chrome_width(&self) -> f32 {
+        64.0 + 48.0 + if self.config.editor.wide_scrollbar { 16.0 } else { 14.0 }
+    }
+
+    pub(crate) fn window_content_width(&self, window_width: f32) -> f32 {
+        (window_width - self.editor_chrome_width()).max(40.0)
+    }
+
+    pub(crate) fn note_width_target_px(&self, slider: u32, window_width: f32) -> u32 {
+        // Use the whole editor area between the sidebars, not the raw window:
+        // keeping the sidebars open must not make 100 px wider than the space
+        // that is actually left for text.
+        let editor_area_w = self.pane_width_for_leaf(None, window_width);
+        crate::settings::note_width_px(
+            slider,
+            self.monitor_width_px,
+            self.window_content_width(editor_area_w),
+        )
+    }
+
+    /// Width the active leaf can actually use after pane divider, padding,
+    /// gutter and scrollbar. Sidebars and the split ratio are already part of
+    /// the pane width.
+    pub(crate) fn active_note_width_px(&self, slider: u32, window_width: f32) -> u32 {
+        let target = self.note_width_target_px(slider, window_width);
+        let max_content_w = self.max_content_width_for_leaf(
+            Some(self.state.workspace.active_leaf),
+            window_width,
+        );
+        (target as f32).min(max_content_w).round() as u32
+    }
+
+    pub(crate) fn max_content_width_for_leaf(
+        &self,
+        leaf_id: Option<crate::workspace::LeafId>,
+        window_width: f32,
+    ) -> f32 {
+        let pane_w = self.pane_width_for_leaf(leaf_id, window_width);
+        let width_ratio = leaf_id
+            .map(|lid| self.state.workspace.horizontal_width_ratio_of_leaf(lid))
+            .unwrap_or(1.0);
+        let divider_w = if width_ratio < 0.999 { 4.0 } else { 0.0 };
+        (pane_w - divider_w - self.editor_chrome_width()).max(40.0)
+    }
+
+    pub(crate) fn note_content_width(&self, max_content_w: f32, window_width: f32) -> f32 {
+        let target = self.note_width_target_px(self.config.editor.editor_width_pct, window_width) as f32;
+        target.min(max_content_w)
     }
 
     pub(crate) fn pane_width_for_leaf(&self, leaf_id: Option<crate::workspace::LeafId>, window_width: f32) -> f32 {
@@ -26,20 +75,8 @@ impl AppView {
     }
 
     pub(crate) fn note_margins_for_leaf(&self, leaf_id: Option<crate::workspace::LeafId>, window_width: f32) -> (f32, f32) {
-        if self.config.editor.editor_width_pct >= 100 {
-            return (0.0, 0.0);
-        }
-        let pane_w = self.pane_width_for_leaf(leaf_id, window_width);
-        let width_ratio = leaf_id
-            .map(|lid| self.state.workspace.horizontal_width_ratio_of_leaf(lid))
-            .unwrap_or(1.0);
-        let divider_w = if width_ratio < 0.999 { 4.0 } else { 0.0 };
-        let horizontal_padding = 64.0;
-        let gutter_w = 48.0;
-        let scrollbar_w = if self.config.editor.wide_scrollbar { 16.0 } else { 14.0 };
-
-        let max_content_w = (pane_w - divider_w - horizontal_padding - gutter_w - scrollbar_w).max(40.0);
-        let content_w = self.note_content_width(max_content_w);
+        let max_content_w = self.max_content_width_for_leaf(leaf_id, window_width);
+        let content_w = self.note_content_width(max_content_w, window_width);
         let extra_space = (max_content_w - content_w).max(0.0);
 
         match self.config.editor.note_align {
@@ -69,16 +106,8 @@ impl AppView {
 
     pub(crate) fn note_title_offset_for_leaf(&self, leaf_id: Option<crate::workspace::LeafId>, window_width: f32, title_text_w: f32) -> f32 {
         let pane_w = self.pane_width_for_leaf(leaf_id, window_width);
-        let width_ratio = leaf_id
-            .map(|lid| self.state.workspace.horizontal_width_ratio_of_leaf(lid))
-            .unwrap_or(1.0);
-        let divider_w = if width_ratio < 0.999 { 4.0 } else { 0.0 };
-        let horizontal_padding = 64.0;
-        let gutter_w = 48.0;
-        let scrollbar_w = if self.config.editor.wide_scrollbar { 16.0 } else { 14.0 };
-
-        let max_content_w = (pane_w - divider_w - horizontal_padding - gutter_w - scrollbar_w).max(40.0);
-        let content_w = self.note_content_width(max_content_w);
+        let max_content_w = self.max_content_width_for_leaf(leaf_id, window_width);
+        let content_w = self.note_content_width(max_content_w, window_width);
         let extra_space = (max_content_w - content_w).max(0.0);
 
         let note_margin_left = match self.config.editor.note_align {
@@ -121,17 +150,8 @@ impl AppView {
 
     pub(super) fn compute_wrap_cols_for_leaf(&self, leaf_id: Option<crate::workspace::LeafId>, window_width: f32, char_width: f32) -> usize {
         let char_w = if char_width > 1.0 { char_width } else { 7.7 };
-        let pane_w = self.pane_width_for_leaf(leaf_id, window_width);
-        let width_ratio = leaf_id
-            .map(|lid| self.state.workspace.horizontal_width_ratio_of_leaf(lid))
-            .unwrap_or(1.0);
-        let divider_w = if width_ratio < 0.999 { 4.0 } else { 0.0 };
-        let horizontal_padding = 64.0; // px_8 on editor_list = 32px left + 32px right
-        let gutter_w = 48.0; // line numbers (40px) + gap (8px)
-        let scrollbar_w = if self.config.editor.wide_scrollbar { 16.0 } else { 14.0 };
-
-        let max_content_w = (pane_w - divider_w - horizontal_padding - gutter_w - scrollbar_w).max(40.0);
-        let content_w = self.note_content_width(max_content_w);
+        let max_content_w = self.max_content_width_for_leaf(leaf_id, window_width);
+        let content_w = self.note_content_width(max_content_w, window_width);
         ((content_w / char_w).floor() as usize).max(20)
     }
 
@@ -262,6 +282,7 @@ impl AppView {
         if self.config.editor.editor_width_pct == clamped {
             return;
         }
+        self.refresh_monitor_width(window, cx);
         self.config.editor.editor_width_pct = clamped;
         let viewport_w: f32 = window.viewport_size().width.into();
         let editor_font = self.editor_font_family();
@@ -293,7 +314,8 @@ impl AppView {
             }
         }
         self.last_wrap_cols = self.compute_wrap_cols(viewport_w, line_char_width);
-        self.state.status_text = self.t_fmt("editor.note_width", &[&clamped.to_string()]);
+        let width_px = self.active_note_width_px(clamped, viewport_w);
+        self.state.status_text = self.t_fmt("editor.note_width", &[&width_px.to_string()]);
         cx.notify();
     }
 
@@ -386,7 +408,7 @@ impl AppView {
                         this.save_settings(cx);
                     })),
             )
-            // Value badge (purple rectangle with white number, clicking resets to 100% or toggles to 45%)
+            // Value badge (purple rectangle with white number, clicking cycles 30 → 45 → 80 → 100)
             .child(
                 div()
                     .id("status-note-width-badge")
@@ -409,16 +431,9 @@ impl AppView {
                         cx.stop_propagation();
                     })
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        let current = this.config.editor.editor_width_pct;
-                        let next = if current == 100 { 45 } else { 100 };
+                        let next = crate::settings::next_note_width_preset(this.config.editor.editor_width_pct);
                         this.set_editor_width_pct(next, window, cx);
                         this.save_settings(cx);
-                        this.state.status_text = if next == 100 {
-                            this.t("editor.note_width_reset").to_string()
-                        } else {
-                            this.t_fmt("editor.note_width", &[&next.to_string()])
-                        };
-                        cx.notify();
                     })),
             )
     }

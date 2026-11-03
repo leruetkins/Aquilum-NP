@@ -130,7 +130,7 @@
       "debounce_desc": "输入完成后写入磁盘前的防抖延时",
       "debounce_unit": "{} 毫秒",
       "note_width": "笔记列宽度",
-      "note_width_desc": "笔记内容列占窗口宽度的百分比 (0-100%)",
+      "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
       "note_align": "笔记对齐方式",
       "note_align_desc": "笔记列的水平对齐方式：居中或居左",
       "align_center": "居中",
@@ -788,7 +788,7 @@
       "example": "示例",
       "quote": "引用"
     },
-    "note_width": "笔记宽度: {}%",
+    "note_width": "笔记宽度: {} px",
     "note_width_reset": "重置笔记宽度 (100%)",
     "context": {
       "insert_link": "插入链接",

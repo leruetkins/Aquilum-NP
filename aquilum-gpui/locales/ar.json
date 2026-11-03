@@ -130,7 +130,7 @@
       "debounce_desc": "المهلة بعد إدخال النص قبل الحفظ على القرص",
       "debounce_unit": "{} مللي ثانية",
       "note_width": "عرض عمود الملاحظة",
-      "note_width_desc": "عرض عمود محتوى الملاحظة كنسبة مئوية من عرض النافذة (0-100%)",
+      "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
       "note_align": "محاذاة الملاحظة",
       "note_align_desc": "المحاذاة الأفقية لعمود الملاحظة: في المنتصف أو إلى اليسار",
       "align_center": "توسيط",
@@ -788,7 +788,7 @@
       "example": "مثال",
       "quote": "اقتباس"
     },
-    "note_width": "عرض الملاحظة: {}%",
+    "note_width": "عرض الملاحظة: {} px",
     "note_width_reset": "إعادة تعيين عرض الملاحظة (100%)",
     "context": {
       "insert_link": "أدخل الرابط",
