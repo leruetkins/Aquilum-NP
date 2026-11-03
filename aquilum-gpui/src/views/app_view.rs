@@ -310,6 +310,8 @@ pub struct AppView {
     pub ribbon_context_menu: crate::views::ribbon_menu::RibbonContextMenuState,
     pub editor_context_menu: crate::views::editor_context_menu::ContextMenuState,
     pub toolbar_view: crate::views::toolbar_view::ToolbarViewState,
+    /// Drag state of the top/bottom editor toolbar icons.
+    pub toolbar_drag: Option<crate::views::toolbar_view::ToolbarDragState>,
     pub ribbon_dragged_id: Option<String>,
     pub ribbon_drag_start_y: Option<f32>,
     pub ribbon_is_dragging: bool,
@@ -578,6 +580,7 @@ impl AppView {
             ribbon_context_menu: crate::views::ribbon_menu::RibbonContextMenuState::default(),
             editor_context_menu: crate::views::editor_context_menu::ContextMenuState::default(),
             toolbar_view: crate::views::toolbar_view::ToolbarViewState::default(),
+            toolbar_drag: None,
             ribbon_dragged_id: None,
             ribbon_drag_start_y: None,
             ribbon_is_dragging: false,

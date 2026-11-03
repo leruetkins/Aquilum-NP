@@ -2,7 +2,8 @@
 //! split buttons, overflow menus, and keyboard navigation.
 
 use gpui::{
-    div, prelude::*, px, Context, IntoElement, MouseButton, SharedString, Styled, TextRun, Window,
+    div, prelude::*, px, AnyElement, Context, IntoElement, MouseButton, MouseMoveEvent,
+    SharedString, Styled, TextRun, Window,
 };
 use crate::formatting::ActiveFormatting;
 use crate::icons;
@@ -30,6 +31,22 @@ pub struct OpenToolbarDropdown {
 pub struct ToolbarViewState {
     pub open_dropdown: Option<OpenToolbarDropdown>,
     pub hovered_tooltip: Option<ToolbarTooltipInfo>,
+}
+
+/// Active drag of a toolbar icon.
+#[derive(Clone, Debug)]
+pub struct ToolbarDragState {
+    pub toolbar_id: String,
+    pub source_id: String,
+    /// Pointer X at the mouse-down that started the gesture, in window coordinates.
+    pub start_x: f32,
+    pub pointer_x: f32,
+    pub pointer_y: f32,
+    pub is_dragging: bool,
+    /// Icon under the pointer, highlighted as the drop slot.
+    pub target_id: Option<String>,
+    /// Separators and the overflow button can be clicked but not dragged.
+    pub can_drag: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -318,8 +335,37 @@ impl AppView {
             }
         }
 
+        // Drag state for this strip: the source and the icon under the pointer. The
+        // insertion line is drawn between icons and the order changes only on release.
+        let drag = self
+            .toolbar_drag
+            .as_ref()
+            .filter(|drag| drag.is_dragging && drag.toolbar_id == toolbar_id && drag.can_drag);
+        let from_index = drag.and_then(|drag| {
+            visible_items
+                .iter()
+                .position(|item| item.id == drag.source_id)
+        });
+        let to_index = drag.and_then(|drag| {
+            drag.target_id
+                .as_ref()
+                .and_then(|target| visible_items.iter().position(|item| &item.id == target))
+        });
+        let drop_boundary = match (from_index, to_index) {
+            (Some(from), Some(to)) if from != to => {
+                Some(if from < to { to + 1 } else { to })
+            }
+            _ => None,
+        };
+        let indicator_x = drop_boundary.map(|boundary| {
+            8.0 + visible_widths[..boundary].iter().sum::<f32>()
+                + 3.0 * boundary as f32
+                - 1.5
+        });
+
         let mut strip = div()
             .id(SharedString::from(format!("toolbar-strip-{}", toolbar_id)))
+            .relative()
             .flex()
             .flex_row()
             .items_center()
@@ -329,11 +375,18 @@ impl AppView {
             .overflow_hidden();
 
         let item_start_y = origin_y;
+        let mut item_slots: Vec<(f32, f32, String, bool)> = Vec::new();
 
         // Render visible items with accurate accumulated X positions in window coordinates
         let mut current_item_x = origin_x + 8.0;
         for (i, item) in visible_items.iter().enumerate() {
             let item_w = visible_widths[i];
+            item_slots.push((
+                current_item_x,
+                current_item_x + item_w,
+                item.id.clone(),
+                !item.is_separator(),
+            ));
             strip = strip.child(self.render_toolbar_item(
                 &toolbar_id,
                 item,
@@ -349,8 +402,16 @@ impl AppView {
 
         // Render overflow menu if items exceeded available width
         if !overflow_items.is_empty() {
+            let overflow_id = format!("{}-overflow", toolbar_id);
+            // Clickable (opens the overflow menu) but not part of the reorderable list.
+            item_slots.push((
+                current_item_x,
+                current_item_x + overflow_btn_w,
+                overflow_id.clone(),
+                false,
+            ));
             let overflow_dropdown_item = ToolbarItem {
-                id: format!("{}-overflow", toolbar_id),
+                id: overflow_id,
                 kind: ToolbarItemKind::Dropdown {
                     icon: "more-horizontal".to_string(),
                     tooltip: Some("More actions".to_string()),
@@ -370,7 +431,224 @@ impl AppView {
             ));
         }
 
+        // Vertical insertion line where the dragged icon will land.
+        if let Some(x) = indicator_x {
+            strip = strip.child(
+                div()
+                    .id(SharedString::from(format!(
+                        "toolbar-drop-indicator-{}",
+                        toolbar_id
+                    )))
+                    .absolute()
+                    .left(px(x))
+                    .top(px(10.0))
+                    .w(px(2.0))
+                    .h(px(20.0))
+                    .rounded_full()
+                    .bg(theme.accent),
+            );
+        }
+
+        // A press on an icon arms the drag; the icon's own mouse-up handler runs the
+        // action when the gesture stayed a click.
+        strip = strip.on_mouse_down(MouseButton::Left, cx.listener({
+            let toolbar_id = toolbar_id.clone();
+            let slots = item_slots.clone();
+            move |this, event: &gpui::MouseDownEvent, _, cx| {
+                let x: f32 = event.position.x.into();
+                let y: f32 = event.position.y.into();
+                if let Some((_, _, id, can_drag)) =
+                    slots.iter().find(|(left, right, _, _)| x >= *left && x < *right)
+                {
+                    this.toolbar_view.hovered_tooltip = None;
+                    this.toolbar_drag = Some(ToolbarDragState {
+                        toolbar_id: toolbar_id.clone(),
+                        source_id: id.clone(),
+                        start_x: x,
+                        pointer_x: x,
+                        pointer_y: y,
+                        is_dragging: false,
+                        target_id: None,
+                        can_drag: *can_drag,
+                    });
+                    cx.notify();
+                }
+            }
+        }));
+        strip = strip.on_mouse_move(cx.listener({
+            let toolbar_id = toolbar_id.clone();
+            let slots = item_slots.clone();
+            move |this, event: &MouseMoveEvent, _, cx| {
+                let Some(drag) = this.toolbar_drag.as_mut() else {
+                    return;
+                };
+                if drag.toolbar_id != toolbar_id {
+                    return;
+                }
+                let x: f32 = event.position.x.into();
+                drag.pointer_x = x;
+                drag.pointer_y = event.position.y.into();
+                if drag.can_drag && (x - drag.start_x).abs() > 4.0 {
+                    drag.is_dragging = true;
+                }
+                if drag.is_dragging {
+                    if let Some((_, _, id, can_drag)) =
+                        slots.iter().find(|(left, right, _, _)| x >= *left && x < *right)
+                    {
+                        if *can_drag {
+                            drag.target_id = if id.as_str() == drag.source_id {
+                                None
+                            } else {
+                                Some(id.clone())
+                            };
+                        }
+                    }
+                    cx.notify();
+                }
+            }
+        }));
+        // Released over a gap, separator or empty strip area: commit to the last
+        // highlighted icon. Releases over an icon are committed here too, because the
+        // icon's handler leaves a drag alone.
+        strip = strip.on_mouse_up(MouseButton::Left, cx.listener({
+            let toolbar_id = toolbar_id.clone();
+            move |this, _, _, cx| {
+                let Some(drag) = this.toolbar_drag.take() else {
+                    return;
+                };
+                if drag.toolbar_id == toolbar_id && drag.is_dragging && drag.can_drag {
+                    if let Some(target) = drag.target_id {
+                        this.reorder_toolbar_item(
+                            &toolbar_id,
+                            &drag.source_id,
+                            &target,
+                            cx,
+                        );
+                    }
+                }
+                cx.notify();
+            }
+        }));
+        strip = strip.on_mouse_up_out(MouseButton::Left, cx.listener({
+            let toolbar_id = toolbar_id.clone();
+            move |this, _, _, cx| {
+                if this
+                    .toolbar_drag
+                    .as_ref()
+                    .is_some_and(|drag| drag.toolbar_id == toolbar_id)
+                {
+                    this.toolbar_drag = None;
+                    cx.notify();
+                }
+            }
+        }));
+        // Leaving the strip clears the indicated slot so the line never points at a
+        // place the release cannot reach.
+        strip = strip.on_hover(cx.listener({
+            let toolbar_id = toolbar_id.clone();
+            move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    return;
+                }
+                if let Some(drag) = this.toolbar_drag.as_mut() {
+                    if drag.toolbar_id == toolbar_id && drag.target_id.take().is_some() {
+                        cx.notify();
+                    }
+                }
+            }
+        }));
+
         strip
+    }
+
+    /// Reorders an icon inside a toolbar and persists the bundled toolbar config.
+    pub(crate) fn reorder_toolbar_item(
+        &mut self,
+        toolbar_id: &str,
+        from_id: &str,
+        to_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if from_id == to_id {
+            return;
+        }
+        let Some(spec) = self.state.toolbars.get_toolbar(toolbar_id) else {
+            return;
+        };
+        let mut items = spec.items;
+        let Some(from) = items.iter().position(|item| item.id == from_id) else {
+            return;
+        };
+        let Some(to) = items.iter().position(|item| item.id == to_id) else {
+            return;
+        };
+
+        let item = items.remove(from);
+        items.insert(to, item);
+        self.state
+            .toolbars
+            .update_toolbar(toolbar_id, items.clone());
+
+        if toolbar_id == crate::plugins::editor_toolbar::TOOLBAR_PLUGIN_ID {
+            let root = self
+                .state
+                .vault
+                .as_ref()
+                .map(|vault| vault.root.clone())
+                .or_else(|| self.state.workspace_path.clone());
+            if let Some(root) = root {
+                let _ = crate::plugins::editor_toolbar::save_toolbar_config(&root, &items);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Floating preview of the toolbar icon being reordered, drawn at the pointer.
+    pub(crate) fn render_toolbar_drag_ghost(&self, theme: &Theme) -> Option<AnyElement> {
+        let drag = self.toolbar_drag.as_ref().filter(|drag| drag.is_dragging)?;
+        let spec = self.state.toolbars.get_toolbar(&drag.toolbar_id)?;
+        let item = spec.items.iter().find(|item| item.id == drag.source_id)?;
+        let icon = item.icon()?;
+        let title = item
+            .tooltip()
+            .map(|title| title.to_string())
+            .or_else(|| item.command_id().and_then(|cmd| self.get_command_name(cmd)))
+            .unwrap_or_default();
+        let icon_asset = icons::resolve_toolbar_icon(icon);
+
+        Some(
+            div()
+                .absolute()
+                .left(px(drag.pointer_x + 14.0))
+                .top(px(drag.pointer_y + 10.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1p5()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .bg(theme.bg_card)
+                .border_1()
+                .border_color(theme.accent)
+                .shadow_lg()
+                .opacity(0.92)
+                .child(
+                    gpui::svg()
+                        .path(icon_asset)
+                        .w(px(15.0))
+                        .h(px(15.0))
+                        .text_color(theme.accent)
+                        .flex_shrink_0(),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.text_primary)
+                        .child(title),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Renders an individual item (button, split-dropdown, dropdown, or separator).
@@ -385,6 +663,18 @@ impl AppView {
         theme: &Theme,
         cx: &Context<Self>,
     ) -> impl IntoElement {
+        let is_dragged = self.toolbar_drag.as_ref().is_some_and(|drag| {
+            drag.is_dragging
+                && drag.toolbar_id == toolbar_id
+                && drag.source_id == item.id
+        });
+        // While reordering, the insertion line is the only affordance: no hover/active
+        // highlight on the icon under the pointer.
+        let drag_active = self
+            .toolbar_drag
+            .as_ref()
+            .is_some_and(|drag| drag.is_dragging);
+
         match &item.kind {
             ToolbarItemKind::Button { command_id, icon, tooltip } => {
                 let cmd_id = command_id.clone();
@@ -405,7 +695,12 @@ impl AppView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded_md();
+                    .rounded_md()
+                    .when(is_dragged, |d| {
+                        d.border_1()
+                            .border_color(theme.accent)
+                            .bg(theme.bg_selected)
+                    });
 
                 if is_disabled {
                     btn = btn
@@ -414,11 +709,21 @@ impl AppView {
                 } else {
                     btn = btn
                         .cursor_pointer()
-                        .hover(|h| h.bg(theme.bg_hover))
-                        .active(|a| a.bg(theme.bg_hover));
+                        .when(!drag_active, |d| {
+                            d.hover(|h| h.bg(theme.bg_hover))
+                                .active(|a| a.bg(theme.bg_hover))
+                        });
 
                     let cmd_to_exec = cmd_id.clone();
-                    btn = btn.on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                    let source_id = it_id.clone();
+                    btn = btn.on_mouse_up(MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                        let Some(drag) = this.toolbar_drag.as_ref() else {
+                            return;
+                        };
+                        if drag.is_dragging || drag.source_id != source_id {
+                            return;
+                        }
+                        this.toolbar_drag = None;
                         this.close_toolbar_dropdown(cx);
                         this.execute_command(&cmd_to_exec, window, cx);
                         window.focus(&this.focus_handle);
@@ -428,6 +733,15 @@ impl AppView {
                     if let Some(title) = tooltip_text {
                         let hk = hotkey;
                         btn = btn.on_hover(cx.listener(move |this, is_hovered: &bool, _, cx| {
+                            if this
+                                .toolbar_drag
+                                .as_ref()
+                                .is_some_and(|drag| drag.is_dragging)
+                            {
+                                this.toolbar_view.hovered_tooltip = None;
+                                cx.notify();
+                                return;
+                            }
                             if *is_hovered {
                                 this.toolbar_view.hovered_tooltip = Some(ToolbarTooltipInfo {
                                     title: title.clone(),
@@ -495,8 +809,13 @@ impl AppView {
                         .w(px(46.0))
                         .flex_shrink_0()
                         .rounded_md()
+                        .when(is_dragged, |d| {
+                            d.border_1()
+                                .border_color(theme.accent)
+                                .bg(theme.bg_selected)
+                        })
                         .when(is_open, |d| d.bg(theme.bg_hover))
-                        .hover(|h| h.bg(theme.bg_hover));
+                        .when(!drag_active, |d| d.hover(|h| h.bg(theme.bg_hover)));
 
                     // Main button
                     let main_btn = div()
@@ -508,12 +827,22 @@ impl AppView {
                         .justify_center()
                         .cursor_pointer()
                         .rounded_l_md()
-                        .hover(|h| h.bg(theme.bg_hover))
-                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| {
-                            this.close_toolbar_dropdown(cx);
-                            this.execute_command(&cmd_to_exec, window, cx);
-                            window.focus(&this.focus_handle);
-                            cx.notify();
+                        .when(!drag_active, |d| d.hover(|h| h.bg(theme.bg_hover)))
+                        .on_mouse_up(MouseButton::Left, cx.listener({
+                            let source_id = it_id.clone();
+                            move |this, _, window, cx| {
+                                let Some(drag) = this.toolbar_drag.as_ref() else {
+                                    return;
+                                };
+                                if drag.is_dragging || drag.source_id != source_id {
+                                    return;
+                                }
+                                this.toolbar_drag = None;
+                                this.close_toolbar_dropdown(cx);
+                                this.execute_command(&cmd_to_exec, window, cx);
+                                window.focus(&this.focus_handle);
+                                cx.notify();
+                            }
                         }))
                         .child(
                             gpui::svg()
@@ -534,17 +863,26 @@ impl AppView {
                         .justify_center()
                         .cursor_pointer()
                         .rounded_r_md()
-                        .hover(|h| h.bg(theme.bg_hover))
-                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.toggle_toolbar_dropdown(
-                                &tb_id_arrow,
-                                &it_id_arrow,
-                                item_x,
-                                item_y + 42.0,
-                                dd_items_arrow.clone(),
-                                cx,
-                            );
+                        .when(!drag_active, |d| d.hover(|h| h.bg(theme.bg_hover)))
+                        .on_mouse_up(MouseButton::Left, cx.listener({
+                            let source_id = it_id.clone();
+                            move |this, _, _, cx| {
+                                let Some(drag) = this.toolbar_drag.as_ref() else {
+                                    return;
+                                };
+                                if drag.is_dragging || drag.source_id != source_id {
+                                    return;
+                                }
+                                this.toolbar_drag = None;
+                                this.toggle_toolbar_dropdown(
+                                    &tb_id_arrow,
+                                    &it_id_arrow,
+                                    item_x,
+                                    item_y + 42.0,
+                                    dd_items_arrow.clone(),
+                                    cx,
+                                );
+                            }
                         }))
                         .child(
                             gpui::svg()
@@ -559,6 +897,15 @@ impl AppView {
 
                     if let Some(title) = tooltip_text {
                         split_container = split_container.on_hover(cx.listener(move |this, is_hovered: &bool, _, cx| {
+                            if this
+                                .toolbar_drag
+                                .as_ref()
+                                .is_some_and(|drag| drag.is_dragging)
+                            {
+                                this.toolbar_view.hovered_tooltip = None;
+                                cx.notify();
+                                return;
+                            }
                             if *is_hovered {
                                 this.toolbar_view.hovered_tooltip = Some(ToolbarTooltipInfo {
                                     title: title.clone(),
@@ -596,18 +943,32 @@ impl AppView {
                         .gap(px(3.0))
                         .rounded_md()
                         .cursor_pointer()
+                        .when(is_dragged, |d| {
+                            d.border_1()
+                                .border_color(theme.accent)
+                                .bg(theme.bg_selected)
+                        })
                         .when(is_open, |d| d.bg(theme.bg_hover))
-                        .hover(|h| h.bg(theme.bg_hover))
-                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.toggle_toolbar_dropdown(
-                                &tb_id_click,
-                                &it_id_click,
-                                item_x,
-                                item_y + 42.0,
-                                dd_items_click.clone(),
-                                cx,
-                            );
+                        .when(!drag_active, |d| d.hover(|h| h.bg(theme.bg_hover)))
+                        .on_mouse_up(MouseButton::Left, cx.listener({
+                            let source_id = it_id.clone();
+                            move |this, _, _, cx| {
+                                let Some(drag) = this.toolbar_drag.as_ref() else {
+                                    return;
+                                };
+                                if drag.is_dragging || drag.source_id != source_id {
+                                    return;
+                                }
+                                this.toolbar_drag = None;
+                                this.toggle_toolbar_dropdown(
+                                    &tb_id_click,
+                                    &it_id_click,
+                                    item_x,
+                                    item_y + 42.0,
+                                    dd_items_click.clone(),
+                                    cx,
+                                );
+                            }
                         }))
                         .child(
                             gpui::svg()
@@ -628,6 +989,15 @@ impl AppView {
 
                     if let Some(title) = tooltip_text {
                         dropdown_btn = dropdown_btn.on_hover(cx.listener(move |this, is_hovered: &bool, _, cx| {
+                            if this
+                                .toolbar_drag
+                                .as_ref()
+                                .is_some_and(|drag| drag.is_dragging)
+                            {
+                                this.toolbar_view.hovered_tooltip = None;
+                                cx.notify();
+                                return;
+                            }
                             if *is_hovered {
                                 this.toolbar_view.hovered_tooltip = Some(ToolbarTooltipInfo {
                                     title: title.clone(),
