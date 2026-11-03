@@ -323,6 +323,10 @@ pub struct AppView {
     pub bookmark_drag: Option<crate::views::sidebar::bookmarks::BookmarkDragState>,
     /// Drag state of the file explorer tree (moving files/folders into other folders).
     pub sidebar_tree_drag: Option<crate::views::sidebar::tree::SidebarTreeDragState>,
+    /// File just moved by drag-and-drop; its row flashes in the tree for a second.
+    pub sidebar_move_flash: Option<PathBuf>,
+    /// Increments per flash so the fade animation restarts when the same path is moved again.
+    pub sidebar_move_flash_seq: u64,
     pub expanded_bookmark_groups: std::collections::HashSet<String>,
     pub bookmark_context_menu: Option<crate::views::sidebar::bookmarks::BookmarkContextMenuState>,
     pub bookmark_rename: Option<crate::views::sidebar::bookmarks::BookmarkRenameState>,
@@ -579,6 +583,8 @@ impl AppView {
             panel_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
             bookmark_drag: None,
             sidebar_tree_drag: None,
+            sidebar_move_flash: None,
+            sidebar_move_flash_seq: 0,
             expanded_bookmark_groups: std::collections::HashSet::new(),
             bookmark_context_menu: None,
             bookmark_rename: None,

@@ -10,8 +10,9 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    canvas, div, point, prelude::*, px, rgba, AnyElement, Context, DispatchPhase, MouseButton,
-    MouseDownEvent, MouseMoveEvent, Pixels, ScrollWheelEvent, SharedString, Window,
+    canvas, div, point, prelude::*, px, rgba, Animation, AnimationExt, AnyElement, Context,
+    DispatchPhase, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, ScrollWheelEvent,
+    SharedString, Window,
 };
 
 use crate::icons;
@@ -195,6 +196,37 @@ pub struct SidebarTreeDragState {
 
 /// Distance in pixels the pointer must travel before a press turns into a drag.
 const SIDEBAR_DRAG_THRESHOLD: f32 = 4.0;
+
+/// How long a moved row stays fully highlighted before it starts fading out.
+const SIDEBAR_MOVE_FLASH_HOLD: std::time::Duration =
+    std::time::Duration::from_millis(1000);
+/// Fade-out duration after the hold.
+const SIDEBAR_MOVE_FLASH_FADE: std::time::Duration =
+    std::time::Duration::from_millis(400);
+
+/// Hold + fade run as one animation: the row stays highlighted, then eases to transparent.
+///
+/// A single animation with a hold-then-smoothstep curve is used instead of two chained
+/// animations, because the chain jumps to the next animation's end value on the frame it
+/// switches and would flash transparent for one frame before fading.
+fn sidebar_move_flash_animations() -> Vec<Animation> {
+    vec![
+        Animation::new(SIDEBAR_MOVE_FLASH_HOLD + SIDEBAR_MOVE_FLASH_FADE)
+            .with_easing(sidebar_move_flash_easing),
+    ]
+}
+
+/// `0` through the hold, then a smoothstep ramp to `1` over the fade.
+fn sidebar_move_flash_easing(delta: f32) -> f32 {
+    let total = SIDEBAR_MOVE_FLASH_HOLD + SIDEBAR_MOVE_FLASH_FADE;
+    let hold = SIDEBAR_MOVE_FLASH_HOLD.as_secs_f32() / total.as_secs_f32();
+    if delta <= hold {
+        0.0
+    } else {
+        let t = ((delta - hold) / (1.0 - hold)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+}
 
 /// Whether dropping the dragged entry into `dest_folder` would move anything.
 ///
@@ -773,10 +805,14 @@ impl AppView {
 
         match result {
             Ok(new_path) => {
+                // A file that is not open in a tab gets a brief frame where it landed;
+                // an open file is already visible in the editor.
+                let is_open = self.state.find_document_by_path(&source).is_some()
+                    || self.state.open_tabs.contains(&source);
                 self.state.handle_file_renamed(&source, &new_path);
                 self.state.expanded_folders.remove(&source);
                 self.state.expanded_folders.insert(dest_folder.clone());
-                self.state.expanded_folders.insert(new_path);
+                self.state.expanded_folders.insert(new_path.clone());
                 self.state.reload_file_tree();
                 self.state.publish_snapshot();
                 self.state.status_text = if drag.is_folder {
@@ -784,6 +820,12 @@ impl AppView {
                 } else {
                     self.t("sidebar.file_moved")
                 };
+
+                if drag.is_folder || !is_open {
+                    self.sidebar_move_flash = Some(new_path.clone());
+                    self.sidebar_move_flash_seq = self.sidebar_move_flash_seq.wrapping_add(1);
+                    self.schedule_sidebar_move_flash_clear(new_path, cx);
+                }
             }
             Err(e) => {
                 let msg = self.t_fmt("sidebar.error_moving", &[&e]);
@@ -797,6 +839,36 @@ impl AppView {
             }
         }
         cx.notify();
+    }
+
+    /// Clears the move flash after a second, so the frame is a highlight rather than state.
+    fn schedule_sidebar_move_flash_clear(
+        &self,
+        flash_path: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let entity = cx.weak_entity();
+        let async_cx = cx.to_async();
+        let timer_executor = cx.background_executor().clone();
+        cx.foreground_executor()
+            .spawn(async move {
+                timer_executor
+                    .timer(SIDEBAR_MOVE_FLASH_HOLD + SIDEBAR_MOVE_FLASH_FADE)
+                    .await;
+                let _ = async_cx.update(|cx| {
+                    if let Some(view) = entity.upgrade() {
+                        view.update(cx, |this, cx| {
+                            if this.sidebar_move_flash.as_deref()
+                                == Some(flash_path.as_path())
+                            {
+                                this.sidebar_move_flash = None;
+                                cx.notify();
+                            }
+                        });
+                    }
+                });
+            })
+            .detach();
     }
 
     /// Drop zone at the end of the tree that moves the dragged entry to the workspace root.
@@ -934,6 +1006,11 @@ impl AppView {
         let is_drop_block = effective_target
             .map(|target| row.path.starts_with(target))
             .unwrap_or(false);
+        let is_move_flash = self
+            .sidebar_move_flash
+            .as_deref()
+            .map(|path| path == row.path.as_path())
+            .unwrap_or(false);
 
         if row.is_folder {
             let is_folder_selected = (self.folder_context_menu.is_open && self.folder_context_menu.folder_path == row.path)
@@ -950,7 +1027,7 @@ impl AppView {
                 icons::icon(icons::ICON_FOLDER, 14.0, theme.accent)
             };
             let indent = (row.depth * 14) as f32 + 4.0;
-            let label_color = if is_folder_selected || is_dragged {
+            let label_color = if is_folder_selected || is_dragged || is_move_flash {
                 theme.accent
             } else {
                 theme.text_primary
@@ -966,7 +1043,7 @@ impl AppView {
 
             let folder_path_context = row.path.clone();
 
-            div()
+            let row_element = div()
                 .id(SharedString::from(format!("fld-{}", row.path.to_string_lossy())))
                 .flex()
                 .flex_row()
@@ -999,6 +1076,14 @@ impl AppView {
                 .when(is_dragged, |s| {
                     s.border_1()
                         .border_color(theme.accent)
+                        .text_color(theme.accent)
+                })
+                // A freshly moved folder flashes too; the fade is applied by the
+                // animation wrapper at the end of this branch.
+                .when(is_move_flash, |s| {
+                    s.border_1()
+                        .border_color(theme.accent)
+                        .bg(theme.selection_bg)
                         .text_color(theme.accent)
                 })
                 .child(chevron)
@@ -1068,13 +1153,28 @@ impl AppView {
                     let x: f32 = event.position.x.into();
                     let y: f32 = event.position.y.into();
                     this.open_folder_context_menu(folder_path_context.clone(), x, y, cx);
-                }))
-                .into_any_element()
+                }));
+
+            if is_move_flash {
+                row_element
+                    .with_animations(
+                        SharedString::from(format!(
+                            "sidebar-move-flash-{}-{}",
+                            self.sidebar_move_flash_seq,
+                            row.path.to_string_lossy()
+                        )),
+                        sidebar_move_flash_animations(),
+                        |el, _phase, delta| el.opacity(1.0 - delta),
+                    )
+                    .into_any_element()
+            } else {
+                row_element.into_any_element()
+            }
         } else {
             let is_selected = row.is_selected;
             let indent = (row.depth * 14 + 18) as f32 + 4.0;
             let display_name = row.name.strip_suffix(".md").unwrap_or(&row.name).to_string();
-            let base_color = if is_selected || is_dragged {
+            let base_color = if is_selected || is_dragged || is_move_flash {
                 theme.accent
             } else {
                 theme.text_secondary
@@ -1091,7 +1191,7 @@ impl AppView {
             let file_svg = icons::icon(
                 icons::ICON_FILE_TEXT,
                 13.0,
-                if is_selected || is_dragged {
+                if is_selected || is_dragged || is_move_flash {
                     theme.accent
                 } else {
                     theme.text_muted
@@ -1103,7 +1203,7 @@ impl AppView {
                 .parent()
                 .map(|parent| parent.to_path_buf());
 
-            div()
+            let row_element = div()
                 .id(SharedString::from(format!("fil-{}", row.path.to_string_lossy())))
                 .flex()
                 .flex_row()
@@ -1137,6 +1237,14 @@ impl AppView {
                 .when(is_dragged, |s| {
                     s.border_1()
                         .border_color(theme.accent)
+                        .text_color(theme.accent)
+                })
+                // A freshly moved file flashes in the accent colour so the user sees
+                // exactly where it landed.
+                .when(is_move_flash, |s| {
+                    s.border_1()
+                        .border_color(theme.accent)
+                        .bg(theme.selection_bg)
                         .text_color(theme.accent)
                 })
                 .child(file_svg)
@@ -1212,8 +1320,23 @@ impl AppView {
                         this.select_note(file_path.clone(), false, window, cx);
                         this.open_file_context_menu(file_path.clone(), x, y, cx);
                     }
-                }))
-                .into_any_element()
+                }));
+
+            if is_move_flash {
+                row_element
+                    .with_animations(
+                        SharedString::from(format!(
+                            "sidebar-move-flash-{}-{}",
+                            self.sidebar_move_flash_seq,
+                            row.path.to_string_lossy()
+                        )),
+                        sidebar_move_flash_animations(),
+                        |el, _phase, delta| el.opacity(1.0 - delta),
+                    )
+                    .into_any_element()
+            } else {
+                row_element.into_any_element()
+            }
         }
     }
 }
