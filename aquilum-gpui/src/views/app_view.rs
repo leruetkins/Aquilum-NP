@@ -313,6 +313,11 @@ pub struct AppView {
     pub ribbon_dragged_id: Option<String>,
     pub ribbon_drag_start_y: Option<f32>,
     pub ribbon_is_dragging: bool,
+    /// Ribbon icon whose slot is highlighted as the drop position.
+    pub ribbon_drop_id: Option<String>,
+    /// Current pointer position in window coordinates; drives the ribbon drag ghost.
+    pub ribbon_drag_pointer_x: f32,
+    pub ribbon_drag_pointer_y: f32,
     /// Sidebar content mode (file tree vs Obsidian-style search panel).
     pub sidebar_mode: crate::views::sidebar::SidebarMode,
     pub sidebar_search: crate::views::sidebar::SidebarSearchState,
@@ -576,6 +581,9 @@ impl AppView {
             ribbon_dragged_id: None,
             ribbon_drag_start_y: None,
             ribbon_is_dragging: false,
+            ribbon_drop_id: None,
+            ribbon_drag_pointer_x: 0.0,
+            ribbon_drag_pointer_y: 0.0,
             sidebar_mode,
             sidebar_search: crate::views::sidebar::SidebarSearchState::default(),
             search_panel_focus_handle: cx.focus_handle(),

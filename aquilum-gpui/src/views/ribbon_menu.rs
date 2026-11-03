@@ -1,5 +1,6 @@
 use gpui::{
-    div, prelude::*, px, Context, IntoElement, MouseButton, SharedString, Stateful, Styled, Window,
+    div, prelude::*, px, AnyElement, Context, IntoElement, MouseButton, MouseMoveEvent,
+    SharedString, Stateful, Styled, Window,
 };
 
 use crate::icons;
@@ -14,6 +15,11 @@ pub struct RibbonContextMenuState {
     pub position_x: f32,
     pub position_y: f32,
 }
+
+/// Ribbon rail geometry, mirrored by the drop insertion indicator.
+const RIBBON_ITEM_SIZE: f32 = 32.0;
+const RIBBON_ITEM_GAP: f32 = 8.0;
+const RIBBON_PAD_TOP: f32 = 8.0;
 
 /// Descriptor of a ribbon item for display in the ribbon rail and context menu.
 #[derive(Clone, Debug)]
@@ -236,34 +242,87 @@ impl AppView {
         let visible_items: Vec<RibbonItem> = items.into_iter().filter(|i| i.is_visible).collect();
         let dragged_id = self.ribbon_dragged_id.clone();
         let is_dragging = self.ribbon_is_dragging;
+        let drop_id = self.ribbon_drop_id.clone();
 
-        div()
+        let from_index = dragged_id
+            .as_ref()
+            .and_then(|id| visible_items.iter().position(|item| &item.id == id));
+        let to_index = drop_id
+            .as_ref()
+            .and_then(|id| visible_items.iter().position(|item| &item.id == id));
+        // Gap between buttons where the icon will land. The commit rule
+        // (`reorder_ribbon_item`) inserts after the hovered button when dragging down and
+        // before it when dragging up, so the indicator follows the same rule.
+        let drop_boundary = match (is_dragging, from_index, to_index) {
+            (true, Some(from), Some(to)) if from != to => {
+                Some(if from < to { to + 1 } else { to })
+            }
+            _ => None,
+        };
+
+        let mut rail = div()
             .id("ribbon-rail")
             .flex()
             .flex_col()
             .items_center()
+            .relative()
             .w(px(44.0))
             .h_full()
             .flex_shrink_0()
             .border_r_1()
             .border_color(theme.border)
             .bg(theme.bg_sidebar)
-            .pt_2()
-            .pb_2()
-            .gap_2()
+            .pt(px(RIBBON_PAD_TOP))
+            .pb(px(RIBBON_PAD_TOP))
+            .gap(px(RIBBON_ITEM_GAP))
             // Right-click on ribbon rail background opens the ribbon context menu
             .on_mouse_down(MouseButton::Right, cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
                 this.open_ribbon_context_menu(event.position.x.into(), event.position.y.into(), cx);
             }))
-            // Global mouse-up resets dragging state safely
+            // A drag is committed by the rail's own mouse-up below, so releasing in the
+            // gap above/below an icon still drops where the insertion line is. This
+            // handler only turns a plain click into the item's action.
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                if this.ribbon_is_dragging {
-                    this.state.session.save(&crate::state::app_data_dir());
-                }
-                this.ribbon_dragged_id = None;
+                let Some(from_id) = this.ribbon_dragged_id.take() else {
+                    return;
+                };
+                let was_dragging = this.ribbon_is_dragging;
+                let target = this.ribbon_drop_id.take();
                 this.ribbon_drag_start_y = None;
                 this.ribbon_is_dragging = false;
+
+                if was_dragging {
+                    if let Some(to_id) = target {
+                        this.reorder_ribbon_item(&from_id, &to_id, cx);
+                    }
+                }
                 cx.notify();
+            }))
+            // Released outside the rail entirely: cancel instead of leaving the ghost armed.
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if this.ribbon_dragged_id.take().is_some() {
+                    this.ribbon_drop_id = None;
+                    this.ribbon_drag_start_y = None;
+                    this.ribbon_is_dragging = false;
+                    cx.notify();
+                }
+            }))
+            // Keeps the ghost glued to the pointer over gaps and empty rail space.
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if this.ribbon_dragged_id.is_some() {
+                    this.ribbon_drag_pointer_x = event.position.x.into();
+                    this.ribbon_drag_pointer_y = event.position.y.into();
+                    if this.ribbon_is_dragging {
+                        cx.notify();
+                    }
+                }
+            }))
+            // Leaving the rail cancels the indicated slot, so the insertion line never
+            // points at a place the release cannot reach.
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !hovered && this.ribbon_drop_id.take().is_some() {
+                    cx.notify();
+                }
             }))
             // Render active draggable ribbon action buttons
             .children(visible_items.into_iter().map(|item| {
@@ -280,8 +339,8 @@ impl AppView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .w(px(32.0))
-                    .h(px(32.0))
+                    .w(px(RIBBON_ITEM_SIZE))
+                    .h(px(RIBBON_ITEM_SIZE))
                     .rounded_md()
                     .cursor_pointer()
                     .when(is_this_dragged, |d| {
@@ -289,7 +348,9 @@ impl AppView {
                             .border_color(theme.accent)
                             .bg(theme.bg_selected)
                     })
-                    .when(!is_this_dragged, |d| {
+                    // No hover feedback while reordering: the insertion line is the
+                    // only thing that should draw attention.
+                    .when(!is_this_dragged && !is_dragging, |d| {
                         d.hover(|h| h.bg(theme.bg_hover))
                     })
                     .child(icons::icon(item.icon, 17.0, theme.text_secondary))
@@ -297,6 +358,9 @@ impl AppView {
                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
                         this.ribbon_dragged_id = Some(id_down.clone());
                         this.ribbon_drag_start_y = Some(event.position.y.into());
+                        this.ribbon_drag_pointer_x = event.position.x.into();
+                        this.ribbon_drag_pointer_y = event.position.y.into();
+                        this.ribbon_drop_id = None;
                         this.ribbon_is_dragging = false;
                         cx.notify();
                     }))
@@ -304,34 +368,62 @@ impl AppView {
                     .on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
                         this.open_ribbon_context_menu(event.position.x.into(), event.position.y.into(), cx);
                     }))
-                    // Reorder items when dragging over another ribbon item
+                    // Track the pointer and highlight the slot the icon would move to.
+                    // The list itself is left untouched until the button is released.
                     .on_mouse_move(cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| {
-                        if let Some(from_id) = this.ribbon_dragged_id.clone() {
-                            let cur_y: f32 = event.position.y.into();
-                            let start_y = this.ribbon_drag_start_y.unwrap_or(cur_y);
-                            if (cur_y - start_y).abs() > 4.0 {
-                                this.ribbon_is_dragging = true;
-                            }
-                            if this.ribbon_is_dragging && from_id != id_move {
-                                this.reorder_ribbon_item(&from_id, &id_move, cx);
-                            }
+                        this.ribbon_drag_pointer_x = event.position.x.into();
+                        this.ribbon_drag_pointer_y = event.position.y.into();
+                        let Some(from_id) = this.ribbon_dragged_id.clone() else {
+                            return;
+                        };
+                        let cur_y: f32 = event.position.y.into();
+                        let start_y = this.ribbon_drag_start_y.unwrap_or(cur_y);
+                        if (cur_y - start_y).abs() > 4.0 {
+                            this.ribbon_is_dragging = true;
+                        }
+                        if this.ribbon_is_dragging {
+                            this.ribbon_drop_id =
+                                if from_id == id_move { None } else { Some(id_move.clone()) };
+                            cx.notify();
                         }
                     }))
-                    // On mouse up: execute action if not dragged, or finish drag
+                    // On mouse up: a plain click runs the action; a drag is committed by
+                    // the rail so the drop also works outside the button's hitbox.
                     .on_mouse_up(MouseButton::Left, cx.listener(move |this, _, window, cx| {
-                        let was_dragging = this.ribbon_is_dragging;
-                        this.ribbon_dragged_id = None;
+                        if this.ribbon_is_dragging {
+                            return;
+                        }
+                        let Some(from_id) = this.ribbon_dragged_id.take() else {
+                            return;
+                        };
+                        this.ribbon_drop_id = None;
                         this.ribbon_drag_start_y = None;
-                        this.ribbon_is_dragging = false;
-
-                        if !was_dragging {
+                        if from_id == id_up {
                             this.execute_ribbon_action(&id_up, window, cx);
-                        } else {
-                            this.state.session.save(&crate::state::app_data_dir());
                         }
                         cx.notify();
                     }))
-            }))
+            }));
+
+        // Insertion line in the gap between icons: the line sits where the icon will
+        // land, and the buttons themselves are not restyled.
+        if let Some(boundary) = drop_boundary {
+            rail = rail.child(
+                div()
+                    .id("ribbon-drop-indicator")
+                    .absolute()
+                    .left(px((44.0 - RIBBON_ITEM_SIZE) / 2.0))
+                    .top(px(RIBBON_PAD_TOP
+                        + boundary as f32 * (RIBBON_ITEM_SIZE + RIBBON_ITEM_GAP)
+                        - RIBBON_ITEM_GAP / 2.0))
+                    .w(px(RIBBON_ITEM_SIZE))
+                    .h(px(2.0))
+                    .rounded_full()
+                    .bg(theme.accent),
+            );
+        }
+
+        rail
             // Spacer to push settings to bottom
             .child(div().flex_1())
             // Settings button at bottom of ribbon
@@ -341,8 +433,8 @@ impl AppView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .w(px(32.0))
-                    .h(px(32.0))
+                    .w(px(RIBBON_ITEM_SIZE))
+                    .h(px(RIBBON_ITEM_SIZE))
                     .rounded_md()
                     .cursor_pointer()
                     .hover(|h| h.bg(theme.bg_hover))
@@ -355,6 +447,45 @@ impl AppView {
                         this.open_settings(None, cx);
                     })),
             )
+    }
+
+    /// Floating preview of the ribbon icon being reordered, drawn at the pointer.
+    pub(crate) fn render_ribbon_drag_ghost(&self, theme: &Theme) -> Option<AnyElement> {
+        if !self.ribbon_is_dragging {
+            return None;
+        }
+        let dragged_id = self.ribbon_dragged_id.as_deref()?;
+        let item = self
+            .get_all_ribbon_items()
+            .into_iter()
+            .find(|item| item.id.as_str() == dragged_id)?;
+
+        Some(
+            div()
+                .absolute()
+                .left(px(self.ribbon_drag_pointer_x + 14.0))
+                .top(px(self.ribbon_drag_pointer_y + 10.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1p5()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .bg(theme.bg_card)
+                .border_1()
+                .border_color(theme.accent)
+                .shadow_lg()
+                .opacity(0.92)
+                .child(icons::icon(item.icon, 15.0, theme.accent))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.text_primary)
+                        .child(item.title),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Renders the floating context menu for ribbon buttons matching Obsidian style.
