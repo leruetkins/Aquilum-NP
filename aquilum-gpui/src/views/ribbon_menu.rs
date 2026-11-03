@@ -426,6 +426,33 @@ impl AppView {
         rail
             // Spacer to push settings to bottom
             .child(div().flex_1())
+            // Theme toggle: flips between the selected light and dark presets.
+            .child(
+                div()
+                    .id("rail-btn-theme-toggle")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(RIBBON_ITEM_SIZE))
+                    .h(px(RIBBON_ITEM_SIZE))
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(|h| h.bg(theme.bg_hover))
+                    .child(icons::icon(
+                        if theme.is_dark {
+                            icons::ICON_SUN
+                        } else {
+                            icons::ICON_MOON
+                        },
+                        17.0,
+                        theme.text_muted,
+                    ))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let next = if this.theme.is_dark { "light" } else { "dark" }.to_string();
+                        this.settings_model
+                            .update(cx, |model, cx| model.set_theme(next, cx));
+                    })),
+            )
             // Settings button at bottom of ribbon
             .child(
                 div()
