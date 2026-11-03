@@ -90,6 +90,7 @@ impl SettingsView {
             toolbar_command_popup_subscription: None,
             toolbar_icon_popup: None,
             toolbar_icon_popup_subscription: None,
+            toolbar_drag: None,
         }
     }
 
@@ -1011,6 +1012,9 @@ impl SettingsView {
                     .child(self.render_settings_content(window, cx)),
             )
             .when_some(plugin_modal_overlay, |this, overlay| this.child(overlay))
+            .when_some(self.render_toolbar_cfg_drag_ghost(cx), |this, ghost| {
+                this.child(ghost)
+            })
     }
 
     /// Renders the standalone title bar for the Settings window.

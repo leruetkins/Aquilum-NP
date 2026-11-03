@@ -1,5 +1,50 @@
 use super::*;
 
+/// Drag state for reordering rows in the editor-toolbar settings list.
+#[derive(Clone, Debug)]
+pub struct SettingsToolbarDragState {
+    pub source_path: Vec<usize>,
+    pub start_y: f32,
+    pub pointer_x: f32,
+    pub pointer_y: f32,
+    pub is_dragging: bool,
+    /// Row under the pointer at the same nesting level, highlighted as the drop slot.
+    pub target_path: Option<Vec<usize>>,
+}
+
+/// Resolves an item by its index path.
+fn item_at_path<'a>(
+    items: &'a [crate::toolbar::ToolbarItem],
+    path: &[usize],
+) -> Option<&'a crate::toolbar::ToolbarItem> {
+    let (first, rest) = path.split_first()?;
+    let item = items.get(*first)?;
+    if rest.is_empty() {
+        Some(item)
+    } else if let crate::toolbar::ToolbarItemKind::Dropdown { items, .. } = &item.kind {
+        item_at_path(items, rest)
+    } else {
+        None
+    }
+}
+
+/// Resolves the mutable sibling list at `path` (empty path = the root list).
+fn items_at_path_mut<'a>(
+    items: &'a mut Vec<crate::toolbar::ToolbarItem>,
+    path: &[usize],
+) -> Option<&'a mut Vec<crate::toolbar::ToolbarItem>> {
+    if path.is_empty() {
+        return Some(items);
+    }
+    let (first, rest) = path.split_first()?;
+    let item = items.get_mut(*first)?;
+    if let crate::toolbar::ToolbarItemKind::Dropdown { items, .. } = &mut item.kind {
+        items_at_path_mut(items, rest)
+    } else {
+        None
+    }
+}
+
 impl UiSink for SettingsView {
     fn send_plugin_ui_event(
         &mut self,
@@ -480,6 +525,7 @@ impl SettingsView {
 
         // Render current items list
         let mut items_container = div()
+            .id("toolbar-cfg-items")
             .flex()
             .flex_col()
             .gap_1p5()
@@ -487,7 +533,45 @@ impl SettingsView {
             .rounded_lg()
             .bg(theme.bg_card)
             .border_1()
-            .border_color(theme.border_subtle);
+            .border_color(theme.border_subtle)
+            // A drag released over a button or a gap still drops at the highlighted
+            // slot; releases inside a row are handled by the row itself.
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                let Some(drag) = this.toolbar_drag.take() else {
+                    return;
+                };
+                if drag.is_dragging {
+                    if let Some(target) = drag.target_path {
+                        this.toolbar_reorder_item_to_path(&drag.source_path, &target, cx);
+                    }
+                }
+                cx.notify();
+            }))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if this.toolbar_drag.take().is_some() {
+                    cx.notify();
+                }
+            }))
+            // Keeps the ghost glued to the pointer over gaps and the action buttons.
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if let Some(drag) = this.toolbar_drag.as_mut() {
+                    drag.pointer_x = event.position.x.into();
+                    drag.pointer_y = event.position.y.into();
+                    if drag.is_dragging {
+                        cx.notify();
+                    }
+                }
+            }))
+            // Leaving the list clears the indicated slot.
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !*hovered {
+                    if let Some(drag) = this.toolbar_drag.as_mut() {
+                        if drag.target_path.take().is_some() {
+                            cx.notify();
+                        }
+                    }
+                }
+            }));
 
         let total_items = items.len();
         for (i, it) in items.iter().enumerate() {
@@ -539,6 +623,18 @@ impl SettingsView {
         let can_move_down = idx + 1 < total;
         let item_id_str = item.id.clone();
 
+        let drag = self.toolbar_drag.as_ref().filter(|drag| drag.is_dragging);
+        let is_drag_source = drag.is_some_and(|drag| drag.source_path == path_vec);
+        let is_drop_target = drag.is_some_and(|drag| drag.target_path.as_deref() == Some(path));
+        // Dragging down places the row after the hovered one, dragging up before it —
+        // the same rule `toolbar_reorder_item_to_path` applies.
+        let drop_after = is_drop_target
+            && drag.is_some_and(|drag| {
+                drag.source_path
+                    .last()
+                    .is_some_and(|source| *source < idx)
+            });
+
         let move_up_btn = div()
             .id(gpui::SharedString::from(format!("tb-up-{}", item_id_str)))
             .px_1p5()
@@ -585,12 +681,22 @@ impl SettingsView {
             }));
 
         let mut row_container = div()
+            .relative()
             .flex()
             .flex_col()
             .gap_1();
 
         match &item.kind {
             crate::toolbar::ToolbarItemKind::Separator => {
+                let label = div()
+                    .text_xs()
+                    .text_color(theme.text_muted)
+                    .child(self.t("settings.toolbar.separator"));
+                let label = self.with_toolbar_drag_handlers(
+                    label,
+                    path_vec.clone(),
+                    cx,
+                );
                 let main_row = div()
                     .flex()
                     .flex_row()
@@ -602,12 +708,8 @@ impl SettingsView {
                     .bg(theme.bg_editor)
                     .border_1()
                     .border_color(theme.border_subtle)
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.text_muted)
-                            .child(self.t("settings.toolbar.separator")),
-                    )
+                    .when(is_drag_source, |d| d.border_color(theme.accent))
+                    .child(label)
                     .child(
                         div()
                             .flex()
@@ -631,6 +733,43 @@ impl SettingsView {
                     .unwrap_or_else(|| is_plugin_command(command_id, None));
                 let cmd_type_icon = command_type_icon(is_plugin);
 
+                let info = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        gpui::svg()
+                            .path(icon_asset)
+                            .w(px(14.0))
+                            .h(px(14.0))
+                            .text_color(theme.accent)
+                            .flex_shrink_0()
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.text_primary)
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .child(icons::icon(cmd_type_icon, 12.0, theme.text_muted)),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.text_muted)
+                            .child(format!("({})", command_id)),
+                    );
+                let info = self.with_toolbar_drag_handlers(
+                    info,
+                    path_vec.clone(),
+                    cx,
+                );
+
                 let main_row = div()
                     .flex()
                     .flex_row()
@@ -642,39 +781,8 @@ impl SettingsView {
                     .bg(theme.bg_editor)
                     .border_1()
                     .border_color(theme.border_subtle)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                gpui::svg()
-                                    .path(icon_asset)
-                                    .w(px(14.0))
-                                    .h(px(14.0))
-                                    .text_color(theme.accent)
-                                    .flex_shrink_0()
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(theme.text_primary)
-                                    .child(label),
-                            )
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .child(icons::icon(cmd_type_icon, 12.0, theme.text_muted)),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.text_muted)
-                                    .child(format!("({})", command_id)),
-                            ),
-                    )
+                    .when(is_drag_source, |d| d.border_color(theme.accent))
+                    .child(info)
                     .child(
                         div()
                             .flex()
@@ -728,6 +836,49 @@ impl SettingsView {
                         cx.notify();
                     }));
 
+                let info = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        gpui::svg()
+                            .path(icon_asset)
+                            .w(px(14.0))
+                            .h(px(14.0))
+                            .text_color(theme.accent)
+                            .flex_shrink_0()
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(theme.text_primary)
+                            .child(format!("{} ▾", title)),
+                    )
+                    .when_some(split_type_icon, |row, ic| {
+                        row.child(
+                            div()
+                                .flex_shrink_0()
+                                .child(icons::icon(ic, 12.0, theme.text_muted)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.text_muted)
+                            .child(format!(
+                                "({}){}",
+                                self.t_fmt("settings.toolbar.items", &[&sub_items.len().to_string()]),
+                                if let Some(cmd) = command { format!(" [split: {}]", cmd) } else { "".to_string() }
+                            )),
+                    );
+                let info = self.with_toolbar_drag_handlers(
+                    info,
+                    path_vec.clone(),
+                    cx,
+                );
+
                 let main_row = div()
                     .flex()
                     .flex_row()
@@ -739,45 +890,8 @@ impl SettingsView {
                     .bg(theme.bg_hover)
                     .border_1()
                     .border_color(theme.border)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                gpui::svg()
-                                    .path(icon_asset)
-                                    .w(px(14.0))
-                                    .h(px(14.0))
-                                    .text_color(theme.accent)
-                                    .flex_shrink_0()
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .text_color(theme.text_primary)
-                                    .child(format!("{} ▾", title)),
-                            )
-                            .when_some(split_type_icon, |row, ic| {
-                                row.child(
-                                    div()
-                                        .flex_shrink_0()
-                                        .child(icons::icon(ic, 12.0, theme.text_muted)),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.text_muted)
-                        .child(format!(
-                            "({}){}",
-                            self.t_fmt("settings.toolbar.items", &[&sub_items.len().to_string()]),
-                            if let Some(cmd) = command { format!(" [split: {}]", cmd) } else { "".to_string() }
-                        )),
-                            ),
-                    )
+                    .when(is_drag_source, |d| d.border_color(theme.accent))
+                    .child(info)
                     .child(
                         div()
                             .flex()
@@ -817,6 +931,22 @@ impl SettingsView {
                     row_container = row_container.child(sub_list);
                 }
             }
+        }
+
+        // Insertion line in the gap above/below the hovered row, matching where the
+        // dragged item will land.
+        if is_drop_target {
+            row_container = row_container.child(
+                div()
+                    .absolute()
+                    .left(px(0.0))
+                    .right(px(0.0))
+                    .h(px(2.0))
+                    .rounded_full()
+                    .bg(theme.accent)
+                    .when(drop_after, |d| d.bottom(px(-3.0)))
+                    .when(!drop_after, |d| d.top(px(-3.0))),
+            );
         }
 
         row_container
@@ -1700,5 +1830,171 @@ impl SettingsView {
             self.toolbar_status_msg = Some(m.to_string());
         }
         cx.notify();
+    }
+
+    /// Adds the drag handlers that reorder a row within its sibling list.
+    fn with_toolbar_drag_handlers<E>(
+        &self,
+        el: E,
+        path: Vec<usize>,
+        cx: &Context<Self>,
+    ) -> E
+    where
+        E: InteractiveElement + 'static,
+    {
+        let path_move = path.clone();
+        el.on_mouse_down(MouseButton::Left, cx.listener({
+            let path = path.clone();
+            move |this, event: &MouseDownEvent, _, cx| {
+                this.toolbar_drag = Some(SettingsToolbarDragState {
+                    source_path: path.clone(),
+                    start_y: event.position.y.into(),
+                    pointer_x: event.position.x.into(),
+                    pointer_y: event.position.y.into(),
+                    is_dragging: false,
+                    target_path: None,
+                });
+                cx.notify();
+            }
+        }))
+        .on_mouse_move(cx.listener({
+            let path = path_move;
+            move |this, event: &MouseMoveEvent, _, cx| {
+                let Some(drag) = this.toolbar_drag.as_mut() else {
+                    return;
+                };
+                let y: f32 = event.position.y.into();
+                drag.pointer_x = event.position.x.into();
+                drag.pointer_y = y;
+                if !drag.is_dragging && (y - drag.start_y).abs() > 4.0 {
+                    drag.is_dragging = true;
+                }
+                if drag.is_dragging {
+                    // Only rows with the same parent take part: moving across the
+                    // nesting levels is not a plain reorder.
+                    let same_parent = !path.is_empty()
+                        && drag.source_path.len() == path.len()
+                        && drag.source_path[..path.len() - 1] == path[..path.len() - 1];
+                    if same_parent {
+                        drag.target_path = if drag.source_path == path {
+                            None
+                        } else {
+                            Some(path.clone())
+                        };
+                    } else {
+                        drag.target_path = None;
+                    }
+                    cx.notify();
+                }
+            }
+        }))
+        .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+            let Some(drag) = this.toolbar_drag.take() else {
+                return;
+            };
+            if drag.is_dragging {
+                if let Some(target) = drag.target_path {
+                    this.toolbar_reorder_item_to_path(&drag.source_path, &target, cx);
+                }
+            }
+            cx.notify();
+        }))
+    }
+
+    /// Moves an item to the slot of `target` inside the same parent list.
+    pub(super) fn toolbar_reorder_item_to_path(
+        &mut self,
+        source: &[usize],
+        target: &[usize],
+        cx: &mut Context<Self>,
+    ) {
+        if source.is_empty() || source.len() != target.len() {
+            return;
+        }
+        let parent_len = source.len() - 1;
+        if source[..parent_len] != target[..parent_len] {
+            return;
+        }
+
+        let vault_root = self
+            .weak_app
+            .upgrade()
+            .and_then(|a| a.read(cx).state.vault.as_ref().map(|v| v.root.clone()));
+        let mut items = crate::plugins::editor_toolbar::load_toolbar_config(vault_root.as_deref());
+
+        {
+            let Some(list) = items_at_path_mut(&mut items, &source[..parent_len]) else {
+                return;
+            };
+            let (Some(from), Some(to)) = (source.last().copied(), target.last().copied())
+            else {
+                return;
+            };
+            if from == to || from >= list.len() || to >= list.len() {
+                return;
+            }
+            let item = list.remove(from);
+            list.insert(to, item);
+        }
+
+        self.toolbar_save_and_sync(items, None, cx);
+    }
+
+    /// Floating preview of the toolbar row being reordered in settings.
+    pub(super) fn render_toolbar_cfg_drag_ghost(
+        &self,
+        cx: &Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let drag = self
+            .toolbar_drag
+            .as_ref()
+            .filter(|drag| drag.is_dragging)?;
+        let vault_root = self
+            .weak_app
+            .upgrade()
+            .and_then(|a| a.read(cx).state.vault.as_ref().map(|v| v.root.clone()));
+        let items = crate::plugins::editor_toolbar::load_toolbar_config(vault_root.as_deref());
+        let item = item_at_path(&items, &drag.source_path)?;
+        let label = item
+            .tooltip()
+            .map(|title| title.to_string())
+            .or_else(|| item.command_id().map(|cmd| cmd.to_string()))
+            .unwrap_or_else(|| self.t("settings.toolbar.separator"));
+
+        let mut chip = div()
+            .absolute()
+            .left(px(drag.pointer_x + 14.0))
+            .top(px(drag.pointer_y + 10.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1p5()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(self.theme.bg_card)
+            .border_1()
+            .border_color(self.theme.accent)
+            .shadow_lg()
+            .opacity(0.92);
+
+        if let Some(icon) = item.icon() {
+            chip = chip.child(
+                gpui::svg()
+                    .path(icons::resolve_toolbar_icon(icon))
+                    .w(px(14.0))
+                    .h(px(14.0))
+                    .text_color(self.theme.accent)
+                    .flex_shrink_0(),
+            );
+        }
+        chip = chip.child(
+            div()
+                .text_xs()
+                .text_color(self.theme.text_primary)
+                .child(label),
+        );
+
+        Some(chip.into_any_element())
     }
 }

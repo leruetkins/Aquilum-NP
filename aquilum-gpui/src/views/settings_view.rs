@@ -443,6 +443,8 @@ pub struct SettingsView {
     pub toolbar_command_popup_subscription: Option<Subscription>,
     pub toolbar_icon_popup: Option<gpui::Entity<TabListPopup>>,
     pub toolbar_icon_popup_subscription: Option<Subscription>,
+    /// Drag state of the editor-toolbar item list (reorder by dragging a row).
+    pub toolbar_drag: Option<plugin_toolbar::SettingsToolbarDragState>,
 }
 
 /// Encapsulates the complete state of the settings search input (based on quick_filter.rs).
