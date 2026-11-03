@@ -33,7 +33,7 @@
       "mcp": "AI-agenten",
       "history": "Geschiedenis",
       "trash": "Afval",
-      "system": "Systeem",
+      "system": "Over",
       "shortcuts": "Snelkoppelingen",
       "core_plugins": "Kernplug-ins",
       "community_plugins": "Community-plug-ins",
@@ -218,7 +218,7 @@
       "folder_desc": "Lokale prullenbak in de huidige bankbiljettenkluis"
     },
     "system": {
-      "title": "Over & Systeem",
+      "title": "Over",
       "version": "App-versie",
       "arch": "Samengestelde native clientarchitectuur",
       "storage": "Opslagmotor",

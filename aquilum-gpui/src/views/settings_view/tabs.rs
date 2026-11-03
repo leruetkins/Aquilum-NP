@@ -1707,167 +1707,6 @@ impl SettingsView {
     }
 
     // =========================================================================
-    // 7. Graph Analysis Tab
-    // =========================================================================
-
-    /// Renders graph analysis and BM25F ranking algorithms settings tab.
-    pub(super) fn render_analysis_tab(&self, cx: &Context<Self>) -> gpui::Div {
-        let config = &self.config;
-
-        let analysis_rows = vec![
-            self.render_setting_row_with_id(
-                Some("analysis.bm25f"),
-                &self.t("settings.analysis.bm25f"),
-                Some(&self.t("settings.analysis.bm25f_desc")),
-                div()
-                    .id("row-bm25f")
-                    .child(self.render_toggle_switch(config.analysis.enable_bm25f))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.analysis.enable_bm25f = !this.config.analysis.enable_bm25f;
-                        this.save_settings(cx);
-                    })),
-                cx,
-            ),
-            self.render_setting_row_with_id(
-                Some("analysis.adamicAdar"),
-                &self.t("settings.analysis.adamic_adar"),
-                Some(&self.t("settings.analysis.adamic_adar_desc")),
-                div()
-                    .id("row-adamic")
-                    .child(self.render_toggle_switch(config.analysis.enable_adamic_adar))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.analysis.enable_adamic_adar = !this.config.analysis.enable_adamic_adar;
-                        this.save_settings(cx);
-                    })),
-                cx,
-            ),
-            self.render_setting_row_with_id(
-                Some("analysis.wikixiv"),
-                &self.t("settings.analysis.wikixiv"),
-                Some(&self.t("settings.analysis.wikixiv_desc")),
-                div()
-                    .id("row-wikixiv")
-                    .child(self.render_toggle_switch(config.analysis.enable_wikixiv))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.analysis.enable_wikixiv = !this.config.analysis.enable_wikixiv;
-                        this.save_settings(cx);
-                    })),
-                cx,
-            ),
-        ];
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_5()
-            .child(self.render_settings_card(&self.t("settings.analysis.title"), analysis_rows))
-    }
-
-    // =========================================================================
-    // 8. AI Agents (MCP) Tab
-    // =========================================================================
-
-    /// Renders Model Context Protocol local server settings tab.
-    pub(super) fn render_mcp_tab(&self, cx: &Context<Self>) -> gpui::Div {
-        let theme = &self.theme;
-        let config = &self.config;
-
-        let mcp_rows = vec![
-            self.render_setting_row_with_id(
-                Some("mcp.enabled"),
-                &self.t("settings.mcp.enable"),
-                Some(&self.t("settings.mcp.enable_desc")),
-                div()
-                    .id("row-mcp")
-                    .child(self.render_toggle_switch(config.mcp.enabled))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.mcp.enabled = !this.config.mcp.enabled;
-                        this.save_settings(cx);
-                    })),
-                cx,
-            ),
-            self.render_setting_row_with_id(
-                Some("mcp.port"),
-                &self.t("settings.mcp.port"),
-                Some(&self.t("settings.mcp.port_desc")),
-                div()
-                    .px_3()
-                    .py_1()
-                    .bg(theme.bg_sidebar)
-                    .border_1()
-                    .border_color(theme.border)
-                    .rounded_md()
-                    .text_xs()
-                    .text_color(theme.text_primary)
-                    .child(format!("{}", config.mcp.port)),
-                cx,
-            ),
-            self.render_setting_row_with_id(
-                Some("mcp.allowWrite"),
-                &self.t("settings.mcp.allow_write"),
-                Some(&self.t("settings.mcp.allow_write_desc")),
-                div()
-                    .id("row-mcp-write")
-                    .child(self.render_toggle_switch(config.mcp.allow_write))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.mcp.allow_write = !this.config.mcp.allow_write;
-                        this.save_settings(cx);
-                    })),
-                cx,
-            ),
-        ];
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_5()
-            .child(self.render_settings_card(&self.t("settings.mcp.title"), mcp_rows))
-    }
-
-    // =========================================================================
-    // 9. History Tab
-    // =========================================================================
-
-    /// Renders note versioning and revision history retention settings tab.
-    pub(super) fn render_history_tab(&self, cx: &Context<Self>) -> gpui::Div {
-        let config = &self.config;
-
-        let history_rows = vec![
-            self.render_setting_row_with_id(
-                Some("history.retention"),
-                &self.t("settings.history.retention"),
-                Some(&self.t("settings.history.retention_desc")),
-                div()
-                    .id("row-history-retention")
-                    .cursor_pointer()
-                    .child(self.render_select_pill(&match config.history.retention_days {
-                        0 => self.t("common.always"),
-                        30 => self.t("common.days_30"),
-                        90 => self.t("common.days_90"),
-                        365 => self.t("common.year_1"),
-                        _ => self.t("common.always"),
-                    }))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.history.retention_days = match this.config.history.retention_days {
-                            0 => 30,
-                            30 => 90,
-                            90 => 365,
-                            _ => 0,
-                        };
-                        this.save_settings(cx);
-                    })),
-                cx,
-            ),
-        ];
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_5()
-            .child(self.render_settings_card(&self.t("settings.history.title"), history_rows))
-    }
-
-    // =========================================================================
     // 10. Trash Tab
     // =========================================================================
 
@@ -1937,7 +1776,7 @@ impl SettingsView {
         let system_rows = vec![
             self.render_setting_row(
                 &self.t("settings.system.version"),
-                Some(&self.t("settings.system.arch")),
+                None,
                 div()
                     .px_3()
                     .py_1()
@@ -1948,15 +1787,7 @@ impl SettingsView {
                     .text_xs()
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(theme.accent)
-                    .child(format!("v{} GPUI Native DirectX 120 FPS", env!("CARGO_PKG_VERSION"))),
-            ),
-            self.render_setting_row(
-                &self.t("settings.system.storage"),
-                Some(&self.t("settings.system.storage_desc")),
-                div()
-                    .text_xs()
-                    .text_color(theme.text_secondary)
-                    .child("SQLite WAL + Tantivy v2"),
+                    .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
             ),
         ];
 

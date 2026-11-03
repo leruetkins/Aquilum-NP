@@ -33,7 +33,7 @@
       "mcp": "Agentes de IA",
       "history": "História",
       "trash": "Lixo",
-      "system": "Sistema",
+      "system": "Sobre",
       "shortcuts": "Atalhos",
       "core_plugins": "Plug-ins principais",
       "community_plugins": "Plug-ins da comunidade",
@@ -218,7 +218,7 @@
       "folder_desc": "Lixo local dentro do cofre de notas atual"
     },
     "system": {
-      "title": "Sobre e sistema",
+      "title": "Sobre",
       "version": "Versão do aplicativo",
       "arch": "Arquitetura de cliente nativa compilada",
       "storage": "Mecanismo de armazenamento",

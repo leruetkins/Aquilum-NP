@@ -33,7 +33,7 @@
       "mcp": "Đại lý AI",
       "history": "Lịch sử",
       "trash": "Rác",
-      "system": "Hệ thống",
+      "system": "Giới thiệu",
       "shortcuts": "Phím tắt",
       "core_plugins": "Plugin cốt lõi",
       "community_plugins": "Plugin cộng đồng",
@@ -218,7 +218,7 @@
       "folder_desc": "Thùng rác cục bộ bên trong kho ghi chú hiện tại"
     },
     "system": {
-      "title": "Giới thiệu & Hệ thống",
+      "title": "Giới thiệu",
       "version": "Phiên bản ứng dụng",
       "arch": "Kiến trúc máy khách gốc được biên dịch",
       "storage": "Công cụ lưu trữ",

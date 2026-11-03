@@ -33,7 +33,7 @@
       "mcp": "Agenti dell'intelligenza artificiale",
       "history": "Storia",
       "trash": "Spazzatura",
-      "system": "Sistema",
+      "system": "Informazioni",
       "shortcuts": "Scorciatoie",
       "core_plugins": "Plugin principali",
       "community_plugins": "Plugin della comunità",
@@ -218,7 +218,7 @@
       "folder_desc": "Cestino locale all'interno del caveau delle banconote corrente"
     },
     "system": {
-      "title": "Informazioni e sistema",
+      "title": "Informazioni",
       "version": "Versione dell'app",
       "arch": "Architettura client nativa compilata",
       "storage": "Motore di archiviazione",

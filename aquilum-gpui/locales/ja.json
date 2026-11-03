@@ -33,7 +33,7 @@
       "mcp": "AIエージェント",
       "history": "歴史",
       "trash": "ごみ",
-      "system": "システム",
+      "system": "バージョン情報",
       "shortcuts": "ショートカット",
       "core_plugins": "コアプラグイン",
       "community_plugins": "コミュニティプラグイン",
@@ -218,7 +218,7 @@
       "folder_desc": "現在のメモ保管庫内のローカルのゴミ箱"
     },
     "system": {
-      "title": "概要とシステム",
+      "title": "バージョン情報",
       "version": "アプリのバージョン",
       "arch": "コンパイルされたネイティブ クライアント アーキテクチャ",
       "storage": "ストレージエンジン",

@@ -33,7 +33,7 @@
       "mcp": "人工智慧代理",
       "history": "歷史",
       "trash": "垃圾",
-      "system": "系統",
+      "system": "關於",
       "shortcuts": "快速方式",
       "core_plugins": "核心插件",
       "community_plugins": "社群插件",
@@ -218,7 +218,7 @@
       "folder_desc": "目前筆記庫內的本地垃圾"
     },
     "system": {
-      "title": "關於與系統",
+      "title": "關於",
       "version": "應用程式版本",
       "arch": "編譯的本機客戶端架構",
       "storage": "儲存引擎",

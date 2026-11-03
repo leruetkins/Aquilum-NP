@@ -33,7 +33,7 @@
       "mcp": "Agentes IA",
       "history": "Historial",
       "trash": "Papelera",
-      "system": "Sistema",
+      "system": "Acerca de",
       "shortcuts": "Atajos",
       "core_plugins": "Complementos principales",
       "community_plugins": "Complementos comunitarios",
@@ -218,7 +218,7 @@
       "folder_desc": "Papelera local dentro de la bóveda de notas actual"
     },
     "system": {
-      "title": "Acerca de y sistema",
+      "title": "Acerca de",
       "version": "Versión de la aplicación",
       "arch": "Arquitectura de cliente nativa compilada",
       "storage": "Motor de almacenamiento",

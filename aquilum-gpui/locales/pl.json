@@ -33,7 +33,7 @@
       "mcp": "Agenci AI",
       "history": "Historia",
       "trash": "Kosz",
-      "system": "System",
+      "system": "O programie",
       "shortcuts": "Skróty klawiszowe",
       "core_plugins": "Podstawowe wtyczki",
       "community_plugins": "Wtyczki społecznościowe",
@@ -218,7 +218,7 @@
       "folder_desc": "Lokalne śmieci w bieżącym skarbcu notatek"
     },
     "system": {
-      "title": "Informacje i system",
+      "title": "O programie",
       "version": "Wersja aplikacji",
       "arch": "Skompilowana natywna architektura klienta",
       "storage": "Silnik przechowywania",

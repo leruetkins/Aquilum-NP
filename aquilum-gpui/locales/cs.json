@@ -33,7 +33,7 @@
       "mcp": "Agenti AI",
       "history": "Dějiny",
       "trash": "Odpadky",
-      "system": "Systém",
+      "system": "O aplikaci",
       "shortcuts": "Zkratky",
       "core_plugins": "Základní pluginy",
       "community_plugins": "Komunitní pluginy",
@@ -218,7 +218,7 @@
       "folder_desc": "Místní koš uvnitř aktuálního trezoru poznámek"
     },
     "system": {
-      "title": "O a systému",
+      "title": "O aplikaci",
       "version": "Verze aplikace",
       "arch": "Kompilovaná architektura nativního klienta",
       "storage": "Úložný modul",

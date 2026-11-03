@@ -33,7 +33,7 @@
       "mcp": "KI-Agenten",
       "history": "Verlauf",
       "trash": "Papierkorb",
-      "system": "System",
+      "system": "Über",
       "shortcuts": "Tastenkürzel",
       "core_plugins": "Kern-Plugins",
       "community_plugins": "Community-Plugins",
@@ -218,7 +218,7 @@
       "folder_desc": "Lokaler Papierkorb im aktuellen Notiztresor"
     },
     "system": {
-      "title": "Über & System",
+      "title": "Über",
       "version": "App-Version",
       "arch": "Kompilierte native Client-Architektur",
       "storage": "Speicher-Engine",

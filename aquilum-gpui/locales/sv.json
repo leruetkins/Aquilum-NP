@@ -33,7 +33,7 @@
       "mcp": "AI-agenter",
       "history": "Historia",
       "trash": "Skräp",
-      "system": "System",
+      "system": "Om",
       "shortcuts": "Genvägar",
       "core_plugins": "Kärnplugins",
       "community_plugins": "Community-tillägg",
@@ -218,7 +218,7 @@
       "folder_desc": "Lokalt skräp i det aktuella sedelvalvet"
     },
     "system": {
-      "title": "Om & System",
+      "title": "Om",
       "version": "Appversion",
       "arch": "Sammanställd inbyggd klientarkitektur",
       "storage": "Förvaringsmotor",

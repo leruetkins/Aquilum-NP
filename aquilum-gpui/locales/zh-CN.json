@@ -33,7 +33,7 @@
       "mcp": "AI 代理",
       "history": "历史记录",
       "trash": "回收站",
-      "system": "系统",
+      "system": "关于",
       "shortcuts": "快捷键",
       "core_plugins": "核心插件",
       "community_plugins": "社区插件",
@@ -218,7 +218,7 @@
       "folder_desc": "当前笔记库内的本地垃圾"
     },
     "system": {
-      "title": "关于与系统",
+      "title": "关于",
       "version": "应用程序版本",
       "arch": "编译的本机客户端架构",
       "storage": "存储引擎",

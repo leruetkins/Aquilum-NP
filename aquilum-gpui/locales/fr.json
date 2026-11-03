@@ -33,7 +33,7 @@
       "mcp": "Agents IA",
       "history": "Historique",
       "trash": "Corbeille",
-      "system": "Système",
+      "system": "À propos",
       "shortcuts": "Raccourcis",
       "core_plugins": "Plugins de base",
       "community_plugins": "Plugins communautaires",
@@ -218,7 +218,7 @@
       "folder_desc": "Corbeille locale dans le coffre-fort de notes actuel"
     },
     "system": {
-      "title": "À propos et système",
+      "title": "À propos",
       "version": "Version de l'application",
       "arch": "Architecture client native compilée",
       "storage": "Moteur de stockage",

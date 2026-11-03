@@ -33,7 +33,7 @@
       "mcp": "Yapay Zeka Aracıları",
       "history": "Tarih",
       "trash": "Çöp",
-      "system": "Sistem",
+      "system": "Hakkında",
       "shortcuts": "Kısayollar",
       "core_plugins": "Çekirdek eklentiler",
       "community_plugins": "Topluluk eklentileri",
@@ -218,7 +218,7 @@
       "folder_desc": "Mevcut not kasasının içindeki yerel çöp kutusu"
     },
     "system": {
-      "title": "Hakkında ve Sistem",
+      "title": "Hakkında",
       "version": "Uygulama Sürümü",
       "arch": "Derlenmiş yerel istemci mimarisi",
       "storage": "Depolama Motoru",

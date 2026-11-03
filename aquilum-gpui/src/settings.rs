@@ -30,24 +30,10 @@ impl Default for Bm25fParams {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AnalysisSettings {
-    pub enable_bm25f: bool,
-    pub enable_adamic_adar: bool,
-    pub enable_wikixiv: bool,
     pub bm25f_params: Bm25fParams,
-}
-
-impl Default for AnalysisSettings {
-    fn default() -> Self {
-        Self {
-            enable_bm25f: true,
-            enable_adamic_adar: true,
-            enable_wikixiv: true,
-            bm25f_params: Bm25fParams::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -370,32 +356,6 @@ impl Default for TrashSettings {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct HistorySettings {
-    pub retention_days: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct McpSettings {
-    pub enabled: bool,
-    pub port: u16,
-    pub token: String,
-    pub allow_write: bool,
-}
-
-impl Default for McpSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            port: 8787,
-            token: String::new(),
-            allow_write: true,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TemplateSettings {
@@ -468,18 +428,6 @@ impl Default for FilesSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-pub struct UpdateSettings {
-    pub auto: bool,
-}
-
-impl Default for UpdateSettings {
-    fn default() -> Self {
-        Self { auto: true }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
 pub struct CommunityPluginSettings {
     /// Safe mode disables execution of all community plugins.
     pub safe_mode: bool,
@@ -495,9 +443,7 @@ impl Default for CommunityPluginSettings {
 #[serde(rename_all = "camelCase", default)]
 pub struct AppConfig {
     pub analysis: AnalysisSettings,
-    pub mcp: McpSettings,
     pub trash: TrashSettings,
-    pub history: HistorySettings,
     pub search: SearchIndexSettings,
     pub editor: EditorSettings,
     pub reader: ReaderSettings,
@@ -505,7 +451,6 @@ pub struct AppConfig {
     pub templates: TemplateSettings,
     pub files: FilesSettings,
     pub images: ImagesSettings,
-    pub updates: UpdateSettings,
     pub community_plugins: CommunityPluginSettings,
 }
 
@@ -860,15 +805,6 @@ pub static SETTINGS: &[SettingDescriptor] = &[
         setting_type: SettingType::Bool,
     },
     SettingDescriptor {
-        id: "mcp.enabled",
-        tab_id: "mcp",
-        title_key: "settings.registry.mcp.enabled.title",
-        desc_key: "settings.registry.mcp.enabled.desc",
-        keywords: &["mcp", "ai", "server", "сервер", "агенты"],
-        aliases: &[],
-        setting_type: SettingType::Bool,
-    },
-    SettingDescriptor {
         id: "trash.retentionDays",
         tab_id: "trash",
         title_key: "settings.registry.trash.retentionDays.title",
@@ -1192,60 +1128,6 @@ pub static SETTINGS: &[SettingDescriptor] = &[
         keywords: &[],
         aliases: &[],
         setting_type: SettingType::String,
-    },
-    SettingDescriptor {
-        id: "analysis.bm25f",
-        tab_id: "analysis",
-        title_key: "settings.analysis.bm25f",
-        desc_key: "settings.analysis.bm25f_desc",
-        keywords: &[],
-        aliases: &[],
-        setting_type: SettingType::Bool,
-    },
-    SettingDescriptor {
-        id: "analysis.adamicAdar",
-        tab_id: "analysis",
-        title_key: "settings.analysis.adamic_adar",
-        desc_key: "settings.analysis.adamic_adar_desc",
-        keywords: &[],
-        aliases: &[],
-        setting_type: SettingType::Bool,
-    },
-    SettingDescriptor {
-        id: "analysis.wikixiv",
-        tab_id: "analysis",
-        title_key: "settings.analysis.wikixiv",
-        desc_key: "settings.analysis.wikixiv_desc",
-        keywords: &[],
-        aliases: &[],
-        setting_type: SettingType::Bool,
-    },
-    SettingDescriptor {
-        id: "mcp.port",
-        tab_id: "mcp",
-        title_key: "settings.mcp.port",
-        desc_key: "settings.mcp.port_desc",
-        keywords: &[],
-        aliases: &[],
-        setting_type: SettingType::U32,
-    },
-    SettingDescriptor {
-        id: "mcp.allowWrite",
-        tab_id: "mcp",
-        title_key: "settings.mcp.allow_write",
-        desc_key: "settings.mcp.allow_write_desc",
-        keywords: &[],
-        aliases: &[],
-        setting_type: SettingType::Bool,
-    },
-    SettingDescriptor {
-        id: "history.retention",
-        tab_id: "history",
-        title_key: "settings.history.retention",
-        desc_key: "settings.history.retention_desc",
-        keywords: &[],
-        aliases: &[],
-        setting_type: SettingType::U32,
     },
     SettingDescriptor {
         id: "trash.autoDelete",

@@ -33,7 +33,7 @@
       "mcp": "AI Agents",
       "history": "History",
       "trash": "Trash",
-      "system": "System",
+      "system": "About",
       "shortcuts": "Shortcuts",
       "core_plugins": "Core plugins",
       "community_plugins": "Community plugins",
@@ -218,7 +218,7 @@
       "folder_desc": "Local trash inside current note vault"
     },
     "system": {
-      "title": "About & System",
+      "title": "About",
       "version": "App Version",
       "arch": "Compiled native client architecture",
       "storage": "Storage Engine",
