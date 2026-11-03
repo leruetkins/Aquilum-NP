@@ -407,12 +407,15 @@ impl SettingsView {
         ];
 
         let font_rows = vec![
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("ui.fontFamily"),
                 &self.t("settings.ui.font_family"),
                 Some(&self.t("settings.ui.font_family_desc")),
                 self.render_select_pill(&config.ui.font.font_family),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("ui.fontWeight"),
                 &self.t("settings.ui.font_weight"),
                 Some(&self.t("settings.ui.font_weight_desc")),
                 self.render_select_pill(&self.t(if config.ui.font.font_weight >= 600 {
@@ -420,8 +423,10 @@ impl SettingsView {
                 } else {
                     "settings.ui.font_weight_regular"
                 })),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("ui.fontSize"),
                 &self.t("settings.ui.font_size"),
                 Some(&self.t("settings.ui.font_size_desc")),
                 self.render_stepper(
@@ -441,6 +446,7 @@ impl SettingsView {
                     },
                     cx,
                 ),
+                cx,
             ),
         ];
 
@@ -462,7 +468,8 @@ impl SettingsView {
         let config = &self.config;
 
         let heading_rows = vec![
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("editor.heading1"),
                 &self.t("settings.editor.h1_title"),
                 Some(&self.t("settings.editor.h1_desc")),
                 div()
@@ -506,8 +513,10 @@ impl SettingsView {
                         },
                         cx,
                     )),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("editor.heading2"),
                 &self.t("settings.editor.h2_title"),
                 Some(&self.t("settings.editor.h2_desc")),
                 div()
@@ -551,8 +560,10 @@ impl SettingsView {
                         },
                         cx,
                     )),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("editor.heading3"),
                 &self.t("settings.editor.h3_title"),
                 Some(&self.t("settings.editor.h3_desc")),
                 div()
@@ -596,8 +607,10 @@ impl SettingsView {
                         },
                         cx,
                     )),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("editor.heading4"),
                 &self.t("settings.editor.h4_title"),
                 Some(&self.t("settings.editor.h4_desc")),
                 div()
@@ -641,8 +654,10 @@ impl SettingsView {
                         },
                         cx,
                     )),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("editor.heading5"),
                 &self.t("settings.editor.h5_title"),
                 Some(&self.t("settings.editor.h5_desc")),
                 div()
@@ -686,8 +701,10 @@ impl SettingsView {
                         },
                         cx,
                     )),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("editor.heading6"),
                 &self.t("settings.editor.h6_title"),
                 Some(&self.t("settings.editor.h6_desc")),
                 div()
@@ -731,13 +748,15 @@ impl SettingsView {
                         },
                         cx,
                     )),
+                cx,
             ),
         ];
 
         let font_rows = vec![
             {
                 let current_font = config.editor.font.font_family.clone();
-                self.render_setting_row(
+                self.render_setting_row_with_id(
+                    Some("editor.fontFamily"),
                     &self.t("settings.editor.font_family"),
                     Some(&self.t("settings.editor.font_family_desc")),
                     div()
@@ -771,9 +790,11 @@ impl SettingsView {
                                 .with_priority(999),
                             )
                         }),
+                    cx,
                 )
             },
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("editor.fontSizeBase"),
                 &self.t("settings.editor.font_size"),
                 Some(&self.t("settings.editor.font_size_desc")),
                 self.render_stepper(
@@ -793,8 +814,10 @@ impl SettingsView {
                     },
                     cx,
                 ),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("editor.lineHeight"),
                 &self.t("settings.editor.line_height"),
                 Some(&self.t("settings.editor.line_height_desc")),
                 self.render_stepper(
@@ -814,6 +837,7 @@ impl SettingsView {
                     },
                     cx,
                 ),
+                cx,
             ),
         ];
 
@@ -989,7 +1013,8 @@ impl SettingsView {
                     ),
                 cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("editor.maxWidth"),
                 &self.t("settings.editor.max_width"),
                 Some(&self.t("settings.editor.max_width_desc")),
                 self.render_stepper(
@@ -1009,6 +1034,7 @@ impl SettingsView {
                     },
                     cx,
                 ),
+                cx,
             ),
             self.render_setting_row_with_id(
                 Some("editor.wordWrap"),
@@ -1022,7 +1048,8 @@ impl SettingsView {
                     })),
                 cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("editor.liveTabs"),
                 &self.t("settings.editor.live_tabs"),
                 Some(&self.t("settings.editor.live_tabs_desc")),
                 self.render_stepper(
@@ -1042,6 +1069,7 @@ impl SettingsView {
                     },
                     cx,
                 ),
+                cx,
             ),
             self.render_setting_row_with_id(
                 Some("editor.wheelSmoothScroll"),
@@ -1099,7 +1127,8 @@ impl SettingsView {
 
         let debounce_display = self.t_fmt("settings.editor.debounce_unit", &[&config.editor.save_debounce_ms.to_string()]);
         let input_rows = vec![
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("editor.smartDashes"),
                 &self.t("settings.editor.smart_dashes"),
                 Some(&self.t("settings.editor.smart_dashes_desc")),
                 div()
@@ -1109,8 +1138,10 @@ impl SettingsView {
                         this.config.editor.smart_dashes = !this.config.editor.smart_dashes;
                         this.save_settings(cx);
                     })),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("editor.listCallouts"),
                 &self.t("settings.editor.list_callouts"),
                 Some(&self.t("settings.editor.list_callouts_desc")),
                 div()
@@ -1120,8 +1151,10 @@ impl SettingsView {
                         this.config.editor.list_callouts = !this.config.editor.list_callouts;
                         this.save_settings(cx);
                     })),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("editor.linkSuggest"),
                 &self.t("settings.editor.link_suggest"),
                 Some(&self.t("settings.editor.link_suggest_desc")),
                 div()
@@ -1131,8 +1164,10 @@ impl SettingsView {
                         this.config.editor.link_suggest = !this.config.editor.link_suggest;
                         this.save_settings(cx);
                     })),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("editor.hideCurrentLineOnSelection"),
                 &self.t("settings.editor.hide_current_line_on_selection"),
                 Some(&self.t("settings.editor.hide_current_line_on_selection_desc")),
                 div()
@@ -1142,8 +1177,10 @@ impl SettingsView {
                         this.config.editor.hide_current_line_on_selection = !this.config.editor.hide_current_line_on_selection;
                         this.save_settings(cx);
                     })),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("editor.debounce"),
                 &self.t("settings.editor.debounce"),
                 Some(&self.t("settings.editor.debounce_desc")),
                 self.render_stepper(
@@ -1163,6 +1200,7 @@ impl SettingsView {
                     },
                     cx,
                 ),
+                cx,
             ),
         ];
 
@@ -1185,12 +1223,15 @@ impl SettingsView {
         let config = &self.config;
 
         let reader_rows = vec![
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("reader.fontFamily"),
                 &self.t("settings.reader.font_family"),
                 Some(&self.t("settings.reader.font_family_desc")),
                 self.render_select_pill(&config.reader.font.font_family),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("reader.lineHeight"),
                 &self.t("settings.reader.line_height"),
                 Some(&self.t("settings.reader.line_height_desc")),
                 self.render_stepper(
@@ -1206,8 +1247,10 @@ impl SettingsView {
                     },
                     cx,
                 ),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("reader.justify"),
                 &self.t("settings.reader.justify"),
                 Some(&self.t("settings.reader.justify_desc")),
                 div()
@@ -1217,8 +1260,10 @@ impl SettingsView {
                         this.config.reader.justify = !this.config.reader.justify;
                         this.save_settings(cx);
                     })),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("reader.hyphenate"),
                 &self.t("settings.reader.hyphenate"),
                 Some(&self.t("settings.reader.hyphenate_desc")),
                 div()
@@ -1228,6 +1273,7 @@ impl SettingsView {
                         this.config.reader.hyphenate = !this.config.reader.hyphenate;
                         this.save_settings(cx);
                     })),
+                cx,
             ),
         ];
 
@@ -1247,7 +1293,8 @@ impl SettingsView {
         let config = &self.config;
 
         let search_rows = vec![
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("search.candidatePool"),
                 &self.t("settings.search.candidate_pool"),
                 Some(&self.t("settings.search.candidate_pool_desc")),
                 self.render_stepper(
@@ -1267,8 +1314,10 @@ impl SettingsView {
                     },
                     cx,
                 ),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("search.maxTerms"),
                 &self.t("settings.search.max_terms"),
                 Some(&self.t("settings.search.max_terms_desc")),
                 self.render_stepper(
@@ -1288,6 +1337,7 @@ impl SettingsView {
                     },
                     cx,
                 ),
+                cx,
             ),
         ];
 
@@ -1303,12 +1353,13 @@ impl SettingsView {
     // =========================================================================
 
     /// Renders note template configuration and generator tab.
-    pub(super) fn render_templates_tab(&self, _cx: &Context<Self>) -> gpui::Div {
+    pub(super) fn render_templates_tab(&self, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
         let config = &self.config;
 
         let template_rows = vec![
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("templates.folder"),
                 &self.t("settings.templates.folder"),
                 Some(&self.t("settings.templates.folder_desc")),
                 div()
@@ -1321,6 +1372,7 @@ impl SettingsView {
                     .text_xs()
                     .text_color(theme.text_primary)
                     .child(config.templates.folder.clone()),
+                cx,
             ),
         ];
 
@@ -1663,7 +1715,8 @@ impl SettingsView {
         let config = &self.config;
 
         let analysis_rows = vec![
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("analysis.bm25f"),
                 &self.t("settings.analysis.bm25f"),
                 Some(&self.t("settings.analysis.bm25f_desc")),
                 div()
@@ -1673,8 +1726,10 @@ impl SettingsView {
                         this.config.analysis.enable_bm25f = !this.config.analysis.enable_bm25f;
                         this.save_settings(cx);
                     })),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("analysis.adamicAdar"),
                 &self.t("settings.analysis.adamic_adar"),
                 Some(&self.t("settings.analysis.adamic_adar_desc")),
                 div()
@@ -1684,8 +1739,10 @@ impl SettingsView {
                         this.config.analysis.enable_adamic_adar = !this.config.analysis.enable_adamic_adar;
                         this.save_settings(cx);
                     })),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("analysis.wikixiv"),
                 &self.t("settings.analysis.wikixiv"),
                 Some(&self.t("settings.analysis.wikixiv_desc")),
                 div()
@@ -1695,6 +1752,7 @@ impl SettingsView {
                         this.config.analysis.enable_wikixiv = !this.config.analysis.enable_wikixiv;
                         this.save_settings(cx);
                     })),
+                cx,
             ),
         ];
 
@@ -1715,7 +1773,8 @@ impl SettingsView {
         let config = &self.config;
 
         let mcp_rows = vec![
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("mcp.enabled"),
                 &self.t("settings.mcp.enable"),
                 Some(&self.t("settings.mcp.enable_desc")),
                 div()
@@ -1725,8 +1784,10 @@ impl SettingsView {
                         this.config.mcp.enabled = !this.config.mcp.enabled;
                         this.save_settings(cx);
                     })),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("mcp.port"),
                 &self.t("settings.mcp.port"),
                 Some(&self.t("settings.mcp.port_desc")),
                 div()
@@ -1739,8 +1800,10 @@ impl SettingsView {
                     .text_xs()
                     .text_color(theme.text_primary)
                     .child(format!("{}", config.mcp.port)),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("mcp.allowWrite"),
                 &self.t("settings.mcp.allow_write"),
                 Some(&self.t("settings.mcp.allow_write_desc")),
                 div()
@@ -1750,6 +1813,7 @@ impl SettingsView {
                         this.config.mcp.allow_write = !this.config.mcp.allow_write;
                         this.save_settings(cx);
                     })),
+                cx,
             ),
         ];
 
@@ -1769,7 +1833,8 @@ impl SettingsView {
         let config = &self.config;
 
         let history_rows = vec![
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("history.retention"),
                 &self.t("settings.history.retention"),
                 Some(&self.t("settings.history.retention_desc")),
                 div()
@@ -1791,6 +1856,7 @@ impl SettingsView {
                         };
                         this.save_settings(cx);
                     })),
+                cx,
             ),
         ];
 
@@ -1811,7 +1877,8 @@ impl SettingsView {
         let config = &self.config;
 
         let trash_rows = vec![
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("trash.autoDelete"),
                 &self.t("settings.trash.auto_delete"),
                 Some(&self.t("settings.trash.auto_delete_desc")),
                 div()
@@ -1832,8 +1899,10 @@ impl SettingsView {
                         };
                         this.save_settings(cx);
                     })),
+                cx,
             ),
-            self.render_setting_row(
+            self.render_setting_row_with_id(
+                Some("trash.folder"),
                 &self.t("settings.trash.folder"),
                 Some(&self.t("settings.trash.folder_desc")),
                 div()
@@ -1846,6 +1915,7 @@ impl SettingsView {
                     .text_xs()
                     .text_color(theme.text_secondary)
                     .child(".trash"),
+                cx,
             ),
         ];
 
@@ -2060,7 +2130,14 @@ impl SettingsView {
                     div().child(toggle)
                 };
 
-                self.render_setting_row(&name, Some(&desc), action_container)
+                let setting_id = match id {
+                    "command-palette" => Some("corePlugins.commandPalette"),
+                    "word-counter" => Some("corePlugins.wordCounter"),
+                    "editor-toolbar" => Some("corePlugins.editorToolbar"),
+                    "file-recovery" => Some("corePlugins.fileRecovery"),
+                    _ => None,
+                };
+                self.render_setting_row_with_id(setting_id, &name, Some(&desc), action_container, cx)
             })
             .collect();
 
@@ -2094,10 +2171,12 @@ impl SettingsView {
                 this.save_settings(cx);
             }));
 
-        let safe_mode_row = self.render_setting_row(
+        let safe_mode_row = self.render_setting_row_with_id(
+            Some("communityPlugins.safeMode"),
             &self.t("settings.plugins.community.safe_mode"),
             Some(&self.t("settings.plugins.community.safe_mode_desc")),
             safe_mode_toggle,
+            cx,
         );
 
         let browse_btn = div()
