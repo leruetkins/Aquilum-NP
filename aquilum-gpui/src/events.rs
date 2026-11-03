@@ -1,34 +1,34 @@
 use std::sync::Mutex;
 
-/// События vault (файловые операции).
-/// Рассылаются подписчикам плагинов и внутренних сервисов хоста.
+/// Vault events (file operations).
+/// Broadcast to plugin subscribers and internal host services.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VaultEvent {
-    /// Файл изменён (сохранение заметки).
+    /// File changed (note saved).
     Modify { path: String },
-    /// Файл создан.
+    /// File created.
     Create { path: String },
-    /// Файл удалён.
+    /// File deleted.
     Delete { path: String },
-    /// Файл переименован.
+    /// File renamed.
     Rename { old_path: String, new_path: String },
 }
 
-/// События рабочей области.
+/// Workspace events.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceEvent {
-    /// Открыт файл (или None при закрытии последнего файла / переходе на пустую вкладку).
+    /// File opened (or None when the last file is closed / switching to an empty tab).
     FileOpen { path: Option<String> },
-    /// Изменилась активная вкладка.
+    /// The active tab changed.
     ActiveLeafChange,
-    /// Vault открыт или переключён на другой путь.
+    /// Vault opened or switched to another path.
     VaultOpen { path: String },
 }
 
 type VaultHandler = Box<dyn Fn(&VaultEvent) + Send + 'static>;
 type WorkspaceHandler = Box<dyn Fn(&WorkspaceEvent) + Send + 'static>;
 
-/// Потокобезопасная шина событий для связывания ядра с плагинами и UI.
+/// Thread-safe event bus for wiring the core to plugins and the UI.
 pub struct EventBus {
     vault_handlers: Mutex<Vec<(u64, VaultHandler)>>,
     workspace_handlers: Mutex<Vec<(u64, WorkspaceHandler)>>,
@@ -57,7 +57,7 @@ impl EventBus {
         val
     }
 
-    /// Подписаться на события vault. Возвращает id подписки для последующей отписки.
+    /// Subscribe to vault events. Returns a subscription id for later unsubscription.
     pub fn on_vault<F>(&self, handler: F) -> u64
     where
         F: Fn(&VaultEvent) + Send + 'static,
@@ -67,7 +67,7 @@ impl EventBus {
         id
     }
 
-    /// Подписаться на события workspace. Возвращает id подписки.
+    /// Subscribe to workspace events. Returns a subscription id.
     pub fn on_workspace<F>(&self, handler: F) -> u64
     where
         F: Fn(&WorkspaceEvent) + Send + 'static,
@@ -77,13 +77,13 @@ impl EventBus {
         id
     }
 
-    /// Отписаться от событий по идентификатору подписки.
+    /// Unsubscribe from events by subscription id.
     pub fn off(&self, handler_id: u64) {
         self.vault_handlers.lock().unwrap().retain(|(id, _)| *id != handler_id);
         self.workspace_handlers.lock().unwrap().retain(|(id, _)| *id != handler_id);
     }
 
-    /// Отправить событие vault всем зарегистрированным слушателям.
+    /// Send a vault event to all registered listeners.
     pub fn emit_vault(&self, event: &VaultEvent) {
         let handlers = self.vault_handlers.lock().unwrap();
         for (_, handler) in handlers.iter() {
@@ -91,7 +91,7 @@ impl EventBus {
         }
     }
 
-    /// Отправить событие workspace всем зарегистрированным слушателям.
+    /// Send a workspace event to all registered listeners.
     pub fn emit_workspace(&self, event: &WorkspaceEvent) {
         let handlers = self.workspace_handlers.lock().unwrap();
         for (_, handler) in handlers.iter() {
@@ -126,10 +126,10 @@ mod tests {
         bus.emit_vault(&VaultEvent::Modify { path: "Notes/Test.md".into() });
         assert_eq!(counter.load(Ordering::SeqCst), 1);
 
-        // Отписываемся
+        // Unsubscribe
         bus.off(sub_id);
         bus.emit_vault(&VaultEvent::Modify { path: "Notes/Test.md".into() });
-        assert_eq!(counter.load(Ordering::SeqCst), 1); // Не изменился
+        assert_eq!(counter.load(Ordering::SeqCst), 1); // Unchanged
     }
 
     #[test]

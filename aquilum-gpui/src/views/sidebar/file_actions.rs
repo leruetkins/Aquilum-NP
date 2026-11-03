@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::fs;
 
-/// Duplicates a file in the same directory (`<name> (копия).md`, etc.).
+/// Duplicates a file in the same directory (`<name> (copy).md`, etc.).
 pub fn duplicate_file(file: &Path) -> Result<PathBuf, String> {
     if !file.exists() {
         return Err(format!("Файл не существует: {:?}", file));

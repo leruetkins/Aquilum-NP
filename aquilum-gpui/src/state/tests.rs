@@ -734,7 +734,7 @@
         let _ = view.line_col(&doc);
 
         // Selection across multi-byte characters
-        view.selection_anchor = Some(2); // inside "# Заметка"
+        view.selection_anchor = Some(2); // inside the heading note
         let range = view.selection_range(doc.content().len());
         assert!(range.is_some());
         let range = range.unwrap();
@@ -743,7 +743,7 @@
         let selected = view.selected_text(&doc);
         assert!(selected.is_some());
 
-        // Test with exact template from create_note_in_folder: "# Без названия\n\n"
+        // Test with the exact template from create_note_in_folder: an untitled note header plus a blank line
         let doc_id2 = DocumentId::new();
         let tab_id2 = TabId::new();
         let mut new_doc = DocumentBuffer::new(
@@ -757,7 +757,7 @@
         new_view.ensure_visual_cache(&mut new_doc, true, 80, 0);
         new_view.cursor_offset = new_doc.content().len();
 
-        // Type text containing 'ё' and other Cyrillic characters
+        // Type text containing Cyrillic characters, including the diaeresis letter
         let sample = "Привет, моё солнышко! Ещё одна заметка.";
         for ch in sample.chars() {
             let mut s = String::new();
@@ -2829,7 +2829,7 @@
         let doc_id = state.active_doc_id().unwrap();
         let tab_id = state.active_tab_id().unwrap();
 
-        // Select "Привет" (bytes 0..12)
+        // Select the first word (bytes 0..12)
         {
             let view = state.views.get_mut(&tab_id).unwrap();
             view.selection_anchor = Some(0);

@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use crate::commands::{Command, CommandRegistry};
 
-/// Регистрирует метаданные встроенных команд приложения в реестр команд.
+/// Registers metadata for the application's built-in commands in the command registry.
 pub fn register_builtin_commands(registry: &CommandRegistry) {
-    // 1. Сохранить текущую заметку (Ctrl+S)
+    // 1. Save the current note (Ctrl+S)
     registry.register(Command {
         id: "editor:save".into(),
         name: "Save current note".into(),
@@ -13,7 +13,7 @@ pub fn register_builtin_commands(registry: &CommandRegistry) {
         callback: Arc::new(|| {}),
     });
 
-    // 2. Новая пустая вкладка (Ctrl+N)
+    // 2. New empty tab (Ctrl+N)
     registry.register(Command {
         id: "workspace:new-tab".into(),
         name: "New empty tab".into(),
@@ -23,7 +23,7 @@ pub fn register_builtin_commands(registry: &CommandRegistry) {
         callback: Arc::new(|| {}),
     });
 
-    // 3. Закрыть текущую вкладку (Ctrl+W)
+    // 3. Close the current tab (Ctrl+W)
     registry.register(Command {
         id: "workspace:close-tab".into(),
         name: "Close active tab".into(),
@@ -33,7 +33,7 @@ pub fn register_builtin_commands(registry: &CommandRegistry) {
         callback: Arc::new(|| {}),
     });
 
-    // 4. Переключить левый сайдбар (Ctrl+B)
+    // 4. Toggle the left sidebar (Ctrl+B)
     registry.register(Command {
         id: "view:toggle-left-sidebar".into(),
         name: "Toggle left sidebar".into(),
@@ -43,7 +43,7 @@ pub fn register_builtin_commands(registry: &CommandRegistry) {
         callback: Arc::new(|| {}),
     });
 
-    // 5. Переключить правый сайдбар
+    // 5. Toggle the right sidebar
     registry.register(Command {
         id: "view:toggle-right-sidebar".into(),
         name: "Toggle right sidebar".into(),
@@ -53,7 +53,7 @@ pub fn register_builtin_commands(registry: &CommandRegistry) {
         callback: Arc::new(|| {}),
     });
 
-    // Переключить вертикальную панель (Ribbon)
+    // Toggle the vertical panel (Ribbon)
     registry.register(Command {
         id: "view:toggle-ribbon".into(),
         name: "Toggle vertical ribbon rail".into(),
@@ -63,7 +63,7 @@ pub fn register_builtin_commands(registry: &CommandRegistry) {
         callback: Arc::new(|| {}),
     });
 
-    // 6. Переключить настройки (Ctrl+,)
+    // 6. Toggle settings (Ctrl+,)
     registry.register(Command {
         id: "app:open-settings".into(),
         name: "Open settings".into(),
@@ -73,7 +73,7 @@ pub fn register_builtin_commands(registry: &CommandRegistry) {
         callback: Arc::new(|| {}),
     });
 
-    // 7. Переключить перенос строк (Word Wrap)
+    // 7. Toggle line wrapping (Word Wrap)
     registry.register(Command {
         id: "editor:toggle-word-wrap".into(),
         name: "Toggle word wrap".into(),
@@ -83,7 +83,7 @@ pub fn register_builtin_commands(registry: &CommandRegistry) {
         callback: Arc::new(|| {}),
     });
 
-    // 8. Палитра команд (Ctrl+P)
+    // 8. Command palette (Ctrl+P)
     registry.register(Command {
         id: "app:open-command-palette".into(),
         name: "Open command palette".into(),
@@ -93,7 +93,7 @@ pub fn register_builtin_commands(registry: &CommandRegistry) {
         callback: Arc::new(|| {}),
     });
 
-    // 9. Меню быстрого перехода / поиск файлов (Ctrl+O)
+    // 9. Quick switcher menu / file search (Ctrl+O)
     registry.register(Command {
         id: "app:open-search-dialog".into(),
         name: "Quick switcher: Open search".into(),
@@ -103,7 +103,7 @@ pub fn register_builtin_commands(registry: &CommandRegistry) {
         callback: Arc::new(|| {}),
     });
 
-    // 10. Разделить справа (Ctrl+\)
+    // 10. Split right (Ctrl+\)
     registry.register(Command {
         id: "workspace:split-right".into(),
         name: "Split right".into(),
@@ -113,7 +113,7 @@ pub fn register_builtin_commands(registry: &CommandRegistry) {
         callback: Arc::new(|| {}),
     });
 
-    // 11. Разделить снизу (Ctrl+Shift+\)
+    // 11. Split down (Ctrl+Shift+\)
     registry.register(Command {
         id: "workspace:split-down".into(),
         name: "Split down".into(),
@@ -123,7 +123,7 @@ pub fn register_builtin_commands(registry: &CommandRegistry) {
         callback: Arc::new(|| {}),
     });
 
-    // 12. Экспорт в PDF
+    // 12. Export to PDF
     registry.register(Command {
         id: "app:export-pdf".into(),
         name: "Export to PDF".into(),

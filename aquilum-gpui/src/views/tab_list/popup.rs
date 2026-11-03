@@ -1391,13 +1391,13 @@ impl Render for TabListPopup {
                                 canvas(
                                     move |viewport, _window, _cx| bounds.set(viewport),
                                     |viewport, _state, window, _cx| {
-                                        // Гасим колесо и тачпад в фазе capture: до того, как событие
-                                        // дойдёт до слушателя uniform_list (он срабатывает раньше любого
-                                        // ancestor-слушателя, так что обычным on_scroll_wheel сверху его
-                                        // не перехватить). Прокруткой управляет только положение курсора.
-                                        // Слушатель живёт один кадр и регистрируется заново в каждом
-                                        // paint — так задумано в gpui, утечки нет. contains() нужен,
-                                        // чтобы не глушить колесо вне списка: слушатель висит на всём окне.
+                                        // Suppress the wheel and trackpad in the capture phase: before the event
+                                        // reaches the uniform_list listener (it fires earlier than any
+                                        // ancestor listener, so a regular on_scroll_wheel on top cannot
+                                        // intercept it). Scrolling is controlled only by the cursor position.
+                                        // The listener lives for one frame and is registered again in every
+                                        // paint — this is intentional in gpui, there is no leak. contains() is needed
+                                        // so the wheel is not swallowed outside the list: the listener is attached to the whole window.
                                         window.on_mouse_event(
                                             move |event: &ScrollWheelEvent, phase, _window, cx| {
                                                 if phase == DispatchPhase::Capture

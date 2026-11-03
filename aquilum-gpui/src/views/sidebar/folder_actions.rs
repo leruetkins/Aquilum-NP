@@ -46,7 +46,7 @@ pub fn create_note_in_folder(folder: &Path, untitled: &str) -> Result<PathBuf, S
 }
 
 /// Creates a new subfolder inside the specified folder.
-/// Automatically handles naming collisions (`Новая папка`, `Новая папка 1`, etc.).
+/// Automatically handles naming collisions (the default folder name, then a numbered variant, etc.).
 pub fn create_folder_in_folder(folder: &Path) -> Result<PathBuf, String> {
     if !folder.exists() {
         return Err(format!("Папка не существует: {:?}", folder));

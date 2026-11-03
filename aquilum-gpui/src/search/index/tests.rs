@@ -139,7 +139,7 @@
         assert_eq!(index.body_count(&b, "конец"), 5);
 
         // Re-save the FIRST file: its postings re-append after B's.
-        // "конец снова один конец два конец три" — 3 in-body occurrences;
+        // the re-saved text has 3 in-body occurrences;
         // the rebuilt postings must replace A's, not merge with B's.
         std::fs::write(&a, "конец снова один конец два конец три").unwrap();
         index.upsert(&a);

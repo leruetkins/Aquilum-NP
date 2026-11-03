@@ -1,14 +1,14 @@
-//! Масштабируемая система локализации (i18n) для Aquilum / Vibecodium.
+//! Scalable localization (i18n) system for Aquilum / Vibecodium.
 //!
-//! - Поддержка 20 языков интерфейса.
-//! - Все переводы вкомпилированы в бинарный файл через `include_str!`.
-//! - Ленивая инициализация в плоскую хеш-таблицу для O(1) поиска.
-//! - Многоуровневый fallback: `Запрошенный язык` -> `en` -> `Имя ключа`.
+//! - Support for 20 interface languages.
+//! - All translations are compiled into the binary via `include_str!`.
+//! - Lazy initialization into a flat hash table for O(1) lookup.
+//! - Multi-level fallback: `requested language` -> `en` -> `key name`.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-/// Информация о поддерживаемом языке.
+/// Information about a supported language.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LocaleInfo {
     pub code: &'static str,
@@ -16,7 +16,7 @@ pub struct LocaleInfo {
     pub english_name: &'static str,
 }
 
-/// Список всех 20 поддерживаемых языков интерфейса.
+/// List of all 20 supported interface languages.
 pub static SUPPORTED_LOCALES: &[LocaleInfo] = &[
     LocaleInfo { code: "ru", native_name: "Русский", english_name: "Russian" },
     LocaleInfo { code: "en", native_name: "English", english_name: "English" },
@@ -41,13 +41,13 @@ pub static SUPPORTED_LOCALES: &[LocaleInfo] = &[
 ];
 
 impl LocaleInfo {
-    /// Поиск информации о локали по коду (регистронезависимо).
+    /// Looks up locale information by code (case-insensitive).
     pub fn for_code(code: &str) -> Option<&'static LocaleInfo> {
         let code_clean = code.trim();
         SUPPORTED_LOCALES.iter().find(|l| l.code.eq_ignore_ascii_case(code_clean))
     }
 
-    /// Нормализовать код языка (с префиксным fallback, e.g. "ru_RU" -> "ru").
+    /// Normalizes a language code (with prefix fallback, e.g. "ru_RU" -> "ru").
     pub fn normalize(code: &str) -> &'static str {
         if let Some(info) = Self::for_code(code) {
             return info.code;
@@ -121,17 +121,17 @@ fn registry() -> &'static RegistryMap {
     })
 }
 
-/// Получить перевод по ключу для заданного языка.
+/// Gets a translation by key for the given language.
 ///
-/// Цепочка поиска:
+/// Lookup chain:
 /// 1. `lang`
 /// 2. `en` (fallback)
-/// 3. `key` (если перевод отсутствует)
+/// 3. `key` (if the translation is missing)
 pub fn t(key: &str, lang: &str) -> String {
     let reg = registry();
     let norm = LocaleInfo::normalize(lang);
 
-    // 1. Ищем в запрошенном языке
+    // 1. Look in the requested language
     if let Some(map) = reg.get(norm) {
         if let Some(val) = map.get(key) {
             if !val.is_empty() {
@@ -140,7 +140,7 @@ pub fn t(key: &str, lang: &str) -> String {
         }
     }
 
-    // 2. Fallback на английский
+    // 2. Fallback to English
     if norm != "en" {
         if let Some(en_map) = reg.get("en") {
             if let Some(val) = en_map.get(key) {
@@ -151,11 +151,11 @@ pub fn t(key: &str, lang: &str) -> String {
         }
     }
 
-    // 3. Fallback на сам ключ
+    // 3. Fallback to the key itself
     key.to_string()
 }
 
-/// Получить перевод с подстановкой именованных параметров `{name}`.
+/// Gets a translation with named parameter substitution `{name}`.
 pub fn t_args(key: &str, lang: &str, args: &[(&str, &str)]) -> String {
     let mut s = t(key, lang);
     for (name, val) in args {
@@ -164,7 +164,7 @@ pub fn t_args(key: &str, lang: &str, args: &[(&str, &str)]) -> String {
     s
 }
 
-/// Получить перевод с последовательной подстановкой позиционных `{}`.
+/// Gets a translation with sequential substitution of positional `{}`.
 pub fn t_fmt(key: &str, lang: &str, args: &[&str]) -> String {
     let mut s = t(key, lang);
     for arg in args {

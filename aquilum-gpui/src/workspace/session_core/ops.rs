@@ -1,19 +1,19 @@
-//! Идентификаторы, элементарные операции и OT-преобразование смещений.
+//! Identifiers, elementary operations, and OT transformation of offsets.
 
 use smallvec::SmallVec;
 
 pub use crate::document_buffer::DocumentId;
 pub use crate::workspace::tree::{LeafId, TabId};
 
-/// Позиционная операция для трансформации чужих курсоров.
+/// Positional operation for transforming other cursors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextOp {
     Insert { at: usize, len: usize },
     Delete { at: usize, len: usize },
 }
 
-/// Вставка ровно в позиции курсора сдвигает его вперёд (Bias::Right).
-/// Удаление текста вокруг курсора прижимает курсор к началу зоны удаления (at).
+/// Inserting exactly at the cursor position shifts it forward (Bias::Right).
+/// Deleting text around the cursor snaps the cursor to the start of the deletion zone (at).
 pub fn transform_offset(off: usize, op: TextOp) -> usize {
     match op {
         TextOp::Insert { at, len } => {
@@ -35,7 +35,7 @@ pub fn transform_offset(off: usize, op: TextOp) -> usize {
     }
 }
 
-/// Трансформация диапазона выделения [offset, anchor] через TextOp.
+/// Transform the selection range [offset, anchor] through a TextOp.
 pub fn transform_selection(range: (usize, usize), op: TextOp) -> (usize, usize) {
     let (head, anchor) = range;
     let (start, end) = if head <= anchor { (head, anchor) } else { (anchor, head) };
@@ -53,7 +53,7 @@ pub fn transform_selection(range: (usize, usize), op: TextOp) -> (usize, usize) 
     }
 }
 
-/// Операции применяются последовательно: каждая позиция относится к тексту после предыдущей.
+/// Operations are applied sequentially: each position refers to the text after the previous one.
 pub fn transform_through(off: usize, ops: &[TextOp]) -> usize {
     ops.iter().fold(off, |o, &op| transform_offset(o, op))
 }
@@ -62,7 +62,7 @@ pub fn transform_selection_through(range: (usize, usize), ops: &[TextOp]) -> (us
     ops.iter().fold(range, |r, &op| transform_selection(r, op))
 }
 
-/// Конкретная правка с текстом (нужна для undo: у Delete хранится удалённое).
+/// Concrete edit with text (needed for undo: Delete stores the deleted text).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Edit {
     Insert { at: usize, text: String },
@@ -82,7 +82,7 @@ impl Edit {
             Edit::Delete { at, text } => Edit::Insert { at: *at, text: text.clone() },
         }
     }
-    /// Где должен оказаться курсор инициатора после правки.
+    /// Where the initiator's cursor should end up after the edit.
     pub fn cursor_after(&self) -> usize {
         match self {
             Edit::Insert { at, text } => at + text.len(),
@@ -97,15 +97,15 @@ impl Edit {
     }
 }
 
-/// Результат правки; рассылается всем сессиям документа.
+/// Edit result; broadcast to all sessions of the document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditEvent {
     pub doc: DocumentId,
-    /// Версия документа ПОСЛЕ правки.
+    /// Document version AFTER the edit.
     pub version: u64,
     pub ops: SmallVec<[TextOp; 2]>,
-    /// Кто правил (undo/redo тоже). None — внешнее изменение (файл на диске).
+    /// Who made the edit (undo/redo too). None — external change (file on disk).
     pub origin: Option<TabId>,
-    /// Позиция курсора инициатора; остальные вкладки трансформируются.
+    /// Initiator's cursor position; other tabs are transformed.
     pub cursor_after: Option<usize>,
 }

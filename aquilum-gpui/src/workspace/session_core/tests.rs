@@ -4,7 +4,7 @@ fn ins(at: usize, t: &str) -> EditCmd {
     EditCmd::Insert { at, text: t.into() }
 }
 
-/// Два листа, одна заметка открыта в обоих. Возвращает (ws, вкладка A, вкладка B, doc).
+/// Two leaves, one note open in both. Returns (ws, tab A, tab B, doc).
 fn setup(content: &str) -> (Workspace, TabId, TabId, DocumentId) {
     let mut ws = Workspace::new();
     let l0 = ws.layout.active_leaf;
@@ -21,7 +21,7 @@ fn set_cursor(ws: &mut Workspace, t: TabId, off: usize, anchor: Option<usize>) {
     s.cursor.anchor = anchor;
 }
 
-/// Закрытие по протоколу: эффекты, затем finish_close.
+/// Closing by protocol: effects first, then finish_close.
 fn close_clean(ws: &mut Workspace, t: TabId) {
     if let CloseRequest::NeedsEffects(fx) = ws.request_close(t).unwrap() {
         for e in &fx {
@@ -59,9 +59,9 @@ fn edit_below_does_not_move_other_tab() {
 fn origin_gets_cursor_after_and_is_not_transformed_twice() {
     let (mut ws, a, _b, _) = setup("0123456789ABCDEF");
     set_cursor(&mut ws, a, 10, None);
-    // правка не в позиции курсора (напр. замена по поиску)
+    // edit is not at the cursor position (e.g. search replace)
     ws.edit(a, ins(3, "abc")).unwrap();
-    // cursor_after = 3 + 3; transform дал бы 13
+    // cursor_after = 3 + 3; transform would give 13
     assert_eq!(ws.tabs.get(a).unwrap().cursor.offset, 6);
 }
 
@@ -77,8 +77,8 @@ fn undo_from_other_tab_restores_text_and_cursors() {
     let ev = ws.undo(b).unwrap().expect("есть что откатывать");
     assert_eq!(ev.origin, Some(b));
     assert_eq!(ws.docs.get(doc).unwrap().content(), "hello world");
-    assert_eq!(ws.tabs.get(b).unwrap().cursor.offset, 0); // cursor_after для инициатора undo
-    assert_eq!(ws.tabs.get(a).unwrap().cursor.offset, 0); // 2 → 0 через Delete{0,2}
+    assert_eq!(ws.tabs.get(b).unwrap().cursor.offset, 0); // cursor_after for the undo initiator
+    assert_eq!(ws.tabs.get(a).unwrap().cursor.offset, 0); // 2 → 0 via Delete{0,2}
 
     ws.redo(b).unwrap().unwrap();
     assert_eq!(ws.docs.get(doc).unwrap().content(), "XXhello world");
@@ -115,7 +115,7 @@ fn close_with_title_input_requires_commit_and_session_survives_until_finish() {
         }
     }
     ws.finish_close(a).unwrap();
-    // doc жив (есть вкладка B), заголовок применён и виден в B без рассылки
+    // doc is alive (tab B exists), title applied and visible in B without broadcast
     assert_eq!(ws.title_of(b), Some("New"));
 }
 
@@ -126,7 +126,7 @@ fn failed_title_commit_cancels_close() {
     let a = ws.open_in_leaf(l, "/v/a.md", "").unwrap();
     let _b = ws.open_in_leaf(l, "/v/b.md", "").unwrap();
     ws.tabs.get_mut(a).unwrap().title_input =
-        Some(TitleInput { text: "B".into(), cursor: 1, anchor: None }); // коллизия (регистр нормализуется)
+        Some(TitleInput { text: "B".into(), cursor: 1, anchor: None }); // collision (case is normalized)
 
     let CloseRequest::NeedsEffects(fx) = ws.request_close(a).unwrap() else { panic!() };
     assert_eq!(ws.run_effect(&fx[0]), Err(WsError::NameTaken));
@@ -183,14 +183,14 @@ fn closing_active_tab_activates_neighbour() {
 #[test]
 fn doc_released_only_with_last_tab_and_flush_only_for_last() {
     let (mut ws, a, b, _) = setup("x");
-    ws.edit(a, ins(1, "y")).unwrap(); // документ грязный
+    ws.edit(a, ins(1, "y")).unwrap(); // document is dirty
 
-    // не последняя вкладка: сброс не нужен
+    // not the last tab: no flush needed
     assert_eq!(ws.request_close(a).unwrap(), CloseRequest::Ready);
     ws.finish_close(a).unwrap();
     assert_eq!(ws.docs.len(), 1);
 
-    // последняя: нужен FlushDoc, без него finish_close отказывает
+    // last one: FlushDoc needed, without it finish_close refuses
     let CloseRequest::NeedsEffects(fx) = ws.request_close(b).unwrap() else { panic!() };
     assert!(matches!(fx.as_slice(), [Effect::FlushDoc(_)]));
     assert_eq!(ws.finish_close(b), Err(WsError::PendingEffects));
@@ -249,7 +249,7 @@ fn rename_is_visible_in_all_tabs_and_path_index_follows() {
     assert_eq!(ws.docs.id_by_path(std::path::Path::new("/v/a.md")), None);
 }
 
-// доп. ───────────────────────────────────────────────────────────────
+// extra ───────────────────────────────────────────────────────────────
 #[test]
 fn path_normalisation_keeps_one_document_per_file() {
     let mut reg = DocumentRegistry::new();
@@ -274,7 +274,7 @@ fn multi_op_event_applies_sequentially() {
         cursor_after: None,
     };
     store.apply_edit_event(&ev);
-    // 10 → 7 (после Delete) → 8 (после Insert)
+    // 10 → 7 (after Delete) → 8 (after Insert)
     assert_eq!(store.get(TabId::from_u64(1)).unwrap().cursor.offset, 8);
 }
 
@@ -301,9 +301,9 @@ fn bad_range_is_rejected_without_changing_document() {
 #[test]
 fn transform_offset_edge_cases() {
     use TextOp::*;
-    assert_eq!(transform_offset(5, Insert { at: 5, len: 2 }), 7); // вставка в позиции курсора сдвигает
+    assert_eq!(transform_offset(5, Insert { at: 5, len: 2 }), 7); // insertion at the cursor position shifts it
     assert_eq!(transform_offset(5, Insert { at: 6, len: 2 }), 5);
-    assert_eq!(transform_offset(5, Delete { at: 3, len: 4 }), 3); // курсор внутри удалённого → в начало
+    assert_eq!(transform_offset(5, Delete { at: 3, len: 4 }), 3); // cursor inside the deleted range → to its start
     assert_eq!(transform_offset(7, Delete { at: 3, len: 4 }), 3);
     assert_eq!(transform_offset(8, Delete { at: 3, len: 4 }), 4);
 }

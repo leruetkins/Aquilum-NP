@@ -471,7 +471,7 @@ impl AppView {
                             .bg(theme.border_subtle)
                             .my_1(),
                     )
-                    // Bottom item: "Скрыть вертикальную панель"
+                    // Bottom item: "Hide vertical panel"
                     .child(
                         div()
                             .id("ribbon-menu-toggle-rail")

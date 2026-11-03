@@ -22,7 +22,7 @@ impl AppState {
 
     pub(super) fn create_new_note_placed(&mut self, at_front: bool) -> Option<PathBuf> {
         let ws = self.workspace_path.clone()?;
-        // Default file name comes from the UI locale ("Без названия" for
+        // Default file name comes from the UI locale ("Untitled" for
         // Russian, "Untitled" for English, ...), never hardcoded.
         let base = self.untitled_base();
         let mut candidate = ws.join(format!("{}.md", base));

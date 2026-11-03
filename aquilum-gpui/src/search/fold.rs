@@ -484,7 +484,7 @@ mod tests {
         assert!(contains("Привет Мир", "мир", Fold::Lower, Mode::Substring));
         assert!(contains("Привет Мир", "ПРИВЕТ", Fold::Lower, Mode::Substring));
         assert!(!contains("Привет Мир", "ПРИВЕТ", Fold::Exact, Mode::Substring));
-        // `е` and `ё` stay distinct, exactly like `to_lowercase` today.
+        // Cyrillic e and yo stay distinct, exactly like `to_lowercase` today.
         assert!(!contains("Ель", "ёль", Fold::Lower, Mode::Substring));
     }
 

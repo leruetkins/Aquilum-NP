@@ -1,4 +1,4 @@
-//! Раскладка: чистая геометрия и списки вкладок, без документов.
+//! Layout: pure geometry and tab lists, without documents.
 
 use std::collections::HashMap;
 
@@ -26,7 +26,7 @@ pub enum LayoutNode {
 pub struct LeafState {
     pub tabs: Vec<TabId>,
     pub active: Option<TabId>,
-    /// Высота вьюпорта берётся отсюда, а не глобально.
+    /// The viewport height comes from here, not globally.
     pub bounds: Rect,
 }
 
@@ -55,7 +55,7 @@ impl WorkspaceLayout {
         self.leaves.iter().find(|(_, l)| l.tabs.contains(&tab)).map(|(id, _)| *id)
     }
 
-    /// Делит лист; новый лист пуст и наследует размер.
+    /// Splits the leaf; the new leaf is empty and inherits the size.
     pub fn split_leaf(&mut self, leaf: LeafId, axis: Axis) -> Option<LeafId> {
         let bounds = self.leaves.get(&leaf)?.bounds;
         let new = LeafId::from_u64(self.next_leaf);
@@ -67,7 +67,7 @@ impl WorkspaceLayout {
         Some(new)
     }
 
-    /// Убирает вкладку; активной становится соседняя (следующая, иначе предыдущая).
+    /// Removes the tab; the neighbour becomes active (the next one, otherwise the previous).
     pub fn remove_tab(&mut self, leaf: LeafId, tab: TabId) {
         if let Some(l) = self.leaves.get_mut(&leaf) {
             if let Some(idx) = l.tabs.iter().position(|&t| t == tab) {

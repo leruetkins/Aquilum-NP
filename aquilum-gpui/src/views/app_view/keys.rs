@@ -235,49 +235,49 @@ impl AppView {
             return;
         }
 
-        // Ctrl + \ или Ctrl + B (Свернуть / развернуть сайдбар)
+        // Ctrl + \ or Ctrl + B (Collapse / expand the sidebar)
         if ctrl && (keystroke.key == "\\" || keystroke.key.eq_ignore_ascii_case("b") || keystroke.key == "и" || keystroke.key == "И") {
             self.toggle_sidebar(cx);
             return;
         }
 
-        // Ctrl + S (Сохранение)
+        // Ctrl + S (Save)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("s") || keystroke.key == "ы" || keystroke.key == "Ы") {
             self.flush_active_note_now(cx);
             return;
         }
 
-        // Ctrl + P (Палитра команд)
+        // Ctrl + P (Command palette)
         if ctrl && !shift && (keystroke.key.eq_ignore_ascii_case("p") || keystroke.key == "з" || keystroke.key == "З") {
             self.open_command_palette(_window, cx);
             return;
         }
 
-        // Ctrl + Shift + P (Палитра команд)
+        // Ctrl + Shift + P (Command palette)
         if ctrl && shift && (keystroke.key.eq_ignore_ascii_case("p") || keystroke.key == "з" || keystroke.key == "З") {
             self.open_command_palette(_window, cx);
             return;
         }
 
-        // Ctrl + O (Поиск заметок / Меню быстрого перехода)
+        // Ctrl + O (Search notes / Quick switcher)
         if ctrl && !shift && (keystroke.key.eq_ignore_ascii_case("o") || keystroke.key == "щ" || keystroke.key == "Щ") {
             self.open_search_dialog(_window, cx);
             return;
         }
 
-        // Ctrl + Shift + O (Открыть хранилище)
+        // Ctrl + Shift + O (Open vault)
         if ctrl && shift && (keystroke.key.eq_ignore_ascii_case("o") || keystroke.key == "щ" || keystroke.key == "Щ") {
             self.open_folder_dialog(_window, cx);
             return;
         }
 
-        // Ctrl + N (Новая пустая вкладка: файл не создаётся, показывается New Tab)
+        // Ctrl + N (New empty tab: no file is created, New Tab is shown)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("n") || keystroke.key == "т" || keystroke.key == "Т") {
             self.open_empty_tab(_window, cx);
             return;
         }
 
-        // Ctrl + W (Закрыть текущую вкладку)
+        // Ctrl + W (Close current tab)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("w") || keystroke.key == "ц" || keystroke.key == "Ц") {
             if let Some(doc) = self.state.active_document() {
                 let path = doc.path.clone();
@@ -286,7 +286,7 @@ impl AppView {
             return;
         }
 
-        // Ctrl + F (Поиск и замена по заметке). Shift excluded:
+        // Ctrl + F (Find and replace in note). Shift excluded:
         // Ctrl+Shift+F opens the sidebar search panel via the root listener.
         if ctrl && !shift && (keystroke.key.eq_ignore_ascii_case("f") || keystroke.key == "а" || keystroke.key == "А") {
             self.open_find_bar(_window, cx);
@@ -302,7 +302,7 @@ impl AppView {
             return;
         }
 
-        // Ctrl + Y или Ctrl + Shift + Z (Redo)
+        // Ctrl + Y or Ctrl + Shift + Z (Redo)
         if (ctrl && (keystroke.key.eq_ignore_ascii_case("y") || keystroke.key == "н" || keystroke.key == "Н"))
             || (ctrl && shift && (keystroke.key.eq_ignore_ascii_case("z") || keystroke.key == "я" || keystroke.key == "Я"))
         {
@@ -313,7 +313,7 @@ impl AppView {
             return;
         }
 
-        // Ctrl + A (Выделить всё)
+        // Ctrl + A (Select all)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("a") || keystroke.key == "ф" || keystroke.key == "Ф") {
             self.ctrl_preview_selection = false;
             self.state.active_select_all();
@@ -321,7 +321,7 @@ impl AppView {
             return;
         }
 
-        // Ctrl + C (Копировать)
+        // Ctrl + C (Copy)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("c") || keystroke.key == "с" || keystroke.key == "С") {
             let copied_tsv = if let Some((view, doc)) = self.state.active_view_and_doc() {
                 let (cursor_line, _) = view.line_col(doc);
@@ -389,7 +389,7 @@ impl AppView {
             }
         }
 
-        // Ctrl + X (Вырезать)
+        // Ctrl + X (Cut)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("x") || keystroke.key == "ч" || keystroke.key == "Ч") {
             if let Some(text) = self.state.active_selected_text() {
                 let meta = if self.edit_mode && !self.ctrl_preview_selection {
@@ -410,13 +410,13 @@ impl AppView {
             return;
         }
 
-        // Alt + Z (Переключение переноса строк)
+        // Alt + Z (Toggle word wrap)
         if keystroke.modifiers.alt && (keystroke.key.eq_ignore_ascii_case("z") || keystroke.key == "я" || keystroke.key == "Я") {
             self.toggle_word_wrap(cx);
             return;
         }
 
-        // Ctrl + / (Переключение исходника активной таблицы)
+        // Ctrl + / (Toggle raw source of the active table)
         if ctrl && (keystroke.key == "/" || keystroke.key == "?" || keystroke.key == "." || keystroke.key == "ю" || keystroke.key == "Ю") {
             if self.state.active_toggle_raw_table() {
                 cx.notify();
@@ -424,7 +424,7 @@ impl AppView {
             }
         }
 
-        // Ctrl + V (Вставить)
+        // Ctrl + V (Paste)
         if ctrl && (keystroke.key.eq_ignore_ascii_case("v") || keystroke.key == "м" || keystroke.key == "М") {
             // A raster on the clipboard is an image, even when the same payload
             // also carries text (browsers, Paint). GPUI sees only its own

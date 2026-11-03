@@ -185,7 +185,7 @@ impl AppState {
         }
     }
 
-    /// Публикует актуальный иммутабельный снимок состояния vault и активного файла
+    /// Publishes the current immutable snapshot of the vault and active file state
     pub fn publish_snapshot(&self) {
         let active_doc = self.active_document();
         let active = active_doc.as_ref().and_then(|doc| {

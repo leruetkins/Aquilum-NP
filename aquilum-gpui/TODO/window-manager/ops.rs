@@ -1,4 +1,4 @@
-//! Идентификаторы, элементарные операции и OT-преобразование смещений.
+//! Identifiers, primitive operations, and OT transformation of offsets.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DocumentId(pub u64);
@@ -7,16 +7,16 @@ pub struct TabId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LeafId(pub u64);
 
-/// Позиционная операция для трансформации чужих курсоров.
+/// Positional operation for transforming foreign cursors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextOp {
     Insert { at: usize, len: usize },
     Delete { at: usize, len: usize },
 }
 
-/// ЗАГЛУШКА: в проекте замените вызовом существующих
+/// STUB: replace this in the project with calls to the existing
 /// `transform_offset` / `transform_selection_range`.
-/// Вставка ровно в позиции курсора сдвигает его вперёд.
+/// An insert exactly at the cursor position moves it forward.
 pub fn transform_offset(off: usize, op: TextOp) -> usize {
     match op {
         TextOp::Insert { at, len } => if at <= off { off + len } else { off },
@@ -26,13 +26,13 @@ pub fn transform_offset(off: usize, op: TextOp) -> usize {
     }
 }
 
-/// Операции применяются последовательно: каждая позиция относится
-/// к тексту после предыдущей.
+/// Operations are applied sequentially: each position refers
+/// to the text after the previous one.
 pub fn transform_through(off: usize, ops: &[TextOp]) -> usize {
     ops.iter().fold(off, |o, &op| transform_offset(o, op))
 }
 
-/// Конкретная правка с текстом (нужна для undo: у Delete хранится удалённое).
+/// Concrete edit with text (needed for undo: Delete stores the removed text).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Edit {
     Insert { at: usize, text: String },
@@ -52,7 +52,7 @@ impl Edit {
             Edit::Delete { at, text } => Edit::Insert { at: *at, text: text.clone() },
         }
     }
-    /// Где должен оказаться курсор инициатора после правки.
+    /// Where the initiator's cursor should end up after the edit.
     pub fn cursor_after(&self) -> usize {
         match self {
             Edit::Insert { at, text } => at + text.len(),
@@ -67,16 +67,16 @@ impl Edit {
     }
 }
 
-/// Результат правки; рассылается всем сессиям документа.
-/// (В проекте `ops` можно заменить на SmallVec<[TextOp; 2]>.)
+/// Result of an edit; broadcast to all sessions of the document.
+/// (In the project, `ops` can be replaced with SmallVec<[TextOp; 2]>.)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditEvent {
     pub doc: DocumentId,
-    /// Версия документа ПОСЛЕ правки.
+    /// Document version AFTER the edit.
     pub version: u64,
     pub ops: Vec<TextOp>,
-    /// Кто правил (undo/redo тоже). None — внешнее изменение (файл на диске).
+    /// Who made the edit (undo/redo too). None — external change (file on disk).
     pub origin: Option<TabId>,
-    /// Позиция курсора инициатора; остальные вкладки трансформируются.
+    /// Initiator's cursor position; other tabs are transformed.
     pub cursor_after: Option<usize>,
 }

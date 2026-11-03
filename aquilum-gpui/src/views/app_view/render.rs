@@ -1095,7 +1095,7 @@ if let Some(new_scroll) = new_active_scroll {
                     .overflow_hidden()
                     // ----- Left Action Rail / Ribbon (Obsidian-style) -----
                     .child(self.render_ribbon_rail(theme, cx))
-                    // ----- Сайдбар файлов (Дерево каталогов) -----
+                    // ----- File sidebar (Directory tree) -----
                     .when(!self.sidebar_collapsed, |s| {
                         s.child(
                             div()
@@ -1280,7 +1280,7 @@ if let Some(new_scroll) = new_active_scroll {
                                     == crate::views::sidebar::SidebarMode::Files,
                                 |d| {
                                     d.child(self.render_quick_filter(window, cx))
-                                        // Tree Scroll — виртуализированный список (см. views/sidebar/tree.rs)
+                                        // Tree Scroll — virtualized list (see views/sidebar/tree.rs)
                                         .child(self.render_sidebar_tree(
                                             active_path.as_ref(),
                                             theme,
@@ -1474,7 +1474,7 @@ if let Some(new_scroll) = new_active_scroll {
                                 ),
                         )
                     })
-                    // ----- Центральная область редактора -----
+                    // ----- Central editor area -----
                     .child({
                         let win_w: f32 = window.bounds().size.width.into();
                         let win_h: f32 = window.bounds().size.height.into();

@@ -46,7 +46,7 @@ fn measure_key_repeat(doc: &mut crate::document_buffer::DocumentBuffer, count: u
                 1,
             );
             let mut view = crate::workspace::EditorViewState::new(tab_id, doc_id);
-            // Поставим курсор в середину (на границу UTF-8 символа)
+            // Place the cursor in the middle (on a UTF-8 char boundary)
             let mut offset = doc.len() / 2;
             while !doc.is_char_boundary(offset) {
                 offset += 1;
@@ -54,7 +54,7 @@ fn measure_key_repeat(doc: &mut crate::document_buffer::DocumentBuffer, count: u
             view.cursor_offset = offset;
             let wrap_cols = 80;
 
-            // 1. Замер движения курсора вверх (move_cursor_up_visual логика)
+            // 1. Measure cursor movement up (move_cursor_up_visual logic)
             let iterations = if line_count <= 500 { 100 } else { 10 };
             let full_text = doc.content();
             let t0 = Instant::now();
@@ -75,7 +75,7 @@ fn measure_key_repeat(doc: &mut crate::document_buffer::DocumentBuffer, count: u
             }
             let cursor_elapsed = t0.elapsed() / iterations;
 
-            // 2. Замер scroll_cursor_into_view (вызывается на каждый стрелочный клик)
+            // 2. Measure scroll_cursor_into_view (called on every arrow keypress)
             let t1 = Instant::now();
             for _ in 0..iterations {
                 let (cursor_line, cursor_col) = view.line_col(&doc);
@@ -85,7 +85,7 @@ fn measure_key_repeat(doc: &mut crate::document_buffer::DocumentBuffer, count: u
             }
             let scroll_elapsed = t1.elapsed() / iterations;
 
-            // 3. Замер подготовки кадра в render (lines allocation, visual_rows, code_states, line_starts)
+            // 3. Measure frame preparation in render (lines allocation, visual_rows, code_states, line_starts)
             let t2 = Instant::now();
             for _ in 0..iterations {
                 let lines: Vec<String> = doc.content().split('\n').map(String::from).collect();
@@ -143,7 +143,7 @@ fn measure_key_repeat(doc: &mut crate::document_buffer::DocumentBuffer, count: u
             }
             let vis_range_time = t1.elapsed() / (iters as u32);
 
-            // 3. set_height (хвост префиксных сумм)
+            // 3. set_height (prefix-sum tail)
             let iters_upd = 1_000;
             let t2 = Instant::now();
             for i in 0..iters_upd {
@@ -270,7 +270,7 @@ fn measure_key_repeat(doc: &mut crate::document_buffer::DocumentBuffer, count: u
             let doc_text = generate_test_doc(line_count);
             let mb = doc_text.len() as f64 / (1024.0 * 1024.0);
 
-            // 1. Ввод сверху (offset 0)
+            // 1. Typing at the top (offset 0)
             let mut doc_top = crate::document_buffer::DocumentBuffer::new(
                 crate::document_buffer::DocumentId::new(),
                 std::path::PathBuf::from("test.md"),
@@ -292,7 +292,7 @@ fn measure_key_repeat(doc: &mut crate::document_buffer::DocumentBuffer, count: u
             }
             let top_time = t_top.elapsed() / (iters as u32);
 
-            // 2. Ввод снизу (EOF)
+            // 2. Typing at the bottom (EOF)
             let mut doc_bot = crate::document_buffer::DocumentBuffer::new(
                 crate::document_buffer::DocumentId::new(),
                 std::path::PathBuf::from("test.md"),
@@ -337,22 +337,22 @@ fn measure_key_repeat(doc: &mut crate::document_buffer::DocumentBuffer, count: u
         state.workspace_path = Some(temp_dir.clone());
         state.vault = Some(crate::vault::VaultCore::open(temp_dir.clone()));
 
-        // 1. Открытие большого файла
+        // 1. Opening a large file
         let t_open = Instant::now();
         state.open_note(large_path.clone());
         let open_time = t_open.elapsed();
 
-        // 2. Создание новой заметки при открытом большом файле
+        // 2. Creating a new note while a large file is open
         let t_create = Instant::now();
         let new_note = state.create_new_note().expect("Должна создаться новая заметка");
         let create_time = t_create.elapsed();
 
-        // 3. Переключение обратно на большой файл
+        // 3. Switching back to the large file
         let t_switch_large = Instant::now();
         state.open_note(large_path.clone());
         let switch_to_large_time = t_switch_large.elapsed();
 
-        // 4. Переключение обратно на новую заметку
+        // 4. Switching back to the new note
         let t_switch_small = Instant::now();
         state.open_note(new_note);
         let switch_to_small_time = t_switch_small.elapsed();
@@ -498,7 +498,7 @@ fn measure_key_repeat(doc: &mut crate::document_buffer::DocumentBuffer, count: u
             // Auxiliary memory: everything except the text itself. Every column
             // but `starts` measures the *window*, so none of them grows with the
             // document — that is the whole point of the open-path budget, and it
-            // is what the `строк` column is there to show.
+            // is what the `lines` column is there to show.
             let lines_bytes = view.window.lines.bytes();
             let vrows = view.window.visual_rows.capacity()
                 * std::mem::size_of::<crate::markdown::VisualRow>();

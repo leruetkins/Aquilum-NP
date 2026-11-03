@@ -91,23 +91,23 @@
     #[test]
     fn test_cursor_state_active_nodes_boundaries() {
         let doc = MarkdownDocument::new("a **b** c".to_string());
-        // pos = 0 (на "a") -> активных узлов нет
+        // pos = 0 (on "a") -> no active nodes
         let c0 = doc.cursor_state(0);
         assert!(c0.active_nodes.is_empty());
 
-        // pos = 2 (прямо перед "**") -> узел активен (граница start)
+        // pos = 2 (right before "**") -> node is active (start boundary)
         let c2 = doc.cursor_state(2);
         assert_eq!(c2.active_nodes.len(), 1);
 
-        // pos = 4 (внутри "b") -> узел активен
+        // pos = 4 (inside "b") -> node is active
         let c4 = doc.cursor_state(4);
         assert_eq!(c4.active_nodes.len(), 1);
 
-        // pos = 7 (прямо после закрывающего "**") -> узел активен (граница end)
+        // pos = 7 (right after the closing "**") -> node is active (end boundary)
         let c7 = doc.cursor_state(7);
         assert_eq!(c7.active_nodes.len(), 1);
 
-        // pos = 8 (на пробеле после "**") -> активных узлов нет
+        // pos = 8 (on the space after "**") -> no active nodes
         let c8 = doc.cursor_state(8);
         assert!(c8.active_nodes.is_empty());
     }
@@ -178,7 +178,7 @@
     fn test_height_index_visible_range() {
         let h = HeightIndex::new(vec![10.0, 20.0, 30.0, 40.0, 50.0]);
         // scroll_top = 15.0, viewport_h = 30.0, overscan = 0.0
-        // top = 15.0 (блок 1, top = 10..30), bottom = 45.0 (блок 2, top = 30..60)
+        // top = 15.0 (block 1, top = 10..30), bottom = 45.0 (block 2, top = 30..60)
         let r = h.visible_range(15.0, 30.0, 0.0);
         assert_eq!(r, 1..3);
     }
@@ -191,7 +191,7 @@
         assert_eq!(h.top_of(2), 35.0);
         assert_eq!(h.total(), 65.0);
 
-        // splice: заменяем блок 1 на два блока [15.0, 15.0]
+        // splice: replace block 1 with two blocks [15.0, 15.0]
         h.splice(1..2, vec![15.0, 15.0]);
         assert_eq!(h.len(), 4);
         assert_eq!(h.height_of(0), 10.0);
@@ -215,7 +215,7 @@
         let doc = MarkdownDocument::new("a **b** c".to_string());
         let cursor = doc.cursor_state(0); // pos = 0
         let runs = build_runs(&doc.blocks[0], &cursor);
-        // Маркеры скрыты! Ожидаем 3 пробега: "a ", "b" (bold), " c"
+        // Markers are hidden! Expect 3 runs: "a ", "b" (bold), " c"
         assert_eq!(runs.len(), 3);
         assert_eq!(runs[0].source, 0..2);
         assert!(!runs[0].style.marker && !runs[0].style.bold);
@@ -230,9 +230,9 @@
     #[test]
     fn test_build_runs_markers_shown_when_cursor_on_boundary() {
         let doc = MarkdownDocument::new("a **b** c".to_string());
-        let cursor = doc.cursor_state(2); // pos = 2 (перед "**")
+        let cursor = doc.cursor_state(2); // pos = 2 (before "**")
         let runs = build_runs(&doc.blocks[0], &cursor);
-        // Маркеры показаны! Ожидаем 5 пробегов: "a ", "**" (marker), "b" (bold), "**" (marker), " c"
+        // Markers are shown! Expect 5 runs: "a ", "**" (marker), "b" (bold), "**" (marker), " c"
         assert_eq!(runs.len(), 5);
         assert_eq!(runs[0].source, 0..2);
 
@@ -262,11 +262,11 @@
         let val1_again = cache.get(&key1);
         assert!(val1_again.is_some());
 
-        // Вставляем key2
+        // Insert key2
         cache.insert(key2.clone(), Arc::new("block2".to_string()));
         assert_eq!(cache.len(), 2);
 
-        // Вставляем key3 -> key1 должен быть вытеснен из LRU (емкость 2)
+        // Insert key3 -> key1 must be evicted from LRU (capacity 2)
         cache.insert(key3.clone(), Arc::new("block3".to_string()));
         assert_eq!(cache.len(), 2);
         assert!(cache.get(&key1).is_none());
@@ -280,10 +280,10 @@
         let doc = MarkdownDocument::new(text.to_string());
         let mut cursor = doc.cursor_state(0);
 
-        // Сбросим счетчики
+        // Reset counters
         crate::perf::PERF.snapshot_and_reset();
 
-        // 1. Движение внутри "Hello" (позиции 0..=5): маркеры скрыты, invalidation = 0
+        // 1. Movement inside "Hello" (positions 0..=5): markers hidden, invalidation = 0
         for pos in 1..=5 {
             let outcome = doc.update_cursor(&mut cursor, pos);
             assert_eq!(outcome, CursorUpdateOutcome::Unchanged { old_pos: pos - 1, new_pos: pos });
@@ -291,7 +291,7 @@
             assert!(runs.iter().all(|r| !r.style.marker));
         }
 
-        // 2. Вход на границу "**" (позиция 6): узел активируется, инвалидируется ровно 1 блок
+        // 2. Entering the "**" boundary (position 6): node activates, exactly 1 block is invalidated
         let outcome = doc.update_cursor(&mut cursor, 6);
         match outcome {
             CursorUpdateOutcome::ActiveNodesChanged { invalidated_blocks, .. } => {
@@ -302,7 +302,7 @@
         let runs = build_runs(&doc.blocks[0], &cursor);
         assert!(runs.iter().any(|r| r.style.marker));
 
-        // 3. Движение внутри "**bold**" (позиции 7..=14): маркеры раскрыты, invalidation = 0!
+        // 3. Movement inside "**bold**" (positions 7..=14): markers expanded, invalidation = 0!
         for pos in 7..=14 {
             let outcome = doc.update_cursor(&mut cursor, pos);
             assert_eq!(outcome, CursorUpdateOutcome::Unchanged { old_pos: pos - 1, new_pos: pos });
@@ -310,7 +310,7 @@
             assert!(runs.iter().any(|r| r.style.marker));
         }
 
-        // 4. Выход за пределы "**" (позиция 15, пробел перед "world"): узел деактивируется, инвалидируется ровно 1 блок
+        // 4. Leaving "**" (position 15, the space before "world"): node deactivates, exactly 1 block is invalidated
         let outcome = doc.update_cursor(&mut cursor, 15);
         match outcome {
             CursorUpdateOutcome::ActiveNodesChanged { invalidated_blocks, .. } => {
@@ -321,13 +321,13 @@
         let runs = build_runs(&doc.blocks[0], &cursor);
         assert!(runs.iter().all(|r| !r.style.marker));
 
-        // 5. Движение в "world" (16..=20): маркеры скрыты, invalidation = 0
+        // 5. Movement in "world" (16..=20): markers hidden, invalidation = 0
         for pos in 16..=text.len() {
             let outcome = doc.update_cursor(&mut cursor, pos);
             assert_eq!(outcome, CursorUpdateOutcome::Unchanged { old_pos: pos - 1, new_pos: pos });
         }
 
-        // За все шаги парсер не вызывался ни разу!
+        // The parser was never called across all steps!
         let counters = crate::perf::PERF.snapshot_and_reset();
         assert_eq!(counters[0], 0, "parse_calls must be 0");
         assert_eq!(counters[1], 0, "span_rebuilds must be 0");
@@ -337,11 +337,11 @@
     fn test_stage4_multi_block_cursor_crossing() {
         let text = "# Heading\n\nSecond paragraph text.";
         let doc = MarkdownDocument::new(text.to_string());
-        let mut cursor = doc.cursor_state(0); // блок 0
+        let mut cursor = doc.cursor_state(0); // block 0
 
         crate::perf::PERF.snapshot_and_reset();
 
-        // Переходим из блока 0 в блок 1 (позиция 12)
+        // Move from block 0 to block 1 (position 12)
         let outcome = doc.update_cursor(&mut cursor, 12);
         match outcome {
             CursorUpdateOutcome::ActiveNodesChanged { invalidated_blocks, .. } => {
@@ -362,18 +362,18 @@
         let m = VisualMap::new(0, vec![2..4, 5..7]);
         assert_eq!(m.to_visual(0), 0);
         assert_eq!(m.to_visual(1), 1);
-        assert_eq!(m.to_visual(2), 2); // начало первого скрытого
-        assert_eq!(m.to_visual(4), 2); // конец первого скрытого
-        assert_eq!(m.to_visual(5), 3); // "b" (длина 1), начало второго скрытого
-        assert_eq!(m.to_visual(7), 3); // конец второго скрытого
+        assert_eq!(m.to_visual(2), 2); // start of the first hidden range
+        assert_eq!(m.to_visual(4), 2); // end of the first hidden range
+        assert_eq!(m.to_visual(5), 3); // "b" (length 1), start of the second hidden range
+        assert_eq!(m.to_visual(7), 3); // end of the second hidden range
         assert_eq!(m.to_visual(8), 4); // " c"
 
         assert_eq!(m.to_source(0), 0);
         assert_eq!(m.to_source(1), 1);
-        assert_eq!(m.to_source(2), 4); // после первого скрытого диапазона
-        assert_eq!(m.to_source(3), 7); // после второго скрытого диапазона
+        assert_eq!(m.to_source(2), 4); // after the first hidden range
+        assert_eq!(m.to_source(3), 7); // after the second hidden range
 
-        // Проверка круглого цикла: to_visual(to_source(vis)) == vis
+        // Round-trip check: to_visual(to_source(vis)) == vis
         for vis in 0..=4 {
             let src = m.to_source(vis);
             assert_eq!(m.to_visual(src), vis);
@@ -385,13 +385,13 @@
         let doc = MarkdownDocument::new("a **b** c".to_string());
         let block = &doc.blocks[0];
 
-        // 1. Курсор вне узла -> маркеры скрыты -> VisualMap сжат
+        // 1. Cursor outside the node -> markers hidden -> VisualMap is compressed
         let cursor_outside = doc.cursor_state(0);
         let map_outside = VisualMap::from_block(block, &cursor_outside);
         assert_eq!(map_outside.hidden.len(), 2);
-        assert_eq!(map_outside.to_visual(4), 2); // 'b' находится на визуальной позиции 2
+        assert_eq!(map_outside.to_visual(4), 2); // 'b' is at visual position 2
 
-        // 2. Курсор на границе -> маркеры раскрыты -> VisualMap без скрытых диапазонов
+        // 2. Cursor on the boundary -> markers expanded -> VisualMap has no hidden ranges
         let cursor_active = doc.cursor_state(2);
         let map_active = VisualMap::from_block(block, &cursor_active);
         assert!(map_active.hidden.is_empty());
@@ -402,13 +402,13 @@
     #[test]
     fn test_stage5_clamp_hidden_and_normalize_atomic() {
         let m = VisualMap::new(0, vec![2..4]);
-        // Внутри 2..4: moving_right -> 4, moving_left -> 2
+        // Inside 2..4: moving_right -> 4, moving_left -> 2
         assert_eq!(m.clamp_hidden_pos(3, true), 4);
         assert_eq!(m.clamp_hidden_pos(3, false), 2);
-        // Вне: остается без изменений
+        // Outside: remains unchanged
         assert_eq!(m.clamp_hidden_pos(5, true), 5);
 
-        // Atomic span: курсор перепрыгивает
+        // Atomic span: cursor jumps over
         let block = MarkdownBlock {
             id: 1,
             source_range: 0..30,
@@ -433,19 +433,19 @@
         let base_font = 16.0;
         let base_lh = 24.0;
 
-        // Курсор снаружи заголовка (в абзаце на позиции 15)
+        // Cursor outside the heading (in the paragraph at position 15)
         let cursor_outside = doc.cursor_state(15);
         assert!(!cursor_outside.is_node_active(h1_block.spans[0].node));
 
         let typo_outside = BlockTypography::for_block(h1_block.kind, base_font, base_lh);
 
-        // Курсор внутри заголовка (на позиции 3)
+        // Cursor inside the heading (at position 3)
         let cursor_inside = doc.cursor_state(3);
         assert!(cursor_inside.is_node_active(h1_block.spans[0].node));
 
         let typo_inside = BlockTypography::for_block(h1_block.kind, base_font, base_lh);
 
-        // Размеры шрифта и высота строки СТРОГО идентичны
+        // Font sizes and line height are STRICTLY identical
         assert_eq!(typo_outside.font_size, typo_inside.font_size);
         assert_eq!(typo_outside.line_height, typo_inside.line_height);
         assert_eq!(typo_inside.font_size, 16.0 * 1.8);
@@ -469,11 +469,11 @@
         let mut doc = MarkdownDocument::new(initial_text.to_string());
         assert_eq!(doc.blocks.len(), 4);
 
-        // Вставляем слово "MODIFIED " во второй абзац (перед "Second")
+        // Insert the word "MODIFIED " into the second paragraph (before "Second")
         let edit_pos = doc.blocks[2].source_range.start;
         doc.apply_edit(edit_pos..edit_pos, "MODIFIED ");
 
-        // Сравниваем с полным перепарсингом
+        // Compare with a full reparse
         let mut ids = IdGen::new();
         let full_blocks = parse_blocks(&doc.source, 0, &mut ids);
 
@@ -504,7 +504,7 @@
         let mut doc = MarkdownDocument::new(initial_text.to_string());
         assert_eq!(doc.blocks.len(), 3);
 
-        // Удаляем "def " из второго блока
+        // Remove "def " from the second block
         let b1_start = doc.blocks[1].source_range.start;
         doc.apply_edit(b1_start + 4..b1_start + 8, "");
 

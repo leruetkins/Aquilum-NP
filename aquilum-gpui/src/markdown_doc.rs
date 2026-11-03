@@ -445,7 +445,7 @@ pub fn estimate_height(block: &MarkdownBlock, line_height: f32, width: f32, char
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HeightIndex {
     heights: Vec<f32>,
-    /// prefix[i] = сумма высот блоков [0..i), len = heights.len() + 1
+    /// prefix[i] = sum of block heights [0..i), len = heights.len() + 1
     prefix: Vec<f32>,
 }
 
@@ -502,7 +502,7 @@ impl HeightIndex {
         self.rebuild_from(block);
     }
 
-    /// Вставка/удаление блоков (при правке текста): заменяем диапазон блоков.
+    /// Inserting/removing blocks (when editing text): replace a range of blocks.
     pub fn splice(&mut self, range: Range<usize>, new_heights: Vec<f32>) {
         let start = range.start.min(self.heights.len());
         let end = range.end.min(self.heights.len()).max(start);
@@ -520,17 +520,17 @@ impl HeightIndex {
         }
     }
 
-    /// Индекс блока, содержащего вертикальную координату y.
+    /// Index of the block containing vertical coordinate y.
     pub fn block_at(&self, y: f32) -> usize {
         if self.heights.is_empty() || y <= 0.0 {
             return 0;
         }
-        // первый i такой, что prefix[i+1] > y
+        // first i such that prefix[i+1] > y
         let i = self.prefix.partition_point(|&p| p <= y);
         i.saturating_sub(1).min(self.heights.len().saturating_sub(1))
     }
 
-    /// Диапазон видимых блоков с запасом overscan (в пикселях).
+    /// Range of visible blocks with overscan margin (in pixels).
     pub fn visible_range(&self, scroll_top: f32, viewport_h: f32, overscan: f32) -> Range<usize> {
         if self.heights.is_empty() {
             return 0..0;
@@ -646,10 +646,10 @@ impl MarkdownDocument {
         width: f32,
         char_w: f32,
     ) {
-        // 1. Применяем правку к исходному тексту
+        // 1. Apply the edit to the source text
         self.source.replace_range(range, new_text);
 
-        // 2. Полный надёжный парсинг AST документа без повреждения UTF-8 смещений и срезов
+        // 2. Full reliable parsing of the document AST without corrupting UTF-8 offsets and slices
         crate::perf::PERF.parse_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let new_blocks = parse_blocks(&self.source, 0, &mut self.ids);
         self.heights = HeightIndex::from_blocks(&new_blocks, line_height, width, char_w);
@@ -904,7 +904,7 @@ impl VisualMap {
         Self::new(block.source_range.start, hidden)
     }
 
-    /// source offset -> visual offset (в байтах видимого текста блока)
+    /// source offset -> visual offset (in bytes of the block's visible text)
     pub fn to_visual(&self, src: usize) -> usize {
         let src = src.max(self.base);
         let i = self.hidden.partition_point(|r| r.start <= src);
@@ -930,7 +930,7 @@ impl VisualMap {
         src
     }
 
-    /// Если pos оказался внутри скрытого диапазона, вынести наружу к ближайшей границе.
+    /// If pos ends up inside a hidden range, move it out to the nearest boundary.
     pub fn clamp_hidden_pos(&self, pos: usize, moving_right: bool) -> usize {
         for r in &self.hidden {
             if r.start < pos && pos < r.end {
@@ -941,7 +941,7 @@ impl VisualMap {
     }
 }
 
-/// После любого изменения позиции: если pos оказался внутри Atomic-диапазона, перепрыгнуть его.
+/// After any position change: if pos ends up inside an Atomic range, skip over it.
 pub fn normalize_pos(block: &MarkdownBlock, pos: usize, moving_right: bool) -> usize {
     for s in &block.spans {
         if s.kind == SpanKind::Atomic && s.range.start < pos && pos < s.range.end {

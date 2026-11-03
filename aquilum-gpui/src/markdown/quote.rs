@@ -170,7 +170,7 @@ fn callout_name(tag: &str) -> &'static str {
     }
 }
 
-/// The localized name an idle untitled callout header shows, e.g. `Совет` for
+/// The localized name an idle untitled callout header shows, e.g. the type label for
 /// `[!tip]` in Russian.
 ///
 /// An unknown translation falls back to the source type in title case, so a

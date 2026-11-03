@@ -1,4 +1,4 @@
-//! Фасад: координирует реестр, сессии, кэши и раскладку. Чистая логика; IO — через Effect.
+//! Facade: coordinates the registry, sessions, caches, and layout. Pure logic; IO goes through Effect.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -9,7 +9,7 @@ use super::ops::{DocumentId, EditEvent, LeafId, TabId};
 use super::session::{TabSession, TabSessionStore};
 use super::WsError;
 
-/// Производный кэш: не состояние, перестраивается при смене ключа.
+/// Derived cache: not state, rebuilt when the key changes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CacheKey {
     pub doc_version: u64,
@@ -21,7 +21,7 @@ pub struct CacheKey {
 pub struct ViewCache {
     pub key: CacheKey,
     pub rebuilds: u32,
-    // сюда: window: EditorWindow, above/below_lines, above/below_h, est_*
+    // here: window: EditorWindow, above/below_lines, above/below_h, est_*
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -123,7 +123,7 @@ impl Workspace {
         Ok(())
     }
 
-    /// true, если кэш вкладки был перестроен.
+    /// true if the tab's cache was rebuilt.
     pub fn refresh_cache(&mut self, tab: TabId) -> Result<bool, WsError> {
         let s = self.tabs.get(tab).ok_or(WsError::UnknownTab)?;
         let leaf = self.layout.leaf_of(tab).ok_or(WsError::UnknownLeaf)?;
@@ -152,7 +152,7 @@ impl Workspace {
         self.caches.get(&tab)
     }
 
-    // ── закрытие: двухфазное ───────────────────────────────────────────
+    // ── closing: two-phase ─────────────────────────────────────────────
 
     pub fn request_close(&self, tab: TabId) -> Result<CloseRequest, WsError> {
         let s = self.tabs.get(tab).ok_or(WsError::UnknownTab)?;
@@ -168,8 +168,8 @@ impl Workspace {
         Ok(if fx.is_empty() { CloseRequest::Ready } else { CloseRequest::NeedsEffects(fx) })
     }
 
-    /// Выполнение эффекта; в приложении здесь реальный IO.
-    /// Ошибка (напр. NameTaken) оставляет всё как есть, закрытие отменяется.
+    /// Effect execution; in the application this is real IO.
+    /// An error (e.g. NameTaken) leaves everything as is, and closing is cancelled.
     pub fn run_effect(&mut self, e: &Effect) -> Result<(), WsError> {
         match e {
             Effect::CommitTitle { tab, doc, new_title } => {
@@ -186,7 +186,7 @@ impl Workspace {
         }
     }
 
-    /// Удаляет сессию. Отказывает, пока не выполнены эффекты.
+    /// Removes the session. Refuses while effects are pending.
     pub fn finish_close(&mut self, tab: TabId) -> Result<(), WsError> {
         let s = self.tabs.get(tab).ok_or(WsError::UnknownTab)?;
         let doc = s.doc_id;

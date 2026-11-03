@@ -1,4 +1,4 @@
-//! Recent Files (Последние документы) sidebar component.
+//! Recent Files (Recent Documents) sidebar component.
 //!
 //! Matches Obsidian's `recent-files-obsidian` plugin data format (`data.json`)
 //! stored in `<vault>/.vault/plugins/recent-files-obsidian/data.json` (or `.vault/recent-files.json`).

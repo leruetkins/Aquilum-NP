@@ -229,7 +229,7 @@ fn find_term_ranges(text: &str, terms: &[String]) -> Vec<(usize, usize)> {
     #[test]
     fn op_prefix_with_multibyte_query_does_not_panic() {
         // Regression: probing the ASCII prefix with byte slicing panicked on
-        // Cyrillic input (`trimmed[..5]` lands inside `и` for "при").
+        // Cyrillic input (`trimmed[..5]` lands inside a multi-byte letter).
         assert_eq!(
             parse_search_op("при"),
             (SearchOp::Any, "при".to_string())

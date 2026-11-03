@@ -150,8 +150,8 @@ impl SettingsView {
                     .child(self.render_toggle_switch(config.ui.sidebar_smart_scroll))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.config.ui.sidebar_smart_scroll = !this.config.ui.sidebar_smart_scroll;
-                        // Сбрасываем курсорное состояние, чтобы при включении
-                        // список не прыгал от устаревшей позиции мыши.
+                        // Reset the cursor state so that when enabled
+                        // the list does not jump from a stale mouse position.
                         if let Some(app) = this.weak_app.upgrade() {
                             app.update(cx, |app, _| {
                                 app.sidebar_smart_last_mouse_y.set(None);

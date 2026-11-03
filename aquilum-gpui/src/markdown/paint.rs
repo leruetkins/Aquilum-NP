@@ -514,7 +514,7 @@ pub fn clean_link_url(raw: &str) -> String {
     url_part.to_string()
 }
 
-/// Decodes percent-encoded characters (e.g. `%20` -> ` `, `%D0%9C` -> `М`).
+/// Decodes percent-encoded characters (e.g. `%20` -> ` `, `%D0%9C` -> `U+041C`).
 pub fn percent_decode(input: &str) -> String {
     let mut bytes = Vec::with_capacity(input.len());
     let mut chars = input.bytes();

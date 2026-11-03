@@ -100,7 +100,7 @@ impl AppView {
             menu_x + menu_w + submenu_gap
         };
 
-        // Item 8 ("Копировать путь") vertical position inside menu container:
+        // Item 8 ("Copy path") vertical position inside menu container:
         // Precise vertical coordinate calculation for the submenu:
         // - Top internal padding of the menu panel: p_1() = 4px
         // - 8 menu items preceding Item 8 (indices 0..7), each with fixed height h(px(26.0)):
@@ -109,8 +109,8 @@ impl AppView {
         //   2 * 8px = 16px
         // Total offset of Item 8 top edge: 4px + 208px + 16px = 228px.
         // Because the submenu container also has identical top padding p_1() (4px) and 26px item height,
-        // submenu_y = menu_y + 228px aligns the first submenu item ("как URL Obsidian")
-        // pixel-perfect horizontally with the parent item ("Копировать путь").
+        // submenu_y = menu_y + 228px aligns the first submenu item ("as Obsidian URL")
+        // pixel-perfect horizontally with the parent item ("Copy path").
         let submenu_y = menu_y + 228.0;
 
         let is_submenu_open = self.file_context_menu.hovered_item == Some(8);
@@ -227,7 +227,7 @@ impl AppView {
                         cx.stop_propagation();
                     })
                     // --- SECTION 1: OPENING MODES ---
-                    // 1. Открыть в новой вкладке (index 0)
+                    // 1. Open in new tab (index 0)
                     .child(render_item(
                         0,
                         "menu-item-open-new-tab",
@@ -242,7 +242,7 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 2. Открыть в области справа (index 1)
+                    // 2. Open in right area (index 1)
                     .child(render_item(
                         1,
                         "menu-item-open-right-split",
@@ -259,7 +259,7 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 3. Открыть в новом окне (index 2)
+                    // 3. Open in new window (index 2)
                     .child(render_item(
                         2,
                         "menu-item-open-new-window",
@@ -277,7 +277,7 @@ impl AppView {
                     // Divider 1
                     .child(self.render_menu_divider(theme))
                     // --- SECTION 2: DRAWINGS ---
-                    // 4. Создать новый чертеж (index 3)
+                    // 4. Create new drawing (index 3)
                     .child(render_item(
                         3,
                         "menu-item-file-new-drawing",
@@ -300,7 +300,7 @@ impl AppView {
                     // Divider 2
                     .child(self.render_menu_divider(theme))
                     // --- SECTION 3: MANAGEMENT & COPY PATH ---
-                    // 5. Создать копию (index 4)
+                    // 5. Create copy (index 4)
                     .child(render_item(
                         4,
                         "menu-item-file-duplicate",
@@ -320,7 +320,7 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 6. Переместить файл в... (index 5)
+                    // 6. Move file to... (index 5)
                     .child(render_item(
                         5,
                         "menu-item-file-move",
@@ -335,7 +335,7 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 7. Добавить / удалить из закладок (index 6)
+                    // 7. Add / remove from bookmarks (index 6)
                     .child({
                         let is_bm = self.is_file_bookmarked(&target_path);
                         let label = if is_bm {
@@ -361,7 +361,7 @@ impl AppView {
                             })),
                         )
                     })
-                    // 8. Объединить весь файл с... (index 7 - in Group 3)
+                    // 8. Merge entire file with... (index 7 - in Group 3)
                     .child(render_item(
                         7,
                         "menu-item-file-merge",
@@ -378,7 +378,7 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 9. Копировать путь > (triggers floating submenu, index 8 in sequential hovering)
+                    // 9. Copy path > (triggers floating submenu, index 8 in sequential hovering)
                     .child(
                         div()
                             .id("file-menu-item-copy-path-parent")
@@ -417,7 +417,7 @@ impl AppView {
                     // Divider 3
                     .child(self.render_menu_divider(theme))
                     // --- SECTION 4: APPS & EXPLORER ---
-                    // 10. Открыть в приложении по умолчанию (index 9)
+                    // 10. Open in default app (index 9)
                     .child(render_item(
                         9,
                         "menu-item-open-default-app",
@@ -432,7 +432,7 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 11. Показать в Проводнике (index 10)
+                    // 11. Show in Explorer (index 10)
                     .child(render_item(
                         10,
                         "menu-item-file-show-in-explorer",
@@ -504,7 +504,7 @@ impl AppView {
                     // Divider 5
                     .child(self.render_menu_divider(theme))
                     // --- SECTION 6: RENAME & DELETE ---
-                    // 15. Переименовать (index 14)
+                    // 15. Rename (index 14)
                     .child(render_item(
                         14,
                         "menu-item-file-rename",
@@ -519,7 +519,7 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 16. Удалить (index 15)
+                    // 16. Delete (index 15)
                     .child(render_item(
                         15,
                         "menu-item-file-delete",
@@ -599,7 +599,7 @@ impl AppView {
                                     }
                                 })),
                         )
-                        // Submenu item 1: как URL Obsidian
+                        // Submenu item 1: as Obsidian URL
                         .child(
                             div()
                                 .id("file-submenu-copy-obsidian-url")
@@ -637,7 +637,7 @@ impl AppView {
                                     })
                                 }),
                         )
-                        // Submenu item 2: из папки хранилища (относительный путь)
+                        // Submenu item 2: from vault folder (relative path)
                         .child(
                             div()
                                 .id("file-submenu-copy-vault-path")
@@ -675,7 +675,7 @@ impl AppView {
                                     })
                                 }),
                         )
-                        // Submenu item 3: от корня системы (абсолютный путь)
+                        // Submenu item 3: from system root (absolute path)
                         .child(
                             div()
                                 .id("file-submenu-copy-abs-path")

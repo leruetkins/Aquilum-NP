@@ -45,7 +45,7 @@
 вторая".to_string(),
             1,
         );
-        // 9 is inside the two-byte 'а' of "первая".
+        // 9 is inside a two-byte Cyrillic character of the first line.
         assert_eq!(doc.line_of_byte(9), 0);
         assert_eq!(doc.line_of_byte(29), 1);
     }

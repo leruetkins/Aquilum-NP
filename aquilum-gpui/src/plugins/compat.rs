@@ -33,7 +33,7 @@ pub struct CompatibilityReport {
 }
 
 impl CompatibilityReport {
-    /// Returns the badge display text (e.g., "100% Совместим", "75% Совместим", "Не поддерживается").
+    /// Returns the badge display text (e.g., "100% Compatible", "75% Compatible", "Not supported").
     pub fn badge_label(&self) -> String {
         match self.status {
             CompatibilityStatus::Full => "100% Совместим".to_string(),
@@ -186,24 +186,24 @@ pub fn analyze_plugin_script(script_source: &str) -> CompatibilityReport {
     }
 }
 
-// ──────────────────────────────────────────────────────── реестр корпуса
+// ──────────────────────────────────────────────────────── corpus registry
 
-/// Запись реестра совместимости: результат статического скана doctor'а по реальному
-/// корпусу плагинов Obsidian. `catalog_id` — id плагина из community-plugins.json.
+/// Compatibility registry record: the result of the doctor's static scan over a real
+/// corpus of Obsidian plugins. `catalog_id` is the plugin id from community-plugins.json.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CatalogCompatRecord {
     pub status: CompatibilityStatus,
-    /// Доля распознанных поддержанных вызовов от всех распознанных (0..1).
+    /// Share of recognized supported calls among all recognized calls (0..1).
     pub coverage: f32,
-    /// Экспорты obsidian, которых нет у хоста (API новее 1.7.5 и т.п.).
+    /// Obsidian exports missing on the host (APIs newer than 1.7.5, etc.).
     pub missing_exports: Vec<String>,
-    /// Члены app.*, которых нет у хоста.
+    /// app.* members missing on the host.
     pub missing_app: Vec<String>,
-    /// Движковые блокеры (canvas / codemirror / node / ...).
+    /// Engine blockers (canvas / codemirror / node / ...).
     pub blockers: Vec<String>,
 }
 
-/// Компактные формы JSON-реестра.
+/// Compact forms of the JSON registry.
 #[derive(Deserialize)]
 struct RegistryRecord {
     s: String,
@@ -226,13 +226,13 @@ struct RegistryFile {
     plugins: BTreeMap<String, RegistryRecord>,
 }
 
-/// Сгенерированный реестр: `node make-compat-registry.cjs <doctor-report> <out>`.
-/// Инструмент живёт в REA `.workbuddy-ai/tools/plugin-probe/`; обновлять файл стоит
-/// после заметных изменений поверхности хоста или нового скана корпуса.
+/// Generated registry: `node make-compat-registry.cjs <doctor-report> <out>`.
+/// The tool lives in REA `.workbuddy-ai/tools/plugin-probe/`; the file should be updated
+/// after noticeable host surface changes or a new corpus scan.
 static COMPAT_REGISTRY_JSON: &str = include_str!("compat_registry.json");
 
-/// Разобранный реестр, один раз на процесс: каталогу нужен lookup на каждую строку
-/// списка, а JSON на ~80КБ не должен парситься в цикле рендера.
+/// Parsed registry, once per process: the catalog needs a lookup for every row
+/// of the list, and an ~80KB JSON must not be parsed in the render loop.
 static COMPAT_REGISTRY: OnceLock<RegistryFile> = OnceLock::new();
 
 fn compat_registry() -> &'static RegistryFile {
@@ -241,7 +241,7 @@ fn compat_registry() -> &'static RegistryFile {
     })
 }
 
-/// Возвращает запись совместимости по id плагина из каталога, если он был в скане корпуса.
+/// Returns the compatibility record for a catalog plugin id if it was in the corpus scan.
 pub fn catalog_compat(plugin_id: &str) -> Option<CatalogCompatRecord> {
     let file = compat_registry();
     let record = file.plugins.get(plugin_id)?;
@@ -260,7 +260,7 @@ pub fn catalog_compat(plugin_id: &str) -> Option<CatalogCompatRecord> {
     })
 }
 
-/// Число плагинов, покрытых реестром (для подписи в каталоге).
+/// Number of plugins covered by the registry (for the catalog caption).
 pub fn catalog_compat_stats() -> (u32, u32, u32, u32) {
     let file = compat_registry();
     let total = file.plugins.len() as u32;

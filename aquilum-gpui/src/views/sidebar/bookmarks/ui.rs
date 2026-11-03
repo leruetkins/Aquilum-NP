@@ -1277,7 +1277,7 @@ impl AppView {
                     .on_scroll_wheel(|_, _, cx| {
                         cx.stop_propagation();
                     })
-                    // 1. Открыть в новой вкладке
+                    // 1. Open in a new tab
                     .child(render_item(
                         "bm-item-open-new-tab",
                         icons::ICON_NOTE_CREATE,
@@ -1314,7 +1314,7 @@ impl AppView {
                             }
                         }),
                     ))
-                    // 2. Открыть в области справа
+                    // 2. Open in the area to the right
                     .child(render_item(
                         "bm-item-open-right",
                         icons::ICON_SPLIT,
@@ -1351,7 +1351,7 @@ impl AppView {
                             }
                         }),
                     ))
-                    // 3. Открыть в новом окне
+                    // 3. Open in a new window
                     .child(render_item(
                         "bm-item-open-new-window",
                         icons::ICON_APP_WINDOW,
@@ -1390,7 +1390,7 @@ impl AppView {
                     ))
                     // Divider
                     .child(render_divider())
-                    // 4. Переименовать
+                    // 4. Rename
                     .child(render_item(
                         "bm-item-rename",
                         icons::ICON_PENCIL,
@@ -1452,7 +1452,7 @@ impl AppView {
                             }
                         }),
                     ))
-                    // 5. Добавить в закладки текущую вкладку...
+                    // 5. Bookmark the current tab...
                     .child(render_item(
                         "bm-item-bookmark-current",
                         icons::ICON_BOOKMARK,
@@ -1471,7 +1471,7 @@ impl AppView {
                             }
                         }),
                     ))
-                    // 6. Новая группа закладок
+                    // 6. New bookmark group
                     .child(render_item(
                         "bm-item-new-group",
                         icons::ICON_FOLDER_PLUS,
@@ -1484,7 +1484,7 @@ impl AppView {
                     ))
                     // Divider
                     .child(render_divider())
-                    // 7. Удалить
+                    // 7. Delete
                     .child(render_item(
                         "bm-item-delete",
                         icons::ICON_TRASH_2,

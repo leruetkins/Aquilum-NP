@@ -166,8 +166,8 @@
         assert!(!host_state.is_plugin_registered("counter-plugin"));
     }
 
-    /// Сквозная проверка стилей: styles.css → загрузчик → runtime → шим → NodeStyle.
-    /// Без неё связка проверяется только по кускам, и перепутанный аргумент не поймать.
+    /// End-to-end styles check: styles.css → loader → runtime → shim → NodeStyle.
+    /// Without it the chain is only tested piecemeal, and a swapped argument cannot be caught.
     #[test]
     fn test_styles_css_reaches_the_rendered_tree() {
         let temp = TempDir::new("css_e2e");

@@ -19,8 +19,8 @@ pub struct PluginRuntimeHandle {
     pub host_events_tx: UnboundedSender<HostEvent>,
 }
 
-/// Исходники плагина: код и необязательная таблица стилей. Отдельная структура, а не два
-/// строковых параметра подряд, — перепутать их местами иначе можно молча.
+/// Plugin sources: the code and an optional stylesheet. A separate struct instead of two
+/// consecutive string parameters, which are otherwise easy to swap silently.
 #[derive(Debug, Clone)]
 pub struct PluginSources {
     pub script: String,
@@ -42,8 +42,8 @@ pub fn spawn_plugin_runtime(
     )
 }
 
-/// То же, но с таблицей стилей плагина: `styles.css` лежит рядом с `main.js`.
-/// Разбирает её шим — только у него есть DOM с классами и родительской цепочкой.
+/// The same, but with the plugin's stylesheet: `styles.css` sits next to `main.js`.
+/// The shim parses it — only it has a DOM with classes and a parent chain.
 pub fn spawn_plugin_runtime_with_styles(
     manifest: PluginManifest,
     sources: PluginSources,
@@ -104,7 +104,7 @@ pub fn spawn_plugin_runtime_with_styles(
 
             // Setup global environment and Obsidian compatibility API
             if let Some(css) = styles_css.as_deref() {
-                // Бутстрап разберёт её один раз при загрузке плагина.
+                // The bootstrap parses it once when the plugin loads.
                 if let Err(e) = ctx.with(|ctx| ctx.globals().set("__plugin_styles_css", css)) {
                     eprintln!("[plugin:{}] Failed to pass styles.css: {:?}", p_id, e);
                 }
@@ -419,8 +419,8 @@ fn setup_plugin_environment<'js>(
 
     // 5. Inject runtime JavaScript bootstrap defining Obsidian-compatible classes & timers
     let bootstrap_js = r####"
-        // Состояние разбора styles.css объявлено в начале скрипта: мутаторы VElement трогают
-        // его, а они могут сработать раньше, чем дойдёт очередь до объявлений в середине файла.
+        // The styles.css parsing state is declared at the top of the script: VElement mutators touch
+        // it, and they may run before the declarations in the middle of the file are reached.
         let __css_rules = [];
         let __css_by_class = new Map();
         let __css_by_tag = new Map();
@@ -693,8 +693,8 @@ fn setup_plugin_environment<'js>(
         }
 
         async function __bootstrap_plugin_instance() {
-            // Таблица стилей плагина разбирается до onload(): плагин создаёт элементы уже
-            // стилизованными, и первый же кадр должен выглядеть правильно.
+            // The plugin's stylesheet is parsed before onload(): the plugin creates elements already
+            // styled, and the very first frame must look right.
             __init_plugin_css(globalThis.__plugin_styles_css);
             let exported = globalThis.module ? globalThis.module.exports : null;
             if (exported && exported.default && typeof exported !== "function") {
@@ -1458,8 +1458,8 @@ fn setup_plugin_environment<'js>(
                         return true;
                     }
                 });
-                // Цель прокси хранится отдельно: сериализатор читает её напрямую, а плагин
-                // продолжает видеть обычный `el.style.width = ...`.
+                // The proxy target is stored separately: the serializer reads it directly, while
+                // the plugin keeps seeing a regular `el.style.width = ...`.
                 const styleTarget = {};
                 this._styleTarget = styleTarget;
                 this.style = new Proxy(styleTarget, {
@@ -1469,7 +1469,7 @@ fn setup_plugin_environment<'js>(
                 globalThis.__velement_registry.set(this._id, this);
             }
 
-            /** Obsidian добавляет setCssProps к элементам: набор свойств разом. */
+            /** Obsidian adds setCssProps to elements: set several properties at once. */
             setCssProps(props) {
                 if (props && typeof props === "object") {
                     for (const [k, v] of Object.entries(props)) {
@@ -2720,9 +2720,9 @@ fn setup_plugin_environment<'js>(
             };
         }
 
-        // Стили, которые хост умеет применить к нативному узлу. Всё остальное (gap, flexDirection,
-        // zIndex, transform, transition, clipPath, cursor) не пробрасывается: обещать эффект,
-        // которого нет, хуже, чем честно его не показывать.
+        // Styles the host can apply to a native node. Everything else (gap, flexDirection,
+        // zIndex, transform, transition, clipPath, cursor) is not forwarded: promising an effect
+        // that does not exist is worse than honestly not showing it.
         const __STYLE_KEYS = new Set([
             "display", "width", "height", "minWidth", "maxWidth", "minHeight", "maxHeight",
             "padding", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
@@ -2736,19 +2736,19 @@ fn setup_plugin_environment<'js>(
             return String(k).trim().replace(/-([a-z])/g, (_, c) => c.toUpperCase());
         }
 
-        // ── styles.css плагина ────────────────────────────────────────────────────────────
-        // Таблица стилей лежит рядом с main.js. Сопоставление идёт здесь, а не в Rust:
-        // только в шиме есть настоящий DOM — тег, набор классов и родительская цепочка.
-        // Найденные декларации уходят в тот же канал, что и inline-стили, и проходят тот же
-        // белый список, поэтому хост вообще не знает о существовании CSS-селекторов.
+        // ── plugin styles.css ─────────────────────────────────────────────────────────────
+        // The stylesheet sits next to main.js. Matching happens here, not in Rust:
+        // only the shim has a real DOM — tag, class set and parent chain.
+        // Found declarations go into the same channel as inline styles and pass through the same
+        // whitelist, so the host does not even know that CSS selectors exist.
         //
-        // Чего сознательно нет: псевдоклассов и псевдоэлементов (:hover, :focus, :first-child,
-        // ::before), соседних комбинаторов (+, ~), @media и @supports. Это состояния и условия,
-        // которых у нас не существует; притворяться, что они есть, — врать плагину.
-        // Само состояние объявлено в начале скрипта (см. `__css_epoch`).
+        // Deliberately absent: pseudo-classes and pseudo-elements (:hover, :focus, :first-child,
+        // ::before), sibling combinators (+, ~), @media and @supports. These are states and conditions
+        // that do not exist for us; pretending they do would be lying to the plugin.
+        // The state itself is declared at the top of the script (see `__css_epoch`).
         const __css_stats = { rules: 0, selectors: 0, skipped_pseudo: 0, skipped_at: 0 };
 
-        /** Любое изменение классов или структуры делает закэшированные совпадения неверными. */
+        /** Any change to classes or structure invalidates the cached matches. */
         function __css_touch() {
             __css_epoch++;
         }
@@ -2761,7 +2761,7 @@ fn setup_plugin_environment<'js>(
             }
         }
 
-        /** Селекторы, адресующие корень документа: они задают переменные, а не узлы. */
+        /** Selectors that target the document root: they define variables, not nodes. */
         function __css_root_selector(sel) {
             const s = sel.trim().toLowerCase();
             if (s === ":root" || s === "html" || s === "body" || s === "html body") return "always";
@@ -2770,9 +2770,9 @@ fn setup_plugin_environment<'js>(
             return null;
         }
 
-        /** Одна составная часть селектора: div.a.b#id[attr="v"]. null — часть не поддержана.
-         *  `stripPseudo` отбрасывает :hover/:focus/::before вместо отказа от части: это нужно,
-         *  чтобы понять, показывается ли элемент вообще (см. `__css_any_show`). */
+        /** One compound part of a selector: div.a.b#id[attr="v"]. null — the part is unsupported.
+         *  `stripPseudo` drops :hover/:focus/::before instead of rejecting the part: this is needed
+         *  to determine whether the element is shown at all (see `__css_any_show`). */
         function __css_compound(text, stripPseudo) {
             const c = { tag: null, id: null, classes: [], attrs: [] };
             const s = text.trim();
@@ -2861,7 +2861,7 @@ fn setup_plugin_environment<'js>(
             return parts;
         }
 
-        /** Разбиение тела правила по ';' с учётом скобок: url(data:...;base64,...) не ломается. */
+        /** Splitting a rule body by ';' while respecting parentheses: url(data:...;base64,...) does not break. */
         function __css_split_decls(body) {
             const out = [];
             let cur = "";
@@ -2921,7 +2921,7 @@ fn setup_plugin_environment<'js>(
             return compounds;
         }
 
-        /** Индекс по правой части селектора: она решает, подходит ли правило узлу вообще. */
+        /** Index by the rightmost part of the selector: it decides whether a rule matches the node at all. */
         function __css_index(byClass, byTag, universal, rule) {
             const last = rule.parts[rule.parts.length - 1];
             if (last.classes.length > 0) {
@@ -2937,9 +2937,9 @@ fn setup_plugin_environment<'js>(
         }
 
         /**
-         * Правило с псевдоклассом: применить его мы не можем — состояния :hover/:focus у нас
-         * нет. Но если оно показывает элемент, это надо запомнить: иначе парное
-         * `display: none` спрячет кнопку навсегда и до неё будет не добраться.
+         * A rule with a pseudo-class: we cannot apply it — we have no :hover/:focus
+         * state. But if it shows the element, that must be remembered: otherwise the paired
+         * `display: none` will hide the button forever and it becomes unreachable.
          */
         function __css_note_state_rule(parts, decls) {
             __css_stats.skipped_pseudo++;
@@ -2955,7 +2955,7 @@ fn setup_plugin_environment<'js>(
             });
         }
 
-        /** Показывается ли элемент хоть каким-то правилом состояния. */
+        /** Whether the element is shown by at least one state rule. */
         function __css_any_show(el) {
             const hit = (list) => {
                 if (!list) return false;
@@ -2991,8 +2991,8 @@ fn setup_plugin_environment<'js>(
                 cls += c.classes.length + c.attrs.length;
                 if (c.tag) tags++;
             }
-            // Ключ каскада считается один раз: сравнивать числа дешевле, чем три поля на кадр.
-            // order ограничен числом правил в файле (тысячи), специфичность — сотнями.
+            // The cascade key is computed once: comparing numbers is cheaper than three fields per frame.
+            // order is bounded by the number of rules in the file (thousands), specificity by hundreds.
             const key = ids * 1e12 + cls * 1e9 + tags * 1e6 + order;
             const rule = { parts: compounds, decls, order, key };
             __css_rules.push(rule);
@@ -3000,7 +3000,7 @@ fn setup_plugin_environment<'js>(
             __css_index(__css_by_class, __css_by_tag, __css_universal, rule);
         }
 
-        /** Разбор таблицы стилей плагина. Вызывается один раз при загрузке. */
+        /** Parser for the plugin's stylesheet. Called once on load. */
         function __init_plugin_css(src) {
             __css_rules = [];
             __css_by_class = new Map();
@@ -3059,7 +3059,7 @@ fn setup_plugin_environment<'js>(
             }
         }
 
-        /** var(--x) и var(--x, fallback) из переменных, объявленных на корне и теме. */
+        /** var(--x) and var(--x, fallback) from variables declared on the root and theme. */
         function __css_resolve_vars(value, depth) {
             if (depth > 6 || value.indexOf("var(") < 0) return value;
             return value.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*([^()]*))?\)/g, (m, name, fallback) => {
@@ -3087,7 +3087,7 @@ fn setup_plugin_environment<'js>(
             return true;
         }
 
-        /** Справа налево: правая часть уже совпала, проверяем предков по комбинатору. */
+        /** Right to left: the right part has matched, now check ancestors by combinator. */
         function __css_matches(el, parts, idx) {
             if (!__css_compound_matches(el, parts[idx])) return false;
             if (idx === 0) return true;
@@ -3117,7 +3117,7 @@ fn setup_plugin_environment<'js>(
             if (el.tag) add(__css_by_tag.get(el.tag));
             if (el.classes) for (const cls of el.classes) add(__css_by_class.get(cls));
             if (cands.length === 0) return null;
-            // Каскад: специфичность, затем порядок в файле. Побеждает последнее применённое.
+            // Cascade: specificity, then order in the file. The last applied wins.
             cands.sort((a, b) => a.key - b.key);
             const out = {};
             let any = false;
@@ -3130,8 +3130,8 @@ fn setup_plugin_environment<'js>(
                     any = true;
                 }
             }
-            // Спрятать насовсем — худшее из возможного: элемент показывается по :hover/:focus,
-            // которого мы не умеем, и до кнопки было бы не добраться. Показываем всегда.
+            // Hiding for good is the worst possible outcome: the element is shown via :hover/:focus,
+            // which we do not support, and the button would be unreachable. Always show it.
             if (out.display === "none" && __css_any_show(el)) {
                 delete out.display;
                 any = Object.keys(out).length > 0;
@@ -3149,8 +3149,8 @@ fn setup_plugin_environment<'js>(
         }
 
         /**
-         * Стили элемента: сначала styles.css, поверх — inline. Возвращает null, если пусто.
-         * `base` — декларации, найденные по селекторам таблицы стилей плагина.
+         * Element styles: styles.css first, then inline on top. Returns null if empty.
+         * `base` — declarations found by the plugin stylesheet's selectors.
          */
         function __style_to_uinode(el, base) {
             const src = el && el._styleTarget;
@@ -3158,11 +3158,11 @@ fn setup_plugin_environment<'js>(
             if (base) for (const [k, v] of Object.entries(base)) out[k] = v;
             if (!src) return Object.keys(out).length > 0 ? out : null;
             for (const [k, v] of Object.entries(src)) {
-                // Пустое значение — это "снять", а не "поставить пустоту": нижележащий
-                // стиль из таблицы должен остаться в силе.
+                // An empty value means "remove", not "set empty": the underlying
+                // style from the stylesheet must remain in effect.
                 if (v == null || v === "") continue;
                 if (k === "cssText") {
-                    // Тот же CSS, но строкой: плагины пишут так 253 раза за корпус.
+                    // The same CSS, but as a string: plugins write it this way 253 times in the corpus.
                     for (const decl of String(v).split(";")) {
                         const i = decl.indexOf(":");
                         if (i < 0) continue;
@@ -3177,15 +3177,15 @@ fn setup_plugin_environment<'js>(
         }
 
         /**
-         * Элемент с непустым style становится узлом `styled`: style — бокс элемента, child — то,
-         * что из него получилось. Дети идут через эту же функцию, поэтому вложенные стили не теряются.
+         * An element with a non-empty style becomes a `styled` node: style is the element's box, child is
+         * what it turned into. Children go through the same function, so nested styles are not lost.
          */
         function __velement_to_uinode(el) {
             const node = __velement_core_to_uinode(el);
             const style = __style_to_uinode(el, __css_declarations_for(el));
             if (!style) return node;
-            // Пустой div без текста сериализатор обычно выбрасывает, но если у него есть размер
-            // или фон — это распорка/разделитель, и он должен остаться пустым боксом.
+            // A textless empty div is usually dropped by the serializer, but if it has a size
+            // or a background — it is a spacer/divider, and it must remain an empty box.
             return { type: "styled", style, child: node || { type: "column", children: [] } };
         }
 
@@ -4029,7 +4029,7 @@ fn setup_plugin_environment<'js>(
                 if (date === undefined || date === null) return new Date();
                 if (typeof date === "number" || typeof date === "string") return new Date(date);
                 if (date instanceof Date) return new Date(date.getTime());
-                // moment-подобные обёртки (наш или чужой) отдают время через valueOf()
+                // moment-like wrappers (ours or someone else's) return time via valueOf()
                 if (typeof date.valueOf === "function") return new Date(date.valueOf());
                 return new Date(date);
             })();
@@ -4051,7 +4051,7 @@ fn setup_plugin_environment<'js>(
                     case "month": {
                         const day = nd.getDate();
                         nd.setMonth(nd.getMonth() + n);
-                        // Клэмп конца месяца (31 января + 1 месяц -> 28/29 февраля).
+                        // End-of-month clamp (January 31 + 1 month -> February 28/29).
                         if (nd.getDate() < day) nd.setDate(0);
                         break;
                     }
@@ -4075,7 +4075,7 @@ fn setup_plugin_environment<'js>(
                 return wrap(nd);
             }
             function endOf(unit) {
-                // Конец единицы = начало следующей минус 1 мс.
+                // End of a unit = start of the next one minus 1 ms.
                 const next = addAmount(1, unit);
                 return wrap(new Date(next.startOf(unit).valueOf() - 1));
             }

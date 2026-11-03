@@ -206,7 +206,7 @@ impl AppView {
                         cx.stop_propagation();
                     })
                     // --- SECTION 1: CREATION ---
-                    // 1. Новая заметка (index 0)
+                    // 1. New note (index 0)
                     .child(render_item(
                         0,
                         "menu-item-new-note",
@@ -226,7 +226,7 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 2. Новая папка (index 1)
+                    // 2. New folder (index 1)
                     .child(render_item(
                         1,
                         "menu-item-new-folder",
@@ -246,7 +246,7 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 3. Новый холст (index 2)
+                    // 3. New canvas (index 2)
                     .child(render_item(
                         2,
                         "menu-item-new-canvas",
@@ -266,7 +266,7 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 4. Создать новый чертеж (index 3)
+                    // 4. Create new drawing (index 3)
                     .child(render_item(
                         3,
                         "menu-item-new-drawing",
@@ -289,7 +289,7 @@ impl AppView {
                     // Divider 1
                     .child(self.render_menu_divider(theme))
                     // --- SECTION 2: MANAGEMENT ---
-                    // 5. Создать копию (index 4)
+                    // 5. Create copy (index 4)
                     .child(render_item(
                         4,
                         "menu-item-duplicate-folder",
@@ -308,7 +308,7 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 6. Переместить папку в... (index 5)
+                    // 6. Move folder to... (index 5)
                     .child(render_item(
                         5,
                         "menu-item-move-folder",
@@ -323,7 +323,7 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 7. Искать в папке (index 6)
+                    // 7. Search in folder (index 6)
                     .child(render_item(
                         6,
                         "menu-item-search-in-folder",
@@ -343,7 +343,7 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 8. Добавить в закладки... (index 7)
+                    // 8. Add to bookmarks... (index 7)
                     .child(render_item(
                         7,
                         "menu-item-bookmark-folder",
@@ -363,7 +363,7 @@ impl AppView {
                     // Divider 2
                     .child(self.render_menu_divider(theme))
                     // --- SECTION 3: PATHS & EXPLORER ---
-                    // 9. Копировать путь > (triggers floating submenu, index 8)
+                    // 9. Copy path > (triggers floating submenu, index 8)
                     .child(
                         div()
                             .id("menu-item-copy-path-parent")
@@ -398,7 +398,7 @@ impl AppView {
                             )
                             .child(icons::icon(icons::ICON_CHEVRON_RIGHT, 11.0, theme.text_muted)),
                     )
-                    // 10. Показать в Проводнике (index 9)
+                    // 10. Show in Explorer (index 9)
                     .child(render_item(
                         9,
                         "menu-item-show-in-explorer",
@@ -477,7 +477,7 @@ impl AppView {
                     // Divider 4
                     .child(self.render_menu_divider(theme))
                     // --- SECTION 5: MODIFICATIONS (RENAME / DELETE) ---
-                    // 14. Переименовать (index 13)
+                    // 14. Rename (index 13)
                     .child(render_item(
                         13,
                         "menu-item-rename-folder",
@@ -492,7 +492,7 @@ impl AppView {
                             }))
                         },
                     ))
-                    // 15. Удалить (Red danger item, index 14)
+                    // 15. Delete (Red danger item, index 14)
                     .child(render_item(
                         14,
                         "menu-item-delete-folder",

@@ -339,7 +339,7 @@ impl AppView {
                         cx.stop_propagation();
                     })
                     // --- GROUP 1: VIEWS & BACKLINKS ---
-                    // 1. Показывать обратные ссылки
+                    // 1. Show backlinks
                     .child(self.render_more_options_item(
                         "more-item-show-backlinks",
                         icons::ICON_LINK,
@@ -460,7 +460,7 @@ impl AppView {
                             cx,
                         )
                     })
-                    // 4. Показывать непечатаемые знаки
+                    // 4. Show invisibles
                     .child(self.render_more_options_check_item(
                         "more-item-toggle-invisibles",
                         icons::ICON_TYPE,
@@ -476,7 +476,7 @@ impl AppView {
                     // Divider 1
                     .child(self.render_menu_divider(theme))
                     // --- GROUP 2: SPLITS & WINDOWS ---
-                    // 4. Разделить вправо
+                    // 4. Split right
                     .child(self.render_more_options_item(
                         "more-item-split-right",
                         icons::ICON_SPLIT,
@@ -496,7 +496,7 @@ impl AppView {
                         theme,
                         cx,
                     ))
-                    // 5. Разделить вниз
+                    // 5. Split down
                     .child(self.render_more_options_item(
                         "more-item-split-down",
                         icons::ICON_SPLIT_DOWN,
@@ -516,7 +516,7 @@ impl AppView {
                         theme,
                         cx,
                     ))
-                    // 6. Открыть в новом окне
+                    // 6. Open in new window
                     .child(self.render_more_options_item(
                         "more-item-new-window",
                         icons::ICON_APP_WINDOW,
@@ -535,7 +535,7 @@ impl AppView {
                     // Divider 2
                     .child(self.render_menu_divider(theme))
                     // --- GROUP 3: FILE MANAGEMENT ---
-                    // 7. Переименовать
+                    // 7. Rename
                     .child(self.render_more_options_item(
                         "more-item-rename",
                         icons::ICON_PENCIL,
@@ -555,7 +555,7 @@ impl AppView {
                         theme,
                         cx,
                     ))
-                    // 8. Переместить файл в...
+                    // 8. Move file to...
                     .child(self.render_more_options_item(
                         "more-item-move",
                         icons::ICON_FOLDER_INPUT,
@@ -575,7 +575,7 @@ impl AppView {
                         theme,
                         cx,
                     ))
-                    // 9. Добавить / удалить из закладок...
+                    // 9. Add / remove from bookmarks...
                     .child({
                         let is_bm = target_path
                             .as_ref()
@@ -604,7 +604,7 @@ impl AppView {
                             cx,
                         )
                     })
-                    // 10. Объединить весь файл с...
+                    // 10. Merge entire file with...
                     .child(self.render_more_options_item(
                         "more-item-merge",
                         icons::ICON_MERGE,
@@ -626,7 +626,7 @@ impl AppView {
                         theme,
                         cx,
                     ))
-                    // 11. Добавить свойство файла
+                    // 11. Add file property
                     .child(self.render_more_options_item(
                         "more-item-add-property",
                         icons::ICON_CIRCLE_PLUS,
@@ -641,7 +641,7 @@ impl AppView {
                         theme,
                         cx,
                     ))
-                    // 12. Экспортировать в PDF
+                    // 12. Export to PDF
                     .child(self.render_more_options_item(
                         "more-item-export-pdf",
                         icons::ICON_DOWNLOAD,
@@ -659,7 +659,7 @@ impl AppView {
                         theme,
                         cx,
                     ))
-                    // 12b. Экспорт MD в zip
+                    // 12b. Export MD to zip
                     .child(self.render_more_options_item(
                         "more-item-export-md",
                         icons::ICON_DOWNLOAD,
@@ -680,7 +680,7 @@ impl AppView {
                     // Divider 3
                     .child(self.render_menu_divider(theme))
                     // --- GROUP 4: SEARCH & REPLACE ---
-                    // 13. Найти...
+                    // 13. Find...
                     .child(self.render_more_options_item(
                         "more-item-find",
                         icons::ICON_SEARCH,
@@ -696,7 +696,7 @@ impl AppView {
                         theme,
                         cx,
                     ))
-                    // 14. Заменить...
+                    // 14. Replace...
                     .child(self.render_more_options_item(
                         "more-item-replace",
                         icons::ICON_REFRESH,
@@ -718,7 +718,7 @@ impl AppView {
                     // Divider 4
                     .child(self.render_menu_divider(theme))
                     // --- GROUP 5: PATHS & LINKED VIEWS (SUBMENUS) ---
-                    // 15. Копировать путь >
+                    // 15. Copy path >
                     .child(self.render_more_options_item(
                         "more-item-copy-path",
                         icons::ICON_COPY,
@@ -733,7 +733,7 @@ impl AppView {
                         theme,
                         cx,
                     ))
-                    // 16. Открыть связанное представление >
+                    // 16. Open linked view >
                     .child(self.render_more_options_item(
                         "more-item-linked-view",
                         icons::ICON_LINK,
@@ -751,7 +751,7 @@ impl AppView {
                     // Divider 5
                     .child(self.render_menu_divider(theme))
                     // --- GROUP 6: EXTERNAL & EXPLORER ---
-                    // 17. Открыть в приложении по умолчанию
+                    // 17. Open in default app
                     .child(self.render_more_options_item(
                         "more-item-open-default",
                         icons::ICON_EXTERNAL_LINK,
@@ -771,7 +771,7 @@ impl AppView {
                         theme,
                         cx,
                     ))
-                    // 18. Показать в Проводнике
+                    // 18. Show in Explorer
                     .child(self.render_more_options_item(
                         "more-item-reveal-explorer",
                         icons::ICON_EXTERNAL_LINK,
@@ -791,7 +791,7 @@ impl AppView {
                         theme,
                         cx,
                     ))
-                    // 19. Показать в файловом менеджере
+                    // 19. Show in file manager
                     .child(self.render_more_options_item(
                         "more-item-reveal-file-manager",
                         icons::ICON_FOLDER,
@@ -884,7 +884,7 @@ impl AppView {
                     // Divider 7
                     .child(self.render_menu_divider(theme))
                     // --- GROUP 8: DELETE (RED DANGER) ---
-                    // 23. Удалить файл
+                    // 23. Delete file
                     .child(self.render_more_options_item(
                         "more-item-delete-file",
                         icons::ICON_TRASH_2,
@@ -923,7 +923,7 @@ impl AppView {
                         theme,
                         cx,
                     ))
-                    // 25. Создать новый чертеж
+                    // 25. Create new drawing
                     .child(self.render_more_options_item(
                         "more-item-new-drawing",
                         icons::ICON_DRAWING,
@@ -951,7 +951,7 @@ impl AppView {
                         theme,
                         cx,
                     ))
-                    // 26. Неиспользуемые вложения
+                    // 26. Unused attachments
                     .child(self.render_more_options_item(
                         "more-item-unused-attachments",
                         icons::ICON_PAPERCLIP,
@@ -1008,7 +1008,7 @@ impl AppView {
                                     }
                                 })),
                         )
-                        // Subitem 1: Относительный путь
+                        // Subitem 1: Relative path
                         .child({
                             let p = target_for_copy.clone();
                             div()
@@ -1049,7 +1049,7 @@ impl AppView {
                                     this.close_more_options_menu(cx);
                                 }))
                         })
-                        // Subitem 2: Абсолютный путь
+                        // Subitem 2: Absolute path
                         .child({
                             let p = target_for_copy.clone();
                             div()
@@ -1086,7 +1086,7 @@ impl AppView {
                                     this.close_more_options_menu(cx);
                                 }))
                         })
-                        // Subitem 3: как URL Obsidian
+                        // Subitem 3: as Obsidian URL
                         .child({
                             let p = target_for_copy.clone();
                             div()
@@ -1167,7 +1167,7 @@ impl AppView {
                                     }
                                 })),
                         )
-                        // Subitem 1: Связанная область предварительного просмотра
+                        // Subitem 1: Linked preview area
                         .child({
                             let p = target_for_linked.clone();
                             div()
@@ -1199,7 +1199,7 @@ impl AppView {
                                     cx.notify();
                                 }))
                         })
-                        // Subitem 2: Обратные ссылки
+                        // Subitem 2: Backlinks
                         .child(
                             div()
                                 .id("more-sub-linked-backlinks")
@@ -1226,7 +1226,7 @@ impl AppView {
                                     cx.notify();
                                 })),
                         )
-                        // Subitem 3: Исходящие ссылки
+                        // Subitem 3: Outgoing links
                         .child(
                             div()
                                 .id("more-sub-linked-outgoing")

@@ -129,7 +129,7 @@ impl AppView {
         cx.notify();
     }
 
-    /// Opens the sidebar search panel with a tag query (e.g. `tag:#миша`) and runs the search.
+    /// Opens the sidebar search panel with a tag query (e.g. `tag:#name`) and runs the search.
     pub fn open_tag_search(&mut self, tag: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_collapsed = false;
         self.sidebar_mode = SidebarMode::Search;

@@ -55,8 +55,8 @@ use gpui::{div, px};
         style.color = Some(0xff0000ff);
         style.font_size = Some(14.0);
         style.font_weight = Some(600);
-        // Цвет и кегль обёртке-контейнеру достаточно передать вниз: колонка внутри строки
-        // из нескольких span сломала бы раскладку.
+        // For a wrapper container it is enough to pass color and font size down: a column
+        // inside a row of several spans would break the layout.
         assert!(!style.affects_layout());
 
         style.padding = Some(Sides { top: 4.0, right: 4.0, bottom: 4.0, left: 4.0 });
@@ -68,7 +68,7 @@ use gpui::{div, px};
 
         let mut hidden = NodeStyle::default();
         hidden.hidden = true;
-        // display:none не требует бокса — узел и так не рендерится.
+        // display:none does not need a box — the node is not rendered anyway.
         assert!(!hidden.affects_layout());
     }
 
@@ -82,7 +82,7 @@ use gpui::{div, px};
                 value: None,
             }),
         };
-        // Обёртка прозрачна: id остаётся у ребёнка, и валидатор видит его один раз.
+        // The wrapper is transparent: the id stays with the child, and the validator sees it once.
         assert_eq!(node.id(), None);
         assert_eq!(node.children().len(), 1);
         assert_eq!(node.children()[0].id(), Some("query"));
@@ -91,8 +91,8 @@ use gpui::{div, px};
 
     #[test]
     fn styled_wrapper_does_not_duplicate_child_id() {
-        // Ровно то, что падало в приложении: CSS-правило накрыло поле ввода, обёртка
-        // унаследовала его id, и дерево отвергалось как «Duplicate UI node id».
+        // Exactly what failed in the app: a CSS rule covered the input, the wrapper
+        // inherited its id, and the tree was rejected as "Duplicate UI node id".
         let tree = UiNode::Column {
             id: None,
             class: None,
@@ -115,8 +115,8 @@ use gpui::{div, px};
 
     #[test]
     fn styled_box_nodes_take_the_sheet_without_a_wrapper() {
-        // Обёртка вокруг колонки делала её родителя «авто-высотой», и `flex_1` (basis 0)
-        // схлопывался в ноль: список файлов в Empty Files Cleaner исчезал целиком.
+        // A wrapper around the column made its parent "auto-height", and `flex_1` (basis 0)
+        // collapsed to zero: the file list in Empty Files Cleaner vanished entirely.
         let column = UiNode::Column {
             id: None,
             class: Some("ef-list".into()),
@@ -141,8 +141,8 @@ use gpui::{div, px};
 
     #[test]
     fn sheet_padding_wins_over_class_heuristic_on_the_same_box() {
-        // `.ef-header { padding: 28px 28px 20px }` против эвристики `is_header` (24/24/14).
-        // Один бокс, каскад: стиль применён последним и перекрывает все четыре стороны.
+        // `.ef-header { padding: 28px 28px 20px }` versus the `is_header` heuristic (24/24/14).
+        // One box, cascade: the style is applied last and overrides all four sides.
         let style = NodeStyle::from_map(&BTreeMap::from([("padding".to_string(), "28px 28px 20px".to_string())]));
         let mut el = apply_sheet(div().px(px(24.0)).pt(px(24.0)).pb(px(14.0)), Some(&style));
         let padding = el.style().padding.clone();
@@ -154,8 +154,8 @@ use gpui::{div, px};
 
     #[test]
     fn sheet_without_box_properties_keeps_the_heuristic() {
-        // Цвет в таблице стилей не отменяет отступы эвристики: иначе плагин с одним правилом
-        // `.item { color: red }` потерял бы всю коробку.
+        // A color in the stylesheet does not cancel the heuristic padding: otherwise a plugin
+        // with a single `.item { color: red }` rule would lose its whole box.
         let style = NodeStyle::from_map(&BTreeMap::from([("color".to_string(), "#ff0000".to_string())]));
         let mut el = apply_sheet(div().px(px(24.0)), Some(&style));
         assert_eq!(el.style().padding.left, Some(px(24.0).into()));
@@ -376,12 +376,12 @@ use gpui::{div, px};
         assert_eq!(deserialized, tree);
     }
 
-    // ──────────────────────────────────────────────────────── golden: реальные деревья
+    // ──────────────────────────────────────────────────────── golden: real trees
 
-    /// Golden-бандл: живые UI-деревья из пробника топ-500 плагинов Obsidian
-    /// (probe-one собирает set_view_tree при загрузке + активации; в бандл попадает
-    /// до трёх деревьев на плагин, по одному файлу на плагин). Регенерация:
-    /// `node make-fixtures.cjs <probe-out> <fixtures-dir>` в tools/plugin-probe.
+    /// Golden bundle: live UI trees from a probe of the top 500 Obsidian plugins
+    /// (probe-one collects set_view_tree on load + activation; the bundle gets
+    /// up to three trees per plugin, one file per plugin). Regenerate with:
+    /// `node make-fixtures.cjs <probe-out> <fixtures-dir>` in tools/plugin-probe.
     const GOLDEN_BUNDLE: &str = include_str!("../tests/ui_golden_bundle.json");
 
     #[derive(serde::Deserialize)]
@@ -411,9 +411,9 @@ use gpui::{div, px};
         assert!(bundle.trees.len() >= 500, "golden bundle too small: {}", bundle.trees.len());
 
         for entry in &bundle.trees {
-            // Прямая serde-загрузка уже сделана выше; round-trip проверяет, что
-            // Serialize и Deserialize формы UiNode не разъехались (инвариант канала
-            // worker → host: tree передаётся через serde_json обе стороны).
+            // The direct serde load already happened above; the round-trip checks that
+            // Serialize and Deserialize of the UiNode shape have not drifted apart (the channel
+            // invariant worker → host: the tree is passed through serde_json on both sides).
             let json = serde_json::to_string(&entry.tree).unwrap();
             let back: UiNode = serde_json::from_str(&json).unwrap();
             assert_eq!(back, entry.tree, "{}: serde round-trip drifted", entry.id);
@@ -434,11 +434,11 @@ use gpui::{div, px};
 
         let nodes = total.nodes as f32;
         let pct = |v: usize| format!("{:.1}%", v as f32 / nodes * 100.0);
-        // База покрытия на корпусе 2026-10. Смысл порогов — не «красиво», а «стабильно»:
-        // при правках рендера или бутстрапа цифры не должны ползти вниз. Рост — сигнал,
-        // что новый узел/свойство транслируются, и базу стоит поднять.
-        // display:none — валидное состояние живого дерева (плагины прячут узлы
-        // программно, ~28 стилей на корпус): rendered считается отдельно от nodes.
+        // Coverage baseline on the 2026-10 corpus. The point of the thresholds is not "pretty" but "stable":
+        // when the renderer or bootstrap changes, the numbers must not creep down. Growth is a signal
+        // that a new node/property is being translated, and the baseline should be raised.
+        // display:none is a valid state of a live tree (plugins hide nodes
+        // programmatically, ~28 styles per corpus): rendered is counted separately from nodes.
         assert!(total.rendered <= total.nodes);
         assert!(total.rendered > 9500, "rendered nodes collapsed: {}", total.rendered);
         assert!(total.styled > 50, "corpus has no styled nodes");

@@ -49,7 +49,7 @@ impl AppView {
         // loaded manifests before any plugin code runs against it.
         self.refresh_plugin_registry_snapshot();
 
-        // ВРЕМЕННО (снять окно плагина для проверки вёрстки без кликов):
+        // TEMPORARILY (detach the plugin window to check the layout without clicks):
         // AQUILUM_DEBUG_PLUGIN_CMD="<plugin-id>:<command-id>"
         if let Ok(spec) = std::env::var("AQUILUM_DEBUG_PLUGIN_CMD") {
             if let Some((plugin_id, command_id)) = spec.split_once(':') {

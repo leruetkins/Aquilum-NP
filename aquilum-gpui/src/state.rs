@@ -252,7 +252,7 @@ pub struct NoteEditEvent {
     pub line_diff: isize,
 }
 
-/// Неизменяемый снимок состояния vault и активного файла для синхронных геттеров плагинов.
+/// Immutable snapshot of the vault state and the active file for synchronous plugin getters.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub version: u64,

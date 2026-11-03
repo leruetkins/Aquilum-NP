@@ -41,7 +41,7 @@
     #[test]
     fn test_toggle_inline_unicode_russian() {
         let text = "Привет мир";
-        // Select "мир" (chars 7..10; "Привет " is 7 chars)
+        // Select the second word (chars 7..10; the first word plus its space is 7 chars)
         let res = apply_toggle_inline(text, 7, 10, "**", "**");
         let byte_start = "Привет ".len();
         let byte_end = "Привет мир".len();
@@ -98,7 +98,7 @@
     fn test_russian_unicode_formatting_operations() {
         let text = "Заголовок документа\nТекст с русскими словами для проверки.";
 
-        // 1. Highlight "русскими" (chars 28..36 in text)
+        // 1. Highlight the target word (chars 28..36 in text)
         let ch_start = text.chars().position(|c| c == 'р').unwrap();
         let target_word = "русскими";
         let ch_end = ch_start + target_word.chars().count();
@@ -111,7 +111,7 @@
         assert!(full_after_hl.is_char_boundary(res_hl.new_cursor));
         assert!(full_after_hl.is_char_boundary(res_hl.new_anchor.unwrap()));
 
-        // 2. Heading-2 on "Заголовок документа"
+        // 2. Heading-2 on the document title
         let res_h2 = apply_toggle_heading(&full_after_hl, 5, 5, 2);
         assert!(res_h2.new_text.starts_with("## Заголовок документа"));
         assert!(full_after_hl.is_char_boundary(res_h2.byte_range.start));

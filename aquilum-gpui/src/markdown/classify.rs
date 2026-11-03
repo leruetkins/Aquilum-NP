@@ -65,7 +65,7 @@ pub fn classify_line<'a>(
     } else if trimmed_start == "---" || trimmed_start == "***" || trimmed_start == "___" {
         LineKind::HorizontalRule
     } else {
-        // Проверка нумерованного списка "1. ", "2. "
+        // Check for a numbered list "1. ", "2. "
         let digits_len = trimmed_start.chars().take_while(|c| c.is_ascii_digit()).count();
         if digits_len > 0 && trimmed_start[digits_len..].starts_with(". ") {
             let num = &trimmed_start[..digits_len];

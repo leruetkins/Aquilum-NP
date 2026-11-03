@@ -1,5 +1,5 @@
-//! Чистое ядро многооконности: документы, сессии вкладок, раскладка.
-//! Без GPUI. Смещения — байтовые и должны лежать на границах char.
+//! A pure multi-window core: documents, tab sessions, layout.
+//! No GPUI. Offsets are byte-based and must lie on char boundaries.
 
 pub mod document;
 pub mod layout;
@@ -20,9 +20,9 @@ pub enum WsError {
     UnknownLeaf,
     BadRange,
     EmptyTitle,
-    /// Файл с таким именем уже есть (коллизия при переименовании).
+    /// A file with this name already exists (collision on rename).
     NameTaken,
-    /// finish_close вызван, пока не выполнены эффекты из request_close.
+    /// finish_close was called while effects from request_close are not yet executed.
     PendingEffects,
 }
 

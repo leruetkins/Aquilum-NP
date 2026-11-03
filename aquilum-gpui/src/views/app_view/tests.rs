@@ -790,7 +790,7 @@
 
     /// A notch arriving mid-glide keeps the motion alive: the new glide
     /// enters at (close to) the speed the old one had, instead of collapsing
-    /// to a stop and re-accelerating — that collapse is the "присадка" a
+    /// to a stop and re-accelerating — that collapse is the "hitch" a
     /// notch stream must not have. And every glide lands exactly on target.
     #[test]
     fn glide_chain_keeps_the_speed_between_notches() {

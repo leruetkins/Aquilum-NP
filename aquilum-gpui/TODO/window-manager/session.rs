@@ -1,4 +1,4 @@
-//! Сессии вкладок: только то, что принадлежит вкладке.
+//! Tab sessions: only what belongs to a tab.
 
 use std::collections::HashMap;
 
@@ -10,8 +10,8 @@ pub struct CursorState {
     pub anchor: Option<usize>,
 }
 
-/// Позиция вьюпорта. Здесь якорь — байтовое смещение; в проекте сопоставьте
-/// с `ViewportAnchor` (строка) через `apply_external_edit_detailed`.
+/// Viewport position. Here the anchor is a byte offset; in the project, map it
+/// to `ViewportAnchor` (a line) via `apply_external_edit_detailed`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ViewState {
     pub anchor_offset: usize,
@@ -22,7 +22,7 @@ pub struct ViewState {
     pub edit_mode: bool,
 }
 
-/// Some(..) = заголовок редактируется; is_focused не нужен.
+/// Some(..) = the title is being edited; is_focused is not needed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TitleInput {
     pub text: String,
@@ -78,8 +78,8 @@ impl TabSessionStore {
         v
     }
 
-    /// OT для всех вкладок документа.
-    /// Инициатор не трансформируется, а получает `cursor_after` (иначе сдвиг дважды).
+    /// OT for all tabs of the document.
+    /// The initiator is not transformed but gets `cursor_after` (otherwise it shifts twice).
     pub fn apply_edit_event(&mut self, ev: &EditEvent) {
         for s in self.tabs.values_mut().filter(|s| s.doc_id == ev.doc) {
             s.view.anchor_offset = transform_through(s.view.anchor_offset, &ev.ops);

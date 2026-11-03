@@ -289,8 +289,8 @@ impl AppView {
                 crate::plugins::ui::UiNode::Column { children, .. } | crate::plugins::ui::UiNode::Row { children, .. } => {
                     children.iter().find_map(find_heading)
                 }
-                // Обёртка стилей — не узел, а бокс: заголовок за ней остаётся заголовком.
-                // Без этой ветки модалка показывала два заголовка сразу — свой и запасной.
+                // The styles wrapper is not a node but a box: the heading behind it remains a heading.
+                // Without this branch the modal showed two headings at once — its own and the fallback.
                 crate::plugins::ui::UiNode::Styled { child, .. } => find_heading(child),
                 _ => None,
             }

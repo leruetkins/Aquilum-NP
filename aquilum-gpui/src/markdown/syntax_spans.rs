@@ -26,7 +26,7 @@ pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
             }
         }
 
-        // School-grammar member: `::s{red/blue}[текст]`. The closing `]` ends the
+        // School-grammar member: `::s{red/blue}[text]`. The closing `]` ends the
         // fragment (there is no `::` after it). An unknown type letter or a
         // malformed construct is not consumed here, so it accumulates as plain text.
         if s.starts_with("::") {
@@ -154,7 +154,7 @@ pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
         }
 
         // Inline code: a run of N backticks, closed by the next run of exactly N. The
-        // run length is the whole point: `` ``код с `обратными` `` `` is one span holding
+        // run length is the whole point: `` ``code with `backticks` `` `` is one span holding
         // literal single backticks, and reading it as a lone delimiter produced an empty
         // span plus a wrongly-short one (the content must not be re-scanned either).
         let run = backtick_run_len(s);
@@ -272,7 +272,7 @@ pub fn parse_inline_syntax_spans(mut s: &str) -> Vec<SyntaxSpan> {
             }
         }
 
-        // Tag: #tag (e.g. #миша, #гончаров, #сергей, #валиев)
+        // Tag: #tag (e.g. #name, #surname, #nickname)
         if s.starts_with('#') {
             let prev_ok = plain_accum.chars().last().map_or_else(
                 || {

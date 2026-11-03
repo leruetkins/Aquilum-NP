@@ -124,9 +124,9 @@ pub enum UiNode {
         #[serde(default)]
         children: Vec<UiNode>,
     },
-    /// Элемент плагина с явными inline-стилями: `style` — бокс элемента, `child` — его содержимое.
-    /// Обёртка появляется только тогда, когда стиль непустой: `display: none` и размеры должны
-    /// принадлежать самому элементу, а не его внутренней раскладке.
+    /// Plugin element with explicit inline styles: `style` is the element box, `child` its content.
+    /// The wrapper appears only when the style is non-empty: `display: none` and sizes must
+    /// belong to the element itself, not to its inner layout.
     Styled {
         style: NodeStyle,
         child: Box<UiNode>,
@@ -146,9 +146,9 @@ impl UiNode {
             | UiNode::Slider { id, .. }
             | UiNode::Select { id, .. }
             | UiNode::List { id, .. } => Some(id),
-            // Обёртка стилей — декорация, а не узел: собственной идентичности у неё нет.
-            // Ребёнок попадает в `children()` и там же проходит проверку на дубликат;
-            // делегировать id сюда значило бы показать валидатору один и тот же узел дважды.
+            // The style wrapper is decoration, not a node: it has no identity of its own.
+            // The child lands in `children()` and is checked for duplicates there;
+            // delegating the id here would show the validator the same node twice.
             UiNode::Styled { .. } => None,
             _ => None,
         }
@@ -354,22 +354,22 @@ pub fn validate_tree(root: &UiNode) -> Result<(), String> {
     walk(root, 0, &mut total_nodes, &mut ids)
 }
 
-/// Сводка трансляции одного дерева в GPUI: что реально отрисуется, что разберётся,
-/// что будет отброшено. Наполняется golden-тестами на живых деревьях плагинов —
-/// численно фиксирует покрытие на каждый коммит.
+/// Summary of translating one tree into GPUI: what actually renders, what is parsed,
+/// what is dropped. Filled in by golden tests on live plugin trees —
+/// it numerically pins coverage on every commit.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct TreeStats {
     pub nodes: usize,
-    /// Узлы, для которых рендер что-то рисует (всё, кроме `hidden`).
+    /// Nodes for which the renderer draws something (everything except `hidden`).
     pub rendered: usize,
-    /// Узлы с inline-стилем, разобранным в `NodeStyle`.
+    /// Nodes with an inline style parsed into `NodeStyle`.
     pub styled: usize,
-    /// Стили, меняющие геометрию (требуют бокса-обёртки).
+    /// Styles that change geometry (require a wrapper box).
     pub layout_styles: usize,
-    /// Текст/лейблы/описания суммарно, в байтах — прокси стоимости рендера текста.
+    /// Text/labels/descriptions total, in bytes — a proxy for text render cost.
     pub text_bytes: usize,
     pub by_kind: BTreeMap<&'static str, usize>,
-    /// Разобранные значения по ключам стиля (`width` → сколько узлов с шириной).
+    /// Parsed values by style key (`width` → how many nodes have a width).
     pub style_props: BTreeMap<&'static str, usize>,
 }
 
@@ -389,9 +389,9 @@ impl TreeStats {
     }
 }
 
-/// Чистый обход дерева: те же правила, что применяет рендер, но без GPUI-контекста.
-/// Нужен golden-тестам, чтобы мерить реальные деревья плагинов и ловить дрейф
-/// покрытия при правках рендера или бутстрапа.
+/// Pure tree walk: the same rules the renderer applies, but without a GPUI context.
+/// Needed by golden tests to measure real plugin trees and catch coverage drift
+/// when the renderer or bootstrap is changed.
 pub fn tree_translation_stats(node: &UiNode) -> TreeStats {
     let mut acc = TreeStats::default();
     fn walk(node: &UiNode, acc: &mut TreeStats) {
@@ -436,7 +436,7 @@ pub fn tree_translation_stats(node: &UiNode) -> TreeStats {
         };
         *acc.by_kind.entry(kind).or_default() += 1;
 
-        // display:none узлы остаются в дереве, но рендер их пропускает.
+        // display:none nodes stay in the tree, but the renderer skips them.
         if style.as_ref().map_or(true, |s| !s.hidden) {
             acc.rendered += 1;
         }

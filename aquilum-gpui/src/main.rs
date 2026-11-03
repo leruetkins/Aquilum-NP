@@ -1,5 +1,5 @@
-// Release-сборка: подсистема "windows" — консольное окно не создаётся вовсе.
-// Debug-сборка сохраняет консоль, чтобы видеть логи (в т.ч. FPS-монитор).
+// Release build: "windows" subsystem — no console window is created at all.
+// Debug build keeps the console so logs are visible (including the FPS monitor).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 pub mod blink_manager;

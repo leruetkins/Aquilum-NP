@@ -79,13 +79,13 @@ pub struct SelectOption {
     pub label: String,
 }
 
-// ──────────────────────────────────────────────────────── inline-стили плагинов
+// ──────────────────────────────────────────────────────── plugin inline styles
 //
-// Плагин пишет `el.style.width = "300px"` — CSS, которого хост не исполняет. Здесь объявлено ровно
-// то подмножество, которое хост умеет применить к нативному узлу; остальное отбрасывается ещё в JS
-// (`__style_to_uinode`). Поэтому «поле заполнено» = «будет применено», а не «может быть, повезёт».
+// A plugin writes `el.style.width = "300px"` — CSS the host does not execute. Only the subset the
+// host can apply to a native node is declared here; the rest is dropped already in JS
+// (`__style_to_uinode`). So "field is filled" = "will be applied", not "maybe we get lucky".
 
-/// Длина: пиксели или проценты от родителя.
+/// Length: pixels or percentages of the parent.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Len {
@@ -112,7 +112,7 @@ impl Len {
     }
 }
 
-/// Четыре стороны: padding/margin.
+/// Four sides: padding/margin.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Sides {
     pub top: f32,
@@ -127,7 +127,7 @@ impl Sides {
     }
 }
 
-/// Смещения абсолютно позиционированного узла.
+/// Offsets of an absolutely positioned node.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Inset {
     pub top: Option<Len>,
@@ -143,10 +143,10 @@ pub enum StylePosition {
     Absolute,
 }
 
-/// Подмножество CSS-свойств, применяемое к нативному узлу.
+/// The subset of CSS properties applied to a native node.
 ///
-/// Строится из плоской карты строк (`{"width": "300px"}`) через `TryFrom`, поэтому парсинг
-/// происходит один раз при разборе дерева, а не на каждом кадре.
+/// Built from a flat string map (`{"width": "300px"}`) via `TryFrom`, so parsing
+/// happens once while the tree is parsed, not on every frame.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(try_from = "BTreeMap<String, String>")]
 pub struct NodeStyle {
@@ -158,7 +158,7 @@ pub struct NodeStyle {
     pub max_height: Option<Len>,
     pub padding: Option<Sides>,
     pub margin: Option<Sides>,
-    /// 0xRRGGBBAA: `Rgba` не сериализуется, а u32 спокойно переживает границу воркера.
+    /// 0xRRGGBBAA: `Rgba` does not serialize, while a u32 crosses the worker boundary fine.
     pub background: Option<u32>,
     pub color: Option<u32>,
     pub opacity: Option<f32>,
@@ -169,14 +169,14 @@ pub struct NodeStyle {
     pub position: Option<StylePosition>,
     pub inset: Inset,
     pub overflow_hidden: bool,
-    /// `display: none` — узел не рендерится, но остаётся в дереве: плагин может вернуть его обратно.
+    /// `display: none` — the node is not rendered but stays in the tree: a plugin can bring it back.
     pub hidden: bool,
 }
 
 impl NodeStyle {
-    /// Трогает ли стиль геометрию. Только такие стили требуют отдельного бокса вокруг узла:
-    /// цвет и кегль достаточно повесить на обёртку-контейнер, а жёсткая колонка внутри строки
-    /// из нескольких `span` сломала бы раскладку.
+    /// Whether the style touches geometry. Only such styles need a separate box around the node:
+    /// color and font size are enough on a wrapper container, while a fixed column inside a row
+    /// of several `span`s would break the layout.
     pub fn affects_layout(&self) -> bool {
         self.width.is_some()
             || self.height.is_some()
@@ -192,8 +192,8 @@ impl NodeStyle {
     }
 }
 
-/// Сериализация в ту же плоскую карту строк, что присылает JS: иначе дерево нельзя
-/// прогнать через `serde_json::to_string`/`from_str` — форма записи и чтения разъедутся.
+/// Serialization into the same flat string map JS sends: otherwise the tree cannot
+/// be round-tripped through `serde_json::to_string`/`from_str` — write and read shapes would diverge.
 impl Serialize for NodeStyle {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
@@ -296,7 +296,7 @@ impl TryFrom<BTreeMap<String, String>> for NodeStyle {
     }
 }
 
-/// Ключ CSS в канонический вид: без регистра и разделителей (`background-color` → `backgroundcolor`).
+/// Canonical CSS key: no case and no separators (`background-color` → `backgroundcolor`).
 pub(crate) fn norm_key(key: &str) -> String {
     key.chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -320,8 +320,8 @@ impl NodeStyle {
             margin: sides(&map, "margin"),
             background: get("backgroundcolor").or_else(|| get("background")).and_then(parse_color),
             color: get("color").and_then(parse_color),
-            // visibility: hidden сохраняет место в раскладке — ближайший эквивалент в GPUI —
-            // нулевая непрозрачность, а не удаление узла.
+            // `visibility: hidden` keeps its place in the layout — in GPUI the closest
+            // equivalent is zero opacity rather than removing the node.
             opacity: match (get("opacity").and_then(parse_f32), get("visibility")) {
                 (Some(v), _) => Some(v.clamp(0.0, 1.0)),
                 (None, Some(v)) if v.trim() == "hidden" => Some(0.0),
@@ -352,13 +352,13 @@ impl NodeStyle {
         }
     }
 
-    /// Есть ли что применять: пустой стиль не должен превращаться в лишнюю обёртку.
+    /// Whether there is anything to apply: an empty style must not become a redundant wrapper.
     pub fn is_empty(&self) -> bool {
         self == &NodeStyle::default()
     }
 }
 
-/// `padding`/`margin` по правилам CSS: 1–4 значения + отдельные стороны поверх.
+/// `padding`/`margin` per CSS rules: 1–4 values plus individual sides on top.
 pub(crate) fn sides(map: &BTreeMap<String, &str>, base: &str) -> Option<Sides> {
     let mut any = false;
     let mut s = Sides::default();
@@ -397,7 +397,7 @@ pub(crate) fn parse_f32(raw: &str) -> Option<f32> {
     raw.trim().parse::<f32>().ok().filter(|v| v.is_finite())
 }
 
-/// Пиксели без единицы тоже принимаются: плагины пишут и `"12"`, и `"12px"`.
+/// Unitless pixels are accepted too: plugins write both `"12"` and `"12px"`.
 pub(crate) fn parse_px(raw: &str) -> Option<f32> {
     let s = raw.trim();
     if s.is_empty() || s.eq_ignore_ascii_case("auto") {
@@ -406,7 +406,7 @@ pub(crate) fn parse_px(raw: &str) -> Option<f32> {
     parse_f32(s.strip_suffix("px").unwrap_or(s))
 }
 
-/// CSS-цвет → 0xRRGGBBAA. Понимает #rgb/#rrggbb/#rrggbbaa, rgb()/rgba() и базовые имена.
+/// CSS color → 0xRRGGBBAA. Understands #rgb/#rrggbb/#rrggbbaa, rgb()/rgba() and basic names.
 pub(crate) fn parse_color(raw: &str) -> Option<u32> {
     let s = raw.trim().to_ascii_lowercase();
     let named = match s.as_str() {
@@ -464,14 +464,14 @@ pub(crate) fn units(len: Len) -> gpui::Length {
     }
 }
 
-/// Совпадение слова внутри имени класса: `setting-item-name` содержит `name`, а `username`,
-/// `rename` и `subtitle` — нет. Дефис, подчёркивание и пробел считаются границами слова.
+/// Word match inside a class name: `setting-item-name` contains `name`, while `username`,
+/// `rename` and `subtitle` do not. Hyphen, underscore and space count as word boundaries.
 pub(crate) fn has_word(cls: &str, word: &str) -> bool {
     cls.split(|c: char| !c.is_alphanumeric()).any(|part| part == word)
 }
 
-/// Применяет стиль поверх того, что уже решили класс и семантика узла: явный стиль плагина
-/// главнее эвристики по классу.
+/// Applies the style on top of what the node's class and semantics already decided: an explicit
+/// plugin style outranks the class heuristic.
 pub(crate) fn apply_style<T: Styled>(mut el: T, style: &NodeStyle) -> T {
     if let Some(v) = style.width {
         el = el.w(units(v));
@@ -544,12 +544,12 @@ pub(crate) fn apply_style<T: Styled>(mut el: T, style: &NodeStyle) -> T {
     el
 }
 
-/// Стиль плагина ложится на тот же бокс, что и эвристика по классу: последнее слово остаётся
-/// за таблицей стилей — ровно как в каскаде CSS. Отдельная обёртка для этого не годится:
-/// бокс с авто-высотой делает родителя «неопределённым», и `flex_1`-ребёнок (basis 0)
-/// схлопывается в ноль — так пропадал список файлов в Empty Files Cleaner.
+/// The plugin style lands on the same box as the class heuristic: the last word stays with the
+/// style sheet — exactly like a CSS cascade. A separate wrapper does not work here: a box with
+/// auto height makes the parent "indeterminate", and a `flex_1` child (basis 0) collapses to
+/// zero — that is how the file list disappeared in Empty Files Cleaner.
 ///
-/// Обобщён по `Styled`, потому что узел с `id` — уже `Stateful<Div>`, а не `Div`.
+/// Generic over `Styled`, because a node with an `id` is already `Stateful<Div>`, not `Div`.
 pub(crate) fn apply_sheet<T: Styled>(el: T, sheet: Option<&NodeStyle>) -> T {
     match sheet {
         Some(style) => apply_style(el, style),
@@ -557,11 +557,11 @@ pub(crate) fn apply_sheet<T: Styled>(el: T, sheet: Option<&NodeStyle>) -> T {
     }
 }
 
-/// Узел, чья ветка рендера сама заканчивается `apply_sheet`: обёртка ему не нужна и вредна.
+/// A node whose render branch itself ends with `apply_sheet`: a wrapper is unnecessary and harmful.
 ///
-/// Только эти три вида несут эвристику по классу, которая спорит с таблицей стилей за одну и ту
-/// же коробку. Всё остальное (текст, поле ввода, чекбокс) получает обёртку — там она безвредна,
-/// потому что геометрию никто не делит.
+/// Only these three kinds carry a class heuristic that competes with the style sheet for the same
+/// box. Everything else (text, input field, checkbox) gets a wrapper — harmless there, because
+/// nobody shares the geometry.
 pub(crate) fn takes_style_directly(node: &UiNode) -> bool {
     matches!(
         node,
@@ -569,13 +569,13 @@ pub(crate) fn takes_style_directly(node: &UiNode) -> bool {
     )
 }
 
-/// Пустой контрол для setting-строки: подставляется, когда плагин прислал `control: null`
-/// (например, строка с одной иконкой вместо поля ввода).
+/// Empty control for a setting row: substituted when a plugin sent `control: null`
+/// (for example, a row with a single icon instead of an input field).
 pub(crate) fn empty_text_control() -> Box<UiNode> {
     Box::new(UiNode::Text { value: String::new(), class: None, style: TextStyle::Normal })
 }
 
-/// `control: null` в проводном формате — «контрола нет», а не ошибка разбора.
+/// `control: null` in the wire format means "no control", not a parse error.
 pub(crate) fn control_or_empty<'de, D>(deserializer: D) -> Result<Box<UiNode>, D::Error>
 where
     D: serde::Deserializer<'de>,

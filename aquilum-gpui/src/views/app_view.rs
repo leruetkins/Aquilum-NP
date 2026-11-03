@@ -1170,11 +1170,11 @@ impl AppView {
     }
 }
 
-/// FPS-монитор — только для debug-сборки.
+/// FPS monitor — only for debug builds.
 ///
-/// В release-сборке это пустая функция: в Windows-приложении с подсистемой "windows"
-/// консоли нет, и писать в stdout/stderr некуда. Убираем последнего runtime-писателя
-/// в консоль, чтобы исключить его влияние на CPU в простое.
+/// In release builds this is an empty function: in a Windows app with the "windows" subsystem
+/// there is no console, and there is nowhere to write to stdout/stderr. We remove the last runtime writer
+/// to the console, to eliminate its effect on idle CPU.
 #[cfg(debug_assertions)]
 fn log_fps_tick() {
     static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1244,7 +1244,7 @@ fn log_fps_tick() {
     }
 }
 
-/// В release-сборке монитор выключен — ни одной записи в консоль.
+/// In release builds the monitor is disabled — not a single console write.
 #[cfg(not(debug_assertions))]
 fn log_fps_tick() {}
 

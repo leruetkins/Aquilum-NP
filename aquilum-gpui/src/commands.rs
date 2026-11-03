@@ -7,12 +7,12 @@ pub type CommandCallback = Arc<dyn Fn() + Send + Sync>;
 pub struct Command {
     pub id: String,
     pub name: String,
-    /// None для встроенных команд, Some(plugin_id) для плагинных команд.
+    /// None for built-in commands, Some(plugin_id) for plugin commands.
     pub owner: Option<String>,
     pub callback: CommandCallback,
-    /// Горячая клавиша для отображения в палитре (например, "Ctrl+S").
+    /// Hotkey for display in the palette (e.g., "Ctrl+S").
     pub hotkey: Option<String>,
-    /// Иконка для отображения в тулбаре и палитре команд.
+    /// Icon for display in the toolbar and command palette.
     pub icon: Option<String>,
 }
 
@@ -28,7 +28,7 @@ impl std::fmt::Debug for Command {
     }
 }
 
-/// Центральный реестр команд приложения и плагинов.
+/// Central registry of app and plugin commands.
 pub struct CommandRegistry {
     commands: Mutex<HashMap<String, Command>>,
 }
@@ -46,25 +46,25 @@ impl CommandRegistry {
         }
     }
 
-    /// Зарегистрировать команду. Если команда с таким id существовала, она перезаписывается.
+    /// Register a command. If a command with the same id existed, it is overwritten.
     pub fn register(&self, cmd: Command) -> String {
         let id = cmd.id.clone();
         self.commands.lock().unwrap().insert(id.clone(), cmd);
         id
     }
 
-    /// Найти команду по id.
+    /// Find a command by id.
     pub fn get(&self, id: &str) -> Option<Command> {
         let cmds = self.commands.lock().unwrap();
         cmds.get(id).cloned()
     }
 
-    /// Снять регистрацию команды по идентификатору.
+    /// Unregister a command by identifier.
     pub fn unregister(&self, id: &str) {
         self.commands.lock().unwrap().remove(id);
     }
 
-    /// Удалить все команды, зарегистрированные конкретным плагином (при его выгрузке).
+    /// Remove all commands registered by a particular plugin (when it is unloaded).
     pub fn unregister_all_of(&self, plugin_id: &str) {
         self.commands
             .lock()
@@ -72,7 +72,7 @@ impl CommandRegistry {
             .retain(|_, cmd| cmd.owner.as_deref() != Some(plugin_id));
     }
 
-    /// Получить список всех команд (для палитры команд).
+    /// Get the list of all commands (for the command palette).
     pub fn all(&self) -> Vec<Command> {
         let cmds = self.commands.lock().unwrap();
         let mut list: Vec<Command> = cmds.values().cloned().collect();
@@ -80,7 +80,7 @@ impl CommandRegistry {
         list
     }
 
-    /// Фильтрация команд по поисковому запросу (все слова запроса должны присутствовать в имени или id).
+    /// Filter commands by search query (every query word must appear in the name or id).
     pub fn search(&self, query: &str) -> Vec<Command> {
         let q = query.trim().to_lowercase();
         if q.is_empty() {
@@ -101,7 +101,7 @@ impl CommandRegistry {
         list
     }
 
-    /// Выполнить команду по ее идентификатору. Возвращает true, если команда найдена и вызвана.
+    /// Execute a command by its identifier. Returns true if the command was found and invoked.
     pub fn execute(&self, id: &str) -> bool {
         let callback = {
             let cmds = self.commands.lock().unwrap();
@@ -146,7 +146,7 @@ mod tests {
         assert!(registry.execute("test:action"));
         assert!(executed.load(Ordering::SeqCst));
 
-        // Вызов несуществующей
+        // Calling a nonexistent one
         assert!(!registry.execute("non:existent"));
     }
 
@@ -183,7 +183,7 @@ mod tests {
 
         assert_eq!(registry.all().len(), 3);
 
-        // Выгружаем plugin-a
+        // Unload plugin-a
         registry.unregister_all_of("plugin-a");
         assert_eq!(registry.all().len(), 2);
         assert!(registry.commands.lock().unwrap().contains_key("builtin:save"));

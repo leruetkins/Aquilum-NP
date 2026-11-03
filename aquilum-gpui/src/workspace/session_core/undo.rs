@@ -1,13 +1,13 @@
-//! Единственный механизм undo/redo: атомарные шаги без склеек
-//! (семантика AECO_DETAILEDUNDO из AkelPad). Ядро не знает о rope/String.
+//! The single undo/redo mechanism: atomic steps without coalescing
+//! (AkelPad's AECO_DETAILEDUNDO semantics). The core knows nothing about rope/String.
 
 use std::collections::VecDeque;
 
-/// Ёмкость undo-истории; выбрасывается старейший шаг (FIFO).
-/// Redo-стек капа не имеет: шаг попадает туда только через take.
+/// Undo history capacity; the oldest step is dropped (FIFO).
+/// The redo stack has no cap: a step gets there only through take.
 pub const HISTORY_CAP: usize = 10_000;
 
-/// Позиция курсора и, если есть, якорь выделения.
+/// Cursor position and, if any, the selection anchor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Selection {
     pub cursor: usize,
@@ -20,7 +20,7 @@ impl Selection {
     }
 }
 
-/// Правка: заменить байты `at..at + removed.len()` на `inserted`.
+/// Edit: replace bytes `at..at + removed.len()` with `inserted`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextChange {
     /// Byte offset where the change occurred.
@@ -41,7 +41,7 @@ impl TextChange {
     }
 }
 
-/// Один шаг undo: одна или несколько правок плюс выделение до и после.
+/// One undo step: one or more edits plus the selection before and after.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
     pub changes: Vec<TextChange>,
@@ -49,7 +49,7 @@ pub struct Step {
     pub sel_after: Selection,
 }
 
-/// Стеки undo/redo. Все шаги атомарны и записываются как есть — склейки нет.
+/// Undo/redo stacks. All steps are atomic and recorded as-is — no coalescing.
 #[derive(Default)]
 pub struct History {
     undo: VecDeque<Step>,
@@ -84,7 +84,7 @@ impl History {
         }
     }
 
-    /// Снимает шаг с верхушки и переносит на противоположный стек.
+    /// Pops a step off the top and moves it to the opposite stack.
     pub fn take(&mut self, redo: bool) -> Option<Step> {
         let (from, to) = if redo {
             (&mut self.redo, &mut self.undo)

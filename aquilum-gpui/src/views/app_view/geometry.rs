@@ -706,8 +706,8 @@ impl AppView {
     
 /// Scrolls the viewport the least amount that brings the caret into view.
 pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrategy) {
-    // handle_key обновляет визуальный кеш после изменения текста
-    // и перемещения курсора.
+    // handle_key updates the visual cache after text changes
+    // and cursor movement.
     let target = self
         .state
         .active_view_and_doc()
@@ -773,15 +773,15 @@ pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         return;
     };
 
-    // Высота содержимого без дополнительного нижнего отступа.
+    // Content height without extra bottom padding.
     let max_scroll = (total_content_h - f64::from(viewport_h)).max(0.0);
 
     let raw_scroll = self.current_scroll_top_f64();
     let current_scroll = raw_scroll.clamp(0.0, max_scroll);
     let viewport_bottom = current_scroll + f64::from(viewport_h);
 
-    // Никаких дополнительных отступов сверху и снизу.
-    // Прокручиваем только тогда, когда строка выходит за границы.
+    // No extra padding at the top or bottom.
+    // Scroll only when the row goes beyond the boundaries.
     let target_scroll = if row_top < current_scroll {
         row_top
     } else if row_bottom > viewport_bottom {
@@ -791,8 +791,8 @@ pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
     }
     .clamp(0.0, max_scroll);
 
-    // Исправляем устаревшую позицию после изменения высоты содержимого.
-    // Игнорируем субпиксельные изменения, чтобы не провоцировать дрожание.
+    // Correct a stale position after the content height changes.
+    // Ignore subpixel changes to avoid provoking jitter.
     if (target_scroll - raw_scroll).abs() > 0.5 {
         self.set_editor_scroll_top_f64(target_scroll);
     }

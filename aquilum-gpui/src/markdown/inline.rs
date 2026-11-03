@@ -16,7 +16,7 @@ pub enum InlineSpan {
 ///
 /// A backtick string is a run of one *or more* backticks, and CommonMark closes a code
 /// span with a run of **exactly** the same length. That is what makes
-/// `` ``код с `обратными` `` `` a single span whose content holds literal backticks,
+/// `` ``code with `backticks` `` `` a single span whose content holds literal backticks,
 /// instead of an empty span followed by a lone one.
 pub(crate) fn backtick_run_len(s: &str) -> usize {
     s.bytes().take_while(|&b| b == b'`').count()
@@ -167,7 +167,7 @@ pub fn parse_inline_spans(mut s: &str) -> Vec<InlineSpan> {
             }
         }
 
-        // Italic: *...* (исключая списки)
+        // Italic: *...* (excluding lists)
         if s.starts_with('*') {
             if let Some(end_idx) = s[1..].find('*') {
                 if !plain_accum.is_empty() {
@@ -240,7 +240,7 @@ pub fn parse_inline_spans(mut s: &str) -> Vec<InlineSpan> {
             }
         }
 
-        // Обычный символ
+        // Ordinary character
         let mut chars = s.chars();
         if let Some(c) = chars.next() {
             plain_accum.push(c);

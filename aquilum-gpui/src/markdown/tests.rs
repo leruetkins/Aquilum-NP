@@ -81,28 +81,28 @@
 
     #[test]
     fn test_selection_chars_in_line_unicode_boundary_safety() {
-        // "Привет" is 12 bytes: П(0..2), р(2..4), и(4..6), в(6..8), е(8..10), т(10..12)
-        // With line_start = 20, 'в' sits at bytes 26..28. Byte 27 is strictly inside 'в'.
+        // The six-char test word is 12 bytes: each char takes 2 bytes (0..2, 2..4, ..., 10..12)
+        // With line_start = 20, the 4th char sits at bytes 26..28. Byte 27 is strictly inside it.
         let line = "Привет мир";
         let line_start = 20;
 
-        // Selection ends at byte 27 (inside 'в' at relative byte 7)
+        // Selection ends at byte 27 (inside the 4th char at relative byte 7)
         let sel = 20..27;
         let res = selection_chars_in_line(line, line_start, Some(&sel));
         assert!(res.is_some());
         let (start_ch, end_ch) = res.unwrap();
         assert_eq!(start_ch, 0);
-        // Clamps to byte 6 ('и'), so 3 characters: 'П', 'р', 'и'
+        // Clamps to byte 6 (the 3rd char), so 3 characters: chars 1, 2, 3
         assert_eq!(end_ch, 3);
 
-        // Selection starts inside 'р' (relative byte 3) and ends after 'м' (relative byte 15)
+        // Selection starts inside the 2nd char (relative byte 3) and ends after the 8th char (relative byte 15)
         let sel2 = 23..35;
         let res2 = selection_chars_in_line(line, line_start, Some(&sel2));
         assert!(res2.is_some());
         let (start_ch2, end_ch2) = res2.unwrap();
-        // Clamps start from 23 to 22 ('П'), counting 1 char ('П')
+        // Clamps start from 23 to 22 (start of the 1st char), counting 1 char
         assert_eq!(start_ch2, 1);
-        // Byte 35 - 20 = 15 bytes: "Привет " (13 bytes, 7 chars) + "м" (2 bytes, 1 char) = 8 chars
+        // Byte 35 - 20 = 15 bytes: the test word plus a space (13 bytes, 7 chars) + the 8th char (2 bytes, 1 char) = 8 chars
         assert_eq!(end_ch2, 8);
 
         // Selection extends beyond end of line
@@ -364,11 +364,11 @@
     fn test_visual_col_roundtrip_with_links_and_tags() {
         let line = "A [link](https://example.com) B";
         let spans = parse_inline_syntax_spans(line);
-        // В неактивной строке отображается "A link B" (длина: 1 + 1 + 4 + 1 + 1 = 8 символов)
-        // Исходная строка: 31 символ
-        let raw_char = 2; // Символ 'l' в "link" (в исходной строке после "A [")
+        // On an inactive line "A link B" is displayed (length: 1 + 1 + 4 + 1 + 1 = 8 characters)
+        // Source line: 31 characters
+        let raw_char = 2; // Character 'l' in "link" (in the source line after "A [")
         let vis_col = row_char_to_visual_col(&spans, raw_char, false, 0);
-        assert_eq!(vis_col, 2); // 'l' в визуальной строке "A link B"
+        assert_eq!(vis_col, 2); // 'l' in the visual line "A link B"
 
         let recovered_raw = visual_col_to_row_char(&spans, vis_col, false, 0);
         assert_eq!(recovered_raw, raw_char);

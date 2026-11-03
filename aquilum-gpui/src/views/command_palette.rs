@@ -4,7 +4,7 @@
 //! plugin commands. Designed identically to Obsidian's Command Palette:
 //! - Centered card with search filter input, caret blinking, and close button.
 //! - Filtered list of registered commands with hotkey badges (e.g. `Ctrl + O`, `Ctrl + B`).
-//! - Bottom keyboard navigation hints footer: `↑↓ навигация   ↵ использовать   esc отмена`.
+//! - Bottom keyboard navigation hints footer: `↑↓ navigate   ↵ use   esc cancel`.
 //! - Up/Down arrow wrap navigation, Enter to run, Escape to dismiss.
 
 use std::cell::Cell;
@@ -684,7 +684,7 @@ impl AppView {
         let is_input_focused = self.command_palette_focus_handle.is_focused(window);
         let caret_visible = is_input_focused && self.command_palette_blink.visible();
 
-        // Localized placeholder: "Выберите команду..." in Russian, "Type a command..." in English
+        // Localized placeholder: "Select a command..." in Russian, "Type a command..." in English
         let placeholder_text = if self.config.ui.language.starts_with("ru") {
             "Выберите команду..."
         } else {

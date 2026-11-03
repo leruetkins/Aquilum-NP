@@ -1916,9 +1916,9 @@ impl SettingsView {
                 canvas(
                     |viewport, _, _| viewport,
                     move |viewport, _, window, _cx| {
-                        // Capture-перехват колеса раньше дефолтного скролла div:
-                        // делим Lines-тики (мышь) на 3 — один тик ≈ одна строка,
-                        // пиксельные дельты тачпада идут как есть.
+                        // Capture-intercept the wheel before the div's default scroll:
+                        // divide Lines ticks (mouse) by 3 — one tick ≈ one line,
+                        // pixel deltas from the touchpad pass through as is.
                         let current_view = window.current_view();
                         window.on_mouse_event(
                             move |event: &ScrollWheelEvent, phase, window, cx| {
@@ -2657,7 +2657,7 @@ impl SettingsView {
                                 )
                             })
                     )
-                    // Eyedropper / Color Picker (Пипетка) button
+                    // Eyedropper / Color Picker button
                     .child(
                         div()
                             .id("btn-eyedropper-picker")

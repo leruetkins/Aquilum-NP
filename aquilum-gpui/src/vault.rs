@@ -1,16 +1,16 @@
 use std::path::{Component, Path, PathBuf};
 
-/// Информация о файле, совместимая с TFile из Obsidian API.
-/// Используется в Snapshot для синхронных геттеров плагинов.
+/// File information compatible with TFile from the Obsidian API.
+/// Used in Snapshot for synchronous plugin getters.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileInfo {
-    /// Относительный путь от корня vault с прямыми слешами ('/').
+    /// Relative path from the vault root using forward slashes ('/').
     pub path: String,
-    /// Имя файла с расширением.
+    /// File name with extension.
     pub name: String,
-    /// Имя без расширения.
+    /// Name without extension.
     pub basename: String,
-    /// Расширение без точки ("md", "txt", ...).
+    /// Extension without the dot ("md", "txt", ...).
     pub extension: String,
 }
 
@@ -50,7 +50,7 @@ impl std::fmt::Display for VaultError {
 
 impl std::error::Error for VaultError {}
 
-/// Куда переместить файл в корзине vault, не затирая ранее выброшенный файл с тем же путём.
+/// Destination for a file in the vault trash that does not overwrite a previously trashed file with the same path.
 fn unique_trash_destination(root: &Path, rel_path: &str) -> PathBuf {
     let trash_root = root.join(".trash");
     let dest = trash_root.join(rel_path);
@@ -88,12 +88,12 @@ fn note_content(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
-/// Ядро vault без зависимости от GPUI.
-/// Управляет файловой структурой заметки, проверкой путей и данными плагинов.
+/// Vault core with no GPUI dependency.
+/// Manages the note file structure, path validation, and plugin data.
 pub struct VaultCore {
-    /// Абсолютный путь к корню vault.
+    /// Absolute path to the vault root.
     pub root: PathBuf,
-    /// Имя vault.
+    /// Vault name.
     pub name: String,
     markdown_files_cache: std::sync::Mutex<Option<std::sync::Arc<[FileInfo]>>>,
 }
@@ -111,14 +111,14 @@ impl VaultCore {
         }
     }
 
-    /// Безопасное разрешение пути относительно корня vault.
+    /// Safe path resolution relative to the vault root.
     ///
-    /// Алгоритм нормализации:
-    /// 1. Отсекает нулевые байты и абсолютные пути.
-    /// 2. Лексически разрешает `.` и `..` без обращения к файловой системе.
-    /// 3. Находит ближайшего существующего предка и вызывает canonicalize для раскрытия симлинков.
-    /// 4. Присоединяет остаток пути и проверяет, что итог не выходит за пределы корня vault.
-    /// 5. Блокирует прямой доступ к `.vault/` (кроме явных вызовов плагинных данных).
+    /// Normalization algorithm:
+    /// 1. Rejects null bytes and absolute paths.
+    /// 2. Lexically resolves `.` and `..` without accessing the filesystem.
+    /// 3. Finds the nearest existing ancestor and calls canonicalize to expand symlinks.
+    /// 4. Appends the remaining path and verifies that the result does not escape the vault root.
+    /// 5. Blocks direct access to `.vault/` (except explicit plugin data calls).
     pub fn resolve(&self, rel: &str) -> Result<PathBuf, VaultError> {
         self.resolve_internal(rel, false)
     }
@@ -132,7 +132,7 @@ impl VaultCore {
             return Err(VaultError::InvalidPath("path must be relative".into()));
         }
 
-        // Лексическая нормализация без обращения к ФС
+        // Lexical normalization without filesystem access
         let mut stack: Vec<&std::ffi::OsStr> = Vec::new();
         for c in rel_path.components() {
             match c {
@@ -151,7 +151,7 @@ impl VaultCore {
 
         let joined = stack.iter().fold(self.root.clone(), |p, s| p.join(s));
 
-        // Раскрыть симлинки у ближайшего существующего предка
+        // Expand symlinks at the nearest existing ancestor
         let mut existing = joined.as_path();
         let mut tail: Vec<std::ffi::OsString> = Vec::new();
         let canon_prefix = loop {
@@ -176,7 +176,7 @@ impl VaultCore {
             resolved.push(part);
         }
 
-        // Канонизируем корень vault для сравнения префикса
+        // Canonicalize the vault root for prefix comparison
         let root_canon = match self.root.canonicalize() {
             Ok(p) => p,
             Err(_) => self.root.clone(),
@@ -186,7 +186,7 @@ impl VaultCore {
             return Err(VaultError::InvalidPath("resolved path escapes vault".into()));
         }
 
-        // Запрет доступа к скрытой служебной директории .vault
+        // Deny access to the hidden service directory .vault
         if !allow_reserved && resolved.starts_with(root_canon.join(".vault")) {
             return Err(VaultError::InvalidPath("access to .vault is reserved".into()));
         }
@@ -194,7 +194,7 @@ impl VaultCore {
         Ok(resolved)
     }
 
-    /// Чтение текстового файла из vault. Путь относительный.
+    /// Reads a text file from the vault. The path is relative.
     pub fn read_file(&self, rel_path: &str) -> Result<String, VaultError> {
         let abs = self.resolve(rel_path)?;
         if !abs.exists() {
@@ -213,7 +213,7 @@ impl VaultCore {
         std::fs::read_to_string(&abs).map_err(|e| VaultError::Io(e.to_string()))
     }
 
-    /// Запись/перезапись файла в vault. Путь относительный.
+    /// Writes/overwrites a file in the vault. The path is relative.
     pub fn modify_file(&self, rel_path: &str, data: &str) -> Result<(), VaultError> {
         let abs = self.resolve(rel_path)?;
         if let Some(parent) = abs.parent() {
@@ -222,7 +222,7 @@ impl VaultCore {
         std::fs::write(&abs, data).map_err(|e| VaultError::Io(e.to_string()))
     }
 
-    /// Создание нового файла. Возвращает абсолютный путь. Ошибка, если файл уже существует.
+    /// Creates a new file. Returns the absolute path. Errors if the file already exists.
     pub fn create_file(&self, rel_path: &str, data: &str) -> Result<PathBuf, VaultError> {
         let abs = self.resolve(rel_path)?;
         if abs.exists() {
@@ -236,11 +236,11 @@ impl VaultCore {
         Ok(abs)
     }
 
-    /// Верхняя граница бинарных операций плагинов: транспорт base64-в-JSON
-    /// приемлем для картинок и вложений, но не для гигабайтных файлов.
+    /// Upper bound for plugin binary operations: base64-in-JSON transport
+    /// is acceptable for images and attachments, but not for gigabyte-sized files.
     const BINARY_LIMIT: u64 = 50 * 1024 * 1024;
 
-    /// Читает файл как байты (base64-кодирование делает бридж).
+    /// Reads a file as bytes (base64 encoding is done by the bridge).
     pub fn read_file_binary(&self, rel_path: &str) -> Result<Vec<u8>, VaultError> {
         let abs = self.resolve(rel_path)?;
         if !abs.exists() {
@@ -256,7 +256,7 @@ impl VaultCore {
         std::fs::read(&abs).map_err(|e| VaultError::Io(e.to_string()))
     }
 
-    /// Перезаписывает или создаёт бинарный файл.
+    /// Overwrites or creates a binary file.
     pub fn modify_file_binary(&self, rel_path: &str, data: &[u8]) -> Result<(), VaultError> {
         if data.len() as u64 > Self::BINARY_LIMIT {
             return Err(VaultError::Io(format!(
@@ -271,7 +271,7 @@ impl VaultCore {
         std::fs::write(&abs, data).map_err(|e| VaultError::Io(e.to_string()))
     }
 
-    /// Создаёт новый бинарный файл. Ошибка, если файл уже существует.
+    /// Creates a new binary file. Errors if the file already exists.
     pub fn create_file_binary(&self, rel_path: &str, data: &[u8]) -> Result<PathBuf, VaultError> {
         if data.len() as u64 > Self::BINARY_LIMIT {
             return Err(VaultError::Io(format!(
@@ -291,7 +291,7 @@ impl VaultCore {
         Ok(abs)
     }
 
-    /// Удаление файла.
+    /// Deletes a file.
     pub fn delete_file(&self, rel_path: &str) -> Result<(), VaultError> {
         let abs = self.resolve(rel_path)?;
         if !abs.exists() {
@@ -312,9 +312,9 @@ impl VaultCore {
         Ok(())
     }
 
-    /// Безопасное удаление: файл перемещается в корзину vault (`.trash/<rel_path>`),
-    /// а не удаляется безвозвратно. `.trash` — скрытая директория, поэтому корзина
-    /// не попадает в снапшот и файловое дерево.
+    /// Safe deletion: the file is moved to the vault trash (`.trash/<rel_path>`)
+    /// instead of being permanently deleted. `.trash` is a hidden directory, so the trash
+    /// does not appear in the snapshot or the file tree.
     pub fn trash_file(&self, rel_path: &str) -> Result<(), VaultError> {
         let abs = self.resolve(rel_path)?;
         if !abs.exists() {
@@ -339,7 +339,7 @@ impl VaultCore {
         Ok(())
     }
 
-    /// Переименование / перемещение файла внутри vault.
+    /// Renames / moves a file inside the vault.
     pub fn rename_file(&self, old_rel: &str, new_rel: &str) -> Result<PathBuf, VaultError> {
         let old_abs = self.resolve(old_rel)?;
         let new_abs = self.resolve(new_rel)?;
@@ -366,7 +366,7 @@ impl VaultCore {
         Ok(new_abs)
     }
 
-    /// Сбрасывает кэш списка markdown-файлов.
+    /// Invalidates the markdown file list cache.
     pub fn invalidate_markdown_cache(&self) {
         if let Ok(mut cache) = self.markdown_files_cache.lock() {
             *cache = None;
@@ -417,19 +417,19 @@ impl VaultCore {
         }
     }
 
-    /// Путь к файлу настроек плагина: <vault>/.vault/plugins/<id>/data.json
+    /// Path to the plugin settings file: <vault>/.vault/plugins/<id>/data.json
     pub fn plugin_data_path(&self, plugin_id: &str) -> PathBuf {
         self.root.join(".vault").join("plugins").join(plugin_id).join("data.json")
     }
 
-    /// Чтение данных плагина из data.json
+    /// Reads plugin data from data.json
     pub fn load_plugin_data(&self, plugin_id: &str) -> Option<serde_json::Value> {
         let path = self.plugin_data_path(plugin_id);
         let content = std::fs::read_to_string(path).ok()?;
         serde_json::from_str(&content).ok()
     }
 
-    /// Сохранение настроек плагина в data.json (атомарно через создание родительской папки)
+    /// Saves plugin settings to data.json (atomically via creation of the parent folder)
     pub fn save_plugin_data(&self, plugin_id: &str, data: &serde_json::Value) -> Result<(), String> {
         let path = self.plugin_data_path(plugin_id);
         if let Some(parent) = path.parent() {
@@ -439,12 +439,12 @@ impl VaultCore {
         std::fs::write(path, json).map_err(|e| e.to_string())
     }
 
-    /// Путь к списку активных сторонних плагинов: <vault>/.vault/community-plugins.json
+    /// Path to the list of enabled third-party plugins: <vault>/.vault/community-plugins.json
     pub fn community_plugins_path(&self) -> PathBuf {
         self.root.join(".vault").join("community-plugins.json")
     }
 
-    /// Считывает список ID активных сторонних плагинов.
+    /// Reads the list of enabled third-party plugin IDs.
     pub fn load_community_plugins(&self) -> Vec<String> {
         let path = self.community_plugins_path();
         let Ok(content) = std::fs::read_to_string(path) else {
@@ -453,7 +453,7 @@ impl VaultCore {
         serde_json::from_str(&content).unwrap_or_default()
     }
 
-    /// Сохраняет список ID активных сторонних плагинов.
+    /// Saves the list of enabled third-party plugin IDs.
     pub fn save_community_plugins(&self, plugin_ids: &[String]) -> Result<(), String> {
         let path = self.community_plugins_path();
         if let Some(parent) = path.parent() {
@@ -463,7 +463,7 @@ impl VaultCore {
         std::fs::write(path, json).map_err(|e| e.to_string())
     }
 
-    /// Включает плагин в community-plugins.json.
+    /// Enables a plugin in community-plugins.json.
     pub fn enable_community_plugin(&self, plugin_id: &str) -> Result<(), String> {
         let mut list = self.load_community_plugins();
         if !list.iter().any(|id| id == plugin_id) {
@@ -473,14 +473,14 @@ impl VaultCore {
         Ok(())
     }
 
-    /// Отключает плагин в community-plugins.json.
+    /// Disables a plugin in community-plugins.json.
     pub fn disable_community_plugin(&self, plugin_id: &str) -> Result<(), String> {
         let mut list = self.load_community_plugins();
         list.retain(|id| id != plugin_id);
         self.save_community_plugins(&list)
     }
 
-    /// Проверяет, активен ли плагин в community-plugins.json.
+    /// Checks whether a plugin is enabled in community-plugins.json.
     pub fn is_community_plugin_enabled(&self, plugin_id: &str) -> bool {
         self.load_community_plugins().iter().any(|id| id == plugin_id)
     }

@@ -199,9 +199,9 @@ pub fn render_ui_node<V: UiSink>(
     )
 }
 
-/// `sheet` — стиль, который `styles.css` плагина уже заявил для этого узла. Он приходит только
-/// из ветки `Styled`: больше никто про таблицу стилей не знает, а эвристике по классу нужно
-/// уметь уступать (см. `BoxOwnership`).
+/// `sheet` — the style the plugin's `styles.css` already declared for this node. It comes only
+/// from the `Styled` branch: no one else knows about the stylesheet, and the class heuristic must
+/// be able to yield to it (see `BoxOwnership`).
 fn render_ui_node_inner<V: UiSink>(
     node: &UiNode,
     sheet: Option<&NodeStyle>,
@@ -393,10 +393,10 @@ fn render_ui_node_inner<V: UiSink>(
                             .min_h_0()
                             .max_h(px(340.0))
                             .w_full()
-                            // Жёлоб под полосу прокрутки — хром хоста, а не отступ плагина.
-                            // В таблице стилей `.ef-list { padding: 8px 0 }`, и если держать
-                            // жёлоб в padding узла, стиль его законно перекрывает — тогда
-                            // содержимое уезжает под полосу.
+                            // The scrollbar gutter is host chrome, not plugin padding.
+                            // In the stylesheet `.ef-list { padding: 8px 0 }`, so keeping the
+                            // gutter in the node padding lets the style legitimately override it —
+                            // then the content slides under the scrollbar.
                             .pr(px(14.0))
                             .on_mouse_down(MouseButton::Middle, cx.listener(|this, _, _, cx| {
                                 cx.stop_propagation();
@@ -517,9 +517,9 @@ fn render_ui_node_inner<V: UiSink>(
                 }
             } else if is_modal_item {
                 row = row
-                    // Высота строки кратна 4: при масштабах 125–200% она приходится на целое
-                    // число пикселей, иначе разделители соседних строк «прыгают» на 1px.
-                    // 68 — по высоте двухстрочной строки (имя + путь) с отступами 10+10.
+                    // The row height is a multiple of 4: at 125–200% scale it lands on a whole
+                    // number of pixels; otherwise adjacent row separators "jump" by 1px.
+                    // 68 matches a two-line row (name + path) with 10+10 padding.
                     .min_h(px(68.0))
                     .px(px(24.0))
                     .py(px(8.0))
@@ -544,10 +544,10 @@ fn render_ui_node_inner<V: UiSink>(
                     .border_b_1()
                     .border_color(theme.border_subtle);
             } else if is_footer {
-                // Без собственного фона: футер прижат к нижней кромке диалога, а `overflow_hidden`
-                // в этой GPUI обрезает по прямоугольнику (`ContentMask` хранит только `bounds`),
-                // поэтому закрашенный футер вылезал квадратными углами за скругление. Фон диалога
-                // и так тот же — убирать нечего.
+                // No background of its own: the footer is flush with the dialog's bottom edge, and
+                // `overflow_hidden` in this GPUI clips to a rectangle (`ContentMask` stores only `bounds`),
+                // so a filled footer poked its square corners past the rounded corner. The dialog
+                // background is the same anyway — there is nothing to remove.
                 row = row
                     .flex_shrink_0()
                     .px(px(24.0))
@@ -695,10 +695,10 @@ fn render_ui_node_inner<V: UiSink>(
             disabled,
         } => {
             let is_disabled = *disabled;
-            // У выключенной кнопки цвета — хозяйские. Плагин не знает нашей темы: его запасные
-            // значения (`var(--text-error, #ff6b6b)` и подобные) подобраны под тёмную тему и на
-            // светлой дают пару «светло-красное на розовом» — надпись не читается. Габариты,
-            // отступы и радиус из таблицы стилей при этом остаются за плагином.
+            // A disabled button's colors are ours. The plugin does not know our theme: its fallback
+            // values (`var(--text-error, #ff6b6b)` and the like) are tuned for a dark theme and on
+            // a light one give "light red on pink" — the label is unreadable. Dimensions,
+            // padding and radius from the stylesheet still stay with the plugin.
             let filtered;
             let sheet = if is_disabled {
                 filtered = sheet.map(|s| NodeStyle { background: None, color: None, opacity: None, ..s.clone() });
@@ -1640,11 +1640,11 @@ fn render_ui_node_inner<V: UiSink>(
             if style.hidden {
                 return div().into_any_element();
             }
-            // Колонка, строка и кнопка носят стиль на себе: их ветки заканчиваются тем же
-            // `apply_style`, и каскад решается на одном боксе. Обёртка тут не просто лишняя —
-            // она ломает раскладку: бокс с авто-высотой делает родителя «неопределённым»,
-            // и `flex_1`-ребёнок (basis 0) схлопывается в ноль. Именно так исчезал список
-            // файлов в Empty Files Cleaner.
+            // Column, row and button carry the style themselves: their branches end with the same
+            // `apply_style`, and the cascade is resolved on a single box. A wrapper here is not merely
+            // redundant — it breaks the layout: an auto-height box makes the parent "indefinite",
+            // and the `flex_1` child (basis 0) collapses to zero. That is exactly how the file
+            // list vanished in Empty Files Cleaner.
             if takes_style_directly(child.as_ref()) {
                 return render_ui_node_inner(
                     child,
@@ -1677,10 +1677,10 @@ fn render_ui_node_inner<V: UiSink>(
                 cx,
                 scroll_ctx,
             );
-            // Обёртка — это бокс самого элемента плагина: размеры, отступы, фон, позиция.
-            // Внутренняя раскладка (row/column, gap) остаётся за самим узлом. Стиль без
-            // геометрии (цвет, кегль, начертание) получает обычный бокс: он должен передать
-            // текстовые свойства вниз и не навязывать колонку.
+            // The wrapper is the box of the plugin element itself: size, padding, background, position.
+            // The internal layout (row/column, gap) stays with the node itself. A style without
+            // geometry (color, font size, weight) gets an ordinary box: it must pass
+            // text properties down and not impose a column.
             let base = if style.affects_layout() {
                 div().flex().flex_col().flex_shrink_0()
             } else {

@@ -1,4 +1,4 @@
-//! Реестр документов: единственный владелец текста, undo/redo, пути и заголовка.
+//! Document registry: the single owner of text, undo/redo, paths and title.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -31,8 +31,8 @@ impl DocumentBuffer {
     }
 }
 
-/// Ключ пути: разделители и регистр нормализуются (Windows).
-/// Для регистрозависимых ФС это сознательно консервативно.
+/// Path key: separators and case are normalized (Windows).
+/// For case-sensitive file systems this is deliberately conservative.
 pub fn path_key(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/").to_lowercase()
 }
@@ -62,8 +62,8 @@ impl DocumentRegistry {
         self.by_path.get(&path_key(path)).copied()
     }
 
-    /// Один файл = один документ: повторное открытие возвращает тот же id
-    /// (переданный content игнорируется).
+    /// One file = one document: reopening returns the same id
+    /// (the passed content is ignored).
     pub fn open(&mut self, path: &Path, content: &str) -> DocumentId {
         let key = path_key(path);
         if let Some(&id) = self.by_path.get(&key) {
@@ -122,7 +122,7 @@ impl DocumentRegistry {
         Ok(())
     }
 
-    /// Единственный путь изменения текста (в т.ч. внешние изменения: origin = None).
+    /// The single path for text changes (including external changes: origin = None).
     pub fn apply_edit(
         &mut self,
         id: DocumentId,
@@ -168,7 +168,7 @@ impl DocumentRegistry {
         Ok(ev)
     }
 
-    /// Undo общий на документ: откатывает последнюю правку независимо от вкладки.
+    /// Undo is shared per document: it rolls back the last edit regardless of tab.
     pub fn undo(&mut self, id: DocumentId, origin: TabId) -> Option<EditEvent> {
         let d = self.docs.get_mut(&id)?;
         let step = d.history.take(false)?;

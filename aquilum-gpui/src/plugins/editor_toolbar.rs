@@ -26,7 +26,7 @@ fn default_config_version() -> u32 {
 }
 
 /// Generates the default set of toolbar items matching the user specification:
-/// undo, redo, ластик | H1, H2, H3, Hn▾ | B, I, S, U, highlight | вложение, таблица, задача, блок кода, inline code | callout▾, форматирование текста▾, списки▾, выравнивание▾ | fullscreen.
+/// undo, redo, eraser | H1, H2, H3, Hn▾ | B, I, S, U, highlight | attachment, table, task, code block, inline code | callout▾, text formatting▾, lists▾, alignment▾ | fullscreen.
 pub fn default_toolbar_items() -> Vec<ToolbarItem> {
     vec![
         // 1. History & Cleansers

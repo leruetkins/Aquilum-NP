@@ -72,8 +72,8 @@ pub fn discover_plugins(plugins_dir: &Path) -> Vec<DiscoveredPlugin> {
     discovered
 }
 
-/// Читает `styles.css` из папки плагина. Файл необязателен: его отсутствие — не ошибка.
-/// Нечитаемый файл тоже не должен мешать загрузке кода плагина.
+/// Reads `styles.css` from the plugin folder. The file is optional: its absence is not an error.
+/// An unreadable file likewise must not prevent the plugin code from loading.
 fn read_styles_css(dir: &Path) -> Option<String> {
     let path = dir.join("styles.css");
     if !path.is_file() {
@@ -115,8 +115,8 @@ pub fn load_installed_plugins(
             }
         };
 
-        // styles.css рядом с main.js: необязателен, но если есть — это единственный источник
-        // настоящих правил оформления плагина.
+        // styles.css next to main.js: optional, but if present it is the only source
+        // of the plugin's real styling rules.
         let sources = PluginSources {
             script,
             styles: read_styles_css(&plugin.dir_path),
