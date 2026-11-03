@@ -8,7 +8,7 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> Self {
         let config = model.read(cx).config.clone();
-        let theme = Theme::from_config(&config.ui.theme, None);
+        let theme = Theme::from_ui(&config.ui, None);
         let word_wrap = config.editor.word_wrap;
 
         let model_sub = cx.subscribe(&model, |this, model, event: &SettingsEvent, cx| {
@@ -18,8 +18,8 @@ impl SettingsView {
                     cx.notify();
                 }
                 SettingsEvent::ThemeChanged => {
-                    let theme_name = model.read(cx).config.ui.theme.clone();
-                    this.theme = Theme::from_config(&theme_name, None);
+                    let ui = model.read(cx).config.ui.clone();
+                    this.theme = Theme::from_ui(&ui, None);
                     cx.notify();
                 }
                 SettingsEvent::WordWrapToggled(wrap) => {
@@ -54,6 +54,8 @@ impl SettingsView {
             locale_popup_subscription: None,
             font_popup: None,
             font_popup_subscription: None,
+            theme_popup: None,
+            theme_popup_subscription: None,
             active_plugin_input: None,
             plugin_input_blink: BlinkManager::new(),
             plugin_input_focus_handle: cx.focus_handle(),
@@ -131,10 +133,12 @@ impl SettingsView {
 
     /// Persists the modified AppConfig to disk via SettingsModel.
     pub fn save_settings(&mut self, cx: &mut Context<Self>) {
-        self.theme = crate::theme::Theme::from_config(&self.config.ui.theme, None);
+        self.theme = crate::theme::Theme::from_ui(&self.config.ui, None);
         let config = self.config.clone();
-        let old_theme = self.model.read(cx).config.ui.theme.clone();
-        let theme_changed = old_theme != config.ui.theme;
+        let old_ui = self.model.read(cx).config.ui.clone();
+        let theme_changed = old_ui.theme != config.ui.theme
+            || old_ui.light_theme != config.ui.light_theme
+            || old_ui.dark_theme != config.ui.dark_theme;
         let old_wrap = self.model.read(cx).config.editor.word_wrap;
         let wrap_changed = old_wrap != config.editor.word_wrap;
 
@@ -251,6 +255,10 @@ impl SettingsView {
         }
         if self.font_popup.is_some() {
             self.close_font_popup(cx);
+            return true;
+        }
+        if self.theme_popup.is_some() {
+            self.close_theme_popup(cx);
             return true;
         }
         if self.plugin_select_popup.is_some() {
@@ -657,6 +665,88 @@ impl SettingsView {
 
     pub fn font_popup_is_open(&self) -> bool {
         self.font_popup.is_some()
+    }
+
+    pub fn open_theme_popup(&mut self, slot: ThemeSlot, window: &mut Window, cx: &mut Context<Self>) {
+        let is_dark = slot == ThemeSlot::Dark;
+        let selected = if is_dark {
+            self.config.ui.dark_theme.clone()
+        } else {
+            self.config.ui.light_theme.clone()
+        };
+        let presets = crate::theme::presets(is_dark);
+        let tabs: Vec<TabEntry> = presets
+            .iter()
+            .enumerate()
+            .map(|(id, preset)| TabEntry {
+                id,
+                title: SharedString::from(preset.name),
+                subtitle: None,
+                icon: icons::ICON_PIPETTE,
+                font_family: None,
+                dot_color: None,
+                trailing_icon: None,
+            })
+            .collect();
+        let active_ix = presets.iter().position(|p| p.id == selected).unwrap_or(0);
+        let theme = self.theme.clone();
+        let placeholder = self.t("settings.ui.theme_search");
+        let max_rows = presets.len().clamp(1, 10) as f32;
+
+        let popup = cx.new(|cx| {
+            TabListPopup::new(
+                tabs,
+                Some(active_ix),
+                theme,
+                None,
+                Some(px(ROW_HEIGHT * max_rows)),
+                Some(50.0),
+                cx,
+            )
+            .with_search(placeholder)
+        });
+        let subscription = cx.subscribe_in(
+            &popup,
+            window,
+            move |this, _popup, event: &TabListEvent, _window, cx| {
+                match event {
+                    TabListEvent::Activate(id) => {
+                        if let Some(preset) = crate::theme::presets(is_dark).get(*id) {
+                            if is_dark {
+                                this.config.ui.dark_theme = preset.id.to_string();
+                            } else {
+                                this.config.ui.light_theme = preset.id.to_string();
+                            }
+                            this.save_settings(cx);
+                        }
+                        this.close_theme_popup(cx);
+                    }
+                    TabListEvent::FoldTabs
+                    | TabListEvent::BookmarkTabs
+                    | TabListEvent::CloseAllTabs => {}
+                    TabListEvent::Dismiss => this.close_theme_popup(cx),
+                }
+            },
+        );
+
+        window.focus(&popup.read(cx).focus_handle());
+        self.theme_popup = Some((slot, popup));
+        self.theme_popup_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    pub fn close_theme_popup(&mut self, cx: &mut Context<Self>) {
+        if self.theme_popup.take().is_none() {
+            return;
+        }
+        self.theme_popup_subscription = None;
+        cx.notify();
+    }
+
+    pub fn theme_popup_is_open(&self, slot: ThemeSlot) -> bool {
+        self.theme_popup
+            .as_ref()
+            .is_some_and(|(open_slot, _)| *open_slot == slot)
     }
 
     pub fn open_plugin_select(

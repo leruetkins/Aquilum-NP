@@ -47,6 +47,11 @@
       "theme_system": "Sistema",
       "theme_light": "Luz",
       "theme_dark": "Escuro",
+      "light_theme": "Tema claro",
+      "light_theme_desc": "Tema usado quando a aparência clara está ativa",
+      "dark_theme": "Tema escuro",
+      "dark_theme_desc": "Tema usado quando a aparência escura está ativa",
+      "theme_search": "Pesquisar temas...",
       "language": "Idioma da interface",
       "language_desc": "Idioma para menus e mensagens do sistema",
       "accent_color": "Cor de destaque",
@@ -355,6 +360,14 @@
       }
     },
     "registry": {
+      "ui.lightTheme": {
+        "title": "Tema claro",
+        "desc": "Predefinição de tema usada quando a aparência clara está ativa"
+      },
+      "ui.darkTheme": {
+        "title": "Tema escuro",
+        "desc": "Predefinição de tema usada quando a aparência escura está ativa"
+      },
       "ui": {
         "theme": {
           "title": "Tema de aparência",

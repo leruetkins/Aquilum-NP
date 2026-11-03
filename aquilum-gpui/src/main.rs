@@ -59,7 +59,7 @@ fn main() {
 
             let initial_settings = settings::SettingsManager::new(&app_data_dir);
             let initial_config = initial_settings.get_config();
-            let initial_theme = theme::Theme::from_config(&initial_config.ui.theme, None);
+            let initial_theme = theme::Theme::from_ui(&initial_config.ui, None);
             cx.set_global(theme::ActiveTheme(std::sync::Arc::new(initial_theme)));
 
             crate::ipc::platform::register_url_scheme();

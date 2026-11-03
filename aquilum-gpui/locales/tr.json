@@ -47,6 +47,11 @@
       "theme_system": "Sistem",
       "theme_light": "Işık",
       "theme_dark": "Karanlık",
+      "light_theme": "Açık tema",
+      "light_theme_desc": "Açık görünüm etkinken kullanılan tema",
+      "dark_theme": "Koyu tema",
+      "dark_theme_desc": "Koyu görünüm etkinken kullanılan tema",
+      "theme_search": "Tema ara...",
       "language": "Arayüz Dili",
       "language_desc": "Menüler ve sistem mesajları için dil",
       "accent_color": "Vurgu Rengi",
@@ -355,6 +360,14 @@
       }
     },
     "registry": {
+      "ui.lightTheme": {
+        "title": "Açık tema",
+        "desc": "Açık görünüm etkinken kullanılan tema ön ayarı"
+      },
+      "ui.darkTheme": {
+        "title": "Koyu tema",
+        "desc": "Koyu görünüm etkinken kullanılan tema ön ayarı"
+      },
       "ui": {
         "theme": {
           "title": "Görünüm Teması",

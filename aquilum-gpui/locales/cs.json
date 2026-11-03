@@ -47,6 +47,11 @@
       "theme_system": "Systém",
       "theme_light": "Světlo",
       "theme_dark": "Tmavý",
+      "light_theme": "Světlý motiv",
+      "light_theme_desc": "Motiv použitý při aktivním světlém vzhledu",
+      "dark_theme": "Tmavý motiv",
+      "dark_theme_desc": "Motiv použitý při aktivním tmavém vzhledu",
+      "theme_search": "Hledat motivy...",
       "language": "Jazyk rozhraní",
       "language_desc": "Jazyk pro nabídky a systémové zprávy",
       "accent_color": "Barva zvýraznění",
@@ -355,6 +360,14 @@
       }
     },
     "registry": {
+      "ui.lightTheme": {
+        "title": "Světlý motiv",
+        "desc": "Předvolba motivu použitá při aktivním světlém vzhledu"
+      },
+      "ui.darkTheme": {
+        "title": "Tmavý motiv",
+        "desc": "Předvolba motivu použitá při aktivním tmavém vzhledu"
+      },
       "ui": {
         "theme": {
           "title": "Vzhled Téma",

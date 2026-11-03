@@ -47,6 +47,11 @@
       "theme_system": "系统",
       "theme_light": "光",
       "theme_dark": "黑暗的",
+      "light_theme": "浅色主题",
+      "light_theme_desc": "浅色外观启用时使用的主题",
+      "dark_theme": "深色主题",
+      "dark_theme_desc": "深色外观启用时使用的主题",
+      "theme_search": "搜索主题...",
       "language": "界面语言",
       "language_desc": "菜单和系统消息的语言",
       "accent_color": "强调色",
@@ -355,6 +360,14 @@
       }
     },
     "registry": {
+      "ui.lightTheme": {
+        "title": "浅色主题",
+        "desc": "浅色外观启用时使用的主题预设"
+      },
+      "ui.darkTheme": {
+        "title": "深色主题",
+        "desc": "深色外观启用时使用的主题预设"
+      },
       "ui": {
         "theme": {
           "title": "外观主题",

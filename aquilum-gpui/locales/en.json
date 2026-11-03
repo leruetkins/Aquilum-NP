@@ -47,6 +47,11 @@
       "theme_system": "System",
       "theme_light": "Light",
       "theme_dark": "Dark",
+      "light_theme": "Light Theme",
+      "light_theme_desc": "Theme used when the light appearance is active",
+      "dark_theme": "Dark Theme",
+      "dark_theme_desc": "Theme used when the dark appearance is active",
+      "theme_search": "Search themes...",
       "language": "Interface Language",
       "language_desc": "Language for menus and system messages",
       "accent_color": "Accent Color",
@@ -358,6 +363,14 @@
       "ui.theme": {
         "title": "Appearance Theme",
         "desc": "Color theme for the user interface: system, dark, or light"
+      },
+      "ui.lightTheme": {
+        "title": "Light Theme",
+        "desc": "Theme preset used when the light appearance is active"
+      },
+      "ui.darkTheme": {
+        "title": "Dark Theme",
+        "desc": "Theme preset used when the dark appearance is active"
       },
       "ui.language": {
         "title": "Interface Language",

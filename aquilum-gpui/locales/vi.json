@@ -47,6 +47,11 @@
       "theme_system": "Hệ thống",
       "theme_light": "Ánh sáng",
       "theme_dark": "Tối tăm",
+      "light_theme": "Chủ đề sáng",
+      "light_theme_desc": "Chủ đề dùng khi giao diện sáng đang bật",
+      "dark_theme": "Chủ đề tối",
+      "dark_theme_desc": "Chủ đề dùng khi giao diện tối đang bật",
+      "theme_search": "Tìm chủ đề...",
       "language": "Ngôn ngữ giao diện",
       "language_desc": "Ngôn ngữ cho menu và thông báo hệ thống",
       "accent_color": "Màu nhấn",
@@ -355,6 +360,14 @@
       }
     },
     "registry": {
+      "ui.lightTheme": {
+        "title": "Chủ đề sáng",
+        "desc": "Bộ chủ đề dùng khi giao diện sáng đang bật"
+      },
+      "ui.darkTheme": {
+        "title": "Chủ đề tối",
+        "desc": "Bộ chủ đề dùng khi giao diện tối đang bật"
+      },
       "ui": {
         "theme": {
           "title": "Chủ đề ngoại hình",

@@ -47,6 +47,11 @@
       "theme_system": "System",
       "theme_light": "Światło",
       "theme_dark": "Ciemny",
+      "light_theme": "Jasny motyw",
+      "light_theme_desc": "Motyw używany, gdy aktywny jest jasny wygląd",
+      "dark_theme": "Ciemny motyw",
+      "dark_theme_desc": "Motyw używany, gdy aktywny jest ciemny wygląd",
+      "theme_search": "Szukaj motywów...",
       "language": "Język interfejsu",
       "language_desc": "Język menu i komunikatów systemowych",
       "accent_color": "Kolor akcentu",
@@ -355,6 +360,14 @@
       }
     },
     "registry": {
+      "ui.lightTheme": {
+        "title": "Jasny motyw",
+        "desc": "Ustawienie wstępne motywu używane, gdy aktywny jest jasny wygląd"
+      },
+      "ui.darkTheme": {
+        "title": "Ciemny motyw",
+        "desc": "Ustawienie wstępne motywu używane, gdy aktywny jest ciemny wygląd"
+      },
       "ui": {
         "theme": {
           "title": "Motyw wyglądu",

@@ -47,6 +47,11 @@
       "theme_system": "체계",
       "theme_light": "빛",
       "theme_dark": "어두운",
+      "light_theme": "라이트 테마",
+      "light_theme_desc": "라이트 모드가 활성화될 때 사용하는 테마",
+      "dark_theme": "다크 테마",
+      "dark_theme_desc": "다크 모드가 활성화될 때 사용하는 테마",
+      "theme_search": "테마 검색...",
       "language": "인터페이스 언어",
       "language_desc": "메뉴 및 시스템 메시지 언어",
       "accent_color": "악센트 색상",
@@ -355,6 +360,14 @@
       }
     },
     "registry": {
+      "ui.lightTheme": {
+        "title": "라이트 테마",
+        "desc": "라이트 모드가 활성화될 때 사용하는 테마 프리셋"
+      },
+      "ui.darkTheme": {
+        "title": "다크 테마",
+        "desc": "다크 모드가 활성화될 때 사용하는 테마 프리셋"
+      },
       "ui": {
         "theme": {
           "title": "외관 테마",

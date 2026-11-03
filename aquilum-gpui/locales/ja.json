@@ -47,6 +47,11 @@
       "theme_system": "システム",
       "theme_light": "ライト",
       "theme_dark": "暗い",
+      "light_theme": "ライトテーマ",
+      "light_theme_desc": "ライト表示が有効なときに使用するテーマ",
+      "dark_theme": "ダークテーマ",
+      "dark_theme_desc": "ダーク表示が有効なときに使用するテーマ",
+      "theme_search": "テーマを検索...",
       "language": "インターフェース言語",
       "language_desc": "メニューとシステムメッセージの言語",
       "accent_color": "アクセントカラー",
@@ -355,6 +360,14 @@
       }
     },
     "registry": {
+      "ui.lightTheme": {
+        "title": "ライトテーマ",
+        "desc": "ライト表示が有効なときに使用するテーマプリセット"
+      },
+      "ui.darkTheme": {
+        "title": "ダークテーマ",
+        "desc": "ダーク表示が有効なときに使用するテーマプリセット"
+      },
       "ui": {
         "theme": {
           "title": "登場テーマ",

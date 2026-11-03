@@ -325,6 +325,10 @@ impl Default for ReaderSettings {
 #[serde(rename_all = "camelCase", default)]
 pub struct UiSettings {
     pub theme: String,
+    /// Preset id used when the light appearance is active.
+    pub light_theme: String,
+    /// Preset id used when the dark appearance is active.
+    pub dark_theme: String,
     pub language: String,
     pub primary_color: String,
     pub sidebar_smart_scroll: bool,
@@ -337,6 +341,8 @@ impl Default for UiSettings {
     fn default() -> Self {
         Self {
             theme: "system".to_string(),
+            light_theme: "light".to_string(),
+            dark_theme: "dark".to_string(),
             language: String::new(),
             primary_color: "#1471eb".to_string(),
             sidebar_smart_scroll: false,
@@ -662,6 +668,24 @@ pub static SETTINGS: &[SettingDescriptor] = &[
         desc_key: "settings.registry.ui.theme.desc",
         keywords: &["theme", "dark", "light", "тема", "тёмная", "светлая"],
         aliases: &["appearance.theme"],
+        setting_type: SettingType::String,
+    },
+    SettingDescriptor {
+        id: "ui.lightTheme",
+        tab_id: "ui",
+        title_key: "settings.registry.ui.lightTheme.title",
+        desc_key: "settings.registry.ui.lightTheme.desc",
+        keywords: &["theme", "light", "palette", "тема", "светлая", "палитра"],
+        aliases: &[],
+        setting_type: SettingType::String,
+    },
+    SettingDescriptor {
+        id: "ui.darkTheme",
+        tab_id: "ui",
+        title_key: "settings.registry.ui.darkTheme.title",
+        desc_key: "settings.registry.ui.darkTheme.desc",
+        keywords: &["theme", "dark", "palette", "тема", "тёмная", "темная", "палитра"],
+        aliases: &[],
         setting_type: SettingType::String,
     },
     SettingDescriptor {

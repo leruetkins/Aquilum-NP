@@ -1,5 +1,43 @@
 use gpui::{rgb, rgba, Rgba, WindowAppearance};
 
+/// A selectable theme preset: a stable id persisted in the config and the
+/// display name shown in the interface settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ThemePreset {
+    pub id: &'static str,
+    pub name: &'static str,
+}
+
+/// Light presets available for the "light appearance" slot.
+pub const LIGHT_THEMES: &[ThemePreset] = &[
+    ThemePreset { id: "light", name: "Catppuccin Latte" },
+    ThemePreset { id: "obsidian-light", name: "Obsidian" },
+];
+
+/// Dark presets available for the "dark appearance" slot.
+pub const DARK_THEMES: &[ThemePreset] = &[
+    ThemePreset { id: "dark", name: "Catppuccin Mocha" },
+    ThemePreset { id: "obsidian-dark", name: "Obsidian" },
+];
+
+/// Returns the presets for the requested appearance family.
+pub fn presets(is_dark: bool) -> &'static [ThemePreset] {
+    if is_dark {
+        DARK_THEMES
+    } else {
+        LIGHT_THEMES
+    }
+}
+
+/// Display name of a preset id; falls back to the id itself.
+pub fn preset_name(id: &str) -> &str {
+    LIGHT_THEMES
+        .iter()
+        .chain(DARK_THEMES)
+        .find(|preset| preset.id == id)
+        .map_or(id, |preset| preset.name)
+}
+
 /// Holds all color definitions for the active UI theme.
 #[derive(Clone, Debug)]
 pub struct Theme {
@@ -151,21 +189,79 @@ impl Theme {
         }
     }
 
-    /// Resolves the theme based on the configuration preference and OS window appearance.
-    pub fn from_config(theme_name: &str, appearance: Option<WindowAppearance>) -> Self {
-        match theme_name {
-            "light" => Self::light(),
-            "dark" => Self::dark(),
-            _ => {
-                // "system" preference: resolve based on operating system window appearance
-                if let Some(app) = appearance {
-                    match app {
-                        WindowAppearance::Light | WindowAppearance::VibrantLight => Self::light(),
-                        _ => Self::dark(),
-                    }
-                } else {
-                    Self::dark()
-                }
+    /// Returns the Obsidian-style dark theme (neutral graphite with a violet accent).
+    pub fn obsidian_dark() -> Self {
+        Self {
+            is_dark: true,
+            bg_app: rgb(0x181818),
+            bg_sidebar: rgb(0x202020),
+            bg_editor: rgb(0x1e1e1e),
+            bg_card: rgb(0x262626),
+            bg_hover: rgb(0x2a2a2a),
+            bg_selected: rgb(0x333333),
+            border: rgb(0x333333),
+            border_subtle: rgb(0x2a2a2a),
+            text_primary: rgb(0xdcddde),
+            text_secondary: rgb(0xb3b3b3),
+            text_muted: rgb(0x8a8a8a),
+            accent: rgb(0x8b5cf6),         // Obsidian violet
+            accent_hover: rgb(0xa78bfa),
+            text_on_accent: rgb(0xffffff),
+            selection_bg: rgba(0x8b5cf640),
+            tag_bg: rgb(0x262626),
+            code_bg: rgb(0x161616),
+            success: rgb(0x4ade80),
+        }
+    }
+
+    /// Returns the Obsidian-style light theme (paper white with a violet accent).
+    pub fn obsidian_light() -> Self {
+        Self {
+            is_dark: false,
+            bg_app: rgb(0xf7f7f7),
+            bg_sidebar: rgb(0xf0f0f0),
+            bg_editor: rgb(0xffffff),
+            bg_card: rgb(0xffffff),
+            bg_hover: rgb(0xe9e9e9),
+            bg_selected: rgb(0xdfdfdf),
+            border: rgb(0xd8d8d8),
+            border_subtle: rgb(0xe6e6e6),
+            text_primary: rgb(0x1f1f1f),
+            text_secondary: rgb(0x4a4a4a),
+            text_muted: rgb(0x8a8a8a),
+            accent: rgb(0x7c3aed),         // Violet, darkened for white surfaces
+            accent_hover: rgb(0x6d28d9),
+            text_on_accent: rgb(0xffffff),
+            selection_bg: rgba(0x7c3aed2e),
+            tag_bg: rgb(0xf0f0f0),
+            code_bg: rgb(0xf5f5f5),
+            success: rgb(0x16a34a),
+        }
+    }
+
+    /// Resolves the active theme from the interface settings and OS appearance.
+    ///
+    /// `ui.theme` picks the appearance (`system`, `light`, `dark`); the light
+    /// and dark slots each hold their own selected preset id.
+    pub fn from_ui(ui: &crate::settings::UiSettings, appearance: Option<WindowAppearance>) -> Self {
+        let is_dark = match ui.theme.as_str() {
+            "light" => false,
+            "dark" => true,
+            _ => match appearance {
+                Some(WindowAppearance::Light | WindowAppearance::VibrantLight) => false,
+                _ => true,
+            },
+        };
+
+        if is_dark {
+            match ui.dark_theme.as_str() {
+                "obsidian-dark" => Self::obsidian_dark(),
+                _ => Self::dark(),
+            }
+        } else {
+            match ui.light_theme.as_str() {
+                "obsidian-light" => Self::obsidian_light(),
+                _ => Self::light(),
             }
         }
     }
@@ -188,5 +284,62 @@ impl std::ops::Deref for ActiveTheme {
     type Target = Theme;
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::UiSettings;
+
+    #[test]
+    fn resolves_selected_light_and_dark_presets() {
+        let ui = UiSettings {
+            theme: "dark".to_string(),
+            dark_theme: "obsidian-dark".to_string(),
+            ..Default::default()
+        };
+        let theme = Theme::from_ui(&ui, None);
+        assert!(theme.is_dark);
+        assert_eq!(theme.accent, rgb(0x8b5cf6));
+
+        let ui = UiSettings {
+            theme: "light".to_string(),
+            light_theme: "obsidian-light".to_string(),
+            ..Default::default()
+        };
+        let theme = Theme::from_ui(&ui, None);
+        assert!(!theme.is_dark);
+        assert_eq!(theme.accent, rgb(0x7c3aed));
+    }
+
+    #[test]
+    fn system_appearance_picks_the_matching_slot() {
+        let ui = UiSettings {
+            theme: "system".to_string(),
+            light_theme: "obsidian-light".to_string(),
+            dark_theme: "obsidian-dark".to_string(),
+            ..Default::default()
+        };
+
+        let light = Theme::from_ui(&ui, Some(WindowAppearance::Light));
+        assert!(!light.is_dark);
+        assert_eq!(light.accent, rgb(0x7c3aed));
+
+        let dark = Theme::from_ui(&ui, Some(WindowAppearance::Dark));
+        assert!(dark.is_dark);
+        assert_eq!(dark.accent, rgb(0x8b5cf6));
+    }
+
+    #[test]
+    fn unknown_preset_falls_back_to_default_family_theme() {
+        let ui = UiSettings {
+            theme: "light".to_string(),
+            light_theme: "does-not-exist".to_string(),
+            ..Default::default()
+        };
+        let theme = Theme::from_ui(&ui, None);
+        assert!(!theme.is_dark);
+        assert_eq!(theme.accent, Theme::light().accent);
     }
 }

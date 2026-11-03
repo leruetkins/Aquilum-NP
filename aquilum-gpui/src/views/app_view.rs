@@ -387,7 +387,7 @@ impl AppView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let state = AppState::new();
         let config = state.settings.get_config();
-        let theme = Theme::from_config(&config.ui.theme, None);
+        let theme = Theme::from_ui(&config.ui, None);
         let ws = crate::state::WindowState::load(&crate::state::app_data_dir());
         let last_saved_geometry = Some((ws.width, ws.height, ws.x, ws.y, ws.maximized));
 
@@ -665,8 +665,8 @@ impl AppView {
                     cx.notify();
                 }
                 crate::settings::SettingsEvent::ThemeChanged => {
-                    let theme_name = model.read(cx).config.ui.theme.clone();
-                    let theme = crate::theme::Theme::from_config(&theme_name, None);
+                    let ui = model.read(cx).config.ui.clone();
+                    let theme = crate::theme::Theme::from_ui(&ui, None);
                     this.theme = theme.clone();
                     cx.set_global(crate::theme::ActiveTheme(std::sync::Arc::new(theme)));
                     cx.notify();

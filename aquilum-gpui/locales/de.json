@@ -47,6 +47,11 @@
       "theme_system": "System",
       "theme_light": "Licht",
       "theme_dark": "Dunkel",
+      "light_theme": "Helles Design",
+      "light_theme_desc": "Design, das im hellen Erscheinungsbild verwendet wird",
+      "dark_theme": "Dunkles Design",
+      "dark_theme_desc": "Design, das im dunklen Erscheinungsbild verwendet wird",
+      "theme_search": "Designs durchsuchen...",
       "language": "Sprache",
       "language_desc": "Sprache für Menüs und Systemmeldungen",
       "accent_color": "Akzentfarbe",
@@ -355,6 +360,14 @@
       }
     },
     "registry": {
+      "ui.lightTheme": {
+        "title": "Helles Design",
+        "desc": "Design-Voreinstellung, die im hellen Erscheinungsbild verwendet wird"
+      },
+      "ui.darkTheme": {
+        "title": "Dunkles Design",
+        "desc": "Design-Voreinstellung, die im dunklen Erscheinungsbild verwendet wird"
+      },
       "ui": {
         "theme": {
           "title": "Erscheinungsthema",

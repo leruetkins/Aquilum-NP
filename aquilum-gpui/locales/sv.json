@@ -47,6 +47,11 @@
       "theme_system": "System",
       "theme_light": "Ljus",
       "theme_dark": "Mörk",
+      "light_theme": "Ljust tema",
+      "light_theme_desc": "Tema som används när ljust utseende är aktivt",
+      "dark_theme": "Mörkt tema",
+      "dark_theme_desc": "Tema som används när mörkt utseende är aktivt",
+      "theme_search": "Sök teman...",
       "language": "Gränssnittsspråk",
       "language_desc": "Språk för menyer och systemmeddelanden",
       "accent_color": "Accentfärg",
@@ -355,6 +360,14 @@
       }
     },
     "registry": {
+      "ui.lightTheme": {
+        "title": "Ljust tema",
+        "desc": "Temaförval som används när ljust utseende är aktivt"
+      },
+      "ui.darkTheme": {
+        "title": "Mörkt tema",
+        "desc": "Temaförval som används när mörkt utseende är aktivt"
+      },
       "ui": {
         "theme": {
           "title": "Utseendetema",

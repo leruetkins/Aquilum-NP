@@ -39,6 +39,28 @@
     }
 
     #[test]
+    fn test_ui_theme_slots_default_and_serde() {
+        let default_ui = UiSettings::default();
+        assert_eq!(default_ui.theme, "system");
+        assert_eq!(default_ui.light_theme, "light");
+        assert_eq!(default_ui.dark_theme, "dark");
+
+        let parsed: UiSettings =
+            serde_json::from_str(r#"{"theme":"dark","darkTheme":"obsidian-dark"}"#).unwrap();
+        assert_eq!(parsed.dark_theme, "obsidian-dark");
+        assert_eq!(parsed.light_theme, "light");
+
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        assert!(serialized.contains(r#""lightTheme":"light""#));
+    }
+
+    #[test]
+    fn test_theme_slot_settings_are_registered() {
+        assert_eq!(get_setting_by_id("ui.lightTheme").map(|s| s.id), Some("ui.lightTheme"));
+        assert_eq!(get_setting_by_id("ui.darkTheme").map(|s| s.id), Some("ui.darkTheme"));
+    }
+
+    #[test]
     fn test_search_settings() {
         // Direct ID and URL match
         let res_id = search_settings("editor.wordWrap", "ru");

@@ -11,6 +11,51 @@ impl SettingsView {
         let theme = &self.theme;
         let config = &self.config;
 
+        // The theme pickers reuse the smart list used by the language and
+        // font selectors, so they stay searchable and keyboard-driven as the
+        // preset list grows.
+        let theme_picker = |slot: ThemeSlot, selected: &str, id_prefix: &'static str| {
+            let selected_name = crate::theme::preset_name(selected).to_string();
+            let open_popup = match self.theme_popup.as_ref() {
+                Some((open_slot, popup)) if *open_slot == slot => Some(popup.clone()),
+                _ => None,
+            };
+
+            div()
+                .relative()
+                .child(
+                    div()
+                        .id(gpui::ElementId::from(gpui::SharedString::from(format!(
+                            "select-{id_prefix}-btn"
+                        ))))
+                        .cursor_pointer()
+                        .child(self.render_select_pill(&selected_name))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if this.theme_popup_is_open(slot) {
+                                this.close_theme_popup(cx);
+                            } else {
+                                this.open_theme_popup(slot, window, cx);
+                            }
+                        })),
+                )
+                .when_some(open_popup, |parent, popup| {
+                    parent.child(
+                        gpui::deferred(
+                            div()
+                                .id(gpui::ElementId::from(gpui::SharedString::from(format!(
+                                    "{id_prefix}-dropdown-menu"
+                                ))))
+                                .absolute()
+                                .top_full()
+                                .right_0()
+                                .mt_1()
+                                .child(popup),
+                        )
+                        .with_priority(999),
+                    )
+                })
+        };
+
         let display_rows = vec![
             self.render_setting_row_with_id(
                 Some("ui.theme"),
@@ -76,6 +121,20 @@ impl SettingsView {
                                 this.save_settings(cx);
                             })),
                     ),
+                cx,
+            ),
+            self.render_setting_row_with_id(
+                Some("ui.lightTheme"),
+                &self.t("settings.ui.light_theme"),
+                Some(&self.t("settings.ui.light_theme_desc")),
+                theme_picker(ThemeSlot::Light, &config.ui.light_theme, "light-theme"),
+                cx,
+            ),
+            self.render_setting_row_with_id(
+                Some("ui.darkTheme"),
+                &self.t("settings.ui.dark_theme"),
+                Some(&self.t("settings.ui.dark_theme_desc")),
+                theme_picker(ThemeSlot::Dark, &config.ui.dark_theme, "dark-theme"),
                 cx,
             ),
             self.render_setting_row_with_id(

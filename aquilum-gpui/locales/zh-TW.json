@@ -47,6 +47,11 @@
       "theme_system": "系統",
       "theme_light": "光",
       "theme_dark": "黑暗的",
+      "light_theme": "淺色主題",
+      "light_theme_desc": "淺色外觀啟用時使用的主題",
+      "dark_theme": "深色主題",
+      "dark_theme_desc": "深色外觀啟用時使用的主題",
+      "theme_search": "搜尋主題...",
       "language": "介面語言",
       "language_desc": "選單和系統訊息的語言",
       "accent_color": "強調色",
@@ -355,6 +360,14 @@
       }
     },
     "registry": {
+      "ui.lightTheme": {
+        "title": "淺色主題",
+        "desc": "淺色外觀啟用時使用的主題預設"
+      },
+      "ui.darkTheme": {
+        "title": "深色主題",
+        "desc": "深色外觀啟用時使用的主題預設"
+      },
       "ui": {
         "theme": {
           "title": "外觀主題",

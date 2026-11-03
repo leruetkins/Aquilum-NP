@@ -47,6 +47,11 @@
       "theme_system": "Systeem",
       "theme_light": "Licht",
       "theme_dark": "Donker",
+      "light_theme": "Licht thema",
+      "light_theme_desc": "Thema dat wordt gebruikt als het lichte uiterlijk actief is",
+      "dark_theme": "Donker thema",
+      "dark_theme_desc": "Thema dat wordt gebruikt als het donkere uiterlijk actief is",
+      "theme_search": "Thema's zoeken...",
       "language": "Interfacetaal",
       "language_desc": "Taal voor menu's en systeemberichten",
       "accent_color": "Accentkleur",
@@ -355,6 +360,14 @@
       }
     },
     "registry": {
+      "ui.lightTheme": {
+        "title": "Licht thema",
+        "desc": "Themapreset dat wordt gebruikt als het lichte uiterlijk actief is"
+      },
+      "ui.darkTheme": {
+        "title": "Donker thema",
+        "desc": "Themapreset dat wordt gebruikt als het donkere uiterlijk actief is"
+      },
       "ui": {
         "theme": {
           "title": "Uiterlijk Thema",

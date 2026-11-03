@@ -248,7 +248,7 @@ if let Some(new_scroll) = new_active_scroll {
             self.scroll_cursor_into_view();
         }
 
-        self.theme = Theme::from_config(&self.config.ui.theme, Some(window.appearance()));
+        self.theme = Theme::from_ui(&self.config.ui, Some(window.appearance()));
         let cx = &*cx;
         let theme = &self.theme;
         let active_path = self.selected_sidebar_folder.clone().or_else(|| self.state.active_document().map(|d| d.path.clone()));

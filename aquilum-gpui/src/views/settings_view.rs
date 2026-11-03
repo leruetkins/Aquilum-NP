@@ -381,6 +381,13 @@ impl SettingsWindowManager {
     }
 }
 
+/// Which of the two theme slots a picker edits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemeSlot {
+    Light,
+    Dark,
+}
+
 /// Independent view entity hosting all settings tabs in a standalone OS window.
 pub struct SettingsView {
     pub model: Entity<SettingsModel>,
@@ -405,6 +412,8 @@ pub struct SettingsView {
     pub locale_popup_subscription: Option<Subscription>,
     pub font_popup: Option<gpui::Entity<TabListPopup>>,
     pub font_popup_subscription: Option<Subscription>,
+    pub theme_popup: Option<(ThemeSlot, gpui::Entity<TabListPopup>)>,
+    pub theme_popup_subscription: Option<Subscription>,
     pub active_plugin_input: Option<PluginInputFocusState>,
     pub plugin_input_blink: BlinkManager,
     pub plugin_input_focus_handle: FocusHandle,
