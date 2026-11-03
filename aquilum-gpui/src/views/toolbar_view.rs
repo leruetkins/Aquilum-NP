@@ -39,6 +39,12 @@ pub struct ToolbarContextMenuState {
     pub is_open: bool,
     pub position_x: f32,
     pub position_y: f32,
+    /// Strip rectangle in window coordinates, used to reopen the menu on a repeated
+    /// right-click inside the same toolbar.
+    pub area_x: f32,
+    pub area_y: f32,
+    pub area_w: f32,
+    pub area_h: f32,
 }
 
 /// Active drag of a toolbar icon.
@@ -108,12 +114,22 @@ impl AppView {
     }
 
     /// Opens the toolbar context menu at window coordinates.
-    pub fn open_toolbar_context_menu(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
+    pub fn open_toolbar_context_menu(
+        &mut self,
+        x: f32,
+        y: f32,
+        area: (f32, f32, f32, f32),
+        cx: &mut Context<Self>,
+    ) {
         self.close_toolbar_dropdown(cx);
         self.toolbar_context_menu = ToolbarContextMenuState {
             is_open: true,
             position_x: x,
             position_y: y,
+            area_x: area.0,
+            area_y: area.1,
+            area_w: area.2,
+            area_h: area.3,
         };
         cx.notify();
     }
@@ -342,9 +358,21 @@ impl AppView {
                 cx.stop_propagation();
                 this.close_toolbar_context_menu(cx);
             }))
-            .on_mouse_down(MouseButton::Right, cx.listener(|this, _, _, cx| {
+            .on_mouse_down(MouseButton::Right, cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
                 cx.stop_propagation();
+                let x: f32 = event.position.x.into();
+                let y: f32 = event.position.y.into();
+                let menu = &this.toolbar_context_menu;
+                let in_strip = x >= menu.area_x
+                    && x <= menu.area_x + menu.area_w
+                    && y >= menu.area_y
+                    && y <= menu.area_y + menu.area_h;
+                let area = (menu.area_x, menu.area_y, menu.area_w, menu.area_h);
                 this.close_toolbar_context_menu(cx);
+                // A second right-click on the same toolbar reopens the menu there.
+                if in_strip {
+                    this.open_toolbar_context_menu(x, y, area, cx);
+                }
             }))
             .on_mouse_move(|_, _, cx| cx.stop_propagation())
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
@@ -691,6 +719,7 @@ impl AppView {
                 this.open_toolbar_context_menu(
                     event.position.x.into(),
                     event.position.y.into(),
+                    (origin_x, origin_y, available_w, 40.0),
                     cx,
                 );
             }

@@ -504,12 +504,16 @@ impl AppView {
         let win_h = f32::from(window_bounds.size.height);
         let win_w = f32::from(window_bounds.size.width);
 
-        let menu_x = self.ribbon_context_menu.position_x.max(44.0).min(win_w - menu_w - 10.0);
-        let menu_y = if self.ribbon_context_menu.position_y + total_items_h > win_h {
-            (win_h - total_items_h - 10.0).max(10.0)
-        } else {
-            self.ribbon_context_menu.position_y.max(10.0)
-        };
+        // Same anchoring as the top toolbar menu: the panel starts at the pointer and is
+        // only pushed inside the window when it would otherwise overflow.
+        let menu_x = self
+            .ribbon_context_menu
+            .position_x
+            .clamp(8.0, (win_w - menu_w - 8.0).max(8.0));
+        let menu_y = self
+            .ribbon_context_menu
+            .position_y
+            .clamp(8.0, (win_h - total_items_h - 8.0).max(8.0));
 
         let hide_panel_label = self.t("app.ribbon.hide_panel");
 
@@ -521,9 +525,17 @@ impl AppView {
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                 cx.stop_propagation();
             })
-            .on_mouse_down(MouseButton::Right, |_, _, cx| {
+            // A second right-click closes this menu and reopens it under the new pointer
+            // position when the click is on the ribbon rail.
+            .on_mouse_down(MouseButton::Right, cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
                 cx.stop_propagation();
-            })
+                let x: f32 = event.position.x.into();
+                let y: f32 = event.position.y.into();
+                this.close_ribbon_context_menu(cx);
+                if x < 44.0 {
+                    this.open_ribbon_context_menu(x, y, cx);
+                }
+            }))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.close_ribbon_context_menu(cx);
             }))
