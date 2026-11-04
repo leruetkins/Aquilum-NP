@@ -1129,17 +1129,17 @@ impl WindowsWindowInner {
 
     fn handle_cursor_changed(&self, lparam: LPARAM) -> Option<isize> {
         let mut state = self.state.borrow_mut();
-        let had_cursor = state.current_cursor.is_some();
-
         state.current_cursor = if lparam.0 == 0 {
             None
         } else {
             Some(HCURSOR(lparam.0 as _))
         };
 
-        if had_cursor != state.current_cursor.is_some() {
-            unsafe { SetCursor(state.current_cursor) };
-        }
+        // Apply the new cursor right away. `set_cursor_style` stores the handle
+        // before posting this message, so the old presence-only check never saw
+        // a difference between two real cursors: the icon kept the previous style
+        // until the next WM_SETCURSOR (the next mouse move).
+        unsafe { SetCursor(state.current_cursor) };
 
         Some(0)
     }

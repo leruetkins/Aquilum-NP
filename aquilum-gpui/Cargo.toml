@@ -47,7 +47,7 @@ winres = "0.1"
 [dev-dependencies]
 tempfile = "3"
 
-# GPUI 0.2.2 is vendored (see vendor/gpui) with three Windows fixes.
+# GPUI 0.2.2 is vendored (see vendor/gpui) with four Windows fixes.
 #
 # 1. Frame loop: upstream re-presents the cached scene on EVERY vsync tick for one
 # second after the last input event ("to prevent the display from underclocking
@@ -72,6 +72,11 @@ tempfile = "3"
 # over the titlebar drag area while the window buttons keep priority. Since the
 # removed frame also took the drop shadow with it, `DwmExtendFrameIntoClientArea`
 # with 1px margins brings the shadow back without the frame line.
+#
+# 4. Cursor style: `WM_GPUI_CURSOR_STYLE_CHANGED` now calls `SetCursor` immediately.
+# The old presence-only check never applied a change between two non-null cursors,
+# so the icon kept the previous style until the next mouse move — visible when
+# crossing a pointer/I-beam boundary, such as the inline rename field.
 [patch.crates-io]
 gpui = { path = "vendor/gpui" }
 
