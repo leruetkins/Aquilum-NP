@@ -236,8 +236,14 @@ impl AppView {
         cx.notify();
     }
 
-    /// Selects a folder in the sidebar file tree, expanding its parent folders and scrolling to it.
-    pub(crate) fn select_sidebar_folder(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    /// Selects a folder in the sidebar file tree, expanding its parent folders and,
+    /// when `center_in_sidebar` is set, scrolling the list to it.
+    pub(crate) fn select_sidebar_folder(
+        &mut self,
+        path: PathBuf,
+        center_in_sidebar: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.sidebar_mode = crate::views::sidebar::SidebarMode::Files;
         self.sidebar_collapsed = false;
         self.selected_sidebar_folder = Some(path.clone());
@@ -249,7 +255,9 @@ impl AppView {
                 self.state.reveal_path_in_tree(&path);
                 self.state.expanded_folders.insert(path);
                 self.state.save_session_state();
-                self.need_scroll_sidebar_to_active.set(true);
+                if center_in_sidebar {
+                    self.need_scroll_sidebar_to_active.set(true);
+                }
             }
         }
         cx.notify();
@@ -291,7 +299,9 @@ impl AppView {
             self.state.expanded_folders.insert(target_dir);
             self.state.expanded_folders.insert(new_folder.clone());
             self.state.reload_file_tree();
-            self.select_sidebar_folder(new_folder.clone(), cx);
+            // Creating a folder starts an inline rename; keep the explorer at its
+            // current scroll position instead of centering the new row.
+            self.select_sidebar_folder(new_folder.clone(), false, cx);
             self.start_sidebar_tree_rename(new_folder, true, window, cx);
         }
     }

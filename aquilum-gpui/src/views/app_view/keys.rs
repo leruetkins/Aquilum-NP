@@ -1229,7 +1229,7 @@ impl AppView {
                                     .hover(|h| h.bg(theme.bg_hover).text_color(theme.text_primary));
                                 if let Some(path) = item_path {
                                     item_elem = item_elem.on_click(cx.listener(move |this, _, _, cx| {
-                                        this.select_sidebar_folder(path.clone(), cx);
+                                        this.select_sidebar_folder(path.clone(), true, cx);
                                     }));
                                 }
                             } else if let Some(path) = item_path {

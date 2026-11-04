@@ -164,19 +164,8 @@ impl AppView {
                             self.selected_sidebar_folder = Some(new_path);
                             self.state.status_text =
                                 self.t_fmt("sidebar.folder_renamed", &[&new_name]);
-                            self.need_scroll_sidebar_to_active.set(true);
-                        } else {
-                            if self.selected_sidebar_folder.as_deref() == Some(path.as_path()) {
-                                self.selected_sidebar_folder = None;
-                            }
-                            if self
-                                .state
-                                .active_document()
-                                .map(|doc| doc.path == new_path)
-                                .unwrap_or(false)
-                            {
-                                self.need_scroll_sidebar_to_active.set(true);
-                            }
+                        } else if self.selected_sidebar_folder.as_deref() == Some(path.as_path()) {
+                            self.selected_sidebar_folder = None;
                         }
                         self.state.reload_file_tree();
                         self.state.publish_snapshot();

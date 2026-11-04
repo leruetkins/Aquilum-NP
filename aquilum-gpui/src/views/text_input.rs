@@ -552,6 +552,10 @@ impl TextInput {
                         if query.is_empty() {
                             div()
                                 .font_family(SharedString::from(font_family.to_string()))
+                                // The caret and selection are measured with the normal
+                                // weight; an inherited bold weight would paint wider
+                                // glyphs and leave the caret inside a letter.
+                                .font_weight(gpui::FontWeight::NORMAL)
                                 .text_size(px(font_size))
                                 .line_height(px(line_height))
                                 .text_color(theme.text_muted)
@@ -560,6 +564,7 @@ impl TextInput {
                         } else {
                             div()
                                 .font_family(SharedString::from(font_family.to_string()))
+                                .font_weight(gpui::FontWeight::NORMAL)
                                 .text_size(px(font_size))
                                 .line_height(px(line_height))
                                 .text_color(theme.text_primary)

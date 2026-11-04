@@ -866,18 +866,12 @@ impl AppView {
         // with it.
         self.quick_filter.clear(&mut self.state.search_query, cx);
         self.state.reveal_path_in_tree(&path);
+        // Renaming never re-centers the list: the row is already in view, and the
+        // explorer must keep its scroll position.
         if is_folder {
             self.selected_sidebar_folder = Some(path.clone());
-            self.need_scroll_sidebar_to_active.set(true);
-        } else {
-            if self.selected_sidebar_folder.as_deref() == Some(path.as_path()) {
-                self.selected_sidebar_folder = None;
-            }
-            // Only the active note is auto-centered; a file renamed from its context
-            // menu is already on screen and must not jump the list elsewhere.
-            if self.state.active_document().map(|doc| doc.path == path).unwrap_or(false) {
-                self.need_scroll_sidebar_to_active.set(true);
-            }
+        } else if self.selected_sidebar_folder.as_deref() == Some(path.as_path()) {
+            self.selected_sidebar_folder = None;
         }
 
         self.bookmark_rename = Some(crate::views::sidebar::BookmarkRenameState::new(

@@ -267,7 +267,7 @@ impl AppView {
                                     this.state.expanded_folders.insert(p.clone());
                                     this.state.expanded_folders.insert(new_folder.clone());
                                     this.state.reload_file_tree();
-                                    this.select_sidebar_folder(new_folder.clone(), cx);
+                                    this.select_sidebar_folder(new_folder.clone(), false, cx);
                                     this.start_sidebar_tree_rename(new_folder, true, window, cx);
                                 }
                             }))
