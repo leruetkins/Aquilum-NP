@@ -399,6 +399,24 @@ impl AppView {
         cx.notify();
     }
 
+    /// Floating preview of the dragged favorite note, drawn at the pointer so the
+    /// gesture stays visible even when the source row scrolls out of view.
+    pub fn render_bookmark_drag_ghost(&self, theme: &Theme) -> Option<AnyElement> {
+        let drag = self
+            .bookmark_drag
+            .as_ref()
+            .filter(|drag| drag.is_dragging)?;
+
+        Some(crate::views::sidebar::drag_ghost::sidebar_drag_ghost(
+            drag.source.display_name.clone(),
+            icons::ICON_FILE_TEXT,
+            13.0,
+            drag.pointer_x,
+            drag.pointer_y,
+            theme,
+        ))
+    }
+
     /// Renders the inline rename input box with purple border matching Image 2.
     pub fn render_bookmark_rename_input(
         &self,
@@ -509,6 +527,31 @@ impl AppView {
                 let x: f32 = event.position.x.into();
                 let y: f32 = event.position.y.into();
                 this.open_bookmark_context_menu(BookmarkContextTarget::EmptyArea, x, y, cx);
+            }))
+            // Keeps the drag ghost glued to the pointer over gaps between rows, where
+            // no row listener runs.
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if let Some(ref mut drag) = this.bookmark_drag {
+                    drag.pointer_x = event.position.x.into();
+                    drag.pointer_y = event.position.y.into();
+                    if drag.is_dragging {
+                        cx.notify();
+                    }
+                }
+            }))
+            // A drag released over empty space (not a row, not the root zone) has no
+            // destination: drop the state instead of leaving the gesture armed. Rows run
+            // first in the bubble phase and take the state themselves, so this only sees
+            // gestures that ended outside every drop target.
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if this.bookmark_drag.take().is_some() {
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if this.bookmark_drag.take().is_some() {
+                    cx.notify();
+                }
             }));
 
         if self.state.bookmarks.is_empty() {
@@ -586,6 +629,7 @@ impl AppView {
                         &display_name,
                         title.clone(),
                         item_idx,
+                        is_dragging_active,
                         theme,
                         window,
                         cx,
@@ -646,14 +690,10 @@ impl AppView {
                     .id("bookmark-root-drop-zone")
                     .h(px(40.0))
                     .w_full()
-                    .rounded_md()
-                    .border_1()
-                    .when(is_hovered, |d| {
-                        d.border_color(theme.accent).bg(theme.bg_hover)
-                    })
-                    .when(!is_hovered, |d| {
-                        d.border_color(rgba(0x00000000))
-                    })
+                    .border_t_2()
+                    // Same as the ribbon rail: the drop slot is a line, not a filled box.
+                    .when(is_hovered, |d| d.border_color(theme.accent))
+                    .when(!is_hovered, |d| d.border_color(rgba(0x00000000)))
                     .on_mouse_move(cx.listener(|this, _, _, cx| {
                         if let Some(ref mut drag) = this.bookmark_drag {
                             if drag.is_dragging {
@@ -685,7 +725,7 @@ impl AppView {
         group_index: Option<usize>,
         item_index: usize,
         active_path: Option<&PathBuf>,
-        _is_dragging_active: bool,
+        is_dragging_active: bool,
         theme: &Theme,
         window: &Window,
         cx: &Context<Self>,
@@ -695,7 +735,7 @@ impl AppView {
         let is_selected = active_path.map(|p| p == &abs_path).unwrap_or(false);
 
         let is_being_dragged = self.bookmark_drag.as_ref().map(|d| {
-            d.source.group_index == group_index && d.source.item_index == item_index
+            d.is_dragging && d.source.group_index == group_index && d.source.item_index == item_index
         }).unwrap_or(false);
 
         let is_drop_target = match self.bookmark_drag.as_ref().and_then(|d| d.target.as_ref()) {
@@ -745,14 +785,15 @@ impl AppView {
                     .text_color(theme.accent)
                     .font_weight(gpui::FontWeight::SEMIBOLD)
             })
-            .when(!is_selected && !is_drop_target && !is_menu_open, |s| {
+            .when(!is_selected && !is_menu_open && !is_dragging_active, |s| {
                 s.hover(|h| h.bg(theme.bg_hover)).text_color(theme.text_primary)
             })
+            // The grabbed row keeps an accent frame while the ghost follows the pointer,
+            // the same as the sidebar file tree.
             .when(is_being_dragged, |s| {
-                s.opacity(0.5)
-            })
-            .when(is_drop_target, |s| {
-                s.border_t_2().border_color(theme.accent).bg(theme.bg_hover)
+                s.border_1()
+                    .border_color(theme.accent)
+                    .text_color(theme.accent)
             })
             .child(file_svg);
 
@@ -784,6 +825,8 @@ impl AppView {
                             display_name: name_owned.clone(),
                         },
                         start_y: event.position.y.into(),
+                        pointer_x: event.position.x.into(),
+                        pointer_y: event.position.y.into(),
                         is_dragging: false,
                         target: None,
                     });
@@ -847,6 +890,22 @@ impl AppView {
                 }));
         }
 
+        // Only the insertion line marks the destination; the row itself is not
+        // highlighted while a note is being reordered. The line is absolute so the
+        // target row does not shift by a border width as it changes.
+        if is_drop_target && !is_being_dragged {
+            row = row.relative().child(
+                div()
+                    .absolute()
+                    .left(px(0.0))
+                    .right(px(0.0))
+                    .top(px(-1.0))
+                    .h(px(2.0))
+                    .rounded_full()
+                    .bg(theme.accent),
+            );
+        }
+
         row.into_any_element()
     }
 
@@ -858,6 +917,7 @@ impl AppView {
         display_name: &str,
         custom_title: Option<String>,
         item_index: usize,
+        is_dragging_active: bool,
         theme: &Theme,
         window: &Window,
         cx: &Context<Self>,
@@ -884,7 +944,9 @@ impl AppView {
             .px_2()
             .rounded_md()
             .cursor_pointer()
-            .when(!is_menu_open, |s| s.hover(|h| h.bg(theme.bg_hover)))
+            .when(!is_menu_open && !is_dragging_active, |s| {
+                s.hover(|h| h.bg(theme.bg_hover))
+            })
             .child(folder_svg);
 
         if is_editing {
@@ -951,6 +1013,19 @@ impl AppView {
             self.bookmark_drag.as_ref().and_then(|d| d.target.as_ref()),
             Some(BookmarkDropTarget::IntoGroup(idx)) if idx == &group_idx
         );
+        let is_drop_target_item = matches!(
+            self.bookmark_drag.as_ref().and_then(|d| d.target.as_ref()),
+            Some(BookmarkDropTarget::GroupItem(idx, _)) if idx == &group_idx
+        );
+        // A note moved here from the root or another group highlights the whole group:
+        // the header and the files inside it share one frame. Reordering within the
+        // group keeps only the insertion line.
+        let source_outside_group = self
+            .bookmark_drag
+            .as_ref()
+            .map(|drag| drag.source.group_index != Some(group_idx))
+            .unwrap_or(false);
+        let frame_group = source_outside_group && (is_drop_target_group || is_drop_target_item);
 
         let chevron = if is_expanded {
             icons::icon(icons::ICON_CHEVRON_DOWN, 12.0, theme.text_muted)
@@ -976,10 +1051,9 @@ impl AppView {
             .px_2()
             .rounded_md()
             .cursor_pointer()
-            .when(is_drop_target_group, |s| {
-                s.border_1().border_color(theme.accent).bg(theme.bg_hover)
-            })
-            .when(!is_drop_target_group && !is_menu_open, |s| {
+            // No row highlight for the group while reordering: the insertion line at
+            // the end of the group is the only marker (same as the ribbon rail).
+            .when(!is_menu_open && !is_dragging_active, |s| {
                 s.hover(|h| h.bg(theme.bg_hover))
             })
             .child(
@@ -1119,6 +1193,25 @@ impl AppView {
             }
 
             group_elem = group_elem.child(children_container);
+        }
+
+        if frame_group {
+            group_elem = group_elem
+                .rounded_md()
+                .border_1()
+                .border_color(theme.accent);
+        } else if is_drop_target_group {
+            // Appending inside the same group: only the line at the end of the group.
+            group_elem = group_elem.relative().child(
+                div()
+                    .absolute()
+                    .left(px(0.0))
+                    .right(px(0.0))
+                    .bottom_0()
+                    .h(px(2.0))
+                    .rounded_full()
+                    .bg(theme.accent),
+            );
         }
 
         group_elem.into_any_element()

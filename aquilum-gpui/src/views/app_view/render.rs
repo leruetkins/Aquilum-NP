@@ -1663,6 +1663,10 @@ if let Some(new_scroll) = new_active_scroll {
             .when_some(self.render_sidebar_drag_ghost(theme), |d, ghost| {
                 d.child(ghost)
             })
+            // ================= BOOKMARKS DRAG GHOST =================
+            .when_some(self.render_bookmark_drag_ghost(theme), |d, ghost| {
+                d.child(ghost)
+            })
             // ================= RIBBON DRAG GHOST =================
             .when_some(self.render_ribbon_drag_ghost(theme), |d, ghost| {
                 d.child(ghost)

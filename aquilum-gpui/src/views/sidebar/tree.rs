@@ -946,32 +946,14 @@ impl AppView {
             icons::ICON_FILE_TEXT
         };
 
-        Some(
-            div()
-                .absolute()
-                .left(px(drag.pointer_x + 14.0))
-                .top(px(drag.pointer_y + 10.0))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_1p5()
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .bg(theme.bg_card)
-                .border_1()
-                .border_color(theme.accent)
-                .shadow_lg()
-                .opacity(0.92)
-                .child(icons::icon(icon, 13.0, theme.accent))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.text_primary)
-                        .child(display_name),
-                )
-                .into_any_element(),
-        )
+        Some(crate::views::sidebar::drag_ghost::sidebar_drag_ghost(
+            display_name,
+            icon,
+            13.0,
+            drag.pointer_x,
+            drag.pointer_y,
+            theme,
+        ))
     }
 
     /// Renders a single flattened sidebar row. Row height is fixed ([`SIDEBAR_ROW_H`]) so

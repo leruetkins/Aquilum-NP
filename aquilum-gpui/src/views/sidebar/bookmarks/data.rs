@@ -249,6 +249,9 @@ pub enum BookmarkDropTarget {
 pub struct BookmarkDragState {
     pub source: BookmarkDragSource,
     pub start_y: f32,
+    /// Current pointer position in window coordinates; drives the drag ghost.
+    pub pointer_x: f32,
+    pub pointer_y: f32,
     pub is_dragging: bool,
     pub target: Option<BookmarkDropTarget>,
 }

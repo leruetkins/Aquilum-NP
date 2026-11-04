@@ -1,4 +1,5 @@
 pub mod bookmarks;
+mod drag_ghost;
 pub mod file_actions;
 pub mod file_context_menu;
 pub mod folder_actions;
