@@ -1632,6 +1632,48 @@
         assert_eq!(find_bar_left_left, 210.0);
     }
 
+    /// Shrinking the note width re-wraps every line, so the old pixel scroll
+    /// no longer shows the same rows. The scroll must follow the caret row:
+    /// its screen Y is what has to survive the reflow.
+    #[test]
+    fn width_change_pins_the_caret_row_on_screen() {
+        let text = (0..400)
+            .map(|i| format!("line {i}: {}\n", "words ".repeat(40)))
+            .collect::<String>();
+        let doc_id = crate::document_buffer::DocumentId::new();
+        let mut doc = crate::document_buffer::DocumentBuffer::new(
+            doc_id,
+            std::path::PathBuf::from("wrap.md"),
+            "wrap".to_string(),
+            text,
+            1,
+        );
+        let mut view =
+            crate::workspace::EditorViewState::new(crate::workspace::TabId::new(), doc_id);
+        let cursor_line = 200;
+        let cursor_col = 7;
+        view.cursor_offset = view.offset_for_line_col(&doc, cursor_line, cursor_col);
+        view.rebuild_visual_cache_with_headings(&mut doc, true, 80, None, cursor_line, false);
+
+        let wide_y = AppView::row_doc_y(&view, cursor_line, Some(cursor_col)).unwrap();
+        let viewport_h = 800.0;
+        // The caret sits in the middle of the viewport.
+        let wide_scroll = wide_y - viewport_h / 2.0;
+        let screen_y = wide_y - wide_scroll;
+
+        view.visual_cache_dirty = true;
+        view.ensure_visual_cache_with_headings(&mut doc, true, 30, None, cursor_line, false);
+        let narrow_y = AppView::row_doc_y(&view, cursor_line, Some(cursor_col)).unwrap();
+        assert!(
+            narrow_y > wide_y + 500.0,
+            "the narrower note must add rows above the caret ({wide_y} -> {narrow_y})"
+        );
+
+        let pinned =
+            AppView::pinned_scroll(wide_scroll, wide_y, narrow_y, view.total_height(), viewport_h);
+        assert!((narrow_y - pinned - screen_y).abs() < 1e-6);
+    }
+
     #[test]
     fn test_whitespace_dot_ranges() {
         assert_eq!(whitespace_dot_ranges(""), Vec::<std::ops::Range<usize>>::new());

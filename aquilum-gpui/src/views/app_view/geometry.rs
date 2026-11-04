@@ -311,6 +311,40 @@ impl AppView {
         editor_left_x + start_ratio * workspace_w + margin_left + 32.0 + 8.0 + gutter_w
     }
 
+    /// Document Y of `line`'s row in the view's current visual cache.
+    ///
+    /// With `col` the row is the sub-row that holds that caret column, without
+    /// it the line's first row. `None` when the cached window does not cover
+    /// the line, so a caller never pins to a row it cannot place.
+    pub(super) fn row_doc_y(
+        view: &crate::workspace::EditorViewState,
+        line: usize,
+        col: Option<usize>,
+    ) -> Option<f64> {
+        if !view.window.covers_line(line) {
+            return None;
+        }
+        let v_idx = match col {
+            Some(col) => {
+                crate::markdown::find_visual_row_for_cursor(&view.window.visual_rows, line, col)?.0
+            }
+            None => view.window.first_row_of_line(line)?,
+        };
+        Some(view.doc_y_of_local_v_idx(v_idx))
+    }
+
+    /// Scroll position that keeps the row at `old_y` at the same screen Y after
+    /// a re-wrap moved it to `new_y`.
+    pub(super) fn pinned_scroll(
+        old_scroll: f64,
+        old_y: f64,
+        new_y: f64,
+        total_h: f64,
+        viewport_h: f64,
+    ) -> f64 {
+        (old_scroll + (new_y - old_y)).clamp(0.0, (total_h - viewport_h).max(0.0))
+    }
+
     pub fn set_editor_width_pct(&mut self, pct: u32, window: &Window, cx: &mut Context<Self>) {
         let clamped = pct.clamp(0, 100);
         if self.config.editor.editor_width_pct == clamped {
@@ -321,6 +355,30 @@ impl AppView {
         let viewport_w: f32 = window.viewport_size().width.into();
         let typography = self.editor_typography();
         let line_char_width = self.editor_char_width(cx);
+
+        // Re-wrapping changes the document Y of every row, so the pixel scroll
+        // position no longer shows what it did a moment ago. Keep the caret
+        // row where it is on screen; if the caret is scrolled out of view, pin
+        // the viewport's top line instead so a width change never yanks the
+        // note away from where the reader is.
+        let viewport_h = f64::from({
+            let measured = f32::from(self.editor_scroll_handle.bounds().size.height);
+            if measured > 50.0 {
+                measured
+            } else {
+                self.last_editor_h.get().max(100.0)
+            }
+        });
+        let old_scroll = self.current_scroll_top_f64();
+        let pin = self.state.active_view_and_doc().and_then(|(view, doc)| {
+            let (line, col) = view.line_col(doc);
+            let cursor_y = Self::row_doc_y(view, line, Some(col));
+            if cursor_y.is_some_and(|y| y >= old_scroll && y < old_scroll + viewport_h) {
+                return cursor_y.map(|y| (line, Some(col), y));
+            }
+            let top = view.viewport.offset;
+            Self::row_doc_y(view, top, None).map(|y| (top, None, y))
+        });
 
         for (leaf_id, leaf) in self.state.leaves.iter() {
             if let Some(tab) = leaf.active_tab() {
@@ -343,6 +401,17 @@ impl AppView {
             }
         }
         self.last_wrap_cols = self.compute_wrap_cols(viewport_w, line_char_width);
+        if let (Some((line, col, old_y)), Some((view, _))) =
+            (pin, self.state.active_view_and_doc())
+        {
+            if let Some(new_y) = Self::row_doc_y(view, line, col) {
+                let target =
+                    Self::pinned_scroll(old_scroll, old_y, new_y, view.total_height(), viewport_h);
+                if (target - old_scroll).abs() > 0.5 {
+                    self.set_editor_scroll_top_f64(target);
+                }
+            }
+        }
         let width_px = self.active_note_width_px(clamped, viewport_w);
         self.state.status_text = self.t_fmt("editor.note_width", &[&width_px.to_string()]);
         cx.notify();

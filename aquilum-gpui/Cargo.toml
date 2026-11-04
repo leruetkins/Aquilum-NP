@@ -85,8 +85,8 @@ gpui = { path = "vendor/gpui" }
 #opt-level = "s"
 
 # In debug builds, optimize dependencies (GPUI, pulldown-cmark, etc.) so UI runs smoothly at 60-120 FPS
-#[profile.dev]
-#opt-level = 1
+[profile.dev]
+opt-level = 1
 
 #[profile.dev.package."*"]
 #opt-level = 3
