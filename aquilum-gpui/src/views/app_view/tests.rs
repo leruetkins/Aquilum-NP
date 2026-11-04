@@ -601,12 +601,206 @@
     fn restore_target_is_clamped_to_the_document() {
         // A stale target (window shrank since exit) is pulled in to the true end.
         assert_eq!(AppView::clamp_restore_target(5000.0, 6000.0, 740.0), 5000.0);
-        assert_eq!(AppView::clamp_restore_target(5000.0, 5400.0, 740.0), 4660.0);
+        // The end keeps half a viewport of typewriter padding below the last row.
+        assert_eq!(AppView::clamp_restore_target(5000.0, 5400.0, 740.0), 5000.0);
         // Negative targets and short docs pin to zero.
         assert_eq!(AppView::clamp_restore_target(-40.0, 6000.0, 740.0), 0.0);
         assert_eq!(AppView::clamp_restore_target(5000.0, 300.0, 740.0), 0.0);
         // Exactness at the tail of a huge document: f32 would move this by 16 px.
         assert_eq!(AppView::clamp_restore_target(1.0e8, 1.0e8 + 1000.0, 740.0), 1.0e8);
+    }
+
+    /// The scroll range has to keep half a viewport of empty space below the
+    /// last row, otherwise the final line cannot be centered and typing at the
+    /// end of a note stays glued to the bottom edge.
+    #[test]
+    fn bottom_padding_leaves_room_to_center_the_last_line() {
+        let viewport = 800.0;
+        let row_h = 24.0;
+        let total = 5000.0;
+        let max = AppView::editor_max_scroll(total, viewport);
+        assert_eq!(max, total - viewport / 2.0);
+
+        let last_top = total - row_h;
+        let centered = last_top - (viewport - row_h) / 2.0;
+        assert!(centered <= max, "the last row must be able to reach the middle");
+        assert!((last_top + row_h / 2.0 - centered - viewport / 2.0).abs() < 1e-9);
+
+        // Notes that already fit keep their old, unscrollable range.
+        assert_eq!(AppView::editor_max_scroll(700.0, viewport), 0.0);
+    }
+
+    /// The padded scroll range must actually be paintable: at its maximum the
+    /// last row has to be in the visible slice, roughly in the middle, with the
+    /// empty padding below it.
+    #[test]
+    fn last_row_is_visible_at_the_padded_max_scroll() {
+        let text = (0..500).map(|i| format!("line {i}\n")).collect::<String>();
+        let doc_id = crate::document_buffer::DocumentId::new();
+        let mut doc = crate::document_buffer::DocumentBuffer::new(
+            doc_id,
+            std::path::PathBuf::from("tail.md"),
+            "tail".to_string(),
+            text,
+            1,
+        );
+        let mut view =
+            crate::workspace::EditorViewState::new(crate::workspace::TabId::new(), doc_id);
+        view.rebuild_visual_cache_with_headings(&mut doc, true, 80, None, 0, false);
+
+        let viewport = 800.0;
+        let total = view.total_height();
+        let max = AppView::editor_max_scroll(total, viewport);
+        let local_scroll = max - view.above_h;
+        let range = view
+            .window
+            .height_index
+            .visible_range(local_scroll, viewport, 0.0);
+        let last = view.window.visual_rows.len() - 1;
+        assert!(
+            range.contains(&last),
+            "the last row must be painted at the padded end"
+        );
+
+        let row_h = f64::from(view.window.height_index.height_of(last));
+        let painted_top = view.window.height_index.top_of(last) - local_scroll;
+        let painted_center = painted_top + row_h / 2.0;
+        assert!(
+            (painted_center - viewport / 2.0).abs() <= row_h / 2.0 + 1e-9,
+            "the last row paints at {painted_center}, not around {}",
+            viewport / 2.0
+        );
+    }
+
+    /// After the wheel lifts the current line to the middle, pressing Enter
+    /// adds rows below it; the content above must stay put until the caret
+    /// reaches the bottom edge of the viewport. ZNotes above the window limit
+    /// add their rows just past the cached window, which is the case that used
+    /// to re-anchor the window on the caret and shift everything on screen.
+    #[test]
+    fn enter_after_centering_does_not_move_the_content_above() {
+        let text = (0..7_000)
+            .map(|i| {
+                if i % 7 == 0 {
+                    format!("# Heading {i}\n")
+                } else {
+                    format!("line {i}\n")
+                }
+            })
+            .collect::<String>();
+        let doc_id = crate::document_buffer::DocumentId::new();
+        let mut doc = crate::document_buffer::DocumentBuffer::new(
+            doc_id,
+            std::path::PathBuf::from("enter.md"),
+            "enter".to_string(),
+            text,
+            1,
+        );
+        let typography =
+            test_typography(&crate::settings::HeadingsSettings::default());
+        let mut view =
+            crate::workspace::EditorViewState::new(crate::workspace::TabId::new(), doc_id);
+        view.rebuild_visual_cache_with_headings(
+            &mut doc,
+            true,
+            80,
+            Some(&typography),
+            6_990,
+            false,
+        );
+        view.cursor_offset = doc.len();
+
+        let viewport = 800.0;
+        let row_h = 24.0;
+        let last = view.window.visual_rows.len() - 1;
+        let mut scroll = view.doc_y_of_local_v_idx(last) - (viewport - row_h) / 2.0;
+        view.viewport.offset = view.line_at_doc_y(doc.line_index.lines(), scroll);
+        // A fixed row above the caret; its screen position must not move.
+        let probe_line = view.viewport.offset + 2;
+        let initial_probe_y =
+            view.doc_y_of_line(doc.line_index.lines(), probe_line) - scroll;
+
+        for enter in 0..10 {
+            let before = scroll;
+            let _ = view.insert_newline_auto_indent(&mut doc);
+
+            // What `refresh_view_after_cursor_move` does before revealing.
+            let (cursor_line, _) = view.line_col(&doc);
+            let (anchor, reuse_window) = AppView::anchor_for_cursor(
+                view.viewport.offset,
+                cursor_line,
+                doc.line_index.lines(),
+            );
+            if reuse_window {
+                if !view.window.covers_line(cursor_line)
+                    || !view.window.covers_line(view.viewport.offset)
+                {
+                    view.visual_cache_dirty = true;
+                }
+            } else {
+                view.viewport.offset = anchor;
+            }
+            let anchor_before = view.doc_y_of_line(doc.line_index.lines(), anchor);
+            view.ensure_visual_cache_with_headings(&mut doc, true, 80, Some(&typography), anchor, false);
+            let anchor_after = view.doc_y_of_line(doc.line_index.lines(), anchor);
+            scroll = (scroll + (anchor_after - anchor_before)).max(0.0);
+
+            // The nearest reveal `scroll_visual_row_into_view` performs.
+            let (line, col) = view.line_col(&doc);
+            let (v_idx, _) =
+                crate::markdown::find_visual_row_for_cursor(&view.window.visual_rows, line, col)
+                    .unwrap();
+            let top = view.doc_y_of_local_v_idx(v_idx);
+            let bottom = top + f64::from(view.window.height_index.height_of(v_idx));
+            let max = AppView::editor_max_scroll(view.total_height(), viewport);
+            let current = scroll.clamp(0.0, max);
+            let target = if top < current {
+                top
+            } else if bottom > current + viewport {
+                bottom - viewport
+            } else {
+                current
+            }
+            .clamp(0.0, max);
+            scroll = target;
+
+            // The next frame's re-anchor, which follows a changed anchor line.
+            let lines = doc.line_index.lines();
+            let anchor_line = view.line_at_doc_y(lines, scroll);
+            let old_line_top = view.doc_y_of_line(lines, anchor_line);
+            let px_in_line = (scroll - old_line_top).max(0.0);
+            let old_above_h = view.above_h;
+            let old_wrap_cols = view.window.wrap_cols;
+            view.viewport.offset = anchor_line;
+            view.ensure_visual_cache_with_headings(
+                &mut doc,
+                true,
+                80,
+                Some(&typography),
+                anchor_line,
+                false,
+            );
+            let new_line_top = view.doc_y_of_line(lines, anchor_line);
+            if view.window.wrap_cols != old_wrap_cols
+                || (view.above_h - old_above_h).abs() > 0.5
+                || (new_line_top - old_line_top).abs() > 0.5
+            {
+                let first_v = view.window.first_row_of_line(anchor_line).unwrap_or(0);
+                scroll = view.above_h + view.window.height_index.top_of(first_v) + px_in_line;
+            }
+
+            let probe_y = view.doc_y_of_line(doc.line_index.lines(), probe_line) - scroll;
+            assert!(
+                (probe_y - initial_probe_y).abs() < 0.5,
+                "Enter {enter} moved the rows above the caret by {} px",
+                probe_y - initial_probe_y
+            );
+            assert!(
+                (scroll - before).abs() < 0.5,
+                "Enter {enter} scrolled the view by {} px",
+                scroll - before
+            );
+        }
     }
 
     /// The chip has to be visibly shorter than its row at every font size, and never

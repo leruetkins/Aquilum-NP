@@ -333,6 +333,19 @@ impl AppView {
         Some(view.doc_y_of_local_v_idx(v_idx))
     }
 
+    /// Bottom of the editor's scroll range, in document pixels.
+    ///
+    /// Half a viewport of empty space is kept below the last row so the caret
+    /// can be placed in the middle of the editor even when it sits on the final
+    /// line. Notes that fit the viewport keep their old, unscrollable range.
+    pub(super) fn editor_max_scroll(total_h: f64, viewport_h: f64) -> f64 {
+        if total_h <= viewport_h {
+            0.0
+        } else {
+            total_h - viewport_h * 0.5
+        }
+    }
+
     /// Scroll position that keeps the row at `old_y` at the same screen Y after
     /// a re-wrap moved it to `new_y`.
     pub(super) fn pinned_scroll(
@@ -342,7 +355,7 @@ impl AppView {
         total_h: f64,
         viewport_h: f64,
     ) -> f64 {
-        (old_scroll + (new_y - old_y)).clamp(0.0, (total_h - viewport_h).max(0.0))
+        (old_scroll + (new_y - old_y)).clamp(0.0, Self::editor_max_scroll(total_h, viewport_h))
     }
 
     pub fn set_editor_width_pct(&mut self, pct: u32, window: &Window, cx: &mut Context<Self>) {
@@ -848,6 +861,11 @@ pub fn scroll_cursor_into_view_with_strategy(&mut self, _strategy: ScrollStrateg
 /// needs its row, so the window is placed on `line` first; after the reveal
 /// the viewport shows it, so that anchor is the right one for the next frame
 /// too. Find uses it to reveal a match without moving the document caret.
+///
+/// Keyboard reveals stay "nearest": Enter and the arrow keys keep the active
+/// line at the bottom edge. The extra scroll range below the last row is for
+/// the wheel, so the reader can lift the current line to the middle and type
+/// there without the view snapping back.
 pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
     let measured_h = f32::from(self.editor_scroll_handle.bounds().size.height);
 
@@ -897,14 +915,13 @@ pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         return;
     };
 
-    // Content height without extra bottom padding.
-    let max_scroll = (total_content_h - f64::from(viewport_h)).max(0.0);
+    let max_scroll = Self::editor_max_scroll(total_content_h, f64::from(viewport_h));
 
     let raw_scroll = self.current_scroll_top_f64();
     let current_scroll = raw_scroll.clamp(0.0, max_scroll);
     let viewport_bottom = current_scroll + f64::from(viewport_h);
 
-    // No extra padding at the top or bottom.
+    // No extra padding at the top.
     // Scroll only when the row goes beyond the boundaries.
     let target_scroll = if row_top < current_scroll {
         row_top
@@ -922,11 +939,34 @@ pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
     }
 }
 
-
-
-
     pub(super) fn scroll_cursor_into_view(&mut self) {
         self.scroll_cursor_into_view_with_strategy(ScrollStrategy::Top);
+    }
+
+    /// Window anchor after a caret move.
+    ///
+    /// Returns `(anchor_line, reuse_window)`. `reuse_window` is true when the
+    /// window should stay on the viewport's own line and merely be extended to
+    /// cover the caret. That is what stops a row appended just past the cached
+    /// end (typing at the end of a note taller than one window) from re-placing
+    /// the window — and its estimated `above_h` — on every keystroke, which
+    /// drags the painted rows above the caret. A caret the viewport-anchored
+    /// window cannot reach is a real jump and becomes the anchor itself.
+    pub(super) fn anchor_for_cursor(
+        viewport_offset: usize,
+        cursor_line: usize,
+        lines_total: usize,
+    ) -> (usize, bool) {
+        if lines_total == 0 {
+            return (0, false);
+        }
+        let (start, end) =
+            crate::editor_window::EditorWindow::bounds_for(viewport_offset, lines_total);
+        if viewport_offset < lines_total && cursor_line >= start && cursor_line < end {
+            (viewport_offset, true)
+        } else {
+            (cursor_line, false)
+        }
     }
 
     /// Keeps the visual cache and the scroll position in sync after the cursor
@@ -934,17 +974,34 @@ pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
     /// the same path as ordinary cursor movement.
     pub(super) fn refresh_view_after_cursor_move(&mut self) {
         let typography = self.editor_typography();
+        let mut scroll_shift = 0.0;
         if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
             let (cursor_line, _) = view.line_col(doc);
-            let anchor = if view.window.covers_line(cursor_line) && view.window.covers_line(view.viewport.offset) {
-                view.viewport.offset
+            let lines_total = doc.line_index.lines();
+            let (anchor, reuse_window) =
+                Self::anchor_for_cursor(view.viewport.offset, cursor_line, lines_total);
+            if reuse_window {
+                if !view.window.covers_line(cursor_line)
+                    || !view.window.covers_line(view.viewport.offset)
+                {
+                    view.visual_cache_dirty = true;
+                }
             } else {
-                view.viewport.offset = cursor_line;
-                cursor_line
-            };
+                view.viewport.offset = anchor;
+            }
+            // A rebuild can re-place the window and move the estimate that
+            // gives every row its document Y. The viewport line must not jump
+            // on screen because of that: the scroll follows the same delta.
+            let anchor_before = view.doc_y_of_line(lines_total, anchor);
             let word_wrap = self.word_wrap;
             let wrap_cols = self.last_wrap_cols;
             view.ensure_visual_cache_with_headings(doc, word_wrap, wrap_cols, Some(&typography), anchor, self.ctrl_preview_selection || !self.edit_mode);
+            scroll_shift = view.doc_y_of_line(lines_total, anchor) - anchor_before;
+        }
+        if scroll_shift.abs() > 0.5 {
+            self.set_editor_scroll_top_f64(
+                (self.current_scroll_top_f64() + scroll_shift).max(0.0),
+            );
         }
         self.scroll_cursor_into_view();
     }
@@ -1270,7 +1327,7 @@ pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         let wrap_cols = if self.last_wrap_cols > 0 { self.last_wrap_cols } else { 80 };
         view.ensure_visual_cache_with_headings(doc, self.word_wrap, wrap_cols, Some(&typography), view.viewport.offset, self.ctrl_preview_selection || !self.edit_mode);
         let total = view.total_height();
-        let max_scroll = (total - f64::from(viewport_h)).max(0.0);
+        let max_scroll = Self::editor_max_scroll(total, f64::from(viewport_h));
         if max_scroll <= 1.0 {
             return None;
         }
@@ -1293,10 +1350,11 @@ pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
 
     /// Clamps a saved scroll target into the true scrollable range.
     ///
-    /// The real max is `total - viewport`: the list paints a slice anchored near
+    /// The real max is the content minus the padding at the bottom (see
+    /// [`Self::editor_max_scroll`]): the list paints a slice anchored near
     /// y = 0, so gpui's own `max_offset` describes the slice, not the document.
     pub(crate) fn clamp_restore_target(target: f64, total_h: f64, viewport_h: f64) -> f64 {
-        let max = (total_h - viewport_h).max(0.0);
+        let max = Self::editor_max_scroll(total_h, viewport_h);
         target.clamp(0.0, max)
     }
 
@@ -1411,7 +1469,7 @@ pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
         };
 
         let slice_h = viewport_h;
-        let max_scroll_content = (total_content_h - viewport_h as f64).max(0.0);
+        let max_scroll_content = Self::editor_max_scroll(total_content_h, viewport_h as f64);
         let track_top_y = if is_leaf_active && self.split_drag_state.is_none() {
             let bounds = self.editor_scroll_handle.bounds();
             let estimated_top_y = 38.0 + (workspace_h * leaf_id.map(|lid| self.state.workspace.vertical_ratio_of_leaf(lid)).unwrap_or(0.0)) + (if in_titlebar { 0.0 } else { 36.0 }) + 90.0;

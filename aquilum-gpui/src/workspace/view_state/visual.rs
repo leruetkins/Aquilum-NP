@@ -119,17 +119,33 @@ impl TabSession {
         };
         let old_row_top = pure_move.then(|| row_of(&self.window)).flatten()
             .map(|v| self.window.height_index.top_of(v));
+        // Keep the current start when the anchor sits comfortably below it and
+        // the window still reaches the document end (or is within a follow
+        // margin of it). Growth at the end — typing a new last line — is then
+        // absorbed by extending the window's end. Re-placing the window on the
+        // caret instead moves the estimated `above_h` under the rows being
+        // read, which shows up as the content above the caret drifting on
+        // every keystroke.
+        let window = &self.window;
+        let keep_start = !window.is_empty()
+            && window.word_wrap == word_wrap
+            && window.wrap_cols == wrap_cols
+            && window.covers_line(anchor_line)
+            && anchor_line >= window.start_line.saturating_add(crate::editor_window::FOLLOW_SLACK)
+            && (anchor_line.saturating_add(crate::editor_window::FOLLOW_SLACK) < window.end_line
+                || window.end_line.saturating_add(crate::editor_window::FOLLOW_SLACK)
+                    >= lines_total);
         let (start, end) = if lines_total <= 2 * crate::editor_window::MARGIN_LINES + 1 {
             (0, lines_total)
-        } else if !self.window.is_empty()
-            && !self.window.should_move_to(anchor_line, lines_total, word_wrap, wrap_cols)
-        {
+        } else if keep_start {
             let target_len = self
                 .window
                 .line_count()
                 .max(2 * crate::editor_window::MARGIN_LINES + 1);
             let start = self.window.start_line.min(lines_total.saturating_sub(1));
-            let end = (start + target_len).min(lines_total);
+            let end = (start + target_len)
+                .max(anchor_line.saturating_add(crate::editor_window::FOLLOW_SLACK + 1))
+                .min(lines_total);
             (start, end)
         } else {
             crate::editor_window::EditorWindow::bounds_for(anchor_line, lines_total)
