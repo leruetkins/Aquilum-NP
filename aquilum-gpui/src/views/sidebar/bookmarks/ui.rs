@@ -110,7 +110,31 @@ impl AppView {
         self.bookmark_rename_blink
             .enable(crate::blink_manager::BlinkTarget::SidebarRename, cx);
         window.focus(&self.bookmark_rename_focus_handle);
+        self.arm_inline_rename_blur(window, cx);
         cx.notify();
+    }
+
+    /// Commits the rename when focus leaves its input for another control.
+    ///
+    /// A window deactivation also moves focus away; that must not commit a
+    /// half-typed name, so the callback only acts while the window is active.
+    pub(crate) fn arm_inline_rename_blur(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.bookmark_rename_blur_subscription = Some(cx.on_blur(
+            &self.bookmark_rename_focus_handle,
+            window,
+            |this, window, cx| {
+                if !window.is_window_active() {
+                    return;
+                }
+                if this.bookmark_rename.is_some() {
+                    this.commit_bookmark_rename(cx);
+                }
+            },
+        ));
     }
 
     /// Commits the active inline rename (bookmarks or the sidebar explorer tree).
@@ -156,6 +180,9 @@ impl AppView {
             }
             BookmarkRenameTarget::TreePath { path, is_folder } => {
                 match crate::views::sidebar::folder_actions::rename_folder(&path, &new_name) {
+                    Ok(new_path) if new_path == path => {
+                        // Unchanged name: the inline field simply closes.
+                    }
                     Ok(new_path) => {
                         self.state.handle_file_renamed(&path, &new_path);
                         if is_folder {
@@ -186,12 +213,16 @@ impl AppView {
                 }
             }
         }
+        if self.bookmark_rename.is_none() {
+            self.bookmark_rename_blur_subscription = None;
+        }
         cx.notify();
     }
 
     /// Cancels active inline rename without modifying bookmarks.
     pub fn cancel_bookmark_rename(&mut self, cx: &mut Context<Self>) {
         self.bookmark_rename = None;
+        self.bookmark_rename_blur_subscription = None;
         self.bookmark_rename_blink.disable(cx);
         cx.notify();
     }
@@ -510,6 +541,7 @@ impl AppView {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
                     if let Some(ref mut r) = this.bookmark_rename {
                         r.input.handle_mouse_up();
                         cx.notify();
@@ -520,7 +552,11 @@ impl AppView {
                 let key = &event.keystroke.key;
                 if key == "enter" {
                     this.commit_bookmark_rename(cx);
-                    window.focus(&this.focus_handle);
+                    // On an invalid name the field stays open; keep focus in it so
+                    // the blur listener does not retry the same failed commit.
+                    if this.bookmark_rename.is_none() {
+                        window.focus(&this.focus_handle);
+                    }
                     return;
                 }
                 if key == "escape" {
@@ -864,9 +900,6 @@ impl AppView {
                     if this.bookmark_context_menu.is_some() {
                         this.close_bookmark_context_menu(cx);
                         return;
-                    }
-                    if this.bookmark_rename.is_some() {
-                        this.commit_bookmark_rename(cx);
                     }
                     this.bookmark_drag = Some(BookmarkDragState {
                         source: BookmarkDragSource {

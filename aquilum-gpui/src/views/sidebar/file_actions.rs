@@ -63,6 +63,11 @@ pub fn rename_file(src: &Path, new_name: &str) -> Result<PathBuf, String> {
     if target.exists() && target != src {
         return Err(format!("Файл '{}' уже существует", final_name));
     }
+    // Renaming to the same name is a no-op, not a filesystem call: the inline
+    // rename edits the stem only, so committing it unchanged lands here.
+    if target.as_path() == src {
+        return Ok(target);
+    }
 
     fs::rename(src, &target).map_err(|e| format!("Ошибка переименования: {}", e))?;
     Ok(target)

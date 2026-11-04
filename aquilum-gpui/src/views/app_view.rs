@@ -345,6 +345,8 @@ pub struct AppView {
     pub bookmark_rename: Option<crate::views::sidebar::bookmarks::BookmarkRenameState>,
     pub bookmark_rename_focus_handle: FocusHandle,
     pub bookmark_rename_blink: BlinkManager,
+    /// Commits the inline rename when its field loses focus to another control.
+    pub bookmark_rename_blur_subscription: Option<Subscription>,
     pub recent_files_sort_order: crate::views::sidebar::recent_files::RecentFilesSortOrder,
     pub recent_files_scroll_handle: ScrollHandle,
     pub recent_files_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag,
@@ -610,6 +612,7 @@ impl AppView {
             bookmark_rename: None,
             bookmark_rename_focus_handle: cx.focus_handle(),
             bookmark_rename_blink: BlinkManager::new(),
+            bookmark_rename_blur_subscription: None,
             recent_files_sort_order,
             recent_files_scroll_handle: ScrollHandle::new(),
             recent_files_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),

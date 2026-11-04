@@ -176,6 +176,10 @@ pub fn rename_folder(src: &Path, new_name: &str) -> Result<PathBuf, String> {
     if target.exists() && target != src {
         return Err(format!("Папка или файл '{}' уже существует", trimmed));
     }
+    // An unchanged name is a no-op.
+    if target.as_path() == src {
+        return Ok(target);
+    }
 
     fs::rename(src, &target).map_err(|e| format!("Ошибка переименования: {}", e))?;
     Ok(target)
@@ -438,9 +442,23 @@ mod tests {
         let folder = temp.path().join("Alpha");
         fs::create_dir_all(&folder).unwrap();
 
+        // The inline rename edits the stem only, so committing it unchanged must
+        // be a no-op instead of a filesystem call.
+        let unchanged = rename_folder(&folder, "Alpha").unwrap();
+        assert_eq!(unchanged, folder);
+        assert!(folder.exists());
+
         let renamed = rename_folder(&folder, "Beta").unwrap();
         assert_eq!(renamed.file_name().unwrap(), "Beta");
         assert!(renamed.exists());
+
+        let note = temp.path().join("Note.md");
+        fs::write(&note, "x").unwrap();
+        let same_note = rename_folder(&note, "Note").unwrap();
+        assert_eq!(same_note, note);
+        let renamed_note = rename_folder(&note, "Other").unwrap();
+        assert_eq!(renamed_note, temp.path().join("Other.md"));
+        assert!(renamed_note.exists());
 
         let dest = temp.path().join("Dest");
         fs::create_dir_all(&dest).unwrap();

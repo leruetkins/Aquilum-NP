@@ -21,6 +21,9 @@ impl AppView {
 
         let pixel_scale = window.scale_factor();
         let window_h = f32::from(window.bounds().size.height);
+        // The sidebar inline rename holds focus while it is open: the editor must
+        // not paint its caret or current-line highlight during that time.
+        let sidebar_rename_focused = self.bookmark_rename_focus_handle.is_focused(window);
 
         let root_id = if let Some(lid) = leaf_id {
             format!("central-editor-root-{}", lid.0)
@@ -170,7 +173,11 @@ impl AppView {
             let find_field_focused = self.find_bar.is_open
                 && (self.find_bar.query.is_focused(window)
                     || self.find_bar.replace.is_focused(window));
-            let caret_is_inactive = !is_leaf_active || find_field_focused;
+            // The inline rename takes the keyboard away from the editor, so the
+            // editor renders the same way an unfocused split pane does: a static
+            // muted caret and a dashed current-line frame.
+            let caret_is_inactive =
+                !is_leaf_active || find_field_focused || sidebar_rename_focused;
             let mut active_block_ids: std::collections::HashSet<usize> = std::collections::HashSet::new();
             if is_editing {
                 if let Some(s) = code_states_arc.get(cursor_line).and_then(|s| s.as_ref()) {
@@ -1863,7 +1870,7 @@ impl AppView {
                         row_h
                     };
 
-                    if is_leaf_active {
+                    if is_leaf_active && !sidebar_rename_focused {
                         row_div = row_div.child(
                             div()
                                 .absolute()
@@ -2402,7 +2409,7 @@ impl AppView {
                                         .justify_end()
                                         .text_xs()
                                         .text_color(if is_current {
-                                            if is_leaf_active {
+                                            if is_leaf_active && !sidebar_rename_focused {
                                                 theme.accent
                                             } else {
                                                 theme.text_secondary
