@@ -10,7 +10,7 @@ use windows::{
     Wdk::System::SystemServices::RtlGetVersion,
     Win32::{
         Foundation::*, Graphics::Dwm::*, System::LibraryLoader::LoadLibraryA,
-        UI::WindowsAndMessaging::*,
+        UI::{Controls::MARGINS, WindowsAndMessaging::*},
     },
     core::{BOOL, HSTRING, PCSTR},
 };
@@ -170,6 +170,20 @@ pub(crate) fn configure_dwm_dark_mode(hwnd: HWND, appearance: WindowAppearance) 
         )
         .log_err();
     }
+}
+
+/// LOCAL PATCH: a window whose client area covers the whole window rect (see
+/// `get_client_area_insets`) has no nonclient frame, so DWM draws no drop
+/// shadow. Extending the frame by one pixel brings the shadow back without
+/// taking space from the client and without the hard 1px frame line.
+pub(crate) fn enable_dwm_shadow(hwnd: HWND) {
+    let margins = MARGINS {
+        cxLeftWidth: 1,
+        cxRightWidth: 1,
+        cyTopHeight: 1,
+        cyBottomHeight: 1,
+    };
+    unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) }.log_err();
 }
 
 #[inline]

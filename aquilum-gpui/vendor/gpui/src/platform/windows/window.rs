@@ -492,6 +492,11 @@ impl WindowsWindow {
 
         register_drag_drop(&this)?;
         configure_dwm_dark_mode(hwnd, appearance);
+        // LOCAL PATCH: the client area covers the whole window on Windows 10
+        // (see `get_client_area_insets`), which drops the DWM shadow with it.
+        if matches!(windows_version, WindowsVersion::Win10) {
+            enable_dwm_shadow(hwnd);
+        }
         this.state.borrow_mut().border_offset.update(hwnd)?;
         let mut placement = retrieve_window_placement(
             hwnd,

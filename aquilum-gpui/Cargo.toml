@@ -47,7 +47,7 @@ winres = "0.1"
 [dev-dependencies]
 tempfile = "3"
 
-# GPUI 0.2.2 is vendored (see vendor/gpui) with two Windows fixes.
+# GPUI 0.2.2 is vendored (see vendor/gpui) with three Windows fixes.
 #
 # 1. Frame loop: upstream re-presents the cached scene on EVERY vsync tick for one
 # second after the last input event ("to prevent the display from underclocking
@@ -60,6 +60,18 @@ tempfile = "3"
 # window menu loop, which consumed the following left click, so Alt+click never
 # reached the editor (it reveals the whole inline markup of the clicked line).
 # Alt+<key> combos still fall through, so Alt+F4/Alt+Space keep working.
+#
+# 3. Window frame (Windows 10): the client area covers the whole window rect
+# instead of leaving the nonclient strip on the left, right and bottom. DWM drew
+# its 1px frame line into that strip, which is why the window had a dark border
+# on those three edges but not on top (the top inset was already zero). The
+# frame is gone now: `get_client_area_insets` returns zero insets, the resize
+# bands are served from the client edges in `handle_hit_test_msg` (all four
+# sides and corners), resize NC mouse-downs are not offered to the view (a
+# click handler under the pointer used to swallow them), and a resize band wins
+# over the titlebar drag area while the window buttons keep priority. Since the
+# removed frame also took the drop shadow with it, `DwmExtendFrameIntoClientArea`
+# with 1px margins brings the shadow back without the frame line.
 [patch.crates-io]
 gpui = { path = "vendor/gpui" }
 

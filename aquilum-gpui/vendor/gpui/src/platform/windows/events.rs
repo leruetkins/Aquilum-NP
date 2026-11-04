@@ -877,20 +877,24 @@ impl WindowsWindowInner {
         }
 
         let mut lock = self.state.borrow_mut();
-        if let Some(mut callback) = lock.callbacks.hit_test_window_control.take() {
+        let control_area = if let Some(mut callback) = lock.callbacks.hit_test_window_control.take()
+        {
             drop(lock);
             let area = callback();
             self.state.borrow_mut().callbacks.hit_test_window_control = Some(callback);
-            if let Some(area) = area {
-                return match area {
-                    WindowControlArea::Drag => Some(HTCAPTION as _),
-                    WindowControlArea::Close => Some(HTCLOSE as _),
-                    WindowControlArea::Max => Some(HTMAXBUTTON as _),
-                    WindowControlArea::Min => Some(HTMINBUTTON as _),
-                };
-            }
+            area
         } else {
             drop(lock);
+            None
+        };
+        // Buttons keep priority over the resize band; a drag area does not, so
+        // the window still resizes from its top edge where the titlebar drag
+        // region covers it.
+        match control_area {
+            Some(WindowControlArea::Close) => return Some(HTCLOSE as _),
+            Some(WindowControlArea::Max) => return Some(HTMAXBUTTON as _),
+            Some(WindowControlArea::Min) => return Some(HTMINBUTTON as _),
+            _ => {}
         }
 
         if !self.hide_title_bar {
@@ -920,15 +924,45 @@ impl WindowsWindowInner {
         }
 
         let dpi = unsafe { GetDpiForWindow(handle) };
-        let frame_y = unsafe { GetSystemMetricsForDpi(SM_CYFRAME, dpi) };
+        let frame = get_frame_thickness(dpi);
 
         let mut cursor_point = POINT {
             x: lparam.signed_loword().into(),
             y: lparam.signed_hiword().into(),
         };
         unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
-        if !self.state.borrow().is_maximized() && cursor_point.y >= 0 && cursor_point.y <= frame_y {
-            return Some(HTTOP as _);
+        // The client area covers the whole window (see `get_client_area_insets`),
+        // so DefWindowProc no longer reports the sizing border and the resize
+        // bands have to come from the client edges themselves.
+        if !self.state.borrow().is_maximized() {
+            let mut client_rect = RECT::default();
+            unsafe { GetClientRect(handle, &mut client_rect) }.log_err();
+            let on_left = cursor_point.x >= 0 && cursor_point.x <= frame;
+            let on_right =
+                cursor_point.x < client_rect.right && cursor_point.x >= client_rect.right - frame;
+            let on_top = cursor_point.y >= 0 && cursor_point.y <= frame;
+            let on_bottom =
+                cursor_point.y < client_rect.bottom && cursor_point.y >= client_rect.bottom - frame;
+            let area = match (on_top, on_bottom, on_left, on_right) {
+                (true, _, true, _) => HTTOPLEFT,
+                (true, _, _, true) => HTTOPRIGHT,
+                (_, true, true, _) => HTBOTTOMLEFT,
+                (_, true, _, true) => HTBOTTOMRIGHT,
+                (true, _, _, _) => HTTOP,
+                (_, true, _, _) => HTBOTTOM,
+                (_, _, true, _) => HTLEFT,
+                (_, _, _, true) => HTRIGHT,
+                _ => HTCLIENT,
+            };
+            // Not `return` outright: a titlebar drag area still has to reach
+            // HTCAPTION below.
+            if area != HTCLIENT {
+                return Some(area as _);
+            }
+        }
+
+        if matches!(control_area, Some(WindowControlArea::Drag)) {
+            return Some(HTCAPTION as _);
         }
 
         Some(HTCLIENT as _)
@@ -965,35 +999,52 @@ impl WindowsWindowInner {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> Option<isize> {
-        let mut lock = self.state.borrow_mut();
-        if let Some(mut func) = lock.callbacks.input.take() {
-            let scale_factor = lock.scale_factor;
-            let mut cursor_point = POINT {
-                x: lparam.signed_loword().into(),
-                y: lparam.signed_hiword().into(),
+        // LOCAL PATCH: the resize bands sit inside the client area now (see
+        // `handle_hit_test_msg`), so WM_NCLBUTTONDOWN arrives here with a resize
+        // code. It must not be offered to the view: a click handler under the
+        // pointer would swallow it and the native sizing loop would never start.
+        let is_resize = matches!(
+            wparam.0 as u32,
+            HTLEFT
+                | HTRIGHT
+                | HTTOPLEFT
+                | HTTOP
+                | HTTOPRIGHT
+                | HTBOTTOMLEFT
+                | HTBOTTOM
+                | HTBOTTOMRIGHT
+        );
+        if !is_resize {
+            let mut lock = self.state.borrow_mut();
+            if let Some(mut func) = lock.callbacks.input.take() {
+                let scale_factor = lock.scale_factor;
+                let mut cursor_point = POINT {
+                    x: lparam.signed_loword().into(),
+                    y: lparam.signed_hiword().into(),
+                };
+                unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
+                let physical_point = point(DevicePixels(cursor_point.x), DevicePixels(cursor_point.y));
+                let click_count = lock.click_state.update(button, physical_point);
+                drop(lock);
+
+                let input = PlatformInput::MouseDown(MouseDownEvent {
+                    button,
+                    position: logical_point(cursor_point.x as f32, cursor_point.y as f32, scale_factor),
+                    modifiers: current_modifiers(),
+                    click_count,
+                    first_mouse: false,
+                });
+                let result = func(input);
+                let handled = !result.propagate || result.default_prevented;
+                self.state.borrow_mut().callbacks.input = Some(func);
+
+                if handled {
+                    return Some(0);
+                }
+            } else {
+                drop(lock);
             };
-            unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
-            let physical_point = point(DevicePixels(cursor_point.x), DevicePixels(cursor_point.y));
-            let click_count = lock.click_state.update(button, physical_point);
-            drop(lock);
-
-            let input = PlatformInput::MouseDown(MouseDownEvent {
-                button,
-                position: logical_point(cursor_point.x as f32, cursor_point.y as f32, scale_factor),
-                modifiers: current_modifiers(),
-                click_count,
-                first_mouse: false,
-            });
-            let result = func(input);
-            let handled = !result.propagate || result.default_prevented;
-            self.state.borrow_mut().callbacks.input = Some(func);
-
-            if handled {
-                return Some(0);
-            }
-        } else {
-            drop(lock);
-        };
+        }
 
         // Since these are handled in handle_nc_mouse_up_msg we must prevent the default window proc
         if button == MouseButton::Left {
@@ -1525,6 +1576,21 @@ fn get_client_area_insets(
     // tests. Without this, the top 1-2 rows of pixels in our window would be obscured.
     let dpi = unsafe { GetDpiForWindow(handle) };
     let frame_thickness = get_frame_thickness(dpi);
+    // LOCAL PATCH: DWM draws its 1px window frame into the nonclient strip, so
+    // with an inset the line stays visible on every edge the client area does
+    // not reach. On Windows 10 the top inset is zero, which is why the window
+    // showed the frame on the left, right and bottom only. Give the client the
+    // whole window instead: `enable_dwm_shadow` brings the drop shadow back
+    // without the frame line, and `handle_hit_test_msg` serves the resize bands
+    // from the client edges.
+    if !is_maximized && matches!(windows_version, WindowsVersion::Win10) {
+        return RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+    }
     let top_insets = if is_maximized {
         frame_thickness
     } else {
