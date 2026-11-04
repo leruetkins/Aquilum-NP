@@ -1505,7 +1505,16 @@ impl AppView {
                 } else {
                     None
                 };
-                if self.edit_mode && grid_tbl.is_none() {
+                if self.edit_mode {
+                    // A grid table paints its cells below the table's top edge
+                    // margin, so the dots have to start at the same offset.
+                    let ws_top_offset = if grid_tbl
+                        .is_some_and(|tbl| v.line_idx == tbl.first_line)
+                    {
+                        crate::markdown::TABLE_EDGE_MARGIN
+                    } else {
+                        0.0
+                    };
                     let ws_quads = whitespace_dot_quads(
                         line,
                         &row_layout,
@@ -1514,6 +1523,7 @@ impl AppView {
                         guide_columns,
                         preview_sel,
                         self.show_invisibles,
+                        ws_top_offset,
                     );
                     if !ws_quads.is_empty() {
                         let dot_color = if self.show_invisibles {
@@ -1558,7 +1568,9 @@ impl AppView {
                         );
                     }
 
-                    if self.show_invisibles && v.is_last_sub {
+                    // A table paints its rows as cells, not as text lines, so
+                    // there is no line end to mark inside it.
+                    if self.show_invisibles && v.is_last_sub && grid_tbl.is_none() {
                         let end_col = if line.is_empty() || v.char_start >= v.char_end {
                             0
                         } else {

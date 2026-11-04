@@ -56,6 +56,10 @@ pub(crate) fn whitespace_dot_ranges_with_mode(line: &str, show_all: bool) -> Vec
 /// that horizontal selection range are omitted.
 ///
 /// When `show_all` is true (non-printable characters mode), every space is marked.
+///
+/// `top_offset` is the distance from the row's top to the box the text is
+/// painted in: a grid table keeps `TABLE_EDGE_MARGIN` above its header row, so
+/// its cells start that much lower than a plain text row.
 pub(crate) fn whitespace_dot_quads(
     line: &str,
     row_layout: &RowShapedLayout,
@@ -64,13 +68,12 @@ pub(crate) fn whitespace_dot_quads(
     guide_columns: &[f32],
     preview_selection: Option<(f32, f32)>,
     show_all: bool,
+    top_offset: f32,
 ) -> Vec<(f32, f32, f32, f32, f32)> {
     let ranges = whitespace_dot_ranges_with_mode(line, show_all);
     if ranges.is_empty() {
         return Vec::new();
     }
-
-    let center_y = row_h / 2.0;
 
     let dot_device_px = (2.0 * scale).round().max(2.0);
     let dot_size = if scale > 0.0 { dot_device_px / scale } else { 2.0 };
@@ -85,6 +88,58 @@ pub(crate) fn whitespace_dot_quads(
     };
 
     let mut quads = Vec::new();
+    let push_dot = |quads: &mut Vec<(f32, f32, f32, f32, f32)>, center_x: f32, center_y: f32| {
+        // Skip dots that fall inside an active preview selection rectangle.
+        if let Some((sel_x, sel_w)) = preview_selection {
+            if sel_w > 0.0 {
+                let sel_right = sel_x + sel_w;
+                if center_x >= sel_x - 0.5 && center_x <= sel_right + 0.5 {
+                    return;
+                }
+            }
+        }
+        let left = snap(center_x - radius);
+        let top = snap(center_y - radius);
+        quads.push((left, top, dot_size, dot_size, radius));
+    };
+
+    // A table row paints its cells as stacked sub-lines, so the dot of a space
+    // sits in the sub-line that holds it, at the cell's own glyph position.
+    if let Some(table_row) = &row_layout.table_row {
+        for cell in &table_row.cells {
+            for (line_idx, sub) in cell.lines.iter().enumerate() {
+                let center_y = top_offset
+                    + crate::markdown::TABLE_PAD_Y
+                    + line_idx as f32 * table_row.line_h
+                    + table_row.line_h / 2.0;
+                let columns = sub.columns.min(sub.line_chars.len().saturating_sub(1));
+                for (col, ch) in sub.text.chars().enumerate().take(columns) {
+                    if ch != ' ' {
+                        continue;
+                    }
+                    let lc = sub.line_chars[col];
+                    let is_synthetic = (col + 1 < sub.line_chars.len()
+                        && sub.line_chars[col + 1] == lc)
+                        || (col > 0 && sub.line_chars[col - 1] == lc);
+                    if is_synthetic {
+                        continue;
+                    }
+                    if !ranges.iter().any(|r| r.contains(&lc)) {
+                        continue;
+                    }
+                    let x0 = sub.glyph_x(col);
+                    let x1 = sub.glyph_x(col + 1);
+                    if x1 <= x0 {
+                        continue;
+                    }
+                    push_dot(&mut quads, (x0 + x1) / 2.0, center_y);
+                }
+            }
+        }
+        return quads;
+    }
+
+    let center_y = row_h / 2.0;
     let columns = row_layout.columns();
     let line_chars = &row_layout.line_chars;
 
@@ -119,20 +174,7 @@ pub(crate) fn whitespace_dot_quads(
             continue;
         }
 
-        let center_x = (x0 + x1) / 2.0;
-
-        // Skip dots that fall inside an active preview selection rectangle.
-        if let Some((sel_x, sel_w)) = preview_selection {
-            if sel_w > 0.0 {
-                let sel_right = sel_x + sel_w;
-                if center_x >= sel_x - 0.5 && center_x <= sel_right + 0.5 {
-                    continue;
-                }
-            }
-        }
-        let left = snap(center_x - radius);
-        let top = snap(center_y - radius);
-        quads.push((left, top, dot_size, dot_size, radius));
+        push_dot(&mut quads, (x0 + x1) / 2.0, center_y);
     }
 
     quads

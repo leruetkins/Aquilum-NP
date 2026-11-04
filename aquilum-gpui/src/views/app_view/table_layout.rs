@@ -68,7 +68,7 @@ impl TableCellLine {
     }
 
     /// X of painted column `col` of this sub-line, relative to the row.
-    fn glyph_x(&self, col: usize) -> f32 {
+    pub(crate) fn glyph_x(&self, col: usize) -> f32 {
         if col >= self.columns {
             return self.content_x + f32::from(self.layout.width);
         }

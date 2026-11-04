@@ -1641,6 +1641,85 @@
     }
 
     #[test]
+    fn table_cells_show_whitespace_dots() {
+        gpui::Application::new().run(|cx: &mut gpui::App| {
+            crate::fonts::register_embedded_fonts(cx);
+            let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                let line = "| a  b | c |";
+                let block = crate::table::TableBlock {
+                    first_line: 1,
+                    last_line: 3,
+                    aligns: vec![crate::table::Align::Left, crate::table::Align::Left],
+                };
+                let lines = vec![
+                    "| h1 | h2 |",
+                    "|---|---|",
+                    line,
+                ];
+                // `TableBlock` addresses document lines 1..=3.
+                let get_line = |idx: usize| idx.checked_sub(1).and_then(|i| lines.get(i)).copied();
+                let font = gpui::SharedString::from("Consolas");
+                let layout = compute_table_layout(
+                    window.text_system(),
+                    &get_line,
+                    &block,
+                    &font,
+                    None,
+                    7.7,
+                    720.0,
+                    14.0,
+                    20.0,
+                );
+                let headings = crate::settings::HeadingsSettings::default();
+                let row = shape_table_row(
+                    window.text_system(),
+                    line,
+                    &block,
+                    3,
+                    None,
+                    &layout,
+                    &headings,
+                    &font,
+                    7.7,
+                );
+
+                let quads = whitespace_dot_quads(line, &row, 42.0, 1.0, &[], None, false, 0.0);
+                assert_eq!(quads.len(), 2, "both spaces of the double space must get a dot");
+                let cell_x = layout.col_x[0];
+                let cell_w = layout.col_widths[0];
+                let expected_center_y =
+                    crate::markdown::TABLE_PAD_Y + layout.line_h / 2.0;
+                for (x, y, w, h, _) in quads {
+                    assert!(
+                        x >= cell_x && x + w <= cell_x + cell_w,
+                        "dot {x}..{} must sit inside the first cell {cell_x}..{}",
+                        x + w,
+                        cell_x + cell_w
+                    );
+                    assert!(
+                        (y + h / 2.0 - expected_center_y).abs() < 0.51,
+                        "dot must sit on the cell's first painted line"
+                    );
+                }
+
+                // "Show invisibles" marks every space; the spaces trimmed out of
+                // a cell are not painted, so the count stays the same here.
+                let all = whitespace_dot_quads(line, &row, 42.0, 1.0, &[], None, true, 0.0);
+                assert_eq!(all.len(), 2);
+
+                cx.quit();
+                struct DummyView;
+                impl gpui::Render for DummyView {
+                    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+                        gpui::div()
+                    }
+                }
+                cx.new(|_| DummyView)
+            });
+        });
+    }
+
+    #[test]
     fn test_mouse_drag_threshold() {
         let is_drag = |dx: f32, dy: f32| dx * dx + dy * dy >= 16.0;
         assert!(!is_drag(0.0, 0.0));
