@@ -220,8 +220,6 @@ struct RegistryRecord {
 #[derive(Deserialize)]
 struct RegistryFile {
     #[serde(default)]
-    generated: String,
-    #[serde(default)]
     counts: BTreeMap<String, u32>,
     plugins: BTreeMap<String, RegistryRecord>,
 }
