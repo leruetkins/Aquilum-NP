@@ -102,6 +102,14 @@ impl AppView {
         };
 
         if let Some((view, doc)) = current_view_and_doc {
+            const NOTE_EDGE_PAD: f32 = 32.0;
+            let (note_margin_left, note_margin_right) = self.note_margins_for_leaf(leaf_id, window_w);
+            // The current-line wash is a child of a row inside the padded note
+            // column. Negative insets pull it out over that padding so the line
+            // spans the whole editor, gutter and note margins included.
+            let highlight_left = -(NOTE_EDGE_PAD + note_margin_left);
+            let highlight_right = -(NOTE_EDGE_PAD + note_margin_right);
+
             let note_title = doc
                 .path
                 .file_stem()
@@ -1823,8 +1831,7 @@ impl AppView {
                     .when(grid_tbl.is_some(), |d| d.items_start())
                     .h(px(row_h))
                     .py_0()
-                    .px_2()
-                    .rounded_sm();
+                    .px_2();
 
                 if show_current_line_highlight {
                     let is_sep = grid_tbl.map_or(false, |tbl| v.line_idx == tbl.sep_line());
@@ -1854,11 +1861,10 @@ impl AppView {
                         row_div = row_div.child(
                             div()
                                 .absolute()
-                                .left_0()
-                                .right_0()
+                                .left(px(highlight_left))
+                                .right(px(highlight_right))
                                 .top(px(hl_top))
                                 .h(px(hl_h))
-                                .rounded_sm()
                                 .bg(theme.bg_hover),
                         );
                     } else {
@@ -1869,11 +1875,10 @@ impl AppView {
                         row_div = row_div.child(
                             div()
                                 .absolute()
-                                .left_0()
-                                .right_0()
+                                .left(px(highlight_left))
+                                .right(px(highlight_right))
                                 .top(px(hl_top))
                                 .h(px(hl_h))
-                                .rounded_sm()
                                 .bg(faint_bg)
                                 .border_1()
                                 .border_dashed()
@@ -2732,17 +2737,14 @@ impl AppView {
                 items.push(row_div);
             }
 
-            let window_w_editor = f32::from(window.bounds().size.width);
-            let (note_margin_left, note_margin_right) = self.note_margins_for_leaf(leaf_id, window_w_editor);
-
             let mut editor_list = div()
                 .id(gpui::ElementId::from(("note-editor-list", lid_tag)))
                 .flex()
                 .flex_col()
                 .when(show_scrollbar, |d| d.overflow_hidden())
                 .size_full()
-                .pl(px(32.0 + note_margin_left))
-                .pr(px(32.0 + note_margin_right))
+                .pl(px(NOTE_EDGE_PAD + note_margin_left))
+                .pr(px(NOTE_EDGE_PAD + note_margin_right))
                 .pt_0();
 
             if is_leaf_active {
