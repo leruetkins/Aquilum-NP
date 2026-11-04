@@ -266,7 +266,7 @@ impl AppView {
     }
 
     /// Creates a new folder in the currently selected directory (or active document parent / workspace root).
-    pub(crate) fn create_new_folder(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn create_new_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ws) = self.state.workspace_path.clone() else { return; };
         let target_dir = if let Some(ref sel) = self.selected_sidebar_folder {
             if sel.is_dir() {
@@ -291,7 +291,8 @@ impl AppView {
             self.state.expanded_folders.insert(target_dir);
             self.state.expanded_folders.insert(new_folder.clone());
             self.state.reload_file_tree();
-            self.select_sidebar_folder(new_folder, cx);
+            self.select_sidebar_folder(new_folder.clone(), cx);
+            self.start_sidebar_tree_rename(new_folder, true, window, cx);
         }
     }
 

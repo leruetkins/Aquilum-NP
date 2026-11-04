@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use gpui::{
-    div, prelude::*, px, rgb, AnyElement, Context, IntoElement, KeyDownEvent,
+    div, prelude::*, px, AnyElement, Context, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, SharedString, Window,
 };
 use crate::icons;
@@ -102,31 +102,35 @@ impl AppView {
         if self.bookmark_rename.is_some() {
             self.commit_bookmark_rename(cx);
         }
-        let mut rename = BookmarkRenameState::new(
+        self.bookmark_rename = Some(BookmarkRenameState::new(
             target,
             initial_title.to_string(),
             self.bookmark_rename_focus_handle.clone(),
-        );
-        rename
-            .input
-            .enable_blink(|this: &mut AppView| &mut this.bookmark_rename_blink, cx);
-        self.bookmark_rename = Some(rename);
+        ));
+        self.bookmark_rename_blink
+            .enable(crate::blink_manager::BlinkTarget::SidebarRename, cx);
         window.focus(&self.bookmark_rename_focus_handle);
         cx.notify();
     }
 
-    /// Commits the active inline rename.
+    /// Commits the active inline rename (bookmarks or the sidebar explorer tree).
     pub fn commit_bookmark_rename(&mut self, cx: &mut Context<Self>) {
         let Some(rename) = self.bookmark_rename.take() else {
             return;
         };
+        self.bookmark_rename_blink.disable(cx);
         let new_name = rename.input.text.trim().to_string();
         if new_name.is_empty() {
+            // Keep the input open so the user can type a name instead of losing the
+            // gesture.
+            self.bookmark_rename = Some(rename);
+            self.bookmark_rename_blink
+                .enable(crate::blink_manager::BlinkTarget::SidebarRename, cx);
             cx.notify();
             return;
         }
 
-        match rename.target {
+        match rename.target.clone() {
             BookmarkRenameTarget::Group(group_idx) => {
                 if group_idx < self.state.bookmarks.items.len() {
                     let old_title = rename.original_title;
@@ -150,6 +154,48 @@ impl AppView {
                 self.state.bookmarks.rename_folder_bookmark(item_index, new_name);
                 self.save_bookmarks();
             }
+            BookmarkRenameTarget::TreePath { path, is_folder } => {
+                match crate::views::sidebar::folder_actions::rename_folder(&path, &new_name) {
+                    Ok(new_path) => {
+                        self.state.handle_file_renamed(&path, &new_path);
+                        if is_folder {
+                            self.state.expanded_folders.remove(&path);
+                            self.state.expanded_folders.insert(new_path.clone());
+                            self.selected_sidebar_folder = Some(new_path);
+                            self.state.status_text =
+                                self.t_fmt("sidebar.folder_renamed", &[&new_name]);
+                            self.need_scroll_sidebar_to_active.set(true);
+                        } else {
+                            if self.selected_sidebar_folder.as_deref() == Some(path.as_path()) {
+                                self.selected_sidebar_folder = None;
+                            }
+                            if self
+                                .state
+                                .active_document()
+                                .map(|doc| doc.path == new_path)
+                                .unwrap_or(false)
+                            {
+                                self.need_scroll_sidebar_to_active.set(true);
+                            }
+                        }
+                        self.state.reload_file_tree();
+                        self.state.publish_snapshot();
+                    }
+                    Err(e) => {
+                        // Keep the input open so the name can be corrected.
+                        self.bookmark_rename = Some(rename);
+                        self.bookmark_rename_blink
+                            .enable(crate::blink_manager::BlinkTarget::SidebarRename, cx);
+                        self.push_notification(
+                            crate::views::notification::NotificationType::Error,
+                            None,
+                            e,
+                            Some(6000),
+                            cx,
+                        );
+                    }
+                }
+            }
         }
         cx.notify();
     }
@@ -157,6 +203,7 @@ impl AppView {
     /// Cancels active inline rename without modifying bookmarks.
     pub fn cancel_bookmark_rename(&mut self, cx: &mut Context<Self>) {
         self.bookmark_rename = None;
+        self.bookmark_rename_blink.disable(cx);
         cx.notify();
     }
 
@@ -417,7 +464,7 @@ impl AppView {
         ))
     }
 
-    /// Renders the inline rename input box with purple border matching Image 2.
+    /// Renders the inline rename input box shared by bookmarks and the explorer tree.
     pub fn render_bookmark_rename_input(
         &self,
         theme: &Theme,
@@ -429,9 +476,11 @@ impl AppView {
         };
 
         let pixel_scale = window.scale_factor();
-        let input_div = rename
-            .input
-            .render("", theme, window, pixel_scale, 12.0, "Segoe UI");
+        // Render with the view-level blink manager: the input's own manager is not
+        // the one the handlers drive, so the caret would never blink.
+        let mut input = rename.input.clone();
+        input.blink = self.bookmark_rename_blink.clone();
+        let input_div = input.render("", theme, window, pixel_scale, 12.0, "Segoe UI");
 
         div()
             .id("bookmark-inline-rename-box")
@@ -444,8 +493,8 @@ impl AppView {
             .h(px(24.0))
             .px_2()
             .rounded_md()
-            .border_2()
-            .border_color(rgb(0x8b5cf6)) // Rounded purple border matching Image 2
+            .border_1()
+            .border_color(theme.accent)
             .bg(theme.bg_card)
             .cursor(gpui::CursorStyle::IBeam)
             .on_mouse_down(
@@ -455,9 +504,9 @@ impl AppView {
                     window.focus(&this.bookmark_rename_focus_handle);
                     if let Some(ref mut r) = this.bookmark_rename {
                         r.input.handle_mouse_down(event, window, 12.0, "Segoe UI");
-                        r.input
-                            .pause_and_show(|t: &mut AppView| &mut t.bookmark_rename_blink, cx);
                     }
+                    this.bookmark_rename_blink
+                        .pause_and_show(crate::blink_manager::BlinkTarget::SidebarRename, cx);
                     cx.notify();
                 }),
             )
@@ -490,11 +539,14 @@ impl AppView {
                     window.focus(&this.focus_handle);
                     return;
                 }
-                if let Some(ref mut r) = this.bookmark_rename {
-                    if r.input.handle_key_down(event, cx) {
-                        r.input
-                            .pause_and_show(|t: &mut AppView| &mut t.bookmark_rename_blink, cx);
-                    }
+                let changed = if let Some(ref mut r) = this.bookmark_rename {
+                    r.input.handle_key_down(event, cx)
+                } else {
+                    false
+                };
+                if changed {
+                    this.bookmark_rename_blink
+                        .pause_and_show(crate::blink_manager::BlinkTarget::SidebarRename, cx);
                 }
             }))
             .child(input_div)

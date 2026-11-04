@@ -440,6 +440,15 @@ if let Some(new_scroll) = new_active_scroll {
                     cx.notify();
                 } else if this.quick_filter.is_mouse_selecting {
                     this.quick_filter.handle_mouse_move(event, &this.state.search_query, window, cx);
+                } else if this
+                    .bookmark_rename
+                    .as_ref()
+                    .is_some_and(|state| state.input.is_mouse_selecting)
+                {
+                    if let Some(state) = this.bookmark_rename.as_mut() {
+                        state.input.handle_mouse_move(event, window, 12.0, "Segoe UI");
+                    }
+                    cx.notify();
                 } else if this.panel_scrollbar_drag.active {
                     let y: f32 = event.position.y.into();
                     this.handle_panel_scrollbar_drag(y, cx);
@@ -478,6 +487,12 @@ if let Some(new_scroll) = new_active_scroll {
                     }
                 }
                 this.quick_filter.handle_mouse_up(cx);
+                if let Some(state) = this.bookmark_rename.as_mut() {
+                    if state.input.is_mouse_selecting {
+                        state.input.handle_mouse_up();
+                        cx.notify();
+                    }
+                }
                 this.handle_goto_mouse_up(cx);
                 this.goto_scrollbar_drag.end();
                 this.catalog_scrollbar_drag.end();
@@ -538,6 +553,12 @@ if let Some(new_scroll) = new_active_scroll {
                     }
                 }
                 this.quick_filter.handle_mouse_up(cx);
+                if let Some(state) = this.bookmark_rename.as_mut() {
+                    if state.input.is_mouse_selecting {
+                        state.input.handle_mouse_up();
+                        cx.notify();
+                    }
+                }
                 this.handle_goto_mouse_up(cx);
                 this.goto_scrollbar_drag.end();
                 this.handle_panel_mouse_up(cx);
@@ -1152,8 +1173,8 @@ if let Some(new_scroll) = new_active_scroll {
                                                         .cursor_pointer()
                                                         .hover(|h| h.bg(theme.bg_hover))
                                                         .child(icons::icon(icons::ICON_FOLDER_PLUS, 14.0, theme.text_muted))
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            this.create_new_folder(cx);
+                                                        .on_click(cx.listener(|this, _, window, cx| {
+                                                            this.create_new_folder(window, cx);
                                                         })),
                                                 )
                                                 .child(

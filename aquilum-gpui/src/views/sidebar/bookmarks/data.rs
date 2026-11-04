@@ -294,9 +294,14 @@ pub enum BookmarkRenameTarget {
         item_index: usize,
     },
     Folder(usize),
+    /// File or folder row in the sidebar explorer tree.
+    TreePath { path: PathBuf, is_folder: bool },
 }
 
 /// Active inline rename state with TextInput and selection.
+///
+/// Shared by the bookmarks list and the sidebar explorer tree, so both use the same
+/// input element and editing behavior.
 pub struct BookmarkRenameState {
     pub target: BookmarkRenameTarget,
     pub input: TextInput,

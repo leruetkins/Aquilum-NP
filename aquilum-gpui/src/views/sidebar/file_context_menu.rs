@@ -36,6 +36,9 @@ impl Default for FileContextMenuState {
 impl AppView {
     /// Opens the file context menu at the specified screen coordinates.
     pub fn open_file_context_menu(&mut self, file_path: PathBuf, x: f32, y: f32, cx: &mut Context<Self>) {
+        if self.bookmark_rename.is_some() {
+            self.commit_bookmark_rename(cx);
+        }
         // If folder menu is open, close it
         self.folder_context_menu.is_open = false;
         self.more_options_menu.is_open = false;
@@ -513,9 +516,9 @@ impl AppView {
                         false,
                         {
                             let p = target_path.clone();
-                            Box::new(cx.listener(move |this, _, _, cx| {
+                            Box::new(cx.listener(move |this, _, window, cx| {
                                 this.close_file_context_menu(cx);
-                                this.open_rename_folder_modal(p.clone(), cx);
+                                this.start_sidebar_tree_rename(p.clone(), false, window, cx);
                             }))
                         },
                     ))

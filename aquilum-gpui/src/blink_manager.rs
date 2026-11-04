@@ -279,6 +279,7 @@ pub enum BlinkTarget {
     FindQuery,
     FindReplace,
     Caption,
+    SidebarRename,
 }
 
 impl BlinkTarget {
@@ -299,6 +300,7 @@ impl BlinkTarget {
                 Some(state) => &mut state.input.blink,
                 None => &mut view.editor_blink,
             },
+            BlinkTarget::SidebarRename => &mut view.bookmark_rename_blink,
         }
     }
 }

@@ -545,10 +545,10 @@ impl AppView {
                         ActiveSubmenu::None,
                         {
                             let p = target_path.clone();
-                            Box::new(move |this, _, cx| {
+                            Box::new(move |this, window, cx| {
                                 this.close_more_options_menu(cx);
                                 if let Some(ref path) = p {
-                                    this.open_rename_folder_modal(path.clone(), cx);
+                                    this.start_sidebar_tree_rename(path.clone(), false, window, cx);
                                 }
                             })
                         },

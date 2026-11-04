@@ -302,6 +302,9 @@ impl AppView {
         if self.active_plugin_input.is_some() {
             self.plugin_input_blink.suspend_visible(cx);
         }
+        if self.bookmark_rename.is_some() {
+            self.bookmark_rename_blink.suspend_visible(cx);
+        }
     }
 
     /// Re-arms blinking for whichever caret holds in-app focus. Used when the OS window
@@ -333,6 +336,10 @@ impl AppView {
         }
         if self.active_plugin_input.is_some() {
             self.plugin_input_blink.enable(BlinkTarget::PluginInput, cx);
+        }
+        if self.bookmark_rename.is_some() {
+            self.bookmark_rename_blink
+                .enable(BlinkTarget::SidebarRename, cx);
         }
     }
 

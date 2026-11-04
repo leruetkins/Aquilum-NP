@@ -419,7 +419,7 @@ impl AppView {
             );
         }
         for ix in visible_rows {
-            tree_elements.push(self.render_sidebar_row(&sidebar_rows[ix], theme, cx));
+            tree_elements.push(self.render_sidebar_row(&sidebar_rows[ix], theme, window, cx));
         }
         if bottom_spacer_h > 0.0 {
             tree_elements.push(
@@ -841,6 +841,56 @@ impl AppView {
         cx.notify();
     }
 
+    /// Starts inline rename for a file or folder row.
+    ///
+    /// Reuses the bookmarks inline-rename state and input, so both lists edit names
+    /// through the same element.
+    pub(crate) fn start_sidebar_tree_rename(
+        &mut self,
+        path: PathBuf,
+        is_folder: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.bookmark_rename.is_some() {
+            self.commit_bookmark_rename(cx);
+        }
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        self.sidebar_mode = crate::views::sidebar::SidebarMode::Files;
+        self.sidebar_collapsed = false;
+        // An active quick filter could hide the row being renamed, taking the input
+        // with it.
+        self.quick_filter.clear(&mut self.state.search_query, cx);
+        self.state.reveal_path_in_tree(&path);
+        if is_folder {
+            self.selected_sidebar_folder = Some(path.clone());
+            self.need_scroll_sidebar_to_active.set(true);
+        } else {
+            if self.selected_sidebar_folder.as_deref() == Some(path.as_path()) {
+                self.selected_sidebar_folder = None;
+            }
+            // Only the active note is auto-centered; a file renamed from its context
+            // menu is already on screen and must not jump the list elsewhere.
+            if self.state.active_document().map(|doc| doc.path == path).unwrap_or(false) {
+                self.need_scroll_sidebar_to_active.set(true);
+            }
+        }
+
+        self.bookmark_rename = Some(crate::views::sidebar::BookmarkRenameState::new(
+            crate::views::sidebar::BookmarkRenameTarget::TreePath { path, is_folder },
+            name,
+            self.bookmark_rename_focus_handle.clone(),
+        ));
+        self.bookmark_rename_blink
+            .enable(crate::blink_manager::BlinkTarget::SidebarRename, cx);
+        window.focus(&self.bookmark_rename_focus_handle);
+        cx.notify();
+    }
+
     /// Clears the move flash after a second, so the frame is a highlight rather than state.
     fn schedule_sidebar_move_flash_clear(
         &self,
@@ -958,7 +1008,23 @@ impl AppView {
 
     /// Renders a single flattened sidebar row. Row height is fixed ([`SIDEBAR_ROW_H`]) so
     /// the caller can place it from the row index alone.
-    fn render_sidebar_row(&self, row: &SidebarRow, theme: &Theme, cx: &Context<Self>) -> AnyElement {
+    fn render_sidebar_row(
+        &self,
+        row: &SidebarRow,
+        theme: &Theme,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let is_renaming = self
+            .bookmark_rename
+            .as_ref()
+            .map(|rename| match &rename.target {
+                crate::views::sidebar::BookmarkRenameTarget::TreePath { path, .. } => {
+                    path.as_path() == row.path.as_path()
+                }
+                _ => false,
+            })
+            .unwrap_or(false);
         let drag = self
             .sidebar_tree_drag
             .as_ref()
@@ -1070,13 +1136,16 @@ impl AppView {
                 })
                 .child(chevron)
                 .child(folder_svg)
-                .child(
+                .child(if is_renaming {
+                    self.render_bookmark_rename_input(theme, window, cx)
+                } else {
                     div()
                         .text_xs()
                         .text_color(label_color)
                         .truncate()
-                        .child(label),
-                )
+                        .child(label)
+                        .into_any_element()
+                })
                 // Left mouse down only arms the drag; a plain click is resolved on mouse up,
                 // after the drag threshold had a chance to engage (same as bookmarks).
                 .on_mouse_down(MouseButton::Left, cx.listener({
@@ -1084,6 +1153,11 @@ impl AppView {
                     move |this, event: &MouseDownEvent, _, cx| {
                         if this.folder_context_menu.is_open || this.file_context_menu.is_open {
                             return;
+                        }
+                        // Clicking another row finishes an inline rename, like the
+                        // bookmarks list does.
+                        if this.bookmark_rename.is_some() {
+                            this.commit_bookmark_rename(cx);
                         }
                         this.sidebar_tree_drag = Some(SidebarTreeDragState {
                             source_path: path.clone(),
@@ -1230,17 +1304,25 @@ impl AppView {
                         .text_color(theme.accent)
                 })
                 .child(file_svg)
-                .child(
+                .child(if is_renaming {
+                    self.render_bookmark_rename_input(theme, window, cx)
+                } else {
                     div()
                         .text_xs()
                         .truncate()
-                        .child(label),
-                )
+                        .child(label)
+                        .into_any_element()
+                })
                 .on_mouse_down(MouseButton::Left, cx.listener({
                     let path = row.path.clone();
                     move |this, event: &MouseDownEvent, _, cx| {
                         if this.folder_context_menu.is_open || this.file_context_menu.is_open {
                             return;
+                        }
+                        // Clicking another row finishes an inline rename, like the
+                        // bookmarks list does.
+                        if this.bookmark_rename.is_some() {
+                            this.commit_bookmark_rename(cx);
                         }
                         this.sidebar_tree_drag = Some(SidebarTreeDragState {
                             source_path: path.clone(),

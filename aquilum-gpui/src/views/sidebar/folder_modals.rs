@@ -12,13 +12,6 @@ use crate::views::sidebar::folder_actions;
 #[derive(Clone, Debug, PartialEq)]
 pub enum FolderModal {
     None,
-    Rename {
-        folder_path: PathBuf,
-        current_name: String,
-        new_name: String,
-        cursor_pos: usize,
-        error_msg: Option<String>,
-    },
     Delete {
         folder_path: PathBuf,
         folder_name: String,
@@ -38,24 +31,6 @@ impl Default for FolderModal {
 }
 
 impl AppView {
-    /// Opens the rename folder modal.
-    pub fn open_rename_folder_modal(&mut self, folder_path: PathBuf, cx: &mut Context<Self>) {
-        let current_name = folder_path
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let len = current_name.chars().count();
-
-        self.folder_modal = FolderModal::Rename {
-            folder_path,
-            current_name: current_name.clone(),
-            new_name: current_name,
-            cursor_pos: len,
-            error_msg: None,
-        };
-        cx.notify();
-    }
-
     /// Opens the delete folder confirmation modal.
     pub fn open_delete_folder_modal(&mut self, folder_path: PathBuf, cx: &mut Context<Self>) {
         let fallback_folder = self.t("common.folder");
@@ -100,34 +75,6 @@ impl AppView {
     pub fn close_folder_modal(&mut self, cx: &mut Context<Self>) {
         self.folder_modal = FolderModal::None;
         cx.notify();
-    }
-
-    /// Commits the rename action on the folder.
-    pub fn commit_folder_rename(&mut self, cx: &mut Context<Self>) {
-        if let FolderModal::Rename {
-            ref folder_path,
-            ref new_name,
-            ..
-        } = self.folder_modal.clone()
-        {
-            match folder_actions::rename_folder(&folder_path, &new_name) {
-                Ok(new_path) => {
-                    self.state.handle_file_renamed(&folder_path, &new_path);
-                    self.state.expanded_folders.remove(folder_path);
-                    self.state.expanded_folders.insert(new_path);
-                    self.state.reload_file_tree();
-                    self.state.publish_snapshot();
-                    self.state.status_text = self.t_fmt("sidebar.folder_renamed", &[new_name]);
-                    self.folder_modal = FolderModal::None;
-                }
-                Err(e) => {
-                    if let FolderModal::Rename { ref mut error_msg, .. } = self.folder_modal {
-                        *error_msg = Some(e);
-                    }
-                }
-            }
-            cx.notify();
-        }
     }
 
     /// Commits the deletion of the folder.
@@ -191,81 +138,6 @@ impl AppView {
         }
     }
 
-    /// Handles keyboard events inside the rename modal.
-    pub fn handle_folder_rename_keydown(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        if let FolderModal::Rename {
-            ref mut new_name,
-            ref mut cursor_pos,
-            ..
-        } = self.folder_modal
-        {
-            let key = &event.keystroke.key;
-            if key == "escape" {
-                self.folder_modal = FolderModal::None;
-                cx.notify();
-                return;
-            }
-            if key == "enter" {
-                self.commit_folder_rename(cx);
-                return;
-            }
-            if key == "backspace" {
-                if *cursor_pos > 0 {
-                    let mut chars: Vec<char> = new_name.chars().collect();
-                    chars.remove(*cursor_pos - 1);
-                    *new_name = chars.into_iter().collect();
-                    *cursor_pos -= 1;
-                    cx.notify();
-                }
-                return;
-            }
-            if key == "delete" {
-                let char_count = new_name.chars().count();
-                if *cursor_pos < char_count {
-                    let mut chars: Vec<char> = new_name.chars().collect();
-                    chars.remove(*cursor_pos);
-                    *new_name = chars.into_iter().collect();
-                    cx.notify();
-                }
-                return;
-            }
-            if key == "left" {
-                if *cursor_pos > 0 {
-                    *cursor_pos -= 1;
-                    cx.notify();
-                }
-                return;
-            }
-            if key == "right" {
-                let char_count = new_name.chars().count();
-                if *cursor_pos < char_count {
-                    *cursor_pos += 1;
-                    cx.notify();
-                }
-                return;
-            }
-
-            // Text typing
-            let ch = if let Some(c) = &event.keystroke.key_char {
-                c.as_str()
-            } else if key.chars().count() == 1 {
-                key.as_str()
-            } else {
-                ""
-            };
-
-            if !ch.is_empty() {
-                for c in ch.chars() {
-                    let mut chars: Vec<char> = new_name.chars().collect();
-                    chars.insert(*cursor_pos, c);
-                    *cursor_pos += 1;
-                    *new_name = chars.into_iter().collect();
-                }
-                cx.notify();
-            }
-        }
-    }
-
     /// Renders active folder modals.
     pub fn render_folder_modals(&self, theme: &Theme, window: &mut Window, cx: &Context<Self>) -> impl IntoElement {
         let modal = self.folder_modal.clone();
@@ -297,117 +169,6 @@ impl AppView {
                     .justify_center()
                     .child(match modal {
                         FolderModal::None => div().into_any_element(),
-                        FolderModal::Rename {
-                            new_name,
-                            error_msg,
-                            ..
-                        } => {
-                            window.focus(&self.folder_modal_focus_handle);
-
-                            div()
-                                .id("folder-rename-dialog")
-                                .w(px(380.0))
-                                .bg(theme.bg_card)
-                                .border_1()
-                                .border_color(theme.border)
-                                .rounded_lg()
-                                .shadow_xl()
-                                .p_4()
-                                .flex()
-                                .flex_col()
-                                .gap_3()
-                                .track_focus(&self.folder_modal_focus_handle)
-                                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                                    this.handle_folder_rename_keydown(event, cx);
-                                }))
-                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                    cx.stop_propagation();
-                                })
-                                // Title
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .text_color(theme.text_primary)
-                                        .child(self.t("sidebar.rename_folder")),
-                                )
-                                // Input Box
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .px_3()
-                                        .py_1p5()
-                                        .bg(theme.bg_sidebar)
-                                        .border_1()
-                                        .border_color(theme.accent)
-                                        .rounded_md()
-                                        .child(
-                                            div()
-                                                .text_sm()
-                                                .text_color(theme.text_primary)
-                                                .child(new_name),
-                                        )
-                                        .child(
-                                            div()
-                                                .w(px(1.5))
-                                                .h(px(16.0))
-                                                .bg(theme.accent)
-                                                .ml_0p5(),
-                                        ),
-                                )
-                                // Optional Error
-                                .when_some(error_msg, |d, err| {
-                                    d.child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(gpui::rgb(0xe05252))
-                                            .child(err),
-                                    )
-                                })
-                                // Actions
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_row()
-                                        .justify_end()
-                                        .gap_2()
-                                        .mt_2()
-                                        .child(
-                                            div()
-                                                .id("folder-rename-btn-cancel")
-                                                .px_3()
-                                                .py_1()
-                                                .rounded_md()
-                                                .text_xs()
-                                                .cursor_pointer()
-                                                .text_color(theme.text_secondary)
-                                                .hover(|h| h.bg(theme.bg_hover))
-                                                .child(self.t("common.cancel"))
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.close_folder_modal(cx);
-                                                })),
-                                        )
-                                        .child(
-                                            div()
-                                                .id("folder-rename-btn-submit")
-                                                .px_3()
-                                                .py_1()
-                                                .rounded_md()
-                                                .text_xs()
-                                                .cursor_pointer()
-                                                .bg(theme.accent)
-                                                .text_color(gpui::rgb(0xffffff))
-                                                .hover(|h| h.opacity(0.9))
-                                                .child(self.t("sidebar.rename"))
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.commit_folder_rename(cx);
-                                                })),
-                                        ),
-                                )
-                                .into_any_element()
-                        }
                         FolderModal::Delete { folder_name, .. } => {
                             window.focus(&self.folder_modal_focus_handle);
 

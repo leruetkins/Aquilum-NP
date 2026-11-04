@@ -37,6 +37,9 @@ impl Default for FolderContextMenuState {
 impl AppView {
     /// Opens the folder context menu at the given coordinates.
     pub fn open_folder_context_menu(&mut self, folder_path: PathBuf, x: f32, y: f32, cx: &mut Context<Self>) {
+        if self.bookmark_rename.is_some() {
+            self.commit_bookmark_rename(cx);
+        }
         // If file menu is open, close it
         self.file_context_menu.is_open = false;
 
@@ -258,13 +261,14 @@ impl AppView {
                         false,
                         {
                             let p = target_path.clone();
-                            Box::new(cx.listener(move |this, _, _, cx| {
+                            Box::new(cx.listener(move |this, _, window, cx| {
                                 this.close_folder_context_menu(cx);
                                 if let Ok(new_folder) = folder_actions::create_folder_in_folder(&p) {
                                     this.state.expanded_folders.insert(p.clone());
-                                    this.state.expanded_folders.insert(new_folder);
+                                    this.state.expanded_folders.insert(new_folder.clone());
                                     this.state.reload_file_tree();
-                                    cx.notify();
+                                    this.select_sidebar_folder(new_folder.clone(), cx);
+                                    this.start_sidebar_tree_rename(new_folder, true, window, cx);
                                 }
                             }))
                         },
@@ -526,9 +530,9 @@ impl AppView {
                         false,
                         {
                             let p = target_path.clone();
-                            Box::new(cx.listener(move |this, _, _, cx| {
+                            Box::new(cx.listener(move |this, _, window, cx| {
                                 this.close_folder_context_menu(cx);
-                                this.open_rename_folder_modal(p.clone(), cx);
+                                this.start_sidebar_tree_rename(p.clone(), true, window, cx);
                             }))
                         },
                     ))
