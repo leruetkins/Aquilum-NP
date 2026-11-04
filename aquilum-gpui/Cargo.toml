@@ -63,6 +63,15 @@ tempfile = "3"
 [patch.crates-io]
 gpui = { path = "vendor/gpui" }
 
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.release.package."*"]
+opt-level = "s"
+
 # In debug builds, optimize dependencies (GPUI, pulldown-cmark, etc.) so UI runs smoothly at 60-120 FPS
 [profile.dev]
 opt-level = 1
