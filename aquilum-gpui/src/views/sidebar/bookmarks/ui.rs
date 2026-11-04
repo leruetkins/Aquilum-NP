@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use gpui::{
-    div, prelude::*, px, rgb, rgba, AnyElement, Context, IntoElement, KeyDownEvent,
+    div, prelude::*, px, rgb, AnyElement, Context, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, SharedString, Window,
 };
 use crate::icons;
@@ -688,12 +688,22 @@ impl AppView {
             scroll_container = scroll_container.child(
                 div()
                     .id("bookmark-root-drop-zone")
+                    .relative()
                     .h(px(40.0))
                     .w_full()
-                    .border_t_2()
-                    // Same as the ribbon rail: the drop slot is a line, not a filled box.
-                    .when(is_hovered, |d| d.border_color(theme.accent))
-                    .when(!is_hovered, |d| d.border_color(rgba(0x00000000)))
+                    // An explicit square rectangle instead of a top border: a border
+                    // picks up rounded caps at the ends of the line.
+                    .when(is_hovered, |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .top(px(0.0))
+                                .left(px(0.0))
+                                .right(px(0.0))
+                                .h(px(2.0))
+                                .bg(theme.accent),
+                        )
+                    })
                     .on_mouse_move(cx.listener(|this, _, _, cx| {
                         if let Some(ref mut drag) = this.bookmark_drag {
                             if drag.is_dragging {
@@ -894,16 +904,19 @@ impl AppView {
         // highlighted while a note is being reordered. The line is absolute so the
         // target row does not shift by a border width as it changes.
         if is_drop_target && !is_being_dragged {
-            row = row.relative().child(
-                div()
-                    .absolute()
-                    .left(px(0.0))
-                    .right(px(0.0))
-                    .top(px(-1.0))
-                    .h(px(2.0))
-                    .rounded_full()
-                    .bg(theme.accent),
-            );
+            let mut line = div()
+                .absolute()
+                .left(px(0.0))
+                .right(px(0.0))
+                .top(px(-1.0))
+                .h(px(2.0))
+                .bg(theme.accent);
+            // Root-level insertions are a plain square strip; only items inside a
+            // group keep the pill-shaped line.
+            if group_index.is_some() {
+                line = line.rounded_full();
+            }
+            row = row.relative().child(line);
         }
 
         row.into_any_element()
@@ -1196,10 +1209,16 @@ impl AppView {
         }
 
         if frame_group {
-            group_elem = group_elem
-                .rounded_md()
-                .border_1()
-                .border_color(theme.accent);
+            // Drawn as an overlay instead of a real border: a border would take a pixel
+            // from the layout and shift the header's title down and right.
+            group_elem = group_elem.relative().child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme.accent),
+            );
         } else if is_drop_target_group {
             // Appending inside the same group: only the line at the end of the group.
             group_elem = group_elem.relative().child(
