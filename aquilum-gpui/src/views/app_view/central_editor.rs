@@ -2070,6 +2070,8 @@ impl AppView {
                             }
                             window.focus(&this.focus_handle);
                             this.reset_editor_cursor_blink(cx);
+                            this.scroll_cursor_into_view();
+                            this.state.publish_snapshot();
                             cx.notify();
                         }))
                         .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {

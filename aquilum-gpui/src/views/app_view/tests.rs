@@ -2074,3 +2074,101 @@
         // In the active row, column 0 maps to char 0 (the first '#'), staying at column 0!
         assert_eq!(active_char, 0);
     }
+
+    /// Clicking a partially visible row at the top edge of the viewport must
+    /// reveal it completely (nearest reveal) and keep the scroll stable across
+    /// the subsequent frame's re-anchor check.
+    #[test]
+    fn test_partially_visible_top_row_reveal_simulation() {
+        let text = (0..7000).map(|i| format!("line {i}\n")).collect::<String>();
+        let doc_id = crate::document_buffer::DocumentId::new();
+        let mut doc = crate::document_buffer::DocumentBuffer::new(
+            doc_id,
+            std::path::PathBuf::from("huge.md"),
+            "huge".to_string(),
+            text,
+            1,
+        );
+        let mut view =
+            crate::workspace::EditorViewState::new(crate::workspace::TabId::new(), doc_id);
+        let typography = crate::settings::EditorTypography::default();
+        view.rebuild_visual_cache_with_headings(
+            &mut doc,
+            true,
+            80,
+            Some(&typography),
+            6_990,
+            false,
+        );
+        view.cursor_offset = doc.len();
+
+        let viewport = 800.0f64;
+        let target_line = 6950;
+        let line_top = view.doc_y_of_line(doc.line_index.lines(), target_line);
+        let mut scroll = line_top + 10.0;
+
+        view.viewport.offset = view.line_at_doc_y(doc.line_index.lines(), scroll);
+
+        let editor_rows_top_y = 100.0f32;
+        let click_y = editor_rows_top_y + 5.0;
+        let rel_y = f64::from(click_y) - f64::from(editor_rows_top_y) + scroll;
+        let target_v_idx = view.local_v_idx_at_doc_y(rel_y);
+        let v = &view.window.visual_rows[target_v_idx];
+        assert_eq!(v.line_idx, target_line);
+
+        let offset = view.offset_for_line_col(&doc, v.line_idx, 0);
+        view.cursor_offset = offset;
+
+        let (cursor_line, cursor_col) = view.line_col(&doc);
+        assert_eq!(cursor_line, target_line);
+
+        let anchor = if view.window.covers_line(cursor_line) && view.window.covers_line(view.viewport.offset) {
+            view.viewport.offset
+        } else {
+            view.viewport.offset = cursor_line;
+            cursor_line
+        };
+        view.ensure_visual_cache_with_headings(&mut doc, true, 80, Some(&typography), anchor, false);
+
+        let (v_idx, _) = crate::markdown::find_visual_row_for_cursor(&view.window.visual_rows, cursor_line, cursor_col).unwrap();
+        let row_top = view.doc_y_of_local_v_idx(v_idx);
+        let row_bottom = row_top + f64::from(view.window.height_index.height_of(v_idx));
+        let total_content_h = view.total_height();
+        let max_scroll = AppView::editor_max_scroll(total_content_h, viewport);
+
+        let current_scroll = scroll.clamp(0.0, max_scroll);
+        let viewport_bottom = current_scroll + viewport;
+
+        let target_scroll = if row_top < current_scroll {
+            row_top
+        } else if row_bottom > viewport_bottom {
+            row_bottom - viewport
+        } else {
+            current_scroll
+        }
+        .clamp(0.0, max_scroll);
+
+        if (target_scroll - scroll).abs() > 0.5 {
+            scroll = target_scroll;
+        }
+
+        let anchor_doc_y = scroll;
+        view.viewport.offset = view.line_at_doc_y(doc.line_index.lines(), anchor_doc_y);
+        let anchor_line = view.viewport.offset;
+        let old_line_top = view.doc_y_of_line(doc.line_index.lines(), anchor_line);
+        let px_in_line = (scroll - old_line_top).max(0.0);
+        let old_above_h = view.above_h;
+        let old_wrap_cols = view.window.wrap_cols;
+
+        view.ensure_visual_cache_with_headings(&mut doc, true, 80, Some(&typography), anchor_line, false);
+        let new_line_top = view.doc_y_of_line(doc.line_index.lines(), anchor_line);
+        if view.window.wrap_cols != old_wrap_cols
+            || (view.above_h - old_above_h).abs() > 0.5
+            || (new_line_top - old_line_top).abs() > 0.5
+        {
+            let first_v = view.window.first_row_of_line(anchor_line).unwrap_or(0);
+            scroll = view.above_h + view.window.height_index.top_of(first_v) + px_in_line;
+        }
+
+        assert_eq!(scroll, line_top);
+    }

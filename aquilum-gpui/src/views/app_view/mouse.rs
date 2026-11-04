@@ -260,6 +260,7 @@ impl AppView {
             None
         };
         self.reset_editor_cursor_blink(cx);
+        self.scroll_cursor_into_view();
         self.state.publish_snapshot();
         cx.notify();
     }

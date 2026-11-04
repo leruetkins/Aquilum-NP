@@ -936,6 +936,10 @@ pub(super) fn scroll_visual_row_into_view(&mut self, line: usize, col: usize) {
     // Ignore subpixel changes to avoid provoking jitter.
     if (target_scroll - raw_scroll).abs() > 0.5 {
         self.set_editor_scroll_top_f64(target_scroll);
+        if let Some((view, doc)) = self.state.active_view_and_doc_mut() {
+            view.viewport.offset = view.line_at_doc_y(doc.line_index.lines(), target_scroll);
+        }
+        self.layout_settle_frames.set(1);
     }
 }
 
