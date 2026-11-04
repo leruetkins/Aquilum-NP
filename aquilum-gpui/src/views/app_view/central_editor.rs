@@ -2170,37 +2170,23 @@ impl AppView {
                             let current_widths = table_layout.as_ref().unwrap().col_widths.clone();
                             let tbl_clone = tbl.clone();
                             let group_name = format!("tbl-add-col-grp-{}", tbl.first_line);
-                            // Row heights vary with the wrapped lines of every
-                            // row, so the strip is measured from the table's own
-                            // cell budgets instead of a fixed row height.
-                            let col_budgets = table_layout.as_ref().unwrap().col_chars.clone();
-                            let row_h_of = |l: usize| -> f32 {
-                                if l == tbl.sep_line() {
-                                    return 1.0;
-                                }
-                                let text = &lines_arc[l];
-                                let cells = crate::table::split_row(text);
-                                let ranges: Vec<std::ops::Range<usize>> =
-                                    cells.iter().map(|c| c.content.clone()).collect();
-                                let n = crate::markdown::table_row_wrap_lines(
-                                    text,
-                                    &ranges,
-                                    &col_budgets,
-                                    None,
-                                    &crate::markdown::InlineReveal::None,
-                                    headings,
-                                );
-                                let content = n as f32 * typography.table_line_height
-                                    + 2.0 * crate::markdown::TABLE_PAD_Y;
-                                if l == tbl.first_line || l == tbl.last_line {
-                                    content + crate::markdown::TABLE_EDGE_MARGIN
-                                } else {
-                                    content
-                                }
-                            };
-                            let above: f32 = (tbl.first_line..tbl.last_line).map(row_h_of).sum();
-                            let table_h = above + row_h_of(tbl.last_line);
-                            let col_btn_top = -above;
+                            // The strip spans the painted grid, not the row boxes:
+                            // the table keeps an edge margin above the header and
+                            // below the last row, so the visible grid starts and
+                            // ends one margin inside the row heights. The heights
+                            // come from the height index the rows are painted at,
+                            // so a wrapped or revealed cell cannot shift the strip.
+                            let above: f32 = (tbl.first_line..tbl.last_line)
+                                .map(|l| {
+                                    view.window
+                                        .first_row_of_line(l)
+                                        .map_or(0.0, |idx| height_index_arc.height_of(idx))
+                                })
+                                .sum();
+                            let table_h = above + row_h;
+                            let col_btn_top = crate::markdown::TABLE_EDGE_MARGIN - above;
+                            let col_btn_h = (table_h - 2.0 * crate::markdown::TABLE_EDGE_MARGIN)
+                                .max(typography.table_line_height);
                             Some(
                                 div()
                                     .id(gpui::ElementId::Name(format!("table-add-col-{}", v_idx).into()))
@@ -2209,7 +2195,7 @@ impl AppView {
                                     .left(px(total_w - 1.0))
                                     .top(px(col_btn_top))
                                     .w(px(14.0))
-                                    .h(px(table_h))
+                                    .h(px(col_btn_h))
                                     .cursor_pointer()
                                     .child(
                                         div()
