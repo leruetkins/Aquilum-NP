@@ -131,6 +131,8 @@
       "debounce_unit": "{}밀리초",
       "note_width": "노트 열 너비",
       "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
+      "show_width_limit_zones": "너비 제한 영역 표시",
+      "show_width_limit_zones_desc": "노트 열 양쪽에 옅은 띠를 표시합니다. 끄면 현재 줄 강조가 편집기 전체 너비로 확장됩니다",
       "note_align": "노트 정렬",
       "note_align_desc": "노트 열의 가로 정렬: 가운데 또는 왼쪽 정렬",
       "align_center": "가운데",
@@ -399,6 +401,10 @@
         }
       },
       "editor": {
+        "showWidthLimitZones": {
+          "title": "너비 제한 영역 표시",
+          "desc": "노트 열 양쪽에 옅은 띠를 표시합니다. 끄면 현재 줄 강조가 편집기 전체 너비로 확장됩니다"
+        },
         "fontSizeBase": {
           "title": "편집기 글꼴 크기",
           "desc": "노트 편집기 뷰포트의 기본 글꼴 크기(px)"

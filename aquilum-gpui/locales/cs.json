@@ -131,6 +131,8 @@
       "debounce_unit": "{} ms",
       "note_width": "Šířka poznámky",
       "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
+      "show_width_limit_zones": "Zobrazit zóny omezení šířky",
+      "show_width_limit_zones_desc": "Světlé pruhy po obou stranách sloupce poznámky. Při vypnutí se zvýraznění aktuálního řádku roztáhne na celou šířku editoru",
       "note_align": "Zarovnání poznámky",
       "note_align_desc": "Vodorovné zarovnání sloupce poznámky: na střed nebo vlevo",
       "align_center": "Na střed",
@@ -399,6 +401,10 @@
         }
       },
       "editor": {
+        "showWidthLimitZones": {
+          "title": "Zobrazit zóny omezení šířky",
+          "desc": "Světlé pruhy po obou stranách sloupce poznámky. Při vypnutí se zvýraznění aktuálního řádku roztáhne na celou šířku editoru"
+        },
         "fontSizeBase": {
           "title": "Velikost písma editoru",
           "desc": "Základní velikost písma ve výřezu editoru poznámek (px)"

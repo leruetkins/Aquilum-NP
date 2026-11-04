@@ -133,6 +133,8 @@
       "debounce_unit": "{} ms",
       "note_width": "Note Column Width",
       "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
+      "show_width_limit_zones": "Show Width-Limit Zones",
+      "show_width_limit_zones_desc": "Pale bands on both sides of the note column. When off, the current-line highlight spans the full editor width",
       "note_align": "Note Alignment",
       "note_align_desc": "Horizontal alignment of the note column: centered or left-aligned",
       "align_center": "Center",
@@ -427,6 +429,10 @@
       "editor.wideScrollbar": {
         "title": "Wide Scrollbar (Zed-style)",
         "desc": "Wide 16 px lane with a visible track and a full-width square thumb instead of the narrow pill"
+      },
+      "editor.showWidthLimitZones": {
+        "title": "Show Width-Limit Zones",
+        "desc": "Pale bands on both sides of the note column. When off, the current-line highlight spans the full editor width"
       },
       "editor.noteWidth": {
         "title": "Note Column Width",

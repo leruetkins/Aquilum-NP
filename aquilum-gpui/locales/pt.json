@@ -131,6 +131,8 @@
       "debounce_unit": "{} EM",
       "note_width": "Largura da nota",
       "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
+      "show_width_limit_zones": "Mostrar zonas de limite de largura",
+      "show_width_limit_zones_desc": "Faixas claras de ambos os lados da coluna da nota. Desativado, o realce da linha atual ocupa toda a largura do editor",
       "note_align": "Alinhamento da nota",
       "note_align_desc": "Alinhamento horizontal da coluna de nota: centralizado ou à esquerda",
       "align_center": "Centro",
@@ -399,6 +401,10 @@
         }
       },
       "editor": {
+        "showWidthLimitZones": {
+          "title": "Mostrar zonas de limite de largura",
+          "desc": "Faixas claras de ambos os lados da coluna da nota. Desativado, o realce da linha atual ocupa toda a largura do editor"
+        },
         "fontSizeBase": {
           "title": "Tamanho da fonte do editor",
           "desc": "Tamanho base da fonte na janela de visualização do editor de notas (px)"

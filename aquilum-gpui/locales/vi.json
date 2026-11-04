@@ -131,6 +131,8 @@
       "debounce_unit": "{} bệnh đa xơ cứng",
       "note_width": "Độ rộng cột ghi chú",
       "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
+      "show_width_limit_zones": "Hiển thị vùng giới hạn chiều rộng",
+      "show_width_limit_zones_desc": "Dải nhạt ở hai bên cột ghi chú. Khi tắt, vùng sáng dòng hiện tại trải rộng toàn bộ chiều rộng trình soạn thảo",
       "note_align": "Căn chỉnh ghi chú",
       "note_align_desc": "Căn chỉnh ngang của cột ghi chú: căn giữa hoặc sang trái",
       "align_center": "Giữa",
@@ -399,6 +401,10 @@
         }
       },
       "editor": {
+        "showWidthLimitZones": {
+          "title": "Hiển thị vùng giới hạn chiều rộng",
+          "desc": "Dải nhạt ở hai bên cột ghi chú. Khi tắt, vùng sáng dòng hiện tại trải rộng toàn bộ chiều rộng trình soạn thảo"
+        },
         "fontSizeBase": {
           "title": "Cỡ chữ của trình soạn thảo",
           "desc": "Kích thước phông chữ cơ bản trong khung nhìn của trình soạn thảo ghi chú (px)"

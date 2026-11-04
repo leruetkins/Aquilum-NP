@@ -131,6 +131,8 @@
       "debounce_unit": "{} MS",
       "note_width": "Largeur de la note",
       "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
+      "show_width_limit_zones": "Afficher les zones de limite de largeur",
+      "show_width_limit_zones_desc": "Bandes pâles de part et d'autre de la colonne de note. Si désactivé, le surlignage de la ligne courante occupe toute la largeur de l'éditeur",
       "note_align": "Alignement de la note",
       "note_align_desc": "Alignement horizontal de la note : centré ou à gauche",
       "align_center": "Centré",
@@ -399,6 +401,10 @@
         }
       },
       "editor": {
+        "showWidthLimitZones": {
+          "title": "Afficher les zones de limite de largeur",
+          "desc": "Bandes pâles de part et d'autre de la colonne de note. Si désactivé, le surlignage de la ligne courante occupe toute la largeur de l'éditeur"
+        },
         "fontSizeBase": {
           "title": "Taille de la police de l'éditeur",
           "desc": "Taille de police de base dans la fenêtre de l'éditeur de notes (px)"

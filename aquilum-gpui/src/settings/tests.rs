@@ -214,3 +214,23 @@
         let serialized = serde_json::to_string(&parsed_editor_center).unwrap();
         assert!(serialized.contains(r#""titleAlign":"editor_center""#));
     }
+
+    /// Older settings.json files have no showWidthLimitZones key: they must
+    /// keep the zones visible instead of silently turning the feature off.
+    #[test]
+    fn test_show_width_limit_zones_default_and_serde() {
+        assert!(EditorSettings::default().show_width_limit_zones);
+
+        let parsed: EditorSettings = serde_json::from_str("{}").unwrap();
+        assert!(parsed.show_width_limit_zones);
+
+        let legacy: EditorSettings =
+            serde_json::from_str(r#"{"editorWidthPct":36,"noteAlign":"left"}"#).unwrap();
+        assert!(legacy.show_width_limit_zones);
+
+        let off: EditorSettings = serde_json::from_str(r#"{"showWidthLimitZones":false}"#).unwrap();
+        assert!(!off.show_width_limit_zones);
+
+        let serialized = serde_json::to_string(&off).unwrap();
+        assert!(serialized.contains(r#""showWidthLimitZones":false"#));
+    }

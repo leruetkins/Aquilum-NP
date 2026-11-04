@@ -131,6 +131,8 @@
       "debounce_unit": "{} SM",
       "note_width": "Szerokość notatki",
       "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
+      "show_width_limit_zones": "Pokaż strefy ograniczenia szerokości",
+      "show_width_limit_zones_desc": "Blade pasy po obu stronach kolumny notatki. Gdy wyłączone, podświetlenie bieżącej linii rozciąga się na całą szerokość edytora",
       "note_align": "Wyrównanie notatki",
       "note_align_desc": "Wyrównanie poziome kolumny notatki: do środka lub do lewej",
       "align_center": "Środek",
@@ -399,6 +401,10 @@
         }
       },
       "editor": {
+        "showWidthLimitZones": {
+          "title": "Pokaż strefy ograniczenia szerokości",
+          "desc": "Blade pasy po obu stronach kolumny notatki. Gdy wyłączone, podświetlenie bieżącej linii rozciąga się na całą szerokość edytora"
+        },
         "fontSizeBase": {
           "title": "Rozmiar czcionki edytora",
           "desc": "Podstawowy rozmiar czcionki w rzutni edytora notatek (px)"

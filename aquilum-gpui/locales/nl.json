@@ -131,6 +131,8 @@
       "debounce_unit": "{} ms",
       "note_width": "Notitiebreedte",
       "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
+      "show_width_limit_zones": "Breedtebeperkingszones weergeven",
+      "show_width_limit_zones_desc": "Lichte banden aan weerszijden van de notitiekolom. Uit: markering van de huidige regel loopt over de volledige editorbreedte",
       "note_align": "Notitie-uitlijning",
       "note_align_desc": "Horizontale uitlijning van de notitiekolom: gecentreerd of links",
       "align_center": "Gecentreerd",
@@ -399,6 +401,10 @@
         }
       },
       "editor": {
+        "showWidthLimitZones": {
+          "title": "Breedtebeperkingszones weergeven",
+          "desc": "Lichte banden aan weerszijden van de notitiekolom. Uit: markering van de huidige regel loopt over de volledige editorbreedte"
+        },
         "fontSizeBase": {
           "title": "Lettergrootte van editor",
           "desc": "Basislettergrootte in het weergavevenster van de notitie-editor (px)"

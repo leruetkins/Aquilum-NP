@@ -131,6 +131,8 @@
       "debounce_unit": "{} 毫秒",
       "note_width": "笔记列宽度",
       "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
+      "show_width_limit_zones": "显示宽度限制区域",
+      "show_width_limit_zones_desc": "笔记列两侧显示浅色区域。关闭后，当前行高亮延伸至编辑器的整个宽度",
       "note_align": "笔记对齐方式",
       "note_align_desc": "笔记列的水平对齐方式：居中或居左",
       "align_center": "居中",
@@ -399,6 +401,10 @@
         }
       },
       "editor": {
+        "showWidthLimitZones": {
+          "title": "显示宽度限制区域",
+          "desc": "笔记列两侧显示浅色区域。关闭后，当前行高亮延伸至编辑器的整个宽度"
+        },
         "fontSizeBase": {
           "title": "编辑器字体大小",
           "desc": "笔记编辑器视口中的基本字体大小 (px)"

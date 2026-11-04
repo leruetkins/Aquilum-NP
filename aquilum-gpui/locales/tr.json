@@ -131,6 +131,8 @@
       "debounce_unit": "{} ms",
       "note_width": "Not Genişliği",
       "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
+      "show_width_limit_zones": "Genişlik sınırı bölgelerini göster",
+      "show_width_limit_zones_desc": "Not sütununun iki yanında soluk şeritler. Kapalıyken geçerli satır vurgusu editörün tam genişliğine yayılır",
       "note_align": "Not Hizalama",
       "note_align_desc": "Not sütununun yatay hizalaması: ortalı veya sola hizalı",
       "align_center": "Ortala",
@@ -399,6 +401,10 @@
         }
       },
       "editor": {
+        "showWidthLimitZones": {
+          "title": "Genişlik sınırı bölgelerini göster",
+          "desc": "Not sütununun iki yanında soluk şeritler. Kapalıyken geçerli satır vurgusu editörün tam genişliğine yayılır"
+        },
         "fontSizeBase": {
           "title": "Düzenleyici Yazı Tipi Boyutu",
           "desc": "Not düzenleyici görünüm penceresindeki temel yazı tipi boyutu (px)"

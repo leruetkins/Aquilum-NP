@@ -131,6 +131,8 @@
       "debounce_unit": "{} 毫秒",
       "note_width": "筆記欄寬度",
       "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
+      "show_width_limit_zones": "顯示寬度限制區域",
+      "show_width_limit_zones_desc": "筆記欄兩側顯示淺色區域。關閉後，目前行反白會延伸至編輯器的整個寬度",
       "note_align": "筆記對齊方式",
       "note_align_desc": "筆記欄的水平對齊方式：置中或靠左",
       "align_center": "置中",
@@ -399,6 +401,10 @@
         }
       },
       "editor": {
+        "showWidthLimitZones": {
+          "title": "顯示寬度限制區域",
+          "desc": "筆記欄兩側顯示淺色區域。關閉後，目前行反白會延伸至編輯器的整個寬度"
+        },
         "fontSizeBase": {
           "title": "編輯器字體大小",
           "desc": "筆記編輯器視窗中的基本字體大小 (px)"

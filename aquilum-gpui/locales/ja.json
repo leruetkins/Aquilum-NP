@@ -131,6 +131,8 @@
       "debounce_unit": "{} MS",
       "note_width": "ノートの幅",
       "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
+      "show_width_limit_zones": "幅制限ゾーンを表示",
+      "show_width_limit_zones_desc": "ノート列の両側に淡い帯を表示します。オフにすると現在行のハイライトがエディター全体の幅に広がります",
       "note_align": "ノートの配置",
       "note_align_desc": "ノート列の水平配置: 中央揃えまたは左揃え",
       "align_center": "中央揃え",
@@ -399,6 +401,10 @@
         }
       },
       "editor": {
+        "showWidthLimitZones": {
+          "title": "幅制限ゾーンを表示",
+          "desc": "ノート列の両側に淡い帯を表示します。オフにすると現在行のハイライトがエディター全体の幅に広がります"
+        },
         "fontSizeBase": {
           "title": "エディターのフォントサイズ",
           "desc": "ノートエディターのビューポートの基本フォントサイズ (px)"

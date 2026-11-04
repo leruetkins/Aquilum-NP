@@ -131,6 +131,8 @@
       "debounce_unit": "{} ms",
       "note_width": "Anteckningsbredd",
       "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
+      "show_width_limit_zones": "Visa zoner för breddbegränsning",
+      "show_width_limit_zones_desc": "Ljusa band på båda sidor om anteckningskolumnen. Av: markeringen av aktuell rad sträcks över hela editorns bredd",
       "note_align": "Anteckningsjustering",
       "note_align_desc": "Horisontell justering av anteckningskolumnen: centrerad eller vänsterställd",
       "align_center": "Centrerad",
@@ -399,6 +401,10 @@
         }
       },
       "editor": {
+        "showWidthLimitZones": {
+          "title": "Visa zoner för breddbegränsning",
+          "desc": "Ljusa band på båda sidor om anteckningskolumnen. Av: markeringen av aktuell rad sträcks över hela editorns bredd"
+        },
         "fontSizeBase": {
           "title": "Editor teckenstorlek",
           "desc": "Basteckensnittsstorlek i anteckningsredigerarens vyport (px)"

@@ -131,6 +131,8 @@
       "debounce_unit": "{} MS",
       "note_width": "Notizspaltenbreite",
       "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
+      "show_width_limit_zones": "Breitenbegrenzungs-Zonen anzeigen",
+      "show_width_limit_zones_desc": "Blasse Bereiche beiderseits der Notizspalte. Wenn aus, reicht die Hervorhebung der aktuellen Zeile über die gesamte Editorbreite",
       "note_align": "Notizausrichtung",
       "note_align_desc": "Horizontale Ausrichtung der Notizspalte: zentriert oder linksbündig",
       "align_center": "Zentriert",
@@ -399,6 +401,10 @@
         }
       },
       "editor": {
+        "showWidthLimitZones": {
+          "title": "Breitenbegrenzungs-Zonen anzeigen",
+          "desc": "Blasse Bereiche beiderseits der Notizspalte. Wenn aus, reicht die Hervorhebung der aktuellen Zeile über die gesamte Editorbreite"
+        },
         "fontSizeBase": {
           "title": "Schriftgröße des Editors",
           "desc": "Basisschriftgröße im Ansichtsfenster des Notizeditors (px)"

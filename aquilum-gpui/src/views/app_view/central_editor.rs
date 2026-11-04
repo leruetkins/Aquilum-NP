@@ -106,8 +106,9 @@ impl AppView {
             const NOTE_EDGE_PAD: f32 = 32.0;
             let (note_margin_left, note_margin_right) = self.note_margins_for_leaf(leaf_id, window_w);
             let width_limited = self.config.editor.editor_width_pct < 100;
-            let show_left_band = width_limited && note_margin_left > 0.0;
-            let show_right_band = width_limited && note_margin_right > 0.0;
+            let show_zones = self.config.editor.show_width_limit_zones;
+            let show_left_band = show_zones && width_limited && note_margin_left > 0.0;
+            let show_right_band = show_zones && width_limited && note_margin_right > 0.0;
             // The current-line wash is a child of a row inside the padded note
             // column. Negative insets pull it over the gutters, but a band on
             // that side stops it at the note column instead.

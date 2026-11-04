@@ -290,6 +290,9 @@ pub struct EditorSettings {
     /// display-dependent table, 99 is its maximum, and 100 takes the window's
     /// full editor width. Default is 100.
     pub editor_width_pct: u32,
+    /// Pale bands marking the editor area excluded by the width limit. On by
+    /// default; when off, the current-line wash spans the whole editor pane.
+    pub show_width_limit_zones: bool,
     /// Note alignment inside the editor pane (Center or Left). Default is Center.
     pub note_align: NoteAlignment,
     /// Note title alignment (WindowLeft, WindowCenter, EditorLeft, EditorCenter). Default is WindowLeft.
@@ -322,6 +325,7 @@ impl Default for EditorSettings {
             save_on_blur: true,
             show_invisibles: false,
             editor_width_pct: 100,
+            show_width_limit_zones: true,
             note_align: NoteAlignment::Center,
             title_align: TitleAlignment::WindowLeft,
             font: FontSettings {
@@ -795,6 +799,15 @@ pub static SETTINGS: &[SettingDescriptor] = &[
         title_key: "settings.registry.editor.wideScrollbar.title",
         desc_key: "settings.registry.editor.wideScrollbar.desc",
         keywords: &["scrollbar", "wide", "zed", "скроллбар", "широкий", "ползунок"],
+        aliases: &[],
+        setting_type: SettingType::Bool,
+    },
+    SettingDescriptor {
+        id: "editor.showWidthLimitZones",
+        tab_id: "editor",
+        title_key: "settings.registry.editor.showWidthLimitZones.title",
+        desc_key: "settings.registry.editor.showWidthLimitZones.desc",
+        keywords: &["width", "zone", "band", "limit", "ширина", "зона", "ограничение", "полоса"],
         aliases: &[],
         setting_type: SettingType::Bool,
     },

@@ -131,6 +131,8 @@
       "debounce_unit": "{} SM",
       "note_width": "Larghezza della nota",
       "note_width_desc": "0–99 → 500–2100 px (by display); 100 → full editor width",
+      "show_width_limit_zones": "Mostra le zone di limite larghezza",
+      "show_width_limit_zones_desc": "Fasce chiare su entrambi i lati della colonna della nota. Se disattivato, l'evidenziazione della riga corrente copre tutta la larghezza dell'editor",
       "note_align": "Allineamento della nota",
       "note_align_desc": "Allineamento orizzontale della nota: al centro o a sinistra",
       "align_center": "Al centro",
@@ -399,6 +401,10 @@
         }
       },
       "editor": {
+        "showWidthLimitZones": {
+          "title": "Mostra le zone di limite larghezza",
+          "desc": "Fasce chiare su entrambi i lati della colonna della nota. Se disattivato, l'evidenziazione della riga corrente copre tutta la larghezza dell'editor"
+        },
         "fontSizeBase": {
           "title": "Dimensione carattere dell'editor",
           "desc": "Dimensione base del carattere nella finestra dell'editor delle note (px)"

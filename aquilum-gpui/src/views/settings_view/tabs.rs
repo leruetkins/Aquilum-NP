@@ -878,6 +878,19 @@ impl SettingsView {
                 cx,
             ),
             self.render_setting_row_with_id(
+                Some("editor.showWidthLimitZones"),
+                &self.t("settings.editor.show_width_limit_zones"),
+                Some(&self.t("settings.editor.show_width_limit_zones_desc")),
+                div()
+                    .id("row-show-width-limit-zones")
+                    .child(self.render_toggle_switch(config.editor.show_width_limit_zones))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.config.editor.show_width_limit_zones = !this.config.editor.show_width_limit_zones;
+                        this.save_settings(cx);
+                    })),
+                cx,
+            ),
+            self.render_setting_row_with_id(
                 Some("editor.noteAlign"),
                 &self.t("settings.editor.note_align"),
                 Some(&self.t("settings.editor.note_align_desc")),
