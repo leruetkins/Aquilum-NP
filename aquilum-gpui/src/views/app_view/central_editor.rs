@@ -30,6 +30,7 @@ impl AppView {
 
         let mut editor_root = div()
             .id(gpui::ElementId::Name(root_id.into()))
+            .relative()
             .flex()
             .flex_col()
             .flex_1()
@@ -104,11 +105,14 @@ impl AppView {
         if let Some((view, doc)) = current_view_and_doc {
             const NOTE_EDGE_PAD: f32 = 32.0;
             let (note_margin_left, note_margin_right) = self.note_margins_for_leaf(leaf_id, window_w);
+            let width_limited = self.config.editor.editor_width_pct < 100;
+            let show_left_band = width_limited && note_margin_left > 0.0;
+            let show_right_band = width_limited && note_margin_right > 0.0;
             // The current-line wash is a child of a row inside the padded note
-            // column. Negative insets pull it out over that padding so the line
-            // spans the whole editor, gutter and note margins included.
-            let highlight_left = -(NOTE_EDGE_PAD + note_margin_left);
-            let highlight_right = -(NOTE_EDGE_PAD + note_margin_right);
+            // column. Negative insets pull it over the gutters, but a band on
+            // that side stops it at the note column instead.
+            let highlight_left = if show_left_band { 0.0 } else { -(NOTE_EDGE_PAD + note_margin_left) };
+            let highlight_right = if show_right_band { 0.0 } else { -(NOTE_EDGE_PAD + note_margin_right) };
 
             let note_title = doc
                 .path
@@ -118,8 +122,9 @@ impl AppView {
 
             let lines_arc = Arc::clone(&view.window.lines);
             let doc_lines = doc.line_index.lines();
-            let line_number_digits = doc_lines.max(1).to_string().len().max(3);
-            let line_number_width = 40.0 + line_number_digits.saturating_sub(3) as f32 * line_char_width;
+            // The gutter itself owns this width: long numbers grow it instead
+            // of spilling left into the padding and under the width-limit band.
+            let line_number_width = Self::line_number_gutter_width(doc_lines);
             let visual_rows_arc = Arc::clone(&view.window.visual_rows);
             let code_states_arc = Arc::clone(&view.window.code_states);
             let height_index_arc = Arc::clone(&view.window.height_index);
@@ -2378,7 +2383,7 @@ impl AppView {
                         div()
                             .id(gpui::ElementId::Name(format!("line-num-{}-{}", lid_tag, v_idx).into()))
                             .relative()
-                            .w(px(40.0))
+                            .w(px(line_number_width))
                             .flex_shrink_0()
                             .h(px(row_h))
                             .when(!is_tbl_sep, |d| {
@@ -2387,7 +2392,7 @@ impl AppView {
                                         .absolute()
                                         .right(px(if markers_active { FIND_MARKER_W } else { 0.0 }))
                                         .top(px(line_num_top))
-                                        .w(px(line_number_width))
+                                        .w(px(line_number_width - if markers_active { FIND_MARKER_W } else { 0.0 }))
                                         .h(px(line_num_h))
                                         .flex()
                                         .items_center()
@@ -2970,13 +2975,53 @@ impl AppView {
                 editor_container = editor_container.child(scrollbar_track);
             }
 
-            editor_root = editor_root.child(title_box);
+            // The bands start at the note title, so the navigation bar and the
+            // toolbar strips keep their own backgrounds. Painting them last
+            // inside this container keeps one continuous column; they have no
+            // listeners, so clicks still reach the elements underneath.
+            let width_band = |id: &'static str, at_left: bool, width: f32| {
+                let band = div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(width))
+                    .bg(theme.width_limit_bg());
+                let band = if at_left { band.left_0() } else { band.right_0() };
+                band.id(gpui::ElementId::from((id, lid_tag)))
+            };
+
+            let mut note_body = div()
+                .relative()
+                .flex()
+                .flex_col()
+                .w_full()
+                .flex_1()
+                .min_w_0()
+                .min_h_0();
+
+            note_body = note_body.child(title_box);
             // The find bar belongs directly under the note title panel and
             // above the editor body, so it never floats over the text.
             if is_leaf_active && self.find_bar.is_open {
-                editor_root = editor_root.child(self.render_find_bar(leaf_id, theme, window, cx));
+                note_body = note_body.child(self.render_find_bar(leaf_id, theme, window, cx));
             }
-            editor_root = editor_root.child(editor_container);
+            note_body = note_body.child(editor_container);
+
+            if show_right_band {
+                note_body = note_body.child(width_band(
+                    "note-width-limit-area",
+                    false,
+                    NOTE_EDGE_PAD + note_margin_right,
+                ));
+            }
+            if show_left_band {
+                note_body = note_body.child(width_band(
+                    "note-width-limit-area-left",
+                    true,
+                    NOTE_EDGE_PAD + note_margin_left,
+                ));
+            }
+            editor_root = editor_root.child(note_body);
         } else if leaf_id
             .and_then(|lid| self.state.leaves.get(&lid))
             .and_then(|l| l.active_tab())

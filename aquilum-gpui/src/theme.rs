@@ -132,6 +132,17 @@ impl Theme {
         }
     }
 
+    /// Barely-there wash for the part of the editor excluded by the width
+    /// slider. A neutral translucent overlay keeps it subtle over every preset;
+    /// on a white editor surface it composites to #fbfbfb.
+    pub fn width_limit_bg(&self) -> Rgba {
+        if self.is_dark {
+            rgba(0xffffff04)
+        } else {
+            rgba(0x00000004)
+        }
+    }
+
     /// Color for whitespace indicator dots (barely visible muted gray).
     pub fn whitespace_dot(&self) -> Rgba {
         let mut c = self.text_muted;

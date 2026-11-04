@@ -10,12 +10,40 @@ impl AppView {
         }
     }
 
-    fn editor_chrome_width(&self) -> f32 {
-        64.0 + 48.0 + if self.config.editor.wide_scrollbar { 16.0 } else { 14.0 }
+    /// Width of the line-number gutter. It grows with the digit count of the
+    /// largest line number in the document: a note of tens of lines keeps the
+    /// narrow baseline lane, one of tens of millions gets a wider one. The
+    /// numbers are painted at the fixed `text_xs` size, so the step per extra
+    /// digit is a constant rather than the scaled editor cell width.
+    pub(super) fn line_number_gutter_width(doc_lines: usize) -> f32 {
+        const BASE_W: f32 = 40.0;
+        const DIGIT_W: f32 = 7.7;
+        let digits = doc_lines.max(1).to_string().len().max(3);
+        BASE_W + (digits - 3) as f32 * DIGIT_W
+    }
+
+    /// Line count of the document shown in this leaf. The gutter width, the
+    /// pane text origin and the width budget must all read the same document.
+    fn doc_lines_for_leaf(&self, leaf_id: Option<crate::workspace::LeafId>) -> usize {
+        let lid = leaf_id.unwrap_or(self.state.workspace.active_leaf);
+        self.state
+            .leaves
+            .get(&lid)
+            .and_then(|leaf| leaf.active_tab())
+            .and_then(|tab| match &tab.content {
+                crate::workspace::TabContent::Document { id } => self.state.documents.get(id),
+                _ => None,
+            })
+            .map_or(1, |doc| doc.line_index.lines())
+    }
+
+    fn editor_chrome_width(&self, leaf_id: Option<crate::workspace::LeafId>) -> f32 {
+        64.0 + 8.0 + Self::line_number_gutter_width(self.doc_lines_for_leaf(leaf_id))
+            + if self.config.editor.wide_scrollbar { 16.0 } else { 14.0 }
     }
 
     pub(crate) fn window_content_width(&self, window_width: f32) -> f32 {
-        (window_width - self.editor_chrome_width()).max(40.0)
+        (window_width - self.editor_chrome_width(None)).max(40.0)
     }
 
     pub(crate) fn note_width_target_px(&self, slider: u32, window_width: f32) -> u32 {
@@ -52,7 +80,7 @@ impl AppView {
             .map(|lid| self.state.workspace.horizontal_width_ratio_of_leaf(lid))
             .unwrap_or(1.0);
         let divider_w = if width_ratio < 0.999 { 4.0 } else { 0.0 };
-        (pane_w - divider_w - self.editor_chrome_width()).max(40.0)
+        (pane_w - divider_w - self.editor_chrome_width(leaf_id)).max(40.0)
     }
 
     pub(crate) fn note_content_width(&self, max_content_w: f32, window_width: f32) -> f32 {
@@ -279,7 +307,8 @@ impl AppView {
         let target_lid = leaf_id.unwrap_or(self.state.workspace.active_leaf);
         let (start_ratio, _) = self.state.workspace.horizontal_span_of_leaf(target_lid);
         let margin_left = self.note_margin_left_for_leaf(Some(target_lid), window_w);
-        editor_left_x + start_ratio * workspace_w + margin_left + 32.0 + 8.0 + 40.0
+        let gutter_w = Self::line_number_gutter_width(self.doc_lines_for_leaf(Some(target_lid)));
+        editor_left_x + start_ratio * workspace_w + margin_left + 32.0 + 8.0 + gutter_w
     }
 
     pub fn set_editor_width_pct(&mut self, pct: u32, window: &Window, cx: &mut Context<Self>) {

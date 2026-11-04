@@ -962,6 +962,25 @@
         assert_eq!(AppView::editor_thumb_h(800.0, 800.0, true), WIDE_THUMB_H);
     }
 
+    /// The line-number gutter grows with the digit count of the document: a
+    /// short note keeps the narrow baseline, a millions-long note gets room
+    /// for every digit, and the width never oscillates between the two.
+    #[test]
+    fn line_number_gutter_width_tracks_digit_count() {
+        let gutter = AppView::line_number_gutter_width;
+        let near = |got: f32, want: f32| {
+            assert!((got - want).abs() < 0.01, "gutter {got} != {want}");
+        };
+        near(gutter(1), 40.0);
+        near(gutter(20), 40.0);
+        near(gutter(999), 40.0);
+        near(gutter(1000), 47.7);
+        near(gutter(7_769_829), 70.8);
+        near(gutter(10_000_000), 78.5);
+        assert!(gutter(20) < gutter(999_999));
+        assert!(gutter(999_999) < gutter(10_000_000));
+    }
+
     #[test]
     fn test_table_cell_end_cursor_and_geometry() {
         let text = "| aaa | bbb |";
