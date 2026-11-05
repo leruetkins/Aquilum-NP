@@ -567,6 +567,7 @@ impl AppView {
                 current_item_x,
                 item_start_y,
                 item_w,
+                true,
                 fmt,
                 theme,
                 cx,
@@ -599,6 +600,7 @@ impl AppView {
                 current_item_x,
                 item_start_y,
                 overflow_btn_w,
+                false,
                 fmt,
                 theme,
                 cx,
@@ -623,32 +625,9 @@ impl AppView {
             );
         }
 
-        // A press on an icon arms the drag; the icon's own mouse-up handler runs the
-        // action when the gesture stayed a click.
-        strip = strip.on_mouse_down(MouseButton::Left, cx.listener({
-            let toolbar_id = toolbar_id.clone();
-            let slots = item_slots.clone();
-            move |this, event: &gpui::MouseDownEvent, _, cx| {
-                let x: f32 = event.position.x.into();
-                let y: f32 = event.position.y.into();
-                if let Some((_, _, id, can_drag)) =
-                    slots.iter().find(|(left, right, _, _)| x >= *left && x < *right)
-                {
-                    this.toolbar_view.hovered_tooltip = None;
-                    this.toolbar_drag = Some(ToolbarDragState {
-                        toolbar_id: toolbar_id.clone(),
-                        source_id: id.clone(),
-                        start_x: x,
-                        pointer_x: x,
-                        pointer_y: y,
-                        is_dragging: false,
-                        target_id: None,
-                        can_drag: *can_drag,
-                    });
-                    cx.notify();
-                }
-            }
-        }));
+        // The press that arms a drag is handled by the icon itself (see
+        // `render_toolbar_item`), so a click never depends on matching the pointer X
+        // against these slots.
         strip = strip.on_mouse_move(cx.listener({
             let toolbar_id = toolbar_id.clone();
             let slots = item_slots.clone();
@@ -843,6 +822,51 @@ impl AppView {
         )
     }
 
+    /// Arms a toolbar drag from the icon's own mouse-down. Keeping the press on the
+    /// icon (instead of hit-testing the strip) means a click always finds its source:
+    /// slot positions are window-coordinate estimates and may drift from the flex
+    /// layout (overflow, centered rows, panes), which used to drop clicks entirely.
+    fn arm_toolbar_drag(
+        &mut self,
+        toolbar_id: &str,
+        item_id: &str,
+        x: f32,
+        y: f32,
+        can_drag: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.toolbar_view.hovered_tooltip = None;
+        self.toolbar_drag = Some(ToolbarDragState {
+            toolbar_id: toolbar_id.to_string(),
+            source_id: item_id.to_string(),
+            start_x: x,
+            pointer_x: x,
+            pointer_y: y,
+            is_dragging: false,
+            target_id: None,
+            can_drag,
+        });
+        cx.notify();
+    }
+
+    /// Listener for an icon's left press: arms the drag for this exact item.
+    fn arm_toolbar_drag_listener(
+        toolbar_id: String,
+        item_id: String,
+        can_drag: bool,
+    ) -> impl Fn(&mut Self, &gpui::MouseDownEvent, &mut Window, &mut Context<Self>) + 'static {
+        move |this, event: &gpui::MouseDownEvent, _, cx| {
+            this.arm_toolbar_drag(
+                &toolbar_id,
+                &item_id,
+                event.position.x.into(),
+                event.position.y.into(),
+                can_drag,
+                cx,
+            );
+        }
+    }
+
     /// Renders an individual item (button, split-dropdown, dropdown, or separator).
     fn render_toolbar_item(
         &self,
@@ -851,6 +875,7 @@ impl AppView {
         item_x: f32,
         item_y: f32,
         item_w: f32,
+        draggable: bool,
         fmt: &ActiveFormatting,
         theme: &Theme,
         cx: &Context<Self>,
@@ -908,11 +933,22 @@ impl AppView {
 
                     let cmd_to_exec = cmd_id.clone();
                     let source_id = it_id.clone();
+                    btn = btn.on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(Self::arm_toolbar_drag_listener(
+                            tb_id.clone(),
+                            it_id.clone(),
+                            draggable,
+                        )),
+                    );
                     btn = btn.on_mouse_up(MouseButton::Left, cx.listener(move |this, _, window, cx| {
                         let Some(drag) = this.toolbar_drag.as_ref() else {
                             return;
                         };
-                        if drag.is_dragging || drag.source_id != source_id {
+                        // A drag that ended on another icon is committed as a reorder
+                        // by the strip; this icon's action must not also run. A small
+                        // pointer jitter stays a click and still executes.
+                        if drag.source_id != source_id {
                             return;
                         }
                         this.toolbar_drag = None;
@@ -1020,13 +1056,21 @@ impl AppView {
                         .cursor_pointer()
                         .rounded_l_md()
                         .when(!drag_active, |d| d.hover(|h| h.bg(theme.bg_hover)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(Self::arm_toolbar_drag_listener(
+                                tb_id.clone(),
+                                it_id.clone(),
+                                draggable,
+                            )),
+                        )
                         .on_mouse_up(MouseButton::Left, cx.listener({
                             let source_id = it_id.clone();
                             move |this, _, window, cx| {
                                 let Some(drag) = this.toolbar_drag.as_ref() else {
                                     return;
                                 };
-                                if drag.is_dragging || drag.source_id != source_id {
+                                if drag.source_id != source_id {
                                     return;
                                 }
                                 this.toolbar_drag = None;
@@ -1056,13 +1100,21 @@ impl AppView {
                         .cursor_pointer()
                         .rounded_r_md()
                         .when(!drag_active, |d| d.hover(|h| h.bg(theme.bg_hover)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(Self::arm_toolbar_drag_listener(
+                                tb_id.clone(),
+                                it_id.clone(),
+                                draggable,
+                            )),
+                        )
                         .on_mouse_up(MouseButton::Left, cx.listener({
                             let source_id = it_id.clone();
                             move |this, _, _, cx| {
                                 let Some(drag) = this.toolbar_drag.as_ref() else {
                                     return;
                                 };
-                                if drag.is_dragging || drag.source_id != source_id {
+                                if drag.source_id != source_id {
                                     return;
                                 }
                                 this.toolbar_drag = None;
@@ -1142,13 +1194,21 @@ impl AppView {
                         })
                         .when(is_open, |d| d.bg(theme.bg_hover))
                         .when(!drag_active, |d| d.hover(|h| h.bg(theme.bg_hover)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(Self::arm_toolbar_drag_listener(
+                                tb_id.clone(),
+                                it_id.clone(),
+                                draggable,
+                            )),
+                        )
                         .on_mouse_up(MouseButton::Left, cx.listener({
                             let source_id = it_id.clone();
                             move |this, _, _, cx| {
                                 let Some(drag) = this.toolbar_drag.as_ref() else {
                                     return;
                                 };
-                                if drag.is_dragging || drag.source_id != source_id {
+                                if drag.source_id != source_id {
                                     return;
                                 }
                                 this.toolbar_drag = None;
