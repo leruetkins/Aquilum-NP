@@ -761,6 +761,11 @@ if let Some(new_scroll) = new_active_scroll {
                                 .w(px(self.sidebar_width))
                                 .flex_shrink_0()
                                 .h_full()
+                                // The header row's min-content (badge + view buttons) can
+                                // exceed a narrow sidebar. Clip it here, like the sidebar
+                                // column below, so the overflowing buttons can neither
+                                // paint over nor take clicks from the tab strip.
+                                .overflow_hidden()
                                 .bg(theme.bg_sidebar)
                                 .border_b_1()
                                 .border_color(theme.border)
