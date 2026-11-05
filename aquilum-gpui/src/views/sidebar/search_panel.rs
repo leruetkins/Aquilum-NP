@@ -1134,11 +1134,10 @@ impl AppView {
                                     .flex_1()
                                     .min_h_0()
                                     .overflow_scroll()
-                                    // Right gutter hosts the scrollbar lane so
-                                    // cards never run into the thumb (same
-                                    // recipe as the Go to file dialog).
+                                    // Keep the same side spacing as the Explorer:
+                                    // cards start at the content edge and leave a
+                                    // small right gap for the scrollbar lane.
                                     .py_2()
-                                    .when(results_have_scrollbar, |d| d.px_2())
                                     .gap_1p5()
                                     .children(self.sidebar_search.results.iter().enumerate().map(
                                         |(ix, hit)| {
@@ -1166,7 +1165,7 @@ impl AppView {
                                                 .flex()
                                                 .flex_col()
                                                 .gap_1()
-                                                .px_3()
+                                                .px_2()
                                                 .py_2()
                                                 .mr(px(if results_have_scrollbar {
                                                     4.0
