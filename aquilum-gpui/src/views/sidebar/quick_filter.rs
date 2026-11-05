@@ -623,8 +623,9 @@ impl AppView {
                                 .text_xs()
                                 .line_height(px(16.0))
                                 .text_color(theme.text_muted)
-                                .truncate()
+                                .flex_1()
                                 .min_w_0()
+                                .truncate()
                                 .child("Quick filter...")
                         } else {
                             div()

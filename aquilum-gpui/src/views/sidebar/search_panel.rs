@@ -66,6 +66,10 @@ pub struct SidebarSearchState {
     pub selection_anchor: Option<usize>,
     pub is_mouse_selecting: bool,
     pub box_origin_x: Rc<Cell<f32>>,
+    /// Visible width of the text area, recorded by its canvas after layout.
+    pub box_width: Rc<Cell<f32>>,
+    /// Horizontal scroll of the text and caret; keeps the caret inside the field.
+    pub scroll_x: Rc<Cell<f32>>,
     pub blink: BlinkManager,
     pub results: Vec<crate::views::goto_search::GotoResult>,
     /// The query the current `results` answer (highlights follow it while a
@@ -90,6 +94,8 @@ impl Default for SidebarSearchState {
             selection_anchor: None,
             is_mouse_selecting: false,
             box_origin_x: Rc::new(Cell::new(0.0)),
+            box_width: Rc::new(Cell::new(0.0)),
+            scroll_x: Rc::new(Cell::new(0.0)),
             blink: BlinkManager::new(),
             results: Vec::new(),
             results_query: String::new(),
@@ -330,7 +336,7 @@ impl AppView {
             return 0;
         }
         let box_x = self.sidebar_search.box_origin_x.get();
-        let rel_x = (click_x - box_x).max(0.0);
+        let rel_x = (click_x - box_x + self.sidebar_search.scroll_x.get()).max(0.0);
         let run = gpui::TextRun {
             len: query.len(),
             font: gpui::font("Segoe UI"),
@@ -662,6 +668,42 @@ impl AppView {
             let byte_index: usize = query_chars[..cursor_pos].iter().map(|c| c.len_utf8()).sum();
             crate::snap::snap_x(f32::from(shaped.x_for_index(byte_index)), pixel_scale)
         };
+
+        // Keep the caret inside the field: the typed text scrolls instead of
+        // wrapping or spilling past the buttons on the right.
+        let area_w = self.sidebar_search.box_width.get();
+        let mut scroll_x = self.sidebar_search.scroll_x.get();
+        // The caret's right stop is taken from the device grid, so its sub-pixel
+        // phase cannot cross a rounding boundary on some keystrokes and make the
+        // caret jump between two physical pixels at the end of a scrolled line.
+        let caret_stop = crate::snap::snap_x((area_w - 2.0).max(0.0), pixel_scale);
+        if query.is_empty() || area_w <= 0.0 {
+            scroll_x = 0.0;
+        } else {
+            if cursor_x - scroll_x > caret_stop {
+                scroll_x = cursor_x - caret_stop;
+            } else if cursor_x - scroll_x < 0.0 {
+                scroll_x = cursor_x;
+            }
+            let text_w = f32::from(shaped.x_for_index(query.len()));
+            let max_scroll = (text_w - caret_stop).max(0.0);
+            scroll_x = scroll_x.clamp(0.0, max_scroll);
+        }
+        // Snap the scroll to the physical pixel grid: the text and the caret are
+        // shifted by it, and a fractional offset rasterizes the 1.5px caret as
+        // two or three pixels depending on the letter typed.
+        scroll_x = crate::snap::snap_x(scroll_x, pixel_scale);
+        self.sidebar_search.scroll_x.set(scroll_x);
+
+        // Whole device pixels: the caret keeps one thickness instead of straddling
+        // two or three physical columns on every keystroke.
+        let caret_left = crate::snap::snap_x(cursor_x - scroll_x, pixel_scale);
+        let caret_w = crate::snap::device_thickness(
+            (1.5 * pixel_scale).round().max(1.0),
+            pixel_scale,
+        );
+        let caret_w = if caret_w > 0.0 { caret_w } else { 1.5 };
+
         let (sel_x1, sel_w) = if let Some((s, e)) = selection_range {
             if !query.is_empty() {
                 let b1: usize = query_chars[..s.min(query_chars.len())].iter().map(|c| c.len_utf8()).sum();
@@ -758,13 +800,17 @@ impl AppView {
                             .flex_1()
                             .min_w_0()
                             .h(px(16.0))
+                            .overflow_hidden()
                             .child(
                                 gpui::canvas(
                                     {
                                         let cell =
                                             self.sidebar_search.box_origin_x.clone();
+                                        let width =
+                                            self.sidebar_search.box_width.clone();
                                         move |bounds, _, _| {
                                             cell.set(f32::from(bounds.origin.x));
+                                            width.set(f32::from(bounds.size.width));
                                         }
                                     },
                                     |_, _, _, _| {},
@@ -776,7 +822,7 @@ impl AppView {
                                 s.child(
                                     div()
                                         .absolute()
-                                        .left(px(sel_x1))
+                                        .left(px(sel_x1 - scroll_x))
                                         .top(px(0.0))
                                         .w(px(sel_w))
                                         .h(px(16.0))
@@ -790,6 +836,9 @@ impl AppView {
                                     .text_xs()
                                     .line_height(px(16.0))
                                     .text_color(theme.text_muted)
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
                                     .child(self.t("search.panel_hint"))
                             } else {
                                 div()
@@ -797,15 +846,18 @@ impl AppView {
                                     .text_xs()
                                     .line_height(px(16.0))
                                     .text_color(theme.text_primary)
+                                    .whitespace_nowrap()
+                                    .relative()
+                                    .left(px(-scroll_x))
                                     .child(query.clone())
                             })
                             .when(caret_visible, |s| {
                                 s.child(
                                     div()
                                         .absolute()
-                                        .left(px(cursor_x))
+                                        .left(px(caret_left))
                                         .top(px(0.0))
-                                        .w(px(1.5))
+                                        .w(px(caret_w))
                                         .h(px(16.0))
                                         .bg(theme.accent)
                                         .rounded_xs(),
