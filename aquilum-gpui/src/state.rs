@@ -317,6 +317,10 @@ pub struct AppState {
     pub workspace_path: Option<PathBuf>,
     pub workspace_name: String,
     pub vault: Option<crate::vault::VaultCore>,
+    /// True when the vault came from the command line (`--vault`). The session
+    /// is loaded for that vault only and never written back, so the default
+    /// (last used) vault stays untouched.
+    pub vault_from_cli: bool,
     pub events: Arc<crate::events::EventBus>,
     pub commands: Arc<crate::commands::CommandRegistry>,
     pub ribbon: Arc<crate::ribbon::RibbonRegistry>,
@@ -384,21 +388,41 @@ const DEFAULT_WELCOME_NOTE: &str = "# Welcome to Vibecodium (GPUI Live Preview)\
 
 impl AppState {
     pub fn new() -> Self {
+        Self::new_with_vault(None)
+    }
+
+    /// `vault_override` opens that vault for this run only: the previous
+    /// session (last vault, tabs, layout) is neither restored nor overwritten.
+    pub fn new_with_vault(vault_override: Option<PathBuf>) -> Self {
+        let vault_override = match vault_override {
+            Some(path) if path.is_dir() => Some(Self::normalize_path(&path)),
+            Some(path) => {
+                eprintln!("[vault] not a directory: {}", path.display());
+                None
+            }
+            None => None,
+        };
+        let vault_from_cli = vault_override.is_some();
         let app_data_dir = app_data_dir();
         let _ = std::fs::create_dir_all(&app_data_dir);
         let settings = Arc::new(crate::settings::SettingsManager::new(&app_data_dir));
         let session = SessionState::load(&app_data_dir);
 
-        let valid_tabs: Vec<PathBuf> = session
-            .open_tabs
-            .iter()
-            .filter(|p| is_empty_tab_path(p) || p.exists() || p.to_string_lossy() == "Welcome.md")
-            .cloned()
-            .collect();
+        let valid_tabs: Vec<PathBuf> = if vault_from_cli {
+            Vec::new()
+        } else {
+            session
+                .open_tabs
+                .iter()
+                .filter(|p| is_empty_tab_path(p) || p.exists() || p.to_string_lossy() == "Welcome.md")
+                .cloned()
+                .collect()
+        };
 
         let mut bookmarks = session.bookmarks.clone();
         let mut recent_files = session.recent_files.clone();
-        if let Some(ref ws) = session.workspace_path {
+        let session_vault = vault_override.as_ref().or(session.workspace_path.as_ref());
+        if let Some(ws) = session_vault {
             let vault_bm = ws.join(".vault").join("bookmarks.json");
             let obs_bm = ws.join(".obsidian").join("bookmarks.json");
             let bm_path = if vault_bm.exists() {
@@ -450,6 +474,7 @@ impl AppState {
             workspace_path: None,
             workspace_name: "No Workspace".to_owned(),
             vault: None,
+            vault_from_cli,
             events,
             commands,
             ribbon,
@@ -505,11 +530,13 @@ impl AppState {
             LeafState::new(state.workspace.active_leaf),
         );
 
-        // Determine workspace to open
-        let mut ws_to_open = None;
-        if let Some(ref ws) = state.session.workspace_path {
-            if ws.exists() {
-                ws_to_open = Some(ws.clone());
+        // Determine workspace to open: the command-line vault wins.
+        let mut ws_to_open = vault_override.clone();
+        if ws_to_open.is_none() {
+            if let Some(ref ws) = state.session.workspace_path {
+                if ws.exists() {
+                    ws_to_open = Some(ws.clone());
+                }
             }
         }
 
@@ -517,13 +544,16 @@ impl AppState {
             state.open_workspace_without_saving(ws);
         }
 
-        // Restore workspace v2 session if present
+        // Restore workspace v2 session if present. A command-line vault starts
+        // with a clean window: the saved layout belongs to another vault.
         let ws_v2_path = app_data_dir.join("workspace-v2.json");
         let mut restored_v2 = false;
-        if let Ok(content) = std::fs::read_to_string(&ws_v2_path) {
-            if let Ok(ws_v2) = crate::workspace::WorkspaceSessionV2::from_json(&content) {
-                state.restore_workspace_session_v2(ws_v2);
-                restored_v2 = true;
+        if !vault_from_cli {
+            if let Ok(content) = std::fs::read_to_string(&ws_v2_path) {
+                if let Ok(ws_v2) = crate::workspace::WorkspaceSessionV2::from_json(&content) {
+                    state.restore_workspace_session_v2(ws_v2);
+                    restored_v2 = true;
+                }
             }
         }
 
@@ -556,16 +586,20 @@ impl AppState {
                 }
             }
         } else {
-            // Restore active note (or active empty tab)
+            // Restore active note (or active empty tab). With a command-line
+            // vault the session describes a different vault, so only the
+            // vault's own first note is opened.
             let mut note_to_open = None;
             let mut empty_to_open = None;
-            if let Some(ref active) = state.session.active_note {
-                if is_empty_tab_path(active) {
-                    if state.open_tabs.contains(active) {
-                        empty_to_open = Some(active.clone());
+            if !vault_from_cli {
+                if let Some(ref active) = state.session.active_note {
+                    if is_empty_tab_path(active) {
+                        if state.open_tabs.contains(active) {
+                            empty_to_open = Some(active.clone());
+                        }
+                    } else if active.exists() || active.to_string_lossy() == "Welcome.md" {
+                        note_to_open = Some(active.clone());
                     }
-                } else if active.exists() || active.to_string_lossy() == "Welcome.md" {
-                    note_to_open = Some(active.clone());
                 }
             }
             if note_to_open.is_none() && !state.open_tabs.is_empty() {

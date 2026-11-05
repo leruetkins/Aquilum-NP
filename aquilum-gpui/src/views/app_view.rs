@@ -390,8 +390,10 @@ pub struct AppView {
 
 impl AppView {
     /// Creates and initializes a new AppView instance with loaded configuration.
-    pub fn new(cx: &mut Context<Self>) -> Self {
-        let state = AppState::new();
+    /// `vault_override` opens that vault for this run without persisting the
+    /// session, so the default vault stays unchanged.
+    pub fn new(cx: &mut Context<Self>, vault_override: Option<PathBuf>) -> Self {
+        let state = AppState::new_with_vault(vault_override);
         let config = state.settings.get_config();
         let theme = Theme::from_ui(&config.ui, None);
         let ws = crate::state::WindowState::load(&crate::state::app_data_dir());

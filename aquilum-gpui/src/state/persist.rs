@@ -303,6 +303,11 @@ impl AppState {
     /// `sync` also runs the writes inline — used on the exit path, where the
     /// process may not outlive a spawned background job.
     pub fn queue_session_state_save(&mut self, sync: bool) {
+        // Launched with `--vault`: this session belongs to a temporary vault,
+        // so the default (last used) vault and its layout stay untouched.
+        if self.vault_from_cli {
+            return;
+        }
         let active_info = self.active_view().and_then(|v| {
             self.active_document().map(|d| (d.path.clone(), v.cursor_offset, v.selection_anchor))
         });

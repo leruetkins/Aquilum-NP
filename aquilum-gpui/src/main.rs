@@ -40,10 +40,32 @@ pub mod workspace;
 use gpui::{App, AppContext, Application, WindowDecorations, WindowOptions};
 use views::app_view::AppView;
 
+/// Vault passed on the command line: `--vault <path>` or `--vault=<path>`.
+/// A launch with it is ephemeral: the session is not written back, so the
+/// default (last used) vault stays untouched.
+fn parse_vault_arg(args: &[String]) -> Option<std::path::PathBuf> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let raw = arg.trim_matches('"');
+        if let Some(value) = raw.strip_prefix("--vault=") {
+            return (!value.is_empty()).then(|| std::path::PathBuf::from(value.trim_matches('"')));
+        }
+        if raw == "--vault" {
+            let value = iter.next()?.trim_matches('"');
+            return (!value.is_empty()).then(|| std::path::PathBuf::from(value));
+        }
+    }
+    None
+}
+
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 {
-        let payload = args[1..].join("\n");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let vault_override = parse_vault_arg(&args);
+
+    // A vault argument is handled by this process; forwarding it to the
+    // primary instance would start the default vault there instead.
+    if vault_override.is_none() && !args.is_empty() {
+        let payload = args.join("\n");
         if crate::ipc::platform::try_send_to_primary_instance(&payload) {
             return;
         }
@@ -51,7 +73,7 @@ fn main() {
 
     Application::new()
         .with_assets(icons::MemoryAssetSource)
-        .run(|cx: &mut App| {
+        .run(move |cx: &mut App| {
             fonts::register_embedded_fonts(cx);
             let app_data_dir = state::app_data_dir();
             let window_state = state::WindowState::load(&app_data_dir);
@@ -78,12 +100,13 @@ fn main() {
                     app_id: Some("vibecodium".to_string()),
                     ..Default::default()
                 },
-                |window, cx| {
+                move |window, cx| {
                     let (api_tx, api_rx) = futures::channel::mpsc::unbounded();
                     let api_tx_clone = api_tx.clone();
 
+                    let initial_vault = vault_override.clone();
                     let view = cx.new(|cx| {
-                        let mut app = AppView::new(cx);
+                        let mut app = AppView::new(cx, initial_vault.clone());
                         app.plugin_api_tx = Some(api_tx_clone);
                         app.load_installed_plugins_for_vault();
                         // Focus editor by default and activate caret blinking immediately
@@ -168,4 +191,29 @@ fn main() {
             .unwrap();
             cx.activate(true);
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_vault_arg;
+    use std::path::PathBuf;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_vault_argument() {
+        assert_eq!(
+            parse_vault_arg(&args(&["--vault", "D:/notes"])),
+            Some(PathBuf::from("D:/notes"))
+        );
+        assert_eq!(
+            parse_vault_arg(&args(&["--vault=D:/notes"])),
+            Some(PathBuf::from("D:/notes"))
+        );
+        assert_eq!(parse_vault_arg(&args(&["--vault"])), None);
+        assert_eq!(parse_vault_arg(&args(&["--other", "x"])), None);
+        assert_eq!(parse_vault_arg(&[]), None);
+    }
 }

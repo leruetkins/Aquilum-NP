@@ -958,6 +958,7 @@
             workspace_path: Some(temp_dir.clone()),
             workspace_name: "test".into(),
             vault: Some(vault),
+            vault_from_cli: false,
             events,
             commands,
             ribbon: Arc::new(crate::ribbon::RibbonRegistry::new()),
