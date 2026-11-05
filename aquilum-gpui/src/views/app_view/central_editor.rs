@@ -669,7 +669,7 @@ impl AppView {
                         this.is_mouse_selecting = false;
                         this.start_editor_middle_scroll(cx);
                     }))
-                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                    .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, window, cx| {
                         if this.is_resizing_sidebar {
                             let x: f32 = event.position.x.into();
                             if x < 100.0 {
@@ -705,7 +705,29 @@ impl AppView {
                         } else if let Some(drag) = this.table_col_resize_drag.clone() {
                             let x: f32 = event.position.x.into();
                             let delta = x - drag.start_x;
-                            let new_w = (drag.start_width + delta).max(40.0);
+                            // A table may not grow past the note column: otherwise its
+                            // right edge runs under the pale width-limit band or off the
+                            // pane edge instead of stopping at it.
+                            let win_w: f32 = window.viewport_size().width.into();
+                            let char_w = if line_char_width > 1.0 { line_char_width } else { 7.7 };
+                            let room = (this.compute_wrap_cols_for_leaf(leaf_id, win_w, line_char_width)
+                                as f32
+                                * char_w)
+                                .max(160.0);
+                            let other_widths: f32 = this
+                                .manual_table_col_widths
+                                .get(&drag.table_first_line)
+                                .map(|widths| {
+                                    widths
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(idx, _)| *idx != drag.col_idx)
+                                        .map(|(_, w)| *w)
+                                        .sum()
+                                })
+                                .unwrap_or(0.0);
+                            let max_w = (room - other_widths).max(40.0);
+                            let new_w = (drag.start_width + delta).clamp(40.0, max_w);
                             if let Some(widths) = this.manual_table_col_widths.get_mut(&drag.table_first_line) {
                                 if drag.col_idx < widths.len() {
                                     widths[drag.col_idx] = new_w;

@@ -722,17 +722,16 @@ impl AppView {
         click_x: f32,
         current_widths: &[f32],
     ) {
-        let entry = self
-            .manual_table_col_widths
-            .entry(table_first_line)
-            .or_insert_with(|| current_widths.to_vec());
-        if entry.len() != current_widths.len() {
-            *entry = current_widths.to_vec();
-        }
-        let start_width = entry
+        // The gesture continues from the widths that are painted right now: when
+        // the room shrank, the manual values were already scaled down for display,
+        // and starting from the previous (larger) width would make the divider
+        // jump on the first move.
+        self.manual_table_col_widths
+            .insert(table_first_line, current_widths.to_vec());
+        let start_width = current_widths
             .get(col_idx)
             .copied()
-            .unwrap_or(current_widths.get(col_idx).copied().unwrap_or(100.0));
+            .unwrap_or(100.0);
         self.table_col_resize_drag = Some(TableColResizeDrag {
             table_first_line,
             col_idx,

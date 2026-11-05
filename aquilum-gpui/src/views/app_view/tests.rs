@@ -2172,3 +2172,43 @@
 
         assert_eq!(scroll, line_top);
     }
+
+    #[test]
+    fn test_manual_table_widths_shrink_with_the_room() {
+        gpui::Application::new().run(|cx: &mut gpui::App| {
+            crate::fonts::register_embedded_fonts(cx);
+            let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                let block = crate::table::TableBlock {
+                    first_line: 0,
+                    last_line: 2,
+                    aligns: vec![crate::table::Align::Left, crate::table::Align::Left],
+                };
+                let lines = vec!["| a | b |", "|---|---|", "| 1 | 2 |"];
+                let get_line = |idx: usize| lines.get(idx).copied();
+                let manual = vec![400.0, 400.0]; // a table widened by dragging
+                let font = gpui::SharedString::from("Consolas");
+
+                // The pane shrank after the drag: the table must shrink with the
+                // room instead of hanging past the pale band or the pane edge.
+                let layout = compute_table_layout(
+                    window.text_system(), &get_line, &block, &font, Some(&manual), 7.7, 600.0, 14.0, 20.0,
+                );
+                let total: f32 = layout.col_widths.iter().sum();
+                assert!((total - 600.0).abs() < 0.01, "table must fit the room, got {total}");
+                assert!(
+                    (layout.col_widths[0] - layout.col_widths[1]).abs() < 0.01,
+                    "manual proportions must be kept: {:?}",
+                    layout.col_widths
+                );
+
+                cx.quit();
+                struct DummyView;
+                impl gpui::Render for DummyView {
+                    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+                        gpui::div()
+                    }
+                }
+                cx.new(|_| DummyView)
+            });
+        });
+    }

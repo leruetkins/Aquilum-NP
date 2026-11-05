@@ -450,6 +450,18 @@ pub(crate) fn compute_table_layout<'a>(
         } else if w.len() > n_cols {
             w.truncate(n_cols);
         }
+        // Manual widths keep the room as their ceiling. A window, pane or note
+        // width shrink scales the table down proportionally instead of leaving it
+        // hanging under the pale band or past the pane edge; growing back restores
+        // the proportions the user set.
+        let sum: f32 = w.iter().sum();
+        let room = room_px.max(MIN_COL_WIDTH);
+        if sum > room && sum > 0.0 {
+            let scale = room / sum;
+            for width in &mut w {
+                *width *= scale;
+            }
+        }
         w
     } else {
         // A table wider than the room the editor has for it would push the
