@@ -6,7 +6,7 @@ use crate::{
     AnyWindowHandle, Bounds, Decorations, DevicePixels, ForegroundExecutor, GpuSpecs, Modifiers,
     Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
     Point, PromptButton, PromptLevel, RequestFrameOptions, ResizeEdge, ScaledPixels, Scene, Size,
-    Tiling, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
+    Tiling, CursorStyle, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
     WindowDecorations, WindowKind, WindowParams, X11ClientStatePtr, px, size,
 };
 
@@ -108,6 +108,51 @@ impl ResizeEdge {
             ResizeEdge::BottomLeft => 6,
             ResizeEdge::Left => 7,
         }
+    }
+
+    pub(crate) fn cursor_style(self) -> CursorStyle {
+        match self {
+            ResizeEdge::Left | ResizeEdge::Right => CursorStyle::ResizeLeftRight,
+            ResizeEdge::Top | ResizeEdge::Bottom => CursorStyle::ResizeUpDown,
+            ResizeEdge::TopLeft | ResizeEdge::BottomRight => CursorStyle::ResizeUpLeftDownRight,
+            ResizeEdge::TopRight | ResizeEdge::BottomLeft => CursorStyle::ResizeUpRightDownLeft,
+        }
+    }
+}
+
+/// Width (in logical pixels) of the invisible resize border reported by the
+/// CSD hit testing. Mirrors the band GTK reserves for the same purpose.
+const RESIZE_BORDER_LOGICAL: f32 = 8.0;
+
+const MIN_WINDOW_WIDTH_LOGICAL: f32 = 240.0;
+const MIN_WINDOW_HEIGHT_LOGICAL: f32 = 160.0;
+
+/// Returns the resize edge under the given window-relative position.
+fn resize_edge_at_position(
+    rel_x: i32,
+    rel_y: i32,
+    width: i32,
+    height: i32,
+    scale_factor: f32,
+) -> Option<ResizeEdge> {
+    if width <= 0 || height <= 0 || rel_x < 0 || rel_y < 0 || rel_x >= width || rel_y >= height {
+        return None;
+    }
+    let border = (RESIZE_BORDER_LOGICAL * scale_factor).round() as i32;
+    let left = rel_x < border;
+    let right = rel_x >= width - border;
+    let top = rel_y < border;
+    let bottom = rel_y >= height - border;
+    match (top, bottom, left, right) {
+        (true, false, true, false) => Some(ResizeEdge::TopLeft),
+        (true, false, false, true) => Some(ResizeEdge::TopRight),
+        (false, true, true, false) => Some(ResizeEdge::BottomLeft),
+        (false, true, false, true) => Some(ResizeEdge::BottomRight),
+        (true, false, _, _) => Some(ResizeEdge::Top),
+        (false, true, _, _) => Some(ResizeEdge::Bottom),
+        (_, _, true, false) => Some(ResizeEdge::Left),
+        (_, _, false, true) => Some(ResizeEdge::Right),
+        _ => None,
     }
 }
 
@@ -245,6 +290,7 @@ pub struct Callbacks {
     should_close: Option<Box<dyn FnMut() -> bool>>,
     close: Option<Box<dyn FnOnce()>>,
     appearance_changed: Option<Box<dyn FnMut()>>,
+    hit_test_window_control: Option<Box<dyn FnMut() -> Option<WindowControlArea>>>,
 }
 
 pub struct X11WindowState {
@@ -267,12 +313,31 @@ pub struct X11WindowState {
     hidden: bool,
     active: bool,
     hovered: bool,
-    fullscreen: bool,
-    client_side_decorations_supported: bool,
-    decorations: WindowDecorations,
+    pub(crate) fullscreen: bool,    client_side_decorations_supported: bool,
+    pub(crate) decorations: WindowDecorations,
+    // CSD fallback (Astra Linux/Fly WM mishandles _NET_WM_MOVERESIZE): active
+    // during a manual move, holds (press_root_x, press_root_y, origin_x, origin_y)
+    pub(crate) window_manual_move: Option<(i32, i32, i32, i32)>,
+    // CSD fallback: active during a manual edge resize
+    pub(crate) window_manual_resize: Option<ManualWindowResize>,
+    // Cached top-left position of the window in root coordinates, refreshed on
+    // pointer enter and during manual move/resize. Used by edge hit-testing and
+    // the resize cursor hints without extra X round trips.
+    pub(crate) window_root_origin: (i32, i32),
     edge_constraints: Option<EdgeConstraints>,
     pub handle: AnyWindowHandle,
     last_insets: [u32; 4],
+}
+
+/// State of an active manual (CSD-style) window resize.
+pub(crate) struct ManualWindowResize {
+    edge: ResizeEdge,
+    press_root_x: i32,
+    press_root_y: i32,
+    origin_x: i32,
+    origin_y: i32,
+    width: i32,
+    height: i32,
 }
 
 impl X11WindowState {
@@ -681,6 +746,9 @@ impl X11WindowState {
                 fullscreen: false,
                 maximized_vertical: false,
                 maximized_horizontal: false,
+                window_manual_move: None,
+                window_manual_resize: None,
+                window_root_origin: (0, 0),
                 hidden: false,
                 appearance,
                 handle,
@@ -1370,6 +1438,7 @@ impl PlatformWindow for X11Window {
     }
 
     fn map_window(&mut self) -> anyhow::Result<()> {
+        self.set_net_wm_icon().log_err();
         check_reply(
             || "X11 MapWindow failed.",
             self.0.xcb.map_window(self.0.x_window),
@@ -1463,7 +1532,8 @@ impl PlatformWindow for X11Window {
         self.0.callbacks.borrow_mut().close = Some(callback);
     }
 
-    fn on_hit_test_window_control(&self, _callback: Box<dyn FnMut() -> Option<WindowControlArea>>) {
+    fn on_hit_test_window_control(&self, callback: Box<dyn FnMut() -> Option<WindowControlArea>>) {
+        self.0.callbacks.borrow_mut().hit_test_window_control = Some(callback);
     }
 
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>) {
@@ -1666,5 +1736,287 @@ impl PlatformWindow for X11Window {
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
         self.0.state.borrow().renderer.gpu_specs().into()
+    }
+}
+
+impl X11WindowStatePtr {
+    /// Toggles the maximized state via _NET_WM_STATE without creating a
+    /// temporary `X11Window` (whose Drop would destroy the GPU renderer).
+    pub(crate) fn toggle_maximized(&self) {
+        maybe!({
+            let state = self.state.borrow();
+            let message = xproto::ClientMessageEvent::new(
+                32,
+                self.x_window,
+                state.atoms._NET_WM_STATE,
+                [
+                    WmHintPropertyState::Toggle as u32,
+                    state.atoms._NET_WM_STATE_MAXIMIZED_VERT,
+                    state.atoms._NET_WM_STATE_MAXIMIZED_HORZ,
+                    1,
+                    0,
+                ],
+            );
+            check_reply(
+                || "X11 SendEvent to maximize a window failed.",
+                self.xcb.send_event(
+                    false,
+                    state.x_root_window,
+                    xproto::EventMask::SUBSTRUCTURE_REDIRECT
+                        | xproto::EventMask::SUBSTRUCTURE_NOTIFY,
+                    message,
+                ),
+            )?;
+            xcb_flush(&self.xcb);
+            anyhow::Ok(())
+        })
+        .log_err();
+    }
+
+    /// Starts a manual (CSD-style) window move: remembers the press position in
+    /// root coordinates and the current window origin. Used on Astra Linux/Fly
+    /// WM where _NET_WM_MOVERESIZE makes the window manager close the window.
+    pub(crate) fn begin_manual_window_move(&self, press_root_x: i32, press_root_y: i32) {
+        let reply = maybe!({
+            let state = self.state.borrow();
+            get_reply(
+                || "X11 TranslateCoordinates for manual window move failed.",
+                self.xcb.translate_coordinates(self.x_window, state.x_root_window, 0, 0),
+            )
+        })
+        .log_err();
+        let Some(reply) = reply else { return };
+        {
+            let mut state = self.state.borrow_mut();
+            state.window_manual_move = Some((
+                press_root_x,
+                press_root_y,
+                reply.dst_x as i32,
+                reply.dst_y as i32,
+            ));
+            state.window_root_origin = (reply.dst_x as i32, reply.dst_y as i32);
+        }
+        xcb_flush(&self.xcb);
+    }
+
+    /// Moves the window so it follows the pointer during a manual CSD move.
+    pub(crate) fn extend_manual_window_move(&self, pointer_root_x: i32, pointer_root_y: i32) {
+        let Some((press_x, press_y, win_x, win_y)) = self.state.borrow().window_manual_move else {
+            return;
+        };
+        let target_x = win_x + (pointer_root_x - press_x);
+        let target_y = win_y + (pointer_root_y - press_y);
+        maybe!({
+            check_reply(
+                || "X11 ConfigureWindow for manual window move failed.",
+                self.xcb.configure_window(
+                    self.x_window,
+                    &xproto::ConfigureWindowAux::new().x(target_x).y(target_y),
+                ),
+            )?;
+            xcb_flush(&self.xcb);
+            anyhow::Ok(())
+        })
+        .log_err();
+        self.state.borrow_mut().window_root_origin = (target_x, target_y);
+    }
+
+    /// Ends an active manual window move.
+    pub(crate) fn end_manual_window_move(&self) {
+        self.state.borrow_mut().window_manual_move = None;
+        xcb_flush(&self.xcb);
+    }
+
+    /// Runs the registered window-control hit test at the current cursor
+    /// position (see gpui/src/window.rs for the closure it registers).
+    /// Mirrors the access pattern used by the Windows backend.
+    pub(crate) fn window_control_at_cursor(&self) -> Option<WindowControlArea> {
+        let Some(mut callback) = self.callbacks.borrow_mut().hit_test_window_control.take() else {
+            return None;
+        };
+        let area = callback();
+        self.callbacks.borrow_mut().hit_test_window_control = Some(callback);
+        area
+    }
+
+    /// Returns the resize edge under the pointer (in root coordinates) when the
+    /// window uses client-side decorations and is not maximized/fullscreen.
+    pub(crate) fn resize_edge_at_cursor(&self, root_x: i32, root_y: i32) -> Option<ResizeEdge> {
+        let state = self.state.borrow();
+        if state.fullscreen
+            || state.maximized_horizontal
+            || state.maximized_vertical
+            || !state.client_side_decorations_supported
+            || state.decorations != WindowDecorations::Client
+        {
+            return None;
+        }
+        let scale_factor = state.scale_factor;
+        let width = (state.bounds.size.width.0 * scale_factor).round() as i32;
+        let height = (state.bounds.size.height.0 * scale_factor).round() as i32;
+        let (origin_x, origin_y) = state.window_root_origin;
+        drop(state);
+        resize_edge_at_position(
+            root_x - origin_x,
+            root_y - origin_y,
+            width,
+            height,
+            scale_factor,
+        )
+    }
+
+    /// Starts a manual (CSD-style) edge resize: remembers the press position in
+    /// root coordinates plus the window geometry. Used on Astra Linux/Fly WM
+    /// where _NET_WM_MOVERESIZE makes the window manager close the window.
+    pub(crate) fn begin_manual_window_resize(&self, edge: ResizeEdge, root_x: i32, root_y: i32) {
+        let reply = maybe!({
+            let state = self.state.borrow();
+            get_reply(
+                || "X11 TranslateCoordinates for manual window resize failed.",
+                self.xcb.translate_coordinates(self.x_window, state.x_root_window, 0, 0),
+            )
+        })
+        .log_err();
+        let Some(reply) = reply else { return };
+        let origin_x = reply.dst_x as i32;
+        let origin_y = reply.dst_y as i32;
+        {
+            let mut state = self.state.borrow_mut();
+            state.window_manual_resize = Some(ManualWindowResize {
+                edge,
+                press_root_x: root_x,
+                press_root_y: root_y,
+                origin_x,
+                origin_y,
+                width: (state.bounds.size.width.0 * state.scale_factor).round() as i32,
+                height: (state.bounds.size.height.0 * state.scale_factor).round() as i32,
+            });
+            state.window_root_origin = (origin_x, origin_y);
+        }
+        xcb_flush(&self.xcb);
+    }
+
+    /// Reconfigures the window so it follows the pointer during a manual CSD
+    /// edge resize.
+    pub(crate) fn extend_manual_window_resize(&self, pointer_root_x: i32, pointer_root_y: i32) {
+        let scale_factor;
+        let mut geometry = None;
+        {
+            let state = self.state.borrow();
+            scale_factor = state.scale_factor;
+            if let Some(resize) = state.window_manual_resize.as_ref() {
+                geometry = Some((
+                    resize.edge,
+                    resize.press_root_x,
+                    resize.press_root_y,
+                    resize.origin_x,
+                    resize.origin_y,
+                    resize.width,
+                    resize.height,
+                ));
+            }
+        }
+        let Some((edge, press_root_x, press_root_y, origin_x, origin_y, base_width, base_height)) =
+            geometry
+        else {
+            return;
+        };
+        let min_width = (MIN_WINDOW_WIDTH_LOGICAL * scale_factor).round() as i32;
+        let min_height = (MIN_WINDOW_HEIGHT_LOGICAL * scale_factor).round() as i32;
+        let dx = pointer_root_x - press_root_x;
+        let dy = pointer_root_y - press_root_y;
+
+        let grows_left = matches!(edge, ResizeEdge::Left | ResizeEdge::TopLeft | ResizeEdge::BottomLeft);
+        let grows_right = matches!(edge, ResizeEdge::Right | ResizeEdge::TopRight | ResizeEdge::BottomRight);
+        let grows_top = matches!(edge, ResizeEdge::Top | ResizeEdge::TopLeft | ResizeEdge::TopRight);
+        let grows_bottom = matches!(edge, ResizeEdge::Bottom | ResizeEdge::BottomLeft | ResizeEdge::BottomRight);
+
+        let mut width = base_width;
+        let mut height = base_height;
+        let mut x = origin_x;
+        let mut y = origin_y;
+        if grows_left {
+            width = (base_width - dx).max(min_width);
+            x = origin_x + (base_width - width);
+        } else if grows_right {
+            width = (base_width + dx).max(min_width);
+        }
+        if grows_top {
+            height = (base_height - dy).max(min_height);
+            y = origin_y + (base_height - height);
+        } else if grows_bottom {
+            height = (base_height + dy).max(min_height);
+        }
+
+        maybe!({
+            check_reply(
+                || "X11 ConfigureWindow for manual window resize failed.",
+                self.xcb
+                    .configure_window(self.x_window, &xproto::ConfigureWindowAux::new().x(x).y(y).width(width as u32).height(height as u32)),
+            )?;
+            xcb_flush(&self.xcb);
+            anyhow::Ok(())
+        })
+        .log_err();
+
+        self.state.borrow_mut().window_root_origin = (x, y);
+    }
+
+    /// Ends an active manual window resize.
+    pub(crate) fn end_manual_window_resize(&self) {
+        self.state.borrow_mut().window_manual_resize = None;
+        xcb_flush(&self.xcb);
+    }
+
+    /// Refreshes the cached root-coordinate origin of the window (used by the
+    /// CSD edge hit test).
+    pub(crate) fn set_root_origin(&self, x: i32, y: i32) {
+        self.state.borrow_mut().window_root_origin = (x, y);
+    }
+}
+
+impl X11Window {
+    /// Sets the `_NET_WM_ICON` property from the app's embedded icon so the
+    /// window/taskbar icon is correct on Linux X11 window managers (e.g. Fly).
+    fn set_net_wm_icon(&self) -> anyhow::Result<()> {
+        const APP_ICON_PNG: &[u8] = include_bytes!("../../../../resources/app-icon.png");
+        let rgba = image::load_from_memory(APP_ICON_PNG)
+            .context("failed to decode the embedded app icon")?
+            .into_rgba8();
+        let (width, height) = (rgba.width(), rgba.height());
+
+        // _NET_WM_ICON = [width, height, ARGB pixels (0xAARRGGBB), …]
+        let mut payload: Vec<u32> = Vec::with_capacity(2 + (width * height) as usize);
+        payload.push(width);
+        payload.push(height);
+        for pixel in rgba.pixels() {
+            payload.push(
+                ((pixel[3] as u32) << 24)
+                    | ((pixel[0] as u32) << 16)
+                    | ((pixel[1] as u32) << 8)
+                    | (pixel[2] as u32),
+            );
+        }
+
+        let icon_atom = get_reply(
+            || "Failed to intern _NET_WM_ICON.",
+            self.0.xcb.intern_atom(false, b"_NET_WM_ICON"),
+        )?
+        .atom;
+
+        check_reply(
+            || "X11 ChangeProperty for _NET_WM_ICON failed.",
+            self.0.xcb.change_property(
+                xproto::PropMode::REPLACE,
+                self.0.x_window,
+                icon_atom,
+                xproto::AtomEnum::CARDINAL,
+                32,
+                payload.len() as u32,
+                bytemuck::cast_slice::<u32, u8>(&payload),
+            ),
+        )?;
+        xcb_flush(&self.0.xcb);
+        Ok(())
     }
 }

@@ -1,3 +1,4 @@
+#[cfg(target_os = "windows")]
 use super::colors::*;
 
 /// Opens the native OS Color Picker dialog (e.g. ChooseColorW on Windows) to visually pick any color.

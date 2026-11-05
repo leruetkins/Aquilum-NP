@@ -7,7 +7,8 @@ use gpui::{
     div, point, prelude::*, px, rgb, rgba, AnyElement, App, Context, Div, ElementId, FocusHandle,
     InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     ParentElement, Render, ScrollHandle, ScrollWheelEvent, SharedString,
-    StatefulInteractiveElement, Styled, WeakEntity, Window, WindowControlArea, WindowOptions,
+    StatefulInteractiveElement, Styled, WeakEntity, Window, WindowControlArea,
+    WindowDecorations, WindowOptions,
 };
 
 use crate::blink_manager::BlinkTarget;

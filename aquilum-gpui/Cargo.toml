@@ -1,6 +1,6 @@
 [package]
 name = "vibecodium"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [dependencies]
@@ -31,6 +31,12 @@ typst = "0.15.1"
 typst-pdf = "0.15.1"
 typst-layout = "0.15.1"
 typst-assets = "0.15.1"
+
+# libc 0.2.190 crashes on Linux. The lockfile alone keeps builds on 0.2.189,
+# but an exact requirement stops `cargo update` from bumping it again. The
+# Windows build does not compile this target at all.
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.189"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

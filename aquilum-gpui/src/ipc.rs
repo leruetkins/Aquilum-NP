@@ -1,5 +1,7 @@
 use std::path::PathBuf;
-use crate::settings::{APP_URL_SCHEME, APP_IPC_PIPE_NAME, get_setting_by_id};
+use crate::settings::{APP_URL_SCHEME, get_setting_by_id};
+#[cfg(target_os = "windows")]
+use crate::settings::APP_IPC_PIPE_NAME;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VibecodiumAction {
@@ -207,7 +209,6 @@ pub mod platform {
 
 #[cfg(not(target_os = "windows"))]
 pub mod platform {
-    use super::*;
     use std::sync::mpsc;
 
     pub fn try_send_to_primary_instance(_payload: &str) -> bool {

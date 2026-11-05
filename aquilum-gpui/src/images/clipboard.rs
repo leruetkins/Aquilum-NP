@@ -1,3 +1,4 @@
+#[cfg(windows)]
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 

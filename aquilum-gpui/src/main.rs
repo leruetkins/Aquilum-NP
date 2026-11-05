@@ -37,7 +37,7 @@ pub mod vault;
 pub mod views;
 pub mod workspace;
 
-use gpui::{App, AppContext, Application, WindowOptions};
+use gpui::{App, AppContext, Application, WindowDecorations, WindowOptions};
 use views::app_view::AppView;
 
 fn main() {
@@ -74,6 +74,8 @@ fn main() {
                         appears_transparent: true,
                         traffic_light_position: None,
                     }),
+                    window_decorations: Some(WindowDecorations::Client),
+                    app_id: Some("vibecodium".to_string()),
                     ..Default::default()
                 },
                 |window, cx| {

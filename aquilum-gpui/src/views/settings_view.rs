@@ -8,7 +8,8 @@ use gpui::{
     DispatchPhase, Entity, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Render,
     ScrollHandle, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, WeakEntity, Window, WindowControlArea, WindowOptions,
+    Subscription, WeakEntity, Window, WindowControlArea, WindowDecorations,
+    WindowOptions,
 };
 
 use crate::blink_manager::BlinkManager;
@@ -121,6 +122,8 @@ impl AppView {
                     traffic_light_position: None,
                 }),
                 window_min_size: Some(gpui::size(px(680.0), px(500.0))),
+                window_decorations: Some(WindowDecorations::Client),
+                app_id: Some("vibecodium".to_string()),
                 ..Default::default()
             };
 
@@ -297,6 +300,8 @@ impl SettingsWindowManager {
                 traffic_light_position: None,
             }),
             window_min_size: Some(gpui::size(px(680.0), px(500.0))),
+            window_decorations: Some(WindowDecorations::Client),
+            app_id: Some("vibecodium".to_string()),
             ..Default::default()
         };
 

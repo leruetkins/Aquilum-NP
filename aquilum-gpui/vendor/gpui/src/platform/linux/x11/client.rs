@@ -63,7 +63,8 @@ use crate::{
     AnyWindowHandle, Bounds, ClipboardItem, CursorStyle, DisplayId, FileDropEvent, Keystroke,
     LinuxKeyboardLayout, Modifiers, ModifiersChangedEvent, MouseButton, Pixels, Platform,
     PlatformDisplay, PlatformInput, PlatformKeyboardLayout, Point, RequestFrameOptions,
-    ScrollDelta, Size, TouchPhase, WindowParams, X11Window, modifiers_from_xinput_info, point, px,
+    ScrollDelta, Size, TouchPhase, WindowControlArea, WindowDecorations, WindowParams, X11Window,
+    modifiers_from_xinput_info, point, px, ResizeEdge,
 };
 
 /// Value for DeviceId parameters which selects all devices.
@@ -209,6 +210,10 @@ pub struct X11ClientState {
     pub(crate) cursor_handle: cursor::Handle,
     pub(crate) cursor_styles: HashMap<xproto::Window, CursorStyle>,
     pub(crate) cursor_cache: HashMap<CursorStyle, Option<xproto::Cursor>>,
+    // Window whose cursor is currently overridden by the CSD resize border
+    // hints (gpui reserves the outer ~8px band for resizing, like GTK), plus
+    // the resize cursor style that was applied.
+    pub(crate) csd_cursor_override: Option<(xproto::Window, CursorStyle)>,
 
     pointer_device_states: BTreeMap<xinput::DeviceId, PointerDeviceState>,
 
@@ -355,7 +360,9 @@ impl X11Client {
         let compositor_present = check_compositor_present(&xcb_connection, root);
         let gtk_frame_extents_supported =
             check_gtk_frame_extents_supported(&xcb_connection, &atoms, root);
-        let client_side_decorations_supported = compositor_present && gtk_frame_extents_supported;
+        // Astra Linux (Fly WM) has no EWMH compositor selection, but Fly honors
+        // _MOTIF_WM_HINTS, so force client-side decorations everywhere.
+        let client_side_decorations_supported = true;
         log::info!(
             "x11: compositor present: {}, gtk_frame_extents_supported: {}",
             compositor_present,
@@ -508,6 +515,7 @@ impl X11Client {
             cursor_handle,
             cursor_styles: HashMap::default(),
             cursor_cache: HashMap::default(),
+            csd_cursor_override: None,
 
             pointer_device_states,
 
@@ -1117,6 +1125,49 @@ impl X11Client {
                         state.last_location = position;
                         let current_count = state.current_count;
 
+                        // CSD interception (e.g. Astra Linux/Fly WM drew by the app's
+                        // own decorations): left-press inside a Drag area starts an
+                        // interactive WM move; double press maximizes via WM toggle.
+                        let mut intercepted = false;
+                        if button == MouseButton::Left {
+                            let (fullscreen, decorations) = {
+                                let window_state = window.state.borrow();
+                                (window_state.fullscreen, window_state.decorations)
+                            };
+                            if !fullscreen && decorations == WindowDecorations::Client {
+                            let root_x = (event.root_x >> 16) as i32;
+                            let root_y = (event.root_y >> 16) as i32;
+                            // CSD resize borders win over the app's own control
+                            // areas (like GTK's frame handling).
+                            let edge = window.resize_edge_at_cursor(root_x, root_y);
+                            if let Some(edge) = edge {
+                                window.begin_manual_window_resize(edge, root_x, root_y);
+                                intercepted = true;
+                            } else {
+                                let hit_area = window.window_control_at_cursor();
+                                if let Some(area) = hit_area {
+                                    if area == WindowControlArea::Drag {
+                                        if current_count >= 2 {
+                                            window.toggle_maximized();
+                                        } else {
+                                            // Astra Linux/Fly WM mishandles
+                                            // _NET_WM_MOVERESIZE (closes the
+                                            // window): move manually instead.
+                                            window.begin_manual_window_move(
+                                                (event.root_x >> 16) as i32,
+                                                (event.root_y >> 16) as i32,
+                                            );
+                                        }
+                                        intercepted = true;
+                                    }
+                                }
+                            }
+                        }
+                        }
+                        if intercepted {
+                            return Some(());
+                        }
+
                         drop(state);
                         window.handle_input(PlatformInput::MouseDown(crate::MouseDownEvent {
                             button,
@@ -1162,6 +1213,21 @@ impl X11Client {
                 );
                 match button_or_scroll_from_event_detail(event.detail) {
                     Some(ButtonOrScroll::Button(button)) => {
+                        let ends_manual_interaction = button == MouseButton::Left
+                            && {
+                                let window_state = window.state.borrow();
+                                window_state.window_manual_move.is_some()
+                                    || window_state.window_manual_resize.is_some()
+                            };
+                        if ends_manual_interaction {
+                            // Manual CSD window move/resize in progress: the
+                            // pressed event never reached the app, so drop the
+                            // release.
+                            window.end_manual_window_move();
+                            window.end_manual_window_resize();
+                            drop(state);
+                            return Some(());
+                        }
                         let click_count = state.current_count;
                         drop(state);
                         window.handle_input(PlatformInput::MouseUp(crate::MouseUpEvent {
@@ -1177,6 +1243,24 @@ impl X11Client {
             }
             Event::XinputMotion(event) => {
                 let window = self.get_window(event.event)?;
+                if window.state.borrow().window_manual_move.is_some() {
+                    // Manual CSD window move in progress (Astra Linux/Fly WM):
+                    // track the pointer and move the window directly.
+                    window.extend_manual_window_move(
+                        (event.root_x >> 16) as i32,
+                        (event.root_y >> 16) as i32,
+                    );
+                    return Some(());
+                }
+                if window.state.borrow().window_manual_resize.is_some() {
+                    // Manual CSD window resize in progress: track the pointer
+                    // and reconfigure the window directly.
+                    window.extend_manual_window_resize(
+                        (event.root_x >> 16) as i32,
+                        (event.root_y >> 16) as i32,
+                    );
+                    return Some(());
+                }
                 let mut state = self.0.borrow_mut();
                 let pressed_button = pressed_button_from_mask(event.button_mask[0]);
                 let position = point(
@@ -1193,6 +1277,14 @@ impl X11Client {
                         pressed_button,
                         modifiers,
                     }));
+
+                    // CSD resize border hints: show a resize cursor over the
+                    // outer ~8px band and restore the app cursor otherwise.
+                    let edge = window.resize_edge_at_cursor(
+                        (event.root_x >> 16) as i32,
+                        (event.root_y >> 16) as i32,
+                    );
+                    update_csd_cursor_feedback(self, &window, edge);
                 }
 
                 state = self.0.borrow_mut();
@@ -1211,6 +1303,12 @@ impl X11Client {
             Event::XinputEnter(event) if event.mode == xinput::NotifyMode::NORMAL => {
                 let window = self.get_window(event.event)?;
                 window.set_hovered(true);
+                // Refresh the cached root origin from the exact pointer
+                // sampling; keeps the CSD edge hit test accurate.
+                window.set_root_origin(
+                    (event.root_x >> 16) as i32 - (event.event_x >> 16) as i32,
+                    (event.root_y >> 16) as i32 - (event.event_y >> 16) as i32,
+                );
                 let mut state = self.0.borrow_mut();
                 state.mouse_focused_window = Some(event.event);
             }
@@ -1220,6 +1318,32 @@ impl X11Client {
                 // Set last scroll values to `None` so that a large delta isn't created if scrolling is done outside the window (the valuator is global)
                 reset_all_pointer_device_scroll_positions(&mut state.pointer_device_states);
                 state.mouse_focused_window = None;
+                // Drop the CSD resize cursor override, if the pointer was
+                // hovering the window over a resize border.
+                if state.csd_cursor_override.is_some_and(|(window, _)| window == event.event) {
+                    let (window, style) = state.csd_cursor_override.take().unwrap();
+                    let app_style = state
+                        .cursor_styles
+                        .get(&window)
+                        .copied()
+                        .unwrap_or(CursorStyle::Arrow);
+                    if let Some(cursor) = state.get_cursor_icon(app_style) {
+                        check_reply(
+                            || "Failed to restore cursor style after the CSD resize hint",
+                            state.xcb_connection.change_window_attributes(
+                                window,
+                                &ChangeWindowAttributesAux {
+                                    cursor: Some(cursor),
+                                    ..Default::default()
+                                },
+                            ),
+                        )
+                        .log_err();
+                        state.xcb_connection.flush().log_err();
+                    } else {
+                        let _ = style;
+                    }
+                }
                 let pressed_button = pressed_button_from_mask(event.buttons[0]);
                 let position = point(
                     px(event.event_x as f32 / u16::MAX as f32 / state.scale_factor),
@@ -2219,6 +2343,61 @@ fn make_scroll_wheel_event(
         delta: ScrollDelta::Lines(delta),
         modifiers,
         touch_phase: TouchPhase::default(),
+    }
+}
+
+/// Applies or clears the CSD resize border cursor override on `window`'s
+/// underlying X11 window (see `update_csd_cursor_feedback` use sites).
+fn update_csd_cursor_feedback(
+    client: &X11Client,
+    window: &X11WindowStatePtr,
+    edge: Option<ResizeEdge>,
+) {
+    let window_x = window.x_window;
+    let mut state = client.0.borrow_mut();
+    let target_style = edge.map(ResizeEdge::cursor_style);
+
+    if let Some(style) = target_style {
+        if state.csd_cursor_override == Some((window_x, style)) {
+            return;
+        }
+        let Some(cursor) = state.get_cursor_icon(style) else {
+            return;
+        };
+        check_reply(
+            || "Failed to set the CSD resize cursor hint",
+            state.xcb_connection.change_window_attributes(
+                window_x,
+                &ChangeWindowAttributesAux {
+                    cursor: Some(cursor),
+                    ..Default::default()
+                },
+            ),
+        )
+        .log_err();
+        state.xcb_connection.flush().log_err();
+        state.csd_cursor_override = Some((window_x, style));
+    } else if state.csd_cursor_override.is_some_and(|(window, _)| window == window_x) {
+        let app_style = state
+            .cursor_styles
+            .get(&window_x)
+            .copied()
+            .unwrap_or(CursorStyle::Arrow);
+        state.csd_cursor_override = None;
+        if let Some(cursor) = state.get_cursor_icon(app_style) {
+            check_reply(
+                || "Failed to restore the app cursor after the CSD resize hint",
+                state.xcb_connection.change_window_attributes(
+                    window_x,
+                    &ChangeWindowAttributesAux {
+                        cursor: Some(cursor),
+                        ..Default::default()
+                    },
+                ),
+            )
+            .log_err();
+            state.xcb_connection.flush().log_err();
+        }
     }
 }
 
