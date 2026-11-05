@@ -2212,3 +2212,57 @@
             });
         });
     }
+
+    /// Spaces typed after the last character of a cell are trimmed as padding by
+    /// `split_row`, so the painted cell must extend to the caret: otherwise the
+    /// caret stays after the word and only jumps once a letter makes the spaces
+    /// interior.
+    #[test]
+    fn trailing_spaces_in_an_active_cell_move_the_caret() {
+        gpui::Application::new().run(|cx: &mut gpui::App| {
+            crate::fonts::register_embedded_fonts(cx);
+            let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                // "| a   | b |": cell 0 content is "a" (chars 2..3); chars 3..6 are
+                // the spaces typed after it.
+                let line = "| a   | b |";
+                let block = crate::table::TableBlock {
+                    first_line: 0,
+                    last_line: 2,
+                    aligns: vec![crate::table::Align::Left, crate::table::Align::Left],
+                };
+                let lines = vec![line, "|---|---|", "| 1 | 2 |"];
+                let get_line = |idx: usize| lines.get(idx).copied();
+                let font = gpui::SharedString::from("Consolas");
+                let layout = compute_table_layout(
+                    window.text_system(), &get_line, &block, &font, None, 7.7, 720.0, 14.0, 20.0,
+                );
+                let headings = crate::settings::HeadingsSettings::default();
+
+                let inactive =
+                    shape_table_row(window.text_system(), line, &block, 0, None, &layout, &headings, &font, 7.7);
+                let active =
+                    shape_table_row(window.text_system(), line, &block, 0, Some(6), &layout, &headings, &font, 7.7);
+
+                // Without the caret in the cell the spaces stay padding: the caret
+                // sits right after "a".
+                assert_eq!(inactive.column_for_line_char(6), 1);
+                // With the caret at char 6 the spaces are painted, so the caret
+                // column is after them.
+                assert_eq!(active.column_for_line_char(6), 4);
+                assert_eq!(active.line_char_for_column(4), 6);
+                assert!(
+                    active.x_for_column(4) > active.x_for_column(1),
+                    "caret after the spaces must be further right than right after the word"
+                );
+
+                cx.quit();
+                struct DummyView;
+                impl gpui::Render for DummyView {
+                    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+                        gpui::div()
+                    }
+                }
+                cx.new(|_| DummyView)
+            });
+        });
+    }

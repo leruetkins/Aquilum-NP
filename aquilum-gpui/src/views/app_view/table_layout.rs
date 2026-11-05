@@ -364,6 +364,24 @@ pub(crate) fn fit_table_columns(natural: &[f32], room: f32) -> Vec<f32> {
     }
 }
 
+/// Content range of a table cell for painting while the caret is inside it.
+///
+/// `split_row` trims whitespace around a cell, which is right for parsing but
+/// wrong while editing: spaces typed after the last character are treated as
+/// padding, so they stay invisible and the caret refuses to move until a
+/// non-space character makes them interior. The caret's cell keeps everything up
+/// to the caret, so the spaces are painted and the caret steps through them.
+pub(crate) fn cell_content_range_with_caret(
+    content: std::ops::Range<usize>,
+    outer: std::ops::Range<usize>,
+    cursor_col: Option<usize>,
+) -> std::ops::Range<usize> {
+    match cursor_col {
+        Some(col) if col > content.end => content.start..col.min(outer.end),
+        _ => content,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compute_table_layout<'a>(
     text_system: &gpui::WindowTextSystem,
@@ -563,8 +581,12 @@ pub(crate) fn shape_table_row(
             let len = line.chars().count();
             (len..len, len..len)
         };
-
         let is_active_cell = active_cell_idx == Some(c);
+        let content_range = if is_active_cell {
+            cell_content_range_with_caret(content_range, outer_range.clone(), cursor_col)
+        } else {
+            content_range
+        };
         let reveal = if is_active_cell {
             crate::markdown::InlineReveal::All
         } else {

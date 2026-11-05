@@ -83,15 +83,24 @@ pub(crate) fn render_live_styled_row(
             .when(is_last_row, |d| d.h(px(content_h)).mb(px(crate::markdown::TABLE_EDGE_MARGIN)))
             .when(!is_header && !is_last_row, |d| d.h(px(content_h)));
         for (c_idx, &col_w) in table_layout.col_widths.iter().enumerate() {
-            let cell_text = raw_cells
-                .get(c_idx)
-                .and_then(|c| {
-                    let start = *char_byte_offsets.get(c.content.start)?;
-                    let end = *char_byte_offsets.get(c.content.end)?;
-                    line.get(start..end)
-                })
-                .unwrap_or("");
+            let (content_range, outer_range) = match raw_cells.get(c_idx) {
+                Some(c) => (c.content.clone(), c.outer.clone()),
+                None => {
+                    let len = line.chars().count();
+                    (len..len, len..len)
+                }
+            };
             let is_active_cell = active_c == Some(c_idx);
+            let content_range = if is_active_cell {
+                cell_content_range_with_caret(content_range, outer_range, cursor_col)
+            } else {
+                content_range
+            };
+            let cell_text = char_byte_offsets
+                .get(content_range.start)
+                .zip(char_byte_offsets.get(content_range.end))
+                .and_then(|(&start, &end)| line.get(start..end))
+                .unwrap_or("");
             // The active table cell reveals its markup as a whole: `shape_table_row`
             // shapes the same cell from the raw line, and both paths must paint the
             // same characters or the caret and selection rectangles drift.
@@ -108,13 +117,6 @@ pub(crate) fn render_live_styled_row(
                 0,
                 &cell_reveal,
             );
-            let content_range = raw_cells
-                .get(c_idx)
-                .map(|c| c.content.clone())
-                .unwrap_or_else(|| {
-                    let len = line.chars().count();
-                    len..len
-                });
             // The cell is wrapped by the same column budget `shape_table_row`
             // used to shape it, so its painted lines match the row height.
             let wrap = match table_layout.col_chars.get(c_idx) {
