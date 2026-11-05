@@ -864,23 +864,33 @@ impl AppView {
                                 )
                             }),
                     )
-                    // Aa — case sensitive toggle
+                    // Aa — case sensitive toggle, styled like the Ctrl+F find bar
+                    // option button so the input keeps the same height as the
+                    // other sidebar sections.
                     .child(
                         div()
                             .id("search-panel-case")
-                            .px_1p5()
-                            .py_0p5()
-                            .rounded_sm()
+                            .h(px(16.0))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .px_1()
+                            .rounded_xs()
                             .cursor_pointer()
-                            .hover(|h| h.bg(theme.bg_hover))
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(if cs {
-                                theme.accent
-                            } else {
-                                theme.text_muted
-                            })
-                            .child("Aa")
+                            .when(cs, |d| d.bg(theme.bg_hover))
+                            .when(!cs, |d| d.hover(|h| h.bg(theme.bg_hover)))
+                            .child(
+                                div()
+                                    .font_family("Segoe UI")
+                                    .text_xs()
+                                    .text_color(if cs {
+                                        theme.accent
+                                    } else {
+                                        theme.text_muted
+                                    })
+                                    .child("Aa"),
+                            )
                             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                 cx.stop_propagation();
                             })
@@ -957,12 +967,16 @@ impl AppView {
                                         .text_xs()
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
                                         .text_color(theme.accent)
+                                        .flex_shrink_0()
                                         .child(prefix_owned.clone()),
                                 )
                                 .child(
                                     div()
                                         .text_xs()
                                         .text_color(theme.text_muted)
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
                                         .child(self.t(desc_key)),
                                 )
                                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -1032,6 +1046,8 @@ impl AppView {
                                 .child(
                                     div()
                                         .text_xs()
+                                        .flex_1()
+                                        .min_w_0()
                                         .truncate()
                                         .text_color(theme.text_primary)
                                         .child(item_owned.clone()),

@@ -27,6 +27,7 @@ pub const LAYERS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0
 pub const BOOKMARK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>"#;
 pub const BOOKMARK_FILLED: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="black" stroke="none"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>"#;
 pub const SETTINGS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>"#;
+pub const SLIDERS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg>"#;
 pub const MONITOR: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>"#;
 pub const SUN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>"#;
 pub const MOON: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>"#;
@@ -217,6 +218,7 @@ pub const ICON_LAYERS: &str = "icons/layers.svg";
 pub const ICON_BOOKMARK: &str = "icons/bookmark.svg";
 pub const ICON_BOOKMARK_FILLED: &str = "icons/bookmark_filled.svg";
 pub const ICON_SETTINGS: &str = "icons/settings.svg";
+pub const ICON_SLIDERS: &str = "icons/sliders.svg";
 pub const ICON_SUN: &str = "icons/sun.svg";
 pub const ICON_MOON: &str = "icons/moon.svg";
 pub const ICON_MONITOR: &str = "icons/monitor.svg";
@@ -273,6 +275,7 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_BOOKMARK => Some(BOOKMARK),
             ICON_BOOKMARK_FILLED => Some(BOOKMARK_FILLED),
             ICON_SETTINGS => Some(SETTINGS),
+            ICON_SLIDERS => Some(SLIDERS),
             ICON_SUN => Some(SUN),
             ICON_MOON => Some(MOON),
             ICON_MONITOR => Some(MONITOR),
@@ -404,6 +407,7 @@ impl gpui::AssetSource for MemoryAssetSource {
             ICON_BOOKMARK.into(),
             ICON_BOOKMARK_FILLED.into(),
             ICON_SETTINGS.into(),
+            ICON_SLIDERS.into(),
             ICON_SUN.into(),
             ICON_MOON.into(),
             ICON_MONITOR.into(),
@@ -516,6 +520,7 @@ pub fn map_obsidian_icon(name: &str) -> &'static str {
         "history" | "clock" => ICON_HISTORY,
         "trash" | "trash-2" => ICON_TRASH_2,
         "settings" | "gear" => ICON_SETTINGS,
+        "sliders" | "sliders-horizontal" | "equalizer" | "settings-2" => ICON_SLIDERS,
         "sun" | "light-mode" | "sun-medium" => ICON_SUN,
         "moon" | "dark-mode" | "moon-star" => ICON_MOON,
         "bookmark" => ICON_BOOKMARK,

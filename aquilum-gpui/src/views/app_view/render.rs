@@ -1309,7 +1309,28 @@ if let Some(new_scroll) = new_active_scroll {
                                             (self.t("sidebar.recent_files"), Some(actions))
                                         }
                                         crate::views::sidebar::SidebarMode::Search => {
-                                            (self.t("sidebar.search_title"), None)
+                                            // Same action row as the other sections:
+                                            // its buttons give the header the same height,
+                                            // so the input below does not shift when the
+                                            // sidebar switches sections.
+                                            let actions = div()
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .gap_1()
+                                                .child(
+                                                    div()
+                                                        .id("btn-search-settings")
+                                                        .p_1()
+                                                        .rounded_md()
+                                                        .cursor_pointer()
+                                                        .hover(|h| h.bg(theme.bg_hover))
+                                                        .child(icons::icon(icons::ICON_SLIDERS, 14.0, theme.text_muted))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.open_settings(None, cx);
+                                                        })),
+                                                );
+                                            (self.t("sidebar.search_title"), Some(actions))
                                         }
                                         _ => (String::new(), None),
                                     };
