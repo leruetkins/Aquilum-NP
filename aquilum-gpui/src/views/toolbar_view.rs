@@ -465,26 +465,15 @@ impl AppView {
             })
             .collect();
 
-        let max_w = (available_w - 24.0).max(100.0);
-        let mut visible_items = Vec::new();
-        let mut visible_widths = Vec::new();
-        let mut overflow_items = Vec::new();
-        let mut current_w = 0.0;
+        let max_w = (available_w - 24.0).max(0.0);
         let overflow_btn_w = 44.0;
 
-        for (idx, item) in spec.items.iter().enumerate() {
-            let w = item_widths[idx] + 3.0; // width + gap
-            let remaining_count = spec.items.len() - idx;
-            let need_overflow = (current_w + w + if remaining_count > 1 { overflow_btn_w } else { 0.0 }) > max_w;
-
-            if need_overflow && idx > 0 {
-                overflow_items.push(item.clone());
-            } else {
-                current_w += w;
-                visible_items.push(item.clone());
-                visible_widths.push(item_widths[idx]);
-            }
-        }
+        // A prefix of items stays on the strip; everything after it goes into the
+        // overflow menu (see `toolbar_visible_count`).
+        let visible_count = toolbar_visible_count(&item_widths, max_w, overflow_btn_w);
+        let visible_items: Vec<ToolbarItem> = spec.items[..visible_count].to_vec();
+        let visible_widths: Vec<f32> = item_widths[..visible_count].to_vec();
+        let overflow_items: Vec<ToolbarItem> = spec.items[visible_count..].to_vec();
 
         // Center the row when the toolbar is configured that way. The same offset is used
         // for tooltips, dropdown anchors and drag slots so they stay aligned with the
@@ -499,8 +488,11 @@ impl AppView {
                 3.0 + overflow_btn_w
             };
         let inner_width = (available_w - 16.0).max(0.0);
+        // Centered rows carry a flexible spacer on each side, so one gap sits before
+        // the first icon and one after the last. When the row does not fit, both
+        // spacers collapse and the row starts at that 11px, never past the right edge.
         let content_offset = if spec.alignment == ToolbarAlignment::Center {
-            8.0 + ((inner_width - content_width) / 2.0).max(0.0)
+            11.0 + ((inner_width - 6.0 - content_width) / 2.0).max(0.0)
         } else {
             8.0
         };
@@ -540,13 +532,18 @@ impl AppView {
             .flex()
             .flex_row()
             .items_center()
-            .when(spec.alignment == ToolbarAlignment::Center, |d| {
-                d.justify_center()
-            })
             .h(px(40.0))
             .px(px(8.0))
             .gap(px(3.0))
             .overflow_hidden();
+
+        // Flexible spacers center the row and shrink to zero when it does not fit,
+        // instead of `justify_center` clipping equal parts off both edges (which left
+        // the overflow button past the right edge).
+        let centered = spec.alignment == ToolbarAlignment::Center;
+        if centered {
+            strip = strip.child(div().flex_1());
+        }
 
         let item_start_y = origin_y;
         let mut item_slots: Vec<(f32, f32, String, bool)> = Vec::new();
@@ -605,6 +602,10 @@ impl AppView {
                 theme,
                 cx,
             ));
+        }
+
+        if centered {
+            strip = strip.child(div().flex_1());
         }
 
         // Vertical insertion line where the dragged icon will land.
@@ -1676,5 +1677,100 @@ fn is_command_disabled(command_id: &str, fmt: &ActiveFormatting) -> bool {
         "editor:undo" => !fmt.can_undo,
         "editor:redo" => !fmt.can_redo,
         _ => false,
+    }
+}
+
+/// Number of leading items that stay on the strip before the overflow menu.
+///
+/// A kept prefix must fit together with the overflow button while any tail remains.
+/// Once an item does not fit, every later item moves to the menu: re-testing each
+/// item on its own let a short separator or the last icon slip back onto the strip
+/// after the overflow button's room had already been spent, so the centered row grew
+/// past the right edge and the "more" button hung outside the window.
+fn toolbar_visible_count(item_widths: &[f32], max_w: f32, overflow_btn_w: f32) -> usize {
+    let mut current_w = 0.0;
+    for (idx, &width) in item_widths.iter().enumerate() {
+        let w = width + 3.0; // width + gap
+        let has_tail = idx + 1 < item_widths.len();
+        let reserve_overflow = if has_tail { overflow_btn_w } else { 0.0 };
+        if current_w + w + reserve_overflow > max_w {
+            return idx;
+        }
+        current_w += w;
+    }
+    item_widths.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::toolbar_visible_count;
+
+    /// Widths of the bundled toolbar: 32px buttons, 44px dropdowns, 11px separators.
+    fn default_widths() -> Vec<f32> {
+        vec![
+            32.0, 32.0, 32.0, 11.0, 32.0, 32.0, 32.0, 44.0, 11.0, 32.0, 32.0, 32.0, 32.0, 32.0,
+            11.0, 32.0, 32.0, 32.0, 32.0, 32.0, 11.0, 44.0, 44.0, 44.0, 44.0, 11.0, 32.0,
+        ]
+    }
+
+    /// Width of the row: visible icons, their gaps and the overflow button.
+    fn content_width(widths: &[f32], visible: usize, overflow_btn_w: f32) -> f32 {
+        let mut width = widths[..visible].iter().sum::<f32>()
+            + 3.0 * visible.saturating_sub(1) as f32;
+        if visible < widths.len() {
+            width += if visible == 0 { overflow_btn_w } else { 3.0 + overflow_btn_w };
+        }
+        width
+    }
+
+    #[test]
+    fn a_centered_row_always_fits_its_strip() {
+        let widths = default_widths();
+        for available in 100..=1600 {
+            let max_w = (available as f32 - 24.0).max(0.0);
+            let visible = toolbar_visible_count(&widths, max_w, 44.0);
+            // 8px padding and a 3px gap on each side of a centered row.
+            let row = content_width(&widths, visible, 44.0) + 22.0;
+            assert!(
+                row <= available as f32,
+                "row overflows: available={available}, visible={visible}, row={row}"
+            );
+        }
+    }
+
+    #[test]
+    fn widening_the_strip_never_hides_more_items() {
+        let widths = default_widths();
+        let mut previous = 0;
+        for available in 66..=1600 {
+            let max_w = (available as f32 - 24.0).max(0.0);
+            let visible = toolbar_visible_count(&widths, max_w, 44.0);
+            assert!(
+                visible >= previous,
+                "visible icons dropped at {available}px: {previous} -> {visible}"
+            );
+            previous = visible;
+        }
+    }
+
+    #[test]
+    fn items_after_the_cut_never_return_to_the_strip() {
+        let widths = default_widths();
+        // At these widths the old per-item check kept the last icon (fullscreen) on the
+        // strip even though everything around it was already in the overflow menu.
+        for available in [400.0_f32, 600.0, 719.0, 800.0, 900.0] {
+            let max_w = available - 24.0;
+            let visible = toolbar_visible_count(&widths, max_w, 44.0);
+            assert!(visible < widths.len(), "no overflow at {available}px");
+            assert!(
+                content_width(&widths, visible, 44.0) + 22.0 <= available,
+                "row overflows at {available}px: visible={visible}"
+            );
+            // The tail, including the last icon, is behind the overflow button.
+            assert!(
+                visible + 1 < widths.len(),
+                "last icon leaked onto the strip at {available}px"
+            );
+        }
     }
 }
