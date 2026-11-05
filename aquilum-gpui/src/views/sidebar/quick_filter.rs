@@ -529,20 +529,38 @@ impl AppView {
                 // of wrapping or spilling past the clear button.
                 let area_w = self.quick_filter.box_width.get();
                 let mut scroll_x = self.quick_filter.scroll_x.get();
+                // The caret's right stop is taken from the device grid. If it was a
+                // plain `area_w - pad`, its sub-pixel phase would cross a rounding
+                // boundary on some keystrokes and the caret would jump between two
+                // physical pixels at the end of a scrolled line.
+                let caret_stop = crate::snap::snap_x((area_w - 2.0).max(0.0), pixel_scale);
                 if query.is_empty() || area_w <= 0.0 {
                     scroll_x = 0.0;
                 } else {
-                    let caret_pad = 2.0;
-                    if cursor_x - scroll_x > area_w - caret_pad {
-                        scroll_x = cursor_x - (area_w - caret_pad);
+                    if cursor_x - scroll_x > caret_stop {
+                        scroll_x = cursor_x - caret_stop;
                     } else if cursor_x - scroll_x < 0.0 {
                         scroll_x = cursor_x;
                     }
                     let text_w = f32::from(shaped.x_for_index(query.len()));
-                    let max_scroll = (text_w - area_w + caret_pad).max(0.0);
+                    let max_scroll = (text_w - caret_stop).max(0.0);
                     scroll_x = scroll_x.clamp(0.0, max_scroll);
                 }
+                // Keep the scroll on the physical pixel grid: the caret and the
+                // text are shifted by it, and a fractional offset would rasterize
+                // the 1.5px caret as two or three pixels depending on the letter
+                // typed, which reads as flickering thickness.
+                scroll_x = crate::snap::snap_x(scroll_x, pixel_scale);
                 self.quick_filter.scroll_x.set(scroll_x);
+
+                // Whole device pixels: the caret keeps one thickness instead of
+                // straddling two or three physical columns on every keystroke.
+                let caret_left = crate::snap::snap_x(cursor_x - scroll_x, pixel_scale);
+                let caret_w = crate::snap::device_thickness(
+                    (1.5 * pixel_scale).round().max(1.0),
+                    pixel_scale,
+                );
+                let caret_w = if caret_w > 0.0 { caret_w } else { 1.5 };
 
                 let (sel_x1, sel_w) = if let Some((s_start, s_end)) = selection_range {
                     if !query.is_empty() {
@@ -625,9 +643,9 @@ impl AppView {
                         s.child(
                             div()
                                 .absolute()
-                                .left(px(cursor_x - scroll_x))
+                                .left(px(caret_left))
                                 .top(px(0.0))
-                                .w(px(1.5))
+                                .w(px(caret_w))
                                 .h(px(16.0))
                                 .bg(theme.accent)
                                 .rounded_xs(),
