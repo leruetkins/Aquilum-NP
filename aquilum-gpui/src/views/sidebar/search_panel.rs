@@ -1109,6 +1109,15 @@ impl AppView {
                     })
                     .when(!search_pending, |panel| {
                         panel.child({
+                        let results_scroll_style = panel_scrollbar_style();
+                        // With no scrollbar the result cards may span the full
+                        // content width, flush with the search input above; the
+                        // gutter only exists to clear the thumb.
+                        let results_have_scrollbar = ScrollbarGeometry::from_handle(
+                            &self.panel_scroll_handle,
+                            &results_scroll_style,
+                        )
+                        .is_some();
                         let mut viewport = div()
                             .id("search-panel-viewport")
                             .relative()
@@ -1128,7 +1137,8 @@ impl AppView {
                                     // Right gutter hosts the scrollbar lane so
                                     // cards never run into the thumb (same
                                     // recipe as the Go to file dialog).
-                                    .p_2()
+                                    .py_2()
+                                    .when(results_have_scrollbar, |d| d.px_2())
                                     .gap_1p5()
                                     .children(self.sidebar_search.results.iter().enumerate().map(
                                         |(ix, hit)| {
@@ -1158,7 +1168,11 @@ impl AppView {
                                                 .gap_1()
                                                 .px_3()
                                                 .py_2()
-                                                .mr(px(4.0))
+                                                .mr(px(if results_have_scrollbar {
+                                                    4.0
+                                                } else {
+                                                    0.0
+                                                }))
                                                 .rounded_lg()
                                                 .border_1()
                                                 .border_color(theme.border_subtle)
@@ -1280,16 +1294,15 @@ impl AppView {
                                         },
                                     )),
                             );
-                        let scroll_style = panel_scrollbar_style();
                         if let Some(geometry) = ScrollbarGeometry::from_handle(
                             &self.panel_scroll_handle,
-                            &scroll_style,
+                            &results_scroll_style,
                         ) {
                             let dragging = self.panel_scrollbar_drag.active;
                             viewport = viewport.child(overlay_scrollbar(
                                 "search-panel-scrollbar-track",
                                 &geometry,
-                                &scroll_style,
+                                &results_scroll_style,
                                 theme,
                                 dragging,
                                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {

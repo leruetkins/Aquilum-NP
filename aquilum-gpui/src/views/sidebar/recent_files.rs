@@ -600,6 +600,11 @@ impl AppView {
         }
 
         let yesterday_str = self.t("sidebar.yesterday");
+        let style = sidebar_scrollbar_style();
+        // With no scrollbar the cards may span the full content width, flush with
+        // the quick filter above; the gap exists only to clear the thumb.
+        let has_scrollbar =
+            ScrollbarGeometry::from_handle(&self.recent_files_scroll_handle, &style).is_some();
         let mut rows = Vec::with_capacity(items.len());
 
         for (idx, (item, time_sec)) in items.into_iter().enumerate() {
@@ -627,7 +632,11 @@ impl AppView {
                 // The row must not be `w_full()`: the column stretches it, so this
                 // margin actually narrows it, while `w_full()` would make the
                 // margin overflow and get clipped, leaving the card on the bar.
-                .mr(px(SIDEBAR_ROW_SCROLLBAR_GAP + 4.0))
+                .mr(px(if has_scrollbar {
+                    SIDEBAR_ROW_SCROLLBAR_GAP + 4.0
+                } else {
+                    0.0
+                }))
                 .rounded_md()
                 .cursor_pointer()
                 .when(is_active, |d| {
@@ -739,7 +748,6 @@ impl AppView {
             .gap(px(2.0))
             .children(rows);
 
-        let style = sidebar_scrollbar_style();
         let mut viewport = div()
             .id("sidebar-recent-files-viewport")
             .relative()
