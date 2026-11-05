@@ -819,6 +819,10 @@ if let Some(new_scroll) = new_active_scroll {
                                                 .font_weight(gpui::FontWeight::BOLD)
                                                 .rounded_md()
                                                 .text_xs()
+                                                // The badge is a free area in the custom titlebar:
+                                                // dragging it moves the window, like the empty
+                                                // header space to its right.
+                                                .window_control_area(WindowControlArea::Drag)
                                                 .child("VIBECODIUM"),
                                         )
                                         // Files / Search view toggle (Obsidian-style)
@@ -1037,7 +1041,10 @@ if let Some(new_scroll) = new_active_scroll {
                                 .flex_shrink_0()
                                 .bg(resizer_color)
                                 .border_b_1()
-                                .border_color(theme.border)
+                                // Match the vertical line so the accent color reaches the
+                                // titlebar's bottom edge instead of stopping one pixel short
+                                // under the horizontal border.
+                                .border_color(resizer_color)
                                 .child(
                                     div()
                                         .id("titlebar-resizer-hitbox")
@@ -1083,7 +1090,7 @@ if let Some(new_scroll) = new_active_scroll {
                                 .flex_shrink_0()
                                 .bg(right_resizer_color)
                                 .border_b_1()
-                                .border_color(theme.border)
+                                .border_color(right_resizer_color)
                                 .child(
                                     div()
                                         .id("titlebar-right-resizer-hitbox")
