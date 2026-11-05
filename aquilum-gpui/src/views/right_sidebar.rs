@@ -63,8 +63,9 @@ impl AppView {
             .overflow_hidden()
             .h_full()
             .bg(theme.bg_sidebar)
-            .border_l_1()
-            .border_color(theme.border)
+            // The adjacent `right-sidebar-resizer` already draws this border;
+            // drawing another one here would double the separator (and stay
+            // gray while the resizer turns accent).
             .p(px(8.0))
             .gap(px(6.0));
 
