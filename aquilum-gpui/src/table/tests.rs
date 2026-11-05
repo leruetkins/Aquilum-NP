@@ -24,7 +24,7 @@
         assert!(idx.at(6000).is_none());
 
         // An incremental edit inside the covered range: coverage must not move.
-        idx.apply_edit(2, 2000, 0, &rope);
+        idx.apply_edit(2, 2000, 2000, 0, &rope);
         assert_eq!(
             idx.covered_range,
             (900, 5100),
@@ -35,7 +35,7 @@
         assert_eq!(idx.covered_range, (900, 5100));
 
         // An edit OUTSIDE the covered range extends coverage towards it.
-        idx.apply_edit(3, 100, 0, &rope);
+        idx.apply_edit(3, 100, 100, 0, &rope);
         assert_eq!(idx.covered_range.0, 100);
     }
 
@@ -335,7 +335,7 @@
         // Incremental line shift: insert 5 lines at line 100
         let insert_at = rope.byte_of_line(100);
         rope.insert(insert_at, "New 1\nNew 2\nNew 3\nNew 4\nNew 5\n");
-        idx.apply_edit(2, 100, 5, &rope);
+        idx.apply_edit(2, 100, 105, 5, &rope);
 
         assert_eq!(idx.blocks.len(), 2);
         assert_eq!(idx.blocks[0].first_line, 2);
@@ -346,7 +346,7 @@
         // Edit inside table 0
         let cell_at = rope.byte_of_line(4);
         rope.replace(cell_at..cell_at + 9, "| a_modified | b |\n");
-        idx.apply_edit(3, 4, 0, &rope);
+        idx.apply_edit(3, 4, 4, 0, &rope);
 
         assert_eq!(idx.blocks.len(), 2);
         assert_eq!(idx.blocks[0].first_line, 2);

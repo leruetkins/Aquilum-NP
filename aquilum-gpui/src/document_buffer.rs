@@ -618,7 +618,12 @@ impl DocumentBuffer {
         self.version += 1;
         self.line_index.splice_rope(&self.rope, at);
         self.code_checkpoints.truncate_to(edit_line);
-        self.table_index.borrow_mut().apply_edit(self.version, edit_line, line_diff, &self.rope);
+        // The inserted text can span many lines (a pasted table, for example), so
+        // the table index has to rescan the whole changed span, not just its start.
+        let edit_end_line = self.line_of_byte(at + inserted.len());
+        self.table_index
+            .borrow_mut()
+            .apply_edit(self.version, edit_line, edit_end_line, line_diff, &self.rope);
         self.is_dirty = true;
         if self.first_dirty_time.is_none() {
             self.first_dirty_time = Some(Instant::now());
@@ -689,9 +694,10 @@ impl DocumentBuffer {
                 ops.push(TextOp::Insert { at, len: change.removed.len() });
             }
 
+            let edit_end_line = self.line_of_byte(at + change.removed.len());
             self.table_index
                 .borrow_mut()
-                .apply_edit(self.version, edit_line, line_diff, &self.rope);
+                .apply_edit(self.version, edit_line, edit_end_line, line_diff, &self.rope);
         }
 
         self.is_dirty = true;
@@ -748,9 +754,10 @@ impl DocumentBuffer {
                 ops.push(TextOp::Insert { at, len: change.inserted.len() });
             }
 
+            let edit_end_line = self.line_of_byte(at + change.inserted.len());
             self.table_index
                 .borrow_mut()
-                .apply_edit(self.version, edit_line, line_diff, &self.rope);
+                .apply_edit(self.version, edit_line, edit_end_line, line_diff, &self.rope);
         }
 
         self.is_dirty = true;

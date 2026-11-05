@@ -371,3 +371,31 @@
         let expected = "после исправления -  проверь  ssl  еще раз  \n \n \n                            ";
         assert_eq!(normalize_newlines(user_str), expected);
     }
+
+    #[test]
+    fn test_pasted_table_is_indexed_when_blank_lines_precede_it() {
+        // The note is already open, so the visible window has been scanned and the
+        // table index considers itself up to date.
+        let mut buf = DocumentBuffer::new(
+            DocumentId::new(),
+            PathBuf::from("paste.md"),
+            "paste".to_string(),
+            "intro\n\n".to_string(),
+            1,
+        );
+        drop(buf.ensure_table_index_for_window(0, 3));
+
+        // A pasted table usually arrives with blank lines and text above it.
+        let paste = "\n\n| Column 1 | Column 2 |\n| -------- | -------- |\n| Item 1   | Item 2   |\n";
+        let at = buf.len();
+        buf.record_change(at, String::new(), paste.to_string(), at, at + paste.len(), None);
+
+        let lines = buf.line_index.lines();
+        let idx = buf.ensure_table_index_for_window(0, lines);
+        assert_eq!(
+            idx.blocks.len(),
+            1,
+            "pasted table must be indexed without another edit\n---\n{}",
+            buf.content()
+        );
+    }

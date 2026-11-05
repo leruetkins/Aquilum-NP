@@ -313,12 +313,19 @@ impl TableIndex {
         }
     }
 
-    /// Incremental edit update in O(1): shifts table blocks above edit_line and rescans
-    /// only the small paragraph around edit_line.
+    /// Incremental edit update: shifts table blocks above the change and rescans
+    /// only the paragraph that contains it.
+    ///
+    /// `start_line` is the line where the changed text begins; `end_line` is the
+    /// line where it ends in the new rope. The whole span has to be rescanned, not
+    /// just `start_line`: an inserted block can start several blank lines below the
+    /// insertion point (a pasted table, for example), and scanning forward from the
+    /// insertion line alone stops at the first blank line and leaves it unindexed.
     pub fn apply_edit(
         &mut self,
         rev: u64,
-        edit_line: usize,
+        start_line: usize,
+        end_line: usize,
         line_diff: isize,
         rope: &crop::Rope,
     ) {
@@ -332,7 +339,7 @@ impl TableIndex {
         }
 
         // 1. Scan backwards to find paragraph start (blank line or line without pipe)
-        let mut p_start = edit_line;
+        let mut p_start = start_line;
         while p_start > 0 {
             let prev = p_start - 1;
             let start_byte = if prev < rope.line_len() { rope.byte_of_line(prev) } else { rope.byte_len() };
@@ -350,13 +357,16 @@ impl TableIndex {
                 break;
             }
             p_start = prev;
-            if edit_line.saturating_sub(p_start) > 200 {
+            if start_line.saturating_sub(p_start) > 200 {
                 break;
             }
         }
 
-        // Scan forwards to find paragraph end (blank line or line without pipe)
-        let mut p_end = edit_line;
+        // Scan forwards to find paragraph end (blank line or line without pipe).
+        // The walk starts at the end of the changed span so inserted lines below
+        // the first one are inside the rescanned range. An insertion that ends with
+        // a newline points one line past the last real line, so clamp it.
+        let mut p_end = end_line.max(start_line).min(total_lines.saturating_sub(1));
         while p_end + 1 < total_lines {
             let next = p_end + 1;
             let start_byte = if next < rope.line_len() { rope.byte_of_line(next) } else { rope.byte_len() };
@@ -374,7 +384,7 @@ impl TableIndex {
                 break;
             }
             p_end = next;
-            if p_end.saturating_sub(edit_line) > 200 {
+            if p_end.saturating_sub(end_line) > 200 {
                 break;
             }
         }
@@ -417,10 +427,10 @@ impl TableIndex {
         }
 
         let shift = |line: usize| (line as isize + line_diff).max(0) as usize;
-        if self.covered_range.0 > edit_line {
+        if self.covered_range.0 > start_line {
             self.covered_range.0 = shift(self.covered_range.0);
         }
-        if self.covered_range.1 >= edit_line {
+        if self.covered_range.1 >= start_line {
             self.covered_range.1 = shift(self.covered_range.1);
         }
         self.covered_range.0 = self.covered_range.0.min(p_start);
