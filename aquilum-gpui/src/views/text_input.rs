@@ -18,6 +18,10 @@ pub struct TextInput {
     pub selection_anchor: Option<usize>,
     pub is_mouse_selecting: bool,
     pub box_origin_x: Rc<Cell<f32>>,
+    /// Visible width of the text area, recorded by its canvas after layout.
+    pub box_width: Rc<Cell<f32>>,
+    /// Horizontal scroll of the text and caret; keeps the caret inside the field.
+    pub scroll_x: Rc<Cell<f32>>,
     pub blink: BlinkManager,
     pub focus_handle: Option<FocusHandle>,
 }
@@ -30,6 +34,8 @@ impl TextInput {
             selection_anchor: None,
             is_mouse_selecting: false,
             box_origin_x: Rc::new(Cell::new(0.0)),
+            box_width: Rc::new(Cell::new(0.0)),
+            scroll_x: Rc::new(Cell::new(0.0)),
             blink: BlinkManager::new(),
             focus_handle: Some(focus_handle),
         }
@@ -43,6 +49,8 @@ impl TextInput {
             selection_anchor: None,
             is_mouse_selecting: false,
             box_origin_x: Rc::new(Cell::new(0.0)),
+            box_width: Rc::new(Cell::new(0.0)),
+            scroll_x: Rc::new(Cell::new(0.0)),
             blink: BlinkManager::new(),
             focus_handle: None,
         }
@@ -143,7 +151,7 @@ impl TextInput {
             return 0;
         }
         let box_x = self.box_origin_x.get();
-        let rel_x = (click_x - box_x).max(0.0);
+        let rel_x = (click_x - box_x + self.scroll_x.get()).max(0.0);
         let run = gpui::TextRun {
             len: self.text.len(),
             font: gpui::font(font_family),
@@ -485,6 +493,37 @@ impl TextInput {
             crate::snap::snap_x(f32::from(shaped.x_for_index(byte_index)), pixel_scale)
         };
 
+        // Keep the caret inside the field: the typed text scrolls instead of
+        // wrapping or spilling past the field. The right stop is taken from the
+        // device grid, so the caret cannot jump between two physical pixels at
+        // the end of a scrolled line.
+        let area_w = self.box_width.get();
+        let mut scroll_x = self.scroll_x.get();
+        let caret_stop = crate::snap::snap_x((area_w - 2.0).max(0.0), pixel_scale);
+        if query.is_empty() || area_w <= 0.0 {
+            scroll_x = 0.0;
+        } else {
+            if cursor_x - scroll_x > caret_stop {
+                scroll_x = cursor_x - caret_stop;
+            } else if cursor_x - scroll_x < 0.0 {
+                scroll_x = cursor_x;
+            }
+            let text_w = f32::from(shaped.x_for_index(query.len()));
+            let max_scroll = (text_w - caret_stop).max(0.0);
+            scroll_x = scroll_x.clamp(0.0, max_scroll);
+        }
+        scroll_x = crate::snap::snap_x(scroll_x, pixel_scale);
+        self.scroll_x.set(scroll_x);
+
+        // Whole device pixels: the caret keeps one thickness instead of
+        // straddling two or three physical columns on every keystroke.
+        let caret_left = crate::snap::snap_x(cursor_x - scroll_x, pixel_scale);
+        let caret_w = crate::snap::device_thickness(
+            (1.5 * pixel_scale).round().max(1.0),
+            pixel_scale,
+        );
+        let caret_w = if caret_w > 0.0 { caret_w } else { 1.5 };
+
         let (sel_x1, sel_w) = if let Some((s_start, s_end)) = selection_range {
             if !query.is_empty() {
                 let b1: usize = query_chars[..s_start.min(query_chars.len())].iter().map(|c| c.len_utf8()).sum();
@@ -502,6 +541,7 @@ impl TextInput {
         };
 
         let box_cell = self.box_origin_x.clone();
+        let width_cell = self.box_width.clone();
         let caret_visible = is_focused && self.cursor_visible();
 
         // One fixed line box centered in the field, the way the sidebar quick
@@ -528,6 +568,7 @@ impl TextInput {
                         gpui::canvas(
                             move |bounds, _, _| {
                                 box_cell.set(f32::from(bounds.origin.x));
+                                width_cell.set(f32::from(bounds.size.width));
                             },
                             |_, _, _, _| {},
                         )
@@ -539,7 +580,7 @@ impl TextInput {
                         s.child(
                             div()
                                 .absolute()
-                                .left(px(sel_x1))
+                                .left(px(sel_x1 - scroll_x))
                                 .top(px(0.0))
                                 .w(px(sel_w))
                                 .h(px(line_height))
@@ -559,7 +600,9 @@ impl TextInput {
                                 .text_size(px(font_size))
                                 .line_height(px(line_height))
                                 .text_color(theme.text_muted)
-                                .whitespace_nowrap()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
                                 .child(placeholder.to_string())
                         } else {
                             div()
@@ -569,6 +612,8 @@ impl TextInput {
                                 .line_height(px(line_height))
                                 .text_color(theme.text_primary)
                                 .whitespace_nowrap()
+                                .relative()
+                                .left(px(-scroll_x))
                                 .child(query.clone())
                         }
                     )
@@ -577,9 +622,9 @@ impl TextInput {
                         s.child(
                             div()
                                 .absolute()
-                                .left(px(cursor_x))
+                                .left(px(caret_left))
                                 .top(px(0.0))
-                                .w(px(1.5))
+                                .w(px(caret_w))
                                 .h(px(line_height))
                                 .bg(theme.accent)
                                 .rounded_xs(),
