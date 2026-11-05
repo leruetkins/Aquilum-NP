@@ -138,3 +138,62 @@
         let active_h1 = inspect_active_formatting("# Heading", 2, 2);
         assert_eq!(active_h1.heading_level, Some(1));
     }
+
+    /// Applies the code-block wrap to `selection` inside `doc`, the way
+    /// `active_apply_formatting` does: only a short window around the selection is
+    /// handed to the helper.
+    fn code_block_doc(doc: &str, selection: &str) -> String {
+        let start = doc.find(selection).expect("selection must be in the document");
+        let end = start + selection.len();
+        let before_tail: String = doc[..start]
+            .chars()
+            .rev()
+            .take(8)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        let after_head: String = doc[end..].chars().take(8).collect();
+        let (replacement, _) = wrap_in_code_block(&before_tail, selection, &after_head);
+        format!("{}{}{}", &doc[..start], replacement, &doc[end..])
+    }
+
+    #[test]
+    fn test_code_block_is_separated_by_empty_lines() {
+        assert_eq!(
+            code_block_doc("para\ncode\nnext", "code"),
+            "para\n\n```\ncode\n```\n\nnext"
+        );
+    }
+
+    #[test]
+    fn test_code_block_does_not_double_existing_empty_lines() {
+        assert_eq!(
+            code_block_doc("para\n\ncode\n\nnext", "code"),
+            "para\n\n```\ncode\n```\n\nnext"
+        );
+    }
+
+    #[test]
+    fn test_code_block_at_document_edges() {
+        assert_eq!(code_block_doc("code", "code"), "```\ncode\n```\n");
+    }
+
+    #[test]
+    fn test_code_block_wrapped_mid_line() {
+        assert_eq!(
+            code_block_doc("text code tail", "code"),
+            "text \n\n```\ncode\n```\n\n tail"
+        );
+    }
+
+    #[test]
+    fn test_code_block_empty_selection_keeps_a_body_line() {
+        let (replacement, cursor) = wrap_in_code_block("", "", "");
+        assert_eq!(replacement, "```\n\n```\n");
+        assert_eq!(cursor, 4);
+
+        let (replacement, cursor) = wrap_in_code_block("para\n", "", "\nnext");
+        assert_eq!(replacement, "\n```\n\n```\n");
+        assert_eq!(cursor, 5);
+    }

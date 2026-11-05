@@ -130,16 +130,17 @@ impl AppState {
                 }
             }
             crate::formatting::FormattingOp::CodeBlock => {
-                let (replacement, new_cursor) = if sel_min == sel_max {
-                    ("```\n\n```\n".to_string(), sel_min + 4)
-                } else {
-                    let selected_text = doc.slice_to_string(sel_min..sel_max);
-                    (format!("```\n{}\n```\n", selected_text), sel_min + 4 + selected_text.len())
-                };
+                let selected_text = doc.slice_to_string(sel_min..sel_max);
+                // A short window on each side is enough to see whether the fences
+                // already have an empty line around them.
+                let before = doc.slice_to_string(sel_min.saturating_sub(8)..sel_min);
+                let after = doc.slice_to_string(sel_max..(sel_max + 8).min(doc.len()));
+                let (new_text, cursor) =
+                    crate::formatting::wrap_in_code_block(&before, &selected_text, &after);
                 crate::formatting::FormattingResult {
                     byte_range: sel_min..sel_max,
-                    new_text: replacement,
-                    new_cursor,
+                    new_text,
+                    new_cursor: sel_min + cursor,
                     new_anchor: None,
                 }
             }

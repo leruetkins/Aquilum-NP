@@ -454,35 +454,59 @@ pub fn apply_outdent(
     }
 }
 
-/// Inserts a fenced code block with optional inner text.
-pub fn apply_code_block(
-    full_text: &str,
-    char_sel_start: usize,
-    char_sel_end: usize,
-) -> FormattingResult {
-    let chars: Vec<char> = full_text.chars().collect();
-    let (sel_min, sel_max) = if char_sel_start <= char_sel_end {
-        (char_sel_start.min(chars.len()), char_sel_end.min(chars.len()))
+/// Wraps `selected` in a fenced code block, keeping one empty line between the
+/// fences and the surrounding text.
+///
+/// `before` and `after` are the characters immediately around the selection (a
+/// handful is enough): they only decide whether a separating empty line is
+/// already there. Returns the replacement and the cursor offset inside it.
+pub fn wrap_in_code_block(before: &str, selected: &str, after: &str) -> (String, usize) {
+    // The selection begins on its own line when the previous character is a
+    // newline; an empty line above means another newline (or the document start)
+    // right before that one.
+    let at_line_start = before.is_empty() || before.ends_with('\n');
+    let previous_line_blank = if !at_line_start {
+        false
     } else {
-        (char_sel_end.min(chars.len()), char_sel_start.min(chars.len()))
+        let mut chars = before.chars().rev();
+        chars.next();
+        matches!(chars.next(), None | Some('\n'))
     };
 
-    let selected_text: String = chars[sel_min..sel_max].iter().collect();
-    let byte_start = char_to_byte_offset(full_text, sel_min);
-    let byte_end = char_to_byte_offset(full_text, sel_max);
-
-    let (replacement, new_cursor) = if selected_text.is_empty() {
-        ("```\n\n```\n".to_string(), byte_start + 4)
+    // Mirrored for the closing fence: it ends the line when the next character is
+    // a newline, and the following line is already empty when another newline
+    // follows that one.
+    let at_document_end = after.is_empty();
+    let ends_at_line_end = after.starts_with('\n');
+    let next_line_blank = if !ends_at_line_end {
+        false
     } else {
-        (format!("```\n{}\n```\n", selected_text), byte_start + 4 + selected_text.len())
+        let mut chars = after.chars();
+        chars.next();
+        matches!(chars.next(), None | Some('\n'))
     };
 
-    FormattingResult {
-        byte_range: byte_start..byte_end,
-        new_text: replacement,
-        new_cursor,
-        new_anchor: None,
-    }
+    let prefix = if before.is_empty() || previous_line_blank {
+        ""
+    } else if at_line_start {
+        "\n"
+    } else {
+        // The selection starts mid-line: end that line, then open the empty one.
+        "\n\n"
+    };
+    let suffix = if at_document_end {
+        "\n"
+    } else if !ends_at_line_end {
+        "\n\n"
+    } else if next_line_blank {
+        ""
+    } else {
+        "\n"
+    };
+
+    let block = format!("```\n{}\n```", selected);
+    let cursor = prefix.len() + 4 + selected.len();
+    (format!("{prefix}{block}{suffix}"), cursor)
 }
 
 /// Inserts a standard 3x3 markdown table.
