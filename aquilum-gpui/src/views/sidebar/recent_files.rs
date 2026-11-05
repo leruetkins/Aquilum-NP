@@ -672,6 +672,11 @@ impl AppView {
                                         .text_xs()
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(if is_active { theme.accent } else { theme.text_primary })
+                                        // `flex_1` + `min_w_0` give the text a definite,
+                                        // shrinkable width, so it ellipsizes instead of
+                                        // overflowing and being clipped mid-glyph.
+                                        .flex_1()
+                                        .min_w_0()
                                         .truncate()
                                         .child(item.basename.clone()),
                                 ),
