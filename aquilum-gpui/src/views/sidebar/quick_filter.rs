@@ -18,6 +18,10 @@ pub struct QuickFilterState {
     pub is_focused: bool,
     pub blink: BlinkManager,
     pub box_origin_x: Rc<Cell<f32>>,
+    /// Visible width of the text area, recorded by its canvas after layout.
+    pub box_width: Rc<Cell<f32>>,
+    /// Horizontal scroll of the text and caret; keeps the caret inside the field.
+    pub scroll_x: Rc<Cell<f32>>,
 }
 
 impl Default for QuickFilterState {
@@ -35,6 +39,8 @@ impl QuickFilterState {
             is_focused: false,
             blink: BlinkManager::new(),
             box_origin_x: Rc::new(Cell::new(0.0)),
+            box_width: Rc::new(Cell::new(0.0)),
+            scroll_x: Rc::new(Cell::new(0.0)),
         }
     }
 
@@ -99,7 +105,7 @@ impl QuickFilterState {
         }
         let x: f32 = event.position.x.into();
         let box_x = self.box_origin_x.get();
-        let rel_x = (x - box_x).max(0.0);
+        let rel_x = (x - box_x + self.scroll_x.get()).max(0.0);
         let new_pos = if query.is_empty() {
             0
         } else {
@@ -428,7 +434,7 @@ impl AppView {
 
                 let click_x: f32 = event.position.x.into();
                 let box_x = this.quick_filter.box_origin_x.get();
-                let rel_x = (click_x - box_x).max(0.0);
+                let rel_x = (click_x - box_x + this.quick_filter.scroll_x.get()).max(0.0);
 
                 let clicked_pos = if this.state.search_query.is_empty() {
                     0
@@ -519,6 +525,25 @@ impl AppView {
                     crate::snap::snap_x(f32::from(shaped.x_for_index(byte_index)), pixel_scale)
                 };
 
+                // Keep the caret inside the field: the typed text scrolls instead
+                // of wrapping or spilling past the clear button.
+                let area_w = self.quick_filter.box_width.get();
+                let mut scroll_x = self.quick_filter.scroll_x.get();
+                if query.is_empty() || area_w <= 0.0 {
+                    scroll_x = 0.0;
+                } else {
+                    let caret_pad = 2.0;
+                    if cursor_x - scroll_x > area_w - caret_pad {
+                        scroll_x = cursor_x - (area_w - caret_pad);
+                    } else if cursor_x - scroll_x < 0.0 {
+                        scroll_x = cursor_x;
+                    }
+                    let text_w = f32::from(shaped.x_for_index(query.len()));
+                    let max_scroll = (text_w - area_w + caret_pad).max(0.0);
+                    scroll_x = scroll_x.clamp(0.0, max_scroll);
+                }
+                self.quick_filter.scroll_x.set(scroll_x);
+
                 let (sel_x1, sel_w) = if let Some((s_start, s_end)) = selection_range {
                     if !query.is_empty() {
                         let b1: usize = query_chars[..s_start.min(query_chars.len())].iter().map(|c| c.len_utf8()).sum();
@@ -543,12 +568,15 @@ impl AppView {
                     .flex_1()
                     .min_w_0()
                     .h(px(16.0))
+                    .overflow_hidden()
                     .child(
                         gpui::canvas(
                             {
                                 let cell = self.quick_filter.box_origin_x.clone();
+                                let width = self.quick_filter.box_width.clone();
                                 move |bounds, _, _| {
                                     cell.set(f32::from(bounds.origin.x));
+                                    width.set(f32::from(bounds.size.width));
                                 }
                             },
                             |_, _, _, _| {},
@@ -561,7 +589,7 @@ impl AppView {
                         s.child(
                             div()
                                 .absolute()
-                                .left(px(sel_x1))
+                                .left(px(sel_x1 - scroll_x))
                                 .top(px(0.0))
                                 .w(px(sel_w))
                                 .h(px(16.0))
@@ -577,6 +605,8 @@ impl AppView {
                                 .text_xs()
                                 .line_height(px(16.0))
                                 .text_color(theme.text_muted)
+                                .truncate()
+                                .min_w_0()
                                 .child("Quick filter...")
                         } else {
                             div()
@@ -584,6 +614,9 @@ impl AppView {
                                 .text_xs()
                                 .line_height(px(16.0))
                                 .text_color(theme.text_primary)
+                                .whitespace_nowrap()
+                                .relative()
+                                .left(px(-scroll_x))
                                 .child(query.clone())
                         }
                     )
@@ -592,7 +625,7 @@ impl AppView {
                         s.child(
                             div()
                                 .absolute()
-                                .left(px(cursor_x))
+                                .left(px(cursor_x - scroll_x))
                                 .top(px(0.0))
                                 .w(px(1.5))
                                 .h(px(16.0))
