@@ -628,12 +628,14 @@ impl AppView {
                 .gap(px(1.0))
                 .px_2()
                 .py_1p5()
-                // The active card needs a wider gutter than the shared 4 px one.
-                // The row must not be `w_full()`: the column stretches it, so this
-                // margin actually narrows it, while `w_full()` would make the
-                // margin overflow and get clipped, leaving the card on the bar.
+                // Match the Explorer rows: the card starts at the content edge and
+                // gives up only the shared right gutter while the scrollbar is
+                // visible, so it never runs into the thumb. The row must not be
+                // `w_full()`: the column stretches it, so this margin actually
+                // narrows it, while `w_full()` would make the margin overflow and
+                // get clipped, leaving the card on the bar.
                 .mr(px(if has_scrollbar {
-                    SIDEBAR_ROW_SCROLLBAR_GAP + 4.0
+                    SIDEBAR_ROW_SCROLLBAR_GAP
                 } else {
                     0.0
                 }))

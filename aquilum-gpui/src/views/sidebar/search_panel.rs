@@ -1112,12 +1112,15 @@ impl AppView {
                         let results_scroll_style = panel_scrollbar_style();
                         // With no scrollbar the result cards may span the full
                         // content width, flush with the search input above; the
-                        // gutter only exists to clear the thumb.
-                        let results_have_scrollbar = ScrollbarGeometry::from_handle(
-                            &self.panel_scroll_handle,
-                            &results_scroll_style,
-                        )
-                        .is_some();
+                        // gutter only exists to clear the thumb. An empty result
+                        // list must not draw one either: the handle still reports
+                        // the offset of the previous query for one frame.
+                        let results_have_scrollbar = !self.sidebar_search.results.is_empty()
+                            && ScrollbarGeometry::from_handle(
+                                &self.panel_scroll_handle,
+                                &results_scroll_style,
+                            )
+                            .is_some();
                         let mut viewport = div()
                             .id("search-panel-viewport")
                             .relative()
@@ -1296,7 +1299,9 @@ impl AppView {
                         if let Some(geometry) = ScrollbarGeometry::from_handle(
                             &self.panel_scroll_handle,
                             &results_scroll_style,
-                        ) {
+                        )
+                        .filter(|_| !self.sidebar_search.results.is_empty())
+                        {
                             let dragging = self.panel_scrollbar_drag.active;
                             viewport = viewport.child(overlay_scrollbar(
                                 "search-panel-scrollbar-track",
