@@ -1873,7 +1873,18 @@ impl AppView {
                     let hl_top = if image_text_band {
                         image_band_top
                     } else if let Some(tbl) = grid_tbl {
-                        if v.line_idx == tbl.first_line { crate::markdown::TABLE_EDGE_MARGIN } else { 0.0 }
+                        let edge_top = if v.line_idx == tbl.first_line {
+                            crate::markdown::TABLE_EDGE_MARGIN
+                        } else {
+                            0.0
+                        };
+                        // A wrapped cell paints several sub-lines. The current
+                        // line is the one holding the caret, not the whole tall
+                        // row the cell spans.
+                        edge_top
+                            + row_layout.top_for_column(
+                                row_layout.column_for_line_char(v_char_start + active_col_in_row),
+                            )
                     } else {
                         0.0
                     };
@@ -1881,13 +1892,8 @@ impl AppView {
                         1.0
                     } else if image_text_band {
                         h_metrics_row_h
-                    } else if let Some(tbl) = grid_tbl {
-                        let edge_bottom = if v.line_idx == tbl.last_line {
-                            crate::markdown::TABLE_EDGE_MARGIN
-                        } else {
-                            0.0
-                        };
-                        (row_h - hl_top - edge_bottom).max(typography.table_line_height)
+                    } else if grid_tbl.is_some() {
+                        typography.table_line_height
                     } else {
                         row_h
                     };
@@ -2399,13 +2405,11 @@ impl AppView {
                     h_metrics_row_h
                 } else if is_tbl_sep {
                     0.0
-                } else if let Some(tbl) = grid_tbl {
-                    let edge_bottom = if v_line_idx == tbl.last_line {
-                        crate::markdown::TABLE_EDGE_MARGIN
-                    } else {
-                        0.0
-                    };
-                    (row_h - line_num_top - edge_bottom).max(typography.table_line_height)
+                } else if grid_tbl.is_some() {
+                    // A table row is one document line however tall its wrapped
+                    // cells make it: the number belongs to the first painted
+                    // line, not to the middle of the whole row.
+                    typography.table_line_height + 2.0 * crate::markdown::TABLE_PAD_Y
                 } else {
                     row_h
                 };
