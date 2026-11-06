@@ -3610,6 +3610,13 @@ impl SettingsView {
         }
 
         let root = workspace.unwrap();
+        // The service keeps the last measured list; a large file moved to the
+        // trash is gone from disk immediately, so the row must disappear
+        // before the next sync pass refreshes the memory snapshot.
+        let large: Vec<Large> = large
+            .into_iter()
+            .filter(|large| root.join(&large.path).exists())
+            .collect();
         let connected = !matches!(status, SyncStatus::Off(_) | SyncStatus::Login);
         if connected {
             let mut rows = Vec::new();
@@ -3777,8 +3784,8 @@ impl SettingsView {
                 let path_for_trash = path.clone();
                 buttons = buttons.child(
                     self.sync_icon_button(
-                        gpui::ElementId::from(gpui::SharedString::from(format!("sync-trash-{path}"))),
-                        icons::ICON_TRASH_2,
+                        gpui::ElementId::from(gpui::SharedString::from(format!("sync-remove-{path}"))),
+                        icons::ICON_CLOSE,
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(app) = this.weak_app.upgrade() {
