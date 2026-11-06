@@ -429,6 +429,15 @@ pub struct SettingsView {
     pub locale_popup_subscription: Option<Subscription>,
     pub sync_interval_popup: Option<gpui::Entity<TabListPopup>>,
     pub sync_interval_popup_subscription: Option<Subscription>,
+    /// Custom interval editor state.
+    pub sync_custom_open: bool,
+    pub sync_custom_input: crate::views::text_input::TextInput,
+    pub sync_custom_focus_handle: FocusHandle,
+    pub sync_custom_unit: SyncIntervalUnit,
+    pub sync_unit_popup: Option<gpui::Entity<TabListPopup>>,
+    pub sync_unit_popup_subscription: Option<Subscription>,
+    /// Whether the "Not synced" card is expanded in the Sync tab.
+    pub show_ignored: bool,
     pub font_popup: Option<gpui::Entity<TabListPopup>>,
     pub font_popup_subscription: Option<Subscription>,
     pub theme_popup: Option<(ThemeSlot, gpui::Entity<TabListPopup>)>,

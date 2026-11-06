@@ -30,6 +30,10 @@ pub struct Memory {
     pub large: Vec<Large>,
     pub size: Size,
     pub allowed: Vec<String>,
+    /// Large files the user explicitly excluded from synchronization. They are
+    /// left on disk and never uploaded, downloaded, or deleted by a pass.
+    #[serde(default)]
+    pub ignored: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,6 +41,8 @@ pub struct Large {
     pub path: String,
     pub size: u64,
     pub kept: bool,
+    #[serde(default)]
+    pub ignored: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,9 +210,10 @@ mod tests {
         let records = Records::memory().unwrap();
         let memory = Memory {
             done: Some(1),
-            large: vec![Large { path: "video.mp4".into(), size: 20, kept: true }],
+            large: vec![Large { path: "video.mp4".into(), size: 20, kept: true, ignored: false }],
             size: Size { synced: 10, files: 1 },
             allowed: vec!["video.mp4".into()],
+            ignored: Vec::new(),
         };
         records.remember(&memory).unwrap();
         assert_eq!(records.recall().done, Some(1));

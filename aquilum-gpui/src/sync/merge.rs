@@ -245,11 +245,9 @@ struct SidedHunk {
 }
 
 fn overlaps(left: &LineHunk, right: &LineHunk) -> bool {
-    left.from < right.to && right.from < left.to
-}
-
-fn contains(region: &LineHunk, hunk: &LineHunk) -> bool {
-    hunk.from >= region.from && hunk.to <= region.to
+    left.from < right.to
+        && right.from < left.to
+        || (left.from == left.to && right.from == right.to && left.from == right.from)
 }
 
 fn by_position(left: &LineHunk, right: &LineHunk) -> Ordering {
@@ -262,7 +260,10 @@ fn regions(mut hunks: Vec<SidedHunk>) -> Vec<Vec<SidedHunk>> {
     let mut reach = 0;
     for sided in hunks {
         match grouped.last_mut() {
-            Some(region) if sided.hunk.from < reach => {
+            Some(region)
+                if sided.hunk.from < reach
+                    || (sided.hunk.from == reach && sided.hunk.from == sided.hunk.to) =>
+            {
                 reach = reach.max(sided.hunk.to);
                 region.push(sided);
             }
@@ -307,17 +308,38 @@ pub fn merge_external_change(base: &str, external: &str, current: &str) -> Merge
         }
         let from = region.iter().map(|sided| sided.hunk.from).min().unwrap_or(0);
         let to = region.iter().map(|sided| sided.hunk.to).max().unwrap_or(0);
+        let external_lines = apply_hunks(&base_lines, &external, from, to);
         let local = side(&region, false);
         if !local.is_empty() {
-            displaced.extend(apply_hunks(&base_lines, &local, from, to));
+            let local_lines = apply_hunks(&base_lines, &local, from, to);
+            let insertions = region.iter().all(|sided| sided.hunk.from == sided.hunk.to);
+            if insertions && local_lines.starts_with(&external_lines) {
+                // The local side already contains the external insertion.
+                resolved.push(LineHunk { from, to, lines: local_lines });
+                continue;
+            }
+            if insertions && external_lines.starts_with(&local_lines) {
+                // The external side already contains the local insertion.
+            } else if insertions && !local_lines.is_empty() && !external_lines.is_empty() {
+                // Two independent insertions at the same point: keep both
+                // instead of displacing one of them.
+                resolved.push(LineHunk {
+                    from,
+                    to,
+                    lines: external_lines.into_iter().chain(local_lines).collect(),
+                });
+                continue;
+            } else if local_lines != external_lines {
+                displaced.extend(local_lines);
+            }
         }
-        resolved.push(LineHunk { from, to, lines: apply_hunks(&base_lines, &external, from, to) });
+        resolved.push(LineHunk { from, to, lines: external_lines });
     }
 
     let untouched_local = local_diff
         .hunks
         .iter()
-        .filter(|hunk| !resolved.iter().any(|region| overlaps(region, hunk) || contains(region, hunk)))
+        .filter(|hunk| !resolved.iter().any(|region| overlaps(region, hunk)))
         .cloned();
     let mut kept: Vec<LineHunk> = resolved.iter().cloned().chain(untouched_local).collect();
     kept.sort_by(by_position);
@@ -359,6 +381,33 @@ mod tests {
     fn an_empty_document_takes_the_external_file_exactly() {
         let (text, displaced, _) = merge("", "первая\nвторая", "");
         assert_eq!(text, "первая\nвторая");
+        assert!(displaced.is_empty());
+    }
+
+    #[test]
+    fn identical_edits_on_both_sides_are_not_displaced() {
+        let (text, displaced, _) = merge(
+            "один\nдва\nтри\n",
+            "один\nДВА\nтри\n",
+            "один\nДВА\nтри\nчетыре\n",
+        );
+        assert_eq!(text, "один\nДВА\nтри\nчетыре\n");
+        assert!(displaced.is_empty());
+    }
+
+    #[test]
+    fn insertions_at_the_same_point_keep_both_lines() {
+        let (text, displaced, _) = merge("1-4\n", "1-9\n1-4\n", "1-6\n1-4\n");
+        assert!(text.contains("1-9"));
+        assert!(text.contains("1-6"));
+        assert!(displaced.is_empty());
+    }
+
+    #[test]
+    fn an_already_merged_insertion_is_not_duplicated() {
+        let (text, displaced, _) = merge("1-4\n", "1-9\n1-4\n", "1-9\n1-6\n1-4\n");
+        assert_eq!(text.matches("1-9").count(), 1, "{text}");
+        assert!(text.contains("1-6"));
         assert!(displaced.is_empty());
     }
 

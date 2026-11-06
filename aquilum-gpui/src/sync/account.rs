@@ -16,6 +16,22 @@ pub struct Account {
     tokens: Mutex<Tokens>,
 }
 
+impl Clone for Account {
+    fn clone(&self) -> Self {
+        let tokens = self
+            .tokens
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        Self {
+            client: self.client,
+            agent: self.agent.clone(),
+            path: self.path.clone(),
+            tokens: Mutex::new(tokens),
+        }
+    }
+}
+
 impl Account {
     pub fn new(client: Client, agent: ureq::Agent, path: PathBuf, tokens: Tokens) -> io::Result<Self> {
         save(&path, &tokens)?;

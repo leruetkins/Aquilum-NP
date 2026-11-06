@@ -6,6 +6,7 @@ use self::api::{copy, json, Api, Body, CONTENT};
 use self::hash::content_hash;
 use self::types::{Cursor, Entry, Metadata, Session};
 use crate::sync::account::Account;
+use crate::sync::identity;
 use crate::sync::oauth::Client;
 use crate::sync::remote::{Content, Delta, Remote, RemoteError, RemoteFile, RemoteResult};
 use serde_json::{json, Value};
@@ -46,6 +47,62 @@ pub struct Dropbox {
 impl Dropbox {
     pub fn new(account: Account, agent: Agent, folder: &str) -> Self {
         Self { api: Api::new(account, agent), root: format!("/{folder}") }
+    }
+
+    /// Reads the vault marker stored in the remote folder. A missing marker
+    /// is not an error: the folder may predate identities or be brand new.
+    pub fn marker(&self) -> RemoteResult<Option<String>> {
+        let arg = json!({ "path": self.marker_path() });
+        let response = match self
+            .api
+            .call(&format!("{CONTENT}files/download"), Some(&arg), Body::Empty)
+        {
+            Ok(response) => response,
+            Err(RemoteError::Missing) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let mut bytes = Vec::new();
+        copy(&mut response.into_reader(), &mut bytes)?;
+        let value = String::from_utf8(bytes)
+            .map_err(|error| RemoteError::Failed(format!("invalid vault marker: {error}")))?;
+        let value = value.trim();
+        if !identity::valid_id(value) {
+            return Err(RemoteError::Failed("invalid vault marker".into()));
+        }
+        Ok(Some(value.to_owned()))
+    }
+
+    /// Writes the vault marker, creating the app folder when needed.
+    pub fn set_marker(&self, id: &str) -> RemoteResult<()> {
+        if !identity::valid_id(id) {
+            return Err(RemoteError::Failed("invalid vault identity".into()));
+        }
+        self.ensure_root()?;
+        let arg = json!({
+            "path": self.marker_path(),
+            "mode": { ".tag": "overwrite" },
+            "autorename": false,
+            "mute": true,
+            "strict_conflict": false
+        });
+        let bytes = id.as_bytes();
+        self.api
+            .call(&format!("{CONTENT}files/upload"), Some(&arg), Body::Bytes(&bytes, 0..bytes.len()))?;
+        Ok(())
+    }
+
+    fn marker_path(&self) -> String {
+        format!("{}/{}", self.root, identity::MARKER)
+    }
+
+    fn ensure_root(&self) -> RemoteResult<()> {
+        match self
+            .api
+            .rpc::<Value>("files/create_folder_v2", &json!({ "path": self.root }))
+        {
+            Ok(_) | Err(RemoteError::Stale) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     fn file(&self, metadata: Metadata) -> Option<RemoteFile> {
@@ -195,6 +252,24 @@ impl Remote for Dropbox {
 
     fn checksum(&self, content: &dyn Content) -> io::Result<String> {
         content_hash(content)
+    }
+
+    fn remote_identity(&self) -> RemoteResult<Option<String>> {
+        self.marker()
+    }
+
+    fn set_remote_identity(&self, id: &str) -> RemoteResult<()> {
+        self.set_marker(id)
+    }
+}
+
+#[cfg(test)]
+impl Dropbox {
+    /// Removes the whole test folder. Only used by the ignored live test.
+    pub fn remove(&self) -> RemoteResult<()> {
+        self.api
+            .rpc::<Value>("files/delete_v2", &json!({ "path": self.root }))
+            .map(drop)
     }
 }
 

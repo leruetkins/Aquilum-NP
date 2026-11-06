@@ -22,6 +22,7 @@ pub mod decide;
 pub mod dropbox;
 pub mod halt;
 pub mod hash;
+pub mod identity;
 pub mod measure;
 pub mod merge;
 pub mod oauth;

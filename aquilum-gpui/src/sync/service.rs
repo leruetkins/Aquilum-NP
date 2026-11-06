@@ -4,7 +4,7 @@ use crate::sync::decide::edited;
 use crate::sync::dropbox::CLIENT;
 use crate::sync::records::{Large, Size};
 use crate::sync::scan::relative;
-use crate::sync::shared::{canonical, Shared};
+use crate::sync::shared::{Open, Shared};
 use crate::sync::state::SyncStatus;
 use crate::sync::oauth::Tokens;
 use crate::sync::transfer::TRANSFERS;
@@ -25,10 +25,25 @@ pub struct SyncService {
 
 impl SyncService {
     pub fn new(app_data: &Path) -> Self {
+        Self::with(
+            app_data.join("sync"),
+            Box::new(worker::dropbox),
+            "dropbox.json",
+        )
+    }
+
+    /// Builds a service with an injected remote factory. Production uses
+    /// Dropbox; tests use a fake remote without network access.
+    pub(crate) fn with(folder: PathBuf, open: Open, token: impl Into<String>) -> Self {
         Self {
-            shared: Arc::new(Shared::new(app_data.join("sync"))),
+            shared: Arc::new(Shared::new(folder, open, token)),
             started: Mutex::new(false),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shared(&self) -> &Arc<Shared> {
+        &self.shared
     }
 
     pub fn start(&self) {
@@ -46,6 +61,10 @@ impl SyncService {
 
     pub fn status(&self) -> SyncStatus {
         self.shared.lock().status(self.shared.connected())
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.shared.revision()
     }
 
     pub fn large(&self) -> Vec<Large> {
@@ -70,10 +89,10 @@ impl SyncService {
         state.due.filter(|_| waiting)
     }
 
-    pub fn set_vault(&self, vault: Option<(PathBuf, SyncSettings)>) {
+    pub fn set_vault(&self, vault: Option<(PathBuf, SyncSettings)>, language: &str) {
         let vault = vault.filter(|(_, sync)| sync.enabled);
         if let Some((root, sync)) = &vault {
-            if self.reschedule(root, *sync) {
+            if self.reschedule(root, sync.clone(), language) {
                 return;
             }
         }
@@ -84,22 +103,25 @@ impl SyncService {
             .unwrap_or_default();
         self.shared.change(|state| {
             state.restart();
+            state.language = language.to_owned();
             state.memory = memory;
             state.vault = vault.map(|(root, sync)| (root, sync));
         });
     }
 
-    fn reschedule(&self, root: &Path, sync: SyncSettings) -> bool {
+    fn reschedule(&self, root: &Path, sync: SyncSettings, language: &str) -> bool {
         let mut state = self.shared.lock();
         let Some((current, scope)) = &mut state.vault else {
             return false;
         };
-        let same_scope = SyncSettings { interval: sync.interval, ..*scope };
+        let same_scope = SyncSettings { interval: sync.interval, ..scope.clone() };
         if current.as_path() != root || same_scope != sync {
             return false;
         }
         scope.interval = sync.interval;
+        state.language = language.to_owned();
         drop(state);
+        self.shared.bump();
         self.request(Duration::from_secs(sync.interval.max(5)));
         true
     }
@@ -117,8 +139,12 @@ impl SyncService {
         if rescan {
             return true;
         }
-        let watched = canonical(&root);
-        paths.iter().any(|path| path.starts_with(&watched) && edited(&root, scope, &records, &relative(&watched, path)))
+        let watched = crate::sync::shared::normalize(&root);
+        paths.iter().any(|path| {
+            let path = crate::sync::shared::normalize(path);
+            path.starts_with(&watched)
+                && edited(&root, &scope, &records, &relative(&watched, &path))
+        })
     }
 
     pub fn request(&self, delay: Duration) {
@@ -142,8 +168,40 @@ impl SyncService {
                 .large
                 .iter_mut()
                 .filter(|large| paths.contains(&large.path))
-                .for_each(|large| large.kept = false);
+                .for_each(|large| {
+                    large.kept = false;
+                    large.ignored = false;
+                });
             state.memory.allowed.extend(paths);
+            state.due = Some(Instant::now());
+        });
+    }
+
+    /// Pauses synchronization for the listed paths. The files stay on disk;
+    /// a pass will not upload, download, or delete them until they are
+    /// explicitly resumed.
+    pub fn ignore(&self, paths: Vec<String>) {
+        self.shared.change(|state| {
+            for path in &paths {
+                if !state.memory.ignored.contains(path) {
+                    state.memory.ignored.push(path.clone());
+                }
+                if let Some(large) = state.memory.large.iter_mut().find(|large| large.path == *path) {
+                    large.ignored = true;
+                }
+            }
+            state.memory.allowed.retain(|path| !paths.contains(path));
+            state.due = Some(Instant::now());
+        });
+    }
+
+    /// Returns paused paths to normal synchronization.
+    pub fn unignore(&self, paths: Vec<String>) {
+        self.shared.change(|state| {
+            state.memory.ignored.retain(|path| !paths.contains(path));
+            for large in state.memory.large.iter_mut().filter(|large| paths.contains(&large.path)) {
+                large.ignored = false;
+            }
             state.due = Some(Instant::now());
         });
     }
@@ -163,7 +221,11 @@ impl SyncService {
         let waiting = thread::spawn(move || {
             let agent = agent();
             let tokens = login.finish(&agent, &cancel_thread).map_err(|error| error.to_string());
-            let connected = tokens.and_then(|tokens| start_over(&shared.folder, tokens).map_err(|error| error.to_string()));
+            let connected = tokens.and_then(|tokens| {
+                start_over(&shared.folder, shared.token(), tokens)
+                    .map_err(|error| error.to_string())
+            });
+            shared.set_connected(connected.is_ok());
             shared.change(|state| {
                 state.login = None;
                 match connected {
@@ -185,16 +247,20 @@ impl SyncService {
         if state.epoch == token {
             state.login = Some((cancel, waiting));
         }
+        drop(state);
+        self.shared.bump();
         Ok(url)
     }
 
     pub fn disconnect(&self) -> io::Result<()> {
         self.stop_login();
-        let removed = match fs::remove_file(self.shared.folder.join("dropbox.json")) {
+        let removed = match fs::remove_file(self.shared.folder.join(self.shared.token())) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error),
         };
+        let connected = self.shared.folder.join(self.shared.token()).is_file();
+        self.shared.set_connected(connected);
         self.shared.change(|state| state.restart());
         removed
     }
@@ -237,14 +303,14 @@ impl Drop for SyncService {
     }
 }
 
-fn start_over(folder: &Path, tokens: Tokens) -> io::Result<()> {
+fn start_over(folder: &Path, token: &str, tokens: Tokens) -> io::Result<()> {
     match fs::remove_dir_all(folder) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
     fs::create_dir_all(folder)?;
-    Account::new(CLIENT, agent(), folder.join("dropbox.json"), tokens).map(drop)
+    Account::new(CLIENT, agent(), folder.join(token), tokens).map(drop)
 }
 
 pub(crate) fn agent() -> ureq::Agent {

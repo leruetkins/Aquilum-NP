@@ -71,8 +71,17 @@ fn title(path: &Path) -> String {
     path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-fn copy_stem(stem: &str, moment: &LocalMinute, device: &str) -> String {
-    format!("{stem} (конфликт {} {} {device})", moment.date, moment.time.replace(':', "-"))
+fn copy_stem(stem: &str, moment: &LocalMinute, device: &str, language: &str) -> String {
+    let label = crate::i18n::t_args(
+        "settings.sync.conflict_copy",
+        language,
+        &[
+            ("date", &moment.date),
+            ("time", &moment.time.replace(':', "-")),
+            ("device", device),
+        ],
+    );
+    format!("{stem} ({label})")
 }
 
 pub fn resolve(vault: &Vault<'_>, facts: &Facts<'_>) -> Result<(), SyncError> {
@@ -150,7 +159,7 @@ fn merge(
 }
 
 fn keep_both(vault: &Vault<'_>, facts: &Facts<'_>, path: &Path, remote: &RemoteFile) -> Result<(), SyncError> {
-    let label = copy_stem(&title(path), &LocalMinute::now(), vault.device);
+    let label = copy_stem(&title(path), &LocalMinute::now(), vault.device, vault.language);
     let extension = path
         .extension()
         .map(|ext| format!(".{}", ext.to_string_lossy()))
@@ -176,7 +185,7 @@ pub fn preserve_copy(
     }
     let moment = LocalMinute::now();
     let stem = title(path);
-    let label = copy_stem(&stem, &moment, vault.device);
+    let label = copy_stem(&stem, &moment, vault.device, vault.language);
     let header = format!(
         "---\nконфликт: {} {}\nзаметка: \"{}\"\nпричина: \"{}\"\n---\n\n> This is a conflict copy. The text below was not written into the note.\n> **Why.** {}\n> **When.** {} {}\n\n## Текст, который не попал в заметку\n\n",
         moment.date,

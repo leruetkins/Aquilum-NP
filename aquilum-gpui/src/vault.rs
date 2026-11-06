@@ -50,44 +50,6 @@ impl std::fmt::Display for VaultError {
 
 impl std::error::Error for VaultError {}
 
-/// Destination for a file in the vault trash that does not overwrite a previously trashed file with the same path.
-fn unique_trash_destination(root: &Path, rel_path: &str) -> PathBuf {
-    let trash_root = root.join(".trash");
-    let dest = trash_root.join(rel_path);
-    if !dest.exists() {
-        return dest;
-    }
-    let parent = dest.parent().map(Path::to_path_buf).unwrap_or(trash_root);
-    let stem = dest
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let ext = dest.extension().map(|s| s.to_string_lossy().into_owned());
-    let mut n = 1u32;
-    loop {
-        let name = match &ext {
-            Some(e) => format!("{stem} {n}.{e}"),
-            None => format!("{stem} {n}"),
-        };
-        let candidate = parent.join(name);
-        if !candidate.exists() {
-            return candidate;
-        }
-        n += 1;
-    }
-}
-
-fn note_content(path: &Path) -> Option<String> {
-    let is_note = matches!(
-        path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase()).as_deref(),
-        Some("md") | Some("markdown") | Some("txt")
-    );
-    if !is_note {
-        return None;
-    }
-    std::fs::read_to_string(path).ok()
-}
-
 /// Vault core with no GPUI dependency.
 /// Manages the note file structure, path validation, and plugin data.
 pub struct VaultCore {
@@ -297,7 +259,7 @@ impl VaultCore {
         if !abs.exists() {
             return Err(VaultError::NotFound(rel_path.to_string()));
         }
-        let note_content = note_content(&abs);
+        let note_content = crate::trash::note_content(&abs);
         std::fs::remove_file(&abs).map_err(|e| VaultError::Io(e.to_string()))?;
         if let Some(content) = note_content {
             crate::images::trash_note_attachments(
@@ -320,21 +282,8 @@ impl VaultCore {
         if !abs.exists() {
             return Err(VaultError::NotFound(rel_path.to_string()));
         }
-        let note_content = note_content(&abs);
-        let dest = unique_trash_destination(&self.root, rel_path);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| VaultError::Io(e.to_string()))?;
-        }
-        std::fs::rename(&abs, &dest).map_err(|e| VaultError::Io(e.to_string()))?;
-        if let Some(content) = note_content {
-            crate::images::trash_note_attachments(
-                &self.root,
-                &abs,
-                &content,
-                &crate::images::folder(),
-                &[abs.as_path()],
-            );
-        }
+        crate::trash::trash_note(&self.root, &abs, rel_path)
+            .map_err(|error| VaultError::Io(error.to_string()))?;
         self.invalidate_markdown_cache();
         Ok(())
     }
@@ -352,7 +301,7 @@ impl VaultCore {
         if let Some(parent) = new_abs.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let is_note = note_content(&old_abs).is_some();
+        let is_note = crate::trash::note_content(&old_abs).is_some();
         std::fs::rename(&old_abs, &new_abs).map_err(|e| VaultError::Io(e.to_string()))?;
         if is_note {
             crate::images::move_note_attachments(

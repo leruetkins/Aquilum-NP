@@ -74,7 +74,7 @@ fn local_change(
 /// itself matches the recorded hash and is not treated as a user edit.
 pub fn edited(
     root: &Path,
-    scope: SyncSettings,
+    scope: &SyncSettings,
     records: &Records,
     path: &str,
 ) -> bool {

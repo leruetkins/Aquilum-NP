@@ -501,7 +501,7 @@ impl Default for CommunityPluginSettings {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SyncSettings {
     /// Enables Dropbox sync for this workspace.
@@ -514,6 +514,10 @@ pub struct SyncSettings {
     pub history: bool,
     /// Automatic pass interval in seconds. `0` means "only manual/event-driven".
     pub interval: u64,
+    /// Optional Dropbox app-folder name for this workspace. `None` uses the
+    /// workspace directory name.
+    #[serde(default)]
+    pub remote_folder: Option<String>,
 }
 
 impl Default for SyncSettings {
@@ -523,6 +527,7 @@ impl Default for SyncSettings {
             trash: true,
             history: true,
             interval: 300,
+            remote_folder: None,
         }
     }
 }

@@ -218,4 +218,16 @@ pub trait Remote: Sync {
     ) -> RemoteResult<RemoteFile>;
     fn delete(&self, file: &RemoteFile) -> RemoteResult<()>;
     fn checksum(&self, content: &dyn Content) -> io::Result<String>;
+
+    /// Optional stable identity of the remote folder. Providers without an
+    /// identity marker return `None`; the sync engine then keeps only a local
+    /// identity and does not try to detect folder collisions.
+    fn remote_identity(&self) -> RemoteResult<Option<String>> {
+        Ok(None)
+    }
+
+    /// Stores the identity marker for providers that support one.
+    fn set_remote_identity(&self, _id: &str) -> RemoteResult<()> {
+        Ok(())
+    }
 }

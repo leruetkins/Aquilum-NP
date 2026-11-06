@@ -28,6 +28,19 @@
     }
 
     #[test]
+    fn test_sync_interval_units() {
+        assert_eq!(SyncIntervalUnit::from_seconds(90), (90, SyncIntervalUnit::Seconds));
+        assert_eq!(SyncIntervalUnit::from_seconds(300), (5, SyncIntervalUnit::Minutes));
+        assert_eq!(SyncIntervalUnit::from_seconds(3_600), (1, SyncIntervalUnit::Hours));
+        assert_eq!(SyncIntervalUnit::from_seconds(86_400), (1, SyncIntervalUnit::Days));
+        assert_eq!(SyncIntervalUnit::from_seconds(604_800), (1, SyncIntervalUnit::Weeks));
+        assert_eq!(SyncIntervalUnit::from_seconds(2_592_000), (1, SyncIntervalUnit::Months));
+        assert_eq!(SyncIntervalUnit::Hours.multiplier(), 3_600);
+        assert_eq!(SyncIntervalUnit::Months.multiplier(), 2_592_000);
+        assert!(SYNC_INTERVALS.contains(&SYNC_CUSTOM));
+    }
+
+    #[test]
     fn test_plugin_readme_file_discovery_and_fallback() {
         let unique_name = format!("vibecodium_test_plugin_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
         let temp_dir = std::env::temp_dir().join(unique_name);

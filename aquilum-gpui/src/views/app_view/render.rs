@@ -1633,7 +1633,12 @@ if let Some(new_scroll) = new_active_scroll {
                                                 .justify_center()
                                                 .child(icon),
                                         )
-                                        .child(label),
+                                        .child(
+                                            div()
+                                                .max_w(px(320.0))
+                                                .truncate()
+                                                .child(label),
+                                        )
                                 )
                             })
                             // Index status chip, ALWAYS visible with a vault

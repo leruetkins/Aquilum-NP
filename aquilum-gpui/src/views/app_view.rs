@@ -249,6 +249,11 @@ pub struct AppView {
     /// Last sync status shown in the status bar (`None` until the first
     /// poll); change detection for the same 150 ms notify.
     last_sync_status: Option<crate::sync::SyncStatus>,
+    /// Last observed sync revision. The service bumps it on real state
+    /// changes, so polling avoids locking and filesystem checks while idle.
+    last_sync_revision: Option<u64>,
+    /// Last completed sync time; a change means the tree may have new paths.
+    last_sync_done: Option<u64>,
     /// Document line at the top of the viewport, refreshed once per frame.
     ///
     pub(crate) table_layouts: std::cell::RefCell<HashMap<usize, (u64, Arc<TableLayout>)>>,
@@ -546,6 +551,8 @@ impl AppView {
             panel_debounce_epoch: 0,
             last_build_progress: None,
             last_sync_status: None,
+            last_sync_revision: None,
+            last_sync_done: None,
             sidebar_middle_active: false,
             plugin_modal_scrollbar_drag: crate::views::scrollbar::ScrollbarDrag::default(),
             plugin_modal_middle_active: false,

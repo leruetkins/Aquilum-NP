@@ -28,7 +28,9 @@ pub struct Vault<'a> {
     pub watch: &'a dyn Watch,
     pub allow_deletions: bool,
     pub allowed: &'a [String],
+    pub ignored: &'a [String],
     pub device: &'a str,
+    pub language: &'a str,
 }
 
 impl Vault<'_> {
@@ -58,7 +60,19 @@ pub struct Outcome {
 pub fn run(vault: &Vault<'_>) -> Result<Outcome, SyncError> {
     let _ = fs::remove_dir_all(vault.staging);
     let remote = Halt { inner: vault.remote, watch: vault.watch };
-    let vault = &Vault { remote: &remote, ..*vault };
+    let vault = &Vault {
+        remote: &remote,
+        root: vault.root,
+        records: vault.records,
+        staging: vault.staging,
+        scope: vault.scope.clone(),
+        watch: vault.watch,
+        allow_deletions: vault.allow_deletions,
+        allowed: vault.allowed,
+        ignored: vault.ignored,
+        device: vault.device,
+        language: vault.language,
+    };
     let records = vault.records.all()?;
     let local = survey(vault, &records)?;
     let mut outcome = Outcome::default();
@@ -77,7 +91,11 @@ pub fn run(vault: &Vault<'_>) -> Result<Outcome, SyncError> {
         .keys()
         .chain(view.paths())
         .chain(records.keys())
-        .filter(|path| !local.kept.contains(*path))
+        .filter(|path| {
+            !local.kept.contains(*path)
+                && vault.scope.included(path)
+                && !vault.ignored.contains(*path)
+        })
         .collect();
     let mut plan = Vec::new();
     for path in paths {

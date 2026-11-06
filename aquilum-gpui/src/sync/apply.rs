@@ -165,7 +165,7 @@ fn delete_local(vault: &Vault<'_>, facts: &Facts<'_>) -> Result<(), SyncError> {
     if service(facts.path) {
         fs::remove_file(&path)?;
     } else {
-        trash_local(vault.root, facts.path)?;
+        crate::trash::trash_note(vault.root, &path, facts.path)?;
     }
     Ok(vault.records.remove(facts.path)?)
 }
@@ -177,36 +177,4 @@ fn delete_remote(net: &Net<'_>, facts: &Facts<'_>) -> Result<Step, SyncError> {
     }
     net.remote.delete(remote)?;
     Ok(Step::Forget)
-}
-
-/// Moves a vault file to `.trash/<relative>`, avoiding overwrites with a
-/// numbered suffix. `.trash` itself is excluded from scans by default.
-fn trash_local(root: &Path, relative: &str) -> Result<(), SyncError> {
-    let path = absolute(root, relative);
-    if !path.exists() {
-        return Ok(());
-    }
-    let trash = root.join(".trash");
-    let mut target = trash.join(relative);
-    if target.exists() {
-        let parent = target.parent().map(Path::to_path_buf).unwrap_or(trash);
-        let stem = target.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let ext = target.extension().map(|s| s.to_string_lossy().into_owned());
-        for attempt in 1..10_000u32 {
-            let name = match &ext {
-                Some(ext) => format!("{stem} {attempt}.{ext}"),
-                None => format!("{stem} {attempt}"),
-            };
-            let candidate = parent.join(name);
-            if !candidate.exists() {
-                target = candidate;
-                break;
-            }
-        }
-    }
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::rename(&path, &target)?;
-    Ok(())
 }

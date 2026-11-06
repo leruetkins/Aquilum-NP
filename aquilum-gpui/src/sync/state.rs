@@ -23,6 +23,7 @@ pub enum SyncStatus {
 
 pub struct State {
     pub vault: Option<(PathBuf, SyncSettings)>,
+    pub language: String,
     pub memory: Memory,
     pub running: Option<Progress>,
     pub problem: Option<SyncStatus>,
@@ -37,6 +38,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             vault: None,
+            language: "en".to_owned(),
             memory: Memory::default(),
             running: None,
             problem: None,

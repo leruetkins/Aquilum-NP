@@ -13,7 +13,15 @@ pub struct LocalFile {
 
 pub const UNKNOWN: LocalFile = LocalFile { size: 0, modified: 0 };
 
-const HIDDEN_NAMES: [&str; 6] = [".vault", ".obsidian", ".git", ".trash", ".DS_Store", "target"];
+const HIDDEN_NAMES: [&str; 7] = [
+    ".vault",
+    ".obsidian",
+    ".git",
+    ".trash",
+    ".DS_Store",
+    "target",
+    crate::sync::identity::MARKER,
+];
 
 pub fn is_hidden_name(name: &str) -> bool {
     HIDDEN_NAMES.iter().any(|hidden| *hidden == name)
@@ -63,7 +71,7 @@ pub fn service(relative: &str) -> bool {
     }
 }
 
-pub fn scan(root: &Path, scope: SyncSettings) -> io::Result<HashMap<String, LocalFile>> {
+pub fn scan(root: &Path, scope: &SyncSettings) -> io::Result<HashMap<String, LocalFile>> {
     let mut files = HashMap::new();
     walk(root, root, |relative| scope.included(relative), &mut files)?;
     for area in scope.areas(root).iter().filter(|area| area.is_dir()) {
@@ -142,7 +150,7 @@ mod tests {
     use crate::settings::SyncSettings;
 
     fn scope(trash: bool) -> SyncSettings {
-        SyncSettings { enabled: true, trash, history: true, interval: 300 }
+        SyncSettings { enabled: true, trash, history: true, interval: 300, remote_folder: None }
     }
 
     #[test]
@@ -160,7 +168,7 @@ mod tests {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(file, "x").unwrap();
         }
-        let files = scan(root.path(), scope(false)).unwrap();
+        let files = scan(root.path(), &scope(false)).unwrap();
         assert!(files.contains_key("notes/a.md"));
         assert!(files.contains_key("attachments/pic.png"));
         assert!(files.contains_key(".vault/history/h.md"));
@@ -168,11 +176,11 @@ mod tests {
         assert!(!files.contains_key(".obsidian/app.json"));
         assert!(!files.contains_key(".trash/old.md"));
 
-        let files = scan(root.path(), scope(true)).unwrap();
+        let files = scan(root.path(), &scope(true)).unwrap();
         assert!(files.contains_key(".trash/old.md"));
 
         let no_history = SyncSettings { history: false, ..scope(false) };
-        assert!(!scan(root.path(), no_history).unwrap().contains_key(".vault/history/h.md"));
+        assert!(!scan(root.path(), &no_history).unwrap().contains_key(".vault/history/h.md"));
     }
 
     #[test]

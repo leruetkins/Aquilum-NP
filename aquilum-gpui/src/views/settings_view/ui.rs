@@ -1,6 +1,84 @@
 use super::*;
 
-pub(super) const SYNC_INTERVALS: [u64; 5] = [0, 30, 60, 300, 600];
+/// Sentinel entry in the interval dropdown that opens the custom editor.
+pub const SYNC_CUSTOM: u64 = u64::MAX;
+pub const SYNC_INTERVALS: [u64; 14] = [
+    0,
+    15,
+    30,
+    60,
+    300,
+    900,
+    1_800,
+    3_600,
+    7_200,
+    21_600,
+    43_200,
+    86_400,
+    604_800,
+    SYNC_CUSTOM,
+];
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SyncIntervalUnit {
+    Seconds,
+    Minutes,
+    Hours,
+    Days,
+    Weeks,
+    Months,
+}
+
+impl SyncIntervalUnit {
+    pub const ALL: [Self; 6] = [
+        Self::Seconds,
+        Self::Minutes,
+        Self::Hours,
+        Self::Days,
+        Self::Weeks,
+        Self::Months,
+    ];
+
+    pub fn multiplier(self) -> u64 {
+        match self {
+            Self::Seconds => 1,
+            Self::Minutes => 60,
+            Self::Hours => 3_600,
+            Self::Days => 86_400,
+            Self::Weeks => 604_800,
+            Self::Months => 2_592_000,
+        }
+    }
+
+    pub fn label_key(self) -> &'static str {
+        match self {
+            Self::Seconds => "settings.sync.interval_seconds",
+            Self::Minutes => "settings.sync.interval_minutes",
+            Self::Hours => "settings.sync.interval_hours",
+            Self::Days => "settings.sync.interval_days",
+            Self::Weeks => "settings.sync.interval_weeks",
+            Self::Months => "settings.sync.interval_months",
+        }
+    }
+
+    /// Picks the largest unit that divides the interval exactly, so 3600 is
+    /// shown as "1 h" rather than "3600 sec".
+    pub fn from_seconds(seconds: u64) -> (u64, Self) {
+        for (unit, multiplier) in [
+            (Self::Months, 2_592_000),
+            (Self::Weeks, 604_800),
+            (Self::Days, 86_400),
+            (Self::Hours, 3_600),
+            (Self::Minutes, 60),
+            (Self::Seconds, 1),
+        ] {
+            if seconds >= multiplier && seconds % multiplier == 0 {
+                return (seconds / multiplier, unit);
+            }
+        }
+        (seconds, Self::Seconds)
+    }
+}
 
 impl SettingsView {
     pub fn new(
@@ -41,6 +119,10 @@ impl SettingsView {
         let mut files_folder_input =
             crate::views::text_input::TextInput::new(files_folder_focus_handle.clone());
         files_folder_input.set_text(config.files.folder.clone());
+        let sync_custom_focus_handle = cx.focus_handle();
+        let mut sync_custom_input =
+            crate::views::text_input::TextInput::new(sync_custom_focus_handle.clone());
+        sync_custom_input.set_text("1");
 
         let view = Self {
             model,
@@ -65,6 +147,13 @@ impl SettingsView {
             locale_popup_subscription: None,
             sync_interval_popup: None,
             sync_interval_popup_subscription: None,
+            sync_custom_open: false,
+            sync_custom_input,
+            sync_custom_focus_handle,
+            sync_custom_unit: SyncIntervalUnit::Hours,
+            sync_unit_popup: None,
+            sync_unit_popup_subscription: None,
+            show_ignored: false,
             font_popup: None,
             font_popup_subscription: None,
             theme_popup: None,
@@ -651,6 +740,8 @@ impl SettingsView {
 
     /// Opens the small interval dropdown used by the Sync tab.
     pub fn open_sync_interval_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_unit_popup = None;
+        self.sync_unit_popup_subscription = None;
         let Some(app) = self.weak_app.upgrade() else {
             return;
         };
@@ -666,7 +757,11 @@ impl SettingsView {
             .enumerate()
             .map(|(id, seconds)| TabEntry {
                 id,
-                title: SharedString::from(self.t(&format!("settings.sync.every.{seconds}"))),
+                title: SharedString::from(if *seconds == SYNC_CUSTOM {
+                    self.t("settings.sync.custom")
+                } else {
+                    self.t(&format!("settings.sync.every.{seconds}"))
+                }),
                 subtitle: None,
                 icon: icons::ICON_REFRESH,
                 font_family: None,
@@ -674,12 +769,14 @@ impl SettingsView {
                 trailing_icon: None,
             })
             .collect();
-        let active_ix = if settings.enabled {
-            SYNC_INTERVALS.iter().position(|seconds| *seconds == settings.interval)
-        } else {
+        let active_ix = if !settings.enabled {
             Some(0)
-        }
-        .or(Some(0));
+        } else {
+            SYNC_INTERVALS
+                .iter()
+                .position(|seconds| *seconds == settings.interval)
+                .or_else(|| Some(SYNC_INTERVALS.len() - 1))
+        };
         let theme = self.theme.clone();
         let popup = cx.new(|cx| {
             TabListPopup::new(
@@ -687,18 +784,34 @@ impl SettingsView {
                 active_ix,
                 theme,
                 None,
-                Some(px(ROW_HEIGHT * SYNC_INTERVALS.len() as f32)),
+                Some(px(420.0)),
                 Some(50.0),
                 cx,
             )
         });
         let root_for_choice = root.clone();
+        let current_settings = settings.clone();
         let subscription = cx.subscribe_in(
             &popup,
             window,
             move |this, _popup, event: &TabListEvent, _window, cx| match event {
                 TabListEvent::Activate(id) => {
                     let seconds = SYNC_INTERVALS[*id];
+                    if seconds == SYNC_CUSTOM {
+                        let interval = if current_settings.enabled && current_settings.interval > 0 {
+                            current_settings.interval
+                        } else {
+                            3_600
+                        };
+                        let (value, unit) = SyncIntervalUnit::from_seconds(interval);
+                        this.sync_custom_unit = unit;
+                        this.sync_custom_input.set_text(value.to_string());
+                        this.sync_custom_open = true;
+                        this.close_sync_interval_popup(cx);
+                        cx.notify();
+                        return;
+                    }
+                    this.sync_custom_open = false;
                     if let Some(app) = this.weak_app.upgrade() {
                         let root = root_for_choice.clone();
                         app.update(cx, |app, _| {
@@ -734,6 +847,118 @@ impl SettingsView {
 
     pub fn sync_interval_popup_is_open(&self) -> bool {
         self.sync_interval_popup.is_some()
+    }
+
+    /// Opens the unit dropdown for the custom interval editor.
+    pub fn open_sync_unit_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_interval_popup = None;
+        self.sync_interval_popup_subscription = None;
+        let tabs: Vec<TabEntry> = SyncIntervalUnit::ALL
+            .iter()
+            .enumerate()
+            .map(|(id, unit)| TabEntry {
+                id,
+                title: SharedString::from(self.t(unit.label_key())),
+                subtitle: None,
+                icon: icons::ICON_REFRESH,
+                font_family: None,
+                dot_color: None,
+                trailing_icon: None,
+            })
+            .collect();
+        let active_ix = SyncIntervalUnit::ALL
+            .iter()
+            .position(|unit| *unit == self.sync_custom_unit);
+        let theme = self.theme.clone();
+        let popup = cx.new(|cx| {
+            TabListPopup::new(
+                tabs,
+                active_ix,
+                theme,
+                None,
+                Some(px(ROW_HEIGHT * SyncIntervalUnit::ALL.len() as f32)),
+                Some(50.0),
+                cx,
+            )
+        });
+        let subscription = cx.subscribe_in(
+            &popup,
+            window,
+            move |this, _popup, event: &TabListEvent, _window, cx| match event {
+                TabListEvent::Activate(id) => {
+                    this.sync_custom_unit = SyncIntervalUnit::ALL[*id];
+                    this.commit_sync_custom(cx);
+                    this.close_sync_unit_popup(cx);
+                }
+                TabListEvent::Dismiss => this.close_sync_unit_popup(cx),
+                TabListEvent::FoldTabs
+                | TabListEvent::BookmarkTabs
+                | TabListEvent::CloseAllTabs => {}
+            },
+        );
+        window.focus(&popup.read(cx).focus_handle());
+        self.sync_unit_popup = Some(popup);
+        self.sync_unit_popup_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    pub fn close_sync_unit_popup(&mut self, cx: &mut Context<Self>) {
+        if self.sync_unit_popup.take().is_none() {
+            return;
+        }
+        self.sync_unit_popup_subscription = None;
+        cx.notify();
+    }
+
+    pub fn sync_unit_popup_is_open(&self) -> bool {
+        self.sync_unit_popup.is_some()
+    }
+
+    /// Applies the number + unit editor. Invalid or zero values are ignored;
+    /// the previous interval stays in effect.
+    pub(super) fn commit_sync_custom(&mut self, cx: &mut Context<Self>) {
+        let value = self.sync_custom_input.text().trim().parse::<u64>().unwrap_or(0);
+        if value == 0 {
+            return;
+        }
+        let seconds = value.saturating_mul(self.sync_custom_unit.multiplier()).max(5);
+        if let Some(app) = self.weak_app.upgrade() {
+            let Some(root) = app.read(cx).state.workspace_path.clone() else {
+                return;
+            };
+            app.update(cx, |app, _| {
+                let mut next = app.state.sync_settings_for(&root);
+                next.interval = seconds;
+                next.enabled = true;
+                app.state.set_sync_settings(&root, next);
+            });
+        }
+        self.refresh_sync_config(cx);
+        self.sync_custom_input.disable_blink(cx);
+        cx.notify();
+    }
+
+    pub(super) fn cancel_sync_custom(&mut self, cx: &mut Context<Self>) {
+        self.sync_custom_open = false;
+        self.sync_unit_popup = None;
+        self.sync_unit_popup_subscription = None;
+        self.sync_custom_input.disable_blink(cx);
+        cx.notify();
+    }
+
+    pub(super) fn step_sync_custom(&mut self, delta: i64, cx: &mut Context<Self>) {
+        let current = self.sync_custom_input.text().trim().parse::<u64>().unwrap_or(1).max(1);
+        let next = if delta < 0 {
+            current.saturating_sub(delta.unsigned_abs()).max(1)
+        } else {
+            current.saturating_add(delta as u64)
+        };
+        self.sync_custom_input.set_text(next.to_string());
+        self.sync_custom_input.pause_and_show(
+            |s: &mut SettingsView| &mut s.sync_custom_input.blink,
+            cx,
+        );
+        self.commit_sync_custom(cx);
     }
 
     pub fn open_font_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2135,6 +2360,17 @@ impl SettingsView {
             .cursor(gpui::CursorStyle::Arrow)
             .p_6()
             .gap_5()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    // A click on empty settings space commits an edited custom
+                    // interval. The input itself stops propagation on mouse down.
+                    if this.sync_custom_open {
+                        this.commit_sync_custom(cx);
+                        window.focus(&this.focus_handle);
+                    }
+                }),
+            )
             .on_scroll_wheel(cx.listener(|this, _, _, cx| {
                 if this.toolbar_command_dropdown_open || this.toolbar_icon_dropdown_open {
                     cx.stop_propagation();
@@ -2152,7 +2388,7 @@ impl SettingsView {
                 SettingsTab::Search => self.render_search_tab(cx),
                 SettingsTab::Templates => self.render_templates_tab(cx),
                 SettingsTab::Files => self.render_files_tab(window, cx),
-                SettingsTab::Sync => self.render_sync_tab(cx),
+                SettingsTab::Sync => self.render_sync_tab(window, cx),
                 SettingsTab::Trash => self.render_trash_tab(cx),
                 SettingsTab::System => self.render_system_tab(cx),
                 SettingsTab::Shortcuts => self.render_shortcuts_tab(cx),

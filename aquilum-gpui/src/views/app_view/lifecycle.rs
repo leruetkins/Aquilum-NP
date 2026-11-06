@@ -800,6 +800,20 @@ impl AppView {
     /// Polls the background sync service so the status bar shows a running
     /// pass even when no other UI event triggers a repaint.
     pub fn poll_sync_status(&mut self, cx: &mut Context<Self>) {
+        let revision = self.state.sync.revision();
+        if self.last_sync_revision == Some(revision) {
+            return;
+        }
+        self.last_sync_revision = Some(revision);
+        let done = self.state.sync.last();
+        if done != self.last_sync_done {
+            self.last_sync_done = done;
+            if done.is_some() {
+                // The fs watcher usually sees pulled files too, but a pass
+                // that only created folders may not produce a file event.
+                self.reload_file_tree_async(cx);
+            }
+        }
         let status = self.state.sync.status();
         if self.last_sync_status.as_ref() != Some(&status) {
             self.last_sync_status = Some(status);
@@ -829,6 +843,18 @@ impl AppView {
             }
             crate::sync::SyncStatus::Login => {
                 Some((icons::ICON_REFRESH, self.t("settings.sync.login")))
+            }
+            crate::sync::SyncStatus::Offline => {
+                Some((icons::ICON_TRIANGLE_ALERT, self.t("settings.sync.offline")))
+            }
+            crate::sync::SyncStatus::Failed(error) => {
+                Some((icons::ICON_TRIANGLE_ALERT, error.clone()))
+            }
+            crate::sync::SyncStatus::Unsynced { first, .. } => {
+                Some((icons::ICON_TRIANGLE_ALERT, first.clone()))
+            }
+            crate::sync::SyncStatus::Deletions { .. } => {
+                Some((icons::ICON_TRIANGLE_ALERT, self.t("settings.sync.allow_deletions")))
             }
             _ => None,
         }

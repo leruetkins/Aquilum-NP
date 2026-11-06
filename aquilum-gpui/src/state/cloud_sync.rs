@@ -10,7 +10,7 @@ impl AppState {
         config
             .sync_vaults
             .get(&Self::sync_key(root))
-            .copied()
+            .cloned()
             .unwrap_or(config.sync)
     }
 
@@ -27,11 +27,23 @@ impl AppState {
     /// Gives the sync service the current vault and its settings. Called on
     /// workspace open/switch and after a settings change.
     pub fn bind_sync(&self) {
+        let config = self.settings.get_config();
+        if let Some(root) = &self.workspace_path {
+            let days = config.trash.retention_days;
+            if days > 0 {
+                let root = root.clone();
+                // Retention is independent of the sync pass and may walk a
+                // large trash; keep it off the UI thread.
+                std::thread::spawn(move || {
+                    let _ = crate::trash::purge(&root, days);
+                });
+            }
+        }
         let vault = self
             .workspace_path
             .as_ref()
             .map(|root| (root.clone(), self.sync_settings_for(root)));
-        self.sync.set_vault(vault);
+        self.sync.set_vault(vault, &config.ui.language);
     }
 
     fn sync_key(root: &Path) -> String {

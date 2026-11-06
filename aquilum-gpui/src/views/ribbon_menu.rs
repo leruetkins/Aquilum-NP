@@ -4,8 +4,10 @@ use gpui::{
 };
 
 use crate::icons;
+use crate::sync::SyncStatus;
 use crate::theme::Theme;
 use crate::views::app_view::AppView;
+use crate::views::notification::NotificationType;
 use crate::views::settings_view::SettingsTab;
 
 /// State for the Obsidian-style Ribbon context menu.
@@ -152,7 +154,30 @@ impl AppView {
                 // "Sync / Reload" is also the manual sync trigger: the
                 // background worker picks the due pass up immediately while
                 // the tree above reflects any local changes without waiting.
-                self.state.sync.request(std::time::Duration::ZERO);
+                let notice = match self.state.sync.status() {
+                    SyncStatus::Off(_) => {
+                        Some((NotificationType::Warning, self.t("settings.sync.off"), 3000))
+                    }
+                    SyncStatus::Login => {
+                        Some((NotificationType::Info, self.t("settings.sync.login"), 3000))
+                    }
+                    SyncStatus::Offline => {
+                        Some((NotificationType::Warning, self.t("settings.sync.offline"), 3000))
+                    }
+                    SyncStatus::Failed(error) => Some((NotificationType::Error, error, 5000)),
+                    SyncStatus::Deletions { .. } => {
+                        Some((NotificationType::Warning, self.t("settings.sync.allow_deletions"), 5000))
+                    }
+                    SyncStatus::Unsynced { first, .. } => {
+                        Some((NotificationType::Warning, first, 5000))
+                    }
+                    SyncStatus::Running(_) | SyncStatus::Ready => None,
+                };
+                if let Some((kind, message, timeout)) = notice {
+                    self.push_notification(kind, None, message, Some(timeout), cx);
+                } else {
+                    self.state.sync.request(std::time::Duration::ZERO);
+                }
                 cx.notify();
             }
             "ribbon-trash" => {
