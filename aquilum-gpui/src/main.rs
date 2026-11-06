@@ -171,6 +171,7 @@ fn main() {
                                     let _ = app.update(cx, |this, cx| {
                                         this.poll_fs_changes(cx);
                                         this.poll_search_replies(cx);
+                                        this.poll_sync_status(cx);
                                     });
                                 }
                             });

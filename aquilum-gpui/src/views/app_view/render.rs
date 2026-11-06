@@ -1,5 +1,7 @@
 use super::*;
 
+use gpui::AnimationExt;
+
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         log_fps_tick();
@@ -1602,6 +1604,38 @@ if let Some(new_scroll) = new_active_scroll {
                             .flex_shrink_0()
                             .gap_4()
                             .items_center()
+                            // Live sync pass sits before the index chip: the
+                            // user sees what the toolbar button started, and
+                            // the spinner disappears when the pass settles.
+                            .when_some(self.sync_status_bar(), |s, (icon, label)| {
+                                let icon = icons::icon(icon, 12.0, theme.text_muted).with_animation(
+                                    SharedString::from("sync-status-spinner"),
+                                    gpui::Animation::new(Duration::from_millis(900)).repeat(),
+                                    |icon, delta| {
+                                        icon.with_transformation(gpui::Transformation::rotate(
+                                            gpui::radians(delta * std::f32::consts::TAU),
+                                        ))
+                                    },
+                                );
+                                s.child(
+                                    div()
+                                        .id("status-sync")
+                                        .flex()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .text_color(theme.text_muted)
+                                        .child(
+                                            div()
+                                                .w(px(14.0))
+                                                .h(px(14.0))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(icon),
+                                        )
+                                        .child(label),
+                                )
+                            })
                             // Index status chip, ALWAYS visible with a vault
                             // open: "Indexing NN%" while the background build
                             // runs, "Index ready" afterwards — so "is it

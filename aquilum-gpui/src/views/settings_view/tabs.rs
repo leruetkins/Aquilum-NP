@@ -3435,6 +3435,15 @@ impl SettingsView {
         self.t_fmt("settings.sync.progress", &[&self.t(key), &done, &total])
     }
 
+    /// Countdown under the schedule row, rounded up to whole seconds like the
+    /// native settings countdown.
+    fn sync_countdown(&self, due: std::time::Instant) -> String {
+        let left = due.saturating_duration_since(std::time::Instant::now());
+        let seconds = left.as_secs() + u64::from(left.subsec_nanos() > 0);
+        let time = format!("{}:{:02}", seconds / 60, seconds % 60);
+        self.t_fmt("settings.sync.next", &[&time])
+    }
+
     fn sync_file_count(&self, count: u64) -> String {
         let forms = [
             self.t("settings.sync.file_one"),
@@ -3471,7 +3480,7 @@ impl SettingsView {
 
     pub(super) fn render_sync_tab(&self, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
-        let (workspace, settings, status, large, size, last) = if let Some(app) = self.weak_app.upgrade() {
+        let (workspace, settings, status, large, size, last, due) = if let Some(app) = self.weak_app.upgrade() {
             let app = app.read(cx);
             let settings = app
                 .state
@@ -3486,9 +3495,18 @@ impl SettingsView {
                 app.state.sync.large(),
                 app.state.sync.size(),
                 app.state.sync.last(),
+                app.state.sync.due(),
             )
         } else {
-            (None, SyncSettings::default(), SyncStatus::Off(None), Vec::new(), Default::default(), None)
+            (
+                None,
+                SyncSettings::default(),
+                SyncStatus::Off(None),
+                Vec::new(),
+                Default::default(),
+                None,
+                None,
+            )
         };
 
         let status_text = self.sync_status_text(&status, last);
@@ -3663,13 +3681,14 @@ impl SettingsView {
                         .with_priority(999),
                     )
                 });
-            let running = match &status {
+            let detail = match &status {
                 SyncStatus::Running(progress) => Some(self.sync_progress_text(progress)),
+                _ if settings.enabled => due.map(|due| self.sync_countdown(due)),
                 _ => None,
             };
             rows.push(self.sync_row(
                 &self.t("settings.sync.enabled"),
-                running.as_deref(),
+                detail.as_deref(),
                 interval_control,
             ));
 

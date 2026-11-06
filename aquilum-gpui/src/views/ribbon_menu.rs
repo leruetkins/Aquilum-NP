@@ -149,6 +149,10 @@ impl AppView {
             }
             "ribbon-refresh" => {
                 self.state.reload_file_tree();
+                // "Sync / Reload" is also the manual sync trigger: the
+                // background worker picks the due pass up immediately while
+                // the tree above reflects any local changes without waiting.
+                self.state.sync.request(std::time::Duration::ZERO);
                 cx.notify();
             }
             "ribbon-trash" => {

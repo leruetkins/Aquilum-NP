@@ -63,7 +63,7 @@
       "trash_desc": "Include the workspace .trash folder.",
       "size": "Knowledge base size",
       "last": "Last sync",
-      "next": "Next sync",
+      "next": "Next sync in {}",
       "large": "Large files",
       "on_device": "on device",
       "in_cloud": "in the cloud",
