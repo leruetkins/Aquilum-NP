@@ -412,7 +412,7 @@ impl EditorWindow {
             &code_states,
             word_wrap,
             wrap_cols,
-            typography.map(|typography| &typography.headings),
+            typography,
             false,
             |_| false,
         );
@@ -472,7 +472,7 @@ impl EditorWindow {
             &code_states,
             word_wrap,
             wrap_cols,
-            typography.map(|typography| &typography.headings),
+            typography,
             source_mode,
             |idx| {
                 let text = line_refs.get(idx).copied().unwrap_or("");
@@ -662,7 +662,11 @@ impl EditorWindow {
         };
         let metrics =
             markdown::painted_line_metrics(text, &classified, active, &reveal, &typography.headings);
-        markdown::wrap_line_ranges_painted(text, &metrics, self.wrap_cols)
+        markdown::wrap_line_ranges_painted(
+            text,
+            &metrics,
+            markdown::wrap_cols_for_line(&classified, typography, self.wrap_cols),
+        )
     }
 
     fn rows_from_ranges(line: usize, ranges: &[(usize, usize)]) -> Vec<markdown::VisualRow> {

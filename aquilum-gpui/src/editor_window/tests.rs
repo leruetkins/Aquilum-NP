@@ -108,6 +108,53 @@
         assert_eq!(found, Some((2, 3)));
     }
 
+    /// A heading re-wraps inside its own font budget, so entering the line and
+    /// revealing the `"# "` marker does not push a row past the note column.
+    #[test]
+    fn active_heading_rewraps_inside_its_font_budget() {
+        let text = "# слово слово слово слово слово слово слово слово слово";
+        let index = LineIndex::new(text);
+        let typography = crate::settings::EditorTypography::reference();
+        let wrap_cols = 40;
+        let kind = crate::markdown::classify_line(text, None);
+        let mut w = EditorWindow::build(
+            text,
+            &index,
+            0,
+            1,
+            true,
+            wrap_cols,
+            Some(&typography),
+            crate::markdown::CodeScanState::default(),
+        );
+        let paint = crate::markdown::PaintedLineSpec {
+            active: true,
+            reveal: crate::markdown::InlineReveal::All,
+        };
+        assert!(w
+            .rewrap_line(0, &paint, Some(&typography), |_, _| None)
+            .is_some());
+        assert!(w.visual_rows.len() > 1, "the heading must wrap at this width");
+
+        let budget = crate::markdown::wrap_cols_for_line(&kind, &typography, wrap_cols);
+        for row in w.visual_rows.iter().filter(|row| row.line_idx == 0) {
+            let painted = crate::markdown::row_painted_text(
+                text,
+                &kind,
+                row,
+                true,
+                &paint.reveal,
+                &typography.headings,
+            );
+            assert!(
+                painted.columns() <= budget,
+                "row {:?} paints {} columns, over the {budget}-column heading budget",
+                (row.char_start, row.char_end),
+                painted.columns()
+            );
+        }
+    }
+
     /// Single-line updates must not wrap table rows and must keep their table
     /// heights when any other line is edited.
     #[test]

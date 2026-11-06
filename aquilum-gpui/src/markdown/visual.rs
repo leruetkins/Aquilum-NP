@@ -164,6 +164,33 @@ pub fn painted_line_metrics(
     }
 }
 
+/// Column budget of one line, measured in the cells its own font paints.
+///
+/// `wrap_cols` is the note width in base-font cells. A heading paints every
+/// char at its own size, so a row of `wrap_cols` heading chars is wider than the
+/// note and its tail runs past the column edge; converting the width into the
+/// heading's cells keeps the row inside it. The size ratio is the same fallback
+/// the row geometry uses when the text system cannot measure the heading font.
+pub fn wrap_cols_for_line(
+    classified: &LineKind<'_>,
+    typography: &crate::settings::EditorTypography,
+    wrap_cols: usize,
+) -> usize {
+    let heading_size = match classified {
+        LineKind::Heading1(_) => typography.headings.h1.font_size as f32,
+        LineKind::Heading2(_) => typography.headings.h2.font_size as f32,
+        LineKind::Heading3(_) => typography.headings.h3.font_size as f32,
+        LineKind::Heading4(_) => typography.headings.h4.font_size as f32,
+        LineKind::Heading5(_) => typography.headings.h5.font_size as f32,
+        LineKind::Heading6(_) => typography.headings.h6.font_size as f32,
+        _ => return wrap_cols,
+    };
+    if wrap_cols == 0 || heading_size <= 0.0 {
+        return wrap_cols;
+    }
+    ((wrap_cols as f32 * typography.base_font_size / heading_size).floor() as usize).max(1)
+}
+
 /// Lines the renderer paints as a whole, whatever sub-row it is given: a rule
 /// draws one horizontal line and a fence prints its raw text on every row.
 /// Wrapping them would paint the text twice, so they always stay one row.
@@ -269,13 +296,14 @@ pub fn build_visual_rows_canonical(
     code_states: &[Option<CodeBlockState>],
     word_wrap: bool,
     wrap_cols: usize,
-    headings: Option<&crate::settings::HeadingsSettings>,
+    typography: Option<&crate::settings::EditorTypography>,
     source_mode: bool,
     is_table_row: impl Fn(usize) -> bool,
 ) -> Vec<VisualRow> {
     let mut visual_rows = Vec::new();
-    let default_headings = crate::settings::HeadingsSettings::default();
-    let h_settings = headings.unwrap_or(&default_headings);
+    let default_typography = crate::settings::EditorTypography::reference();
+    let typography = typography.unwrap_or(&default_typography);
+    let h_settings = &typography.headings;
     for (line_idx, line) in lines.iter().enumerate() {
         let state = code_states.get(line_idx).and_then(|s| s.as_ref());
         let classified = if source_mode {
@@ -300,7 +328,11 @@ pub fn build_visual_rows_canonical(
                 if source_mode { &InlineReveal::All } else { &InlineReveal::None },
                 h_settings,
             );
-            wrap_line_ranges_painted(line, &metrics, wrap_cols)
+            wrap_line_ranges_painted(
+                line,
+                &metrics,
+                wrap_cols_for_line(&classified, typography, wrap_cols),
+            )
         };
         let count = ranges.len();
         for (sub_idx, (char_start, char_end)) in ranges.into_iter().enumerate() {

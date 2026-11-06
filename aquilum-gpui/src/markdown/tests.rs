@@ -1901,6 +1901,68 @@
         assert_eq!(active[0].0, "# abcdefgh");
     }
 
+    /// A heading paints its chars at its own size, so its column budget is the
+    /// note width converted into heading cells: h1 gets fewer cells, h6 more.
+    #[test]
+    fn heading_wrap_budget_is_measured_in_heading_cells() {
+        let typography = crate::settings::EditorTypography::reference();
+        let base = typography.base_font_size;
+        let wrap_cols = 80;
+
+        let body = classify_line("ordinary paragraph", None);
+        assert_eq!(
+            wrap_cols_for_line(&body, &typography, wrap_cols),
+            wrap_cols,
+            "body rows already count in base cells"
+        );
+
+        let h1 = classify_line("# heading", None);
+        let expected = (wrap_cols as f32 * base / typography.headings.h1.font_size as f32).floor() as usize;
+        assert_eq!(wrap_cols_for_line(&h1, &typography, wrap_cols), expected);
+        assert!(expected < wrap_cols, "an h1 row fits fewer chars than a body row");
+
+        let h6 = classify_line("###### heading", None);
+        assert!(
+            wrap_cols_for_line(&h6, &typography, wrap_cols) > wrap_cols,
+            "h6 is smaller than the body font and fits more chars"
+        );
+    }
+
+    /// The canonical layout keeps every heading row inside the note column: a
+    /// row of `wrap_cols` heading chars would be `h1/base` times wider than it.
+    #[test]
+    fn heading_rows_do_not_outrun_the_note_column() {
+        let typography = crate::settings::EditorTypography::reference();
+        let wrap_cols = 40;
+        let line = "# слово слово слово слово слово слово слово слово слово";
+        let lines = [line];
+        let code_states: [Option<CodeBlockState>; 1] = [None];
+        let kind = classify_line(line, None);
+
+        let rows = build_visual_rows_canonical(
+            &lines,
+            &code_states,
+            true,
+            wrap_cols,
+            Some(&typography),
+            false,
+            |_| false,
+        );
+        assert!(rows.len() > 1, "the heading must wrap at this width");
+
+        let scale = typography.headings.h1.font_size as f32 / typography.base_font_size;
+        for row in &rows {
+            let painted =
+                row_painted_text(line, &kind, row, false, &InlineReveal::None, &typography.headings);
+            let base_cells = painted.columns() as f32 * scale;
+            assert!(
+                base_cells <= wrap_cols as f32,
+                "row {:?} paints {base_cells} base cells, over the {wrap_cols}-cell note",
+                (row.char_start, row.char_end)
+            );
+        }
+    }
+
     #[test]
     fn inline_code_keeps_its_cells_and_emphasis_does_not() {
         let line = "**a** `b` c";
