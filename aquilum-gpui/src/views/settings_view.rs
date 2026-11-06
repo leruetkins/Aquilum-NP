@@ -427,6 +427,8 @@ pub struct SettingsView {
     pub hex_blink: BlinkManager,
     pub locale_popup: Option<gpui::Entity<TabListPopup>>,
     pub locale_popup_subscription: Option<Subscription>,
+    pub sync_interval_popup: Option<gpui::Entity<TabListPopup>>,
+    pub sync_interval_popup_subscription: Option<Subscription>,
     pub font_popup: Option<gpui::Entity<TabListPopup>>,
     pub font_popup_subscription: Option<Subscription>,
     pub theme_popup: Option<(ThemeSlot, gpui::Entity<TabListPopup>)>,

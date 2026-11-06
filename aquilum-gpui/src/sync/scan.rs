@@ -30,7 +30,7 @@ impl SyncSettings {
         let mut parts = relative.split('/');
         let first = parts.next().unwrap_or_default();
         if first == ".vault" {
-            return false;
+            return self.history && parts.next() == Some("history");
         }
         if first == ".trash" {
             return self.trash;
@@ -39,20 +39,28 @@ impl SyncSettings {
     }
 
     pub fn fingerprint(&self) -> String {
-        format!("trash={}", self.trash)
+        format!("trash={};history={}", self.trash, self.history)
     }
 
     fn areas(&self, root: &Path) -> Vec<PathBuf> {
+        let mut areas = Vec::new();
         if self.trash {
-            vec![root.join(".trash")]
-        } else {
-            Vec::new()
+            areas.push(root.join(".trash"));
         }
+        if self.history {
+            areas.push(root.join(".vault").join("history"));
+        }
+        areas
     }
 }
 
 pub fn service(relative: &str) -> bool {
-    matches!(relative.split('/').next(), Some(".trash"))
+    let mut parts = relative.split('/');
+    match parts.next() {
+        Some(".trash") => true,
+        Some(".vault") => parts.next() == Some("history"),
+        _ => false,
+    }
 }
 
 pub fn scan(root: &Path, scope: SyncSettings) -> io::Result<HashMap<String, LocalFile>> {
@@ -134,13 +142,20 @@ mod tests {
     use crate::settings::SyncSettings;
 
     fn scope(trash: bool) -> SyncSettings {
-        SyncSettings { enabled: true, trash, interval: 300 }
+        SyncSettings { enabled: true, trash, history: true, interval: 300 }
     }
 
     #[test]
     fn hidden_service_folders_stay_out_and_attachments_stay_in() {
         let root = tempfile::tempdir().unwrap();
-        for path in [".vault/data.json", ".obsidian/app.json", ".trash/old.md", "attachments/pic.png", "notes/a.md"] {
+        for path in [
+            ".vault/data.json",
+            ".vault/history/h.md",
+            ".obsidian/app.json",
+            ".trash/old.md",
+            "attachments/pic.png",
+            "notes/a.md",
+        ] {
             let file = root.path().join(path);
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(file, "x").unwrap();
@@ -148,12 +163,16 @@ mod tests {
         let files = scan(root.path(), scope(false)).unwrap();
         assert!(files.contains_key("notes/a.md"));
         assert!(files.contains_key("attachments/pic.png"));
+        assert!(files.contains_key(".vault/history/h.md"));
         assert!(!files.contains_key(".vault/data.json"));
         assert!(!files.contains_key(".obsidian/app.json"));
         assert!(!files.contains_key(".trash/old.md"));
 
         let files = scan(root.path(), scope(true)).unwrap();
         assert!(files.contains_key(".trash/old.md"));
+
+        let no_history = SyncSettings { history: false, ..scope(false) };
+        assert!(!scan(root.path(), no_history).unwrap().contains_key(".vault/history/h.md"));
     }
 
     #[test]
@@ -161,6 +180,7 @@ mod tests {
         let root = Path::new("C:/vault");
         assert_eq!(absolute(root, "a/../../b.md"), root.join("a").join("b.md"));
         assert!(service(".trash/x.md"));
+        assert!(service(".vault/history/x.md"));
         assert!(!service("notes/x.md"));
     }
 }

@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) const SYNC_INTERVALS: [u64; 5] = [0, 30, 60, 300, 600];
+
 impl SettingsView {
     pub fn new(
         model: Entity<SettingsModel>,
@@ -61,6 +63,8 @@ impl SettingsView {
             hex_blink: BlinkManager::new(),
             locale_popup: None,
             locale_popup_subscription: None,
+            sync_interval_popup: None,
+            sync_interval_popup_subscription: None,
             font_popup: None,
             font_popup_subscription: None,
             theme_popup: None,
@@ -643,6 +647,93 @@ impl SettingsView {
 
     pub fn locale_popup_is_open(&self) -> bool {
         self.locale_popup.is_some()
+    }
+
+    /// Opens the small interval dropdown used by the Sync tab.
+    pub fn open_sync_interval_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(app) = self.weak_app.upgrade() else {
+            return;
+        };
+        let (settings, root) = {
+            let app = app.read(cx);
+            let Some(root) = app.state.workspace_path.clone() else {
+                return;
+            };
+            (app.state.sync_settings_for(&root), root)
+        };
+        let tabs: Vec<TabEntry> = SYNC_INTERVALS
+            .iter()
+            .enumerate()
+            .map(|(id, seconds)| TabEntry {
+                id,
+                title: SharedString::from(self.t(&format!("settings.sync.every.{seconds}"))),
+                subtitle: None,
+                icon: icons::ICON_REFRESH,
+                font_family: None,
+                dot_color: None,
+                trailing_icon: None,
+            })
+            .collect();
+        let active_ix = if settings.enabled {
+            SYNC_INTERVALS.iter().position(|seconds| *seconds == settings.interval)
+        } else {
+            Some(0)
+        }
+        .or(Some(0));
+        let theme = self.theme.clone();
+        let popup = cx.new(|cx| {
+            TabListPopup::new(
+                tabs,
+                active_ix,
+                theme,
+                None,
+                Some(px(ROW_HEIGHT * SYNC_INTERVALS.len() as f32)),
+                Some(50.0),
+                cx,
+            )
+        });
+        let root_for_choice = root.clone();
+        let subscription = cx.subscribe_in(
+            &popup,
+            window,
+            move |this, _popup, event: &TabListEvent, _window, cx| match event {
+                TabListEvent::Activate(id) => {
+                    let seconds = SYNC_INTERVALS[*id];
+                    if let Some(app) = this.weak_app.upgrade() {
+                        let root = root_for_choice.clone();
+                        app.update(cx, |app, _| {
+                            let mut next = app.state.sync_settings_for(&root);
+                            next.interval = seconds;
+                            next.enabled = seconds > 0;
+                            app.state.set_sync_settings(&root, next);
+                        });
+                    }
+                    this.refresh_sync_config(cx);
+                    this.close_sync_interval_popup(cx);
+                }
+                TabListEvent::Dismiss => this.close_sync_interval_popup(cx),
+                TabListEvent::FoldTabs
+                | TabListEvent::BookmarkTabs
+                | TabListEvent::CloseAllTabs => {}
+            },
+        );
+
+        window.focus(&popup.read(cx).focus_handle());
+        self.sync_interval_popup = Some(popup);
+        self.sync_interval_popup_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    pub fn close_sync_interval_popup(&mut self, cx: &mut Context<Self>) {
+        if self.sync_interval_popup.take().is_none() {
+            return;
+        }
+        self.sync_interval_popup_subscription = None;
+        cx.notify();
+    }
+
+    pub fn sync_interval_popup_is_open(&self) -> bool {
+        self.sync_interval_popup.is_some()
     }
 
     pub fn open_font_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {

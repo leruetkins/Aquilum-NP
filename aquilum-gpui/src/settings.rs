@@ -507,7 +507,11 @@ pub struct SyncSettings {
     /// Enables Dropbox sync for this workspace.
     pub enabled: bool,
     /// Include the vault trash (`.trash`) in sync.
+    #[serde(default = "default_true")]
     pub trash: bool,
+    /// Include `.vault/history` in sync when the vault has one.
+    #[serde(default = "default_true")]
+    pub history: bool,
     /// Automatic pass interval in seconds. `0` means "only manual/event-driven".
     pub interval: u64,
 }
@@ -517,6 +521,7 @@ impl Default for SyncSettings {
         Self {
             enabled: false,
             trash: true,
+            history: true,
             interval: 300,
         }
     }

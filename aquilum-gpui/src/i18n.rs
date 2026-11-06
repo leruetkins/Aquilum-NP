@@ -177,6 +177,30 @@ pub fn t_fmt(key: &str, lang: &str, args: &[&str]) -> String {
     s
 }
 
+/// Plural category for a count: 0 = one, 1 = few, 2 = many/other.
+///
+/// The settings views use it for "N files"; Slavic languages need the
+/// one/few/many distinction, other bundled locales use singular for 1 and
+/// plural otherwise.
+pub fn plural_form(lang: &str, count: u64) -> usize {
+    let code = LocaleInfo::normalize(lang);
+    if matches!(code, "ru" | "uk" | "be") {
+        let hundred = count % 100;
+        let ten = count % 10;
+        if ten == 1 && hundred != 11 {
+            0
+        } else if (2..=4).contains(&ten) && !(12..=14).contains(&hundred) {
+            1
+        } else {
+            2
+        }
+    } else if count == 1 {
+        0
+    } else {
+        2
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

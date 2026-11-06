@@ -13,6 +13,9 @@ account. The implementation is a focused port of the Aquilum Dropbox engine
   folders (`.vault`, `.obsidian`, `.git`, `.DS_Store`, `._*`, `node_modules`,
   `target`) are excluded.
 * `.trash` is optional and can be enabled per workspace.
+* `.vault/history` is optional through **Sync history** when the vault has such
+  a folder; the rest of `.vault` (plugins, bookmarks, service data) is never
+  synced.
 * Files larger than 10 MiB stay on the device until the user presses **Send**
   in Settings → Sync. A large file that already exists in Dropbox is
   downloaded and keeps syncing.

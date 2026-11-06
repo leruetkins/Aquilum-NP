@@ -162,7 +162,7 @@ impl Watch for Probe {
     }
 }
 
-const SCOPE: SyncSettings = SyncSettings { enabled: true, trash: false, interval: 300 };
+const SCOPE: SyncSettings = SyncSettings { enabled: true, trash: false, history: false, interval: 300 };
 
 struct Device {
     root: PathBuf,
