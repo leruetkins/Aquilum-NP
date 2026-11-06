@@ -38,7 +38,8 @@
       "core_plugins": "Základní pluginy",
       "community_plugins": "Komunitní pluginy",
       "plugin_settings": "Nastavení pluginu",
-      "editor_toolbar": "Panel nástrojů editoru"
+      "editor_toolbar": "Panel nástrojů editoru",
+      "sync": "Sync"
     },
     "ui": {
       "title": "Nastavení rozhraní",
@@ -488,6 +489,35 @@
           "desc": "Automaticky přesouvat přílohy do koše, když jsou odkazy odstraněny z poznámek"
         }
       }
+    },
+    "sync": {
+      "provider_desc": "Sync this workspace through your Dropbox account.",
+      "off": "Not connected",
+      "login": "Waiting for Dropbox sign-in...",
+      "ready": "Up to date",
+      "running": "Syncing",
+      "deletions": "Deletion guard: planned / synced",
+      "offline": "Offline",
+      "unsynced": "Some files were not synced",
+      "connect": "Connect Dropbox",
+      "cancel": "Cancel",
+      "disconnect": "Disconnect",
+      "allow_deletions": "Allow deletions",
+      "enabled": "Sync this workspace",
+      "enabled_desc": "Keep notes and attachments in sync through Dropbox.",
+      "interval": "Automatic sync",
+      "interval_desc": "How often to check Dropbox. Manual means only after local edits and on connect.",
+      "manual": "Manual",
+      "trash": "Sync trash",
+      "trash_desc": "Include the workspace .trash folder.",
+      "size": "Synced content",
+      "last": "Last sync",
+      "next": "Next sync",
+      "large": "Large files",
+      "on_device": "on this device",
+      "in_cloud": "in Dropbox",
+      "send": "Send",
+      "no_workspace": "Open a workspace to configure Dropbox sync."
     }
   },
   "sidebar": {

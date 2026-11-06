@@ -85,7 +85,7 @@ pub fn adaptive_delays(content_len: usize) -> (Duration, Duration) {
 /// dispatched before the previous one finished, and the executor runs them on a
 /// pool, so without this lock two writers could pass the hash check together and
 /// interleave their chunks in the temporary file.
-fn path_lock(path: &Path) -> Arc<Mutex<()>> {
+pub(crate) fn path_lock(path: &Path) -> Arc<Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
     let mut locks = lock_unpoisoned(LOCKS.get_or_init(|| Mutex::new(HashMap::new())));
     locks.entry(path.to_path_buf()).or_default().clone()
@@ -131,7 +131,7 @@ fn remember_save(path: &Path, version: u64, hash: &str) {
 /// The per-write counter goes before the pid on purpose: the fs watcher
 /// (`fs_watcher::classify::is_our_atomic_tmp`) reads the last dot-separated part
 /// as the process id to tell our own atomic save from a user rename.
-fn temp_sibling(path: &Path) -> PathBuf {
+pub(crate) fn temp_sibling(path: &Path) -> PathBuf {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let file_name = path
         .file_name()

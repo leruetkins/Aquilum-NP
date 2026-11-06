@@ -17,6 +17,7 @@ mod fs;
 mod close;
 mod doc_lifecycle;
 mod documents;
+mod cloud_sync;
 
 pub fn app_data_dir() -> PathBuf {
     dirs::data_dir()
@@ -378,6 +379,10 @@ pub struct AppState {
     /// worker per AppState — the "Go to file" dialog and the sidebar panel
     /// both talk to it (reply ordering is per consumer via sequence numbers).
     pub search_worker: crate::search::worker::SearchWorker,
+    /// Dropbox synchronization service. It owns its worker thread and writes
+    /// remote changes to disk; the fs watcher below turns them into normal
+    /// reload/close events for the UI.
+    pub sync: crate::sync::SyncService,
     /// Documents deleted on disk: first-seen time; a path missing for longer
     /// than the debounce window is confirmed as deleted (atomic saves of other
     /// programs make the file disappear briefly and it must be cancelled).
@@ -407,6 +412,8 @@ impl AppState {
         let _ = std::fs::create_dir_all(&app_data_dir);
         let settings = Arc::new(crate::settings::SettingsManager::new(&app_data_dir));
         let session = SessionState::load(&app_data_dir);
+        let sync = crate::sync::SyncService::new(&app_data_dir);
+        sync.start();
 
         let valid_tabs: Vec<PathBuf> = if vault_from_cli {
             Vec::new()
@@ -521,6 +528,7 @@ impl AppState {
                 None,
                 settings.clone(),
             ),
+            sync,
             pending_file_deletions: HashMap::new(),
         };
 

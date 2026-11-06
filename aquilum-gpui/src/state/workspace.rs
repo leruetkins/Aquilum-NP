@@ -37,6 +37,10 @@ impl AppState {
             }
         }
         self.reload_file_tree();
+        // Start/retarget Dropbox sync only after the watcher and the initial
+        // tree are in place, so a first pull is observed like any other
+        // external change.
+        self.bind_sync();
         let vault_bm = path.join(".vault").join("bookmarks.json");
         let obs_bm = path.join(".obsidian").join("bookmarks.json");
         let bm_path = if vault_bm.exists() {

@@ -38,7 +38,8 @@
       "core_plugins": "Kärnplugins",
       "community_plugins": "Community-tillägg",
       "plugin_settings": "Plugin-inställningar",
-      "editor_toolbar": "Redigerarens verktygsfält"
+      "editor_toolbar": "Redigerarens verktygsfält",
+      "sync": "Sync"
     },
     "ui": {
       "title": "Gränssnittsinställningar",
@@ -488,6 +489,35 @@
           "desc": "Flytta automatiskt bilagor till papperskorgen när referenser tas bort från anteckningar"
         }
       }
+    },
+    "sync": {
+      "provider_desc": "Sync this workspace through your Dropbox account.",
+      "off": "Not connected",
+      "login": "Waiting for Dropbox sign-in...",
+      "ready": "Up to date",
+      "running": "Syncing",
+      "deletions": "Deletion guard: planned / synced",
+      "offline": "Offline",
+      "unsynced": "Some files were not synced",
+      "connect": "Connect Dropbox",
+      "cancel": "Cancel",
+      "disconnect": "Disconnect",
+      "allow_deletions": "Allow deletions",
+      "enabled": "Sync this workspace",
+      "enabled_desc": "Keep notes and attachments in sync through Dropbox.",
+      "interval": "Automatic sync",
+      "interval_desc": "How often to check Dropbox. Manual means only after local edits and on connect.",
+      "manual": "Manual",
+      "trash": "Sync trash",
+      "trash_desc": "Include the workspace .trash folder.",
+      "size": "Synced content",
+      "last": "Last sync",
+      "next": "Next sync",
+      "large": "Large files",
+      "on_device": "on this device",
+      "in_cloud": "in Dropbox",
+      "send": "Send",
+      "no_workspace": "Open a workspace to configure Dropbox sync."
     }
   },
   "sidebar": {

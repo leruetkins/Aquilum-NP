@@ -95,6 +95,7 @@ impl AppView {
                 self.state.open_tabs.clear();
                 self.state.active_empty_tab = None;
                 self.state.session.workspace_path = None;
+                self.state.bind_sync();
                 self.state.save_session_state();
                 self.open_empty_tab(window, cx);
                 self.close_vault_dialog(cx);

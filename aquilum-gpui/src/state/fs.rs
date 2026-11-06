@@ -514,6 +514,25 @@ impl AppState {
             }
         }
         self.pending_file_deletions.retain(|p, _| tracked_paths.contains(p));
+
+        // Feed real local edits to the Dropbox service. Files written by the
+        // service itself match their recorded hash and are ignored here.
+        let mut sync_paths = Vec::new();
+        let mut sync_rescan = false;
+        for event in &events {
+            match event {
+                FsChangeEvent::Modified(path) | FsChangeEvent::Deleted(path) => sync_paths.push(path.clone()),
+                FsChangeEvent::Renamed { old_path, new_path } => {
+                    sync_paths.push(old_path.clone());
+                    sync_paths.push(new_path.clone());
+                }
+                FsChangeEvent::Rescan => sync_rescan = true,
+                FsChangeEvent::AttachmentsTouched => {}
+            }
+        }
+        if self.sync.touched(&sync_paths, sync_rescan) {
+            self.sync.request(std::time::Duration::from_secs(3));
+        }
         events
     }
 }

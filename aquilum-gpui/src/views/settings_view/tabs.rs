@@ -1,5 +1,8 @@
 use super::*;
 
+use crate::settings::SyncSettings;
+use crate::sync::{Large, SyncStatus};
+
 impl SettingsView {
     /// Pixels the editor will use at the current slider position in the main
     /// window, so the settings stepper matches the status bar.
@@ -3280,5 +3283,374 @@ impl SettingsView {
             .child(self.render_settings_card(&self.t("settings.plugins.metadata.title"), meta_rows))
             .child(content_section)
             .child(settings_section)
+    }
+
+    // =========================================================================
+    // Dropbox Sync Tab
+    // =========================================================================
+
+    fn sync_button(&self, id: impl Into<gpui::ElementId>, label: String, primary: bool) -> gpui::Stateful<gpui::Div> {
+        let theme = &self.theme;
+        let base = div()
+            .id(id)
+            .px_2p5()
+            .py_1()
+            .rounded_md()
+            .cursor_pointer()
+            .text_xs()
+            .font_weight(gpui::FontWeight::SEMIBOLD);
+        let base = if primary {
+            base.bg(theme.accent).text_color(theme.text_on_accent)
+        } else {
+            base.bg(theme.bg_sidebar)
+                .border_1()
+                .border_color(theme.border)
+                .text_color(theme.text_secondary)
+                .hover(|hover| hover.bg(theme.bg_hover))
+        };
+        base.child(label)
+    }
+
+    fn sync_text(&self, status: &SyncStatus) -> String {
+        match status {
+            SyncStatus::Off(None) => self.t("settings.sync.off"),
+            SyncStatus::Off(Some(error)) | SyncStatus::Failed(error) => error.clone(),
+            SyncStatus::Login => self.t("settings.sync.login"),
+            SyncStatus::Ready => self.t("settings.sync.ready"),
+            SyncStatus::Running(progress) => {
+                format!("{} {}/{}", self.t("settings.sync.running"), progress.done, progress.total)
+            }
+            SyncStatus::Deletions { planned, synced } => {
+                format!("{} {} / {}", self.t("settings.sync.deletions"), planned, synced)
+            }
+            SyncStatus::Offline => self.t("settings.sync.offline"),
+            SyncStatus::Unsynced { files, first } => {
+                format!("{} {}: {}", self.t("settings.sync.unsynced"), files, first)
+            }
+        }
+    }
+
+    pub(super) fn render_sync_tab(&self, cx: &Context<Self>) -> gpui::Div {
+        let theme = &self.theme;
+        let (workspace, settings, status, large, size, last, due) = if let Some(app) = self.weak_app.upgrade() {
+            let app = app.read(cx);
+            let settings = app
+                .state
+                .workspace_path
+                .as_ref()
+                .map(|root| app.state.sync_settings_for(root))
+                .unwrap_or_default();
+            (
+                app.state.workspace_path.clone(),
+                settings,
+                app.state.sync.status(),
+                app.state.sync.large(),
+                app.state.sync.size(),
+                app.state.sync.last(),
+                app.state.sync.due(),
+            )
+        } else {
+            (None, SyncSettings::default(), SyncStatus::Off(None), Vec::new(), Default::default(), None, None)
+        };
+
+        let status_text = self.sync_text(&status);
+
+        let mut provider_actions = div().flex().flex_row().items_center().gap_2();
+        match &status {
+            SyncStatus::Off(_) => {
+                provider_actions = provider_actions.child(
+                    self.sync_button("sync-connect", self.t("settings.sync.connect"), true).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            if let Some(app) = this.weak_app.upgrade() {
+                                match app.update(cx, |app, _| app.state.sync.connect()) {
+                                    Ok(url) => cx.open_url(&url),
+                                    Err(error) => {
+                                        let message = format!("Dropbox sign-in failed: {error}");
+                                        let _ = app.update(cx, |app, _| app.state.status_text = message.clone());
+                                    }
+                                }
+                            }
+                            cx.notify();
+                        },
+                    )),
+                );
+            }
+            SyncStatus::Login => {
+                provider_actions = provider_actions.child(
+                    self.sync_button("sync-cancel", self.t("settings.sync.cancel"), false).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            if let Some(app) = this.weak_app.upgrade() {
+                                let _ = app.update(cx, |app, _| app.state.sync.disconnect());
+                            }
+                            cx.notify();
+                        },
+                    )),
+                );
+            }
+            SyncStatus::Deletions { .. } => {
+                provider_actions = provider_actions
+                    .child(
+                        self.sync_button("sync-allow-deletions", self.t("settings.sync.allow_deletions"), true)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(app) = this.weak_app.upgrade() {
+                                    app.update(cx, |app, _| app.state.sync.allow_deletions());
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        self.sync_button("sync-disconnect", self.t("settings.sync.disconnect"), false)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(app) = this.weak_app.upgrade() {
+                                    let _ = app.update(cx, |app, _| app.state.sync.disconnect());
+                                }
+                                cx.notify();
+                            })),
+                    );
+            }
+            _ => {
+                provider_actions = provider_actions.child(
+                    self.sync_button("sync-disconnect", self.t("settings.sync.disconnect"), false).on_click(
+                        cx.listener(|this, _, _, cx| {
+                            if let Some(app) = this.weak_app.upgrade() {
+                                let _ = app.update(cx, |app, _| app.state.sync.disconnect());
+                            }
+                            cx.notify();
+                        }),
+                    ),
+                );
+            }
+        }
+
+        let provider_control = div()
+            .flex()
+            .flex_col()
+            .items_end()
+            .gap_1()
+            .child(div().text_xs().text_color(theme.text_muted).child(status_text))
+            .child(provider_actions);
+
+        let mut rows = Vec::new();
+        rows.push(self.render_setting_row_with_id(
+            Some("sync.provider"),
+            "Dropbox",
+            Some(&self.t("settings.sync.provider_desc")),
+            provider_control,
+            cx,
+        ));
+
+        if workspace.is_none() {
+            rows.push(self.render_setting_row(&self.t("settings.sync.no_workspace"), None, div()));
+            return div().flex().flex_col().gap_5().child(self.render_settings_card(&self.t("settings.tabs.sync"), rows));
+        }
+
+        let root = workspace.unwrap();
+        let root_for_toggle = root.clone();
+        let enabled = settings.enabled;
+        rows.push(self.render_setting_row_with_id(
+            Some("sync.enabled"),
+            &self.t("settings.sync.enabled"),
+            Some(&self.t("settings.sync.enabled_desc")),
+            div()
+                .id("sync-enabled")
+                .child(self.render_toggle_switch(enabled))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(app) = this.weak_app.upgrade() {
+                        let root = root_for_toggle.clone();
+                        app.update(cx, |app, _| {
+                            let mut next = app.state.sync_settings_for(&root);
+                            next.enabled = !next.enabled;
+                            app.state.set_sync_settings(&root, next);
+                        });
+                    }
+                    this.refresh_sync_config(cx);
+                    cx.notify();
+                })),
+            cx,
+        ));
+
+        let mut interval_row = div().flex().flex_row().items_center().gap_1();
+        for seconds in [0u64, 30, 60, 300, 600] {
+            let selected = if seconds == 0 { !settings.enabled } else { settings.enabled && settings.interval == seconds };
+            let label = if seconds == 0 {
+                self.t("settings.sync.manual")
+            } else {
+                format!("{seconds}s")
+            };
+            let root = root.clone();
+            interval_row = interval_row.child(
+                div()
+                    .id(gpui::ElementId::from(gpui::SharedString::from(format!("sync-interval-{seconds}"))))
+                    .px_2p5()
+                    .py_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .text_xs()
+                    .when(selected, |button| button.bg(theme.accent).text_color(theme.text_on_accent))
+                    .when(!selected, |button| {
+                        button
+                            .bg(theme.bg_sidebar)
+                            .border_1()
+                            .border_color(theme.border)
+                            .text_color(theme.text_secondary)
+                            .hover(|hover| hover.bg(theme.bg_hover))
+                    })
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(app) = this.weak_app.upgrade() {
+                            let root = root.clone();
+                            app.update(cx, |app, _| {
+                                let mut next = app.state.sync_settings_for(&root);
+                                next.interval = seconds;
+                                next.enabled = seconds > 0;
+                                app.state.set_sync_settings(&root, next);
+                            });
+                        }
+                        this.refresh_sync_config(cx);
+                        cx.notify();
+                    })),
+            );
+        }
+        rows.push(self.render_setting_row_with_id(
+            Some("sync.interval"),
+            &self.t("settings.sync.interval"),
+            Some(&self.t("settings.sync.interval_desc")),
+            interval_row,
+            cx,
+        ));
+
+        let root_for_trash = root.clone();
+        let trash = settings.trash;
+        rows.push(self.render_setting_row_with_id(
+            Some("sync.trash"),
+            &self.t("settings.sync.trash"),
+            Some(&self.t("settings.sync.trash_desc")),
+            div()
+                .id("sync-trash")
+                .child(self.render_toggle_switch(trash))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(app) = this.weak_app.upgrade() {
+                        let root = root_for_trash.clone();
+                        app.update(cx, |app, _| {
+                            let mut next = app.state.sync_settings_for(&root);
+                            next.trash = !next.trash;
+                            app.state.set_sync_settings(&root, next);
+                        });
+                    }
+                    this.refresh_sync_config(cx);
+                    cx.notify();
+                })),
+            cx,
+        ));
+
+        if size.synced > 0 {
+            rows.push(self.render_setting_row(
+                &self.t("settings.sync.size"),
+                None,
+                div().text_xs().text_color(theme.text_muted).child(format!(
+                    "{} · {}",
+                    format_bytes(size.synced),
+                    size.files
+                )),
+            ));
+        }
+
+        if let Some(last) = last {
+            rows.push(self.render_setting_row(
+                &self.t("settings.sync.last"),
+                None,
+                div().text_xs().text_color(theme.text_muted).child(format_sync_time(last)),
+            ));
+        }
+
+        if let Some(due) = due {
+            let seconds = due.saturating_duration_since(std::time::Instant::now()).as_secs();
+            rows.push(self.render_setting_row(
+                &self.t("settings.sync.next"),
+                None,
+                div().text_xs().text_color(theme.text_muted).child(format!("{seconds}s")),
+            ));
+        }
+
+        let mut blocks = vec![self.render_settings_card(&self.t("settings.tabs.sync"), rows)];
+
+        if !large.is_empty() {
+            let mut file_rows = Vec::new();
+            for Large { path, size, kept } in large {
+                let path_for_send = path.clone();
+                let mut row = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(theme.border_subtle)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .min_w_0()
+                            .child(div().text_xs().text_color(theme.text_primary).child(path))
+                            .child(div().text_xs().text_color(theme.text_muted).child(format!(
+                                "{} · {}",
+                                format_bytes(size),
+                                if kept {
+                                    self.t("settings.sync.on_device")
+                                } else {
+                                    self.t("settings.sync.in_cloud")
+                                }
+                            ))),
+                    );
+                if kept {
+                    row = row.child(
+                        self.sync_button(
+                            gpui::ElementId::from(gpui::SharedString::from(format!("sync-send-{path_for_send}"))),
+                            self.t("settings.sync.send"),
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(app) = this.weak_app.upgrade() {
+                                let path = path_for_send.clone();
+                                app.update(cx, |app, _| app.state.sync.allow(vec![path]));
+                            }
+                            cx.notify();
+                        })),
+                    );
+                }
+                file_rows.push(row);
+            }
+            blocks.push(self.render_settings_card(&self.t("settings.sync.large"), file_rows));
+        }
+
+        div().flex().flex_col().gap_5().children(blocks)
+    }
+}
+
+fn format_sync_time(millis: u64) -> String {
+    let at = time::OffsetDateTime::from_unix_timestamp((millis / 1000) as i64)
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        at.year(),
+        u8::from(at.month()),
+        at.day(),
+        at.hour(),
+        at.minute()
+    )
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
     }
 }

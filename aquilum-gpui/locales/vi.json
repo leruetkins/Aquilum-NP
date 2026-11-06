@@ -38,7 +38,8 @@
       "core_plugins": "Plugin cốt lõi",
       "community_plugins": "Plugin cộng đồng",
       "plugin_settings": "Cài đặt plugin",
-      "editor_toolbar": "Thanh công cụ soạn thảo"
+      "editor_toolbar": "Thanh công cụ soạn thảo",
+      "sync": "Sync"
     },
     "ui": {
       "title": "Cài đặt giao diện",
@@ -488,6 +489,35 @@
           "desc": "Tự động di chuyển tệp đính kèm vào thùng rác khi tham chiếu bị xóa khỏi ghi chú"
         }
       }
+    },
+    "sync": {
+      "provider_desc": "Sync this workspace through your Dropbox account.",
+      "off": "Not connected",
+      "login": "Waiting for Dropbox sign-in...",
+      "ready": "Up to date",
+      "running": "Syncing",
+      "deletions": "Deletion guard: planned / synced",
+      "offline": "Offline",
+      "unsynced": "Some files were not synced",
+      "connect": "Connect Dropbox",
+      "cancel": "Cancel",
+      "disconnect": "Disconnect",
+      "allow_deletions": "Allow deletions",
+      "enabled": "Sync this workspace",
+      "enabled_desc": "Keep notes and attachments in sync through Dropbox.",
+      "interval": "Automatic sync",
+      "interval_desc": "How often to check Dropbox. Manual means only after local edits and on connect.",
+      "manual": "Manual",
+      "trash": "Sync trash",
+      "trash_desc": "Include the workspace .trash folder.",
+      "size": "Synced content",
+      "last": "Last sync",
+      "next": "Next sync",
+      "large": "Large files",
+      "on_device": "on this device",
+      "in_cloud": "in Dropbox",
+      "send": "Send",
+      "no_workspace": "Open a workspace to configure Dropbox sync."
     }
   },
   "sidebar": {

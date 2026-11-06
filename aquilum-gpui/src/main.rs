@@ -28,6 +28,7 @@ pub mod search;
 pub mod settings;
 pub mod snap;
 pub mod state;
+pub mod sync;
 pub mod document_buffer;
 pub mod formatting;
 pub mod table;

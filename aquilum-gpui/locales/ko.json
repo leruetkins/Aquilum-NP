@@ -38,7 +38,8 @@
       "core_plugins": "핵심 플러그인",
       "community_plugins": "커뮤니티 플러그인",
       "plugin_settings": "플러그인 설정",
-      "editor_toolbar": "에디터 툴바"
+      "editor_toolbar": "에디터 툴바",
+      "sync": "Sync"
     },
     "ui": {
       "title": "인터페이스 설정",
@@ -488,6 +489,35 @@
           "desc": "노트에서 참조가 제거되면 첨부 파일을 자동으로 휴지통으로 이동합니다."
         }
       }
+    },
+    "sync": {
+      "provider_desc": "Sync this workspace through your Dropbox account.",
+      "off": "Not connected",
+      "login": "Waiting for Dropbox sign-in...",
+      "ready": "Up to date",
+      "running": "Syncing",
+      "deletions": "Deletion guard: planned / synced",
+      "offline": "Offline",
+      "unsynced": "Some files were not synced",
+      "connect": "Connect Dropbox",
+      "cancel": "Cancel",
+      "disconnect": "Disconnect",
+      "allow_deletions": "Allow deletions",
+      "enabled": "Sync this workspace",
+      "enabled_desc": "Keep notes and attachments in sync through Dropbox.",
+      "interval": "Automatic sync",
+      "interval_desc": "How often to check Dropbox. Manual means only after local edits and on connect.",
+      "manual": "Manual",
+      "trash": "Sync trash",
+      "trash_desc": "Include the workspace .trash folder.",
+      "size": "Synced content",
+      "last": "Last sync",
+      "next": "Next sync",
+      "large": "Large files",
+      "on_device": "on this device",
+      "in_cloud": "in Dropbox",
+      "send": "Send",
+      "no_workspace": "Open a workspace to configure Dropbox sync."
     }
   },
   "sidebar": {

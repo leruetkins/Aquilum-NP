@@ -40,7 +40,7 @@ impl SettingsView {
             crate::views::text_input::TextInput::new(files_folder_focus_handle.clone());
         files_folder_input.set_text(config.files.folder.clone());
 
-        Self {
+        let view = Self {
             model,
             weak_app,
             settings_tab: tab,
@@ -106,7 +106,31 @@ impl SettingsView {
             files_folder_focus_handle,
             files_folder_edit_origin: String::new(),
             files_folder_editing: false,
-        }
+        };
+        // Sync status lives in a background service; keep the tab fresh while
+        // the Settings window is open.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(500)).await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        view
+    }
+
+    pub(super) fn refresh_sync_config(&mut self, cx: &mut Context<Self>) {
+        let Some(app) = self.weak_app.upgrade() else {
+            return;
+        };
+        let config = app.read(cx).state.settings.get_config();
+        self.config = config.clone();
+        self.model.update(cx, |model, cx| {
+            model.config = config;
+            cx.emit(SettingsEvent::ConfigChanged);
+        });
     }
 
     #[inline]
@@ -189,6 +213,7 @@ impl SettingsView {
                 "search" => self.settings_tab = SettingsTab::Search,
                 "templates" => self.settings_tab = SettingsTab::Templates,
                 "files" => self.settings_tab = SettingsTab::Files,
+                "sync" => self.settings_tab = SettingsTab::Sync,
                 "trash" => self.settings_tab = SettingsTab::Trash,
                 "system" => self.settings_tab = SettingsTab::System,
                 "shortcuts" => self.settings_tab = SettingsTab::Shortcuts,
@@ -1910,6 +1935,7 @@ impl SettingsView {
                                     "search" => *active_tab == SettingsTab::Search,
                                     "templates" => *active_tab == SettingsTab::Templates,
                                     "files" => *active_tab == SettingsTab::Files,
+                                    "sync" => *active_tab == SettingsTab::Sync,
                                     "trash" => *active_tab == SettingsTab::Trash,
                                     "system" => *active_tab == SettingsTab::System,
                                     "shortcuts" => *active_tab == SettingsTab::Shortcuts,
@@ -2035,6 +2061,7 @@ impl SettingsView {
                 SettingsTab::Search => self.render_search_tab(cx),
                 SettingsTab::Templates => self.render_templates_tab(cx),
                 SettingsTab::Files => self.render_files_tab(window, cx),
+                SettingsTab::Sync => self.render_sync_tab(cx),
                 SettingsTab::Trash => self.render_trash_tab(cx),
                 SettingsTab::System => self.render_system_tab(cx),
                 SettingsTab::Shortcuts => self.render_shortcuts_tab(cx),

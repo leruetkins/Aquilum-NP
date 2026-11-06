@@ -628,6 +628,7 @@ impl AppView {
     /// and frees document buffers on application shutdown.
     pub fn prepare_shutdown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.state.save_dirty_documents();
+        self.state.sync.close();
         self.catalog_window_manager.close_if_open(cx);
         self.settings_window_manager.close_if_open(cx);
         self.unload_all_plugins();

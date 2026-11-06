@@ -38,7 +38,8 @@
       "core_plugins": "Plugins de base",
       "community_plugins": "Plugins communautaires",
       "plugin_settings": "Paramètres du plugin",
-      "editor_toolbar": "Barre d'outils de l'éditeur"
+      "editor_toolbar": "Barre d'outils de l'éditeur",
+      "sync": "Sync"
     },
     "ui": {
       "title": "Paramètres d'interface",
@@ -488,6 +489,35 @@
           "desc": "Déplacez automatiquement les pièces jointes vers la corbeille lorsque les références sont supprimées des notes"
         }
       }
+    },
+    "sync": {
+      "provider_desc": "Sync this workspace through your Dropbox account.",
+      "off": "Not connected",
+      "login": "Waiting for Dropbox sign-in...",
+      "ready": "Up to date",
+      "running": "Syncing",
+      "deletions": "Deletion guard: planned / synced",
+      "offline": "Offline",
+      "unsynced": "Some files were not synced",
+      "connect": "Connect Dropbox",
+      "cancel": "Cancel",
+      "disconnect": "Disconnect",
+      "allow_deletions": "Allow deletions",
+      "enabled": "Sync this workspace",
+      "enabled_desc": "Keep notes and attachments in sync through Dropbox.",
+      "interval": "Automatic sync",
+      "interval_desc": "How often to check Dropbox. Manual means only after local edits and on connect.",
+      "manual": "Manual",
+      "trash": "Sync trash",
+      "trash_desc": "Include the workspace .trash folder.",
+      "size": "Synced content",
+      "last": "Last sync",
+      "next": "Next sync",
+      "large": "Large files",
+      "on_device": "on this device",
+      "in_cloud": "in Dropbox",
+      "send": "Send",
+      "no_workspace": "Open a workspace to configure Dropbox sync."
     }
   },
   "sidebar": {

@@ -996,6 +996,7 @@
                 None,
                 settings.clone(),
             ),
+            sync: crate::sync::SyncService::new(&temp_dir),
             pending_file_deletions: HashMap::new(),
         };
 
