@@ -1800,14 +1800,16 @@ impl AppView {
                 let v_line_idx = v.line_idx;
                 let v_sub_idx = v.sub_idx;
 
-                let copy_payload: Option<(usize, usize)> =
-                    if is_opening_fence && !is_in_active_block {
-                        code_states_arc[v.line_idx]
-                            .as_ref()
-                            .map(|st| (st.block_id, v.line_idx))
-                    } else {
-                        None
-                    };
+                // The button stays on the opening fence row for as long as the
+                // block exists, including while it is being edited: clicking a
+                // block must not take the button away from the user.
+                let copy_payload: Option<(usize, usize)> = if is_opening_fence {
+                    code_states_arc[v.line_idx]
+                        .as_ref()
+                        .map(|st| (st.block_id, v.line_idx))
+                } else {
+                    None
+                };
 
                 if is_opening_fence {
                     if let Some(st) = code_states_arc[v.line_idx].as_ref() {
