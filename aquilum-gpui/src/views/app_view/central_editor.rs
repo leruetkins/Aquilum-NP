@@ -2728,7 +2728,7 @@ impl AppView {
                                     div()
                                         .id(gpui::ElementId::Name(format!("code-copy-{}-{}", lid_tag, v_idx).into()))
                                         .absolute()
-                                        .right(px(6.0))
+                                        .right_0()
                                         .top_0()
                                         .h(px(row_h))
                                         .flex()

@@ -814,6 +814,9 @@ if let Some(new_scroll) = new_active_scroll {
                                         .px_3()
                                         .child(
                                             div()
+                                                .flex()
+                                                .items_end()
+                                                .gap_1()
                                                 .px_2()
                                                 .py_0p5()
                                                 .bg(theme.accent)
@@ -825,7 +828,17 @@ if let Some(new_scroll) = new_active_scroll {
                                                 // dragging it moves the window, like the empty
                                                 // header space to its right.
                                                 .window_control_area(WindowControlArea::Drag)
-                                                .child("VIBECODIUM"),
+                                                .child("VIBECODIUM")
+                                                .child(
+                                                    div()
+                                                        .pb(px(1.0))
+                                                        .text_size(px(9.0))
+                                                        .font_weight(gpui::FontWeight::NORMAL)
+                                                        .child(format!(
+                                                            "v{}",
+                                                            env!("CARGO_PKG_VERSION")
+                                                        )),
+                                                ),
                                         )
                                         // Files / Search view toggle (Obsidian-style)
                                         .child(
@@ -853,7 +866,7 @@ if let Some(new_scroll) = new_active_scroll {
                                                         .hover(|h| h.bg(theme.bg_hover))
                                                         .child(icons::icon(
                                                             icons::ICON_FOLDER,
-                                                            14.0,
+                                                            16.0,
                                                             if self.sidebar_mode == crate::views::sidebar::SidebarMode::Files {
                                                                 theme.accent
                                                             } else {
@@ -882,7 +895,7 @@ if let Some(new_scroll) = new_active_scroll {
                                                         .hover(|h| h.bg(theme.bg_hover))
                                                         .child(icons::icon(
                                                             icons::ICON_SEARCH,
-                                                            14.0,
+                                                            16.0,
                                                             if self.sidebar_mode == crate::views::sidebar::SidebarMode::Search {
                                                                 theme.accent
                                                             } else {
@@ -911,7 +924,7 @@ if let Some(new_scroll) = new_active_scroll {
                                                         .hover(|h| h.bg(theme.bg_hover))
                                                         .child(icons::icon(
                                                             icons::ICON_BOOKMARK,
-                                                            14.0,
+                                                            16.0,
                                                             if self.sidebar_mode == crate::views::sidebar::SidebarMode::Bookmarks {
                                                                 theme.accent
                                                             } else {
@@ -940,7 +953,7 @@ if let Some(new_scroll) = new_active_scroll {
                                                         .hover(|h| h.bg(theme.bg_hover))
                                                         .child(icons::icon(
                                                             icons::ICON_HISTORY,
-                                                            14.0,
+                                                            16.0,
                                                             if self.sidebar_mode == crate::views::sidebar::SidebarMode::RecentFiles {
                                                                 theme.accent
                                                             } else {
@@ -975,7 +988,7 @@ if let Some(new_scroll) = new_active_scroll {
                                                                 .hover(|h| h.bg(theme.bg_hover))
                                                                 .child(icons::icon(
                                                                     icon_asset,
-                                                                    14.0,
+                                                                    16.0,
                                                                     if is_active {
                                                                         theme.accent
                                                                     } else {
