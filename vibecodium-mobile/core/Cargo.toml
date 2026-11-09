@@ -1,0 +1,29 @@
+[package]
+name = "vibecodium-core"
+version = "0.1.0"
+edition = "2021"
+description = "Platform-independent vibecodium core shared by the desktop app and the Android front end"
+
+[lib]
+name = "vibecodium_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+jni = "0.21.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(target_os = "android")'.dependencies]
+fontdue = "0.9"
+
+[dev-dependencies]
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+# The renderer's hot loops are per-pixel blits; optimizing for size left the
+# scroll frame above the vsync budget on phones.
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = "symbols"

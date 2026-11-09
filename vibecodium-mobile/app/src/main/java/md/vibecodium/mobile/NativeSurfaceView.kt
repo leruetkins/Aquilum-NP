@@ -522,12 +522,10 @@ class NativeEditorView(
     private val caretBlink = object : Runnable {
         override fun run() {
             if (!isFocused || selectionNonEmpty()) {
-                caretVisible = true
-                CoreBridge.nativeEditorSetCaretVisible(surfaceId, true)
+                applyCaretVisible(true)
                 return
             }
-            caretVisible = !caretVisible
-            CoreBridge.nativeEditorSetCaretVisible(surfaceId, caretVisible)
+            applyCaretVisible(!caretVisible)
             postDelayed(this, 500L)
         }
     }
@@ -536,6 +534,7 @@ class NativeEditorView(
     private var flinging = false
     private var velocityTracker: VelocityTracker? = null
     private var scrollMaxY = 0f
+    private var dragStartScroll = 0f
     private var onScrollChanged: ((Float, Float) -> Unit)? = null
     private var onCaretPlaced: (() -> Unit)? = null
     @Volatile private var knownScroll = 0f
@@ -553,7 +552,7 @@ class NativeEditorView(
             ) {
                 flinging = false
                 resumeCaretBlink()
-                postDelayed({ CoreBridge.nativeSurfaceInvalidate(surfaceId) }, 80L)
+                postDelayed({ requestFullRender() }, 80L)
                 removeCallbacks(saveAfterFling)
                 postDelayed(saveAfterFling, 400L)
                 postDelayed({ helper.invalidateRoot() }, 100L)
@@ -737,8 +736,7 @@ class NativeEditorView(
         if (preview == inPreview) return
         inPreview = preview
         if (!preview) {
-            CoreBridge.nativeSurfaceInvalidate(surfaceId)
-            requestRender()
+            requestFullRender()
             return
         }
         stopFling()
@@ -748,10 +746,21 @@ class NativeEditorView(
         clearFocus()
     }
 
+    /**
+     * Pushes a caret visibility change only when it actually flips. The
+     * repaint is queued on the render thread, so the blink no longer paints a
+     * whole frame on the UI thread (which used to stall an ongoing scroll).
+     */
+    private fun applyCaretVisible(visible: Boolean) {
+        if (caretVisible == visible) return
+        caretVisible = visible
+        CoreBridge.nativeEditorSetCaretVisible(surfaceId, visible)
+        requestFullRender()
+    }
+
     private fun startCaretBlink() {
         removeCallbacks(caretBlink)
-        caretVisible = true
-        CoreBridge.nativeEditorSetCaretVisible(surfaceId, true)
+        applyCaretVisible(true)
         if (isFocused && !selectionNonEmpty()) {
             postDelayed(caretBlink, 500L)
         }
@@ -759,25 +768,18 @@ class NativeEditorView(
 
     private fun stopCaretBlink() {
         removeCallbacks(caretBlink)
-        caretVisible = true
-        CoreBridge.nativeEditorSetCaretVisible(surfaceId, true)
+        applyCaretVisible(true)
     }
 
     private fun suspendCaretBlink() {
         removeCallbacks(caretBlink)
-        if (!caretVisible) {
-            caretVisible = true
-            CoreBridge.nativeEditorSetCaretVisible(surfaceId, true)
-        }
+        applyCaretVisible(true)
     }
 
     private fun resumeCaretBlink() {
         removeCallbacks(caretBlink)
         if (!isFocused || selectionNonEmpty()) return
-        if (!caretVisible) {
-            caretVisible = true
-            CoreBridge.nativeEditorSetCaretVisible(surfaceId, true)
-        }
+        applyCaretVisible(true)
         postDelayed(caretBlink, 500L)
     }
 
@@ -888,6 +890,7 @@ class NativeEditorView(
         if (topInset >= 0f) {
             CoreBridge.nativeEditorSetTopInset(surfaceId, topInset)
         }
+        caretVisible = true
         CoreBridge.nativeEditorSetCaretVisible(surfaceId, true)
         lastPath?.let { path ->
             loadViewport(path)?.let { (scroll, scrollX) ->
@@ -967,7 +970,7 @@ class NativeEditorView(
         knownScroll = scroll
         prefs.edit()
             .putString("viewport:$path", "$scroll,$scrollX")
-            .commit()
+            .apply()
     }
 
     /** Reapplies the stored position after the app returns from the background. */
@@ -1220,15 +1223,20 @@ class NativeEditorView(
         when (action) {
             0 -> {
                 stopFling()
-                CoreBridge.nativeSurfaceInvalidate(surfaceId)
+                suspendCaretBlink()
                 downX = event.x
                 downY = event.y
                 dragged = false
                 selecting = false
                 removeCallbacks(longPress)
-                scrollMaxY = runCatching {
+                val viewport = runCatching {
                     JSONObject(CoreBridge.nativeEditorViewport(surfaceId))
-                }.getOrNull()?.optDouble("max_y", 0.0)?.toFloat() ?: 0f
+                }.getOrNull()
+                scrollMaxY = viewport?.optDouble("max_y", 0.0)?.toFloat() ?: 0f
+                dragStartScroll = viewport
+                    ?.optDouble("scroll", knownScroll.toDouble())
+                    ?.toFloat()
+                    ?: knownScroll
                 syncHandles()
                 val handle = handleAt(event.x, event.y)
                 if (handle >= 0) {
@@ -1313,8 +1321,17 @@ class NativeEditorView(
             CoreBridge.nativeSurfaceTouch(surfaceId, event.x, event.y, action)
         }
         if (action == 1 && draggingHandle < 0 && !selecting) {
-            knownScroll = CoreBridge.nativeEditorScroll(surfaceId)
-            onScrollChanged?.invoke(knownScroll, scrollMaxY)
+            // Mirror the native drag formula instead of asking Rust for the
+            // scroll: a JNI read locks the surface mutex that the paint holds,
+            // which stalled the UI thread for every move of the finger.
+            val dy = event.y - downY
+            val dx = event.x - downX
+            val threshold = 8f * resources.displayMetrics.density
+            if (kotlin.math.abs(dy) > threshold && kotlin.math.abs(dx) <= kotlin.math.abs(dy)) {
+                val adjusted = dy - kotlin.math.sign(dy) * threshold
+                knownScroll = (dragStartScroll - adjusted).coerceIn(0f, scrollMaxY)
+                onScrollChanged?.invoke(knownScroll, scrollMaxY)
+            }
         }
         if (action == 2 && !dragged) {
             val now = SystemClock.uptimeMillis()
@@ -1352,10 +1369,14 @@ class NativeEditorView(
             }
         }
         if (action == 2) {
-            knownScroll = CoreBridge.nativeEditorScroll(surfaceId)
             // Guarantee a complete frame after a drag or tap, even if an
-            // incremental scroll band was rendered from a stale buffer.
-            CoreBridge.nativeSurfaceInvalidate(surfaceId)
+            // incremental scroll band was rendered from a stale buffer. The
+            // repaint itself runs on the render thread; a fresh fling already
+            // queued one, so do not stack a second full paint on top of it.
+            if (!flinging) {
+                resumeCaretBlink()
+                requestFullRender()
+            }
             helper.invalidateRoot()
         } else {
             requestRender()
@@ -1432,7 +1453,7 @@ class NativeEditorView(
         scrollMaxY = maxY.toFloat()
         removeCallbacks(saveAfterFling)
         suspendCaretBlink()
-        CoreBridge.nativeSurfaceInvalidate(surfaceId)
+        requestFullRender()
         smoothFling.start(scroll.toFloat(), (-vy).toDouble())
         flinging = true
         Choreographer.getInstance().postFrameCallback(flingRunnable)
