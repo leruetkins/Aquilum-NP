@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,7 +46,12 @@ class VibecodiumController(context: Context) {
     private var tabPersistJob: Job? = null
 
     init {
-        VaultLocatorStore.load(appContext)?.let(::openLocator)
+        VaultLocatorStore.load(appContext)?.let { locator ->
+            // Keep the launch spinner up until the repository and the saved
+            // tabs are ready, instead of flashing the start and empty screens.
+            state = state.copy(booting = true, loading = true)
+            openLocator(locator)
+        }
     }
 
     // ---------------------------------------------------------------- opening
@@ -66,7 +72,7 @@ class VibecodiumController(context: Context) {
 
     fun createDemoVault() {
         scope.launch {
-            state = state.copy(loading = true, message = null)
+            state = state.copy(loading = true, booting = true, message = null)
             closeRepository()
             try {
                 val (repository, locator) = withContext(Dispatchers.IO) {
@@ -81,7 +87,7 @@ class VibecodiumController(context: Context) {
 
     private fun openLocator(locator: VaultLocator) {
         scope.launch {
-            state = state.copy(loading = true, message = null)
+            state = state.copy(loading = true, booting = true, message = null)
             closeRepository()
             try {
                 val repository = withContext(Dispatchers.IO) {
@@ -134,8 +140,13 @@ class VibecodiumController(context: Context) {
             viewerPath = null,
             renamePath = null,
             renameValue = "",
+            newFolderOpen = false,
+            newFolderValue = "",
         )
         if (restoreTabs(repository)) persistTabs()
+        // Saved tabs are now in memory. Only at this point may the shell show
+        // the empty "new note" state when nothing was restored.
+        state = state.copy(booting = false)
         refreshSyncState()
         scope.launch { refreshLists(repository) }
     }
@@ -299,6 +310,25 @@ class VibecodiumController(context: Context) {
             refreshDerived(adjusted.text)
         }
         schedulePersistTabs()
+    }
+
+    /** Text coming from the native SurfaceView editor. */
+    fun updateNativeEditor(text: String, selection: Int) {
+        val index = state.activeTab
+        val tab = state.tabs.getOrNull(index) ?: return
+        if (text == tab.text) {
+            val tabs = state.tabs.toMutableList()
+            tabs[index] = tab.copy(selection = selection.coerceIn(0, tab.text.length))
+            state = state.copy(tabs = tabs)
+            schedulePersistTabs()
+            return
+        }
+        updateEditor(
+            TextFieldValue(
+                text = text,
+                selection = TextRange(selection.coerceIn(0, text.length)),
+            ),
+        )
     }
 
     fun saveActiveNow() {
@@ -502,6 +532,45 @@ class VibecodiumController(context: Context) {
 
     fun dismissRename() {
         state = state.copy(renamePath = null, renameValue = "")
+    }
+
+    // ------------------------------------------------------------- new folder
+
+    fun beginNewFolder() {
+        state = state.copy(newFolderOpen = true, newFolderValue = "")
+    }
+
+    fun updateNewFolderValue(value: String) {
+        state = state.copy(newFolderValue = value)
+    }
+
+    fun dismissNewFolder() {
+        state = state.copy(newFolderOpen = false, newFolderValue = "")
+    }
+
+    fun confirmNewFolder() {
+        val repository = repository ?: return
+        val name = state.newFolderValue.trim()
+        if (name.isEmpty() || name == "." || name == ".." || name.contains('/') || name.contains('\\')) {
+            state = state.copy(message = "Invalid folder name")
+            return
+        }
+        scope.launch {
+            try {
+                repository.createFolder(name)
+                val lists = loadFileLists(repository)
+                state = state.copy(
+                    notes = lists.notes,
+                    entries = lists.entries,
+                    folders = lists.folders,
+                    explorerTree = lists.tree,
+                    newFolderOpen = false,
+                    newFolderValue = "",
+                )
+            } catch (error: Throwable) {
+                state = state.copy(message = error.message ?: "Could not create the folder")
+            }
+        }
     }
 
     fun confirmRename() {

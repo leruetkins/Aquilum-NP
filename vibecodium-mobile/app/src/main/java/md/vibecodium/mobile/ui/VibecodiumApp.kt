@@ -4,6 +4,8 @@ import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -17,11 +19,17 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -30,7 +38,9 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -44,7 +54,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Menu
@@ -54,6 +63,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -68,6 +78,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -75,22 +86,34 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToDown
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.invisibleToUser
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
@@ -100,7 +123,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.OffsetMapping
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -108,20 +130,26 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
+import androidx.compose.ui.viewinterop.AndroidView
 import md.vibecodium.mobile.Drawer
 import md.vibecodium.mobile.DrawerMode
 import md.vibecodium.mobile.DocStats
 import md.vibecodium.mobile.EditorMode
 import md.vibecodium.mobile.CodeColors
-import md.vibecodium.mobile.ExplorerRow
 import md.vibecodium.mobile.LocalCodeColors
 import md.vibecodium.mobile.LIVE_MODEL_CHAR_LIMIT
 import md.vibecodium.mobile.MarkdownLine
 import md.vibecodium.mobile.MarkdownSpan
+import org.json.JSONArray
+import org.json.JSONObject
+import md.vibecodium.mobile.NativeEditorView
+import md.vibecodium.mobile.NativeTreeView
 import md.vibecodium.mobile.NoteItem
-import md.vibecodium.mobile.R
 import md.vibecodium.mobile.Tab
 import md.vibecodium.mobile.UiState
 import md.vibecodium.mobile.VibecodiumController
@@ -129,6 +157,7 @@ import md.vibecodium.mobile.filterExplorerTree
 import md.vibecodium.mobile.flattenExplorerTree
 import md.vibecodium.mobile.indentAtCursor
 import md.vibecodium.mobile.outdentAtCursor
+import kotlinx.coroutines.flow.collect
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -136,8 +165,247 @@ import java.util.Locale
 /** `--navbar-height: var(--touch-size-l)` in the Obsidian phone stylesheet. */
 private val NavbarHeight = 52.dp
 
+/** The floating bottom navbar is temporarily disabled. */
+private const val MobileNavbarEnabled = false
+
 /** `--view-header-height: var(--touch-size-m)` on a phone. */
 private val ViewHeaderHeight = 44.dp
+
+/** `lucide-folder-plus`, Obsidian's new-folder nav action. */
+private val NewFolderIcon: ImageVector = ImageVector.Builder(
+    name = "folder-plus",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f) {
+        moveTo(3f, 18f)
+        lineTo(3f, 5f)
+        curveTo(3f, 3.9f, 3.9f, 3f, 5f, 3f)
+        lineTo(7.9f, 3f)
+        curveTo(8.6f, 3f, 9.2f, 3.3f, 9.6f, 3.9f)
+        lineTo(10.4f, 5.1f)
+        curveTo(10.8f, 5.7f, 11.4f, 6f, 12.1f, 6f)
+        lineTo(19f, 6f)
+        curveTo(20.1f, 6f, 21f, 6.9f, 21f, 8f)
+        lineTo(21f, 18f)
+        curveTo(21f, 19.1f, 20.1f, 20f, 19f, 20f)
+        lineTo(5f, 20f)
+        curveTo(3.9f, 20f, 3f, 19.1f, 3f, 18f)
+        close()
+    }
+    path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f) {
+        moveTo(12f, 10f)
+        lineTo(12f, 16f)
+        moveTo(9f, 13f)
+        lineTo(15f, 13f)
+    }
+}.build()
+
+/** `lucide-edit`, Obsidian's "new note" nav action. */
+private val NewNoteIcon: ImageVector = ImageVector.Builder(
+    name = "new-note",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f) {
+        moveTo(12f, 3f)
+        lineTo(5f, 3f)
+        curveTo(3.9f, 3f, 3f, 3.9f, 3f, 5f)
+        lineTo(3f, 19f)
+        curveTo(3f, 20.1f, 3.9f, 21f, 5f, 21f)
+        lineTo(19f, 21f)
+        curveTo(20.1f, 21f, 21f, 20.1f, 21f, 19f)
+        lineTo(21f, 12f)
+    }
+    path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f) {
+        moveTo(18.4f, 2.6f)
+        curveTo(19.2f, 1.8f, 20.4f, 1.8f, 21.2f, 2.6f)
+        curveTo(22f, 3.4f, 22f, 4.6f, 21.2f, 5.4f)
+        lineTo(12.2f, 14.4f)
+        curveTo(12f, 14.6f, 11.7f, 14.8f, 11.4f, 14.9f)
+        lineTo(8.5f, 15.7f)
+        lineTo(9.3f, 12.8f)
+        curveTo(9.4f, 12.5f, 9.6f, 12.2f, 9.8f, 12f)
+        close()
+    }
+}.build()
+
+/** `lucide-chevrons-up-down`, Obsidian's collapse/expand-all action. */
+private val CollapseAllIcon: ImageVector = ImageVector.Builder(
+    name = "chevrons-up-down",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f) {
+        moveTo(7f, 15f)
+        lineTo(12f, 20f)
+        lineTo(17f, 15f)
+        moveTo(7f, 9f)
+        lineTo(12f, 4f)
+        lineTo(17f, 9f)
+    }
+}.build()
+
+/** `lucide-history`, the desktop client's recent-files icon. */
+private val HistoryIcon: ImageVector = ImageVector.Builder(
+    name = "history",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f) {
+        moveTo(3f, 12f)
+        arcTo(9f, 9f, 0f, true, false, 12f, 3f)
+        arcTo(9.75f, 9.75f, 0f, false, false, 5.26f, 5.74f)
+        lineTo(3f, 8f)
+        moveTo(3f, 3f)
+        lineTo(3f, 8f)
+        lineTo(8f, 8f)
+        moveTo(12f, 7f)
+        lineTo(12f, 12f)
+        lineTo(16f, 14f)
+    }
+}.build()
+
+/** `lucide-keyboard`, shown after placing the caret before the IME opens. */
+private val KeyboardIcon: ImageVector = ImageVector.Builder(
+    name = "keyboard",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(
+        fill = null,
+        stroke = SolidColor(Color.Black),
+        strokeLineWidth = 1.75f,
+        strokeLineCap = StrokeCap.Round,
+    ) {
+        moveTo(5f, 6f)
+        lineTo(19f, 6f)
+        quadTo(21f, 6f, 21f, 8f)
+        lineTo(21f, 16f)
+        quadTo(21f, 18f, 19f, 18f)
+        lineTo(5f, 18f)
+        quadTo(3f, 18f, 3f, 16f)
+        lineTo(3f, 8f)
+        quadTo(3f, 6f, 5f, 6f)
+        close()
+        moveTo(6f, 9f)
+        lineTo(6.1f, 9f)
+        moveTo(10f, 9f)
+        lineTo(10.1f, 9f)
+        moveTo(14f, 9f)
+        lineTo(14.1f, 9f)
+        moveTo(18f, 9f)
+        lineTo(18.1f, 9f)
+        moveTo(8f, 12f)
+        lineTo(8.1f, 12f)
+        moveTo(12f, 12f)
+        lineTo(12.1f, 12f)
+        moveTo(16f, 12f)
+        lineTo(16.1f, 12f)
+        moveTo(7f, 15f)
+        lineTo(17f, 15f)
+    }
+}.build()
+
+/** Obsidian sidebar-toggle: outer rect (1,2,22,20,r4) + inner rect (4,5,2,14,r2). */
+private val SidebarToggleIcon: ImageVector = ImageVector.Builder(
+    name = "sidebar-toggle",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(
+        fill = null,
+        stroke = SolidColor(Color.Black),
+        strokeLineWidth = 1.75f,
+    ) {
+        moveTo(5f, 2f)
+        lineTo(19f, 2f)
+        quadTo(23f, 2f, 23f, 6f)
+        lineTo(23f, 18f)
+        quadTo(23f, 22f, 19f, 22f)
+        lineTo(5f, 22f)
+        quadTo(1f, 22f, 1f, 18f)
+        lineTo(1f, 6f)
+        quadTo(1f, 2f, 5f, 2f)
+        close()
+    }
+    path(fill = SolidColor(Color.Black)) {
+        moveTo(5f, 5f)
+        curveTo(5.55f, 5f, 6f, 5.45f, 6f, 6f)
+        lineTo(6f, 18f)
+        curveTo(6f, 18.55f, 5.55f, 19f, 5f, 19f)
+        curveTo(4.45f, 19f, 4f, 18.55f, 4f, 18f)
+        lineTo(4f, 6f)
+        curveTo(4f, 5.45f, 4.45f, 5f, 5f, 5f)
+        close()
+    }
+}.build()
+
+/** `lucide-book-open`, used for the reading-view action. */
+private val BookOpenIcon: ImageVector = ImageVector.Builder(
+    name = "book-open",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f) {
+        moveTo(12f, 7f)
+        lineTo(12f, 21f)
+    }
+    path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f) {
+        moveTo(3f, 18f)
+        curveTo(2.45f, 18f, 2f, 17.55f, 2f, 17f)
+        lineTo(2f, 4f)
+        curveTo(2f, 3.45f, 2.45f, 3f, 3f, 3f)
+        lineTo(8f, 3f)
+        curveTo(10.21f, 3f, 12f, 4.79f, 12f, 7f)
+        curveTo(12f, 4.79f, 13.79f, 3f, 16f, 3f)
+        lineTo(21f, 3f)
+        curveTo(21.55f, 3f, 22f, 3.45f, 22f, 4f)
+        lineTo(22f, 17f)
+        curveTo(22f, 17.55f, 21.55f, 18f, 21f, 18f)
+        lineTo(15f, 18f)
+        curveTo(13.34f, 18f, 12f, 19.34f, 12f, 21f)
+        curveTo(12f, 19.34f, 10.66f, 18f, 9f, 18f)
+        close()
+    }
+}.build()
+
+/** `lucide-edit-3`, used for the edit-view action. */
+private val EditThreeIcon: ImageVector = ImageVector.Builder(
+    name = "edit-3",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f) {
+        moveTo(13f, 21f)
+        lineTo(21f, 21f)
+    }
+    path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f) {
+        moveTo(16.5f, 3.5f)
+        curveTo(17.33f, 2.67f, 18.67f, 2.67f, 19.5f, 3.5f)
+        curveTo(20.33f, 4.33f, 20.33f, 5.67f, 19.5f, 6.5f)
+        lineTo(7f, 19f)
+        lineTo(3f, 20f)
+        lineTo(4f, 16f)
+        close()
+    }
+}.build()
 
 private val EditorFontSize = 15.sp
 private val EditorLineHeight = 22.sp
@@ -153,10 +421,10 @@ fun VibecodiumApp(controller: VibecodiumController) {
             controller.back()
         }
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-            if (state.vaultName == null) {
-                StartScreen(state, controller)
-            } else {
-                PhoneShell(state, controller)
+            when {
+                state.booting -> BootScreen()
+                state.vaultName == null -> StartScreen(state, controller)
+                else -> PhoneShell(state, controller)
             }
             state.message?.let { message ->
                 MessageBar(message) { controller.dismissMessage() }
@@ -167,7 +435,25 @@ fun VibecodiumApp(controller: VibecodiumController) {
             state.renamePath?.let {
                 RenameDialog(state, controller)
             }
+            if (state.newFolderOpen) {
+                NewFolderDialog(state, controller)
+            }
         }
+    }
+}
+
+@Composable
+private fun BootScreen() {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+        contentAlignment = Alignment.Center,
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(34.dp),
+            strokeWidth = 3.dp,
+        )
     }
 }
 
@@ -238,6 +524,7 @@ private data class EditorSlice(
     val stats: DocStats,
 )
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PhoneShell(state: UiState, controller: VibecodiumController) {
     val editor = remember(controller) {
@@ -261,56 +548,194 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
             .systemBarsPadding(),
     ) {
         val drawerWidth = phoneDrawerWidth(maxWidth)
-        Column(Modifier.fillMaxSize()) {
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                if (editor.value.tabs.isEmpty()) {
-                    EmptyEditor(controller)
-                } else {
-                    EditorScreen(editor.value, controller)
-                }
+        val imeVisible = WindowInsets.isImeVisible
+        val focusManager = LocalFocusManager.current
+        var chromeHidden by remember { mutableStateOf(false) }
+        val lastEditorScroll = remember { floatArrayOf(0f) }
+        val chromeProgress = animateFloatAsState(
+            targetValue = if (chromeHidden) 0f else 1f,
+            animationSpec = tween(160),
+            label = "chrome",
+        )
+        val navProgress = animateFloatAsState(
+            targetValue = if (MobileNavbarEnabled && !imeVisible && !chromeHidden) 1f else 0f,
+            animationSpec = tween(160),
+            label = "navbar",
+        )
+        LaunchedEffect(state.drawer) {
+            if (state.drawer != null) focusManager.clearFocus()
+        }
+        LaunchedEffect(
+            state.drawer,
+            state.tabSwitcher,
+            state.viewerPath,
+            editor.value.activeTab,
+            editor.value.editorMode,
+        ) {
+            chromeHidden = false
+            lastEditorScroll[0] = 0f
+        }
+        val onEditorScroll: (Float, Float) -> Unit = { scroll, maxY ->
+            val previous = lastEditorScroll[0]
+            if (maxY <= 0f || scroll <= 2f) {
+                chromeHidden = false
+            } else if (scroll > previous + 6f) {
+                chromeHidden = true
+            } else if (scroll < previous - 6f) {
+                chromeHidden = false
+            }
+            lastEditorScroll[0] = scroll
+        }
+        Box(Modifier.fillMaxSize()) {
+            EditorArea(
+                editor.value,
+                controller,
+                imeVisible,
+                chromeHidden,
+                state.drawer != null,
+                onEditorScroll,
+            )
 
-                when (state.drawer) {
-                    Drawer.Left -> {
-                        DrawerBackdrop { controller.closeOverlays() }
-                        LeftDrawer(
-                            state,
-                            controller,
-                            Modifier
-                                .align(Alignment.CenterStart)
-                                .width(drawerWidth)
-                                .fillMaxHeight(),
-                        )
+            Box(
+                Modifier
+                    .align(Alignment.TopStart)
+                    .graphicsLayer {
+                        alpha = chromeProgress.value
+                        translationY = -56.dp.toPx() * (1f - chromeProgress.value)
                     }
+                    .then(
+                        if (chromeHidden) Modifier.semantics { invisibleToUser() } else Modifier,
+                    ),
+            ) {
+                FloatingIconButton(
+                    icon = SidebarToggleIcon,
+                    description = "Open explorer",
+                    tint = if (state.drawer == Drawer.Left) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                    modifier = Modifier
+                        .padding(start = 12.dp)
+                        .size(44.dp),
+                ) { controller.toggleDrawer(Drawer.Left) }
+            }
 
-                    Drawer.Right -> {
-                        DrawerBackdrop { controller.closeOverlays() }
-                        RightDrawer(
-                            state,
-                            controller,
-                            Modifier
-                                .align(Alignment.CenterEnd)
-                                .width(drawerWidth)
-                                .fillMaxHeight(),
-                        )
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .graphicsLayer {
+                        alpha = navProgress.value
+                        translationY =
+                            (NavbarHeight.toPx() + 24.dp.toPx()) * (1f - navProgress.value)
                     }
+                    .then(
+                        if (MobileNavbarEnabled && !imeVisible && !chromeHidden) {
+                            Modifier
+                        } else {
+                            Modifier.semantics { invisibleToUser() }
+                        },
+                    ),
+            ) {
+                MobileNavbar(
+                    state,
+                    controller,
+                    Modifier
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .fillMaxWidth()
+                        .widthIn(max = 316.dp),
+                )
+            }
 
-                    null -> Unit
-                }
-
-                if (state.tabSwitcher) {
-                    TabSwitcher(state, controller, Modifier.fillMaxSize())
-                }
-
-                if (state.syncOpen) {
-                    SyncScreen(state, controller, Modifier.fillMaxSize())
-                }
-
-                if (state.viewerPath != null) {
-                    AttachmentViewer(state, controller, Modifier.fillMaxSize())
+            if (state.drawer == Drawer.Left) {
+                DrawerBackdrop {
+                    focusManager.clearFocus()
+                    controller.closeOverlays()
                 }
             }
-            MobileNavbar(state, controller)
+            // The drawer stays composed (just off-screen) so its native tree
+            // SurfaceView already has a rendered surface when it opens. Adding
+            // it on demand exposed the editor for one frame.
+            LeftDrawer(
+                state,
+                controller,
+                Modifier
+                    .align(Alignment.CenterStart)
+                    .width(drawerWidth)
+                    .fillMaxHeight()
+                    .offset(x = if (state.drawer == Drawer.Left) 0.dp else -drawerWidth)
+                    .then(
+                        if (state.drawer == Drawer.Left) {
+                            Modifier
+                        } else {
+                            Modifier.semantics { invisibleToUser() }
+                        },
+                    ),
+            )
+
+            if (state.drawer == Drawer.Right) {
+                DrawerBackdrop {
+                    focusManager.clearFocus()
+                    controller.closeOverlays()
+                }
+                RightDrawer(
+                    state,
+                    controller,
+                    Modifier
+                        .align(Alignment.CenterEnd)
+                        .width(drawerWidth)
+                        .fillMaxHeight(),
+                )
+            }
+
+            if (state.tabSwitcher) {
+                TabSwitcher(state, controller, Modifier.fillMaxSize())
+            }
+
+            if (state.syncOpen) {
+                SyncScreen(state, controller, Modifier.fillMaxSize())
+            }
+
+            if (state.viewerPath != null) {
+                AttachmentViewer(state, controller, Modifier.fillMaxSize())
+            }
         }
+    }
+}
+
+/**
+ * Keeps IME inset reads local so only the editor subtree recomposes while the
+ * keyboard animates; the drawers and navbar stay stable.
+ */
+@Composable
+private fun EditorArea(
+    editor: EditorSlice,
+    controller: VibecodiumController,
+    imeVisible: Boolean,
+    chromeHidden: Boolean,
+    drawerOpen: Boolean,
+    onEditorScroll: (Float, Float) -> Unit,
+) {
+    val density = LocalDensity.current
+    val imeBottomPx = WindowInsets.ime.getBottom(density)
+    val navInsetPx = if (MobileNavbarEnabled) {
+        with(density) { (NavbarHeight + 12.dp).toPx() }
+    } else {
+        0f
+    }
+    val bottomInsetPx = if (imeBottomPx > 0) imeBottomPx.toFloat() else navInsetPx
+    if (editor.tabs.isEmpty()) {
+        EmptyEditor(controller)
+    } else {
+        EditorScreen(
+            editor,
+            controller,
+            imeVisible,
+            bottomInsetPx,
+            chromeHidden,
+            drawerOpen,
+            onEditorScroll,
+        )
     }
 }
 
@@ -321,16 +746,122 @@ private fun phoneDrawerWidth(maxWidth: Dp): Dp {
 }
 
 @Composable
-private fun EditorScreen(state: EditorSlice, controller: VibecodiumController) {
+private fun EditorScreen(
+    state: EditorSlice,
+    controller: VibecodiumController,
+    imeVisible: Boolean,
+    bottomInsetPx: Float,
+    chromeHidden: Boolean,
+    drawerOpen: Boolean,
+    onEditorScroll: (Float, Float) -> Unit,
+) {
     val tab = state.tabs.getOrNull(state.activeTab) ?: return
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        ViewHeader(state, tab, controller)
-        when (state.editorMode) {
-            EditorMode.Source -> SourceEditor(state, controller, tab)
-            EditorMode.Preview -> if (tab.language != null) {
-                CodeViewer(tab, Modifier.fillMaxWidth().weight(1f))
-            } else {
-                MarkdownPreview(state, controller, tab)
+    val bottomInset = if (imeVisible || !MobileNavbarEnabled) 0.dp else NavbarHeight + 12.dp
+    val preview = state.editorMode == EditorMode.Preview
+    val topInsetPx = with(LocalDensity.current) { (ViewHeaderHeight + 10.dp).toPx() }
+    val headerProgress = animateFloatAsState(
+        targetValue = if (chromeHidden) 0f else 1f,
+        animationSpec = tween(160),
+        label = "header",
+    )
+    var editorView by remember { mutableStateOf<NativeEditorView?>(null) }
+    var keyboardPrompt by remember { mutableStateOf(false) }
+    LaunchedEffect(tab.path, preview) {
+        keyboardPrompt = false
+    }
+    LaunchedEffect(drawerOpen) {
+        if (drawerOpen) editorView?.hideKeyboard()
+    }
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        // Keep the native editor alive while preview is open so switching
+        // back does not recreate its SurfaceView or reload the note.
+        SourceEditor(
+            state,
+            controller,
+            tab,
+            topInsetPx,
+            bottomInsetPx,
+            preview,
+            onEditorScroll,
+            onViewReady = { editorView = it },
+            onCaretPlaced = { keyboardPrompt = true },
+        )
+        if (preview) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                awaitPointerEvent().changes.forEach { it.consume() }
+                            }
+                        }
+                    },
+                color = MaterialTheme.colorScheme.background,
+            ) {
+                if (tab.language != null) {
+                    CodeViewer(
+                        tab,
+                        Modifier.fillMaxSize(),
+                        ViewHeaderHeight + 10.dp,
+                        bottomInset,
+                        onEditorScroll,
+                    )
+                } else {
+                    MarkdownPreview(
+                        state,
+                        controller,
+                        tab,
+                        ViewHeaderHeight,
+                        bottomInset,
+                        onEditorScroll,
+                    )
+                }
+            }
+        }
+        Box(
+            Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .graphicsLayer {
+                    alpha = headerProgress.value
+                    translationY = -ViewHeaderHeight.toPx() * (1f - headerProgress.value)
+                }
+                .then(
+                    if (chromeHidden) Modifier.semantics { invisibleToUser() } else Modifier,
+                )
+                .background(MaterialTheme.colorScheme.background),
+        ) {
+            ViewHeader(state, tab, controller)
+        }
+        if (!preview && keyboardPrompt && !imeVisible) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 8.dp, end = 12.dp)
+                    .size(44.dp)
+                    .offset {
+                        IntOffset(
+                            0,
+                            (ViewHeaderHeight.toPx() * headerProgress.value).roundToInt(),
+                        )
+                    },
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                tonalElevation = 3.dp,
+                shadowElevation = 4.dp,
+            ) {
+                IconButton(
+                    onClick = { editorView?.showKeyboard() },
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    Icon(
+                        KeyboardIcon,
+                        contentDescription = "Show keyboard",
+                        modifier = Modifier.size(22.dp),
+                        tint = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
             }
         }
     }
@@ -340,372 +871,301 @@ private fun EditorScreen(state: EditorSlice, controller: VibecodiumController) {
 private fun ViewHeader(state: EditorSlice, tab: Tab, controller: VibecodiumController) {
     val bookmarked = tab.path in state.bookmarks
     val preview = state.editorMode == EditorMode.Preview
-    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
-        Row(
+    var menuOpen by remember { mutableStateOf(false) }
+    var tabsMenuOpen by remember { mutableStateOf(false) }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(ViewHeaderHeight)
+            .padding(start = 60.dp, end = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // The floating explorer button is rendered by PhoneShell at the
+        // same top-left position for both empty and open states.
+        BoxWithConstraints(
             Modifier
-                .fillMaxWidth()
-                .height(ViewHeaderHeight)
-                .padding(start = 14.dp, end = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .weight(1f)
+                .fillMaxHeight(),
         ) {
-            Text(
-                text = tab.title + if (tab.dirty) " •" else "",
-                modifier = Modifier.weight(1f),
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                "${state.stats.words} w",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            IconButton(onClick = { controller.toggleBookmarkActive() }) {
-                Icon(
-                    Icons.Default.Star,
-                    contentDescription = if (bookmarked) "Remove bookmark" else "Bookmark",
-                    modifier = Modifier.size(20.dp),
-                    tint = if (bookmarked) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
-            }
-            IconButton(onClick = {
-                controller.setEditorMode(if (preview) EditorMode.Source else EditorMode.Preview)
-            }) {
-                Icon(
-                    if (preview) Icons.Default.Edit else Icons.Default.List,
-                    contentDescription = if (preview) "Edit" else "Preview",
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-            if (tab.language == null) {
-                IconButton(onClick = { controller.toggleDrawer(Drawer.Right) }) {
+            val titleWidth = maxWidth
+            Surface(
+                onClick = { tabsMenuOpen = true },
+                modifier = Modifier.fillMaxSize(),
+                shape = RoundedCornerShape(percent = 50),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                tonalElevation = 3.dp,
+                shadowElevation = 4.dp,
+            ) {
+                Row(
+                    Modifier
+                        .fillMaxSize()
+                        .padding(start = 16.dp, end = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = tab.title + if (tab.dirty) " •" else "",
+                        modifier = Modifier.weight(1f),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                     Icon(
-                        Icons.Default.List,
-                        contentDescription = "Outline",
-                        modifier = Modifier.size(20.dp),
+                        Icons.Default.KeyboardArrowDown,
+                        contentDescription = "Open tabs",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
-            IconButton(onClick = { controller.saveActiveNow() }) {
-                Icon(
-                    Icons.Default.Check,
-                    contentDescription = "Save",
-                    modifier = Modifier.size(20.dp),
-                    tint = MaterialTheme.colorScheme.primary,
-                )
+            // The menu follows the title button: same width, same corner
+            // radius, and a small gap underneath it.
+            DropdownMenu(
+                expanded = tabsMenuOpen,
+                onDismissRequest = { tabsMenuOpen = false },
+                modifier = Modifier.width(titleWidth),
+                offset = DpOffset(0.dp, 4.dp),
+                shape = RoundedCornerShape(22.dp),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                tonalElevation = 3.dp,
+                shadowElevation = 4.dp,
+            ) {
+                state.tabs.forEachIndexed { index, item ->
+                    val active = index == state.activeTab
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(40.dp)
+                            .clickable {
+                                tabsMenuOpen = false
+                                controller.selectTab(index)
+                            }
+                            .padding(start = 8.dp, end = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Default.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp),
+                            tint = if (active) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                Color.Transparent
+                            },
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            item.title + if (item.dirty) " •" else "",
+                            modifier = Modifier.weight(1f),
+                            fontSize = 13.sp,
+                            fontWeight = if (active) {
+                                FontWeight.SemiBold
+                            } else {
+                                FontWeight.Normal
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = if (active) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                        )
+                        IconButton(
+                            onClick = {
+                                controller.closeTab(index)
+                                if (state.tabs.size <= 1) tabsMenuOpen = false
+                            },
+                            modifier = Modifier.size(30.dp),
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Close tab",
+                                modifier = Modifier.size(15.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
             }
         }
+        Spacer(Modifier.width(8.dp))
+        Surface(
+            shape = RoundedCornerShape(percent = 50),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 3.dp,
+            shadowElevation = 4.dp,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                HeaderActionButton(
+                    icon = if (preview) EditThreeIcon else BookOpenIcon,
+                    description = if (preview) "Edit view" else "Reading view",
+                ) {
+                    controller.setEditorMode(if (preview) EditorMode.Source else EditorMode.Preview)
+                }
+                Box {
+                    HeaderActionButton(
+                        icon = Icons.Default.MoreVert,
+                        description = "More options",
+                    ) { menuOpen = true }
+                    NoteActionsMenu(
+                        expanded = menuOpen,
+                        onDismiss = { menuOpen = false },
+                        tab = tab,
+                        editorMode = state.editorMode,
+                        bookmarked = bookmarked,
+                        activeTab = state.activeTab,
+                        controller = controller,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FloatingIconButton(
+    icon: ImageVector,
+    description: String,
+    modifier: Modifier = Modifier
+        .size(44.dp),
+    tint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = modifier,
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        tonalElevation = 3.dp,
+        shadowElevation = 4.dp,
+    ) {
+        IconButton(onClick = onClick, modifier = Modifier.fillMaxSize()) {
+            Icon(
+                icon,
+                contentDescription = description,
+                modifier = Modifier.size(24.dp),
+                tint = tint,
+            )
+        }
+    }
+}
+
+@Composable
+private fun HeaderActionButton(
+    icon: ImageVector,
+    description: String,
+    onClick: () -> Unit,
+) {
+    IconButton(onClick = onClick, modifier = Modifier.size(44.dp)) {
+        Icon(
+            icon,
+            contentDescription = description,
+            modifier = Modifier.size(24.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun NoteActionsMenu(
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    tab: Tab,
+    editorMode: EditorMode,
+    bookmarked: Boolean,
+    activeTab: Int,
+    controller: VibecodiumController,
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        DropdownMenuItem(
+            text = { Text(if (editorMode == EditorMode.Source) "Reading view" else "Edit view") },
+            onClick = {
+                onDismiss()
+                controller.setEditorMode(
+                    if (editorMode == EditorMode.Source) EditorMode.Preview else EditorMode.Source,
+                )
+            },
+        )
+        DropdownMenuItem(
+            text = { Text("Save note") },
+            onClick = { onDismiss(); controller.saveActiveNow() },
+        )
+        DropdownMenuItem(
+            text = { Text("Rename note") },
+            onClick = { onDismiss(); controller.beginRename() },
+        )
+        DropdownMenuItem(
+            text = { Text(if (bookmarked) "Remove bookmark" else "Toggle bookmark") },
+            onClick = { onDismiss(); controller.toggleBookmarkActive() },
+        )
+        if (tab.language == null) {
+            DropdownMenuItem(
+                text = { Text("Outline") },
+                onClick = { onDismiss(); controller.toggleDrawer(Drawer.Right) },
+            )
+        }
+        DropdownMenuItem(
+            text = { Text("Sync") },
+            onClick = { onDismiss(); controller.openSync() },
+        )
+        DropdownMenuItem(
+            text = { Text("Close tab") },
+            onClick = { onDismiss(); controller.closeTab(activeTab) },
+        )
+        DropdownMenuItem(
+            text = { Text("Delete note") },
+            onClick = { onDismiss(); controller.confirmDeleteActive() },
+        )
+        HorizontalDivider()
+        DropdownMenuItem(
+            text = { Text("Open another vault") },
+            onClick = { onDismiss(); controller.closeVault() },
+        )
+        DropdownMenuItem(
+            text = { Text("About") },
+            onClick = {
+                onDismiss()
+                controller.showMessage("vibecodium · Rust core 0.1.0")
+            },
+        )
     }
 }
 
 // --------------------------------------------------------------------- source
 
-private data class SourceColors(
-    val accent: Color,
-    val muted: Color,
-    val code: CodeColors,
-)
-
 @Composable
-private fun SourceEditor(state: EditorSlice, controller: VibecodiumController, tab: Tab) {
-    val scroll = rememberScrollState()
-    val value = TextFieldValue(
-        text = tab.text,
-        selection = TextRange(tab.selection.coerceIn(0, tab.text.length)),
-    )
-    val codeColors = LocalCodeColors.current
-    val colors = SourceColors(
-        accent = MaterialTheme.colorScheme.primary,
-        muted = MaterialTheme.colorScheme.onSurfaceVariant,
-        code = codeColors,
-    )
-    val isCode = tab.language != null
-    val cursorLine = remember(tab.selection, tab.text) {
-        tab.text.take(tab.selection.coerceIn(0, tab.text.length)).count { it == '\n' }
-    }
-    val transformation: VisualTransformation = when {
-        tab.language != null -> CodeSourceHighlight(tab.language, codeColors)
-        state.lines.isNotEmpty() && tab.text.length <= LIVE_MODEL_CHAR_LIMIT ->
-            MarkdownModelHighlight(
-                modelText = state.markdownText,
-                lines = state.lines,
-                cursorLine = cursorLine,
-                colors = colors,
-                codeColors = codeColors,
-            )
-        else -> VisualTransformation.None
-    }
-    val lineCount = remember(tab.text) { tab.text.count { it == '\n' } + 1 }
-    // One text block instead of one composable per line: a 10k-line note used
-    // to create 10k measure/layout nodes before the first frame.
-    val lineNumbers = remember(lineCount) {
-        buildString {
-            for (line in 1..lineCount) {
-                if (line > 1) append('\n')
-                append(line)
-            }
-        }
-    }
-
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(if (isCode) codeColors.background else Color.Transparent),
-    ) {
-        Row(Modifier.fillMaxWidth().verticalScroll(scroll)) {
-            Text(
-                text = lineNumbers,
-                modifier = Modifier
-                    .padding(start = 8.dp, top = 10.dp, bottom = 10.dp)
-                    .widthIn(min = 30.dp),
-                fontFamily = FontFamily.Monospace,
-                fontSize = 12.sp,
-                lineHeight = EditorLineHeight,
-                color = if (isCode) {
-                    codeColors.comment
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                },
-                textAlign = TextAlign.End,
-            )
-            BasicTextField(
-                value = value,
-                onValueChange = controller::updateEditor,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = 10.dp, end = 12.dp, top = 10.dp, bottom = 10.dp)
-                    .onPreviewKeyEvent { event ->
-                        if (event.type == KeyEventType.KeyDown && event.key == Key.Tab) {
-                            controller.updateEditor(
-                                if (event.isShiftPressed) {
-                                    outdentAtCursor(value)
-                                } else {
-                                    indentAtCursor(value)
-                                },
-                            )
-                            true
-                        } else {
-                            false
-                        }
-                    },
-                textStyle = TextStyle(
-                    color = if (isCode) codeColors.normal else MaterialTheme.colorScheme.onBackground,
-                    fontSize = EditorFontSize,
-                    lineHeight = EditorLineHeight,
-                    fontFamily = FontFamily.Monospace,
-                ),
-                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                visualTransformation = transformation,
-            )
-        }
-    }
-}
-
-/// Applies the Rust markdown model to the source editor. If the model is
-/// momentarily behind the text (it is computed after a short debounce), the raw
-/// text is shown unstyled until the next model arrives.
-private class MarkdownModelHighlight(
-    private val modelText: String,
-    private val lines: List<MarkdownLine>,
-    private val cursorLine: Int,
-    private val colors: SourceColors,
-    private val codeColors: CodeColors,
-) : VisualTransformation {
-    override fun filter(text: AnnotatedString): TransformedText {
-        if (text.text != modelText || lines.isEmpty()) {
-            return TransformedText(text, OffsetMapping.Identity)
-        }
-        return TransformedText(
-            buildModelAnnotated(text.text, lines, cursorLine, colors, codeColors),
-            OffsetMapping.Identity,
-        )
-    }
-}
-
-private fun buildModelAnnotated(
-    text: String,
-    lines: List<MarkdownLine>,
-    cursorLine: Int,
-    colors: SourceColors,
-    codeColors: CodeColors,
-): AnnotatedString {
-    val sourceLines = text.split('\n').let { if (text.endsWith('\n')) it.dropLast(1) else it }
-    if (sourceLines.size != lines.size) return AnnotatedString(text)
-
-    // Markers keep their char cells (they only turn into spaces or a rendered
-    // glyph), so the caret offsets stay 1:1 with the original text. The line
-    // with the caret keeps its raw markers, which is the Obsidian live-preview
-    // behaviour.
-    val chars = text.toCharArray()
-    var lineStart = 0
-    for (index in lines.indices) {
-        val raw = sourceLines[index]
-        if (index != cursorLine) {
-            hideIdleMarkers(chars, lineStart, raw, lines[index])
-        }
-        lineStart += raw.length + 1
-    }
-
-    return buildAnnotatedString {
-        append(String(chars))
-        var offset = 0
-        for (index in lines.indices) {
-            val line = lines[index]
-            val raw = sourceLines[index]
-            val start = offset
-            val active = index == cursorLine
-            val markerChars = line.prefixChars.coerceIn(0, raw.length)
-            if (markerChars > 0 && active) {
-                addStyle(
-                    SpanStyle(color = colors.accent, fontWeight = FontWeight.Medium),
-                    start,
-                    start + markerChars,
-                )
-            }
-            if (!active && markerChars > 0 && (line.kind == "bullet" || line.kind == "task")) {
-                val glyph = if (line.kind == "bullet") {
-                    markerChars - 2
-                } else {
-                    (0 until markerChars).firstOrNull {
-                        raw.getOrNull(it) != ' ' && raw.getOrNull(it) != '\t'
-                    } ?: 0
-                }
-                addStyle(
-                    SpanStyle(color = colors.accent),
-                    start + glyph,
-                    start + glyph + 1,
-                )
-            }
-            when (line.kind) {
-                "heading" -> addStyle(
-                    SpanStyle(color = colors.accent, fontWeight = FontWeight.Bold),
-                    start,
-                    start + raw.length,
-                )
-
-                "quote" -> addStyle(SpanStyle(color = colors.muted), start, start + raw.length)
-
-                "code" -> {
-                    addStyle(codeStyle(colors), start, start + raw.length)
-                    addCodeLineStyles(raw, line.language.orEmpty(), start, codeColors)
-                }
-
-                "code_fence" -> addStyle(codeStyle(colors), start, start + raw.length)
-
-                "rule" -> addStyle(SpanStyle(color = colors.muted), start, start + raw.length)
-
-                "table", "table_row", "table_separator", "image" -> Unit
-
-                else -> {
-                    val contentStart = start + line.prefixChars
-                    for (span in line.spans) {
-                        if (span.kind == "marker" && !active) continue
-                        val spanStart = contentStart + span.start
-                        val spanEnd = contentStart + span.end
-                        spanStyle(span.kind, active, colors, codeColors)?.let { style ->
-                            addStyle(style, spanStart, spanEnd)
-                        }
-                    }
-                }
-            }
-            offset = start + raw.length + 1
-        }
-    }
-}
-
-private fun hideIdleMarkers(
-    chars: CharArray,
-    lineStart: Int,
-    raw: String,
-    line: MarkdownLine,
+private fun SourceEditor(
+    state: EditorSlice,
+    controller: VibecodiumController,
+    tab: Tab,
+    topInsetPx: Float,
+    bottomInsetPx: Float,
+    preview: Boolean,
+    onScroll: (Float, Float) -> Unit,
+    onViewReady: (NativeEditorView) -> Unit,
+    onCaretPlaced: () -> Unit,
 ) {
-    val markerChars = line.prefixChars.coerceIn(0, raw.length)
-    when (line.kind) {
-        "heading" -> for (index in 0 until markerChars) {
-            chars[lineStart + index] = ' '
-        }
-
-        "quote" -> for (index in 0 until markerChars) {
-            chars[lineStart + index] = if (chars[lineStart + index] == '>') '│' else ' '
-        }
-
-        "bullet" -> {
-            for (index in 0 until markerChars) chars[lineStart + index] = ' '
-            if (markerChars >= 2) {
-                chars[lineStart + markerChars - 2] = '•'
-                chars[lineStart + markerChars - 1] = ' '
-            }
-        }
-
-        "task" -> {
-            val box = if (line.checked == true) '☑' else '☐'
-            val first = (0 until markerChars).firstOrNull {
-                raw.getOrNull(it) != ' ' && raw.getOrNull(it) != '\t'
-            } ?: 0
-            for (index in 0 until markerChars) chars[lineStart + index] = ' '
-            if (markerChars > 0) chars[lineStart + first] = box
-        }
-
-        "code_fence" -> for (index in 0 until raw.length) {
-            chars[lineStart + index] = ' '
-        }
-
-        "numbered", "rule", "image", "table", "table_row", "table_separator" -> Unit
-
-        else -> Unit
-    }
-
-    if (line.kind !in CODE_OR_BLOCK_KINDS) {
-        val contentStart = lineStart + line.prefixChars
-        for (span in line.spans) {
-            if (span.kind != "marker") continue
-            val start = contentStart + span.start
-            val end = minOf(contentStart + span.end, chars.size)
-            for (index in start until end) {
-                if (index in chars.indices) chars[index] = ' '
-            }
-        }
-    }
-}
-
-private val CODE_OR_BLOCK_KINDS = setOf(
-    "code", "code_fence", "rule", "image", "table", "table_row", "table_separator",
-)
-
-private fun spanStyle(
-    kind: String,
-    active: Boolean,
-    colors: SourceColors,
-    codeColors: CodeColors,
-): SpanStyle? = when (kind) {
-    "bold" -> SpanStyle(fontWeight = FontWeight.Bold)
-    "italic" -> SpanStyle(fontStyle = FontStyle.Italic)
-    "bold_italic" -> SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)
-    "inline_code" -> SpanStyle(
-        color = codeColors.normal,
-        background = codeColors.background,
-        fontFamily = FontFamily.Monospace,
+    AndroidView(
+        factory = { context ->
+            NativeEditorView(
+                context = context,
+                onTextChanged = { text, selection ->
+                    controller.updateNativeEditor(text, selection)
+                },
+                idleBottomInsetPx = bottomInsetPx,
+            ).also(onViewReady)
+        },
+        modifier = Modifier.fillMaxSize(),
+        update = { view ->
+            view.setTopInset(topInsetPx)
+            view.setBottomInset(bottomInsetPx)
+            view.setOnScrollChanged(onScroll)
+            view.setOnCaretPlaced(onCaretPlaced)
+            view.setEditorPreview(preview)
+            view.setEditor(tab.text, tab.selection, tab.language, tab.path)
+        },
     )
-    "strikethrough" -> SpanStyle(textDecoration = TextDecoration.LineThrough)
-    "link" -> SpanStyle(color = colors.accent, textDecoration = TextDecoration.Underline)
-    "underline" -> SpanStyle(textDecoration = TextDecoration.Underline)
-    "highlight" -> SpanStyle(background = Color(0x33A882FF))
-    "tag" -> SpanStyle(color = colors.accent)
-    "marker" -> SpanStyle(color = if (active) colors.accent else colors.muted)
-    "grammar" -> SpanStyle(fontStyle = FontStyle.Italic)
-    else -> null
 }
-
-private fun codeStyle(colors: SourceColors) = SpanStyle(
-    color = colors.code.normal,
-    background = colors.code.background,
-    fontFamily = FontFamily.Monospace,
-)
 
 // -------------------------------------------------------------------- preview
 
@@ -757,11 +1217,31 @@ private fun buildPreviewBlocks(lines: List<MarkdownLine>): List<PreviewBlock> {
 }
 
 @Composable
-private fun MarkdownPreview(state: EditorSlice, controller: VibecodiumController, tab: Tab) {
+private fun MarkdownPreview(
+    state: EditorSlice,
+    controller: VibecodiumController,
+    tab: Tab,
+    topInset: Dp,
+    bottomInset: Dp,
+    onScroll: (Float, Float) -> Unit,
+) {
     val blocks = remember(state.lines) { buildPreviewBlocks(state.lines) }
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val listState = rememberLazyListState()
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            listState.firstVisibleItemIndex * 100_000L + listState.firstVisibleItemScrollOffset
+        }.collect { value -> onScroll(value.toFloat(), 1f) }
+    }
     LazyColumn(
-        Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 10.dp),
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            top = 10.dp + topInset,
+            end = 16.dp,
+            bottom = 10.dp + bottomInset,
+        ),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (blocks.isEmpty()) {
@@ -1018,14 +1498,24 @@ private fun MarkdownTable(rows: List<List<String>>) {
 }
 
 @Composable
-private fun CodeViewer(tab: Tab, modifier: Modifier) {
+private fun CodeViewer(
+    tab: Tab,
+    modifier: Modifier,
+    topInset: Dp,
+    bottomInset: Dp,
+    onScroll: (Float, Float) -> Unit,
+) {
     val language = tab.language ?: return
     val colors = LocalCodeColors.current
     val clipboard = LocalClipboardManager.current
     val vertical = rememberScrollState()
     val horizontal = rememberScrollState()
     val lineCount = tab.text.count { it == '\n' } + 1
-    Column(modifier.background(colors.background)) {
+    LaunchedEffect(vertical) {
+        snapshotFlow { vertical.value to vertical.maxValue }
+            .collect { (value, max) -> onScroll(value.toFloat(), max.toFloat()) }
+    }
+    Column(modifier.padding(top = topInset).background(colors.background)) {
         Row(
             Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -1042,7 +1532,7 @@ private fun CodeViewer(tab: Tab, modifier: Modifier) {
         }
         Row(Modifier.fillMaxWidth().weight(1f).verticalScroll(vertical)) {
             Column(
-                Modifier.padding(start = 8.dp, end = 10.dp, bottom = 12.dp),
+                Modifier.padding(start = 8.dp, end = 10.dp, bottom = 12.dp + bottomInset),
                 horizontalAlignment = Alignment.End,
             ) {
                 for (line in 1..lineCount) {
@@ -1079,9 +1569,20 @@ private fun CodeViewer(tab: Tab, modifier: Modifier) {
 // --------------------------------------------------------------------- navbar
 
 @Composable
-private fun MobileNavbar(state: UiState, controller: VibecodiumController) {
+private fun MobileNavbar(
+    state: UiState,
+    controller: VibecodiumController,
+    modifier: Modifier = Modifier,
+) {
     var menuOpen by remember { mutableStateOf(false) }
-    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
+    val tab = state.tabs.getOrNull(state.activeTab) ?: Tab(path = "", title = "", text = "")
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(percent = 50),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 6.dp,
+        shadowElevation = 10.dp,
+    ) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -1089,11 +1590,6 @@ private fun MobileNavbar(state: UiState, controller: VibecodiumController) {
                 .padding(horizontal = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            NavButton(
-                icon = Icons.Default.Menu,
-                label = "Drawer",
-                active = state.drawer == Drawer.Left,
-            ) { controller.toggleDrawer(Drawer.Left) }
             NavButton(
                 icon = Icons.Default.ArrowBack,
                 label = "Back",
@@ -1127,66 +1623,20 @@ private fun MobileNavbar(state: UiState, controller: VibecodiumController) {
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    Icons.Default.MoreVert,
-                    contentDescription = "More",
+                    Icons.Default.Menu,
+                    contentDescription = "Menu",
                     modifier = Modifier.size(22.dp),
                     tint = MaterialTheme.colorScheme.onBackground,
                 )
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    DropdownMenuItem(
-                        text = { Text("Save note") },
-                        onClick = { menuOpen = false; controller.saveActiveNow() },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Rename note") },
-                        onClick = { menuOpen = false; controller.beginRename() },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Toggle bookmark") },
-                        onClick = { menuOpen = false; controller.toggleBookmarkActive() },
-                    )
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                if (state.editorMode == EditorMode.Source) "Preview" else "Edit",
-                            )
-                        },
-                        onClick = {
-                            menuOpen = false
-                            controller.setEditorMode(
-                                if (state.editorMode == EditorMode.Source) EditorMode.Preview else EditorMode.Source,
-                            )
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Outline") },
-                        onClick = { menuOpen = false; controller.toggleDrawer(Drawer.Right) },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Sync") },
-                        onClick = { menuOpen = false; controller.openSync() },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Close tab") },
-                        onClick = { menuOpen = false; controller.closeTab(state.activeTab) },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Delete note") },
-                        onClick = { menuOpen = false; controller.confirmDeleteActive() },
-                    )
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        text = { Text("Open another vault") },
-                        onClick = { menuOpen = false; controller.closeVault() },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("About") },
-                        onClick = {
-                            menuOpen = false
-                            controller.showMessage("vibecodium · Rust core 0.1.0")
-                        },
-                    )
-                }
+                NoteActionsMenu(
+                    expanded = menuOpen,
+                    onDismiss = { menuOpen = false },
+                    tab = tab,
+                    editorMode = state.editorMode,
+                    bookmarked = tab.path.isNotEmpty() && tab.path in state.bookmarks,
+                    activeTab = state.activeTab,
+                    controller = controller,
+                )
             }
         }
     }
@@ -1262,89 +1712,177 @@ private fun BoxScope.DrawerBackdrop(onDismiss: () -> Unit) {
 
 @Composable
 private fun LeftDrawer(state: UiState, controller: VibecodiumController, modifier: Modifier) {
-    Surface(modifier = modifier, color = MaterialTheme.colorScheme.surface, tonalElevation = 8.dp) {
+    var vaultMenuOpen by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    Surface(modifier = modifier, color = Color(0xFF282828), tonalElevation = 0.dp) {
         Column(Modifier.fillMaxSize()) {
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .height(52.dp)
-                    .padding(start = 14.dp, end = 4.dp),
+                    .height(58.dp)
+                    .padding(start = 16.dp, end = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        state.vaultName ?: "Vault",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    val fileCount = if (state.entries.isNotEmpty()) state.entries.size else state.notes.size
-                    Text(
-                        "$fileCount files · ${syncSubtitle(state)}",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                Box(Modifier.weight(1f)) {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { vaultMenuOpen = true }
+                            .padding(vertical = 4.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                state.vaultName ?: "Vault",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Icon(
+                                Icons.Default.KeyboardArrowDown,
+                                contentDescription = "Vault options",
+                                modifier = Modifier.size(20.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            syncSubtitle(state),
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    DropdownMenu(expanded = vaultMenuOpen, onDismissRequest = { vaultMenuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Refresh files") },
+                            onClick = { vaultMenuOpen = false; controller.refreshNotes() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Open another vault") },
+                            onClick = { vaultMenuOpen = false; controller.closeVault() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Close drawer") },
+                            onClick = { vaultMenuOpen = false; controller.closeOverlays() },
+                        )
+                    }
                 }
-                IconButton(onClick = { controller.refreshNotes() }) {
+                IconButton(
+                    onClick = {
+                        focusManager.clearFocus()
+                        controller.closeOverlays()
+                    },
+                    modifier = Modifier.size(44.dp),
+                ) {
                     Icon(
-                        Icons.Default.Refresh,
-                        contentDescription = "Refresh files",
-                        modifier = Modifier.size(20.dp),
+                        Icons.Default.Close,
+                        contentDescription = "Close",
+                        modifier = Modifier.size(24.dp),
                     )
                 }
-                IconButton(onClick = { controller.toggleDrawer(Drawer.Right) }) {
-                    Icon(
-                        Icons.Default.KeyboardArrowRight,
-                        contentDescription = "Right panel",
-                        modifier = Modifier.size(20.dp),
-                    )
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                // Keep the native tree composed while another section is open.
+                // Recreating its SurfaceView on every tab switch tore the
+                // surface down and flashed the editor through the drawer.
+                val overlayMode = state.drawerMode != DrawerMode.Files
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .then(
+                            if (overlayMode) {
+                                Modifier.semantics { invisibleToUser() }
+                            } else {
+                                Modifier
+                            },
+                        ),
+                ) {
+                    TreeList(state, controller)
                 }
-                IconButton(onClick = { controller.closeOverlays() }) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", modifier = Modifier.size(20.dp))
+                if (overlayMode) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(Unit) {
+                                // Swallow touches so they cannot reach the
+                                // still-attached native tree underneath.
+                                awaitPointerEventScope {
+                                    while (true) {
+                                        awaitPointerEvent().changes.forEach { it.consume() }
+                                    }
+                                }
+                            },
+                        color = Color(0xFF282828),
+                        tonalElevation = 0.dp,
+                    ) {
+                        when (state.drawerMode) {
+                            DrawerMode.Search -> SearchPanel(state, controller)
+                            DrawerMode.Bookmarks -> BookmarkedList(state, controller)
+                            DrawerMode.Recent -> RecentList(state, controller)
+                            DrawerMode.Files -> Unit
+                        }
+                    }
                 }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .height(44.dp)
-                    .padding(horizontal = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .height(48.dp)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                ModeTab("Files", Icons.Default.Home, state.drawerMode == DrawerMode.Files) {
-                    controller.setDrawerMode(DrawerMode.Files)
+                for (mode in DrawerMode.entries) {
+                    val active = state.drawerMode == mode
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(
+                                if (active) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                                } else {
+                                    Color.Transparent
+                                },
+                            )
+                            .clickable {
+                                focusManager.clearFocus()
+                                controller.setDrawerMode(mode)
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            drawerModeIcon(mode),
+                            contentDescription = drawerModeLabel(mode),
+                            modifier = Modifier.size(26.dp),
+                            tint = if (active) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
                 }
-                ModeTab("Search", Icons.Default.Search, state.drawerMode == DrawerMode.Search) {
-                    controller.setDrawerMode(DrawerMode.Search)
-                }
-                ModeTab("Stars", Icons.Default.Star, state.drawerMode == DrawerMode.Bookmarks) {
-                    controller.setDrawerMode(DrawerMode.Bookmarks)
-                }
-                ModeTab("Recent", Icons.Default.Refresh, state.drawerMode == DrawerMode.Recent) {
-                    controller.setDrawerMode(DrawerMode.Recent)
-                }
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                when (state.drawerMode) {
-                    DrawerMode.Files -> TreeList(state, controller)
-                    DrawerMode.Search -> SearchPanel(state, controller)
-                    DrawerMode.Bookmarks -> BookmarkedList(state, controller)
-                    DrawerMode.Recent -> RecentList(state, controller)
-                }
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
-            TextButton(
-                onClick = { controller.closeVault() },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-            ) {
-                Text("Open another vault")
             }
         }
     }
+}
+
+private fun drawerModeLabel(mode: DrawerMode): String = when (mode) {
+    DrawerMode.Files -> "Files"
+    DrawerMode.Search -> "Search"
+    DrawerMode.Bookmarks -> "Bookmarks"
+    DrawerMode.Recent -> "Recent"
+}
+
+private fun drawerModeIcon(mode: DrawerMode): ImageVector = when (mode) {
+    DrawerMode.Files -> Icons.Default.Home
+    DrawerMode.Search -> Icons.Default.Search
+    DrawerMode.Bookmarks -> Icons.Default.Star
+    DrawerMode.Recent -> HistoryIcon
 }
 
 @Composable
@@ -1496,33 +2034,77 @@ private fun TabSwitcher(state: UiState, controller: VibecodiumController, modifi
 
 @Composable
 private fun TreeList(state: UiState, controller: VibecodiumController) {
+    var filterFocused by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
     Column(Modifier.fillMaxSize()) {
-        ExplorerToolbar(state, controller)
-        OutlinedTextField(
-            value = state.fileQuery,
-            onValueChange = controller::setFileQuery,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-            placeholder = { Text("Filter files", fontSize = 13.sp) },
-            leadingIcon = {
-                Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
-            },
-            trailingIcon = if (state.fileQuery.isEmpty()) {
-                null
-            } else {
-                {
-                    IconButton(onClick = { controller.setFileQuery("") }) {
-                        Icon(
-                            Icons.Default.Close,
-                            contentDescription = "Clear filter",
-                            modifier = Modifier.size(16.dp),
-                        )
+        Box(
+            Modifier.pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        if (event.changes.any { it.changedToDown() }) {
+                            focusManager.clearFocus()
+                        }
                     }
                 }
             },
-            singleLine = true,
-            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
-        )
-        Spacer(Modifier.height(4.dp))
+        ) {
+            ExplorerToolbar(state, controller)
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(44.dp)
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Default.Search,
+                contentDescription = null,
+                modifier = Modifier.size(22.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            BasicTextField(
+                value = state.fileQuery,
+                onValueChange = controller::setFileQuery,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 9.dp)
+                    .onFocusChanged { filterFocused = it.isFocused },
+                singleLine = true,
+                textStyle = androidx.compose.ui.text.TextStyle(
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                ),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                decorationBox = { innerTextField ->
+                    Box(Modifier.fillMaxWidth()) {
+                        if (!filterFocused && state.fileQuery.isEmpty()) {
+                            Text(
+                                "Quick filter...",
+                                fontSize = 14.sp,
+                                color = Color(0xFF8A8A8A),
+                            )
+                        }
+                        innerTextField()
+                    }
+                },
+            )
+            if (state.fileQuery.isNotEmpty()) {
+                IconButton(
+                    onClick = { controller.setFileQuery("") },
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Clear filter",
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
         if (state.entries.isEmpty() && state.folders.isEmpty()) {
             Placeholder("This vault has no files yet.")
             return@Column
@@ -1539,16 +2121,62 @@ private fun TreeList(state: UiState, controller: VibecodiumController) {
             return@Column
         }
         val activePath = state.tabs.getOrNull(state.activeTab)?.path
-        LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-            items(rows, key = { it.node.path }) { row ->
-                ExplorerTreeRow(row, activePath, state, controller)
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+        val treeJson = remember(rows, activePath, state.collapsedFolders) {
+            val array = JSONArray()
+            for (row in rows) {
+                array.put(
+                    JSONObject()
+                        .put(
+                            "name",
+                            if (row.node.isFolder) {
+                                row.node.name
+                            } else {
+                                row.node.name.substringBeforeLast('.', row.node.name)
+                            },
+                        )
+                        .put("path", row.node.path)
+                        .put("folder", row.node.isFolder)
+                        .put("depth", row.depth)
+                        .put("expanded", row.node.path !in state.collapsedFolders)
+                        .put("has_children", row.node.children.isNotEmpty())
+                        .put("note", row.node.entry?.isNote == true)
+                        .put("extension", row.node.entry?.extension.orEmpty()),
+                )
             }
+            JSONObject()
+                .put("rows", array)
+                .put("active", activePath ?: JSONObject.NULL)
+                .toString()
         }
+        AndroidView(
+            factory = { context ->
+                NativeTreeView(
+                    context,
+                    onAction = { action -> handleTreeAction(action, controller) },
+                    onTouchStart = { focusManager.clearFocus() },
+                )
+            },
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            update = { it.setRows(treeJson); it.setDrawerVisible(state.drawer == Drawer.Left) },
+        )
     }
 }
 
-/** Toolbar above the instant file filter. */
+private fun handleTreeAction(action: String, controller: VibecodiumController) {
+    val value = runCatching { JSONObject(action) }.getOrNull() ?: return
+    val path = value.optString("path")
+    if (path.isEmpty()) return
+    when (value.optString("kind")) {
+        "toggle" -> controller.toggleFolder(path)
+        "open_note" -> {
+            controller.openNote(path)
+            controller.closeOverlays()
+        }
+        "open_file" -> controller.openAttachment(path)
+    }
+}
+
+/** Explorer nav header, ordered like Obsidian's `nav-buttons-container`. */
 @Composable
 private fun ExplorerToolbar(state: UiState, controller: VibecodiumController) {
     val allCollapsed = state.folders.isNotEmpty() &&
@@ -1556,130 +2184,53 @@ private fun ExplorerToolbar(state: UiState, controller: VibecodiumController) {
     Row(
         Modifier
             .fillMaxWidth()
-            .height(40.dp)
-            .padding(horizontal = 6.dp),
+            .height(48.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        TextButton(
-            onClick = { controller.toggleAllFolders() },
+        CompactToolbarButton(
+            NewNoteIcon,
+            "New note",
+            modifier = Modifier.weight(1f).fillMaxHeight(),
+        ) { controller.newNote() }
+        CompactToolbarButton(
+            NewFolderIcon,
+            "New folder",
+            modifier = Modifier.weight(1f).fillMaxHeight(),
+        ) { controller.beginNewFolder() }
+        CompactToolbarButton(
+            CollapseAllIcon,
+            if (allCollapsed) "Expand all folders" else "Collapse all folders",
             enabled = state.folders.isNotEmpty(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+            modifier = Modifier.weight(1f).fillMaxHeight(),
+        ) { controller.toggleAllFolders() }
+        CompactToolbarButton(
+            Icons.Default.Refresh,
+            "Refresh files",
+            modifier = Modifier.weight(1f).fillMaxHeight(),
         ) {
-            Icon(
-                if (allCollapsed) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
-                contentDescription = if (allCollapsed) "Expand all folders" else "Collapse all folders",
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(Modifier.width(4.dp))
-            Text(if (allCollapsed) "Expand all" else "Collapse all", fontSize = 11.sp)
+            controller.refreshNotes()
         }
-        Spacer(Modifier.weight(1f))
-        Text(
-            "${state.entries.size} files",
-            fontSize = 11.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(end = 8.dp),
-        )
     }
 }
 
 @Composable
-private fun ExplorerTreeRow(
-    row: ExplorerRow,
-    activePath: String?,
-    state: UiState,
-    controller: VibecodiumController,
+private fun CompactToolbarButton(
+    icon: ImageVector,
+    description: String,
+    enabled: Boolean = true,
+    tint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
 ) {
-    val node = row.node
-    val isFolder = node.isFolder
-    val collapsed = node.path in state.collapsedFolders
-    val hasChildren = node.children.isNotEmpty()
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .background(
-                if (!isFolder && node.path == activePath) {
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                } else {
-                    Color.Transparent
-                },
-            )
-            .clickable {
-                if (isFolder) {
-                    controller.toggleFolder(node.path)
-                } else {
-                    node.entry?.let { entry ->
-                        if (entry.isNote) {
-                            controller.openNote(entry.path)
-                            controller.closeOverlays()
-                        } else {
-                            controller.openAttachment(entry.path)
-                        }
-                    }
-                }
-            }
-            .padding(
-                start = (8 + row.depth * 14).dp,
-                end = 14.dp,
-                top = 8.dp,
-                bottom = 8.dp,
-            ),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (isFolder) {
-            if (hasChildren) {
-                Icon(
-                    if (collapsed) Icons.Default.KeyboardArrowRight else Icons.Default.KeyboardArrowDown,
-                    contentDescription = if (collapsed) "Expand" else "Collapse",
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                Spacer(Modifier.width(16.dp))
-            }
-            Icon(
-                painter = painterResource(R.drawable.ic_folder),
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-                tint = MaterialTheme.colorScheme.primary,
-            )
-        } else {
-            Icon(
-                Icons.Default.List,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(
-                    alpha = if (node.entry?.isNote == true || node.entry?.isCode == true) 1f else 0.55f,
-                ),
-            )
-        }
-        Spacer(Modifier.width(8.dp))
-        Text(
-            node.name,
-            modifier = Modifier.weight(1f),
-            fontSize = 14.sp,
-            fontWeight = if (isFolder) FontWeight.SemiBold else FontWeight.Normal,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+    IconButton(onClick = onClick, modifier = modifier, enabled = enabled) {
+        Icon(
+            icon,
+            contentDescription = description,
+            modifier = Modifier.size(26.dp),
+            tint = if (enabled) tint else tint.copy(alpha = 0.35f),
         )
-        if (!isFolder) {
-            val entry = node.entry
-            if (entry != null && !entry.isNote) {
-                Text(
-                    entry.extension.uppercase(),
-                    fontSize = 9.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (entry != null && entry.isNote && entry.path in state.bookmarks) {
-                Icon(
-                    Icons.Default.Star,
-                    contentDescription = "Bookmarked",
-                    modifier = Modifier.size(14.dp),
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-            }
-        }
     }
 }
 
@@ -1934,6 +2485,33 @@ private fun RenameDialog(state: UiState, controller: VibecodiumController) {
         },
         dismissButton = {
             TextButton(onClick = { controller.dismissRename() }) {
+                Text("Cancel")
+            }
+        },
+    )
+}
+
+@Composable
+private fun NewFolderDialog(state: UiState, controller: VibecodiumController) {
+    AlertDialog(
+        onDismissRequest = { controller.dismissNewFolder() },
+        title = { Text("New folder") },
+        text = {
+            OutlinedTextField(
+                value = state.newFolderValue,
+                onValueChange = controller::updateNewFolderValue,
+                singleLine = true,
+                label = { Text("Folder name") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { controller.confirmNewFolder() }) {
+                Text("Create")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { controller.dismissNewFolder() }) {
                 Text("Cancel")
             }
         },

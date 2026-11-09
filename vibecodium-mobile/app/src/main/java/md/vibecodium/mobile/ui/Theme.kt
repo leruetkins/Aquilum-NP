@@ -3,6 +3,7 @@ package md.vibecodium.mobile.ui
 import androidx.compose.foundation.text.selection.LocalTextSelectionColors
 import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -69,6 +70,7 @@ private val ObsidianDark = darkColorScheme(
 fun VibecodiumTheme(content: @Composable () -> Unit) {
     CompositionLocalProvider(
         LocalCodeColors provides DarkCodeColors,
+        LocalContentColor provides TextNormal,
         LocalTextSelectionColors provides TextSelectionColors(
             handleColor = Accent,
             backgroundColor = Accent.copy(alpha = 0.30f),

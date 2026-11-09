@@ -24,6 +24,7 @@ class SyncEngineTest {
         }
 
         override suspend fun deleteNote(path: String) = deleteFile(path)
+        override suspend fun createFolder(path: String) = Unit
         override suspend fun renameNote(oldPath: String, newPath: String): NoteItem {
             val bytes = files.remove(oldPath) ?: error("missing $oldPath")
             files[newPath] = bytes

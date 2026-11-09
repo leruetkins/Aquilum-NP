@@ -46,4 +46,65 @@ public final class CoreBridge {
     public static native String nativeMarkdown(String text);
 
     public static native String nativeAnalyze(String text);
+
+    public static native void nativeSurfaceAttach(
+            int id, android.view.Surface surface, int width, int height, float density);
+
+    public static native void nativeSurfaceDetach(int id);
+
+    public static native void nativeSurfaceResize(int id, int width, int height);
+
+    public static native void nativeSurfaceBeginUpdate(int id);
+
+    public static native void nativeSurfaceEndUpdate(int id);
+
+    public static native void nativeSurfaceRender(int id);
+
+    public static native void nativeSurfaceInvalidate(int id);
+
+    public static native void nativeSurfaceSetTree(int id, String json);
+
+    public static native void nativeSurfaceSetEditor(int id, String text, int selection, String language);
+
+    public static native String nativeSurfaceTouch(int id, float x, float y, int action);
+
+    public static native float nativeTreeScroll(int id);
+
+    public static native String nativeTreeViewport(int id);
+
+    public static native void nativeTreeSetScroll(int id, float y);
+
+    public static native String nativeEditorInsert(int id, String text);
+
+    public static native String nativeEditorReplace(int id, int start, int end, String text);
+
+    public static native String nativeEditorDelete(int id, int before, int after);
+
+    public static native void nativeEditorSelection(int id, int start, int end);
+
+    public static native void nativeEditorSelectAt(int id, float x, float y, boolean extend);
+
+    public static native void nativeEditorSelectWord(int id, float x, float y);
+
+    public static native String nativeEditorState(int id);
+
+    public static native String nativeEditorSelectionState(int id);
+
+    public static native String nativeEditorLayoutInfo(int id);
+
+    public static native String nativeEditorSelectionHandles(int id);
+
+    public static native boolean nativeEditorDragHandle(int id, int which, float x, float y);
+
+    public static native void nativeEditorSetBottomInset(int id, float inset);
+
+    public static native void nativeEditorSetTopInset(int id, float inset);
+
+    public static native void nativeEditorSetCaretVisible(int id, boolean visible);
+
+    public static native float nativeEditorScroll(int id);
+
+    public static native String nativeEditorViewport(int id);
+
+    public static native void nativeEditorSetScroll(int id, float y, float x);
 }

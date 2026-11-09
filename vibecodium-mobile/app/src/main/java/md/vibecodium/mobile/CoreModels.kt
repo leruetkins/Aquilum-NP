@@ -135,7 +135,11 @@ data class UiState(
     val viewerPath: String? = null,
     val renamePath: String? = null,
     val renameValue: String = "",
+    val newFolderOpen: Boolean = false,
+    val newFolderValue: String = "",
     val loading: Boolean = false,
+    /** True from process start until the vault and saved tabs are ready. */
+    val booting: Boolean = false,
     val message: String? = null,
 )
 

@@ -41,6 +41,7 @@ interface VaultRepository {
     suspend fun readNote(path: String): String
     suspend fun writeNote(path: String, text: String)
     suspend fun createNote(path: String, text: String): NoteItem
+    suspend fun createFolder(path: String)
     suspend fun deleteNote(path: String)
     suspend fun renameNote(oldPath: String, newPath: String): NoteItem
     suspend fun search(query: String, limit: Int): List<SearchHit>
@@ -161,6 +162,17 @@ private class FileVaultRepository(private val root: File) : VaultRepository {
     override suspend fun createNote(path: String, text: String): NoteItem = withContext(Dispatchers.IO) {
         val value = CoreJson.data(CoreBridge.nativeCreateNote(path, text))
         noteItem(value.optString("path", path), value.optString("name", path.substringAfterLast('/')))
+    }
+
+    override suspend fun createFolder(path: String) = withContext(Dispatchers.IO) {
+        val directory = File(root, path)
+        if (directory.exists() && !directory.isDirectory) {
+            error("Already exists: $path")
+        }
+        if (!directory.isDirectory && !directory.mkdirs()) {
+            error("Cannot create folder: $path")
+        }
+        Unit
     }
 
     override suspend fun deleteNote(path: String) = withContext(Dispatchers.IO) {
@@ -318,6 +330,28 @@ private class SafVaultRepository(context: Context, treeUri: Uri) : VaultReposito
             index?.snapshotCache = null
         }
         noteItem(path, fileName)
+    }
+
+    override suspend fun createFolder(path: String) = withContext(Dispatchers.IO) {
+        val parent = path.substringBeforeLast('/', "")
+        val name = path.substringAfterLast('/')
+        val current = ensureIndex()
+        if (current.files.containsKey(path) || current.folders.contains(path)) {
+            error("Already exists: $path")
+        }
+        val parentUri = folderUri(parent, create = true)
+            ?: error("Cannot create folder: $parent")
+        val created = DocumentsContract.createDocument(
+            resolver,
+            parentUri,
+            DocumentsContract.Document.MIME_TYPE_DIR,
+            name,
+        ) ?: error("Cannot create folder: $path")
+        synchronized(indexLock) {
+            index?.folders?.add(path)
+            index?.folderUris?.put(path, created)
+            index?.snapshotCache = null
+        }
     }
 
     override suspend fun deleteNote(path: String) = withContext(Dispatchers.IO) {
