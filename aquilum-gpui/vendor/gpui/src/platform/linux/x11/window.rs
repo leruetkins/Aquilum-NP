@@ -17,7 +17,7 @@ use x11rb::{
     connection::Connection,
     cookie::{Cookie, VoidCookie},
     errors::ConnectionError,
-    properties::WmSizeHints,
+    properties::{WmSizeHints, WmSizeHintsSpecification},
     protocol::{
         sync,
         xinput::{self, ConnectionExt as _},
@@ -311,6 +311,9 @@ pub struct X11WindowState {
     maximized_vertical: bool,
     maximized_horizontal: bool,
     hidden: bool,
+    /// True once `MapWindow` was issued; before that the WM does not manage
+    /// the window and drops `_NET_WM_STATE` client messages.
+    mapped: bool,
     active: bool,
     hovered: bool,
     pub(crate) fullscreen: bool,    client_side_decorations_supported: bool,
@@ -562,20 +565,27 @@ impl X11WindowState {
                 ),
             )?;
 
+            // A window manager places a new window on its own unless the
+            // client marks the position as user-specified, so the saved
+            // geometry from the previous run would never come back.
+            let mut size_hints = WmSizeHints::new();
+            size_hints.position = Some((
+                WmSizeHintsSpecification::UserSpecified,
+                bounds.origin.x.0,
+                bounds.origin.y.0,
+            ));
             if let Some(size) = params.window_min_size {
-                let mut size_hints = WmSizeHints::new();
-                let min_size = (size.width.0 as i32, size.height.0 as i32);
-                size_hints.min_size = Some(min_size);
-                check_reply(
-                    || {
-                        format!(
-                            "X11 change of WM_SIZE_HINTS failed. min_size: {:?}",
-                            min_size
-                        )
-                    },
-                    size_hints.set_normal_hints(xcb, x_window),
-                )?;
+                size_hints.min_size = Some((size.width.0 as i32, size.height.0 as i32));
             }
+            check_reply(
+                || {
+                    format!(
+                        "X11 change of WM_SIZE_HINTS failed. position: ({}, {})",
+                        bounds.origin.x.0, bounds.origin.y.0
+                    )
+                },
+                size_hints.set_normal_hints(xcb, x_window),
+            )?;
 
             let reply = get_reply(|| "X11 GetGeometry failed.", xcb.get_geometry(x_window))?;
             if reply.x == 0 && reply.y == 0 {
@@ -751,6 +761,7 @@ impl X11WindowState {
                 active: false,
                 hovered: false,
                 fullscreen: false,
+                mapped: false,
                 maximized_vertical: false,
                 maximized_horizontal: false,
                 window_manual_move: None,
@@ -1450,6 +1461,7 @@ impl PlatformWindow for X11Window {
             || "X11 MapWindow failed.",
             self.0.xcb.map_window(self.0.x_window),
         )?;
+        self.0.state.borrow_mut().mapped = true;
         Ok(())
     }
 
@@ -1482,12 +1494,41 @@ impl PlatformWindow for X11Window {
     }
 
     fn zoom(&self) {
-        let state = self.0.state.borrow();
+        let (vertical, horizontal) = {
+            let state = self.0.state.borrow();
+            if !state.mapped {
+                // The WM drops `_NET_WM_STATE` client messages for a window it
+                // does not manage yet. EWMH says the initial value of the
+                // property is honored when the window is mapped, so write the
+                // property: the window opens maximized without showing its
+                // windowed size first.
+                check_reply(
+                    || "X11 ChangeProperty for _NET_WM_STATE failed.",
+                    self.0.xcb.change_property32(
+                        xproto::PropMode::REPLACE,
+                        self.0.x_window,
+                        state.atoms._NET_WM_STATE,
+                        xproto::AtomEnum::ATOM,
+                        &[
+                            state.atoms._NET_WM_STATE_MAXIMIZED_VERT,
+                            state.atoms._NET_WM_STATE_MAXIMIZED_HORZ,
+                        ],
+                    ),
+                )
+                .log_err();
+                xcb_flush(&self.0.xcb);
+                return;
+            }
+            (
+                state.atoms._NET_WM_STATE_MAXIMIZED_VERT,
+                state.atoms._NET_WM_STATE_MAXIMIZED_HORZ,
+            )
+        };
         self.set_wm_hints(
             || "X11 SendEvent to maximize a window failed.",
             WmHintPropertyState::Toggle,
-            state.atoms._NET_WM_STATE_MAXIMIZED_VERT,
-            state.atoms._NET_WM_STATE_MAXIMIZED_HORZ,
+            vertical,
+            horizontal,
         )
         .log_err();
     }
@@ -1747,6 +1788,21 @@ impl PlatformWindow for X11Window {
 }
 
 impl X11WindowStatePtr {
+    /// Origin of the window in root (screen) coordinates.
+    ///
+    /// A reparenting window manager reports `ConfigureNotify` x/y relative to
+    /// its frame, which is not the position the window will be restored at.
+    pub(crate) fn root_position(&self) -> Option<(i32, i32)> {
+        let state = self.state.borrow();
+        get_reply(
+            || "X11 TranslateCoordinates for the window origin failed.",
+            self.xcb
+                .translate_coordinates(self.x_window, state.x_root_window, 0, 0),
+        )
+        .ok()
+        .map(|reply| (reply.dst_x as i32, reply.dst_y as i32))
+    }
+
     /// Toggles the maximized state via _NET_WM_STATE without creating a
     /// temporary `X11Window` (whose Drop would destroy the GPU renderer).
     pub(crate) fn toggle_maximized(&self) {

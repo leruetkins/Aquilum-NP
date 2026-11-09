@@ -888,17 +888,20 @@ impl X11Client {
                 }
             }
             Event::ConfigureNotify(event) => {
+                let window = self.get_window(event.window)?;
+                // With a reparenting WM the event carries the position inside
+                // its frame, so ask for the absolute root position instead; the
+                // saved window geometry must be screen coordinates.
+                let (x, y) = window
+                    .root_position()
+                    .unwrap_or((event.x.into(), event.y.into()));
                 let bounds = Bounds {
-                    origin: Point {
-                        x: event.x.into(),
-                        y: event.y.into(),
-                    },
+                    origin: Point { x, y },
                     size: Size {
                         width: event.width.into(),
                         height: event.height.into(),
                     },
                 };
-                let window = self.get_window(event.window)?;
                 window
                     .set_bounds(bounds)
                     .context("X11: Failed to set window bounds")

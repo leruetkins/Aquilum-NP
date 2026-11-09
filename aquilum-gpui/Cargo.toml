@@ -111,6 +111,15 @@ tempfile = "3"
 # The inline call starts a modal move loop while a view callback still holds the
 # app `RefCell`, so the next `WM_TIMER`/`WM_MOVE` panics with "RefCell already
 # borrowed".
+#
+# 8. X11 initial state and placement: `zoom()` before `MapWindow` writes the
+# `_NET_WM_STATE` property (EWMH honors its initial value at map time) instead
+# of sending a client message the WM drops for an unmanaged window, so a
+# restored maximized window no longer flashes its windowed size first. New
+# windows also carry a `USPosition` hint, otherwise the WM picks the position
+# itself and the saved geometry never comes back; `ConfigureNotify` coordinates
+# are translated to the root because a reparenting WM reports them relative to
+# its frame.
 [patch.crates-io]
 gpui = { path = "vendor/gpui" }
 
