@@ -7486,6 +7486,7 @@ dependencies = [
  "notify",
  "oxipng",
  "pulldown-cmark",
+ "raw-window-handle",
  "rfd",
  "rquickjs",
  "rusqlite",
@@ -7506,6 +7507,7 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "winres",
+ "x11rb",
  "zip",
 ]
 

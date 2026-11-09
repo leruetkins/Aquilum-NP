@@ -35,12 +35,18 @@ typst = "0.15.1"
 typst-pdf = "0.15.1"
 typst-layout = "0.15.1"
 typst-assets = "0.15.1"
+raw-window-handle = "0.6"
 
 # libc 0.2.190 crashes on Linux. The lockfile alone keeps builds on 0.2.189,
 # but an exact requirement stops `cargo update` from bumping it again. The
 # Windows build does not compile this target at all.
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.189"
+
+# Always-on-top sends an EWMH _NET_WM_STATE client message over the xcb
+# connection GPUI already owns (allow-unsafe-code unlocks the raw FFI wrapper).
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -49,6 +55,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [build-dependencies]
@@ -93,6 +100,17 @@ tempfile = "3"
 # narrow before flex grew it kept that truncation forever — cut short and without
 # the "…" — and re-measuring it with the final width sliced the runs at a
 # non-char boundary (panic in the DirectWrite shaper).
+#
+# 6. X11 raw window handle: `HasWindowHandle` / `HasDisplayHandle` for `X11Window`
+# were `unimplemented!()`, so the app could not reach the xcb window to set EWMH
+# window state. They now return the XCB window id and the existing xcb
+# connection, which `src/window_ops.rs` uses for always-on-top.
+#
+# 7. Windows window drag: `PlatformWindow::start_window_move` posts
+# `WM_NCLBUTTONDOWN`/`HTCAPTION` instead of running `DefWindowProcW` inline.
+# The inline call starts a modal move loop while a view callback still holds the
+# app `RefCell`, so the next `WM_TIMER`/`WM_MOVE` panics with "RefCell already
+# borrowed".
 [patch.crates-io]
 gpui = { path = "vendor/gpui" }
 

@@ -865,6 +865,25 @@ impl PlatformWindow for WindowsWindow {
         }
     }
 
+    fn start_window_move(&self) {
+        // Post the non-client drag instead of running `DefWindowProcW` inline:
+        // a view callback runs while the app is borrowed, and the modal move
+        // loop re-enters it through WM_TIMER/WM_MOVE, panicking on `borrow_mut`.
+        unsafe {
+            let _ = ReleaseCapture();
+            let mut point = std::mem::zeroed::<POINT>();
+            if GetCursorPos(&mut point).is_ok() {
+                let lparam = LPARAM((point.y as isize) << 16 | (point.x as isize & 0xFFFF));
+                let _ = PostMessageW(
+                    Some(self.0.hwnd),
+                    WM_NCLBUTTONDOWN,
+                    WPARAM(HTCAPTION as usize),
+                    lparam,
+                );
+            }
+        }
+    }
+
     fn is_fullscreen(&self) -> bool {
         self.0.state.borrow().is_fullscreen()
     }

@@ -783,23 +783,11 @@ if let Some(new_scroll) = new_active_scroll {
                                         .border_r_1()
                                         .border_color(theme.border)
                                         .child(
-                                            div()
-                                                .id("btn-toggle-sidebar")
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .p_1()
-                                                .rounded_md()
-                                                .cursor_pointer()
-                                                .hover(|h| h.bg(theme.bg_hover))
-                                                .child(icons::icon(
-                                                    icons::ICON_PANEL_LEFT,
-                                                    15.0,
-                                                    theme.accent,
-                                                ))
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.toggle_sidebar(cx);
-                                                })),
+                                            self.render_sidebar_toggle_button(
+                                                theme.accent,
+                                                theme,
+                                                cx,
+                                            ),
                                         ),
                                 )
                                 // 2. File tree header (VIBECODIUM badge and drag region)
@@ -1025,23 +1013,11 @@ if let Some(new_scroll) = new_active_scroll {
                                 .border_color(theme.border)
                                 .bg(theme.bg_sidebar)
                                 .child(
-                                    div()
-                                        .id("btn-toggle-sidebar")
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .p_1()
-                                        .rounded_md()
-                                        .cursor_pointer()
-                                        .hover(|h| h.bg(theme.bg_hover))
-                                        .child(icons::icon(
-                                            icons::ICON_PANEL_LEFT,
-                                            15.0,
-                                            theme.text_muted,
-                                        ))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.toggle_sidebar(cx);
-                                        })),
+                                    self.render_sidebar_toggle_button(
+                                        theme.text_muted,
+                                        theme,
+                                        cx,
+                                    ),
                                 ),
                         )
                     })

@@ -890,6 +890,15 @@ impl AppView {
         cx.notify();
     }
 
+    /// Toggles "always on top" for the window and persists it in the session.
+    pub fn toggle_always_on_top(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.always_on_top = !self.always_on_top;
+        self.state.session.always_on_top = self.always_on_top;
+        self.state.save_session_state();
+        crate::window_ops::set_always_on_top(window, self.always_on_top);
+        cx.notify();
+    }
+
     /// Toggles word wrapping mode in the editor.
     pub fn toggle_word_wrap(&mut self, cx: &mut Context<Self>) {
         self.word_wrap = !self.word_wrap;

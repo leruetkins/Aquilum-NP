@@ -20,6 +20,7 @@ mod table_layout;
 mod row_shape;
 mod paint;
 mod render;
+mod sidebar_toggle;
 mod central_editor;
 mod tab_bar;
 mod tabs;
@@ -130,6 +131,15 @@ pub struct AppView {
     >,
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
+    /// Window pinned above all other windows (toggled by right-clicking the
+    /// sidebar button in the titlebar).
+    pub always_on_top: bool,
+    /// Press position on the titlebar sidebar button while it may still turn
+    /// into a window drag.
+    pub sidebar_press_origin: Option<gpui::Point<Pixels>>,
+    /// True once a press on that button became a window drag, so the click
+    /// that follows does not also toggle the sidebar.
+    pub sidebar_drag_started: bool,
     pub is_resizing_sidebar: bool,
     pub is_hovering_resizer: bool,
     pub selected_sidebar_folder: Option<PathBuf>,
@@ -446,6 +456,7 @@ impl AppView {
             sidebar_mode
         };
         let recent_files_sort_order = state.session.recent_files_sort_order;
+        let always_on_top = state.session.always_on_top;
         let settings_model = cx.new(|_cx| {
             crate::settings::SettingsModel::new(state.settings.clone())
         });
@@ -499,6 +510,9 @@ impl AppView {
             caption_numbers_cache: std::cell::RefCell::new(None),
             sidebar_width,
             sidebar_collapsed: false,
+            always_on_top,
+            sidebar_press_origin: None,
+            sidebar_drag_started: false,
             is_resizing_sidebar: false,
             is_hovering_resizer: false,
             selected_sidebar_folder: None,

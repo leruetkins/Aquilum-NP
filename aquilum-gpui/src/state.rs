@@ -154,6 +154,9 @@ pub struct SessionState {
     /// Open sidebar panel (file tree vs search). Defaults to files.
     #[serde(default)]
     pub sidebar_mode: crate::views::sidebar::SidebarMode,
+    /// Whether the window is kept above all other windows.
+    #[serde(default)]
+    pub always_on_top: bool,
     /// Whether the find bar's replace row was expanded when the app closed.
     #[serde(default)]
     pub find_replace_open: bool,

@@ -25,6 +25,7 @@ impl Default for SessionState {
             sidebar_scroll_top: 0.0,
             sidebar_width: 0.0,
             sidebar_mode: crate::views::sidebar::SidebarMode::default(),
+            always_on_top: false,
             find_replace_open: false,
             known_vaults: Vec::new(),
             ribbon_hidden: default_ribbon_hidden(),
@@ -69,3 +70,6 @@ impl SessionState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

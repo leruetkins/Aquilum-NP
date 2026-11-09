@@ -37,6 +37,7 @@ pub mod theme;
 pub mod toolbar;
 pub mod vault;
 pub mod views;
+pub mod window_ops;
 pub mod workspace;
 
 use gpui::{App, AppContext, Application, WindowDecorations, WindowOptions};
@@ -79,6 +80,7 @@ fn main() {
             fonts::register_embedded_fonts(cx);
             let app_data_dir = state::app_data_dir();
             let window_state = state::WindowState::load(&app_data_dir);
+            let restore_maximized = window_state.maximized;
             let window_bounds = window_state.to_window_bounds(cx);
 
             let initial_settings = settings::SettingsManager::new(&app_data_dir);
@@ -115,6 +117,20 @@ fn main() {
                         window.focus(&app.focus_handle);
                         app.editor_blink.enable(crate::blink_manager::BlinkTarget::Editor, cx);
                         app.init_window_observers(window, cx);
+                        // Restored window state is applied after the first frame:
+                        // on X11 the window manager ignores requests sent before
+                        // the window is mapped.
+                        let restore_pin = app.always_on_top;
+                        if restore_pin || restore_maximized {
+                            window.on_next_frame(move |window, _| {
+                                if restore_maximized && !window.is_maximized() {
+                                    crate::window_ops::maximize_window(window);
+                                }
+                                if restore_pin {
+                                    crate::window_ops::set_always_on_top(window, true);
+                                }
+                            });
+                        }
                         app
                     });
                     let weak = view.downgrade();
