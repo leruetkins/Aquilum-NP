@@ -54,4 +54,7 @@ aquilum-app/tmp-fm.*
 /Akelpad
 /tools/gui_tester/screenshots
 /Obsidian
-/vibecodium-mobile
+
+/vibecodium-mobile/app/build
+/vibecodium-mobile/core
+/vibecodium-mobile/.gradle
