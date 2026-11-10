@@ -11,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -94,6 +95,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -2043,6 +2046,7 @@ private fun TabSwitcher(state: UiState, controller: VibecodiumController, modifi
 @Composable
 private fun TreeList(state: UiState, controller: VibecodiumController) {
     var filterFocused by remember { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     Column(Modifier.fillMaxSize()) {
         Box(
@@ -2060,55 +2064,86 @@ private fun TreeList(state: UiState, controller: VibecodiumController) {
             ExplorerToolbar(state, controller)
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
-        Row(
+        Box(
             Modifier
                 .fillMaxWidth()
-                .height(44.dp)
-                .padding(horizontal = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .padding(horizontal = 10.dp, vertical = 5.dp),
         ) {
-            Icon(
-                Icons.Default.Search,
-                contentDescription = null,
-                modifier = Modifier.size(22.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            BasicTextField(
-                value = state.fileQuery,
-                onValueChange = controller::setFileQuery,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 9.dp)
-                    .onFocusChanged { filterFocused = it.isFocused },
-                singleLine = true,
-                textStyle = androidx.compose.ui.text.TextStyle(
-                    fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onSurface,
-                ),
-                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                decorationBox = { innerTextField ->
-                    Box(Modifier.fillMaxWidth()) {
-                        if (!filterFocused && state.fileQuery.isEmpty()) {
-                            Text(
-                                "Quick filter...",
-                                fontSize = 14.sp,
-                                color = Color(0xFF8A8A8A),
-                            )
-                        }
-                        innerTextField()
-                    }
-                },
-            )
-            if (state.fileQuery.isNotEmpty()) {
-                IconButton(
-                    onClick = { controller.setFileQuery("") },
-                    modifier = Modifier.size(36.dp),
-                ) {
-                    Icon(
-                        Icons.Default.Close,
-                        contentDescription = "Clear filter",
-                        modifier = Modifier.size(20.dp),
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(36.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(
+                        if (filterFocused) Color(0xFF1B1B1B) else Color(0xFF222222),
                     )
+                    .border(
+                        width = if (filterFocused) 1.5.dp else 1.dp,
+                        color = if (filterFocused) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            Color(0xFF383838)
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                    )
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) {
+                        focusRequester.requestFocus()
+                    }
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Default.Search,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = if (filterFocused) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+                BasicTextField(
+                    value = state.fileQuery,
+                    onValueChange = controller::setFileQuery,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
+                        .focusRequester(focusRequester)
+                        .onFocusChanged { filterFocused = it.isFocused },
+                    singleLine = true,
+                    textStyle = androidx.compose.ui.text.TextStyle(
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    ),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    decorationBox = { innerTextField ->
+                        Box(Modifier.fillMaxWidth()) {
+                            if (!filterFocused && state.fileQuery.isEmpty()) {
+                                Text(
+                                    "Quick filter...",
+                                    fontSize = 14.sp,
+                                    color = Color(0xFF8A8A8A),
+                                )
+                            }
+                            innerTextField()
+                        }
+                    },
+                )
+                if (state.fileQuery.isNotEmpty()) {
+                    IconButton(
+                        onClick = { controller.setFileQuery("") },
+                        modifier = Modifier.size(28.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Clear filter",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }
