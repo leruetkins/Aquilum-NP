@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.PointF
 import android.graphics.Rect
+import android.graphics.SurfaceTexture
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -20,11 +21,12 @@ import android.view.KeyEvent
 import android.view.Menu
 import android.view.MenuItem
 import android.view.MotionEvent
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.view.Surface
+import android.view.TextureView
 import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
+import android.widget.Magnifier
 import android.widget.OverScroller
 import kotlin.math.roundToInt
 
@@ -47,11 +49,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Shared SurfaceView plumbing: one native ANativeWindow per view and a single
+ * Shared TextureView plumbing: one native ANativeWindow per view and a single
  * render thread so JNI never blocks the UI thread with buffer locks.
  */
-abstract class NativeSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
+abstract class NativeSurfaceView(context: Context) : TextureView(context), TextureView.SurfaceTextureListener {
     val surfaceId: Int = NEXT_ID.incrementAndGet()
+    private var currentSurface: Surface? = null
 
     private val renderer: java.util.concurrent.Executor get() = RENDERER
 
@@ -65,19 +68,20 @@ abstract class NativeSurfaceView(context: Context) : SurfaceView(context), Surfa
     private var pendingState: (() -> Unit)? = null
 
     init {
-        holder.addCallback(this)
-        setWillNotDraw(true)
+        surfaceTextureListener = this
         isFocusable = true
         isFocusableInTouchMode = true
     }
 
-    override fun surfaceCreated(holder: SurfaceHolder) {
+    override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+        val w = width.coerceAtLeast(1)
+        val h = height.coerceAtLeast(1)
+        surfaceTexture.setDefaultBufferSize(w, h)
+        val surface = Surface(surfaceTexture)
+        currentSurface = surface
         renderer.execute {
             val density = resources.displayMetrics.density
-            val frame = holder.surfaceFrame
-            val width = frame.width().takeIf { it > 0 } ?: this.width.coerceAtLeast(1)
-            val height = frame.height().takeIf { it > 0 } ?: this.height.coerceAtLeast(1)
-            CoreBridge.nativeSurfaceAttach(surfaceId, holder.surface, width, height, density)
+            CoreBridge.nativeSurfaceAttach(surfaceId, surface, w, h, density)
             attached = true
             // Publish text, insets and the stored viewport before the first
             // frame, so a recreated Surface never flashes the top of the note.
@@ -88,30 +92,41 @@ abstract class NativeSurfaceView(context: Context) : SurfaceView(context), Surfa
                 update()
             }
             CoreBridge.nativeSurfaceEndUpdate(surfaceId)
+            CoreBridge.nativeSurfaceRender(surfaceId)
         }
     }
 
-    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+    override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+        val w = width.coerceAtLeast(1)
+        val h = height.coerceAtLeast(1)
+        surfaceTexture.setDefaultBufferSize(w, h)
         renderer.execute {
             if (!attached) return@execute
             CoreBridge.nativeSurfaceBeginUpdate(surfaceId)
-            CoreBridge.nativeSurfaceResize(surfaceId, width.coerceAtLeast(1), height.coerceAtLeast(1))
+            CoreBridge.nativeSurfaceResize(surfaceId, w, h)
             pendingState?.let { update ->
                 pendingState = null
                 update()
             }
             CoreBridge.nativeSurfaceEndUpdate(surfaceId)
+            CoreBridge.nativeSurfaceRender(surfaceId)
         }
     }
 
-    override fun surfaceDestroyed(holder: SurfaceHolder) {
+    override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
+        val s = currentSurface
+        currentSurface = null
         renderer.execute {
             if (attached) {
                 CoreBridge.nativeSurfaceDetach(surfaceId)
                 attached = false
             }
+            s?.release()
         }
+        return true
     }
+
+    override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) = Unit
 
     protected fun postState(block: () -> Unit) {
         renderer.execute {
@@ -130,53 +145,37 @@ abstract class NativeSurfaceView(context: Context) : SurfaceView(context), Surfa
 
     protected fun isSurfaceAttached(): Boolean = attached
 
-    private val vsyncScheduled = AtomicBoolean(false)
     private val renderDirty = AtomicBoolean(false)
     private val renderRunning = AtomicBoolean(false)
 
-    private val vsyncRender = Choreographer.FrameCallback {
-        vsyncScheduled.set(false)
-        if (!renderDirty.get()) return@FrameCallback
-        if (renderRunning.compareAndSet(false, true)) {
-            renderDirty.set(false)
-            renderer.execute {
-                try {
-                    if (attached) {
-                        CoreBridge.nativeSurfaceRender(surfaceId)
-                    }
-                } finally {
-                    renderRunning.set(false)
-                    if (renderDirty.get() && attached) {
-                        scheduleVsync()
-                    }
+    private val renderTask: Runnable = object : Runnable {
+        override fun run() {
+            try {
+                renderDirty.set(false)
+                if (attached) {
+                    CoreBridge.nativeSurfaceRender(surfaceId)
                 }
-            }
-        } else {
-            scheduleVsync()
-        }
-    }
-
-    private fun scheduleVsync() {
-        if (!vsyncScheduled.compareAndSet(false, true)) return
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            Choreographer.getInstance().postFrameCallback(vsyncRender)
-        } else {
-            mainHandler.post {
-                if (vsyncScheduled.get()) {
-                    Choreographer.getInstance().postFrameCallback(vsyncRender)
+            } finally {
+                renderRunning.set(false)
+                if (renderDirty.get() && attached) {
+                    if (renderRunning.compareAndSet(false, true)) {
+                        renderer.execute(this)
+                    }
                 }
             }
         }
     }
 
     /**
-     * Renders on the next display frame. High-frequency touch moves update
-     * atomic scroll state; UI-thread Choreographer guarantees frames are
-     * synced with the hardware display VSYNC without dropped frames.
+     * Renders on the dedicated render thread immediately. High-frequency touch moves update
+     * atomic scroll state and kick off background rendering without waiting for UI VSYNC,
+     * ensuring frames are always ready in TextureView when the compositor draws.
      */
     protected fun requestRender() {
         renderDirty.set(true)
-        scheduleVsync()
+        if (renderRunning.compareAndSet(false, true)) {
+            renderer.execute(renderTask)
+        }
     }
 
     /** Invalidates and repaints on the render thread. */
@@ -357,10 +356,7 @@ class NativeTreeView(
     private var drawerTouchFloor = 0L
 
     init {
-        // Keeps the sidebar explorer above the base NativeEditorView surface
-        // (which sits at standard APPLICATION_MEDIA layer) and below the main
-        // Compose window.
-        setZOrderMediaOverlay(true)
+        isOpaque = false
         ViewCompat.setAccessibilityDelegate(this, helper)
     }
 
@@ -534,12 +530,16 @@ class NativeEditorView(
     private var visualCount = IntArray(0)
     private var startHandle: PointF? = null
     private var endHandle: PointF? = null
+    private var insertionHandle: PointF? = null
     private var handleSize = 24f * resources.displayMetrics.density
     private var handleRowHeight = 22f * resources.displayMetrics.density
     private var draggingHandle = -1
     private var dragOffsetX = 0f
     private var dragOffsetY = 0f
     private var actionMode: ActionMode? = null
+    private var insertionActionMode: ActionMode? = null
+    private var magnifier: Magnifier? = null
+    private val hideInsertionRunnable = Runnable { applyInsertionHandleVisible(false) }
     private var bottomInset = -1f
     private var topInset = -1f
     private var inPreview = false
@@ -560,6 +560,7 @@ class NativeEditorView(
     private var velocityTracker: VelocityTracker? = null
     @Volatile private var scrollMaxY = 0f
     private var dragStartScroll = 0f
+    private var lastDragY = 0f
     private var onScrollChanged: ((Float, Float) -> Unit)? = null
     private var onCaretPlaced: (() -> Unit)? = null
     @Volatile private var knownScroll = 0f
@@ -652,6 +653,83 @@ class NativeEditorView(
         }
     }
 
+    private val insertionCallback = object : ActionMode.Callback2() {
+        override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            val hasClip = clipboard?.hasPrimaryClip() == true
+            if (hasClip) {
+                menu.add(Menu.NONE, MENU_PASTE, 0, "Paste")
+            }
+            menu.add(Menu.NONE, MENU_SELECT_ALL, 1, "Select all")
+            return true
+        }
+
+        override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean = false
+
+        override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+            when (item.itemId) {
+                MENU_PASTE -> pasteClipboard()
+                MENU_SELECT_ALL -> {
+                    selectNative(0, mirrorText.length)
+                    mode.finish()
+                    showSelectionActions()
+                    return true
+                }
+            }
+            mode.finish()
+            return true
+        }
+
+        override fun onDestroyActionMode(mode: ActionMode) {
+            insertionActionMode = null
+        }
+
+        override fun onGetContentRect(mode: ActionMode, view: View, outRect: Rect) {
+            val ins = insertionHandle
+            if (ins == null) {
+                outRect.set(0, 0, 0, 0)
+                return
+            }
+            val left = (ins.x - handleSize).toInt().coerceAtLeast(0)
+            val right = (ins.x + handleSize).toInt().coerceAtMost(width)
+            val top = (ins.y - handleRowHeight * 1.5f).toInt().coerceAtLeast(0)
+            val bottom = (ins.y + handleSize).toInt().coerceAtMost(height)
+            outRect.set(left, top, right, bottom)
+        }
+    }
+
+    private fun updateMagnifier(sourceX: Float, sourceY: Float) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                if (magnifier == null) {
+                    magnifier = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        Magnifier.Builder(this)
+                            .setSize(
+                                (110f * resources.displayMetrics.density).roundToInt(),
+                                (48f * resources.displayMetrics.density).roundToInt(),
+                            )
+                            .setCornerRadius(24f * resources.displayMetrics.density)
+                            .setInitialZoom(1.25f)
+                            .build()
+                    } else {
+                        Magnifier(this)
+                    }
+                }
+                magnifier?.show(sourceX.coerceIn(0f, width.toFloat()), sourceY.coerceIn(0f, height.toFloat()))
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun dismissMagnifier() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                magnifier?.dismiss()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
     private val helper: ExploreByTouchHelper by lazy {
         object : ExploreByTouchHelper(this) {
             private fun lineText(index: Int): String {
@@ -732,8 +810,7 @@ class NativeEditorView(
     }
 
     init {
-        // Placed at standard APPLICATION_MEDIA (default Z-order) so overlays
-        // like NativeTreeView (media overlay) and Compose UI sit above it.
+        isOpaque = true
         ViewCompat.setAccessibilityDelegate(this, helper)
         bottomInset = idleBottomInsetPx
     }
@@ -1365,30 +1442,42 @@ class NativeEditorView(
     private fun selectionNonEmpty(): Boolean = mirrorAnchor != mirrorSelection
 
     private fun syncHandles() {
-        if (!selectionNonEmpty()) {
-            startHandle = null
-            endHandle = null
-            return
-        }
         val info = runCatching { JSONObject(CoreBridge.nativeEditorSelectionHandles(surfaceId)) }
             .getOrNull() ?: return
-        val start = info.optJSONObject("start")
-        val end = info.optJSONObject("end")
-        if (start == null || end == null) {
-            startHandle = null
-            endHandle = null
-            return
-        }
-        startHandle = PointF(
-            start.optDouble("x", 0.0).toFloat(),
-            start.optDouble("y", 0.0).toFloat(),
-        )
-        endHandle = PointF(
-            end.optDouble("x", 0.0).toFloat(),
-            end.optDouble("y", 0.0).toFloat(),
-        )
         handleSize = info.optDouble("size", handleSize.toDouble()).toFloat()
         handleRowHeight = info.optDouble("row_height", handleRowHeight.toDouble()).toFloat()
+
+        if (selectionNonEmpty()) {
+            val start = info.optJSONObject("start")
+            val end = info.optJSONObject("end")
+            if (start == null || end == null) {
+                startHandle = null
+                endHandle = null
+                insertionHandle = null
+                return
+            }
+            startHandle = PointF(
+                start.optDouble("x", 0.0).toFloat(),
+                start.optDouble("y", 0.0).toFloat(),
+            )
+            endHandle = PointF(
+                end.optDouble("x", 0.0).toFloat(),
+                end.optDouble("y", 0.0).toFloat(),
+            )
+            insertionHandle = null
+        } else {
+            startHandle = null
+            endHandle = null
+            val ins = info.optJSONObject("insertion")
+            if (ins != null) {
+                insertionHandle = PointF(
+                    ins.optDouble("x", 0.0).toFloat(),
+                    ins.optDouble("y", 0.0).toFloat(),
+                )
+            } else {
+                insertionHandle = null
+            }
+        }
     }
 
     private fun showSelectionActions() {
@@ -1397,6 +1486,7 @@ class NativeEditorView(
             return
         }
         stopCaretBlink()
+        insertionActionMode?.finish()
         syncHandles()
         val current = actionMode
         if (current == null) {
@@ -1404,6 +1494,27 @@ class NativeEditorView(
         } else {
             current.invalidate()
             current.invalidateContentRect()
+        }
+    }
+
+    private fun showInsertionActions() {
+        actionMode?.finish()
+        insertionActionMode?.finish()
+        syncHandles()
+        if (insertionHandle == null) return
+        insertionActionMode = startActionMode(insertionCallback, ActionMode.TYPE_FLOATING)
+    }
+
+    private fun applyInsertionHandleVisible(visible: Boolean) {
+        removeCallbacks(hideInsertionRunnable)
+        CoreBridge.nativeEditorSetInsertionHandleVisible(surfaceId, visible)
+        requestRender()
+        if (visible) {
+            syncHandles()
+            postDelayed(hideInsertionRunnable, 4000L)
+        } else {
+            insertionHandle = null
+            insertionActionMode?.finish()
         }
     }
 
@@ -1453,6 +1564,7 @@ class NativeEditorView(
                 suspendCaretBlink()
                 downX = event.x
                 downY = event.y
+                lastDragY = event.y
                 dragged = false
                 selecting = false
                 removeCallbacks(longPress)
@@ -1464,16 +1576,23 @@ class NativeEditorView(
                     ?.optDouble("scroll", knownScroll.toDouble())
                     ?.toFloat()
                     ?: knownScroll
+                insertionActionMode?.finish()
                 syncHandles()
                 val handle = handleAt(event.x, event.y)
                 if (handle >= 0) {
                     draggingHandle = handle
-                    val point = if (handle == 0) startHandle else endHandle
+                    val point = when (handle) {
+                        0 -> startHandle
+                        1 -> endHandle
+                        else -> insertionHandle
+                    }
                     if (point != null) {
                         dragOffsetX = event.x - point.x
                         dragOffsetY = event.y - point.y
+                        updateMagnifier(point.x, point.y - handleRowHeight / 2f)
                     }
                     actionMode?.finish()
+                    insertionActionMode?.finish()
                     velocityTracker?.recycle()
                     velocityTracker = null
                     return true
@@ -1485,6 +1604,7 @@ class NativeEditorView(
             1 -> {
                 velocityTracker?.addMovement(event)
                 if (draggingHandle >= 0) {
+                    dragged = true
                     CoreBridge.nativeEditorDragHandle(
                         surfaceId,
                         draggingHandle,
@@ -1492,12 +1612,16 @@ class NativeEditorView(
                         event.y - dragOffsetY,
                     )
                     refreshSelectionFromNative()
+                    val targetX = event.x - dragOffsetX
+                    val targetY = event.y - dragOffsetY - handleRowHeight / 2f
+                    updateMagnifier(targetX, targetY)
                     saveViewport()
                     return true
                 }
                 if (selecting) {
                     CoreBridge.nativeEditorSelectAt(surfaceId, event.x, event.y, true)
                     refreshSelectionFromNative()
+                    updateMagnifier(event.x, event.y - handleRowHeight / 2f)
                     requestRender()
                     return true
                 }
@@ -1509,9 +1633,12 @@ class NativeEditorView(
                 }
             }
             2 -> {
+                dismissMagnifier()
                 removeCallbacks(longPress)
                 velocityTracker?.addMovement(event)
                 if (draggingHandle >= 0) {
+                    val releasedHandle = draggingHandle
+                    val wasDragged = dragged
                     CoreBridge.nativeEditorDragHandle(
                         surfaceId,
                         draggingHandle,
@@ -1523,7 +1650,14 @@ class NativeEditorView(
                     syncFromNative(notify = true)
                     saveViewport()
                     requestRender()
-                    showSelectionActions()
+                    if (selectionNonEmpty()) {
+                        showSelectionActions()
+                    } else {
+                        if (!wasDragged && releasedHandle == 2) {
+                            showInsertionActions()
+                        }
+                        applyInsertionHandleVisible(true)
+                    }
                     return true
                 }
                 if (selecting) {
@@ -1538,6 +1672,7 @@ class NativeEditorView(
                 }
             }
             -1 -> {
+                dismissMagnifier()
                 removeCallbacks(longPress)
                 selecting = false
                 draggingHandle = -1
@@ -1551,13 +1686,21 @@ class NativeEditorView(
             val threshold = 8f * resources.displayMetrics.density
             val dy = event.y - downY
             val dx = event.x - downX
-            if (!dragged && (kotlin.math.abs(dy) > threshold || kotlin.math.abs(dx) > threshold)) {
-                dragged = true
-                removeCallbacks(longPress)
+            if (!dragged) {
+                if (kotlin.math.abs(dy) > threshold) {
+                    dragged = true
+                    lastDragY = downY + kotlin.math.sign(dy) * threshold
+                    removeCallbacks(longPress)
+                } else if (kotlin.math.abs(dx) > threshold) {
+                    dragged = true
+                    lastDragY = event.y
+                    removeCallbacks(longPress)
+                }
             }
             if (dragged) {
-                val adjusted = dy - kotlin.math.sign(dy) * threshold
-                knownScroll = (dragStartScroll - adjusted).coerceIn(0f, scrollMaxY)
+                val deltaY = event.y - lastDragY
+                lastDragY = event.y
+                knownScroll = (knownScroll - deltaY).coerceIn(0f, scrollMaxY)
                 onScrollChanged?.invoke(knownScroll, scrollMaxY)
             }
         }
@@ -1584,8 +1727,10 @@ class NativeEditorView(
                 showSelectionActions()
             } else {
                 actionMode?.finish()
+                insertionActionMode?.finish()
                 requestFocus()
                 startCaretBlink()
+                applyInsertionHandleVisible(true)
                 onCaretPlaced?.invoke()
             }
         } else if (action == 2 && dragged) {
@@ -1615,24 +1760,32 @@ class NativeEditorView(
     }
 
     private fun handleAt(x: Float, y: Float): Int {
-        if (!selectionNonEmpty()) return -1
-        val reach = 8f * resources.displayMetrics.density
-        fun contains(handle: PointF?, isEnd: Boolean): Boolean {
-            if (handle == null) return false
-            val left = if (isEnd) handle.x - reach else handle.x - handleSize - reach
-            val right = if (isEnd) handle.x + handleSize + reach else handle.x + reach
-            return x in left..right &&
-                y in (handle.y - reach)..(handle.y + handleSize + reach)
-        }
-        val startHit = contains(startHandle, isEnd = false)
-        val endHit = contains(endHandle, isEnd = true)
-        return when {
-            startHit && endHit -> if (kotlin.math.abs(x - (startHandle?.x ?: 0f)) <
-                kotlin.math.abs(x - (endHandle?.x ?: 0f))
-            ) 0 else 1
-            startHit -> 0
-            endHit -> 1
-            else -> -1
+        val reach = 16f * resources.displayMetrics.density
+        if (selectionNonEmpty()) {
+            fun contains(handle: PointF?, isEnd: Boolean): Boolean {
+                if (handle == null) return false
+                val left = if (isEnd) handle.x - reach else handle.x - handleSize - reach
+                val right = if (isEnd) handle.x + handleSize + reach else handle.x + reach
+                return x in left..right &&
+                    y in (handle.y - reach)..(handle.y + handleSize + reach)
+            }
+            val startHit = contains(startHandle, isEnd = false)
+            val endHit = contains(endHandle, isEnd = true)
+            return when {
+                startHit && endHit -> if (kotlin.math.abs(x - (startHandle?.x ?: 0f)) <
+                    kotlin.math.abs(x - (endHandle?.x ?: 0f))
+                ) 0 else 1
+                startHit -> 0
+                endHit -> 1
+                else -> -1
+            }
+        } else {
+            val ins = insertionHandle ?: return -1
+            val left = ins.x - handleSize / 2f - reach
+            val right = ins.x + handleSize / 2f + reach
+            val top = ins.y - reach
+            val bottom = ins.y + handleSize + reach
+            return if (x in left..right && y in top..bottom) 2 else -1
         }
     }
 
@@ -1701,9 +1854,13 @@ class NativeEditorView(
         saveViewport()
         stopFling()
         recycleVelocity()
+        dismissMagnifier()
+        actionMode?.finish()
+        insertionActionMode?.finish()
         removeCallbacks(longPress)
         removeCallbacks(caretBlink)
         removeCallbacks(saveAfterFling)
+        removeCallbacks(hideInsertionRunnable)
         super.onDetachedFromWindow()
     }
 
@@ -1742,6 +1899,7 @@ class NativeEditorView(
     }
 
     private fun applyInsert(text: String) {
+        applyInsertionHandleVisible(false)
         if (text.isEmpty()) {
             if (selectionNonEmpty()) applyDelete(0, 0)
             return
@@ -1762,6 +1920,7 @@ class NativeEditorView(
     }
 
     private fun applyReplace(start: Int, end: Int, text: String) {
+        applyInsertionHandleVisible(false)
         val state = runCatching {
             JSONObject(CoreBridge.nativeEditorReplace(surfaceId, start, end, text))
         }.getOrNull() ?: return
@@ -1779,6 +1938,7 @@ class NativeEditorView(
     }
 
     private fun applyDelete(before: Int, after: Int) {
+        applyInsertionHandleVisible(false)
         val state = runCatching { JSONObject(CoreBridge.nativeEditorDelete(surfaceId, before, after)) }
             .getOrNull() ?: return
         mirrorText = state.optString("text")

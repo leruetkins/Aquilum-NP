@@ -129,6 +129,8 @@ public final class CoreBridge {
 
     public static native void nativeEditorSetCaretVisible(int id, boolean visible);
 
+    public static native void nativeEditorSetInsertionHandleVisible(int id, boolean visible);
+
     public static native float nativeEditorScroll(int id);
 
     public static native String nativeEditorViewport(int id);

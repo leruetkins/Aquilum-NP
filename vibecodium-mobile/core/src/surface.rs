@@ -1109,6 +1109,7 @@ struct EditorState {
     bottom_inset: f32,
     top_inset: f32,
     caret_visible: bool,
+    insertion_handle_visible: bool,
     starts: Vec<usize>,
     starts_dirty: bool,
 }
@@ -1151,7 +1152,7 @@ struct InputState {
     moved: AtomicBool,
     start_x_bits: AtomicU32,
     start_y_bits: AtomicU32,
-    start_scroll_bits: AtomicU32,
+    last_y_bits: AtomicU32,
     scroll_bits: AtomicU32,
     scroll_dirty: AtomicBool,
     max_y_bits: AtomicU32,
@@ -1166,7 +1167,7 @@ impl InputState {
             moved: AtomicBool::new(false),
             start_x_bits: AtomicU32::new(0),
             start_y_bits: AtomicU32::new(0),
-            start_scroll_bits: AtomicU32::new(0),
+            last_y_bits: AtomicU32::new(0),
             scroll_bits: AtomicU32::new(0),
             scroll_dirty: AtomicBool::new(false),
             max_y_bits: AtomicU32::new(0),
@@ -1302,27 +1303,62 @@ fn rounded_rect(
     }
 }
 
-/// Aquilum's selection grip: a rounded square whose sharp corner touches the
-/// selection tip (`Grip` in the desktop client).
-fn draw_selection_grip(
+/// Material-style teardrop handle:
+/// - `kind == 0`: start handle (left). Sharp tip at (tip_x, tip_y) pointing up-right, circular bulb hangs down-left.
+/// - `kind == 1`: end handle (right). Sharp tip at (tip_x, tip_y) pointing up-left, circular bulb hangs down-right.
+/// - `kind == 2`: insertion handle (center). Sharp tip at (tip_x, tip_y) pointing straight up, circular bulb hangs centered below it.
+fn draw_teardrop_handle(
     pixels: &mut [u32],
     width: usize,
     height: usize,
     tip_x: f32,
-    row_bottom: f32,
+    tip_y: f32,
     density: f32,
-    is_end: bool,
+    kind: i32,
     rgb: u32,
 ) {
-    let size = 24.0 * density;
-    let round = size * 0.3;
-    let x = if is_end { tip_x } else { tip_x - size };
-    let radii = if is_end {
-        [0.0, round, round, round]
-    } else {
-        [round, 0.0, round, round]
+    let radius = (if kind == 2 { 9.0 } else { 11.0 }) * density;
+    let (cx, cy) = match kind {
+        0 => (tip_x - radius, tip_y + radius),
+        1 => (tip_x + radius, tip_y + radius),
+        _ => (tip_x, tip_y + radius + 1.0 * density),
     };
-    rounded_rect(pixels, width, height, x, row_bottom, size, radii, rgb);
+
+    let min_x = ((cx - radius).min(tip_x)).floor().max(0.0) as usize;
+    let max_x = ((cx + radius).max(tip_x)).ceil().min(width as f32) as usize;
+    let min_y = tip_y.floor().max(0.0) as usize;
+    let max_y = (cy + radius).ceil().min(height as f32) as usize;
+
+    let r = radius;
+    let aa = (0.75 * density).max(0.5);
+
+    for row in min_y..max_y {
+        let py = row as f32 + 0.5;
+        let row_offset = row * width;
+        for col in min_x..max_x {
+            let px = col as f32 + 0.5;
+            let dx = px - cx;
+            let dy = py - cy;
+            let d2 = dx * dx + dy * dy;
+
+            let in_point = match kind {
+                0 => (cx <= px && px <= tip_x) && (tip_y <= py && py <= cy),
+                1 => (tip_x <= px && px <= cx) && (tip_y <= py && py <= cy),
+                _ => (tip_y <= py && py <= cy) && (px - tip_x).abs() <= (py - tip_y) * (radius / (cy - tip_y).max(0.1)),
+            };
+
+            let index = row_offset + col;
+            if in_point {
+                pixels[index] = blend(pixels[index], rgb, 255);
+            } else if d2 <= (r - aa) * (r - aa) {
+                pixels[index] = blend(pixels[index], rgb, 255);
+            } else if d2 <= (r + aa) * (r + aa) {
+                let dist = d2.sqrt();
+                let alpha = (((r + aa - dist) / (2.0 * aa)) * 255.0).clamp(0.0, 255.0) as u8;
+                pixels[index] = blend(pixels[index], rgb, alpha);
+            }
+        }
+    }
 }
 
 fn wrap_layout(
@@ -1592,6 +1628,7 @@ impl SurfaceState {
             editor: EditorState {
                 language: "\0".to_string(),
                 caret_visible: true,
+                insertion_handle_visible: true,
                 starts: vec![0],
                 ..EditorState::default()
             },
@@ -2047,6 +2084,7 @@ impl SurfaceState {
         let (end_visual, end_offset) = self.visual_for_position(&starts, selection_end);
         let mut start_handle: Option<(f32, f32)> = None;
         let mut end_handle: Option<(f32, f32)> = None;
+        let mut insertion_handle: Option<(f32, f32)> = None;
         for visual in first..last {
             let chunk = self.editor.wrap[visual];
             let y = self.editor.top_inset + visual as f32 * line_h - scroll;
@@ -2273,7 +2311,7 @@ impl SurfaceState {
                     );
                 }
             }
-            if visual == cursor_visual && selection_end == selection_start && self.editor.caret_visible {
+            if visual == cursor_visual && selection_end == selection_start {
                 let cursor_col = chunk_start + cursor_offset;
                 let cursor_cell = cell_offsets
                     .get(cursor_col)
@@ -2281,16 +2319,21 @@ impl SurfaceState {
                     .unwrap_or(cursor_col)
                     .saturating_sub(base_cell);
                 let x = text_x + cursor_cell as f32 * chunk.advance;
-                rect(
-                    pixels,
-                    self.width,
-                    self.height,
-                    x,
-                    y,
-                    1.5 * density,
-                    line_h,
-                    0x8a5cf5,
-                );
+                if self.editor.caret_visible {
+                    rect(
+                        pixels,
+                        self.width,
+                        self.height,
+                        x,
+                        y,
+                        2.0 * density,
+                        line_h,
+                        0x8a5cf5,
+                    );
+                }
+                if self.editor.insertion_handle_visible {
+                    insertion_handle = Some((x + 1.0 * density, y + line_h));
+                }
             }
             if selection_end > selection_start {
                 if visual == start_visual {
@@ -2340,30 +2383,44 @@ impl SurfaceState {
                 true,
             );
         }
-        if let Some((x, y)) = start_handle {
+        if let Some((x, y)) = insertion_handle {
             if x >= gutter && y >= 0.0 && y <= self.height as f32 {
-                draw_selection_grip(
+                draw_teardrop_handle(
                     pixels,
                     self.width,
                     self.height,
                     x,
                     y,
                     density,
-                    false,
+                    2,
+                    0x8a5cf5,
+                );
+            }
+        }
+        if let Some((x, y)) = start_handle {
+            if x >= gutter && y >= 0.0 && y <= self.height as f32 {
+                draw_teardrop_handle(
+                    pixels,
+                    self.width,
+                    self.height,
+                    x,
+                    y,
+                    density,
+                    0,
                     0x8a5cf5,
                 );
             }
         }
         if let Some((x, y)) = end_handle {
             if x >= gutter && y >= 0.0 && y <= self.height as f32 {
-                draw_selection_grip(
+                draw_teardrop_handle(
                     pixels,
                     self.width,
                     self.height,
                     x,
                     y,
                     density,
-                    true,
+                    1,
                     0x8a5cf5,
                 );
             }
@@ -2384,14 +2441,15 @@ impl SurfaceState {
                 if let Some((start_y, start_scroll, tap)) = self.tree.drag {
                     let distance = y - start_y;
                     let threshold = 8.0 * self.density;
-                    if distance.abs() > threshold {
-                        self.tree.drag = Some((start_y, start_scroll, false));
-                        let adjusted = distance - distance.signum() * threshold;
-                        self.tree.scroll = (start_scroll - adjusted)
-                            .max(0.0)
-                            .min((self.tree.doc.rows.len() as f32 * row_h - self.height as f32).max(0.0));
-                    } else if tap {
-                        self.tree.drag = Some((start_y, start_scroll, true));
+                    if distance.abs() > threshold || !tap {
+                        let delta_y = if tap {
+                            distance - distance.signum() * threshold
+                        } else {
+                            distance
+                        };
+                        self.tree.drag = Some((y, start_scroll, false));
+                        let max_y = (self.tree.doc.rows.len() as f32 * row_h - self.height as f32).max(0.0);
+                        self.tree.scroll = (self.tree.scroll - delta_y).clamp(0.0, max_y);
                     }
                 }
                 None
@@ -2427,20 +2485,28 @@ impl SurfaceState {
                 if let Some((start_x, start_y, start_scroll_x, start_scroll, tap)) = self.editor.drag {
                     let dx = x - start_x;
                     let dy = y - start_y;
-                    if dx.abs() > 8.0 * self.density || dy.abs() > 8.0 * self.density {
-                        self.editor.drag =
-                            Some((start_x, start_y, start_scroll_x, start_scroll, false));
-                        if dx.abs() <= dy.abs() {
+                    let threshold = 8.0 * self.density;
+                    if dx.abs() > threshold || dy.abs() > threshold || !tap {
+                        if dx.abs() <= dy.abs() || !tap {
                             let (_advance, _, content) = self.editor_metrics();
                             self.ensure_wrap(content);
                             let max_y = (self.editor.top_inset + self.editor.wrap.len() as f32 * line_h
                                 + self.editor.bottom_inset
                                 - self.height as f32)
                                 .max(0.0);
-                            let threshold = 8.0 * self.density;
-                            let adjusted = dy - dy.signum() * threshold;
-                            self.editor.scroll = (start_scroll - adjusted).clamp(0.0, max_y);
+                            let delta_y = if tap {
+                                if dy.abs() > threshold {
+                                    dy - dy.signum() * threshold
+                                } else {
+                                    0.0
+                                }
+                            } else {
+                                dy
+                            };
+                            self.editor.scroll = (self.editor.scroll - delta_y).clamp(0.0, max_y);
                         }
+                        self.editor.drag =
+                            Some((x, y, start_scroll_x, start_scroll, false));
                         return true;
                     }
                     if tap {
@@ -2459,6 +2525,7 @@ impl SurfaceState {
                 let position = self.editor_position_at(x, y);
                 self.editor.selection = position;
                 self.editor.anchor = position;
+                self.editor.insertion_handle_visible = true;
                 true
             }
             _ => false,
@@ -2495,6 +2562,7 @@ impl SurfaceState {
 
     fn insert(&mut self, text: &str) {
         self.invalidate();
+        self.editor.insertion_handle_visible = false;
         if text.is_empty() {
             return;
         }
@@ -2514,6 +2582,7 @@ impl SurfaceState {
 
     fn delete(&mut self, before: usize, after: usize) {
         self.invalidate();
+        self.editor.insertion_handle_visible = false;
         let (selection_start, selection_end) = self.selected_range();
         if selection_end > selection_start {
             self.delete_range(selection_start, selection_end);
@@ -2552,6 +2621,7 @@ impl SurfaceState {
 
     fn replace_range(&mut self, start: usize, end: usize, text: &str) {
         self.invalidate();
+        self.editor.insertion_handle_visible = false;
         let length = char_count(&self.editor.text);
         let start = start.min(length);
         let end = end.max(start).min(length);
@@ -2768,16 +2838,41 @@ impl SurfaceState {
 
     fn editor_selection_handles(&mut self) -> String {
         let (selection_start, selection_end) = self.selected_range();
-        if selection_end <= selection_start {
-            return "{}".to_string();
-        }
         let line_h = line_height(self.density);
         let (_, gutter, content) = self.editor_metrics();
         self.ensure_wrap(content);
-        let text_x = gutter + 4.0 * self.density;
-        let mut points = Vec::with_capacity(2);
-        for position in [selection_start, selection_end] {
-            let (visual, offset) = self.visual_for_position(&self.editor.starts, position);
+        let text_x = gutter;
+
+        if selection_end > selection_start {
+            let mut points = Vec::with_capacity(2);
+            for position in [selection_start, selection_end] {
+                let (visual, offset) = self.visual_for_position(&self.editor.starts, position);
+                let (advance, cell) = if let Some(chunk) = self.editor.wrap.get(visual) {
+                    let raw = logical_line(&self.editor.text, &self.editor.starts, chunk.line);
+                    let chars: Vec<char> = raw.chars().collect();
+                    let cell_offsets = line_cell_offsets(&chars, &[]);
+                    let chunk_start = chunk.start.min(chars.len());
+                    let base_cell = cell_offsets.get(chunk_start).copied().unwrap_or(0);
+                    let col = (chunk_start + offset).min(chars.len());
+                    let c = cell_offsets.get(col).copied().unwrap_or(col).saturating_sub(base_cell);
+                    (chunk.advance, c)
+                } else {
+                    (0.0, offset)
+                };
+                points.push(json!({
+                    "x": text_x + cell as f32 * advance,
+                    "y": self.editor.top_inset + visual as f32 * line_h - self.editor.scroll + line_h,
+                }));
+            }
+            json!({
+                "start": points[0],
+                "end": points[1],
+                "row_height": line_h,
+                "size": 24.0 * self.density,
+            })
+            .to_string()
+        } else {
+            let (visual, offset) = self.visual_for_position(&self.editor.starts, self.editor.selection);
             let (advance, cell) = if let Some(chunk) = self.editor.wrap.get(visual) {
                 let raw = logical_line(&self.editor.text, &self.editor.starts, chunk.line);
                 let chars: Vec<char> = raw.chars().collect();
@@ -2790,22 +2885,30 @@ impl SurfaceState {
             } else {
                 (0.0, offset)
             };
-            points.push(json!({
-                "x": text_x + cell as f32 * advance,
-                "y": self.editor.top_inset + visual as f32 * line_h - self.editor.scroll + line_h,
-            }));
+            let cursor_x = text_x + cell as f32 * advance + 1.0 * self.density;
+            let cursor_y = self.editor.top_inset + visual as f32 * line_h - self.editor.scroll + line_h;
+            json!({
+                "insertion": {
+                    "x": cursor_x,
+                    "y": cursor_y,
+                },
+                "row_height": line_h,
+                "size": 24.0 * self.density,
+            })
+            .to_string()
         }
-        json!({
-            "start": points[0],
-            "end": points[1],
-            "row_height": line_h,
-            "size": 24.0 * self.density,
-        })
-        .to_string()
     }
 
     fn editor_drag_handle(&mut self, which: i32, x: f32, y: f32) -> bool {
         self.invalidate();
+        if which == 2 {
+            let position = self.editor_position_at(x, (y - 1.0).max(0.0));
+            self.editor.anchor = position;
+            self.editor.selection = position;
+            self.editor.insertion_handle_visible = true;
+            self.scroll_to_cursor();
+            return true;
+        }
         let (selection_start, selection_end) = self.selected_range();
         if selection_end <= selection_start {
             return false;
@@ -3221,6 +3324,19 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetCaret
 }
 
 #[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetInsertionHandleVisible(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+    visible: jboolean,
+) {
+    let _ = with_surface(id, |state| {
+        state.invalidate();
+        state.editor.insertion_handle_visible = visible != 0;
+    });
+}
+
+#[no_mangle]
 pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceTouch(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -3264,7 +3380,8 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceTouch(
                     input.moved.store(false, Ordering::Relaxed);
                     input.start_x_bits.store(x.to_bits(), Ordering::Relaxed);
                     input.start_y_bits.store(y.to_bits(), Ordering::Relaxed);
-                    input.start_scroll_bits.store(scroll.to_bits(), Ordering::Relaxed);
+                    input.last_y_bits.store(y.to_bits(), Ordering::Relaxed);
+                    input.scroll_bits.store(scroll.to_bits(), Ordering::Relaxed);
                     input.scroll_dirty.store(false, Ordering::Relaxed);
                 }
                 touch
@@ -3286,17 +3403,22 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceTouch(
                 let dx = x - start_x;
                 let dy = y - start_y;
                 if !input.moved.load(Ordering::Relaxed) {
-                    if dy.abs() > threshold || dx.abs() > threshold {
+                    if dy.abs() > threshold {
                         input.moved.store(true, Ordering::Relaxed);
+                        let initial_last_y = start_y + dy.signum() * threshold;
+                        input.last_y_bits.store(initial_last_y.to_bits(), Ordering::Relaxed);
+                    } else if dx.abs() > threshold {
+                        input.moved.store(true, Ordering::Relaxed);
+                        input.last_y_bits.store(y.to_bits(), Ordering::Relaxed);
                     }
                 }
                 if input.moved.load(Ordering::Relaxed) {
-                    let start_scroll = f32::from_bits(
-                        input.start_scroll_bits.load(Ordering::Relaxed),
-                    );
+                    let last_y = f32::from_bits(input.last_y_bits.load(Ordering::Relaxed));
+                    let delta_y = y - last_y;
+                    input.last_y_bits.store(y.to_bits(), Ordering::Relaxed);
+                    let current_scroll = f32::from_bits(input.scroll_bits.load(Ordering::Relaxed));
                     let max_y = f32::from_bits(input.max_y_bits.load(Ordering::Relaxed));
-                    let adjusted = dy - dy.signum() * threshold;
-                    let scroll = (start_scroll - adjusted).max(0.0).min(max_y);
+                    let scroll = (current_scroll - delta_y).clamp(0.0, max_y);
                     input.scroll_bits.store(scroll.to_bits(), Ordering::Relaxed);
                     input.scroll_dirty.store(true, Ordering::Relaxed);
                 }
