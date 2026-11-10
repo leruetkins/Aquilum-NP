@@ -351,6 +351,9 @@ class NativeTreeView(
     private var drawerTouchFloor = 0L
 
     init {
+        // Keeps the sidebar explorer above the base NativeEditorView surface
+        // (which sits at standard APPLICATION_MEDIA layer) and below the main
+        // Compose window.
         setZOrderMediaOverlay(true)
         ViewCompat.setAccessibilityDelegate(this, helper)
     }
@@ -723,7 +726,8 @@ class NativeEditorView(
     }
 
     init {
-        setZOrderMediaOverlay(true)
+        // Placed at standard APPLICATION_MEDIA (default Z-order) so overlays
+        // like NativeTreeView (media overlay) and Compose UI sit above it.
         ViewCompat.setAccessibilityDelegate(this, helper)
         bottomInset = idleBottomInsetPx
     }
