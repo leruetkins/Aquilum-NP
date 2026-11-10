@@ -84,6 +84,7 @@ pub mod gpui {
     }
 }
 
+
 /// The desktop callout labels are localized through `crate::i18n::t`. The
 /// mobile model only needs a stable display label, so the last key segment is
 /// title-cased and the Android side localizes its own UI strings.

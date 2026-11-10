@@ -134,4 +134,23 @@ public final class CoreBridge {
     public static native String nativeEditorViewport(int id);
 
     public static native void nativeEditorSetScroll(int id, float y, float x);
+
+    public static int[] rasterizeEmoji(String text, float px) {
+        if (text == null || text.isEmpty()) return null;
+        android.text.TextPaint paint = new android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        paint.setTextSize(px);
+        int w = Math.max(1, (int) Math.ceil(paint.measureText(text)));
+        android.graphics.Paint.FontMetrics fm = paint.getFontMetrics();
+        int h = Math.max(1, (int) Math.ceil(fm.bottom - fm.top));
+        android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas canvas = new android.graphics.Canvas(bitmap);
+        paint.setColor(0xFFFFFFFF);
+        canvas.drawText(text, 0, -fm.top, paint);
+        int[] result = new int[w * h + 2];
+        result[0] = w;
+        result[1] = h;
+        bitmap.getPixels(result, 2, w, 0, 0, w, h);
+        bitmap.recycle();
+        return result;
+    }
 }

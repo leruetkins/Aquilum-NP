@@ -523,11 +523,44 @@ struct IconRaster {
 }
 
 #[derive(Default)]
+struct EmojiRaster {
+    width: usize,
+    height: usize,
+    pixels: Vec<u32>,
+}
+
+fn is_emoji_start(c: char) -> bool {
+    let u = c as u32;
+    matches!(
+        u,
+        0x1F300..=0x1F5FF // Misc Symbols and Pictographs (e.g. 🎁, 🔔, 💎, 🔥)
+        | 0x1F600..=0x1F64F // Emoticons (e.g. 😀, 😂, 😎)
+        | 0x1F680..=0x1F6FF // Transport and Map (e.g. 🚀, 🚗)
+        | 0x1F7E0..=0x1F7EB // Large Colored Circles/Squares (🟠, 🟢)
+        | 0x1F900..=0x1F9FF // Supplemental Symbols and Pictographs (e.g. 🥳, 🤖)
+        | 0x1FA70..=0x1FAFF // Symbols and Pictographs Extended-A
+        | 0x1F1E6..=0x1F1FF // Regional Indicator Symbols (Flags)
+        | 0x231A..=0x231B   // Watch, Hourglass
+        | 0x23E9..=0x23F3   // Fast forward, pause, hourglass
+        | 0x23F8..=0x23FA
+        | 0x26A0..=0x26A1   // Warning ⚠️, High voltage ⚡
+        | 0x26BD..=0x26BE   // Soccer ⚽, Baseball ⚾
+        | 0x26C4..=0x26C5   // Snowman ⛄, Sun behind cloud ⛅
+        | 0x26FD..=0x26FE   // Fuel pump ⛽
+        | 0x2764            // Heart ❤️
+    )
+}
+
+#[derive(Default)]
 struct Painter {
     ui_font: Option<Font>,
     mono_font: Option<Font>,
+    symbols_font: Option<Font>,
+    symbols2_font: Option<Font>,
+    cjk_font: Option<Font>,
     glyphs: HashMap<(u8, char, u32), (fontdue::Metrics, Vec<u8>)>,
     icons: HashMap<(usize, u32, u32), IconRaster>,
+    emojis: HashMap<(String, u32), EmojiRaster>,
 }
 
 fn load_font(paths: &[&str]) -> Option<Font> {
@@ -548,6 +581,7 @@ impl Painter {
     fn new() -> Self {
         let ui_font = load_font(&[
             "/system/fonts/Roboto-Regular.ttf",
+            "/system/fonts/RobotoStatic-Regular.ttf",
             "/system/fonts/NotoSans-Regular.ttf",
         ]);
         let mono_font = load_font(&[
@@ -555,11 +589,26 @@ impl Painter {
             "/system/fonts/DroidSansMono.ttf",
             "/system/fonts/NotoSansMono-Regular.ttf",
         ]);
+        let symbols_font = load_font(&[
+            "/system/fonts/NotoSansSymbols-Regular-Subsetted.ttf",
+            "/system/fonts/NotoSansSymbols-Regular.ttf",
+        ]);
+        let symbols2_font = load_font(&[
+            "/system/fonts/NotoSansSymbols-Regular-Subsetted2.ttf",
+            "/system/fonts/NotoSansSymbols2-Regular.ttf",
+        ]);
+        let cjk_font = load_font(&[
+            "/system/fonts/NotoSansCJK-Regular.ttc",
+        ]);
         Self {
             ui_font,
             mono_font,
+            symbols_font,
+            symbols2_font,
+            cjk_font,
             glyphs: HashMap::new(),
             icons: HashMap::new(),
+            emojis: HashMap::new(),
         }
     }
 
@@ -625,7 +674,38 @@ impl Painter {
         }
     }
 
-    fn advance(&mut self, px: f32, mono: bool) -> f32 {
+    fn font_for_char(&self, character: char, mono: bool) -> Option<&Font> {
+        let primary = if mono {
+            self.mono_font.as_ref().or(self.ui_font.as_ref())
+        } else {
+            self.ui_font.as_ref().or(self.mono_font.as_ref())
+        };
+        if let Some(font) = primary {
+            if font.lookup_glyph_index(character) != 0 {
+                return Some(font);
+            }
+        }
+        let secondary = if mono {
+            self.ui_font.as_ref()
+        } else {
+            self.mono_font.as_ref()
+        };
+        if let Some(font) = secondary {
+            if font.lookup_glyph_index(character) != 0 {
+                return Some(font);
+            }
+        }
+        for fallback in [&self.symbols_font, &self.symbols2_font, &self.cjk_font] {
+            if let Some(font) = fallback.as_ref() {
+                if font.lookup_glyph_index(character) != 0 {
+                    return Some(font);
+                }
+            }
+        }
+        primary
+    }
+
+    fn advance(&self, px: f32, mono: bool) -> f32 {
         let Some(font) = self.font(mono) else {
             return px * 0.6;
         };
@@ -633,11 +713,22 @@ impl Painter {
         metrics.advance_width
     }
 
-    fn width(&mut self, text: &str, px: f32, mono: bool) -> f32 {
+    fn width(&self, text: &str, px: f32, mono: bool) -> f32 {
+        if mono {
+            let advance = self.advance(px, true);
+            return text.chars().filter(|&c| c != '\r').count() as f32 * advance;
+        }
         let Some(font) = self.font(mono) else {
             return text.chars().count() as f32 * px * 0.6;
         };
-        text.chars().map(|c| font.metrics(c, px).advance_width).sum()
+        text.chars().filter(|&c| c != '\r').map(|c| {
+            if is_emoji_start(c) {
+                px
+            } else {
+                let f = self.font_for_char(c, mono).unwrap_or(font);
+                f.metrics(c, px).advance_width
+            }
+        }).sum()
     }
 
     fn draw(
@@ -652,26 +743,98 @@ impl Painter {
         rgb: u32,
         mono: bool,
     ) {
-        let font = if mono {
-            self.mono_font.as_ref().or(self.ui_font.as_ref())
-        } else {
-            self.ui_font.as_ref().or(self.mono_font.as_ref())
-        };
-        let Some(font) = font else {
-            return;
-        };
-        let ascent = font
-            .horizontal_line_metrics(px)
+        let cell_advance = self.advance(px, mono);
+        let ascent = self
+            .font(mono)
+            .and_then(|f| f.horizontal_line_metrics(px))
             .map(|line| line.ascent)
             .unwrap_or(px * 0.8);
         let baseline = y + ascent;
         let mut cursor = x;
-        for character in text.chars() {
+        let mut chars = text.chars().peekable();
+        while let Some(character) = chars.next() {
+            if character == '\r' || character == '\u{fe0f}' || character == '\u{fe0e}' {
+                continue;
+            }
+            if is_emoji_start(character) {
+                let mut emoji_str = String::from(character);
+                let mut char_count = 1usize;
+                while let Some(&next_c) = chars.peek() {
+                    let next_u = next_c as u32;
+                    let is_continuation = next_c == '\u{fe0f}'
+                        || next_c == '\u{fe0e}'
+                        || (0x1f3fb..=0x1f3ff).contains(&next_u)
+                        || ((0x1f1e6..=0x1f1ff).contains(&(character as u32))
+                            && (0x1f1e6..=0x1f1ff).contains(&next_u)
+                            && char_count == 1);
+                    if is_continuation {
+                        chars.next();
+                        emoji_str.push(next_c);
+                        char_count += 1;
+                    } else if next_c == '\u{200d}' {
+                        chars.next();
+                        emoji_str.push(next_c);
+                        char_count += 1;
+                        if let Some(joined) = chars.next() {
+                            emoji_str.push(joined);
+                            char_count += 1;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                let px_key = px.round() as u32;
+                let key = (emoji_str.clone(), px_key);
+                if !self.emojis.contains_key(&key) {
+                    if let Some((ew, eh, epixels)) = crate::jni_bridge::rasterize_emoji(&emoji_str, px) {
+                        self.emojis.insert(key.clone(), EmojiRaster {
+                            width: ew,
+                            height: eh,
+                            pixels: epixels,
+                        });
+                    }
+                }
+                if let Some(raster) = self.emojis.get(&key) {
+                    let gx = cursor.round() as i32;
+                    let gy = (baseline - raster.height as f32 * 0.85).round() as i32;
+                    for row in 0..raster.height {
+                        let py = gy + row as i32;
+                        if py < 0 || py >= height as i32 {
+                            continue;
+                        }
+                        for col in 0..raster.width {
+                            let px_x = gx + col as i32;
+                            if px_x < 0 || px_x >= width as i32 {
+                                continue;
+                            }
+                            let p = raster.pixels[row * raster.width + col];
+                            let alpha = ((p >> 24) & 0xff) as u8;
+                            if alpha == 0 {
+                                continue;
+                            }
+                            let pr = (p >> 16) & 0xff;
+                            let pg = (p >> 8) & 0xff;
+                            let pb = p & 0xff;
+                            let color = (pr << 16) | (pg << 8) | pb;
+                            let index = py as usize * width + px_x as usize;
+                            pixels[index] = blend(pixels[index], color, alpha);
+                        }
+                    }
+                    cursor += if mono { cell_advance * char_count as f32 } else { raster.width as f32 };
+                    continue;
+                }
+            }
             let key = (u8::from(mono), character, px.round() as u32);
-            let (metrics, bitmap) = self
-                .glyphs
-                .entry(key)
-                .or_insert_with(|| font.rasterize(character, px));
+            if !self.glyphs.contains_key(&key) {
+                let raster = self
+                    .font_for_char(character, mono)
+                    .map(|font| font.rasterize(character, px))
+                    .unwrap_or_else(|| (fontdue::Metrics::default(), Vec::new()));
+                self.glyphs.insert(key, raster);
+            }
+            let Some((metrics, bitmap)) = self.glyphs.get(&key) else {
+                continue;
+            };
             let gx = (cursor + metrics.xmin as f32).round() as i32;
             let gy = (baseline - metrics.ymin as f32 - metrics.height as f32).round() as i32;
             for row in 0..metrics.height {
@@ -693,7 +856,7 @@ impl Painter {
                     pixels[index] = blend(pixels[index], rgb, alpha);
                 }
             }
-            cursor += metrics.advance_width;
+            cursor += if mono { cell_advance } else { metrics.advance_width };
         }
     }
 }
@@ -1688,10 +1851,33 @@ impl SurfaceState {
                         }
                         if chunk.line != cursor_line {
                             match line.kind.as_str() {
-                                "heading" | "task" => {
+                                "heading" => {
                                     let length = line.prefix_chars.min(chars.len());
                                     for value in hidden.iter_mut().take(length) {
                                         *value = true;
+                                    }
+                                }
+                                "task" => {
+                                    blank_range(&mut chars, 0, line.prefix_chars);
+                                    let icon = if line.checked == Some(true) { '☑' } else { '☐' };
+                                    if line.indent < chars.len() {
+                                        chars[line.indent] = icon;
+                                        if line.checked == Some(true) {
+                                            colors[line.indent] = 0x808080;
+                                        }
+                                        if line.indent + 1 < chars.len() {
+                                            chars[line.indent + 1] = ' ';
+                                        }
+                                        let hide_start = (line.indent + 2).min(chars.len());
+                                        let hide_end = line.prefix_chars.min(chars.len());
+                                        for value in hidden[hide_start..hide_end].iter_mut() {
+                                            *value = true;
+                                        }
+                                    }
+                                    if line.checked == Some(true) {
+                                        for color in colors[line.prefix_chars.min(chars.len())..].iter_mut() {
+                                            *color = 0x808080;
+                                        }
                                     }
                                 }
                                 "bullet" => {

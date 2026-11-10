@@ -5,9 +5,50 @@
 //! (`Java_md_vibecodium_mobile_CoreBridge_nativeXxx`) and the second parameter
 //! a `JClass` instead of an object instance.
 
+use std::sync::OnceLock;
+
 use jni::objects::{JClass, JObject, JString};
 use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
+
+pub static JAVA_VM: OnceLock<jni::JavaVM> = OnceLock::new();
+
+#[no_mangle]
+pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _reserved: *mut std::ffi::c_void) -> jni::sys::jint {
+    let _ = JAVA_VM.set(vm);
+    jni::sys::JNI_VERSION_1_6
+}
+
+pub fn rasterize_emoji(emoji: &str, px: f32) -> Option<(usize, usize, Vec<u32>)> {
+    let vm = JAVA_VM.get()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    let j_str = env.new_string(emoji).ok()?;
+    let class = env.find_class("md/vibecodium/mobile/CoreBridge").ok()?;
+    let result = env.call_static_method(
+        class,
+        "rasterizeEmoji",
+        "(Ljava/lang/String;F)[I",
+        &[(&j_str).into(), jni::objects::JValue::Float(px)],
+    ).ok()?;
+    let obj = result.l().ok()?;
+    if obj.is_null() {
+        return None;
+    }
+    let array: jni::objects::JIntArray = obj.into();
+    let len = env.get_array_length(&array).ok()? as usize;
+    if len < 2 {
+        return None;
+    }
+    let mut buf = vec![0i32; len];
+    env.get_int_array_region(&array, 0, &mut buf).ok()?;
+    let w = buf[0] as usize;
+    let h = buf[1] as usize;
+    if w == 0 || h == 0 || len < 2 + w * h {
+        return None;
+    }
+    let pixels: Vec<u32> = buf[2..2 + w * h].iter().map(|&p| p as u32).collect();
+    Some((w, h, pixels))
+}
 
 fn to_java(env: &mut JNIEnv<'_>, value: String) -> jstring {
     match env.new_string(value) {
