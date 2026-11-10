@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -61,6 +62,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -139,6 +141,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 import androidx.compose.ui.viewinterop.AndroidView
+import md.vibecodium.mobile.CoreBridge
+import md.vibecodium.mobile.CoreJson
 import md.vibecodium.mobile.Drawer
 import md.vibecodium.mobile.DrawerMode
 import md.vibecodium.mobile.DocStats
@@ -421,8 +425,8 @@ fun VibecodiumApp(controller: VibecodiumController) {
     val state = controller.state
     VibecodiumTheme {
         BackHandler(
-            enabled = state.drawer != null || state.tabSwitcher || state.viewerPath != null ||
-                state.historyIndex > 0,
+            enabled = state.settingsOpen || state.drawer != null || state.tabSwitcher ||
+                state.viewerPath != null || state.historyIndex > 0,
         ) {
             controller.back()
         }
@@ -704,6 +708,10 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
 
             if (state.viewerPath != null) {
                 AttachmentViewer(state, controller, Modifier.fillMaxSize())
+            }
+
+            if (state.settingsOpen) {
+                SettingsScreen(state, controller, Modifier.fillMaxSize())
             }
         }
     }
@@ -1782,6 +1790,19 @@ private fun LeftDrawer(state: UiState, controller: VibecodiumController, modifie
                 IconButton(
                     onClick = {
                         focusManager.clearFocus()
+                        controller.openSettings()
+                    },
+                    modifier = Modifier.size(44.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Settings,
+                        contentDescription = "Settings",
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        focusManager.clearFocus()
                         controller.closeOverlays()
                     },
                     modifier = Modifier.size(44.dp),
@@ -2641,6 +2662,104 @@ private fun NewFolderDialog(state: UiState, controller: VibecodiumController) {
             }
         },
     )
+}
+
+@Composable
+private fun SettingsScreen(state: UiState, controller: VibecodiumController, modifier: Modifier) {
+    val coreVersion = remember {
+        runCatching { CoreJson.data(CoreBridge.nativeVersion()).optString("version") }
+            .getOrDefault("0.1.0")
+    }
+    Surface(modifier = modifier, color = MaterialTheme.colorScheme.surface) {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .padding(start = 16.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Settings",
+                    modifier = Modifier.weight(1f),
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                IconButton(onClick = { controller.closeSettings() }) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Close settings",
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                SettingsGroup("About") {
+                    SettingsInfoRow("vibecodium", "Rust core · Compose shell")
+                    SettingsInfoRow("Rust core", coreVersion)
+                    state.vaultName?.let { name ->
+                        SettingsInfoRow("Vault", name, state.vaultRoot ?: "")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        Text(
+            title,
+            modifier = Modifier.padding(start = 16.dp, bottom = 8.dp),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.background),
+            content = content,
+        )
+    }
+}
+
+@Composable
+private fun SettingsInfoRow(title: String, value: String, detail: String = "") {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                title,
+                modifier = Modifier.weight(1f),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(value, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (detail.isNotBlank()) {
+            Text(
+                detail,
+                modifier = Modifier.padding(top = 2.dp),
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
 }
 
 @Composable

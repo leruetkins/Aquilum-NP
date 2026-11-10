@@ -135,6 +135,7 @@ data class UiState(
     val drawerMode: DrawerMode = DrawerMode.Files,
     val tabSwitcher: Boolean = false,
     val syncOpen: Boolean = false,
+    val settingsOpen: Boolean = false,
     val sync: SyncUiState = SyncUiState(),
     val searchQuery: String = "",
     val searchHits: List<SearchHit> = emptyList(),

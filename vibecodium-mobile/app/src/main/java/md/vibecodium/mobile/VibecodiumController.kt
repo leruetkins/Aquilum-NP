@@ -295,7 +295,7 @@ class VibecodiumController(context: Context) {
         }
         scope.launch {
             try {
-                val note = repository.createNote(path, "# Untitled\n\n")
+                val note = repository.createNote(path, "")
                 val lists = loadFileLists(repository)
                 state = state.copy(
                     notes = lists.notes,
@@ -724,6 +724,20 @@ class VibecodiumController(context: Context) {
         state = state.copy(syncOpen = true)
     }
 
+    // ---------------------------------------------------------------- settings
+
+    fun openSettings() {
+        state = state.copy(
+            settingsOpen = true,
+            drawer = null,
+            tabSwitcher = false,
+        )
+    }
+
+    fun closeSettings() {
+        state = state.copy(settingsOpen = false)
+    }
+
     fun refreshNotes() {
         val repository = repository ?: return
         scope.launch {
@@ -1036,6 +1050,10 @@ class VibecodiumController(context: Context) {
     }
 
     fun back() {
+        if (state.settingsOpen) {
+            state = state.copy(settingsOpen = false)
+            return
+        }
         if (state.viewerPath != null) {
             state = state.copy(viewerPath = null)
             return
