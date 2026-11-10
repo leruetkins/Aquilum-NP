@@ -579,9 +579,9 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
             val previous = lastEditorScroll[0]
             if (maxY <= 0f || scroll <= 2f) {
                 chromeHidden = false
-            } else if (scroll > previous + 6f) {
+            } else if (scroll > previous + 24f) {
                 chromeHidden = true
-            } else if (scroll < previous - 6f) {
+            } else if (scroll < previous - 24f) {
                 chromeHidden = false
             }
             lastEditorScroll[0] = scroll

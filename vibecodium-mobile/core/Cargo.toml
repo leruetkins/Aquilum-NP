@@ -20,6 +20,9 @@ fontdue = "0.9"
 tempfile = "3"
 uuid = { version = "1", features = ["v4"] }
 
+[profile.dev]
+opt-level = 3
+
 [profile.release]
 # The renderer's hot loops are per-pixel blits; optimizing for size left the
 # scroll frame above the vsync budget on phones.

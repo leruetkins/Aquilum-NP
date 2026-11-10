@@ -68,6 +68,13 @@ public final class CoreBridge {
 
     public static native String nativeSurfaceTouch(int id, float x, float y, int action);
 
+    /**
+     * Lock-free absolute scroll request: stores the value for the next paint
+     * without taking the surface lock, so input and fling ticks never wait on
+     * a frame in progress.
+     */
+    public static native void nativeSurfaceScroll(int id, float y);
+
     public static native float nativeTreeScroll(int id);
 
     public static native String nativeTreeViewport(int id);

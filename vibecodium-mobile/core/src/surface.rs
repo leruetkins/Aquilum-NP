@@ -45,16 +45,8 @@ extern "C" {
 
 const WINDOW_FORMAT_RGBA_8888: i32 = 1;
 
-/// Reinterprets a mask row as u64 chunks for fast all-zero tests.
-fn mask_as_u64(mask: &[u8]) -> &[u64] {
-    unsafe {
-        std::slice::from_raw_parts(
-            mask.as_ptr() as *const u64,
-            mask.len() / 8,
-        )
-    }
-}
 
+#[inline(always)]
 fn logical(rgb: u32) -> u32 {
     let r = (rgb >> 16) & 0xff;
     let g = (rgb >> 8) & 0xff;
@@ -62,6 +54,7 @@ fn logical(rgb: u32) -> u32 {
     r | (g << 8) | (b << 16) | (0xff << 24)
 }
 
+#[inline(always)]
 fn blend(dst: u32, rgb: u32, alpha: u8) -> u32 {
     if alpha == 0 {
         return dst;
@@ -679,11 +672,11 @@ impl Painter {
                 .glyphs
                 .entry(key)
                 .or_insert_with(|| font.rasterize(character, px));
-            let gx = cursor + metrics.xmin as f32;
-            let gy = baseline - metrics.ymin as f32 - metrics.height as f32;
+            let gx = (cursor + metrics.xmin as f32).round() as i32;
+            let gy = (baseline - metrics.ymin as f32 - metrics.height as f32).round() as i32;
             for row in 0..metrics.height {
-                let py = gy + row as f32;
-                if py < 0.0 || py >= height as f32 {
+                let py = gy + row as i32;
+                if py < 0 || py >= height as i32 {
                     continue;
                 }
                 let py = py as usize;
@@ -692,8 +685,8 @@ impl Painter {
                     if alpha == 0 {
                         continue;
                     }
-                    let px_x = gx + column as f32;
-                    if px_x < 0.0 || px_x >= width as f32 {
+                    let px_x = gx + column as i32;
+                    if px_x < 0 || px_x >= width as i32 {
                         continue;
                     }
                     let index = py * width + px_x as usize;
@@ -776,6 +769,9 @@ struct SurfaceState {
     window: *mut ANativeWindow,
     width: usize,
     height: usize,
+    /// Real viewport height. `height` is temporarily reduced while a cache
+    /// band is painted, so layout math must not read it.
+    viewport_height: usize,
     density: f32,
     background: u32,
     painter: Painter,
@@ -784,10 +780,6 @@ struct SurfaceState {
     pixels: Vec<u32>,
     frame_valid: bool,
     suspend_render: bool,
-    cache_valid: bool,
-    cache_mode: u8,
-    cache_scroll: f32,
-    cache_mask: Vec<u8>,
     last_mode: u8,
     last_scroll: f32,
     last_width: usize,
@@ -844,19 +836,23 @@ fn input_of(id: i32) -> Option<Arc<InputState>> {
 }
 
 /// Applies a pending lock-free scroll request into the state, if any.
-fn drain_input(id: i32) {
-    let Some(input) = input_of(id) else {
-        return;
-    };
+fn apply_pending_scroll(input: &InputState, state: &mut SurfaceState) {
     if !input.scroll_dirty.swap(false, Ordering::Relaxed) {
         return;
     }
     let y = f32::from_bits(input.scroll_bits.load(Ordering::Relaxed));
     let mode = input.mode.load(Ordering::Relaxed);
-    let _ = with_surface(id, |state| match mode {
+    match mode {
         1 => state.tree_set_scroll(y),
         _ => state.editor_set_scroll(y, 0.0),
-    });
+    }
+}
+
+fn drain_input(id: i32) {
+    let Some(input) = input_of(id) else {
+        return;
+    };
+    let _ = with_surface(id, |state| apply_pending_scroll(&input, state));
 }
 
 fn row_height(density: f32) -> f32 {
@@ -1219,7 +1215,6 @@ fn code_colors(line: &str, language: &str) -> Vec<u32> {
 impl SurfaceState {
     fn invalidate(&mut self) {
         self.frame_valid = false;
-        self.cache_valid = false;
     }
 
     /// Defers the frame until the caller has published all state for a new surface.
@@ -1269,216 +1264,60 @@ impl SurfaceState {
             return;
         }
         let mode = self.current_mode();
+        match mode {
+            1 => {
+                let max_y = (self.tree.doc.rows.len() as f32 * row_height(self.density)
+                    - self.height as f32)
+                    .max(0.0);
+                self.tree.scroll = self.tree.scroll.min(max_y);
+            }
+            2 => {
+                let max_y = self.editor_scroll_metrics().2;
+                self.editor.scroll = self.editor.scroll.min(max_y);
+            }
+            _ => {}
+        }
         let target = match mode {
             1 => self.tree.scroll,
             2 => self.editor.scroll,
             _ => 0.0,
         };
-        self.ensure_cache(mode, target);
-        self.composite(buffer, target, mode);
-        self.frame_valid = true;
-        self.last_mode = mode;
-        self.last_scroll = target;
-        self.last_width = self.width;
-        self.last_height = self.height;
-    }
-
-    fn ensure_cache(&mut self, mode: u8, target: f32) {
-        let cache_height = self.height + 1;
-        let delta = target - self.cache_scroll;
-        if !self.cache_valid
-            || self.cache_mode != mode
-            || delta.abs() >= cache_height as f32
-        {
-            self.render_cache(mode, target.floor());
-            return;
+        let length = self.width * self.height;
+        if self.pixels.len() != length {
+            self.pixels.resize(length, 0);
         }
-        let shift = delta.floor() as i32;
-        if shift != 0 {
-            self.shift_cache(mode, shift);
-        }
-    }
-
-    fn render_cache(&mut self, mode: u8, base: f32) {
-        let width = self.width;
-        let cache_height = self.height + 1;
-        let length = width * cache_height;
         let mut pixels = std::mem::take(&mut self.pixels);
-        if pixels.len() != length {
-            pixels.resize(length, 0);
-        }
-        self.paint_full(&mut pixels, mode, base, cache_height, false);
+        self.paint_full(&mut pixels, mode, target, self.height, true);
         self.pixels = pixels;
-        if self.cache_mask.len() != length {
-            self.cache_mask.resize(length, 0);
-        }
-        let background = logical(self.background);
-        for index in 0..length {
-            self.cache_mask[index] = u8::from(self.pixels[index] != background);
-        }
-        self.cache_scroll = base;
-        self.cache_mode = mode;
-        self.cache_valid = true;
-    }
 
-    fn shift_cache(&mut self, mode: u8, shift: i32) {
-        let width = self.width;
-        let cache_height = self.height + 1;
-        let length = width * cache_height;
-        if self.pixels.len() != length || self.cache_mask.len() != length {
-            self.cache_valid = false;
-            return;
-        }
-        let distance = shift.unsigned_abs() as usize;
-        if distance >= cache_height {
-            self.cache_valid = false;
-            return;
-        }
-        let (band_top, band_height) = if shift > 0 {
-            self.pixels.copy_within(distance * width.., 0);
-            self.cache_mask.copy_within(distance * width.., 0);
-            (cache_height - distance, distance)
-        } else {
-            self.pixels.copy_within(0..(cache_height - distance) * width, distance * width);
-            self.cache_mask
-                .copy_within(0..(cache_height - distance) * width, distance * width);
-            (0, distance)
-        };
-        let band_start = band_top * width;
-        let band_end = band_start + band_height * width;
-        let mut pixels = std::mem::take(&mut self.pixels);
-        fill(
-            &mut pixels[band_start..band_end],
-            width,
-            band_height,
-            self.background,
-        );
-        let new_scroll = self.cache_scroll + shift as f32;
-        let band = &mut pixels[band_start..band_end];
-        let saved_height = self.height;
-        let saved_editor_scroll = self.editor.scroll;
-        let saved_editor_inset = self.editor.bottom_inset;
-        let saved_tree_scroll = self.tree.scroll;
-        self.height = band_height;
-        if band_top > 0 {
-            self.editor.bottom_inset += band_height as f32;
-        }
-        match mode {
-            1 => {
-                self.tree.scroll = new_scroll + band_top as f32;
-                self.draw_tree(band);
-            }
-            2 => {
-                self.editor.scroll = new_scroll + band_top as f32;
-                self.draw_editor(band);
-            }
-            _ => {}
-        }
-        self.height = saved_height;
-        self.editor.scroll = saved_editor_scroll;
-        self.editor.bottom_inset = saved_editor_inset;
-        self.tree.scroll = saved_tree_scroll;
-        self.pixels = pixels;
-        let background = logical(self.background);
-        for index in band_start..band_end {
-            self.cache_mask[index] = u8::from(self.pixels[index] != background);
-        }
-        self.cache_scroll = new_scroll;
-    }
-
-    fn composite(&self, buffer: &ANativeWindowBuffer, target: f32, mode: u8) {
-        let width = self.width;
-        let height = self.height;
         let stride = buffer.stride.max(0) as usize;
         let buffer_width = buffer.width.max(0) as usize;
         let buffer_height = buffer.height.max(0) as usize;
-        if self.pixels.len() < width * (height + 1)
-            || self.cache_mask.len() < width * (height + 1)
-            || buffer.bits.is_null()
-        {
-            return;
-        }
-        let fraction = (target - self.cache_scroll).clamp(0.0, 1.0);
-        // Gralloc pads the row stride (1080 px often becomes 1088), so keying
-        // the direct path on `stride == width` used to fall back to allocating
-        // and copying a whole width*height frame on every scroll frame.
-        if stride >= width && buffer_width >= width && buffer_height >= height {
-            let output = unsafe {
-                std::slice::from_raw_parts_mut(buffer.bits as *mut u32, stride * height)
-            };
-            self.compose_rows(output, stride, fraction);
-            self.draw_scrollbar(output, stride, mode);
+        let copy_width = self.width.min(buffer_width);
+        let copy_height = self.height.min(buffer_height);
+        let target_ptr = buffer.bits as *mut u32;
+
+        if stride == self.width && copy_width == self.width && copy_height == self.height {
+            unsafe {
+                std::ptr::copy_nonoverlapping(self.pixels.as_ptr(), target_ptr, length);
+            }
         } else {
-            let mut output = vec![0u32; width * height];
-            self.compose_rows(&mut output, width, fraction);
-            self.draw_scrollbar(&mut output, width, mode);
-            let target_ptr = buffer.bits as *mut u32;
-            let copy_width = width.min(buffer_width);
-            let copy_height = height.min(buffer_height);
             unsafe {
                 for row in 0..copy_height {
                     std::ptr::copy_nonoverlapping(
-                        output.as_ptr().add(row * width),
+                        self.pixels.as_ptr().add(row * self.width),
                         target_ptr.add(row * stride),
                         copy_width,
                     );
                 }
             }
         }
-    }
 
-    /// Composites the cached band into rows `line_width` pixels apart.
-    fn compose_rows(&self, output: &mut [u32], line_width: usize, fraction: f32) {
-        let width = self.width;
-        let height = self.height;
-        if width == 0 || height == 0 || line_width < width {
-            return;
-        }
-        if fraction <= 0.001 {
-            for row in 0..height {
-                let source = row * width;
-                let destination = row * line_width;
-                output[destination..destination + width]
-                    .copy_from_slice(&self.pixels[source..source + width]);
-            }
-            return;
-        }
-        let weight = (fraction * 256.0).round().clamp(0.0, 256.0) as u32;
-        let inverse = 256 - weight;
-        for row in 0..height {
-            let row_start = row * width;
-            let next_start = row_start + width;
-            let destination = row * line_width;
-            let top = &self.pixels[row_start..next_start];
-            let bottom = &self.pixels[next_start..next_start + width];
-            let top_mask = &self.cache_mask[row_start..next_start];
-            let bottom_mask = &self.cache_mask[next_start..next_start + width];
-            let target = &mut output[destination..destination + width];
-            target.copy_from_slice(top);
-            let mut column = 0usize;
-            let top_u64 = mask_as_u64(top_mask);
-            let bottom_u64 = mask_as_u64(bottom_mask);
-            for chunk in 0..top_u64.len() {
-                if top_u64[chunk] == 0 && bottom_u64[chunk] == 0 {
-                    column = (chunk + 1) * 8;
-                    continue;
-                }
-                while column < (chunk + 1) * 8 && column < width {
-                    if top_mask[column] == 0 && bottom_mask[column] == 0 {
-                        column += 1;
-                        continue;
-                    }
-                    let a = top[column];
-                    let b = bottom[column];
-                    let rb = (((a & 0x00ff00ff) * inverse + (b & 0x00ff00ff) * weight) >> 8)
-                        & 0x00ff00ff;
-                    let g = ((((a >> 8) & 0xff) * inverse + ((b >> 8) & 0xff) * weight) >> 8)
-                        & 0xff;
-                    target[column] = rb | (g << 8) | (0xff << 24);
-                    column += 1;
-                }
-            }
-        }
+        self.frame_valid = true;
+        self.last_mode = mode;
+        self.last_scroll = target;
+        self.last_width = self.width;
+        self.last_height = self.height;
     }
 
     fn paint_full(
@@ -1789,13 +1628,6 @@ impl SurfaceState {
         let starts = std::mem::take(&mut self.editor.starts);
         self.editor.scroll_x = 0.0;
         let total_visual = self.editor.wrap.len();
-        let max_y = (self.editor.top_inset + total_visual as f32 * line_h
-            + self.editor.bottom_inset
-            - self.height as f32)
-            .max(0.0);
-        if self.editor.scroll > max_y {
-            self.editor.scroll = max_y;
-        }
         let text_x = gutter;
         let scroll = self.editor.scroll;
         let first = (((scroll - self.editor.top_inset) / line_h)
@@ -2142,8 +1974,7 @@ impl SurfaceState {
                         let adjusted = distance - distance.signum() * threshold;
                         self.tree.scroll = (start_scroll - adjusted)
                             .max(0.0)
-                            .min((self.tree.doc.rows.len() as f32 * row_h - self.height as f32).max(0.0))
-                            .round();
+                            .min((self.tree.doc.rows.len() as f32 * row_h - self.height as f32).max(0.0));
                     } else if tap {
                         self.tree.drag = Some((start_y, start_scroll, true));
                     }
@@ -2225,7 +2056,7 @@ impl SurfaceState {
         self.ensure_wrap(content);
         let max_y = (self.editor.top_inset + self.editor.wrap.len() as f32 * line_h
             + self.editor.bottom_inset
-            - self.height as f32)
+            - self.viewport_height as f32)
             .max(0.0);
         (gutter, advance, max_y, 0.0)
     }
@@ -2609,6 +2440,7 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceAttach(
         window,
         width,
         height,
+        viewport_height: height,
         density: if density > 0.0 { density } else { 1.0 },
         background: 0x000000,
         painter: Painter::new(),
@@ -2622,10 +2454,6 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceAttach(
         pixels: Vec::new(),
         frame_valid: false,
         suspend_render: false,
-        cache_valid: false,
-        cache_mode: 0,
-        cache_scroll: 0.0,
-        cache_mask: Vec::new(),
         last_mode: 0,
         last_scroll: 0.0,
         last_width: 0,
@@ -2675,6 +2503,7 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceResize(
         state.invalidate();
         state.width = width.max(1) as usize;
         state.height = height.max(1) as usize;
+        state.viewport_height = state.height;
         unsafe {
             ANativeWindow_setBuffersGeometry(
                 state.window,
@@ -2714,11 +2543,11 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceRender(
     _class: JClass<'_>,
     id: jint,
 ) {
-    drain_input(id);
     let window = with_surface(id, |state| state.window).unwrap_or(std::ptr::null_mut());
     if window.is_null() {
         return;
     }
+    let input = input_of(id);
     let mut buffer = ANativeWindowBuffer::default();
     let locked = unsafe {
         ANativeWindow_lock(window, &mut buffer, std::ptr::null_mut())
@@ -2727,8 +2556,14 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceRender(
         return;
     }
     let _ = with_surface(id, |state| {
+        // Apply the newest touch position only once the buffer is available:
+        // locking can wait for the compositor, and a frame drawn with the
+        // position from before that wait reads as a missed scroll tick.
+        if let Some(input) = &input {
+            apply_pending_scroll(input, state);
+        }
         state.paint_locked(&buffer);
-        if let Some(input) = input_of(id) {
+        if let Some(input) = &input {
             let mode = state.current_mode();
             input.mode.store(mode, Ordering::Relaxed);
             let max_y = match mode {
@@ -2747,15 +2582,27 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceRender(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceScroll(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+    y: jfloat,
+) {
+    if let Some(input) = input_of(id) {
+        input.scroll_bits.store(y.to_bits(), Ordering::Relaxed);
+        input.scroll_dirty.store(true, Ordering::Relaxed);
+    }
+}
+
+#[no_mangle]
 pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceInvalidate(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
     id: jint,
 ) {
-    let _ = with_surface(id, |state| {
-        state.invalidate();
-        state.render();
-    });
+    // Only the cache is dropped; the caller paints once on the render thread,
+    // so a full repaint never happens at an arbitrary phase of the frame.
+    let _ = with_surface(id, |state| state.invalidate());
 }
 
 #[no_mangle]
@@ -2778,7 +2625,7 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceSetTree
             - state.height as f32)
             .max(0.0);
         state.tree.scroll = state.tree.scroll.min(max);
-        state.refresh();
+        state.invalidate();
     });
 }
 
@@ -2847,7 +2694,7 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceSetEdit
             state.editor.model_dirty = true;
         }
         state.editor.selection = (selection.max(0) as usize).min(char_count(&state.editor.text));
-        state.refresh();
+        state.invalidate();
     });
 }
 
@@ -2877,6 +2724,11 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceTouch(
         // DOWN: take the lock briefly, seed the input channel.
         0 => {
             let result = with_surface(id, |state| {
+                // Fold in a fling tick that was queued just before this touch,
+                // so the drag base matches what the last frame showed.
+                if let Some(input) = input_of(id) {
+                    apply_pending_scroll(&input, state);
+                }
                 let touch = if state.tree.doc.rows.is_empty() {
                     state.editor_touch(x, y, action);
                     None
@@ -2915,33 +2767,29 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceTouch(
         // MOVE: update the scroll without touching the paint mutex.
         1 => {
             if let Some(input) = input_of(id) {
-                if input.drag_active.load(Ordering::Relaxed)
-                    && !input.moved.load(Ordering::Relaxed).then_some(()).is_none()
-                {
-                    // fallthrough handled below
+                if !input.drag_active.load(Ordering::Relaxed) {
+                    return to_java(&mut env, String::new());
                 }
                 let density = f32::from_bits(input.density_bits.load(Ordering::Relaxed));
                 let threshold = 8.0 * density;
                 let start_x = f32::from_bits(input.start_x_bits.load(Ordering::Relaxed));
                 let start_y = f32::from_bits(input.start_y_bits.load(Ordering::Relaxed));
                 let dx = x - start_x;
-                let distance = y - start_y;
-                if dx.abs() > threshold || distance.abs() > threshold {
-                    input.moved.store(true, Ordering::Relaxed);
-                    if dx.abs() <= distance.abs() {
-                        let start_scroll = f32::from_bits(
-                            input.start_scroll_bits.load(Ordering::Relaxed),
-                        );
-                        let max_y =
-                            f32::from_bits(input.max_y_bits.load(Ordering::Relaxed));
-                        let adjusted = distance - distance.signum() * threshold;
-                        // Whole-pixel targets keep the composite on its cheap
-                        // row-copy path: subpixel blending is reserved for the
-                        // ease-out fling. At 3x density this is a third of a dp.
-                        let scroll = (start_scroll - adjusted).round().max(0.0).min(max_y);
-                        input.scroll_bits.store(scroll.to_bits(), Ordering::Relaxed);
-                        input.scroll_dirty.store(true, Ordering::Relaxed);
+                let dy = y - start_y;
+                if !input.moved.load(Ordering::Relaxed) {
+                    if dy.abs() > threshold || dx.abs() > threshold {
+                        input.moved.store(true, Ordering::Relaxed);
                     }
+                }
+                if input.moved.load(Ordering::Relaxed) {
+                    let start_scroll = f32::from_bits(
+                        input.start_scroll_bits.load(Ordering::Relaxed),
+                    );
+                    let max_y = f32::from_bits(input.max_y_bits.load(Ordering::Relaxed));
+                    let adjusted = dy - dy.signum() * threshold;
+                    let scroll = (start_scroll - adjusted).max(0.0).min(max_y);
+                    input.scroll_bits.store(scroll.to_bits(), Ordering::Relaxed);
+                    input.scroll_dirty.store(true, Ordering::Relaxed);
                 }
                 String::new()
             } else {

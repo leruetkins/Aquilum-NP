@@ -6,6 +6,10 @@ import android.content.Context
 import android.graphics.PointF
 import android.graphics.Rect
 import android.os.Bundle
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
+import android.os.Process
 import android.os.SystemClock
 import android.text.InputType
 import android.view.ActionMode
@@ -19,6 +23,9 @@ import android.view.SurfaceView
 import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
+import android.widget.OverScroller
+import kotlin.math.roundToInt
+
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
@@ -29,10 +36,9 @@ import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import androidx.customview.widget.ExploreByTouchHelper
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.concurrent.Executors
+import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Shared SurfaceView plumbing: one native ANativeWindow per view and a single
@@ -42,12 +48,9 @@ abstract class NativeSurfaceView(context: Context) : SurfaceView(context), Surfa
     val surfaceId: Int = NEXT_ID.incrementAndGet()
 
     private val renderer: java.util.concurrent.Executor get() = RENDERER
-    private val renderQueued = AtomicBoolean(false)
-    private val scrollQueued = AtomicBoolean(false)
-    private val scrollEpoch = AtomicInteger(0)
-    private val pendingScroll = AtomicReference<ScrollRequest?>(null)
 
-    private data class ScrollRequest(val y: Float, val x: Float, val epoch: Int)
+    /** UI-thread handler used by callbacks that run on the render thread. */
+    protected val mainHandler: Handler = Handler(Looper.getMainLooper())
 
     @Volatile
     private var attached = false
@@ -122,61 +125,84 @@ abstract class NativeSurfaceView(context: Context) : SurfaceView(context), Surfa
     protected fun isSurfaceAttached(): Boolean = attached
 
     private val vsyncScheduled = AtomicBoolean(false)
+    private val renderDirty = AtomicBoolean(false)
+    private val renderRunning = AtomicBoolean(false)
+
     private val vsyncRender = Choreographer.FrameCallback {
         vsyncScheduled.set(false)
-        if (!renderQueued.compareAndSet(false, true)) return@FrameCallback
-        renderer.execute {
-            renderQueued.set(false)
-            if (attached) CoreBridge.nativeSurfaceRender(surfaceId)
+        if (!renderDirty.get()) return@FrameCallback
+        if (renderRunning.compareAndSet(false, true)) {
+            renderDirty.set(false)
+            renderer.execute {
+                try {
+                    if (attached) {
+                        CoreBridge.nativeSurfaceRender(surfaceId)
+                    }
+                } finally {
+                    renderRunning.set(false)
+                    if (renderDirty.get() && attached) {
+                        scheduleVsync()
+                    }
+                }
+            }
+        } else {
+            scheduleVsync()
+        }
+    }
+
+    private fun scheduleVsync() {
+        if (!vsyncScheduled.compareAndSet(false, true)) return
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            Choreographer.getInstance().postFrameCallback(vsyncRender)
+        } else {
+            mainHandler.post {
+                if (vsyncScheduled.get()) {
+                    Choreographer.getInstance().postFrameCallback(vsyncRender)
+                }
+            }
         }
     }
 
     /**
-     * Renders on the next display frame. Input events arrive at arbitrary
-     * phases; posting immediately can miss a vsync and produce a periodic
-     * stutter even when the scroll delta itself is smooth.
+     * Renders on the next display frame. High-frequency touch moves update
+     * atomic scroll state; UI-thread Choreographer guarantees frames are
+     * synced with the hardware display VSYNC without dropped frames.
      */
     protected fun requestRender() {
-        if (!vsyncScheduled.compareAndSet(false, true)) return
-        Choreographer.getInstance().postFrameCallback(vsyncRender)
+        renderDirty.set(true)
+        scheduleVsync()
     }
 
-    /** Redraws every pixel even when the native scroll and size are unchanged. */
+    /** Invalidates and repaints on the render thread. */
     protected fun requestFullRender() {
         renderer.execute {
-            if (attached) CoreBridge.nativeSurfaceInvalidate(surfaceId)
+            if (!attached) return@execute
+            CoreBridge.nativeSurfaceInvalidate(surfaceId)
+            requestRender()
         }
     }
 
-    /** Applies the latest scroll on the render thread without blocking the UI thread. */
-    protected fun submitScroll(y: Float, x: Float = 0f) {
-        pendingScroll.set(ScrollRequest(y, x, scrollEpoch.get()))
-        scheduleScroll()
-    }
-
-    private fun scheduleScroll() {
-        if (!scrollQueued.compareAndSet(false, true)) return
-        renderer.execute {
-            scrollQueued.set(false)
-            val request = pendingScroll.getAndSet(null)
-            if (request != null && attached && request.epoch == scrollEpoch.get()) {
-                applyNativeScroll(request.y, request.x)
-                CoreBridge.nativeSurfaceRender(surfaceId)
-            }
-            if (pendingScroll.get() != null) scheduleScroll()
+    /** Schedules an animation callback on the UI thread's vsync clock. */
+    protected fun postFrame(callback: Choreographer.FrameCallback) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            Choreographer.getInstance().postFrameCallback(callback)
+        } else {
+            mainHandler.post { Choreographer.getInstance().postFrameCallback(callback) }
         }
     }
 
-    /** Flushes the last fling tick before a touch so Rust's drag base matches. */
-    protected fun flushPendingScroll() {
-        val request = pendingScroll.getAndSet(null)
-        if (request != null && attached && request.epoch == scrollEpoch.get()) {
-            applyNativeScroll(request.y, request.x)
+    protected fun cancelFrame(callback: Choreographer.FrameCallback) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            Choreographer.getInstance().removeFrameCallback(callback)
+        } else {
+            mainHandler.post { Choreographer.getInstance().removeFrameCallback(callback) }
         }
-        scrollEpoch.incrementAndGet()
     }
 
-    protected open fun applyNativeScroll(y: Float, x: Float) = Unit
+    /** Queues the latest scroll for the next paint without blocking on one. */
+    protected fun submitScroll(y: Float) {
+        CoreBridge.nativeSurfaceScroll(surfaceId, y)
+    }
 
     /** Runs a background task in the same serial order as native rendering. */
     protected fun postRenderTask(task: () -> Unit) {
@@ -192,44 +218,29 @@ abstract class NativeSurfaceView(context: Context) : SurfaceView(context), Surfa
 
     private companion object {
         val NEXT_ID = AtomicInteger(1)
-        val RENDERER = Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "native-surface").apply { isDaemon = true }
+
+        /**
+         * One dedicated render thread shared by every surface. It keeps a
+         * Looper so `Choreographer` can drive frames from here instead of the
+         * UI thread.
+         */
+        val RENDER_THREAD: HandlerThread =
+            HandlerThread("native-surface", Process.THREAD_PRIORITY_DISPLAY).apply { start() }
+        val RENDER_HANDLER: Handler = Handler(RENDER_THREAD.looper)
+        val RENDERER: Executor = Executor { command -> RENDER_HANDLER.post(command) }
+
+        @Volatile
+        var RENDER_CHOREOGRAPHER: Choreographer? = null
+
+        /** Must only be called on the render thread; it owns that vsync clock. */
+        fun renderChoreographer(): Choreographer {
+            RENDER_CHOREOGRAPHER?.let { return it }
+            return Choreographer.getInstance().also { RENDER_CHOREOGRAPHER = it }
         }
     }
 }
 
-/**
- * Time-based cubic ease-out with a finite velocity at the end. Distance grows
- * with the measured fling velocity (no fixed px/s cap), so fast gestures can
- * travel much farther through long documents while the tail still reaches 0
- * exactly at [duration].
- */
-private class SmoothFling {
-    private var startScroll = 0f
-    private var total = 0.0
-    private var duration = 0.0
-    private var startNanos = 0L
-    private val power = 3.0
-    private val maxDuration = 4.0
 
-    fun start(startScroll: Float, velocity: Double) {
-        this.startScroll = startScroll
-        val speed = kotlin.math.abs(velocity).coerceAtLeast(200.0)
-        duration = (0.45 + speed / 9000.0 * 1.6).coerceAtMost(maxDuration)
-        total = velocity.coerceIn(-60000.0, 60000.0) * duration / power
-        startNanos = System.nanoTime()
-    }
-
-    fun position(now: Long): Float {
-        val progress = (((now - startNanos) / 1_000_000_000.0) / duration)
-            .coerceIn(0.0, 1.0)
-        val distance = total * (1.0 - Math.pow(1.0 - progress, power))
-        return (startScroll + distance).toFloat()
-    }
-
-    fun finished(now: Long): Boolean =
-        (now - startNanos) / 1_000_000_000.0 >= duration
-}
 
 /** Native explorer. Kotlin computes the visible rows; Rust paints and hit-tests. */
 class NativeTreeView(
@@ -316,21 +327,22 @@ class NativeTreeView(
         }
     }
 
-    private val treeSmooth = SmoothFling()
-    private var treeMaxScroll = 0f
+    private val treeScroller = OverScroller(context)
+    @Volatile private var treeMaxScroll = 0f
     private var velocityTracker: VelocityTracker? = null
-    private var treeFlinging = false
+    @Volatile private var treeFlinging = false
     private val treeFling = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (!treeFlinging) return
-            val raw = treeSmooth.position(frameTimeNanos)
-            val clamped = raw.coerceIn(0f, treeMaxScroll)
-            submitScroll(clamped)
-            if (treeSmooth.finished(frameTimeNanos) || kotlin.math.abs(raw - clamped) > 0.5f) {
-                treeFlinging = false
-                postDelayed({ helper.invalidateRoot() }, 100L)
+            val more = treeScroller.computeScrollOffset()
+            val currentY = treeScroller.currY.toFloat().coerceIn(0f, treeMaxScroll)
+            submitScroll(currentY)
+            requestRender()
+            if (more && !treeScroller.isFinished && currentY > 0f && currentY < treeMaxScroll) {
+                postFrame(this)
             } else {
-                Choreographer.getInstance().postFrameCallback(this)
+                treeFlinging = false
+                mainHandler.postDelayed({ helper.invalidateRoot() }, 100L)
             }
         }
     }
@@ -366,10 +378,6 @@ class NativeTreeView(
 
     override fun onSurfaceReady() {
         lastJson?.let { CoreBridge.nativeSurfaceSetTree(surfaceId, it) }
-    }
-
-    override fun applyNativeScroll(y: Float, x: Float) {
-        CoreBridge.nativeTreeSetScroll(surfaceId, y)
     }
 
     override fun dispatchHoverEvent(event: MotionEvent): Boolean {
@@ -430,20 +438,28 @@ class NativeTreeView(
 
     private fun stopTreeFling() {
         treeFlinging = false
-        Choreographer.getInstance().removeFrameCallback(treeFling)
-        flushPendingScroll()
+        treeScroller.abortAnimation()
+        cancelFrame(treeFling)
     }
 
     private fun startTreeFling(vy: Float) {
         val viewport = runCatching { JSONObject(CoreBridge.nativeTreeViewport(surfaceId)) }.getOrNull()
             ?: return
-        val scroll = viewport.optDouble("scroll", 0.0)
-        val maxY = viewport.optDouble("max_y", 0.0)
-        if (maxY <= 0.0) return
-        treeMaxScroll = maxY.toFloat()
-        treeSmooth.start(scroll.toFloat(), (-vy).toDouble())
+        val scroll = viewport.optDouble("scroll", 0.0).toFloat()
+        val maxY = viewport.optDouble("max_y", 0.0).toFloat()
+        if (maxY <= 0f) return
+        treeMaxScroll = maxY
+        treeScroller.abortAnimation()
+        treeScroller.fling(
+            0,
+            scroll.roundToInt(),
+            0,
+            (-vy).roundToInt(),
+            0, 0,
+            0, maxY.roundToInt(),
+        )
         treeFlinging = true
-        Choreographer.getInstance().postFrameCallback(treeFling)
+        postFrame(treeFling)
     }
 
     override fun onDetachedFromWindow() {
@@ -529,11 +545,11 @@ class NativeEditorView(
             postDelayed(this, 500L)
         }
     }
-    private val smoothFling = SmoothFling()
+    private val scroller = OverScroller(context)
     private val saveAfterFling = Runnable { postRenderTask { saveViewport() } }
-    private var flinging = false
+    @Volatile private var flinging = false
     private var velocityTracker: VelocityTracker? = null
-    private var scrollMaxY = 0f
+    @Volatile private var scrollMaxY = 0f
     private var dragStartScroll = 0f
     private var onScrollChanged: ((Float, Float) -> Unit)? = null
     private var onCaretPlaced: (() -> Unit)? = null
@@ -542,22 +558,22 @@ class NativeEditorView(
     private val flingRunnable = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (!flinging) return
-            val raw = smoothFling.position(frameTimeNanos)
-            val clamped = raw.coerceIn(0f, scrollMaxY)
-            knownScroll = clamped
-            submitScroll(clamped, 0f)
-            onScrollChanged?.invoke(clamped, scrollMaxY)
-            if (smoothFling.finished(frameTimeNanos) ||
-                kotlin.math.abs(raw - clamped) > 0.5f
-            ) {
-                flinging = false
-                resumeCaretBlink()
-                postDelayed({ requestFullRender() }, 80L)
-                removeCallbacks(saveAfterFling)
-                postDelayed(saveAfterFling, 400L)
-                postDelayed({ helper.invalidateRoot() }, 100L)
+            val more = scroller.computeScrollOffset()
+            val currentY = scroller.currY.toFloat().coerceIn(0f, scrollMaxY)
+            knownScroll = currentY
+            submitScroll(currentY)
+            requestRender()
+            mainHandler.post { onScrollChanged?.invoke(currentY, scrollMaxY) }
+            if (more && !scroller.isFinished && currentY > 0f && currentY < scrollMaxY) {
+                postFrame(this)
             } else {
-                Choreographer.getInstance().postFrameCallback(this)
+                flinging = false
+                mainHandler.post {
+                    resumeCaretBlink()
+                    removeCallbacks(saveAfterFling)
+                    postDelayed(saveAfterFling, 400L)
+                    postDelayed({ helper.invalidateRoot() }, 100L)
+                }
             }
         }
     }
@@ -900,11 +916,6 @@ class NativeEditorView(
         knownScroll = CoreBridge.nativeEditorScroll(surfaceId)
         if (isFocused && !selectionNonEmpty()) startCaretBlink()
         syncHandles()
-    }
-
-    override fun applyNativeScroll(y: Float, x: Float) {
-        CoreBridge.nativeEditorSetScroll(surfaceId, y, x)
-        knownScroll = y
     }
 
     fun setEditor(text: String, selection: Int, language: String?, path: String) {
@@ -1321,13 +1332,14 @@ class NativeEditorView(
             CoreBridge.nativeSurfaceTouch(surfaceId, event.x, event.y, action)
         }
         if (action == 1 && draggingHandle < 0 && !selecting) {
-            // Mirror the native drag formula instead of asking Rust for the
-            // scroll: a JNI read locks the surface mutex that the paint holds,
-            // which stalled the UI thread for every move of the finger.
+            val threshold = 8f * resources.displayMetrics.density
             val dy = event.y - downY
             val dx = event.x - downX
-            val threshold = 8f * resources.displayMetrics.density
-            if (kotlin.math.abs(dy) > threshold && kotlin.math.abs(dx) <= kotlin.math.abs(dy)) {
+            if (!dragged && (kotlin.math.abs(dy) > threshold || kotlin.math.abs(dx) > threshold)) {
+                dragged = true
+                removeCallbacks(longPress)
+            }
+            if (dragged) {
                 val adjusted = dy - kotlin.math.sign(dy) * threshold
                 knownScroll = (dragStartScroll - adjusted).coerceIn(0f, scrollMaxY)
                 onScrollChanged?.invoke(knownScroll, scrollMaxY)
@@ -1440,23 +1452,30 @@ class NativeEditorView(
 
     private fun stopFling() {
         flinging = false
-        Choreographer.getInstance().removeFrameCallback(flingRunnable)
-        flushPendingScroll()
+        scroller.abortAnimation()
+        cancelFrame(flingRunnable)
     }
 
     private fun startFling(vy: Float) {
         val viewport = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
             ?: return
-        val scroll = viewport.optDouble("scroll", 0.0)
-        val maxY = viewport.optDouble("max_y", 0.0)
-        if (maxY <= 0.0) return
-        scrollMaxY = maxY.toFloat()
+        val scroll = viewport.optDouble("scroll", 0.0).toFloat()
+        val maxY = viewport.optDouble("max_y", 0.0).toFloat()
+        if (maxY <= 0f) return
+        scrollMaxY = maxY
         removeCallbacks(saveAfterFling)
         suspendCaretBlink()
-        requestFullRender()
-        smoothFling.start(scroll.toFloat(), (-vy).toDouble())
+        scroller.abortAnimation()
+        scroller.fling(
+            0,
+            scroll.roundToInt(),
+            0,
+            (-vy).roundToInt(),
+            0, 0,
+            0, maxY.roundToInt(),
+        )
         flinging = true
-        Choreographer.getInstance().postFrameCallback(flingRunnable)
+        postFrame(flingRunnable)
     }
 
     override fun onDetachedFromWindow() {
