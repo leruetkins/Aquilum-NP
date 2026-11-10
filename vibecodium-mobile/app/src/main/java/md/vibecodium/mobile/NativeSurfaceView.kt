@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.PointF
 import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
@@ -12,6 +13,7 @@ import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
 import android.text.InputType
+import android.text.TextUtils
 import android.view.ActionMode
 import android.view.Choreographer
 import android.view.KeyEvent
@@ -29,8 +31,12 @@ import kotlin.math.roundToInt
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.ExtractedText
+import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
+import android.view.inputmethod.SurroundingText
+import androidx.annotation.RequiresApi
 import androidx.core.view.ViewCompat
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import androidx.customview.widget.ExploreByTouchHelper
@@ -937,6 +943,8 @@ class NativeEditorView(
         if (mirrorSelection != previous || previousText != text) {
             mirrorAnchor = mirrorSelection
         }
+        composingStart = -1
+        composingEnd = -1
         lastLanguage = nextLanguage
         refreshLines()
         val viewport = if (pathChanged) loadViewport(path) else null
@@ -948,6 +956,11 @@ class NativeEditorView(
         } else {
             "Code source editor ($nextLanguage), ${text.count { it == '\n' } + 1} lines"
         }
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        if (pathChanged) {
+            imm?.restartInput(this)
+        }
+        notifySelectionChanged()
         postState {
             CoreBridge.nativeSurfaceSetEditor(
                 surfaceId,
@@ -1047,7 +1060,290 @@ class NativeEditorView(
             applyInsert("    ")
             return true
         }
+        if (keyCode == KeyEvent.KEYCODE_DEL) {
+            if (selectionNonEmpty()) {
+                applyDelete(0, 0)
+                return true
+            }
+            if (event.isCtrlPressed || event.isAltPressed) {
+                applyDelete(previousWordLength(mirrorText, mirrorSelection), 0)
+                return true
+            }
+            applyDelete(1, 0)
+            return true
+        }
+        if (keyCode == KeyEvent.KEYCODE_ENTER) {
+            applyInsert("\n")
+            return true
+        }
         return super.onKeyDown(keyCode, event)
+    }
+
+    private fun previousWordLength(text: String, cursor: Int): Int {
+        if (cursor <= 0 || text.isEmpty()) return 0
+        val clamped = cursor.coerceIn(0, text.length)
+        if (clamped <= 0) return 0
+
+        // 1. If cursor is right after a newline, delete only the newline so lines join cleanly.
+        val prev = text[clamped - 1]
+        if (prev == '\n') {
+            return if (clamped >= 2 && text[clamped - 2] == '\r') 2 else 1
+        }
+        if (prev == '\r') {
+            return 1
+        }
+
+        var i = clamped
+
+        // 2. Skip horizontal whitespace (spaces, tabs) immediately preceding the cursor.
+        while (i > 0 && (text[i - 1] == ' ' || text[i - 1] == '\t')) {
+            i--
+        }
+
+        // If only whitespace existed on this line before the cursor, delete that whitespace.
+        if (i == 0 || text[i - 1] == '\n' || text[i - 1] == '\r') {
+            return maxOf(1, clamped - i)
+        }
+
+        // 3. Delete the preceding token (word or symbol run).
+        val tokenChar = text[i - 1]
+        if (Character.isLetterOrDigit(tokenChar)) {
+            while (i > 0 && Character.isLetterOrDigit(text[i - 1])) {
+                i--
+            }
+        } else {
+            while (i > 0 && !Character.isLetterOrDigit(text[i - 1]) && !Character.isWhitespace(text[i - 1])) {
+                i--
+            }
+        }
+
+        // Avoid splitting a surrogate pair
+        if (i in 1 until text.length && Character.isLowSurrogate(text[i]) && Character.isHighSurrogate(text[i - 1])) {
+            i--
+        }
+
+        val codePoints = runCatching {
+            text.codePointCount(i, clamped)
+        }.getOrDefault(clamped - i)
+
+        return maxOf(1, codePoints)
+    }
+
+    private var extractedTextToken = 0
+
+    private open inner class EditorInputConnection : BaseInputConnection(this@NativeEditorView, false) {
+        private var batchDepth = 0
+
+        override fun beginBatchEdit(): Boolean {
+            batchDepth++
+            return true
+        }
+
+        override fun endBatchEdit(): Boolean {
+            if (batchDepth > 0) batchDepth--
+            if (batchDepth == 0) {
+                notifySelectionChanged()
+                requestRender()
+            }
+            return batchDepth > 0
+        }
+
+        override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+            val value = text?.toString().orEmpty()
+            if (composingStart >= 0) {
+                applyReplace(composingStart, composingEnd, value)
+                composingStart = -1
+                composingEnd = -1
+            } else if (value.isEmpty() && selectionNonEmpty()) {
+                applyDelete(0, 0)
+            } else {
+                applyInsert(value)
+            }
+            return true
+        }
+
+        override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
+            val start = if (composingStart >= 0) {
+                composingStart
+            } else {
+                minOf(mirrorAnchor, mirrorSelection)
+            }
+            val value = text?.toString().orEmpty()
+            if (value.isEmpty()) {
+                if (composingStart >= 0) {
+                    applyReplace(composingStart, composingEnd, "")
+                } else if (selectionNonEmpty()) {
+                    applyDelete(0, 0)
+                }
+                composingStart = -1
+                composingEnd = -1
+                return true
+            }
+            if (composingStart >= 0) {
+                applyReplace(composingStart, composingEnd, value)
+            } else {
+                applyInsert(value)
+            }
+            composingStart = start
+            composingEnd = mirrorSelection
+            return true
+        }
+
+        override fun setComposingRegion(start: Int, end: Int): Boolean {
+            val len = mirrorText.length
+            composingStart = minOf(start, end).coerceIn(0, len)
+            composingEnd = maxOf(start, end).coerceIn(0, len)
+            notifySelectionChanged()
+            return true
+        }
+
+        override fun finishComposingText(): Boolean {
+            val changed = composingStart >= 0
+            composingStart = -1
+            composingEnd = -1
+            if (changed) notifySelectionChanged()
+            return true
+        }
+
+        override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+            composingStart = -1
+            composingEnd = -1
+            if (selectionNonEmpty()) {
+                applyDelete(0, 0)
+                return true
+            }
+            val cursor = mirrorSelection.coerceIn(0, mirrorText.length)
+            val actualBefore = minOf(beforeLength, cursor)
+            val actualAfter = minOf(afterLength, mirrorText.length - cursor)
+            if (actualBefore <= 0 && actualAfter <= 0) return true
+            applyDelete(actualBefore, actualAfter)
+            return true
+        }
+
+        override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int): Boolean {
+            composingStart = -1
+            composingEnd = -1
+            if (selectionNonEmpty()) {
+                applyDelete(0, 0)
+                return true
+            }
+            val cursor = mirrorSelection.coerceIn(0, mirrorText.length)
+            val actualBefore = minOf(beforeLength, cursor)
+            val actualAfter = minOf(afterLength, mirrorText.length - cursor)
+            if (actualBefore <= 0 && actualAfter <= 0) return true
+            applyDelete(actualBefore, actualAfter)
+            return true
+        }
+
+        @Suppress("DEPRECATION")
+        override fun sendKeyEvent(event: KeyEvent): Boolean {
+            if (event.action != KeyEvent.ACTION_DOWN && event.action != KeyEvent.ACTION_MULTIPLE) {
+                return true
+            }
+            return when (event.keyCode) {
+                KeyEvent.KEYCODE_DEL -> {
+                    if (selectionNonEmpty()) {
+                        applyDelete(0, 0)
+                        return true
+                    }
+                    if (event.isCtrlPressed || event.isAltPressed) {
+                        applyDelete(previousWordLength(mirrorText, mirrorSelection), 0)
+                        return true
+                    }
+                    val count = if (event.action == KeyEvent.ACTION_MULTIPLE) {
+                        maxOf(1, event.repeatCount)
+                    } else {
+                        1
+                    }
+                    val cursor = mirrorSelection.coerceIn(0, mirrorText.length)
+                    val toDelete = if (count > 1) {
+                        minOf(count, previousWordLength(mirrorText, cursor))
+                    } else {
+                        minOf(1, cursor)
+                    }
+                    if (toDelete > 0) {
+                        applyDelete(toDelete, 0)
+                    }
+                    true
+                }
+                KeyEvent.KEYCODE_ENTER -> {
+                    val count = if (event.action == KeyEvent.ACTION_MULTIPLE) {
+                        maxOf(1, event.repeatCount)
+                    } else {
+                        1
+                    }
+                    applyInsert("\n".repeat(count))
+                    true
+                }
+                else -> super.sendKeyEvent(event)
+            }
+        }
+
+        override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence {
+            val selStart = minOf(mirrorAnchor, mirrorSelection).coerceIn(0, mirrorText.length)
+            return mirrorText.substring((selStart - n).coerceAtLeast(0), selStart)
+        }
+
+        override fun getTextAfterCursor(n: Int, flags: Int): CharSequence {
+            val selEnd = maxOf(mirrorAnchor, mirrorSelection).coerceIn(0, mirrorText.length)
+            return mirrorText.substring(selEnd, (selEnd + n).coerceAtMost(mirrorText.length))
+        }
+
+        override fun getSelectedText(flags: Int): CharSequence? {
+            val start = mirrorAnchor.coerceIn(0, mirrorText.length)
+            val end = mirrorSelection.coerceIn(0, mirrorText.length)
+            if (start == end) return null
+            return mirrorText.substring(minOf(start, end), maxOf(start, end))
+        }
+
+        override fun getCursorCapsMode(reqModes: Int): Int {
+            val cursor = mirrorSelection.coerceIn(0, mirrorText.length)
+            return TextUtils.getCapsMode(mirrorText, cursor, reqModes)
+        }
+
+        override fun getExtractedText(request: ExtractedTextRequest?, flags: Int): ExtractedText {
+            if (request != null) {
+                extractedTextToken = request.token
+            }
+            val et = ExtractedText()
+            et.startOffset = 0
+            et.partialStartOffset = -1
+            et.partialEndOffset = -1
+            val len = mirrorText.length
+            et.selectionStart = mirrorAnchor.coerceIn(0, len)
+            et.selectionEnd = mirrorSelection.coerceIn(0, len)
+            et.text = mirrorText
+            et.flags = 0
+            return et
+        }
+
+        override fun setSelection(start: Int, end: Int): Boolean {
+            composingStart = -1
+            composingEnd = -1
+            selectNative(start, end)
+            return true
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private inner class EditorInputConnectionApi31 : EditorInputConnection() {
+        override fun getSurroundingText(beforeLength: Int, afterLength: Int, flags: Int): SurroundingText? {
+            val text = mirrorText
+            val length = text.length
+            val selStart = mirrorAnchor.coerceIn(0, length)
+            val selEnd = mirrorSelection.coerceIn(0, length)
+            val minSel = minOf(selStart, selEnd)
+            val maxSel = maxOf(selStart, selEnd)
+            val startPos = (minSel - maxOf(0, beforeLength)).coerceIn(0, length)
+            val endPos = (maxSel + maxOf(0, afterLength)).coerceIn(startPos, length)
+            val sub = text.substring(startPos, endPos)
+            return SurroundingText(
+                sub,
+                selStart - startPos,
+                selEnd - startPos,
+                startPos,
+            )
+        }
     }
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
@@ -1057,97 +1353,12 @@ class NativeEditorView(
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or
             EditorInfo.IME_FLAG_NO_FULLSCREEN or
             EditorInfo.IME_ACTION_NONE
-        return object : BaseInputConnection(this@NativeEditorView, false) {
-            override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
-                val value = text?.toString().orEmpty()
-                if (composingStart >= 0) {
-                    applyReplace(composingStart, composingEnd, value)
-                    composingStart = -1
-                    composingEnd = -1
-                } else {
-                    applyInsert(value)
-                }
-                return true
-            }
-
-            override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
-                val start = if (composingStart >= 0) {
-                    composingStart
-                } else {
-                    minOf(mirrorAnchor, mirrorSelection)
-                }
-                val value = text?.toString().orEmpty()
-                if (value.isEmpty()) {
-                    if (composingStart >= 0) {
-                        applyReplace(composingStart, composingEnd, "")
-                    } else {
-                        applyDelete(0, 0)
-                    }
-                    composingStart = -1
-                    composingEnd = -1
-                    return true
-                }
-                if (composingStart >= 0) {
-                    applyReplace(composingStart, composingEnd, value)
-                } else {
-                    applyInsert(value)
-                }
-                composingStart = start
-                composingEnd = mirrorSelection
-                return true
-            }
-
-            override fun finishComposingText(): Boolean {
-                composingStart = -1
-                composingEnd = -1
-                return true
-            }
-
-            override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-                composingStart = -1
-                composingEnd = -1
-                applyDelete(beforeLength, afterLength)
-                return true
-            }
-
-            override fun sendKeyEvent(event: KeyEvent): Boolean {
-                if (event.action != KeyEvent.ACTION_DOWN) return true
-                return when (event.keyCode) {
-                    KeyEvent.KEYCODE_DEL -> {
-                        applyDelete(1, 0)
-                        true
-                    }
-                    KeyEvent.KEYCODE_ENTER -> {
-                        applyInsert("\n")
-                        true
-                    }
-                    else -> false
-                }
-            }
-
-            override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence {
-                val end = mirrorSelection.coerceIn(0, mirrorText.length)
-                return mirrorText.substring((end - n).coerceAtLeast(0), end)
-            }
-
-            override fun getTextAfterCursor(n: Int, flags: Int): CharSequence {
-                val start = mirrorSelection.coerceIn(0, mirrorText.length)
-                return mirrorText.substring(start, (start + n).coerceAtMost(mirrorText.length))
-            }
-
-            override fun getSelectedText(flags: Int): CharSequence? {
-                val start = mirrorAnchor.coerceIn(0, mirrorText.length)
-                val end = mirrorSelection.coerceIn(0, mirrorText.length)
-                if (start == end) return null
-                return mirrorText.substring(minOf(start, end), maxOf(start, end))
-            }
-
-            override fun setSelection(start: Int, end: Int): Boolean {
-                composingStart = -1
-                composingEnd = -1
-                selectNative(start, end)
-                return true
-            }
+        outAttrs.initialSelStart = mirrorAnchor
+        outAttrs.initialSelEnd = mirrorSelection
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            EditorInputConnectionApi31()
+        } else {
+            EditorInputConnection()
         }
     }
 
@@ -1222,6 +1433,7 @@ class NativeEditorView(
         }
         syncHandles()
         actionMode?.invalidateContentRect()
+        notifySelectionChanged()
         requestRender()
         helper.invalidateRoot()
     }
@@ -1360,6 +1572,7 @@ class NativeEditorView(
             if (doubleTap) {
                 CoreBridge.nativeEditorSelectWord(surfaceId, event.x, event.y)
                 syncFromNative(notify = true)
+                requestFocus()
                 requestRender()
                 helper.invalidateRoot()
                 showSelectionActions()
@@ -1371,6 +1584,7 @@ class NativeEditorView(
                 showSelectionActions()
             } else {
                 actionMode?.finish()
+                requestFocus()
                 startCaretBlink()
                 onCaretPlaced?.invoke()
             }
@@ -1429,6 +1643,7 @@ class NativeEditorView(
         mirrorAnchor = state.optInt("anchor", mirrorAnchor).coerceIn(0, mirrorText.length)
         syncHandles()
         actionMode?.invalidateContentRect()
+        notifySelectionChanged()
         requestRender()
         helper.invalidateRoot()
     }
@@ -1492,6 +1707,26 @@ class NativeEditorView(
         super.onDetachedFromWindow()
     }
 
+    private fun notifySelectionChanged() {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.updateSelection(this, mirrorAnchor, mirrorSelection, composingStart, composingEnd)
+            if (extractedTextToken != 0) {
+                val et = ExtractedText()
+                et.startOffset = 0
+                et.partialStartOffset = -1
+                et.partialEndOffset = -1
+                val len = mirrorText.length
+                et.selectionStart = mirrorAnchor.coerceIn(0, len)
+                et.selectionEnd = mirrorSelection.coerceIn(0, len)
+                et.text = mirrorText
+                imm?.updateExtractedText(this, extractedTextToken, et)
+            }
+        } else {
+            mainHandler.post { notifySelectionChanged() }
+        }
+    }
+
     private fun syncFromNative(notify: Boolean) {
         val state = runCatching { JSONObject(CoreBridge.nativeEditorState(surfaceId)) }.getOrNull() ?: return
         val text = state.optString("text")
@@ -1502,11 +1737,15 @@ class NativeEditorView(
         refreshLines()
         syncHandles()
         actionMode?.invalidateContentRect()
+        notifySelectionChanged()
         if (notify) onTextChanged(text, selection)
     }
 
     private fun applyInsert(text: String) {
-        if (text.isEmpty()) return
+        if (text.isEmpty()) {
+            if (selectionNonEmpty()) applyDelete(0, 0)
+            return
+        }
         val state = runCatching { JSONObject(CoreBridge.nativeEditorInsert(surfaceId, text)) }.getOrNull()
             ?: return
         mirrorText = state.optString("text")
@@ -1518,6 +1757,7 @@ class NativeEditorView(
         startCaretBlink()
         onTextChanged(mirrorText, mirrorSelection)
         knownScroll = CoreBridge.nativeEditorScroll(surfaceId)
+        notifySelectionChanged()
         requestRender()
     }
 
@@ -1534,6 +1774,7 @@ class NativeEditorView(
         startCaretBlink()
         onTextChanged(mirrorText, mirrorSelection)
         knownScroll = CoreBridge.nativeEditorScroll(surfaceId)
+        notifySelectionChanged()
         requestRender()
     }
 
@@ -1549,6 +1790,7 @@ class NativeEditorView(
         startCaretBlink()
         onTextChanged(mirrorText, mirrorSelection)
         knownScroll = CoreBridge.nativeEditorScroll(surfaceId)
+        notifySelectionChanged()
         requestRender()
     }
 }
