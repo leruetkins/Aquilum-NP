@@ -2377,26 +2377,108 @@ private fun NoteRow(
 
 @Composable
 private fun SearchPanel(state: UiState, controller: VibecodiumController) {
-    Column(Modifier.fillMaxSize().padding(10.dp)) {
-        OutlinedTextField(
-            value = state.searchQuery,
-            onValueChange = controller::search,
-            placeholder = { Text("Search notes") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(8.dp))
+    var queryFocused by remember { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
+    Column(Modifier.fillMaxSize()) {
+        // Same field as the explorer's quick filter (`TreeList`): 36 dp tall,
+        // 8 dp corners, #222222 on #383838, primary accent while focused.
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(36.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(
+                        if (queryFocused) Color(0xFF1B1B1B) else Color(0xFF222222),
+                    )
+                    .border(
+                        width = if (queryFocused) 1.5.dp else 1.dp,
+                        color = if (queryFocused) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            Color(0xFF383838)
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                    )
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) {
+                        focusRequester.requestFocus()
+                    }
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Default.Search,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = if (queryFocused) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+                BasicTextField(
+                    value = state.searchQuery,
+                    onValueChange = controller::search,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
+                        .focusRequester(focusRequester)
+                        .onFocusChanged { queryFocused = it.isFocused },
+                    singleLine = true,
+                    textStyle = androidx.compose.ui.text.TextStyle(
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    ),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    decorationBox = { innerTextField ->
+                        Box(Modifier.fillMaxWidth()) {
+                            if (!queryFocused && state.searchQuery.isEmpty()) {
+                                Text(
+                                    "Search notes...",
+                                    fontSize = 14.sp,
+                                    color = Color(0xFF8A8A8A),
+                                )
+                            }
+                            innerTextField()
+                        }
+                    },
+                )
+                if (state.searchQuery.isNotEmpty()) {
+                    IconButton(
+                        onClick = { controller.search("") },
+                        modifier = Modifier.size(28.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Clear search",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
         when {
             state.searchQuery.isBlank() -> Text(
                 "Type to search file names and note content.",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             )
 
             state.searchHits.isEmpty() -> Text(
                 "No matches.",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             )
 
             else -> LazyColumn(Modifier.fillMaxSize()) {
@@ -2408,7 +2490,7 @@ private fun SearchPanel(state: UiState, controller: VibecodiumController) {
                                 controller.openNote(hit.path)
                                 controller.closeOverlays()
                             }
-                            .padding(vertical = 8.dp),
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
                     ) {
                         Text(
                             hit.name,

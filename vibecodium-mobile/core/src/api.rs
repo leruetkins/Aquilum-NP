@@ -333,6 +333,97 @@ fn snippet(line: &str) -> String {
     out
 }
 
+// ------------------------------------------------------------ indexed search
+
+/// Opens a fresh search session for a vault.
+pub fn search_index_reset() -> String {
+    crate::search_session::reset();
+    ok(json!({}))
+}
+
+/// Feeds one note into the index. `mtime`/`len` form the fingerprint; an
+/// unchanged file is skipped by the core without tokenizing again.
+pub fn search_index_add(path: &str, text: &str, mtime: u64, len: u64) -> String {
+    let indexed = crate::search_session::add(path, text, mtime, len);
+    ok(json!({ "indexed": indexed }))
+}
+
+/// Drops a note that was deleted or renamed away.
+pub fn search_index_remove(path: &str) -> String {
+    crate::search_session::remove(path);
+    ok(json!({}))
+}
+
+/// Marks the index complete; queries answer from it only after this.
+pub fn search_index_finish() -> String {
+    crate::search_session::finish();
+    ok(json!({
+        "ready": crate::search_session::is_ready(),
+        "files": crate::search_session::file_count(),
+    }))
+}
+
+pub fn search_index_status() -> String {
+    ok(json!({
+        "ready": crate::search_session::is_ready(),
+        "files": crate::search_session::file_count(),
+    }))
+}
+
+/// Restores a persisted snapshot from the app-private cache directory.
+pub fn search_index_load(path: &str) -> String {
+    match crate::search_session::load(path) {
+        Some(entries) => {
+            let files = entries.len();
+            let fingerprints: Vec<Value> = entries
+                .into_iter()
+                .map(|(path, mtime, len)| {
+                    json!({ "path": path, "mtime": mtime, "len": len })
+                })
+                .collect();
+            ok(json!({
+                "restored": true,
+                "files": files,
+                "fingerprints": fingerprints,
+            }))
+        }
+        None => ok(json!({
+            "restored": false,
+            "files": 0,
+            "fingerprints": [],
+        })),
+    }
+}
+
+/// Persists the snapshot; `saved` is false while the index is still building.
+pub fn search_index_save(path: &str) -> String {
+    let saved = crate::search_session::save(path);
+    ok(json!({ "saved": saved }))
+}
+
+/// Ranked candidate paths (BM25F over the shared index).
+pub fn search_index_query(query: &str, limit: u32) -> String {
+    let hits = crate::search_session::query(query, limit.clamp(1, 200) as usize);
+    let matches: Vec<Value> = hits
+        .into_iter()
+        .map(|hit| {
+            json!({
+                "path": hit.path,
+                "name": hit.name,
+                "score": hit.score,
+                "count": hit.count,
+            })
+        })
+        .collect();
+    ok(json!({ "matches": matches }))
+}
+
+/// First matching line and snippet for one candidate body.
+pub fn search_locate(query: &str, text: &str) -> String {
+    let (line, snippet) = crate::search_session::locate(query, text);
+    ok(json!({ "line": line, "snippet": snippet }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,5 +459,30 @@ mod tests {
         assert_eq!(headings[1]["text"], "Two");
         assert_eq!(headings[1]["line"], 6);
         assert_eq!(data["lines"].as_array().unwrap().len(), 7);
+    }
+
+    #[test]
+    fn indexed_search_round_trips_through_the_json_envelope() {
+        let _guard = crate::search_session::test_guard();
+        search_index_reset();
+        assert!(search_index_add("notes/alpha.md", "# Alpha\nnothing here\n", 1, 10)
+            .contains("\"ok\":true"));
+        assert!(search_index_add("notes/beta.md", "# Beta\nthe needle hides\n", 2, 20)
+            .contains("\"ok\":true"));
+        search_index_finish();
+
+        let value: Value = serde_json::from_str(&search_index_query("needle", 10)).unwrap();
+        let matches = value["data"]["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1, "envelope: {value}");
+        assert_eq!(matches[0]["path"], "notes/beta.md");
+        assert_eq!(matches[0]["name"], "beta.md");
+
+        let located: Value =
+            serde_json::from_str(&search_locate("needle", "# Beta\nthe needle hides\n")).unwrap();
+        assert_eq!(located["data"]["line"], 2);
+        assert!(located["data"]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("needle"));
     }
 }

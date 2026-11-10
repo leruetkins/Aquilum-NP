@@ -17,6 +17,17 @@ data class SearchHit(
     val snippet: String,
 )
 
+/** One ranked path from the search index, before its body is verified. */
+data class SearchCandidate(
+    val path: String,
+    val name: String,
+    val score: Float,
+    val count: Int,
+)
+
+/** A candidate body resolved to its first matching line and snippet. */
+data class LocatedHit(val line: Int, val snippet: String)
+
 data class Heading(val level: Int, val text: String, val line: Int)
 
 data class MarkdownSpan(
@@ -190,6 +201,46 @@ object CoreJson {
                 snippet = value.optString("snippet"),
             )
         }
+    }
+
+    /** Ranked paths from the search index (BM25F order). */
+    fun searchCandidates(raw: String): List<SearchCandidate> {
+        val array = data(raw).optJSONArray("matches") ?: JSONArray()
+        return List(array.length()) { index ->
+            val value = array.getJSONObject(index)
+            SearchCandidate(
+                path = value.optString("path"),
+                name = value.optString("name"),
+                score = value.optDouble("score", 0.0).toFloat(),
+                count = value.optInt("count", 0),
+            )
+        }
+    }
+
+    /** Line + snippet resolved against one candidate body. */
+    fun searchLocated(raw: String): LocatedHit {
+        val value = data(raw)
+        return LocatedHit(
+            line = value.optInt("line", 0),
+            snippet = value.optString("snippet"),
+        )
+    }
+
+    /**
+     * Stamps restored from an index snapshot: `path -> (mtime, size)`.
+     * Null when no snapshot could be loaded (missing or stale format).
+     */
+    fun indexFingerprints(raw: String): Map<String, LongArray>? {
+        val value = data(raw)
+        if (!value.optBoolean("restored")) return null
+        val array = value.optJSONArray("fingerprints") ?: JSONArray()
+        val stamps = HashMap<String, LongArray>(array.length())
+        for (index in 0 until array.length()) {
+            val item = array.getJSONObject(index)
+            stamps[item.optString("path")] =
+                longArrayOf(item.optLong("mtime"), item.optLong("len"))
+        }
+        return stamps
     }
 
     fun headings(raw: String): List<Heading> = headings(data(raw))

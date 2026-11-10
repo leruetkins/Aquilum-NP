@@ -432,6 +432,7 @@ version = "0.1.0"
 dependencies = [
  "fontdue",
  "jni",
+ "memchr",
  "serde",
  "serde_json",
  "tempfile",

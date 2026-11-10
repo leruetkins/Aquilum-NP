@@ -11,6 +11,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.InputStream
 import java.net.URLDecoder
+import java.security.MessageDigest
 import java.util.ArrayDeque
 
 /**
@@ -45,6 +46,13 @@ interface VaultRepository {
     suspend fun deleteNote(path: String)
     suspend fun renameNote(oldPath: String, newPath: String): NoteItem
     suspend fun search(query: String, limit: Int): List<SearchHit>
+
+    /**
+     * Builds or refreshes the full-text index. Runs in the background after a
+     * vault opens; [search] falls back to a linear scan until it completes.
+     */
+    suspend fun warmSearchIndex() {}
+
     suspend fun readAttachment(target: String, notePath: String): ByteArray?
 
     /** All regular files and folders in one pass; the explorer and sync share it. */
@@ -116,15 +124,30 @@ object VaultRepositories {
     const val DEMO_FOLDER = "vault"
 
     fun open(context: Context, locator: VaultLocator): VaultRepository = when (locator) {
-        is VaultLocator.Local -> FileVaultRepository(File(locator.path))
-        is VaultLocator.Scoped -> SafVaultRepository(context, Uri.parse(locator.uri))
+        is VaultLocator.Local ->
+            FileVaultRepository(File(locator.path), searchSnapshot(context, locator))
+        is VaultLocator.Scoped ->
+            SafVaultRepository(context, Uri.parse(locator.uri), searchSnapshot(context, locator))
     }
 
     fun createDemo(context: Context): Pair<VaultRepository, VaultLocator> {
         val base = context.getExternalFilesDir(null) ?: context.filesDir
         val dir = File(base, DEMO_FOLDER)
         CoreJson.data(CoreBridge.nativeCreateVault(dir.absolutePath))
-        return FileVaultRepository(dir) to VaultLocator.Local(dir.absolutePath)
+        val locator = VaultLocator.Local(dir.absolutePath)
+        return FileVaultRepository(dir, searchSnapshot(context, locator)) to locator
+    }
+
+    /**
+     * `filesDir/search/<key>.vbix` — one snapshot per vault in the app's
+     * private directory, so it is removed with the app and never synced.
+     */
+    private fun searchSnapshot(context: Context, locator: VaultLocator): File {
+        val key = MessageDigest.getInstance("SHA-256")
+            .digest(locator.value.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+            .take(24)
+        return File(File(context.filesDir, "search"), "$key.vbix")
     }
 
     /** Persists the read/write grant attached to an OpenDocumentTree result. */
@@ -138,9 +161,19 @@ object VaultRepositories {
     }
 }
 
-private class FileVaultRepository(private val root: File) : VaultRepository {
+private class FileVaultRepository(
+    private val root: File,
+    private val searchSnapshot: File? = null,
+) : VaultRepository {
     override val name: String = root.name.ifBlank { "Vault" }
     override val isScoped: Boolean = false
+
+    @Volatile
+    private var searchIndexOrNull: SearchIndex? = null
+
+    private fun searchIndex(): SearchIndex = searchIndexOrNull ?: synchronized(this) {
+        searchIndexOrNull ?: SearchIndex(this, searchSnapshot).also { searchIndexOrNull = it }
+    }
 
     init {
         CoreJson.data(CoreBridge.nativeOpenVault(root.absolutePath))
@@ -156,6 +189,7 @@ private class FileVaultRepository(private val root: File) : VaultRepository {
 
     override suspend fun writeNote(path: String, text: String) = withContext(Dispatchers.IO) {
         CoreJson.data(CoreBridge.nativeWriteNote(path, text))
+        searchIndexOrNull?.invalidate(path)
         Unit
     }
 
@@ -187,7 +221,13 @@ private class FileVaultRepository(private val root: File) : VaultRepository {
     }
 
     override suspend fun search(query: String, limit: Int): List<SearchHit> = withContext(Dispatchers.IO) {
-        CoreJson.matches(CoreBridge.nativeSearch(query, limit))
+        searchIndex().search(query, limit)
+    }
+
+    override suspend fun warmSearchIndex() = withContext(Dispatchers.IO) {
+        // Constructing the index restores the snapshot from disk; keep that
+        // off the main thread even when the caller launches from Main.
+        searchIndex().refresh()
     }
 
     override suspend fun readAttachment(target: String, notePath: String): ByteArray? =
@@ -260,6 +300,7 @@ private class FileVaultRepository(private val root: File) : VaultRepository {
     }
 
     override fun close() {
+        searchIndexOrNull?.close()
         runCatching { CoreBridge.nativeCloseVault() }
     }
 }
@@ -273,11 +314,22 @@ private class FileVaultRepository(private val root: File) : VaultRepository {
  * carries all five columns, so the whole tree is one query per directory and
  * the resulting path→document map serves every later open/read/write.
  */
-private class SafVaultRepository(context: Context, treeUri: Uri) : VaultRepository {
+private class SafVaultRepository(
+    context: Context,
+    treeUri: Uri,
+    private val searchSnapshot: File? = null,
+) : VaultRepository {
     private val resolver = context.contentResolver
     private val root: DocumentFile = DocumentFile.fromTreeUri(context, treeUri)
         ?: throw IllegalStateException("The selected folder is no longer accessible")
     private val treeBase: Uri = root.uri
+
+    @Volatile
+    private var searchIndexOrNull: SearchIndex? = null
+
+    private fun searchIndex(): SearchIndex = searchIndexOrNull ?: synchronized(this) {
+        searchIndexOrNull ?: SearchIndex(this, searchSnapshot).also { searchIndexOrNull = it }
+    }
 
     @Volatile
     private var index: SafIndex? = null
@@ -308,6 +360,8 @@ private class SafVaultRepository(context: Context, treeUri: Uri) : VaultReposito
                 lastModified = System.currentTimeMillis(),
             )
         }
+        searchIndexOrNull?.invalidate(path)
+        Unit
     }
 
     override suspend fun createNote(path: String, text: String): NoteItem = withContext(Dispatchers.IO) {
@@ -379,27 +433,13 @@ private class SafVaultRepository(context: Context, treeUri: Uri) : VaultReposito
     }
 
     override suspend fun search(query: String, limit: Int): List<SearchHit> = withContext(Dispatchers.IO) {
-        val needle = query.lowercase()
-        val hits = mutableListOf<SearchHit>()
-        for (file in snapshot().files) {
-            if (hits.size >= limit) break
-            if (!isMarkdownName(file.path)) continue
-            val name = file.path.substringAfterLast('/')
-            val nameHit = name.lowercase().contains(needle)
-            val text = runCatching { readText(file.uri(file.path)) }.getOrNull() ?: continue
-            var lineHit: Pair<Int, String>? = null
-            for ((lineIndex, line) in text.lineSequence().withIndex()) {
-                if (line.lowercase().contains(needle)) {
-                    lineHit = (lineIndex + 1) to line.trim().take(160)
-                    break
-                }
-            }
-            when {
-                lineHit != null -> hits.add(SearchHit(file.path, name, lineHit.first, lineHit.second))
-                nameHit -> hits.add(SearchHit(file.path, name, 0, ""))
-            }
-        }
-        hits
+        searchIndex().search(query, limit)
+    }
+
+    override suspend fun warmSearchIndex() = withContext(Dispatchers.IO) {
+        // Constructing the index restores the snapshot from disk; keep that
+        // off the main thread even when the caller launches from Main.
+        searchIndex().refresh()
     }
 
     override suspend fun readAttachment(target: String, notePath: String): ByteArray? =
@@ -478,7 +518,9 @@ private class SafVaultRepository(context: Context, treeUri: Uri) : VaultReposito
         runCatching { readText(Uri.parse(uri)) }.getOrNull()
     }
 
-    override fun close() = Unit
+    override fun close() {
+        searchIndexOrNull?.close()
+    }
 
     private fun snapshotFrom(value: SafIndex): VaultSnapshot = synchronized(indexLock) {
         value.snapshotCache?.let { return it }

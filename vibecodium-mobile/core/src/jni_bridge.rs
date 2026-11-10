@@ -6,7 +6,7 @@
 //! a `JClass` instead of an object instance.
 
 use jni::objects::{JClass, JObject, JString};
-use jni::sys::{jint, jstring};
+use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
 
 fn to_java(env: &mut JNIEnv<'_>, value: String) -> jstring {
@@ -222,6 +222,124 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeAnalyze(
     let response = match from_java(&mut env, &text) {
         Ok(text) => crate::api::analyze(&text),
         Err(error) => crate::api::err(format!("Could not read the note text: {error}")),
+    };
+    to_java(&mut env, response)
+}
+
+// ------------------------------------------------------------ indexed search
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSearchIndexReset(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+) -> jstring {
+    to_java(&mut env, crate::api::search_index_reset())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSearchIndexAdd(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    path: JString<'_>,
+    text: JString<'_>,
+    mtime: jlong,
+    len: jlong,
+) -> jstring {
+    let response = match (from_java(&mut env, &path), from_java(&mut env, &text)) {
+        (Ok(path), Ok(text)) => crate::api::search_index_add(
+            &path,
+            &text,
+            mtime.max(0) as u64,
+            len.max(0) as u64,
+        ),
+        (Err(error), _) | (_, Err(error)) => {
+            crate::api::err(format!("Could not read the note payload: {error}"))
+        }
+    };
+    to_java(&mut env, response)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSearchIndexRemove(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    path: JString<'_>,
+) -> jstring {
+    let response = match from_java(&mut env, &path) {
+        Ok(path) => crate::api::search_index_remove(&path),
+        Err(error) => crate::api::err(format!("Could not read the note path: {error}")),
+    };
+    to_java(&mut env, response)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSearchIndexFinish(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+) -> jstring {
+    to_java(&mut env, crate::api::search_index_finish())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSearchIndexStatus(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+) -> jstring {
+    to_java(&mut env, crate::api::search_index_status())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSearchIndexLoad(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    path: JString<'_>,
+) -> jstring {
+    let response = match from_java(&mut env, &path) {
+        Ok(path) => crate::api::search_index_load(&path),
+        Err(error) => crate::api::err(format!("Could not read the snapshot path: {error}")),
+    };
+    to_java(&mut env, response)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSearchIndexSave(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    path: JString<'_>,
+) -> jstring {
+    let response = match from_java(&mut env, &path) {
+        Ok(path) => crate::api::search_index_save(&path),
+        Err(error) => crate::api::err(format!("Could not read the snapshot path: {error}")),
+    };
+    to_java(&mut env, response)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSearchIndexQuery(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    query: JString<'_>,
+    limit: jint,
+) -> jstring {
+    let response = match from_java(&mut env, &query) {
+        Ok(query) => crate::api::search_index_query(&query, limit.max(1) as u32),
+        Err(error) => crate::api::err(format!("Could not read the search query: {error}")),
+    };
+    to_java(&mut env, response)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSearchLocate(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    query: JString<'_>,
+    text: JString<'_>,
+) -> jstring {
+    let response = match (from_java(&mut env, &query), from_java(&mut env, &text)) {
+        (Ok(query), Ok(text)) => crate::api::search_locate(&query, &text),
+        (Err(error), _) | (_, Err(error)) => {
+            crate::api::err(format!("Could not read the search payload: {error}"))
+        }
     };
     to_java(&mut env, response)
 }

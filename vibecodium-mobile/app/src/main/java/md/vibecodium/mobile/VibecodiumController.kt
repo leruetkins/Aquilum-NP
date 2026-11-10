@@ -45,6 +45,16 @@ class VibecodiumController(context: Context) {
     private var searchJob: Job? = null
     private var tabPersistJob: Job? = null
 
+    /**
+     * Cancellation is not a failure. A superseded search or a vault switch
+     * cancels the running job; that must unwind through the coroutine
+     * machinery instead of being reported as an error, otherwise the UI shows
+     * "StandaloneCoroutine was canceled".
+     */
+    private fun Throwable.rethrowIfCancelled() {
+        if (this is kotlinx.coroutines.CancellationException) throw this
+    }
+
     init {
         VaultLocatorStore.load(appContext)?.let { locator ->
             // Keep the launch spinner up until the repository and the saved
@@ -80,6 +90,7 @@ class VibecodiumController(context: Context) {
                 }
                 applyRepository(repository, locator)
             } catch (error: Throwable) {
+                error.rethrowIfCancelled()
                 state = UiState(loading = false, message = error.message ?: "Could not create the vault")
             }
         }
@@ -95,6 +106,7 @@ class VibecodiumController(context: Context) {
                 }
                 applyRepository(repository, locator)
             } catch (error: Throwable) {
+                error.rethrowIfCancelled()
                 state = UiState(loading = false, message = error.message ?: "Could not open the vault")
                 VaultLocatorStore.clear(appContext)
             }
@@ -149,6 +161,15 @@ class VibecodiumController(context: Context) {
         state = state.copy(booting = false)
         refreshSyncState()
         scope.launch { refreshLists(repository) }
+        // Warm the full-text index in the background; [search] answers from
+        // the linear scan until it is ready.
+        scope.launch {
+            try {
+                repository.warmSearchIndex()
+            } catch (error: Throwable) {
+                error.rethrowIfCancelled()
+            }
+        }
     }
 
     /** Returns true when at least one saved tab was reopened. */
@@ -204,6 +225,7 @@ class VibecodiumController(context: Context) {
                 syncNow()
             }
         } catch (error: Throwable) {
+            error.rethrowIfCancelled()
             if (this.repository === repository) {
                 state = state.copy(message = error.message ?: "Could not read the file list")
             }
@@ -256,6 +278,7 @@ class VibecodiumController(context: Context) {
                 refreshDerived(text, force = state.editorMode == EditorMode.Preview)
                 persistTabs()
             } catch (error: Throwable) {
+                error.rethrowIfCancelled()
                 state = state.copy(message = error.message ?: "Could not read the note")
             }
         }
@@ -282,6 +305,7 @@ class VibecodiumController(context: Context) {
                 )
                 openNote(note.path)
             } catch (error: Throwable) {
+                error.rethrowIfCancelled()
                 state = state.copy(message = error.message ?: "Could not create a note")
             }
         }
@@ -353,6 +377,7 @@ class VibecodiumController(context: Context) {
                 state = state.copy(tabs = tabs)
             }
         } catch (error: Throwable) {
+            error.rethrowIfCancelled()
             state = state.copy(message = error.message ?: "Could not save the note")
         }
     }
@@ -408,7 +433,8 @@ class VibecodiumController(context: Context) {
                     markdownText = text,
                 )
             }
-        } catch (_: Throwable) {
+        } catch (error: Throwable) {
+            error.rethrowIfCancelled()
             // Derived data is cosmetic; a failed parse must not break editing.
         }
     }
@@ -514,6 +540,7 @@ class VibecodiumController(context: Context) {
                 persistTabs()
                 persistBookmarks()
             } catch (error: Throwable) {
+                error.rethrowIfCancelled()
                 state = state.copy(message = error.message ?: "Could not delete the note")
             }
         }
@@ -568,6 +595,7 @@ class VibecodiumController(context: Context) {
                     newFolderValue = "",
                 )
             } catch (error: Throwable) {
+                error.rethrowIfCancelled()
                 state = state.copy(message = error.message ?: "Could not create the folder")
             }
         }
@@ -628,6 +656,7 @@ class VibecodiumController(context: Context) {
                     )
                 }
             } catch (error: Throwable) {
+                error.rethrowIfCancelled()
                 state = state.copy(message = error.message ?: "Rename failed")
             }
         }
@@ -667,6 +696,7 @@ class VibecodiumController(context: Context) {
                     state = state.copy(searchHits = hits)
                 }
             } catch (error: Throwable) {
+                error.rethrowIfCancelled()
                 state = state.copy(message = error.message ?: "Search failed")
             }
         }
@@ -706,6 +736,7 @@ class VibecodiumController(context: Context) {
                     explorerTree = lists.tree,
                 )
             } catch (error: Throwable) {
+                error.rethrowIfCancelled()
                 state = state.copy(message = error.message ?: "Could not refresh the file list")
             }
         }
@@ -816,6 +847,7 @@ class VibecodiumController(context: Context) {
                 )
                 runSync()
             } catch (error: Throwable) {
+                error.rethrowIfCancelled()
                 state = state.copy(
                     sync = state.sync.copy(
                         busy = false,
@@ -935,6 +967,7 @@ class VibecodiumController(context: Context) {
             persistTabs()
             persistBookmarks()
         } catch (error: Throwable) {
+            error.rethrowIfCancelled()
             state = state.copy(
                 sync = state.sync.copy(
                     busy = false,

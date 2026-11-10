@@ -39,6 +39,26 @@ public final class CoreBridge {
 
     public static native String nativeSearch(String query, int limit);
 
+    // -------------------------------------------------------- indexed search
+
+    public static native String nativeSearchIndexReset();
+
+    public static native String nativeSearchIndexAdd(String path, String text, long mtime, long len);
+
+    public static native String nativeSearchIndexRemove(String path);
+
+    public static native String nativeSearchIndexFinish();
+
+    public static native String nativeSearchIndexStatus();
+
+    public static native String nativeSearchIndexLoad(String path);
+
+    public static native String nativeSearchIndexSave(String path);
+
+    public static native String nativeSearchIndexQuery(String query, int limit);
+
+    public static native String nativeSearchLocate(String query, String text);
+
     public static native String nativeOutline(String text);
 
     public static native String nativeStats(String text);

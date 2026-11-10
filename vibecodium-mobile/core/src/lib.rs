@@ -46,6 +46,9 @@ mod images {
 mod api;
 mod jni_bridge;
 mod markdown;
+mod search_session;
+pub mod search;
+pub mod settings;
 
 #[cfg(target_os = "android")]
 pub mod surface;

@@ -339,6 +339,13 @@ impl Index {
         self.docs.retain(|_, d| d.path_ix != path_ix);
     }
 
+    /// Records the `(mtime_ns, len)` stamp of a path indexed from an
+    /// in-memory document. The desktop records stamps from file metadata
+    /// (`upsert`); the mobile core feeds text and passes the stamp in.
+    pub(crate) fn set_fingerprint(&mut self, path: &Path, fingerprint: (u64, u64)) {
+        self.fingerprints.insert(path.to_path_buf(), fingerprint);
+    }
+
     /// Indexes one page into the index. `title`/`rel` contribute tokens on
     /// the FIRST page only (the reference does the same), so short-field
     /// norms do not repeat across a file's pages.
@@ -818,4 +825,7 @@ impl Builder {
 }
 
 #[cfg(test)]
+// Explicit path: the mobile core includes this file via `#[path]`, and a
+// bare `mod tests;` would then resolve next to the include instead of here.
+#[path = "index/tests.rs"]
 mod tests;
