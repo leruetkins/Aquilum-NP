@@ -171,6 +171,9 @@ private const val MobileNavbarEnabled = false
 /** `--view-header-height: var(--touch-size-m)` on a phone. */
 private val ViewHeaderHeight = 44.dp
 
+/** Top margin for the floating header pills so they hover below the status bar. */
+private val ViewHeaderTopPadding = 8.dp
+
 /** `lucide-folder-plus`, Obsidian's new-folder nav action. */
 private val NewFolderIcon: ImageVector = ImageVector.Builder(
     name = "folder-plus",
@@ -601,7 +604,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                     .align(Alignment.TopStart)
                     .graphicsLayer {
                         alpha = chromeProgress.value
-                        translationY = -56.dp.toPx() * (1f - chromeProgress.value)
+                        translationY = -(56.dp + ViewHeaderTopPadding).toPx() * (1f - chromeProgress.value)
                     }
                     .then(
                         if (chromeHidden) Modifier.semantics { invisibleToUser() } else Modifier,
@@ -616,7 +619,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                         MaterialTheme.colorScheme.onSurface
                     },
                     modifier = Modifier
-                        .padding(start = 12.dp)
+                        .padding(start = 12.dp, top = ViewHeaderTopPadding)
                         .size(44.dp),
                 ) { controller.toggleDrawer(Drawer.Left) }
             }
@@ -758,7 +761,7 @@ private fun EditorScreen(
     val tab = state.tabs.getOrNull(state.activeTab) ?: return
     val bottomInset = if (imeVisible || !MobileNavbarEnabled) 0.dp else NavbarHeight + 12.dp
     val preview = state.editorMode == EditorMode.Preview
-    val topInsetPx = with(LocalDensity.current) { (ViewHeaderHeight + 10.dp).toPx() }
+    val topInsetPx = with(LocalDensity.current) { (ViewHeaderTopPadding + ViewHeaderHeight + 10.dp).toPx() }
     val headerProgress = animateFloatAsState(
         targetValue = if (chromeHidden) 0f else 1f,
         animationSpec = tween(160),
@@ -803,7 +806,7 @@ private fun EditorScreen(
                     CodeViewer(
                         tab,
                         Modifier.fillMaxSize(),
-                        ViewHeaderHeight + 10.dp,
+                        ViewHeaderTopPadding + ViewHeaderHeight + 10.dp,
                         bottomInset,
                         onEditorScroll,
                     )
@@ -812,7 +815,7 @@ private fun EditorScreen(
                         state,
                         controller,
                         tab,
-                        ViewHeaderHeight,
+                        ViewHeaderTopPadding + ViewHeaderHeight,
                         bottomInset,
                         onEditorScroll,
                     )
@@ -823,14 +826,14 @@ private fun EditorScreen(
             Modifier
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
+                .padding(top = ViewHeaderTopPadding)
                 .graphicsLayer {
                     alpha = headerProgress.value
-                    translationY = -ViewHeaderHeight.toPx() * (1f - headerProgress.value)
+                    translationY = -(ViewHeaderHeight + ViewHeaderTopPadding).toPx() * (1f - headerProgress.value)
                 }
                 .then(
                     if (chromeHidden) Modifier.semantics { invisibleToUser() } else Modifier,
-                )
-                .background(MaterialTheme.colorScheme.background),
+                ),
         ) {
             ViewHeader(state, tab, controller)
         }
@@ -838,12 +841,12 @@ private fun EditorScreen(
             Surface(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(top = 8.dp, end = 12.dp)
+                    .padding(top = ViewHeaderTopPadding, end = 12.dp)
                     .size(44.dp)
                     .offset {
                         IntOffset(
                             0,
-                            (ViewHeaderHeight.toPx() * headerProgress.value).roundToInt(),
+                            ((ViewHeaderHeight + ViewHeaderTopPadding).toPx() * headerProgress.value).roundToInt(),
                         )
                     },
                 shape = CircleShape,
@@ -1515,7 +1518,12 @@ private fun CodeViewer(
         snapshotFlow { vertical.value to vertical.maxValue }
             .collect { (value, max) -> onScroll(value.toFloat(), max.toFloat()) }
     }
-    Column(modifier.padding(top = topInset).background(colors.background)) {
+    Column(
+        modifier
+            .background(colors.background)
+            .verticalScroll(vertical),
+    ) {
+        Spacer(Modifier.height(topInset))
         Row(
             Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -1530,7 +1538,7 @@ private fun CodeViewer(
                 Text("Copy", fontSize = 11.sp)
             }
         }
-        Row(Modifier.fillMaxWidth().weight(1f).verticalScroll(vertical)) {
+        Row(Modifier.fillMaxWidth()) {
             Column(
                 Modifier.padding(start = 8.dp, end = 10.dp, bottom = 12.dp + bottomInset),
                 horizontalAlignment = Alignment.End,
@@ -1550,7 +1558,7 @@ private fun CodeViewer(
                 Modifier
                     .weight(1f)
                     .horizontalScroll(horizontal)
-                    .padding(end = 12.dp, bottom = 12.dp),
+                    .padding(end = 12.dp, bottom = 12.dp + bottomInset),
             ) {
                 SelectionContainer {
                     Text(
