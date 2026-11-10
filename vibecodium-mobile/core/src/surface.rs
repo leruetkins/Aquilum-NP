@@ -34,6 +34,7 @@ struct ANativeWindowBuffer {
     reserved: [u32; 6],
 }
 
+#[cfg(target_os = "android")]
 #[link(name = "android")]
 extern "C" {
     fn ANativeWindow_fromSurface(env: *mut jni::sys::JNIEnv, surface: jni::sys::jobject) -> *mut ANativeWindow;
@@ -42,6 +43,22 @@ extern "C" {
     fn ANativeWindow_lock(window: *mut ANativeWindow, buffer: *mut ANativeWindowBuffer, dirty: *mut c_void) -> i32;
     fn ANativeWindow_unlockAndPost(window: *mut ANativeWindow) -> i32;
 }
+
+#[cfg(not(target_os = "android"))]
+#[allow(non_snake_case)]
+unsafe fn ANativeWindow_fromSurface(_env: *mut jni::sys::JNIEnv, _surface: jni::sys::jobject) -> *mut ANativeWindow { std::ptr::null_mut() }
+#[cfg(not(target_os = "android"))]
+#[allow(non_snake_case)]
+unsafe fn ANativeWindow_release(_window: *mut ANativeWindow) {}
+#[cfg(not(target_os = "android"))]
+#[allow(non_snake_case)]
+unsafe fn ANativeWindow_setBuffersGeometry(_window: *mut ANativeWindow, _width: i32, _height: i32, _format: i32) -> i32 { 0 }
+#[cfg(not(target_os = "android"))]
+#[allow(non_snake_case)]
+unsafe fn ANativeWindow_lock(_window: *mut ANativeWindow, _buffer: *mut ANativeWindowBuffer, _dirty: *mut c_void) -> i32 { 0 }
+#[cfg(not(target_os = "android"))]
+#[allow(non_snake_case)]
+unsafe fn ANativeWindow_unlockAndPost(_window: *mut ANativeWindow) -> i32 { 0 }
 
 const WINDOW_FORMAT_RGBA_8888: i32 = 1;
 
@@ -536,19 +553,195 @@ fn is_emoji_start(c: char) -> bool {
         0x1F300..=0x1F5FF // Misc Symbols and Pictographs (e.g. 🎁, 🔔, 💎, 🔥)
         | 0x1F600..=0x1F64F // Emoticons (e.g. 😀, 😂, 😎)
         | 0x1F680..=0x1F6FF // Transport and Map (e.g. 🚀, 🚗)
-        | 0x1F7E0..=0x1F7EB // Large Colored Circles/Squares (🟠, 🟢)
-        | 0x1F900..=0x1F9FF // Supplemental Symbols and Pictographs (e.g. 🥳, 🤖)
-        | 0x1FA70..=0x1FAFF // Symbols and Pictographs Extended-A
+        | 0x1F700..=0x1F77F // Alchemical Symbols
+        | 0x1F780..=0x1F7FF // Geometric Shapes Extended (🟠, 🟢, 🟫)
+        | 0x1F800..=0x1F8FF // Supplemental Arrows-C
+        | 0x1F900..=0x1F9FF // Supplemental Symbols and Pictographs (e.g. 🥳, 🤖, 🧠)
+        | 0x1FA00..=0x1FA6F // Chess Symbols
+        | 0x1FA70..=0x1FAFF // Symbols and Pictographs Extended-A (e.g. 🩺, 🪟)
         | 0x1F1E6..=0x1F1FF // Regional Indicator Symbols (Flags)
         | 0x231A..=0x231B   // Watch, Hourglass
-        | 0x23E9..=0x23F3   // Fast forward, pause, hourglass
-        | 0x23F8..=0x23FA
-        | 0x26A0..=0x26A1   // Warning ⚠️, High voltage ⚡
-        | 0x26BD..=0x26BE   // Soccer ⚽, Baseball ⚾
-        | 0x26C4..=0x26C5   // Snowman ⛄, Sun behind cloud ⛅
-        | 0x26FD..=0x26FE   // Fuel pump ⛽
-        | 0x2764            // Heart ❤️
+        | 0x23E9..=0x23EC   // Fast forward, rewind
+        | 0x23F0            // Alarm clock
+        | 0x23F3            // Hourglass done
+        | 0x23F8..=0x23FA   // Pause, stop, record
+        | 0x25AA..=0x25AB   // Black/white small square
+        | 0x25FB..=0x25FE   // Medium squares
+        | 0x2600..=0x26FF   // Misc symbols (☀️, ☁️, ☂️, ⚡, ⚠️, ☕, ⚽, ⚾, ⛄, ⛅, ⛽)
+        | 0x2702..=0x27B0   // Dingbats (✂️, ✈️, ✉️, ✌️, ✍️, ✏️, ✒️, ✔️, ✖️, ✝️, ✡️, ✳️, ✴️, ❄️, ❇️, ❌, ❎, ❓, ❔, ❕, ❗, ❣️, ❤️, ➕, ➖, ➗, ➡️)
+        | 0x2934..=0x2935   // Curving arrows
+        | 0x2B05..=0x2B07   // Black arrows
+        | 0x2B1B..=0x2B1C   // Black/white large square
+        | 0x2B50            // Star ⭐
+        | 0x2B55            // Heavy large circle ⭕
+        | 0x3030            // Wavy dash
+        | 0x303D            // Part alternation mark
+        | 0x3297            // Circled ideograph congratulation
+        | 0x3299            // Circled ideograph secret
     )
+}
+
+fn is_cjk(c: char) -> bool {
+    let u = c as u32;
+    matches!(
+        u,
+        0x1100..=0x115F   // Hangul Jamo
+        | 0x2329..=0x232A // Angle brackets
+        | 0x2E80..=0x302F // CJK Radicals, Kangxi, CJK Symbols
+        | 0x3040..=0x4DBF // Hiragana, Katakana, Bopomofo, CJK Ext A
+        | 0x4E00..=0xA4CF // CJK Unified Ideographs, Yi
+        | 0xAC00..=0xD7A3 // Hangul Syllables
+        | 0xF900..=0xFAFF // CJK Compatibility Ideographs
+        | 0xFE10..=0xFE19 // Vertical Forms
+        | 0xFE30..=0xFE4F // CJK Compatibility Forms
+        | 0xFF01..=0xFF60 // Fullwidth Forms
+        | 0xFFE0..=0xFFE6 // Fullwidth Signs
+        | 0x20000..=0x2FA1F // CJK Extensions
+    )
+}
+
+fn emoji_cluster_len(chars: &[char], start: usize) -> usize {
+    if start >= chars.len() {
+        return 0;
+    }
+    let c = chars[start];
+    let is_start = is_emoji_start(c);
+    let has_fe0f = start + 1 < chars.len() && chars[start + 1] == '\u{fe0f}';
+    if !is_start && !has_fe0f {
+        return 0;
+    }
+    let mut len = 1;
+    let is_flag_start = (0x1F1E6..=0x1F1FF).contains(&(c as u32));
+    while start + len < chars.len() {
+        let next_c = chars[start + len];
+        let next_u = next_c as u32;
+        let is_continuation = next_c == '\u{fe0f}'
+            || next_c == '\u{fe0e}'
+            || (0x1f3fb..=0x1f3ff).contains(&next_u)
+            || (0xe0020..=0xe007f).contains(&next_u)
+            || (is_flag_start && (0x1f1e6..=0x1f1ff).contains(&next_u) && len == 1);
+        if is_continuation {
+            len += 1;
+            if is_flag_start && (0x1f1e6..=0x1f1ff).contains(&next_u) {
+                break;
+            }
+        } else if next_c == '\u{200d}' {
+            len += 1;
+            if start + len < chars.len() {
+                len += 1;
+            }
+        } else {
+            break;
+        }
+    }
+    len
+}
+
+fn line_cell_offsets(chars: &[char], hidden: &[bool]) -> Vec<usize> {
+    let mut offsets = Vec::with_capacity(chars.len() + 1);
+    let mut current_cell = 0usize;
+    let mut i = 0usize;
+    while i < chars.len() {
+        offsets.push(current_cell);
+        if hidden.get(i).copied().unwrap_or(false) {
+            i += 1;
+            continue;
+        }
+        let cluster_len = emoji_cluster_len(chars, i);
+        if cluster_len > 0 {
+            current_cell += 2;
+            for _ in 1..cluster_len {
+                i += 1;
+                offsets.push(current_cell);
+            }
+            i += 1;
+        } else {
+            let c = chars[i];
+            if c == '\r' || c == '\u{fe0f}' || c == '\u{fe0e}' {
+                // zero-width continuation or carriage return
+            } else if is_cjk(c) {
+                current_cell += 2;
+            } else {
+                current_cell += 1;
+            }
+            i += 1;
+        }
+    }
+    offsets.push(current_cell);
+    offsets
+}
+
+fn prev_grapheme_char_count(chars: &[char], pos: usize) -> usize {
+    if pos == 0 || chars.is_empty() {
+        return 0;
+    }
+    let pos = pos.min(chars.len());
+    let search_start = pos.saturating_sub(12);
+    for p in search_start..pos {
+        let len = emoji_cluster_len(chars, p);
+        if len > 0 && p + len == pos {
+            return len;
+        }
+    }
+    1
+}
+
+fn next_grapheme_char_count(chars: &[char], pos: usize) -> usize {
+    if pos >= chars.len() {
+        return 0;
+    }
+    let len = emoji_cluster_len(chars, pos);
+    if len > 0 {
+        len
+    } else {
+        1
+    }
+}
+
+fn snap_to_cluster_start(chars: &[char], pos: usize) -> usize {
+    if pos == 0 || pos >= chars.len() {
+        return pos.min(chars.len());
+    }
+    let search_start = pos.saturating_sub(12);
+    for p in search_start..pos {
+        let len = emoji_cluster_len(chars, p);
+        if len > 0 && p + len > pos {
+            return p;
+        }
+    }
+    pos
+}
+
+fn snap_to_cluster_end(chars: &[char], pos: usize) -> usize {
+    if pos == 0 || pos >= chars.len() {
+        return pos.min(chars.len());
+    }
+    let search_start = pos.saturating_sub(12);
+    for p in search_start..pos {
+        let len = emoji_cluster_len(chars, p);
+        if len > 0 && p + len > pos {
+            return p + len;
+        }
+    }
+    pos
+}
+
+fn snap_to_cluster_boundary(chars: &[char], pos: usize) -> usize {
+    if pos == 0 || pos >= chars.len() {
+        return pos.min(chars.len());
+    }
+    let search_start = pos.saturating_sub(12);
+    for p in search_start..pos {
+        let len = emoji_cluster_len(chars, p);
+        if len > 0 && p + len > pos {
+            if pos - p >= (len + 1) / 2 {
+                return p + len;
+            } else {
+                return p;
+            }
+        }
+    }
+    pos
 }
 
 #[derive(Default)]
@@ -597,9 +790,7 @@ impl Painter {
             "/system/fonts/NotoSansSymbols-Regular-Subsetted2.ttf",
             "/system/fonts/NotoSansSymbols2-Regular.ttf",
         ]);
-        let cjk_font = load_font(&[
-            "/system/fonts/NotoSansCJK-Regular.ttc",
-        ]);
+        let cjk_font = None;
         Self {
             ui_font,
             mono_font,
@@ -716,7 +907,10 @@ impl Painter {
     fn width(&self, text: &str, px: f32, mono: bool) -> f32 {
         if mono {
             let advance = self.advance(px, true);
-            return text.chars().filter(|&c| c != '\r').count() as f32 * advance;
+            let chars: Vec<char> = text.chars().filter(|&c| c != '\r').collect();
+            let offsets = line_cell_offsets(&chars, &[]);
+            let total_cells = offsets.last().copied().unwrap_or(0);
+            return total_cells as f32 * advance;
         }
         let Some(font) = self.font(mono) else {
             return text.chars().count() as f32 * px * 0.6;
@@ -751,38 +945,17 @@ impl Painter {
             .unwrap_or(px * 0.8);
         let baseline = y + ascent;
         let mut cursor = x;
-        let mut chars = text.chars().peekable();
-        while let Some(character) = chars.next() {
+        let chars: Vec<char> = text.chars().collect();
+        let mut i = 0usize;
+        while i < chars.len() {
+            let character = chars[i];
             if character == '\r' || character == '\u{fe0f}' || character == '\u{fe0e}' {
+                i += 1;
                 continue;
             }
-            if is_emoji_start(character) {
-                let mut emoji_str = String::from(character);
-                let mut char_count = 1usize;
-                while let Some(&next_c) = chars.peek() {
-                    let next_u = next_c as u32;
-                    let is_continuation = next_c == '\u{fe0f}'
-                        || next_c == '\u{fe0e}'
-                        || (0x1f3fb..=0x1f3ff).contains(&next_u)
-                        || ((0x1f1e6..=0x1f1ff).contains(&(character as u32))
-                            && (0x1f1e6..=0x1f1ff).contains(&next_u)
-                            && char_count == 1);
-                    if is_continuation {
-                        chars.next();
-                        emoji_str.push(next_c);
-                        char_count += 1;
-                    } else if next_c == '\u{200d}' {
-                        chars.next();
-                        emoji_str.push(next_c);
-                        char_count += 1;
-                        if let Some(joined) = chars.next() {
-                            emoji_str.push(joined);
-                            char_count += 1;
-                        }
-                    } else {
-                        break;
-                    }
-                }
+            let cluster_len = emoji_cluster_len(&chars, i);
+            if cluster_len > 0 {
+                let emoji_str: String = chars[i..i + cluster_len].iter().collect();
                 let px_key = px.round() as u32;
                 let key = (emoji_str.clone(), px_key);
                 if !self.emojis.contains_key(&key) {
@@ -795,7 +968,9 @@ impl Painter {
                     }
                 }
                 if let Some(raster) = self.emojis.get(&key) {
-                    let gx = cursor.round() as i32;
+                    let slot_w = if mono { 2.0 * cell_advance } else { raster.width as f32 };
+                    let offset_x = ((slot_w - raster.width as f32) / 2.0).max(0.0);
+                    let gx = (cursor + offset_x).round() as i32;
                     let gy = (baseline - raster.height as f32 * 0.85).round() as i32;
                     for row in 0..raster.height {
                         let py = gy + row as i32;
@@ -820,7 +995,8 @@ impl Painter {
                             pixels[index] = blend(pixels[index], color, alpha);
                         }
                     }
-                    cursor += if mono { cell_advance * char_count as f32 } else { raster.width as f32 };
+                    cursor += if mono { 2.0 * cell_advance } else { raster.width as f32 };
+                    i += cluster_len;
                     continue;
                 }
             }
@@ -833,9 +1009,13 @@ impl Painter {
                 self.glyphs.insert(key, raster);
             }
             let Some((metrics, bitmap)) = self.glyphs.get(&key) else {
+                i += 1;
                 continue;
             };
-            let gx = (cursor + metrics.xmin as f32).round() as i32;
+            let cjk = is_cjk(character);
+            let slot_w = if mono && cjk { 2.0 * cell_advance } else if mono { cell_advance } else { metrics.advance_width };
+            let offset_x = if mono && cjk { ((slot_w - metrics.advance_width) / 2.0).max(0.0) } else { 0.0 };
+            let gx = (cursor + metrics.xmin as f32 + offset_x).round() as i32;
             let gy = (baseline - metrics.ymin as f32 - metrics.height as f32).round() as i32;
             for row in 0..metrics.height {
                 let py = gy + row as i32;
@@ -856,7 +1036,12 @@ impl Painter {
                     pixels[index] = blend(pixels[index], rgb, alpha);
                 }
             }
-            cursor += if mono { cell_advance } else { metrics.advance_width };
+            cursor += if mono {
+                if cjk { 2.0 * cell_advance } else { cell_advance }
+            } else {
+                metrics.advance_width
+            };
+            i += 1;
         }
     }
 }
@@ -1172,7 +1357,25 @@ fn wrap_layout(
         let max_cols = ((content_width / advance).floor() as usize).max(1);
         let mut start = 0usize;
         while start < chars.len() {
-            let mut end = (start + max_cols).min(chars.len());
+            let mut end = start;
+            let mut current_cols = 0usize;
+            while end < chars.len() {
+                let cluster_len = emoji_cluster_len(chars, end);
+                let col_w = if cluster_len > 0 {
+                    2
+                } else if is_cjk(chars[end]) {
+                    2
+                } else if chars[end] == '\r' || chars[end] == '\u{fe0f}' || chars[end] == '\u{fe0e}' {
+                    0
+                } else {
+                    1
+                };
+                if current_cols + col_w > max_cols && end > start {
+                    break;
+                }
+                current_cols += col_w;
+                end += if cluster_len > 0 { cluster_len } else { 1 };
+            }
             if end < chars.len() {
                 if let Some(space) = (start..end)
                     .rev()
@@ -1376,6 +1579,32 @@ fn code_colors(line: &str, language: &str) -> Vec<u32> {
 }
 
 impl SurfaceState {
+    fn new(window: *mut ANativeWindow, width: usize, height: usize, density: f32) -> Self {
+        Self {
+            window,
+            width,
+            height,
+            viewport_height: height,
+            density: if density > 0.0 { density } else { 1.0 },
+            background: 0x000000,
+            painter: Painter::new(),
+            tree: TreeState::default(),
+            editor: EditorState {
+                language: "\0".to_string(),
+                caret_visible: true,
+                starts: vec![0],
+                ..EditorState::default()
+            },
+            pixels: Vec::new(),
+            frame_valid: false,
+            suspend_render: false,
+            last_mode: 0,
+            last_scroll: 0.0,
+            last_width: 0,
+            last_height: 0,
+        }
+    }
+
     fn invalidate(&mut self) {
         self.frame_valid = false;
     }
@@ -1811,7 +2040,7 @@ impl SurfaceState {
         let mut chars: Vec<char> = Vec::new();
         let mut colors: Vec<u32> = Vec::new();
         let mut hidden: Vec<bool> = Vec::new();
-        let mut visible_before: Vec<usize> = Vec::new();
+        let mut cell_offsets: Vec<usize> = Vec::new();
         let mut overlays: Vec<(usize, usize, u32)> = Vec::new();
         let (start_visual, start_offset) =
             self.visual_for_position(&starts, selection_start);
@@ -1927,42 +2156,34 @@ impl SurfaceState {
                         }
                     }
                 }
-                visible_before.clear();
-                visible_before.push(0);
-                let mut count = 0usize;
-                for value in &hidden {
-                    if !value {
-                        count += 1;
-                    }
-                    visible_before.push(count);
-                }
+                cell_offsets = line_cell_offsets(&chars, &hidden);
             }
             let chunk_start = chunk.start.min(chars.len());
             let chunk_end = chunk.end.min(chars.len());
-            let base_visible = visible_before.get(chunk_start).copied().unwrap_or(chunk_start);
+            let base_cell = cell_offsets.get(chunk_start).copied().unwrap_or(0);
             let absolute_start = line_start + chunk.start;
             let absolute_end = line_start + chunk.end;
             for (overlay_start, overlay_end, color) in &overlays {
                 let start = (*overlay_start).max(chunk_start);
                 let end = (*overlay_end).min(chunk_end);
-                let visible_start = visible_before
+                let cell_start = cell_offsets
                     .get(start)
                     .copied()
-                    .unwrap_or(start)
-                    .saturating_sub(base_visible);
-                let visible_end = visible_before
+                    .unwrap_or(0)
+                    .saturating_sub(base_cell);
+                let cell_end = cell_offsets
                     .get(end)
                     .copied()
-                    .unwrap_or(end)
-                    .saturating_sub(base_visible);
-                if visible_end > visible_start {
+                    .unwrap_or(0)
+                    .saturating_sub(base_cell);
+                if cell_end > cell_start {
                     rect(
                         pixels,
                         self.width,
                         self.height,
-                        text_x + visible_start as f32 * chunk.advance,
+                        text_x + cell_start as f32 * chunk.advance,
                         y + 2.0 * density,
-                        (visible_end - visible_start) as f32 * chunk.advance,
+                        (cell_end - cell_start) as f32 * chunk.advance,
                         line_h - 4.0 * density,
                         *color,
                     );
@@ -1974,21 +2195,21 @@ impl SurfaceState {
                 if end > start {
                     let raw_start = (start - line_start).clamp(chunk_start, chunk_end);
                     let raw_end = (end - line_start).clamp(chunk_start, chunk_end);
-                    let visible_start = visible_before
+                    let cell_start = cell_offsets
                         .get(raw_start)
                         .copied()
-                        .unwrap_or(raw_start)
-                        .saturating_sub(base_visible);
-                    let visible_end = visible_before
+                        .unwrap_or(0)
+                        .saturating_sub(base_cell);
+                    let cell_end = cell_offsets
                         .get(raw_end)
                         .copied()
-                        .unwrap_or(raw_end)
-                        .saturating_sub(base_visible);
-                    if visible_end > visible_start {
+                        .unwrap_or(0)
+                        .saturating_sub(base_cell);
+                    if cell_end > cell_start {
                         let pad = 1.5 * density;
-                        let left = (text_x + visible_start as f32 * chunk.advance - pad)
+                        let left = (text_x + cell_start as f32 * chunk.advance - pad)
                             .max(gutter);
-                        let right = text_x + visible_end as f32 * chunk.advance + pad;
+                        let right = text_x + cell_end as f32 * chunk.advance + pad;
                         rect(
                             pixels,
                             self.width,
@@ -2002,7 +2223,6 @@ impl SurfaceState {
                     }
                 }
             }
-            let mut visible_pos = 0usize;
             let mut index = chunk_start;
             while index < chunk_end {
                 if hidden[index] {
@@ -2011,19 +2231,23 @@ impl SurfaceState {
                 }
                 let color = colors[index];
                 let mut segment = String::new();
-                let mut end = index;
-                while end < chunk_end {
-                    if hidden[end] {
-                        end += 1;
-                        continue;
-                    }
-                    if colors[end] != color {
+                let start_idx = index;
+                while index < chunk_end {
+                    if hidden[index] {
                         break;
                     }
-                    segment.push(chars[end]);
-                    end += 1;
+                    if colors[index] != color {
+                        break;
+                    }
+                    segment.push(chars[index]);
+                    index += 1;
                 }
-                let segment_x = text_x + visible_pos as f32 * chunk.advance;
+                let cell_pos = cell_offsets
+                    .get(start_idx)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_sub(base_cell);
+                let segment_x = text_x + cell_pos as f32 * chunk.advance;
                 painter.draw(
                     pixels,
                     self.width,
@@ -2048,12 +2272,15 @@ impl SurfaceState {
                         true,
                     );
                 }
-                visible_pos += segment.chars().count();
-                index = if end == index { index + 1 } else { end };
             }
             if visual == cursor_visual && selection_end == selection_start && self.editor.caret_visible {
-                let x = text_x
-                    + cursor_offset as f32 * self.editor.wrap[cursor_visual].advance;
+                let cursor_col = chunk_start + cursor_offset;
+                let cursor_cell = cell_offsets
+                    .get(cursor_col)
+                    .copied()
+                    .unwrap_or(cursor_col)
+                    .saturating_sub(base_cell);
+                let x = text_x + cursor_cell as f32 * chunk.advance;
                 rect(
                     pixels,
                     self.width,
@@ -2067,24 +2294,26 @@ impl SurfaceState {
             }
             if selection_end > selection_start {
                 if visual == start_visual {
-                    let offset = visible_before
-                        .get(chunk_start + start_offset)
+                    let col = chunk_start + start_offset;
+                    let cell = cell_offsets
+                        .get(col)
                         .copied()
-                        .unwrap_or(chunk_start + start_offset)
-                        .saturating_sub(base_visible);
+                        .unwrap_or(col)
+                        .saturating_sub(base_cell);
                     start_handle = Some((
-                        text_x + offset as f32 * chunk.advance,
+                        text_x + cell as f32 * chunk.advance,
                         y + line_h,
                     ));
                 }
                 if visual == end_visual {
-                    let offset = visible_before
-                        .get(chunk_start + end_offset)
+                    let col = chunk_start + end_offset;
+                    let cell = cell_offsets
+                        .get(col)
                         .copied()
-                        .unwrap_or(chunk_start + end_offset)
-                        .saturating_sub(base_visible);
+                        .unwrap_or(col)
+                        .saturating_sub(base_cell);
                     end_handle = Some((
-                        text_x + offset as f32 * chunk.advance,
+                        text_x + cell as f32 * chunk.advance,
                         y + line_h,
                     ));
                 }
@@ -2144,7 +2373,7 @@ impl SurfaceState {
         self.painter = painter;
     }
 
-    fn tree_touch(&mut self, x: f32, y: f32, action: i32) -> Option<String> {
+    fn tree_touch(&mut self, _x: f32, y: f32, action: i32) -> Option<String> {
         let row_h = row_height(self.density);
         match action {
             0 => {
@@ -2202,7 +2431,7 @@ impl SurfaceState {
                         self.editor.drag =
                             Some((start_x, start_y, start_scroll_x, start_scroll, false));
                         if dx.abs() <= dy.abs() {
-                            let (advance, _, content) = self.editor_metrics();
+                            let (_advance, _, content) = self.editor_metrics();
                             self.ensure_wrap(content);
                             let max_y = (self.editor.top_inset + self.editor.wrap.len() as f32 * line_h
                                 + self.editor.bottom_inset
@@ -2291,14 +2520,24 @@ impl SurfaceState {
             self.editor.selection = selection_start;
             self.editor.anchor = selection_start;
             self.editor.model_dirty = true;
-        self.editor.wrap_dirty = true;
-        self.editor.starts_dirty = true;
+            self.editor.wrap_dirty = true;
+            self.editor.starts_dirty = true;
             self.scroll_to_cursor();
             return;
         }
-        let length = char_count(&self.editor.text);
-        let start = self.editor.selection.saturating_sub(before);
-        let end = (self.editor.selection + after).min(length);
+        let chars: Vec<char> = self.editor.text.chars().collect();
+        let pos = self.editor.selection.min(chars.len());
+        let (start, end) = if before == 1 && after == 0 {
+            let count = prev_grapheme_char_count(&chars, pos);
+            (pos.saturating_sub(count), pos)
+        } else if before == 0 && after == 1 {
+            let count = next_grapheme_char_count(&chars, pos);
+            (pos, (pos + count).min(chars.len()))
+        } else {
+            let s = snap_to_cluster_start(&chars, pos.saturating_sub(before));
+            let e = snap_to_cluster_end(&chars, (pos + after).min(chars.len()));
+            (s, e)
+        };
         if start >= end {
             return;
         }
@@ -2383,7 +2622,19 @@ impl SurfaceState {
             end += 1;
         }
         if start == end {
-            return false;
+            let cluster_len = emoji_cluster_len(&chars, position);
+            if cluster_len > 0 {
+                start = position;
+                end = position + cluster_len;
+            } else {
+                let prev_len = prev_grapheme_char_count(&chars, position);
+                if prev_len > 1 || (position > 0 && emoji_cluster_len(&chars, position - prev_len) > 0) {
+                    start = position - prev_len;
+                    end = position;
+                } else {
+                    return false;
+                }
+            }
         }
         self.editor.anchor = start;
         self.editor.selection = end;
@@ -2394,7 +2645,7 @@ impl SurfaceState {
 
     fn editor_position_at(&mut self, x: f32, y: f32) -> usize {
         let line_h = line_height(self.density);
-        let (advance, gutter, content) = self.editor_metrics();
+        let (_, gutter, content) = self.editor_metrics();
         self.ensure_wrap(content);
         let visual = (((y + self.editor.scroll - self.editor.top_inset) / line_h)
             .floor()
@@ -2403,12 +2654,74 @@ impl SurfaceState {
         let Some(chunk) = self.editor.wrap.get(visual).copied() else {
             return 0;
         };
-        let column = (((x + self.editor.scroll_x - gutter) / chunk.advance)
-            .round()
-            .max(0.0) as usize)
-            .min(chunk.end.saturating_sub(chunk.start));
-        (self.editor.starts.get(chunk.line).copied().unwrap_or(0) + chunk.start + column)
-            .min(char_count(&self.editor.text))
+        let line_start = self.editor.starts.get(chunk.line).copied().unwrap_or(0);
+        let raw = logical_line(&self.editor.text, &self.editor.starts, chunk.line);
+        let chars: Vec<char> = raw.chars().collect();
+        let mut hidden = vec![false; chars.len()];
+        let cursor_line = line_of(&self.editor.starts, self.editor.selection);
+        if chunk.line != cursor_line && !self.editor.model.is_empty() {
+            if let Some(line) = self.editor.model.get(chunk.line) {
+                match line.kind.as_str() {
+                    "heading" => {
+                        let length = line.prefix_chars.min(chars.len());
+                        for val in hidden.iter_mut().take(length) {
+                            *val = true;
+                        }
+                    }
+                    "task" => {
+                        if line.indent < chars.len() {
+                            let hide_start = (line.indent + 2).min(chars.len());
+                            let hide_end = line.prefix_chars.min(chars.len());
+                            for val in hidden[hide_start..hide_end].iter_mut() {
+                                *val = true;
+                            }
+                        }
+                    }
+                    "quote" => {
+                        let length = line.prefix_chars.min(chars.len());
+                        for val in hidden.iter_mut().take(length).skip(1) {
+                            *val = true;
+                        }
+                    }
+                    "code_fence" => {
+                        hidden.fill(true);
+                    }
+                    _ => {}
+                }
+                let content_start = line.prefix_chars.min(chars.len());
+                for span in &line.spans {
+                    if span.kind == "marker" {
+                        let s = (content_start + span.start).min(chars.len());
+                        let e = (content_start + span.end).min(chars.len());
+                        for val in hidden[s..e].iter_mut() {
+                            *val = true;
+                        }
+                    }
+                }
+            }
+        }
+        let cell_offsets = line_cell_offsets(&chars, &hidden);
+        let chunk_start = chunk.start.min(chars.len());
+        let chunk_end = chunk.end.min(chars.len());
+        let base_cell = cell_offsets.get(chunk_start).copied().unwrap_or(0);
+        let target_cell = ((x + self.editor.scroll_x - gutter) / chunk.advance).max(0.0);
+
+        let mut best_col = chunk_start;
+        let mut best_dist = f32::MAX;
+        for col in chunk_start..=chunk_end {
+            if col > chunk_start && col < chunk_end {
+                if cell_offsets[col] == cell_offsets[col.saturating_sub(1)] {
+                    continue;
+                }
+            }
+            let cell = cell_offsets.get(col).copied().unwrap_or(0).saturating_sub(base_cell) as f32;
+            let dist = (cell - target_cell).abs();
+            if dist < best_dist {
+                best_dist = dist;
+                best_col = col;
+            }
+        }
+        (line_start + best_col).min(char_count(&self.editor.text))
     }
 
     fn editor_state(&self) -> String {
@@ -2441,7 +2754,7 @@ impl SurfaceState {
     }
 
     fn editor_layout_info(&mut self) -> String {
-        let (advance, _, content) = self.editor_metrics();
+        let (_advance, _, content) = self.editor_metrics();
         self.ensure_wrap(content);
         json!({
             "row_height": line_height(self.density),
@@ -2461,11 +2774,24 @@ impl SurfaceState {
         let line_h = line_height(self.density);
         let (_, gutter, content) = self.editor_metrics();
         self.ensure_wrap(content);
+        let text_x = gutter + 4.0 * self.density;
         let mut points = Vec::with_capacity(2);
         for position in [selection_start, selection_end] {
             let (visual, offset) = self.visual_for_position(&self.editor.starts, position);
+            let (advance, cell) = if let Some(chunk) = self.editor.wrap.get(visual) {
+                let raw = logical_line(&self.editor.text, &self.editor.starts, chunk.line);
+                let chars: Vec<char> = raw.chars().collect();
+                let cell_offsets = line_cell_offsets(&chars, &[]);
+                let chunk_start = chunk.start.min(chars.len());
+                let base_cell = cell_offsets.get(chunk_start).copied().unwrap_or(0);
+                let col = (chunk_start + offset).min(chars.len());
+                let c = cell_offsets.get(col).copied().unwrap_or(col).saturating_sub(base_cell);
+                (chunk.advance, c)
+            } else {
+                (0.0, offset)
+            };
             points.push(json!({
-                "x": gutter + offset as f32 * self.editor.wrap[visual].advance,
+                "x": text_x + cell as f32 * advance,
                 "y": self.editor.top_inset + visual as f32 * line_h - self.editor.scroll + line_h,
             }));
         }
@@ -2591,7 +2917,7 @@ fn with_surface<T>(id: i32, action: impl FnOnce(&mut SurfaceState) -> T) -> Opti
 
 #[no_mangle]
 pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceAttach(
-    mut env: JNIEnv<'_>,
+    env: JNIEnv<'_>,
     _class: JClass<'_>,
     id: jint,
     surface: JObject<'_>,
@@ -2610,47 +2936,43 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceAttach(
     unsafe {
         ANativeWindow_setBuffersGeometry(window, width as i32, height as i32, WINDOW_FORMAT_RGBA_8888);
     }
-    let mut guard = match surfaces().lock() {
-        Ok(guard) => guard,
+    let surface_ref = match surfaces().lock() {
+        Ok(mut guard) => guard
+            .entry(id)
+            .or_insert_with(|| {
+                Arc::new(Mutex::new(SurfaceState::new(
+                    window,
+                    width,
+                    height,
+                    density,
+                )))
+            })
+            .clone(),
         Err(_) => return,
     };
-    if let Some(previous) = guard.remove(&id) {
-        if let Ok(mut surface) = previous.lock() {
-            unsafe {
-                ANativeWindow_release(surface.window);
-                surface.window = std::ptr::null_mut();
-            }
+    let mut state = match surface_ref.lock() {
+        Ok(state) => state,
+        Err(_) => return,
+    };
+    let old_window = state.window;
+    state.window = window;
+    state.width = width;
+    state.height = height;
+    state.viewport_height = height;
+    state.density = if density > 0.0 { density } else { 1.0 };
+    state.frame_valid = false;
+    if !old_window.is_null() && old_window != window {
+        unsafe {
+            ANativeWindow_release(old_window);
         }
     }
-    let state = SurfaceState {
-        window,
-        width,
-        height,
-        viewport_height: height,
-        density: if density > 0.0 { density } else { 1.0 },
-        background: 0x000000,
-        painter: Painter::new(),
-        tree: TreeState::default(),
-        editor: EditorState {
-            language: "\0".to_string(),
-            caret_visible: true,
-            starts: vec![0],
-            ..EditorState::default()
-        },
-        pixels: Vec::new(),
-        frame_valid: false,
-        suspend_render: false,
-        last_mode: 0,
-        last_scroll: 0.0,
-        last_width: 0,
-        last_height: 0,
-    };
-    guard.insert(id, Arc::new(Mutex::new(state)));
-    drop(guard);
-    if let Ok(mut guard) = inputs().lock() {
-        guard.insert(id, Arc::new(InputState::new(
-            if density > 0.0 { density } else { 1.0 },
-        )));
+    drop(state);
+    if let Ok(mut input_guard) = inputs().lock() {
+        input_guard.entry(id).or_insert_with(|| {
+            Arc::new(InputState::new(
+                if density > 0.0 { density } else { 1.0 },
+            ))
+        });
     }
 }
 
@@ -2660,20 +2982,20 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceDetach(
     _class: JClass<'_>,
     id: jint,
 ) {
-    let removed = surfaces()
-        .lock()
-        .ok()
-        .and_then(|mut guard| guard.remove(&id));
-    if let Ok(mut guard) = inputs().lock() {
-        guard.remove(&id);
-    }
-    if let Some(handle) = removed {
-        if let Ok(mut surface) = handle.lock() {
-            unsafe {
-                ANativeWindow_release(surface.window);
-                surface.window = std::ptr::null_mut();
+    if let Ok(guard) = surfaces().lock() {
+        if let Some(handle) = guard.get(&id) {
+            if let Ok(mut surface) = handle.lock() {
+                if !surface.window.is_null() {
+                    unsafe {
+                        ANativeWindow_release(surface.window);
+                    }
+                    surface.window = std::ptr::null_mut();
+                }
             }
         }
+    }
+    if let Ok(mut guard) = inputs().lock() {
+        guard.remove(&id);
     }
 }
 
@@ -2879,7 +3201,8 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceSetEdit
             state.editor.language = language;
             state.editor.model_dirty = true;
         }
-        state.editor.selection = (selection.max(0) as usize).min(char_count(&state.editor.text));
+        let chars: Vec<char> = state.editor.text.chars().collect();
+        state.editor.selection = snap_to_cluster_boundary(&chars, (selection.max(0) as usize).min(chars.len()));
         state.invalidate();
     });
 }
@@ -3088,9 +3411,10 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSelectio
 ) {
     let _ = with_surface(id, |state| {
         state.invalidate();
-        let length = char_count(&state.editor.text);
-        let start = (start.max(0) as usize).min(length);
-        let end = (end.max(0) as usize).min(length);
+        let chars: Vec<char> = state.editor.text.chars().collect();
+        let length = chars.len();
+        let start = snap_to_cluster_boundary(&chars, (start.max(0) as usize).min(length));
+        let end = snap_to_cluster_boundary(&chars, (end.max(0) as usize).min(length));
         state.editor.anchor = start;
         state.editor.selection = end;
     });
@@ -3168,4 +3492,104 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorState(
 ) -> jstring {
     let result = with_surface(id, |state| state.editor_state()).unwrap_or_default();
     to_java(&mut env, result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_emoji_cluster_len() {
+        let single: Vec<char> = "😀".chars().collect();
+        assert_eq!(emoji_cluster_len(&single, 0), 1);
+
+        let heart: Vec<char> = "❤️".chars().collect();
+        assert_eq!(heart.len(), 2);
+        assert_eq!(emoji_cluster_len(&heart, 0), 2);
+
+        let warning: Vec<char> = "⚠️".chars().collect();
+        assert_eq!(warning.len(), 2);
+        assert_eq!(emoji_cluster_len(&warning, 0), 2);
+
+        let flag: Vec<char> = "🇷🇺".chars().collect();
+        assert_eq!(flag.len(), 2);
+        assert_eq!(emoji_cluster_len(&flag, 0), 2);
+
+        let family: Vec<char> = "👨‍👩‍👧‍👦".chars().collect();
+        assert_eq!(family.len(), 7);
+        assert_eq!(emoji_cluster_len(&family, 0), 7);
+
+        let tone: Vec<char> = "👍🏽".chars().collect();
+        assert_eq!(tone.len(), 2);
+        assert_eq!(emoji_cluster_len(&tone, 0), 2);
+
+        let text: Vec<char> = "abc".chars().collect();
+        assert_eq!(emoji_cluster_len(&text, 0), 0);
+    }
+
+    #[test]
+    fn test_line_cell_offsets_emojis() {
+        // "a😀b"
+        let line1: Vec<char> = "a😀b".chars().collect();
+        let off1 = line_cell_offsets(&line1, &[]);
+        assert_eq!(off1, vec![0, 1, 3, 4]);
+
+        // "a❤️b" where ❤️ is \u{2764}\u{fe0f}
+        let line2: Vec<char> = "a❤️b".chars().collect();
+        assert_eq!(line2.len(), 4);
+        let off2 = line_cell_offsets(&line2, &[]);
+        assert_eq!(off2, vec![0, 1, 3, 3, 4]);
+
+        // "a👨‍👩‍👧‍👦b"
+        let line3: Vec<char> = "a👨‍👩‍👧‍👦b".chars().collect();
+        let off3 = line_cell_offsets(&line3, &[]);
+        assert_eq!(off3, vec![0, 1, 3, 3, 3, 3, 3, 3, 3, 4]);
+
+        // "中文"
+        let line4: Vec<char> = "中文".chars().collect();
+        let off4 = line_cell_offsets(&line4, &[]);
+        assert_eq!(off4, vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn test_grapheme_delete_counts() {
+        let text1: Vec<char> = "a❤️b".chars().collect();
+        // Cursor after ❤️ (index 3)
+        assert_eq!(prev_grapheme_char_count(&text1, 3), 2);
+        // Cursor after b (index 4)
+        assert_eq!(prev_grapheme_char_count(&text1, 4), 1);
+
+        let text2: Vec<char> = "a👨‍👩‍👧‍👦b".chars().collect();
+        // Cursor after family (index 8)
+        assert_eq!(prev_grapheme_char_count(&text2, 8), 7);
+    }
+
+    #[test]
+    fn test_snap_to_cluster_boundary() {
+        let text: Vec<char> = "a❤️b".chars().collect();
+        assert_eq!(snap_to_cluster_boundary(&text, 0), 0);
+        assert_eq!(snap_to_cluster_boundary(&text, 1), 1);
+        // index 2 is between \u{2764} and \u{fe0f} inside ❤️
+        assert_eq!(snap_to_cluster_boundary(&text, 2), 3);
+        assert_eq!(snap_to_cluster_boundary(&text, 3), 3);
+        assert_eq!(snap_to_cluster_boundary(&text, 4), 4);
+    }
+
+    #[test]
+    fn test_wrap_layout_emoji_boundary() {
+        let text = "hello 😀 world";
+        let starts = vec![0];
+        let metrics = vec![(15.0, 10.0)];
+        // Content width of 100.0 fits floor(100/10) = 10 cells
+        // "hello " is 6 cells.
+        // 😀 is 2 cells.
+        // "hello 😀 " is 9 cells.
+        // "world" is 5 cells, cannot fit on line 1 (9 + 5 = 14 > 10).
+        // It wraps after the space at index 7: line 1 gets "hello 😀 ", line 2 gets "world".
+        let rows = wrap_layout(text, &starts, 100.0, &metrics);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].start, 0);
+        assert_eq!(rows[0].end, 8); // "hello 😀 "
+        assert_eq!(rows[1].start, 8); // "world"
+    }
 }

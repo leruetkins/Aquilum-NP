@@ -50,7 +50,7 @@ mod search_session;
 pub mod search;
 pub mod settings;
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", test))]
 pub mod surface;
 
 /// Minimal color surface used by the desktop markdown modules that were
