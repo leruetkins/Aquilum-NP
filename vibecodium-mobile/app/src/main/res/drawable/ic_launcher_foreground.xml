@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- "Vi" mark from aquilum-gpui/assets/app-icon.svg. The original 512 unit
+     canvas is kept as the viewport; the outer group scales the artwork by 0.9
+     around its own centre and recentres it, so the whole mark stays inside the
+     72dp safe zone of the 108dp adaptive canvas. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <group
+        android:translateX="-6"
+        android:translateY="2.5">
+        <group
+            android:pivotX="262"
+            android:pivotY="253.5"
+            android:scaleX="0.9"
+            android:scaleY="0.9">
+            <!-- V -->
+            <path
+                android:pathData="M100,150 L205,370 L310,150"
+                android:strokeColor="#FFFFFFFF"
+                android:strokeWidth="40"
+                android:strokeLineCap="round"
+                android:strokeLineJoin="round" />
+            <!-- i, rotated 30 degrees around (385,250) -->
+            <group
+                android:translateY="13.6">
+                <group
+                    android:pivotX="385"
+                    android:pivotY="250"
+                    android:rotation="30">
+                    <path
+                        android:pathData="M354,190 C348,211 360,233 390,255 C440,295 440,330 390,370"
+                        android:strokeColor="#FFFFFFFF"
+                        android:strokeWidth="40"
+                        android:strokeLineCap="round"
+                        android:strokeLineJoin="round" />
+                    <path
+                        android:pathData="M354,128 m-25,0 a25,25 0 1,0 50,0 a25,25 0 1,0 -50,0"
+                        android:fillColor="#FFFFFFFF" />
+                </group>
+            </group>
+        </group>
+    </group>
+</vector>
