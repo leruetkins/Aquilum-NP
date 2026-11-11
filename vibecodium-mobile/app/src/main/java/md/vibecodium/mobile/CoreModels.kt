@@ -136,6 +136,7 @@ data class UiState(
     val tabSwitcher: Boolean = false,
     val syncOpen: Boolean = false,
     val settingsOpen: Boolean = false,
+    val settings: AppSettings = AppSettings(),
     val sync: SyncUiState = SyncUiState(),
     val searchQuery: String = "",
     val searchHits: List<SearchHit> = emptyList(),

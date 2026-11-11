@@ -125,6 +125,15 @@ vibecodium-mobile/
     it disappears while the field is focused and returns when focus is
     cleared; it matches names/paths without a content scan, and the tree
     itself is prebuilt when the file list changes.
+  - the settings sheet is a full-screen Obsidian-style stack: a root list of
+    six sections (Appearance, Editor, Files & links, Sync, Advanced, About)
+    rendered as cards, pushed pages with a back chevron and Android back, and
+    every control writes straight to `SharedPreferences` (`settings:global`).
+    Appearance scales Compose text, toggles auto-hiding chrome and the
+    experimental bottom navbar; Editor sets the default view and autosave
+    delay; Files refreshes the tree and resets folder state; Sync links to the
+    existing screen; Advanced refreshes the search index and resets settings;
+    About shows the app/core versions and the vault location.
 - `ui/Theme.kt` — Obsidian 1.15.0 **mobile dark** palette copied from
   `app.css` (background `#000000`, surface `#1E1E1E`, accent `#8A5CF5`,
   text `#DADADA`/`#B3B3B3`), with every Material 3 role set and a neutral
@@ -417,6 +426,9 @@ Screenshots: `screenshots/editor.png`, `drawer.png`, `tabs.png`,
 
 ## Current limitations
 
+- The Appearance text scale applies to the Compose shell only. The native
+  source editor keeps its compiled 15 dp font and 22 dp line height until a
+  JNI setter for editor metrics is added.
 - The source editor numbers logical lines; a wrapped long line does not get an
   extra gutter row.
 - Native source editing has range/word selection, token colours, horizontal

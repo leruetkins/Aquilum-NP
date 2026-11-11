@@ -56,6 +56,7 @@ class VibecodiumController(context: Context) {
     }
 
     init {
+        state = state.copy(settings = SettingsStore.load(appContext))
         VaultLocatorStore.load(appContext)?.let { locator ->
             // Keep the launch spinner up until the repository and the saved
             // tabs are ready, instead of flashing the start and empty screens.
@@ -91,7 +92,11 @@ class VibecodiumController(context: Context) {
                 applyRepository(repository, locator)
             } catch (error: Throwable) {
                 error.rethrowIfCancelled()
-                state = UiState(loading = false, message = error.message ?: "Could not create the vault")
+                state = UiState(
+                    settings = state.settings,
+                    loading = false,
+                    message = error.message ?: "Could not create the vault",
+                )
             }
         }
     }
@@ -107,7 +112,11 @@ class VibecodiumController(context: Context) {
                 applyRepository(repository, locator)
             } catch (error: Throwable) {
                 error.rethrowIfCancelled()
-                state = UiState(loading = false, message = error.message ?: "Could not open the vault")
+                state = UiState(
+                    settings = state.settings,
+                    loading = false,
+                    message = error.message ?: "Could not open the vault",
+                )
                 VaultLocatorStore.clear(appContext)
             }
         }
@@ -139,7 +148,7 @@ class VibecodiumController(context: Context) {
             loading = false,
             drawer = null,
             tabSwitcher = false,
-            editorMode = EditorMode.Source,
+            editorMode = state.settings.defaultEditorMode,
             lines = emptyList(),
             markdownText = "",
             headings = emptyList(),
@@ -267,15 +276,17 @@ class VibecodiumController(context: Context) {
                     uri = repository.uriFor(path),
                 )
                 val tabs = state.tabs + tab
+                val mode = state.settings.defaultEditorMode
                 state = state.copy(
                     tabs = tabs,
                     activeTab = tabs.lastIndex,
                     drawer = null,
                     tabSwitcher = false,
                     viewerPath = null,
+                    editorMode = mode,
                 )
                 if (pushHistory) pushHistory(path)
-                refreshDerived(text, force = state.editorMode == EditorMode.Preview)
+                refreshDerived(text, force = mode == EditorMode.Preview)
                 persistTabs()
             } catch (error: Throwable) {
                 error.rethrowIfCancelled()
@@ -325,7 +336,7 @@ class VibecodiumController(context: Context) {
 
         saveJob?.cancel()
         saveJob = scope.launch {
-            delay(600)
+            delay(state.settings.autoSaveDelayMs.toLong())
             persistTab(index)
         }
         derivedJob?.cancel()
@@ -721,7 +732,7 @@ class VibecodiumController(context: Context) {
     // -------------------------------------------------------------------- sync
 
     fun openSync() {
-        state = state.copy(syncOpen = true)
+        state = state.copy(syncOpen = true, settingsOpen = false)
     }
 
     // ---------------------------------------------------------------- settings
@@ -736,6 +747,53 @@ class VibecodiumController(context: Context) {
 
     fun closeSettings() {
         state = state.copy(settingsOpen = false)
+    }
+
+    fun setTextScale(value: Float) = updateSettings {
+        it.copy(
+            textScale = value.coerceIn(
+                AppSettingsJson.MIN_TEXT_SCALE,
+                AppSettingsJson.MAX_TEXT_SCALE,
+            ),
+        )
+    }
+
+    fun setAutoHideChrome(enabled: Boolean) = updateSettings { it.copy(autoHideChrome = enabled) }
+
+    fun setNavbarEnabled(enabled: Boolean) = updateSettings { it.copy(navbarEnabled = enabled) }
+
+    fun setDefaultEditorMode(mode: EditorMode) = updateSettings { it.copy(defaultEditorMode = mode) }
+
+    fun setAutoSaveDelay(millis: Int) = updateSettings { it.copy(autoSaveDelayMs = millis) }
+
+    fun resetSettings() {
+        updateSettings { AppSettings() }
+        showMessage("Settings reset")
+    }
+
+    fun resetCollapsedFolders() {
+        state = state.copy(collapsedFolders = emptySet())
+        persistCollapsedFolders(emptySet())
+        showMessage("Folder state reset")
+    }
+
+    fun rebuildSearchIndex() {
+        val repository = repository ?: return
+        scope.launch {
+            try {
+                repository.warmSearchIndex()
+                showMessage("Search index refreshed")
+            } catch (error: Throwable) {
+                error.rethrowIfCancelled()
+                showMessage(error.message ?: "Could not refresh the search index")
+            }
+        }
+    }
+
+    private inline fun updateSettings(transform: (AppSettings) -> AppSettings) {
+        val next = transform(state.settings)
+        state = state.copy(settings = next)
+        SettingsStore.save(appContext, next)
     }
 
     fun refreshNotes() {
@@ -1054,6 +1112,10 @@ class VibecodiumController(context: Context) {
             state = state.copy(settingsOpen = false)
             return
         }
+        if (state.syncOpen) {
+            state = state.copy(syncOpen = false)
+            return
+        }
         if (state.viewerPath != null) {
             state = state.copy(viewerPath = null)
             return
@@ -1097,7 +1159,7 @@ class VibecodiumController(context: Context) {
         scope.launch {
             closeRepository()
             VaultLocatorStore.clear(appContext)
-            state = UiState()
+            state = UiState(settings = state.settings)
         }
     }
 

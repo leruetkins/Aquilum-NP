@@ -87,5 +87,17 @@ object FolderStore {
     }
 }
 
+/** App-wide preferences, stored as one JSON blob under a stable key. */
+object SettingsStore {
+    private const val KEY = "settings:global"
+
+    fun load(context: Context): AppSettings =
+        AppSettingsJson.decode(prefs(context).getString(KEY, null))
+
+    fun save(context: Context, settings: AppSettings) {
+        prefs(context).edit().putString(KEY, AppSettingsJson.encode(settings)).apply()
+    }
+}
+
 internal fun prefs(context: Context) =
     context.getSharedPreferences("vibecodium", Context.MODE_PRIVATE)

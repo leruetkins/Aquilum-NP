@@ -4,8 +4,14 @@ import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -51,10 +57,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.List
@@ -76,11 +84,13 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
@@ -89,6 +99,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -135,6 +146,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
@@ -142,6 +154,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 import androidx.compose.ui.viewinterop.AndroidView
+import md.vibecodium.mobile.AppSettingsJson
 import md.vibecodium.mobile.CoreBridge
 import md.vibecodium.mobile.CoreJson
 import md.vibecodium.mobile.Drawer
@@ -172,9 +185,6 @@ import java.util.Locale
 
 /** `--navbar-height: var(--touch-size-l)` in the Obsidian phone stylesheet. */
 private val NavbarHeight = 52.dp
-
-/** The floating bottom navbar is temporarily disabled. */
-private const val MobileNavbarEnabled = false
 
 /** `--view-header-height: var(--touch-size-m)` on a phone. */
 private val ViewHeaderHeight = 44.dp
@@ -424,30 +434,38 @@ private val EditorLineHeight = 22.sp
 @Composable
 fun VibecodiumApp(controller: VibecodiumController) {
     val state = controller.state
+    val density = LocalDensity.current
     VibecodiumTheme {
-        BackHandler(
-            enabled = state.settingsOpen || state.drawer != null || state.tabSwitcher ||
-                state.viewerPath != null || state.historyIndex > 0,
+        CompositionLocalProvider(
+            LocalDensity provides Density(
+                density.density,
+                density.fontScale * state.settings.textScale,
+            ),
         ) {
-            controller.back()
-        }
-        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-            when {
-                state.booting -> BootScreen()
-                state.vaultName == null -> StartScreen(state, controller)
-                else -> PhoneShell(state, controller)
+            BackHandler(
+                enabled = state.settingsOpen || state.syncOpen || state.drawer != null ||
+                    state.tabSwitcher || state.viewerPath != null || state.historyIndex > 0,
+            ) {
+                controller.back()
             }
-            state.message?.let { message ->
-                MessageBar(message) { controller.dismissMessage() }
-            }
-            state.deletePath?.let { path ->
-                DeleteDialog(path, controller)
-            }
-            state.renamePath?.let {
-                RenameDialog(state, controller)
-            }
-            if (state.newFolderOpen) {
-                NewFolderDialog(state, controller)
+            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+                when {
+                    state.booting -> BootScreen()
+                    state.vaultName == null -> StartScreen(state, controller)
+                    else -> PhoneShell(state, controller)
+                }
+                state.message?.let { message ->
+                    MessageBar(message) { controller.dismissMessage() }
+                }
+                state.deletePath?.let { path ->
+                    DeleteDialog(path, controller)
+                }
+                state.renamePath?.let {
+                    RenameDialog(state, controller)
+                }
+                if (state.newFolderOpen) {
+                    NewFolderDialog(state, controller)
+                }
             }
         }
     }
@@ -559,6 +577,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
             .systemBarsPadding(),
     ) {
         val drawerWidth = phoneDrawerWidth(maxWidth)
+        val navbarEnabled = state.settings.navbarEnabled
         val imeVisible = WindowInsets.isImeVisible
         val focusManager = LocalFocusManager.current
         var chromeHidden by remember { mutableStateOf(false) }
@@ -570,7 +589,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
             label = "chrome",
         )
         val navProgress = animateFloatAsState(
-            targetValue = if (MobileNavbarEnabled && !imeVisible && !chromeHidden) 1f else 0f,
+            targetValue = if (navbarEnabled && !imeVisible && !chromeHidden) 1f else 0f,
             animationSpec = tween(160),
             label = "navbar",
         )
@@ -588,28 +607,37 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
             lastAnchor[0] = 0f
             lastScrollVal[0] = 0f
         }
+        LaunchedEffect(state.settings.autoHideChrome) {
+            if (!state.settings.autoHideChrome) chromeHidden = false
+        }
         val onEditorScroll: (Float, Float) -> Unit = remember {
             { scroll, maxY ->
-                val anchor = lastAnchor[0]
-                val prev = lastScrollVal[0]
-                lastScrollVal[0] = scroll
-                if (maxY <= 0f || scroll <= 2f) {
+                if (!controller.state.settings.autoHideChrome) {
                     if (chromeHidden) chromeHidden = false
                     lastAnchor[0] = 0f
+                    lastScrollVal[0] = scroll
                 } else {
-                    if (scroll > prev && prev < anchor) {
-                        lastAnchor[0] = prev
-                    } else if (scroll < prev && prev > anchor) {
-                        lastAnchor[0] = prev
-                    }
-                    val currentAnchor = lastAnchor[0]
-                    val delta = scroll - currentAnchor
-                    if (delta > 24f) {
-                        if (!chromeHidden) chromeHidden = true
-                        lastAnchor[0] = scroll
-                    } else if (delta < -24f) {
+                    val anchor = lastAnchor[0]
+                    val prev = lastScrollVal[0]
+                    lastScrollVal[0] = scroll
+                    if (maxY <= 0f || scroll <= 2f) {
                         if (chromeHidden) chromeHidden = false
-                        lastAnchor[0] = scroll
+                        lastAnchor[0] = 0f
+                    } else {
+                        if (scroll > prev && prev < anchor) {
+                            lastAnchor[0] = prev
+                        } else if (scroll < prev && prev > anchor) {
+                            lastAnchor[0] = prev
+                        }
+                        val currentAnchor = lastAnchor[0]
+                        val delta = scroll - currentAnchor
+                        if (delta > 24f) {
+                            if (!chromeHidden) chromeHidden = true
+                            lastAnchor[0] = scroll
+                        } else if (delta < -24f) {
+                            if (chromeHidden) chromeHidden = false
+                            lastAnchor[0] = scroll
+                        }
                     }
                 }
             }
@@ -619,6 +647,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 editor.value,
                 controller,
                 imeVisible,
+                navbarEnabled,
                 chromeProgress,
                 state.drawer != null,
                 onEditorScroll,
@@ -658,7 +687,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                             (NavbarHeight.toPx() + 24.dp.toPx()) * (1f - navProgress.value)
                     }
                     .semantics {
-                        if (!MobileNavbarEnabled || imeVisible || navProgress.value < 0.05f) {
+                        if (!navbarEnabled || imeVisible || navProgress.value < 0.05f) {
                             invisibleToUser()
                         }
                     },
@@ -742,13 +771,14 @@ private fun EditorArea(
     editor: EditorSlice,
     controller: VibecodiumController,
     imeVisible: Boolean,
+    navbarEnabled: Boolean,
     chromeProgress: State<Float>,
     drawerOpen: Boolean,
     onEditorScroll: (Float, Float) -> Unit,
 ) {
     val density = LocalDensity.current
     val imeBottomPx = WindowInsets.ime.getBottom(density)
-    val navInsetPx = if (MobileNavbarEnabled) {
+    val navInsetPx = if (navbarEnabled) {
         with(density) { (NavbarHeight + 12.dp).toPx() }
     } else {
         0f
@@ -761,6 +791,7 @@ private fun EditorArea(
             editor,
             controller,
             imeVisible,
+            navbarEnabled,
             bottomInsetPx,
             chromeProgress,
             drawerOpen,
@@ -780,13 +811,14 @@ private fun EditorScreen(
     state: EditorSlice,
     controller: VibecodiumController,
     imeVisible: Boolean,
+    navbarEnabled: Boolean,
     bottomInsetPx: Float,
     chromeProgress: State<Float>,
     drawerOpen: Boolean,
     onEditorScroll: (Float, Float) -> Unit,
 ) {
     val tab = state.tabs.getOrNull(state.activeTab) ?: return
-    val bottomInset = if (imeVisible || !MobileNavbarEnabled) 0.dp else NavbarHeight + 12.dp
+    val bottomInset = if (imeVisible || !navbarEnabled) 0.dp else NavbarHeight + 12.dp
     val preview = state.editorMode == EditorMode.Preview
     val topInsetPx = with(LocalDensity.current) { (ViewHeaderTopPadding + ViewHeaderHeight + 10.dp).toPx() }
     var editorView by remember { mutableStateOf<NativeEditorView?>(null) }
@@ -837,7 +869,7 @@ private fun EditorScreen(
             ViewHeader(state, tab, controller)
         }
         if (!preview && keyboardPrompt && !imeVisible) {
-            val bottomPadding = if (MobileNavbarEnabled) NavbarHeight + 16.dp else 16.dp
+            val bottomPadding = if (navbarEnabled) NavbarHeight + 16.dp else 16.dp
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -2649,48 +2681,281 @@ private fun NewFolderDialog(state: UiState, controller: VibecodiumController) {
     )
 }
 
+private enum class SettingsSection(val title: String, val icon: ImageVector) {
+    Appearance("Appearance", Icons.Default.Settings),
+    Editor("Editor", Icons.Default.Edit),
+    Files("Files & links", Icons.Default.List),
+    Sync("Sync", Icons.Default.Refresh),
+    Advanced("Advanced", Icons.Default.Build),
+    About("About", Icons.Default.Info),
+}
+
 @Composable
 private fun SettingsScreen(state: UiState, controller: VibecodiumController, modifier: Modifier) {
-    val coreVersion = remember {
-        runCatching { CoreJson.data(CoreBridge.nativeVersion()).optString("version") }
-            .getOrDefault("0.1.0")
-    }
+    var sectionName by rememberSaveable { mutableStateOf("") }
+    val section = SettingsSection.entries.firstOrNull { it.name == sectionName }
+    BackHandler(enabled = section != null) { sectionName = "" }
     Surface(modifier = modifier, color = MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxSize()) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .padding(start = 16.dp, end = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "Settings",
-                    modifier = Modifier.weight(1f),
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
+            SettingsHeader(
+                title = section?.title ?: "Settings",
+                showBack = section != null,
+                onBack = { sectionName = "" },
+                onClose = { controller.closeSettings() },
+            )
+            AnimatedContent(
+                targetState = section,
+                transitionSpec = {
+                    if (targetState != null) {
+                        (slideInHorizontally(tween(180)) { it } + fadeIn(tween(180))) togetherWith
+                            (slideOutHorizontally(tween(180)) { -it / 4 } + fadeOut(tween(180)))
+                    } else {
+                        (slideInHorizontally(tween(180)) { -it / 4 } + fadeIn(tween(180))) togetherWith
+                            (slideOutHorizontally(tween(180)) { it } + fadeOut(tween(180)))
+                    }
+                },
+                label = "settings-section",
+                modifier = Modifier.fillMaxSize(),
+            ) { current ->
+                if (current == null) {
+                    SettingsRoot(onOpen = { sectionName = it.name })
+                } else {
+                    SettingsSectionContent(current, state, controller)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsHeader(
+    title: String,
+    showBack: Boolean,
+    onBack: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .padding(start = 4.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (showBack) {
+            IconButton(onClick = onBack, modifier = Modifier.size(44.dp)) {
+                Icon(
+                    Icons.Default.ArrowBack,
+                    contentDescription = "Back",
+                    modifier = Modifier.size(20.dp),
                 )
-                IconButton(onClick = { controller.closeSettings() }) {
-                    Icon(
-                        Icons.Default.Close,
-                        contentDescription = "Close settings",
-                        modifier = Modifier.size(20.dp),
+            }
+        } else {
+            Spacer(Modifier.width(12.dp))
+        }
+        Text(
+            title,
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 4.dp),
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+        IconButton(onClick = onClose, modifier = Modifier.size(44.dp)) {
+            Icon(
+                Icons.Default.Close,
+                contentDescription = "Close settings",
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+}
+
+@Composable
+private fun SettingsRoot(onOpen: (SettingsSection) -> Unit) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        SettingsGroup("Options") {
+            SettingsSection.entries.forEachIndexed { index, section ->
+                SettingsNavRow(
+                    icon = section.icon,
+                    title = section.title,
+                    showDivider = index != SettingsSection.entries.lastIndex,
+                ) { onOpen(section) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsSectionContent(
+    section: SettingsSection,
+    state: UiState,
+    controller: VibecodiumController,
+) {
+    val settings = state.settings
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        when (section) {
+            SettingsSection.Appearance -> {
+                SettingsGroup("Text") {
+                    SettingsSliderRow(
+                        title = "Text scale",
+                        description = "Scales interface text. The native editor keeps its own font size.",
+                        value = settings.textScale,
+                        range = AppSettingsJson.MIN_TEXT_SCALE..AppSettingsJson.MAX_TEXT_SCALE,
+                        format = { "${(it * 100).roundToInt()}%" },
+                        onCommit = controller::setTextScale,
+                    )
+                }
+                SettingsGroup("Interface") {
+                    SettingsSwitchRow(
+                        title = "Auto-hide header",
+                        description = "Hide the header and floating buttons while scrolling",
+                        checked = settings.autoHideChrome,
+                        onChange = controller::setAutoHideChrome,
+                        showDivider = true,
+                    )
+                    SettingsSwitchRow(
+                        title = "Bottom navbar",
+                        description = "Experimental floating navigation bar",
+                        checked = settings.navbarEnabled,
+                        onChange = controller::setNavbarEnabled,
+                        showDivider = false,
                     )
                 }
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                SettingsGroup("About") {
-                    SettingsInfoRow("vibecodium", "Rust core · Compose shell")
+
+            SettingsSection.Editor -> {
+                SettingsGroup("View") {
+                    SettingsChoiceRow(
+                        title = "Default view",
+                        description = "Used when a note is opened in a new tab",
+                        value = settings.defaultEditorMode,
+                        options = listOf(
+                            "Editing" to EditorMode.Source,
+                            "Reading" to EditorMode.Preview,
+                        ),
+                        onSelect = controller::setDefaultEditorMode,
+                    )
+                }
+                SettingsGroup("Saving") {
+                    SettingsChoiceRow(
+                        title = "Autosave delay",
+                        description = "How long to wait after the last edit",
+                        value = settings.autoSaveDelayMs,
+                        options = listOf(
+                            "300 ms" to 300,
+                            "600 ms" to 600,
+                            "1.2 s" to 1200,
+                        ),
+                        onSelect = controller::setAutoSaveDelay,
+                    )
+                }
+            }
+
+            SettingsSection.Files -> {
+                SettingsGroup("Vault") {
+                    SettingsInfoRow("Name", state.vaultName ?: "—")
+                    SettingsInfoRow(
+                        "Storage",
+                        if (state.vaultKind == "saf") "SAF folder" else "Local folder",
+                        showDivider = state.vaultRoot != null,
+                    )
+                    state.vaultRoot?.let {
+                        SettingsInfoRow("Location", "Vault folder", detail = it, showDivider = false)
+                    }
+                }
+                SettingsGroup("Actions") {
+                    SettingsActionRow(
+                        title = "Refresh files",
+                        description = "Rescan the vault tree",
+                        onClick = { controller.refreshNotes() },
+                        showDivider = true,
+                    )
+                    SettingsActionRow(
+                        title = "Reset folder state",
+                        description = "Expand every folder again",
+                        onClick = { controller.resetCollapsedFolders() },
+                        showDivider = false,
+                    )
+                }
+            }
+
+            SettingsSection.Sync -> {
+                val sync = state.sync
+                SettingsGroup("Dropbox") {
+                    SettingsInfoRow(
+                        "Status",
+                        if (sync.connected) "Connected" else "Not connected",
+                        detail = sync.accountName,
+                    )
+                    SettingsInfoRow(
+                        "Last sync",
+                        if (sync.lastSync > 0) dateTimeLabel(sync.lastSync) else "Never",
+                        detail = if (sync.autoSync) "Sync on open is on" else "Sync on open is off",
+                        showDivider = false,
+                    )
+                }
+                SettingsGroup("Actions") {
+                    SettingsActionRow(
+                        title = "Open sync settings",
+                        description = "Account, auto-sync and conflict rules",
+                        onClick = { controller.openSync() },
+                        showDivider = false,
+                    )
+                }
+            }
+
+            SettingsSection.Advanced -> {
+                SettingsGroup("Preferences") {
+                    SettingsActionRow(
+                        title = "Reset settings",
+                        description = "Restore every app preference to its default",
+                        onClick = { controller.resetSettings() },
+                        showDivider = true,
+                    )
+                    SettingsActionRow(
+                        title = "Refresh search index",
+                        description = "Rebuild the full-text index for this vault",
+                        onClick = { controller.rebuildSearchIndex() },
+                        showDivider = false,
+                    )
+                }
+            }
+
+            SettingsSection.About -> {
+                val coreVersion = remember {
+                    runCatching { CoreJson.data(CoreBridge.nativeVersion()).optString("version") }
+                        .getOrDefault("0.1.0")
+                }
+                SettingsGroup("App") {
+                    SettingsInfoRow(
+                        "vibecodium",
+                        "0.1.0",
+                        detail = "Rust core · Compose shell",
+                    )
                     SettingsInfoRow("Rust core", coreVersion)
-                    state.vaultName?.let { name ->
-                        SettingsInfoRow("Vault", name, state.vaultRoot ?: "")
+                    SettingsInfoRow("Platform", "Android · Compose", showDivider = false)
+                }
+                SettingsGroup("Vault") {
+                    SettingsInfoRow(
+                        "Name",
+                        state.vaultName ?: "No vault open",
+                        showDivider = state.vaultRoot != null,
+                    )
+                    state.vaultRoot?.let {
+                        SettingsInfoRow("Location", "Vault folder", detail = it, showDivider = false)
                     }
                 }
             }
@@ -2719,7 +2984,244 @@ private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> 
 }
 
 @Composable
-private fun SettingsInfoRow(title: String, value: String, detail: String = "") {
+private fun SettingsNavRow(
+    icon: ImageVector,
+    title: String,
+    showDivider: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .heightIn(min = 52.dp)
+            .padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            modifier = Modifier.size(22.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(14.dp))
+        Text(
+            title,
+            modifier = Modifier.weight(1f),
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+        )
+        Icon(
+            Icons.Default.ArrowForward,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    if (showDivider) {
+        HorizontalDivider(
+            modifier = Modifier.padding(start = 52.dp),
+            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+        )
+    }
+}
+
+@Composable
+private fun SettingsSwitchRow(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit,
+    showDivider: Boolean,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 60.dp)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            if (description.isNotBlank()) {
+                Text(
+                    description,
+                    modifier = Modifier.padding(top = 2.dp),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
+    if (showDivider) {
+        HorizontalDivider(
+            modifier = Modifier.padding(start = 16.dp),
+            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+        )
+    }
+}
+
+@Composable
+private fun SettingsSliderRow(
+    title: String,
+    description: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    format: (Float) -> String,
+    onCommit: (Float) -> Unit,
+) {
+    var draft by remember(value) { mutableStateOf(value) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                if (description.isNotBlank()) {
+                    Text(
+                        description,
+                        modifier = Modifier.padding(top = 2.dp),
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Text(
+                format(draft),
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Slider(
+            value = draft,
+            onValueChange = { draft = it },
+            onValueChangeFinished = { onCommit(draft) },
+            valueRange = range,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 2.dp),
+        )
+    }
+}
+
+@Composable
+private fun <T> SettingsChoiceRow(
+    title: String,
+    description: String,
+    value: T,
+    options: List<Pair<String, T>>,
+    onSelect: (T) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    val label = options.firstOrNull { it.second == value }?.first ?: ""
+    Box(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { open = true }
+                .heightIn(min = 56.dp)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                if (description.isNotBlank()) {
+                    Text(
+                        description,
+                        modifier = Modifier.padding(top = 2.dp),
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Text(
+                label,
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(4.dp))
+            Icon(
+                Icons.Default.KeyboardArrowDown,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            options.forEach { (optionLabel, optionValue) ->
+                val selected = optionValue == value
+                DropdownMenuItem(
+                    text = { Text(optionLabel) },
+                    trailingIcon = {
+                        if (selected) {
+                            Icon(
+                                Icons.Default.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    },
+                    onClick = {
+                        open = false
+                        onSelect(optionValue)
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsActionRow(
+    title: String,
+    description: String,
+    onClick: () -> Unit,
+    showDivider: Boolean,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .heightIn(min = 56.dp)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            if (description.isNotBlank()) {
+                Text(
+                    description,
+                    modifier = Modifier.padding(top = 2.dp),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+    if (showDivider) {
+        HorizontalDivider(
+            modifier = Modifier.padding(start = 16.dp),
+            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+        )
+    }
+}
+
+@Composable
+private fun SettingsInfoRow(
+    title: String,
+    value: String,
+    detail: String = "",
+    showDivider: Boolean = true,
+) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -2732,7 +3234,13 @@ private fun SettingsInfoRow(title: String, value: String, detail: String = "") {
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
             )
-            Text(value, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                value,
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
         if (detail.isNotBlank()) {
             Text(
@@ -2744,6 +3252,12 @@ private fun SettingsInfoRow(title: String, value: String, detail: String = "") {
                 overflow = TextOverflow.Ellipsis,
             )
         }
+    }
+    if (showDivider) {
+        HorizontalDivider(
+            modifier = Modifier.padding(start = 16.dp),
+            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+        )
     }
 }
 
