@@ -2549,7 +2549,7 @@ private fun BookmarkedList(state: UiState, controller: VibecodiumController) {
 @Composable
 private fun RecentList(state: UiState, controller: VibecodiumController) {
     val byPath = state.notes.associateBy { it.path }
-    val recent = state.history.asReversed().distinct().mapNotNull { byPath[it] }.take(30)
+    val recent = state.recentFiles.mapNotNull { byPath[it] }.take(30)
     if (recent.isEmpty()) {
         Placeholder("Notes you open will appear here.")
         return

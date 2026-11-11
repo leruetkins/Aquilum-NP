@@ -1600,7 +1600,38 @@ fn model_for_editor(text: &str) -> Vec<crate::markdown::MarkdownLine> {
     if text.chars().count() > 120_000 || line_count > 4_000 {
         Vec::new()
     } else {
-        crate::markdown::model(text)
+        let mut model = crate::markdown::model(text);
+        // `str::lines()` drops the empty line after a trailing newline, while
+        // the editor keeps a start offset for it. The renderer only uses the
+        // model when its length matches the line starts, so keep them aligned;
+        // otherwise marker hiding and heading styling are disabled for the
+        // whole note.
+        if !model.is_empty() && text.ends_with('\n') {
+            model.push(blank_markdown_line());
+        }
+        model
+    }
+}
+
+fn blank_markdown_line() -> crate::markdown::MarkdownLine {
+    crate::markdown::MarkdownLine {
+        raw: String::new(),
+        kind: "text".to_string(),
+        level: 0,
+        indent: 0,
+        marker: String::new(),
+        content: String::new(),
+        checked: None,
+        num: None,
+        language: None,
+        is_opening: None,
+        block_id: None,
+        callout: None,
+        prefix_chars: 0,
+        spans: Vec::new(),
+        cells: Vec::new(),
+        target: None,
+        alt: None,
     }
 }
 

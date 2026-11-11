@@ -165,6 +165,7 @@ class VibecodiumController(context: Context) {
         val collapsedFolders = FolderStore.load(appContext, locator.value)
         val bookmarks = BookmarkStore.load(appContext, locator.value)
         val vaultSync = VaultSyncStore.load(appContext, locator.value)
+        val recentFiles = RecentStore.load(appContext, locator.value)
         // Publish the shell before touching the tree. The full snapshot is
         // filled in by [refreshLists] on IO; a large vault must not hold the
         // first frame behind a recursive walk.
@@ -179,6 +180,7 @@ class VibecodiumController(context: Context) {
             folders = emptyList(),
             collapsedFolders = collapsedFolders,
             vaultSync = vaultSync,
+            recentFiles = recentFiles,
             fileQuery = "",
             bookmarks = bookmarks,
             tabs = emptyList(),
@@ -237,6 +239,7 @@ class VibecodiumController(context: Context) {
                     text = text,
                     selection = savedTab.selection.coerceIn(0, text.length),
                     language = codeLanguageFor(savedTab.path),
+                    mode = savedTab.mode,
                     uri = savedTab.uri ?: repository.uriFor(savedTab.path),
                 ),
             )
@@ -246,10 +249,12 @@ class VibecodiumController(context: Context) {
         state = state.copy(
             tabs = tabs,
             activeTab = active,
+            editorMode = tabs[active].mode,
+            recentFiles = RecentStore.remember(appContext, locatorKey(), tabs[active].path),
             history = listOf(tabs[active].path),
             historyIndex = 0,
         )
-        refreshDerived(tabs[active].text)
+        refreshDerived(tabs[active].text, force = tabs[active].mode == EditorMode.Preview)
         return true
     }
 
@@ -306,15 +311,16 @@ class VibecodiumController(context: Context) {
         scope.launch {
             try {
                 val text = repository.readNote(path)
+                val mode = state.settings.defaultEditorMode
                 val tab = Tab(
                     path = path,
                     title = titleOf(path),
                     text = text,
                     language = codeLanguageFor(path),
+                    mode = mode,
                     uri = repository.uriFor(path),
                 )
                 val tabs = state.tabs + tab
-                val mode = state.settings.defaultEditorMode
                 state = state.copy(
                     tabs = tabs,
                     activeTab = tabs.lastIndex,
@@ -322,6 +328,7 @@ class VibecodiumController(context: Context) {
                     tabSwitcher = false,
                     viewerPath = null,
                     editorMode = mode,
+                    recentFiles = RecentStore.remember(appContext, locatorKey(), path),
                 )
                 if (pushHistory) pushHistory(path)
                 refreshDerived(text, force = mode == EditorMode.Preview)
@@ -494,11 +501,19 @@ class VibecodiumController(context: Context) {
             return
         }
         saveActiveNow()
-        state = state.copy(activeTab = index, drawer = null, tabSwitcher = false, viewerPath = null)
+        val tab = state.tabs[index]
+        state = state.copy(
+            activeTab = index,
+            editorMode = tab.mode,
+            recentFiles = RecentStore.remember(appContext, locatorKey(), tab.path),
+            drawer = null,
+            tabSwitcher = false,
+            viewerPath = null,
+        )
         scope.launch {
             refreshDerived(
-                state.tabs[index].text,
-                force = state.editorMode == EditorMode.Preview,
+                tab.text,
+                force = tab.mode == EditorMode.Preview,
             )
         }
         persistTabs()
@@ -518,10 +533,12 @@ class VibecodiumController(context: Context) {
         }
         val active = removeTabState(index)
         if (active >= 0) {
+            val mode = state.tabs[active].mode
+            state = state.copy(editorMode = mode)
             scope.launch {
                 refreshDerived(
                     state.tabs[active].text,
-                    force = state.editorMode == EditorMode.Preview,
+                    force = mode == EditorMode.Preview,
                 )
             }
         } else {
@@ -693,6 +710,7 @@ class VibecodiumController(context: Context) {
                     folders = lists.folders,
                     explorerTree = lists.tree,
                     bookmarks = bookmarks,
+                    recentFiles = RecentStore.rename(appContext, locatorKey(), oldPath, newPath),
                     renamePath = null,
                     renameValue = "",
                 )
@@ -701,7 +719,7 @@ class VibecodiumController(context: Context) {
                 if (index >= 0 && index == state.activeTab) {
                     refreshDerived(
                         state.tabs[index].text,
-                        force = state.editorMode == EditorMode.Preview,
+                        force = state.tabs[index].mode == EditorMode.Preview,
                     )
                 }
             } catch (error: Throwable) {
@@ -755,9 +773,17 @@ class VibecodiumController(context: Context) {
 
     fun setEditorMode(mode: EditorMode) {
         val previous = state.editorMode
-        state = state.copy(editorMode = mode)
+        val index = state.activeTab
+        if (index in state.tabs.indices) {
+            val tabs = state.tabs.toMutableList()
+            tabs[index] = tabs[index].copy(mode = mode)
+            state = state.copy(tabs = tabs, editorMode = mode)
+            persistTabs()
+        } else {
+            state = state.copy(editorMode = mode)
+        }
         if (mode == EditorMode.Preview && previous != EditorMode.Preview) {
-            val tab = state.tabs.getOrNull(state.activeTab) ?: return
+            val tab = state.tabs.getOrNull(index) ?: return
             if (tab.language == null && tab.text.isNotBlank() && state.lines.isEmpty()) {
                 scope.launch { refreshDerived(tab.text, force = true) }
             }
@@ -1155,6 +1181,7 @@ class VibecodiumController(context: Context) {
                 bookmarks = bookmarks,
                 tabs = tabs,
                 activeTab = active,
+                editorMode = if (active >= 0) tabs[active].mode else state.editorMode,
                 sync = state.sync.copy(
                     connected = true,
                     accountName = account,
@@ -1167,7 +1194,7 @@ class VibecodiumController(context: Context) {
             if (active >= 0) {
                 refreshDerived(
                 state.tabs[active].text,
-                force = state.editorMode == EditorMode.Preview,
+                force = state.tabs[active].mode == EditorMode.Preview,
             )
             } else {
                 state = state.copy(

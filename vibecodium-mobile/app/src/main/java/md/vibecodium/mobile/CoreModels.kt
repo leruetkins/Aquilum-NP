@@ -92,6 +92,8 @@ data class Tab(
     val selection: Int = 0,
     /** Null for markdown notes; a language id for code files. */
     val language: String? = null,
+    /** Source/Reading is remembered per tab, like Obsidian leaves. */
+    val mode: EditorMode = EditorMode.Source,
     /** SAF document URI, persisted so a tab reopens without walking the tree. */
     val uri: String? = null,
 )
@@ -149,6 +151,8 @@ data class UiState(
     val searchHits: List<SearchHit> = emptyList(),
     val headings: List<Heading> = emptyList(),
     val stats: DocStats = DocStats(0, 0, 0),
+    /** Recently opened note paths, most recent first, persisted per vault. */
+    val recentFiles: List<String> = emptyList(),
     val history: List<String> = emptyList(),
     val historyIndex: Int = -1,
     val deletePath: String? = null,

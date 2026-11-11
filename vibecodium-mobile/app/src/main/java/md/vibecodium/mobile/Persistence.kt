@@ -4,7 +4,12 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class SavedTab(val path: String, val selection: Int, val uri: String? = null)
+data class SavedTab(
+    val path: String,
+    val selection: Int,
+    val uri: String? = null,
+    val mode: EditorMode = EditorMode.Source,
+)
 
 data class SavedTabs(val tabs: List<SavedTab>, val active: Int)
 
@@ -12,7 +17,10 @@ object TabStore {
     fun save(context: Context, key: String, tabs: List<Tab>, active: Int) {
         val array = JSONArray()
         for (tab in tabs) {
-            val value = JSONObject().put("path", tab.path).put("selection", tab.selection)
+            val value = JSONObject()
+                .put("path", tab.path)
+                .put("selection", tab.selection)
+                .put("mode", tab.mode.name)
             tab.uri?.let { value.put("uri", it) }
             array.put(value)
         }
@@ -31,6 +39,9 @@ object TabStore {
                     path = value.getString("path"),
                     selection = value.optInt("selection", 0),
                     uri = value.optString("uri").takeIf { it.isNotBlank() },
+                    mode = runCatching {
+                        EditorMode.valueOf(value.optString("mode", EditorMode.Source.name))
+                    }.getOrDefault(EditorMode.Source),
                 )
             }
             SavedTabs(tabs, root.optInt("active", 0))
@@ -84,6 +95,47 @@ object FolderStore {
             array.put(path)
         }
         prefs(context).edit().putString("folders:$key", array.toString()).apply()
+    }
+}
+
+/** Recently opened notes, most recent first, persisted per vault. */
+object RecentStore {
+    private const val PREFIX = "recent:"
+    private const val LIMIT = 50
+
+    fun load(context: Context, key: String): List<String> {
+        val raw = prefs(context).getString(PREFIX + key, null) ?: return emptyList()
+        return runCatching {
+            val array = JSONArray(raw)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val path = array.optString(index)
+                    if (path.isNotBlank() && path !in this) add(path)
+                }
+            }.take(LIMIT)
+        }.getOrDefault(emptyList())
+    }
+
+    fun remember(context: Context, key: String, path: String): List<String> {
+        if (path.isBlank()) return load(context, key)
+        val updated = (listOf(path) + load(context, key).filterNot { it == path }).take(LIMIT)
+        save(context, key, updated)
+        return updated
+    }
+
+    fun rename(context: Context, key: String, oldPath: String, newPath: String): List<String> {
+        val updated = load(context, key)
+            .map { if (it == oldPath) newPath else it }
+            .distinct()
+            .take(LIMIT)
+        save(context, key, updated)
+        return updated
+    }
+
+    private fun save(context: Context, key: String, paths: List<String>) {
+        val array = JSONArray()
+        for (path in paths) array.put(path)
+        prefs(context).edit().putString(PREFIX + key, array.toString()).apply()
     }
 }
 

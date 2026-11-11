@@ -49,12 +49,14 @@ vibecodium-mobile/
     `takePersistableUriPermission`.
 - Opening a vault publishes the shell first and builds the tree snapshot on
   `Dispatchers.IO`; the first frame no longer waits for a recursive walk. Tabs
-  persist their SAF document URI, so a saved note reopens with one
-  `openInputStream` instead of re-resolving each path segment.
+  persist their SAF document URI and their Source/Reading mode, so a saved note
+  reopens with one `openInputStream` and the view it had before the restart.
 - Startup restores only the saved tabs. If there are none, the editor stays on
   **No tabs open**; it does not create or auto-open a note. An unreadable saved
-  tab also does not overwrite the stored session with an empty list.
-- `Persistence.kt` — locator, per-vault tabs/cursors and bookmarks.
+  tab also does not overwrite the stored session with an empty list. The Recent
+  list is persisted per vault and fed by opening and switching tabs, so it
+  survives a restart too.
+- `Persistence.kt` — locator, per-vault tabs/cursors, recent notes and bookmarks.
 - `VibecodiumController.kt` — state holder; file work on `Dispatchers.IO`,
   debounced auto-save (600 ms), history, tabs, search, rename, bookmarks.
 - `ui/VibecodiumApp.kt` — the phone shell:
@@ -495,7 +497,7 @@ Screenshots: `screenshots/editor.png`, `drawer.png`, `tabs.png`,
 
 ## Next steps
 
-1. Persist the last editor mode per tab and add hybrid cold-start/scroll benchmarks.
+1. Hybrid cold-start/scroll benchmarks.
 2. Inline image rendering inside the source view, not only preview.
 3. Markdown table editing and task checkboxes in preview.
 4. Bookmark groups and a search scope selector.
