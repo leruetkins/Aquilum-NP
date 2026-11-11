@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use fontdue::Font;
 use jni::objects::{JClass, JObject, JString};
-use jni::sys::{jboolean, jfloat, jint, jstring};
+use jni::sys::{jboolean, jfloat, jint, jlong, jstring};
 use jni::JNIEnv;
 use serde::Deserialize;
 use serde_json::json;
@@ -3052,6 +3052,20 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSelectio
 }
 
 #[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorGetSelection(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+) -> jlong {
+    with_surface(id, |state| {
+        let sel = (state.editor.selection as u64) & 0xffffffff;
+        let anc = (state.editor.anchor as u64) & 0xffffffff;
+        ((sel << 32) | anc) as i64
+    })
+    .unwrap_or(0)
+}
+
+#[no_mangle]
 pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorLayoutInfo(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -3290,6 +3304,7 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceRender(
     _class: JClass<'_>,
     id: jint,
 ) -> jfloat {
+    let t0 = std::time::Instant::now();
     let (window, origin) = with_surface(id, |state| (state.window, state.editor.band_origin))
         .unwrap_or((std::ptr::null_mut(), 0.0));
     if window.is_null() {
@@ -3300,9 +3315,11 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceRender(
     let locked = unsafe {
         ANativeWindow_lock(window, &mut buffer, std::ptr::null_mut())
     };
+    let t_lock = t0.elapsed();
     if locked != 0 || buffer.bits.is_null() {
         return origin;
     }
+    let t1 = std::time::Instant::now();
     let rendered_origin = with_surface(id, |state| {
         // Apply the newest touch position only once the buffer is available:
         // locking can wait for the compositor, and a frame drawn with the
@@ -3326,8 +3343,21 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceRender(
         state.editor.band_origin
     })
     .unwrap_or(origin);
+    let t_paint = t1.elapsed();
+    let t2 = std::time::Instant::now();
     unsafe {
         ANativeWindow_unlockAndPost(window);
+    }
+    let t_post = t2.elapsed();
+    unsafe {
+        __android_log_print(
+            3,
+            b"VibecodiumRust\0".as_ptr(),
+            b"nativeSurfaceRender: lock=%.2fms, paint=%.2fms, post=%.2fms\0".as_ptr(),
+            t_lock.as_secs_f64() * 1000.0,
+            t_paint.as_secs_f64() * 1000.0,
+            t_post.as_secs_f64() * 1000.0,
+        );
     }
     rendered_origin
 }

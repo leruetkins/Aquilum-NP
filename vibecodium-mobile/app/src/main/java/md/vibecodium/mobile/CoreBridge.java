@@ -117,6 +117,8 @@ public final class CoreBridge {
 
     public static native String nativeEditorSelectionState(int id);
 
+    public static native long nativeEditorGetSelection(int id);
+
     public static native String nativeEditorLayoutInfo(int id);
 
     public static native String nativeEditorSelectionHandles(int id);

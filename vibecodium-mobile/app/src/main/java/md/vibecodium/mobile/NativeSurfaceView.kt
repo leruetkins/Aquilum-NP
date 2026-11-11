@@ -574,6 +574,8 @@ class NativeEditorView(
     private var bandOrigin = 0f
     private val bandQueue = ConcurrentLinkedQueue<Float>()
     private val isRenderingBand = AtomicBoolean(false)
+    @Volatile
+    private var forcePendingBandRender = false
     private var pendingBandOrigin: Float? = null
 
     private inner class ScrollbarOverlayView(context: Context) : View(context) {
@@ -628,18 +630,16 @@ class NativeEditorView(
     }
 
     override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {
-        val rendered = bandQueue.poll()
-        if (rendered != null) {
-            bandOrigin = rendered.roundToInt().toFloat()
+        val tNow = SystemClock.uptimeMillis()
+        var latest: Float? = null
+        while (true) {
+            val r = bandQueue.poll() ?: break
+            latest = r
+        }
+        if (latest != null) {
+            bandOrigin = latest.roundToInt().toFloat()
             applyScrollTranslation()
-            isRenderingBand.set(false)
-            val pending = pendingBandOrigin
-            val m = computeBandMargin(height).toFloat()
-            if (pending != null && kotlin.math.abs(pending - bandOrigin) > m * 0.35f) {
-                if (isRenderingBand.compareAndSet(false, true)) {
-                    dispatchBandRender(pending)
-                }
-            }
+            android.util.Log.d("VibecodiumRender", "onSurfaceTextureUpdated: bandOrigin=$bandOrigin at $tNow")
         }
     }
 
@@ -662,9 +662,14 @@ class NativeEditorView(
 
     private fun scheduleBandRender(targetOrigin: Float, force: Boolean = false) {
         val origin = targetOrigin.coerceIn(0f, scrollMaxY).roundToInt().toFloat()
-        if (!force && kotlin.math.abs(origin - bandOrigin) < 1f && !isRenderingBand.get()) return
+        if (force) {
+            forcePendingBandRender = true
+        } else if (kotlin.math.abs(origin - bandOrigin) < 1f && !isRenderingBand.get()) {
+            return
+        }
         pendingBandOrigin = origin
         if (isRenderingBand.compareAndSet(false, true)) {
+            forcePendingBandRender = false
             dispatchBandRender(origin)
         }
     }
@@ -678,15 +683,30 @@ class NativeEditorView(
     }
 
     private fun dispatchBandRender(origin: Float) {
+        val roundedOrigin = origin.roundToInt().toFloat()
         renderer.execute {
-            if (!isSurfaceAttached()) {
+            try {
+                if (!isSurfaceAttached()) {
+                    return@execute
+                }
+                CoreBridge.nativeEditorSetBand(surfaceId, roundedOrigin)
+                val renderedOrigin = CoreBridge.nativeSurfaceRender(surfaceId)
+                bandQueue.add(renderedOrigin)
+                mainHandler.post {
+                    textureView.postInvalidateOnAnimation()
+                }
+            } finally {
                 isRenderingBand.set(false)
-                return@execute
+                mainHandler.post {
+                    val pending = pendingBandOrigin
+                    val m = computeBandMargin(height).toFloat()
+                    val shouldRender = forcePendingBandRender ||
+                        (pending != null && kotlin.math.abs(pending - bandOrigin) > m * 0.35f)
+                    if (shouldRender && pending != null) {
+                        scheduleBandRender(pending, force = forcePendingBandRender)
+                    }
+                }
             }
-            val roundedOrigin = origin.roundToInt().toFloat()
-            CoreBridge.nativeEditorSetBand(surfaceId, roundedOrigin)
-            val renderedOrigin = CoreBridge.nativeSurfaceRender(surfaceId)
-            bandQueue.add(renderedOrigin)
         }
     }
 
@@ -1724,7 +1744,7 @@ class NativeEditorView(
         syncHandles()
         val current = actionMode
         if (current == null) {
-            actionMode = startActionMode(selectionCallback, ActionMode.TYPE_FLOATING)
+            actionMode = runCatching { startActionMode(selectionCallback, ActionMode.TYPE_FLOATING) }.getOrNull()
         } else {
             current.invalidate()
             current.invalidateContentRect()
@@ -1737,7 +1757,7 @@ class NativeEditorView(
         insertionActionMode?.finish()
         syncHandles()
         if (insertionHandle == null) return
-        insertionActionMode = startActionMode(insertionCallback, ActionMode.TYPE_FLOATING)
+        insertionActionMode = runCatching { startActionMode(insertionCallback, ActionMode.TYPE_FLOATING) }.getOrNull()
     }
 
     private fun applyInsertionHandleVisible(visible: Boolean) {
@@ -1950,16 +1970,18 @@ class NativeEditorView(
                     lastTapY = event.y
                     if (doubleTap) {
                         CoreBridge.nativeEditorSelectWord(surfaceId, event.x, event.y)
-                        syncFromNative(notify = true)
+                        syncSelectionFromNative()
                         requestFocus()
                         requestRender()
                         helper.invalidateRoot()
                         showSelectionActions()
                         return true
                     } else {
+                        val t0 = SystemClock.uptimeMillis()
                         CoreBridge.nativeEditorSelectAt(surfaceId, event.x, event.y, false)
-                        syncFromNative(notify = true)
-                        saveViewport()
+                        val t1 = SystemClock.uptimeMillis()
+                        syncSelectionFromNative()
+                        val t2 = SystemClock.uptimeMillis()
                         if (selectionNonEmpty()) {
                             showSelectionActions()
                         } else {
@@ -1974,8 +1996,11 @@ class NativeEditorView(
                                 startCaretBlink()
                             }
                         }
+                        val t3 = SystemClock.uptimeMillis()
                         requestRender()
+                        val t4 = SystemClock.uptimeMillis()
                         helper.invalidateRoot()
+                        android.util.Log.d("VibecodiumTap", "Tap timing: selectAt=${t1-t0}ms, syncSel=${t2-t1}ms, actions=${t3-t2}ms, reqRender=${t4-t3}ms, total=${t4-t0}ms")
                         return true
                     }
                 } else {
@@ -2144,6 +2169,17 @@ class NativeEditorView(
         } else {
             mainHandler.post { notifySelectionChanged() }
         }
+    }
+
+    private fun syncSelectionFromNative() {
+        val packed = CoreBridge.nativeEditorGetSelection(surfaceId)
+        val selection = (packed ushr 32).toInt().coerceIn(0, mirrorText.length)
+        val anchor = (packed.toInt()).coerceIn(0, mirrorText.length)
+        mirrorSelection = selection
+        mirrorAnchor = anchor
+        syncHandles()
+        actionMode?.invalidateContentRect()
+        notifySelectionChanged()
     }
 
     private fun syncFromNative(notify: Boolean) {
