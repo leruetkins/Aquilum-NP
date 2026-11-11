@@ -735,7 +735,7 @@ class NativeEditorView(
     private var caretVisible = true
     private val caretBlink = object : Runnable {
         override fun run() {
-            if (!isFocused || selectionNonEmpty()) {
+            if ((!isFocused && !inPreview) || selectionNonEmpty()) {
                 applyCaretVisible(true)
                 return
             }
@@ -801,9 +801,13 @@ class NativeEditorView(
         override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
             if (selectionNonEmpty()) {
                 menu.add(Menu.NONE, MENU_COPY, 0, "Copy")
-                menu.add(Menu.NONE, MENU_CUT, 1, "Cut")
+                if (!inPreview) {
+                    menu.add(Menu.NONE, MENU_CUT, 1, "Cut")
+                }
             }
-            menu.add(Menu.NONE, MENU_PASTE, 2, "Paste")
+            if (!inPreview) {
+                menu.add(Menu.NONE, MENU_PASTE, 2, "Paste")
+            }
             menu.add(Menu.NONE, MENU_SELECT_ALL, 3, "Select all")
             return true
         }
@@ -1049,15 +1053,21 @@ class NativeEditorView(
     fun setEditorPreview(preview: Boolean) {
         if (preview == inPreview) return
         inPreview = preview
-        if (!preview) {
-            requestFullRender()
-            return
+        postRenderTask {
+            CoreBridge.nativeEditorSetPreview(surfaceId, preview)
         }
         stopFling()
         recycleVelocity()
         actionMode?.finish()
-        stopCaretBlink()
-        clearFocus()
+        insertionActionMode?.finish()
+        if (preview) {
+            applyInsertionHandleVisible(false)
+            hideKeyboard()
+            clearFocus()
+        }
+        applyCaretVisible(true)
+        startCaretBlink()
+        requestFullRender()
     }
 
     /**
@@ -1075,7 +1085,7 @@ class NativeEditorView(
     private fun startCaretBlink() {
         removeCallbacks(caretBlink)
         applyCaretVisible(true)
-        if (isFocused && !selectionNonEmpty()) {
+        if ((isFocused || inPreview) && !selectionNonEmpty()) {
             postDelayed(caretBlink, 500L)
         }
     }
@@ -1092,7 +1102,7 @@ class NativeEditorView(
 
     private fun resumeCaretBlink() {
         removeCallbacks(caretBlink)
-        if (!isFocused || selectionNonEmpty()) return
+        if ((!isFocused && !inPreview) || selectionNonEmpty()) return
         applyCaretVisible(true)
         postDelayed(caretBlink, 500L)
     }
@@ -1103,11 +1113,13 @@ class NativeEditorView(
         previouslyFocusedRect: Rect?,
     ) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
-        if (gainFocus) {
+        if (gainFocus || inPreview) {
             startCaretBlink()
         } else {
             stopCaretBlink()
             actionMode?.finish()
+            insertionActionMode?.finish()
+            applyInsertionHandleVisible(false)
         }
     }
 
@@ -1204,8 +1216,10 @@ class NativeEditorView(
         if (topInset >= 0f) {
             CoreBridge.nativeEditorSetTopInset(surfaceId, topInset)
         }
+        CoreBridge.nativeEditorSetPreview(surfaceId, inPreview)
         caretVisible = true
         CoreBridge.nativeEditorSetCaretVisible(surfaceId, true)
+        CoreBridge.nativeEditorSetInsertionHandleVisible(surfaceId, !inPreview)
         lastPath?.let { path ->
             loadViewport(path)?.let { (scroll, scrollX) ->
                 CoreBridge.nativeEditorSetScroll(surfaceId, scroll, scrollX)
@@ -1217,7 +1231,7 @@ class NativeEditorView(
         val m = computeBandMargin(height).toFloat()
         bandOrigin = (knownScroll - m).coerceAtLeast(0f).roundToInt().toFloat()
         CoreBridge.nativeEditorSetBand(surfaceId, bandOrigin)
-        if (isFocused && !selectionNonEmpty()) startCaretBlink()
+        if (!selectionNonEmpty()) startCaretBlink()
         syncHandles()
         mainHandler.post { applyScrollTranslation() }
     }
@@ -1642,7 +1656,8 @@ class NativeEditorView(
         }
     }
 
-    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
+    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
+        if (inPreview) return null
         outAttrs.inputType = InputType.TYPE_CLASS_TEXT or
             InputType.TYPE_TEXT_FLAG_MULTI_LINE or
             InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
@@ -1717,6 +1732,7 @@ class NativeEditorView(
     }
 
     private fun showInsertionActions() {
+        if (inPreview) return
         actionMode?.finish()
         insertionActionMode?.finish()
         syncHandles()
@@ -1725,10 +1741,11 @@ class NativeEditorView(
     }
 
     private fun applyInsertionHandleVisible(visible: Boolean) {
+        val targetVisible = if (inPreview) false else visible
         removeCallbacks(hideInsertionRunnable)
-        CoreBridge.nativeEditorSetInsertionHandleVisible(surfaceId, visible)
+        CoreBridge.nativeEditorSetInsertionHandleVisible(surfaceId, targetVisible)
         requestRender()
-        if (visible) {
+        if (targetVisible) {
             syncHandles()
             postDelayed(hideInsertionRunnable, 4000L)
         } else {
@@ -1948,10 +1965,14 @@ class NativeEditorView(
                         } else {
                             actionMode?.finish()
                             insertionActionMode?.finish()
-                            requestFocus()
-                            startCaretBlink()
-                            applyInsertionHandleVisible(true)
-                            onCaretPlaced?.invoke()
+                            if (!inPreview) {
+                                requestFocus()
+                                startCaretBlink()
+                                applyInsertionHandleVisible(true)
+                                onCaretPlaced?.invoke()
+                            } else {
+                                startCaretBlink()
+                            }
                         }
                         requestRender()
                         helper.invalidateRoot()
@@ -2043,6 +2064,7 @@ class NativeEditorView(
     }
 
     fun showKeyboard() {
+        if (inPreview) return
         requestFocus()
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
         imm?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)

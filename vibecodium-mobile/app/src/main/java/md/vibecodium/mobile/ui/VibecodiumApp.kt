@@ -813,39 +813,6 @@ private fun EditorScreen(
             onViewReady,
             onCaretPlaced,
         )
-        if (preview) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .pointerInput(Unit) {
-                        awaitPointerEventScope {
-                            while (true) {
-                                awaitPointerEvent().changes.forEach { it.consume() }
-                            }
-                        }
-                    },
-                color = MaterialTheme.colorScheme.background,
-            ) {
-                if (tab.language != null) {
-                    CodeViewer(
-                        tab,
-                        Modifier.fillMaxSize(),
-                        ViewHeaderTopPadding + ViewHeaderHeight + 10.dp,
-                        bottomInset,
-                        onEditorScroll,
-                    )
-                } else {
-                    MarkdownPreview(
-                        state,
-                        controller,
-                        tab,
-                        ViewHeaderTopPadding + ViewHeaderHeight,
-                        bottomInset,
-                        onEditorScroll,
-                    )
-                }
-            }
-        }
         Box(
             Modifier
                 .align(Alignment.TopCenter)

@@ -1180,6 +1180,7 @@ struct EditorState {
     top_inset: f32,
     caret_visible: bool,
     insertion_handle_visible: bool,
+    preview: bool,
     starts: Vec<usize>,
     byte_starts: Vec<usize>,
     starts_dirty: bool,
@@ -2165,7 +2166,11 @@ impl SurfaceState {
         let visible = (self.height as f32 / line_h).ceil() as usize + 2;
         let last = total_visual.min(first + visible);
         let (selection_start, selection_end) = self.selected_range();
-        let cursor_line = line_of(&starts, self.editor.selection);
+        let cursor_line = if self.editor.preview {
+            usize::MAX
+        } else {
+            line_of(&starts, self.editor.selection)
+        };
         let (cursor_visual, cursor_offset) =
             self.visual_for_position(&starts, self.editor.selection);
         let model = std::mem::take(&mut self.editor.model);
@@ -2831,7 +2836,11 @@ impl SurfaceState {
         let raw = logical_line(&self.editor.text, &self.editor.byte_starts, chunk.line);
         let chars: Vec<char> = raw.chars().collect();
         let mut hidden = vec![false; chars.len()];
-        let cursor_line = line_of(&self.editor.starts, self.editor.selection);
+        let cursor_line = if self.editor.preview {
+            usize::MAX
+        } else {
+            line_of(&self.editor.starts, self.editor.selection)
+        };
         if chunk.line != cursor_line && !self.editor.model.is_empty() {
             if let Some(line) = self.editor.model.get(chunk.line) {
                 match line.kind.as_str() {
@@ -3464,6 +3473,19 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetInser
     let _ = with_surface(id, |state| {
         state.invalidate();
         state.editor.insertion_handle_visible = visible != 0;
+    });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetPreview(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+    preview: jboolean,
+) {
+    let _ = with_surface(id, |state| {
+        state.invalidate();
+        state.editor.preview = preview != 0;
     });
 }
 

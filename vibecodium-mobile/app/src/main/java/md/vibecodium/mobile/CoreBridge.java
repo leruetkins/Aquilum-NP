@@ -131,6 +131,8 @@ public final class CoreBridge {
 
     public static native void nativeEditorSetInsertionHandleVisible(int id, boolean visible);
 
+    public static native void nativeEditorSetPreview(int id, boolean preview);
+
     public static native float nativeEditorScroll(int id);
 
     public static native void nativeEditorSetBand(int id, float origin);
