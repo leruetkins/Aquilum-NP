@@ -4,11 +4,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Counts are split so the UI can show how many files exist on each side and
@@ -122,13 +125,13 @@ class SyncEngine(
     private val filter: SyncFilter = SyncFilter(),
     private val progress: suspend (SyncProgress) -> Unit = {},
 ) {
-    private val bytesCache = ConcurrentHashMap<String, ByteArray>()
     private val hashCache = ConcurrentHashMap<String, String>()
+    /** Serialises record writes; SQLite handles reads but the plan runs in parallel. */
+    private val recordsLock = Mutex()
 
     suspend fun sync(remoteRoot: String, localSnapshot: List<VaultFile>? = null): SyncOutcome {
         // A pass must see the current disk; a previous pass may have cached
-        // bytes before an external edit.
-        bytesCache.clear()
+        // hashes before an external edit.
         hashCache.clear()
 
         progress(SyncProgress("Scanning local files"))
@@ -255,78 +258,91 @@ class SyncEngine(
             ),
         )
 
-        var uploaded = 0
-        var downloaded = 0
-        var deletedLocal = 0
-        var deletedRemote = 0
-        var conflicts = 0
-        var skipped = 0
+        val uploaded = AtomicInteger()
+        val downloaded = AtomicInteger()
+        val deletedLocal = AtomicInteger()
+        val deletedRemote = AtomicInteger()
+        val conflicts = AtomicInteger()
+        val skipped = AtomicInteger()
+        val done = AtomicInteger()
         val usedPaths = paths.toMutableSet()
-        var done = 0
+        // Conflict copies pick a unique name from usedPaths, so only one
+        // conflict may resolve at a time even though transfers run in parallel.
+        val conflictLock = Mutex()
+        val progressLock = Mutex()
 
-        for (decision in plan) {
-            done += 1
-            progress(
-                SyncProgress(
-                    phase = "Syncing cloud files",
-                    done = done,
-                    total = plan.size,
-                    localFiles = localFiles.size,
-                    remoteFiles = remoteFiles,
-                    planned = plan.size,
-                    kind = SyncProgressKind.Transferring,
-                ),
-            )
+        suspend fun step(decision: Decision) {
+            progressLock.withLock {
+                val stepDone = done.incrementAndGet()
+                progress(
+                    SyncProgress(
+                        phase = "Syncing cloud files",
+                        done = stepDone,
+                        total = plan.size,
+                        localFiles = localFiles.size,
+                        remoteFiles = remoteFiles,
+                        planned = plan.size,
+                        kind = SyncProgressKind.Transferring,
+                    ),
+                )
+            }
             when (decision) {
-                is Decision.Forget -> records.remove(vaultKey, decision.path)
+                is Decision.Forget ->
+                    recordsLock.withLock { records.remove(vaultKey, decision.path) }
                 is Decision.Noop -> Unit
-                is Decision.Skip -> skipped += 1
+                is Decision.Skip -> skipped.incrementAndGet()
 
                 is Decision.DeleteLocal -> {
                     repository.deleteFile(decision.path)
-                    records.remove(vaultKey, decision.path)
-                    deletedLocal += 1
+                    recordsLock.withLock { records.remove(vaultKey, decision.path) }
+                    deletedLocal.incrementAndGet()
                 }
 
                 is Decision.DeleteRemote -> {
                     provider.delete(remotePath(remoteRoot, decision.path))
-                    records.remove(vaultKey, decision.path)
-                    deletedRemote += 1
+                    recordsLock.withLock { records.remove(vaultKey, decision.path) }
+                    deletedRemote.incrementAndGet()
                 }
 
                 is Decision.Upload -> {
-                    val local = localFiles[decision.path] ?: continue
+                    val local = localFiles[decision.path] ?: return
                     if (local.size > MAX_SYNC_FILE) {
-                        skipped += 1
-                        continue
+                        skipped.incrementAndGet()
+                        return
                     }
-                    val bytes = bytes(local.path)
+                    // No pass-wide byte cache: large attachments would stay
+                    // resident for the whole transfer and could exhaust memory.
+                    val bytes = repository.readBytes(local.path)
                     if (bytes == null) {
-                        skipped += 1
-                        continue
+                        skipped.incrementAndGet()
+                        return
                     }
                     val hash = sha256(bytes)
                     try {
                         val target = remotePath(remoteRoot, decision.path)
                         val entry = uploadWithMetadata(target, bytes, decision.rev)
-                        records.put(
-                            vaultKey,
-                            record(local, hash, entry.rev, entry.contentHash),
-                        )
-                        uploaded += 1
+                        recordsLock.withLock {
+                            records.put(
+                                vaultKey,
+                                record(local, hash, entry.rev, entry.contentHash),
+                            )
+                        }
+                        uploaded.incrementAndGet()
                     } catch (error: DropboxException) {
                         if (error.status == 409 && error.summary.contains("conflict")) {
                             val remote = provider.download(remotePath(remoteRoot, local.path))
-                            resolveConflict(
-                                remoteRoot = remoteRoot,
-                                path = local.path,
-                                local = local,
-                                localBytes = bytes,
-                                localHash = hash,
-                                remote = remote,
-                                usedPaths = usedPaths,
-                            )
-                            conflicts += 1
+                            conflictLock.withLock {
+                                resolveConflict(
+                                    remoteRoot = remoteRoot,
+                                    path = local.path,
+                                    local = local,
+                                    localBytes = bytes,
+                                    localHash = hash,
+                                    remote = remote,
+                                    usedPaths = usedPaths,
+                                )
+                            }
+                            conflicts.incrementAndGet()
                         } else {
                             throw error
                         }
@@ -336,50 +352,64 @@ class SyncEngine(
                 is Decision.Download -> {
                     val remote = decision.remote
                     if (remote.size > MAX_SYNC_FILE) {
-                        skipped += 1
-                        continue
+                        skipped.incrementAndGet()
+                        return
                     }
                     val download = provider.download(remotePath(remoteRoot, remote.path))
                     repository.writeBytes(remote.path, download.bytes)
-                    records.put(
-                        vaultKey,
-                        SyncRecord(
-                            path = remote.path,
-                            localHash = sha256(download.bytes),
-                            localSize = download.bytes.size.toLong(),
-                            localModified = System.currentTimeMillis(),
-                            remoteRev = download.rev,
-                            remoteHash = download.contentHash,
-                            updatedAt = System.currentTimeMillis(),
-                        ),
-                    )
-                    downloaded += 1
+                    recordsLock.withLock {
+                        records.put(
+                            vaultKey,
+                            SyncRecord(
+                                path = remote.path,
+                                localHash = sha256(download.bytes),
+                                localSize = download.bytes.size.toLong(),
+                                localModified = System.currentTimeMillis(),
+                                remoteRev = download.rev,
+                                remoteHash = download.contentHash,
+                                updatedAt = System.currentTimeMillis(),
+                            ),
+                        )
+                    }
+                    downloaded.incrementAndGet()
                 }
 
                 is Decision.Conflict -> {
-                    val local = localFiles[decision.path] ?: continue
+                    val local = localFiles[decision.path] ?: return
                     if (local.size > MAX_SYNC_FILE) {
-                        skipped += 1
-                        continue
+                        skipped.incrementAndGet()
+                        return
                     }
-                    val bytes = bytes(local.path)
+                    val bytes = repository.readBytes(local.path)
                     if (bytes == null) {
-                        skipped += 1
-                        continue
+                        skipped.incrementAndGet()
+                        return
                     }
                     val hash = sha256(bytes)
                     val remote = provider.download(remotePath(remoteRoot, decision.remote.path))
-                    resolveConflict(
-                        remoteRoot = remoteRoot,
-                        path = local.path,
-                        local = local,
-                        localBytes = bytes,
-                        localHash = hash,
-                        remote = remote,
-                        usedPaths = usedPaths,
-                    )
-                    conflicts += 1
+                    conflictLock.withLock {
+                        resolveConflict(
+                            remoteRoot = remoteRoot,
+                            path = local.path,
+                            local = local,
+                            localBytes = bytes,
+                            localHash = hash,
+                            remote = remote,
+                            usedPaths = usedPaths,
+                        )
+                    }
+                    conflicts.incrementAndGet()
                 }
+            }
+        }
+
+        // Bounded batch execution: a first sync can plan thousands of files,
+        // and a Dropbox download/upload round trip dominates each item.
+        plan.chunked(TRANSFER_CONCURRENCY).forEach { chunk ->
+            coroutineScope {
+                chunk.map { decision ->
+                    async(Dispatchers.IO) { step(decision) }
+                }.awaitAll()
             }
         }
 
@@ -394,12 +424,12 @@ class SyncEngine(
             ),
         )
         return SyncOutcome(
-            uploaded = uploaded,
-            downloaded = downloaded,
-            deletedLocal = deletedLocal,
-            deletedRemote = deletedRemote,
-            conflicts = conflicts,
-            skipped = skipped,
+            uploaded = uploaded.get(),
+            downloaded = downloaded.get(),
+            deletedLocal = deletedLocal.get(),
+            deletedRemote = deletedRemote.get(),
+            conflicts = conflicts.get(),
+            skipped = skipped.get(),
             lastSync = now,
         )
     }
@@ -440,7 +470,7 @@ class SyncEngine(
                     localDiffers && !remoteDiffers -> Decision.Upload(path, remote.rev)
                     !localDiffers && remoteDiffers -> Decision.Download(path, remote)
                     sameContent(local, remote) -> {
-                        val bytes = bytes(local.path)
+                        val bytes = repository.readBytes(local.path)
                         if (bytes != null) {
                             records.put(
                                 vaultKey,
@@ -479,7 +509,7 @@ class SyncEngine(
 
     private suspend fun sameContent(local: VaultFile, remote: RemoteEntry): Boolean {
         if (remote.contentHash.isBlank()) return false
-        val bytes = bytes(local.path) ?: return false
+        val bytes = repository.readBytes(local.path) ?: return false
         return dropboxContentHash(bytes) == remote.contentHash
     }
 
@@ -497,25 +527,29 @@ class SyncEngine(
         repository.writeBytes(conflictPath, remote.bytes)
         val conflictRemotePath = remotePath(remoteRoot, conflictPath)
         val conflictEntry = uploadWithMetadata(conflictRemotePath, remote.bytes, null)
-        records.put(
-            vaultKey,
-            SyncRecord(
-                path = conflictPath,
-                localHash = sha256(remote.bytes),
-                localSize = remote.bytes.size.toLong(),
-                localModified = System.currentTimeMillis(),
-                remoteRev = conflictEntry.rev,
-                remoteHash = conflictEntry.contentHash,
-                updatedAt = System.currentTimeMillis(),
-            ),
-        )
+        recordsLock.withLock {
+            records.put(
+                vaultKey,
+                SyncRecord(
+                    path = conflictPath,
+                    localHash = sha256(remote.bytes),
+                    localSize = remote.bytes.size.toLong(),
+                    localModified = System.currentTimeMillis(),
+                    remoteRev = conflictEntry.rev,
+                    remoteHash = conflictEntry.contentHash,
+                    updatedAt = System.currentTimeMillis(),
+                ),
+            )
+        }
 
         val updated = uploadWithMetadata(
             remotePath(remoteRoot, path),
             localBytes,
             remote.rev,
         )
-        records.put(vaultKey, record(local, localHash, updated.rev, updated.contentHash))
+        recordsLock.withLock {
+            records.put(vaultKey, record(local, localHash, updated.rev, updated.contentHash))
+        }
     }
 
     /**
@@ -537,9 +571,6 @@ class SyncEngine(
             size = if (entry.size > 0) entry.size else repaired.size,
         )
     }
-
-    private suspend fun bytes(path: String): ByteArray? =
-        bytesCache[path] ?: repository.readBytes(path)?.also { bytesCache[path] = it }
 
     private suspend fun hashOnly(path: String): String? {
         hashCache[path]?.let { return it }
@@ -630,6 +661,7 @@ class SyncEngine(
     private companion object {
         const val MAX_SYNC_FILE = 10L * 1024 * 1024
         const val HASH_CONCURRENCY = 4
+        const val TRANSFER_CONCURRENCY = 4
 
         fun remotePath(root: String, relative: String): String =
             root.trimEnd('/') + "/" + relative.trimStart('/')

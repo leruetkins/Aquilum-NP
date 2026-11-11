@@ -4,11 +4,12 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.ConcurrentHashMap
 
 class SyncEngineTest {
     private class FakeRepository(
-        val files: MutableMap<String, ByteArray> = mutableMapOf(),
-        val modified: MutableMap<String, Long> = mutableMapOf(),
+        val files: MutableMap<String, ByteArray> = ConcurrentHashMap(),
+        val modified: MutableMap<String, Long> = ConcurrentHashMap(),
     ) : VaultRepository {
         override val name: String = "vault"
         override val isScoped: Boolean = false
@@ -55,8 +56,8 @@ class SyncEngineTest {
     }
 
     private class FakeRecords : SyncRecords {
-        private val records = mutableMapOf<Pair<String, String>, SyncRecord>()
-        private val states = mutableMapOf<String, SyncState>()
+        private val records = ConcurrentHashMap<Pair<String, String>, SyncRecord>()
+        private val states = ConcurrentHashMap<String, SyncState>()
 
         override fun get(vault: String, path: String): SyncRecord? = records[vault to path]
         override fun all(vault: String): Map<String, SyncRecord> =
@@ -77,8 +78,8 @@ class SyncEngineTest {
     }
 
     private class FakeProvider : SyncProvider {
-        val remote = mutableMapOf<String, ByteArray>()
-        val revs = mutableMapOf<String, Int>()
+        val remote = ConcurrentHashMap<String, ByteArray>()
+        val revs = ConcurrentHashMap<String, Int>()
         val root = "/vault"
         var listCalls = 0
         var latestCursorCalls = 0
@@ -164,6 +165,25 @@ class SyncEngineTest {
         val transfers = events.filter { it.kind == SyncProgressKind.Transferring }
         assertTrue(transfers.isNotEmpty())
         assertTrue(transfers.all { it.total > 0 })
+    }
+
+    @Test
+    fun parallelTransfersUploadEveryFile() = runBlocking {
+        val repository = FakeRepository()
+        repeat(10) { index ->
+            repository.files["note$index.md"] = "body$index".toByteArray()
+        }
+        val provider = FakeProvider()
+        val events = mutableListOf<SyncProgress>()
+        val outcome = engine(repository, FakeRecords(), provider) { events += it }.sync("/vault")
+
+        assertEquals(10, outcome.uploaded)
+        assertEquals(10, provider.remote.size)
+        val counters = events
+            .filter { it.kind == SyncProgressKind.Transferring }
+            .map { it.done }
+        assertEquals(counters.sorted(), counters)
+        assertEquals(10, counters.last())
     }
 
     @Test

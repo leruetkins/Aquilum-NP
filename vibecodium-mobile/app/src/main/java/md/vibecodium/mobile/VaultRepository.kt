@@ -13,6 +13,9 @@ import java.io.InputStream
 import java.net.URLDecoder
 import java.security.MessageDigest
 import java.util.ArrayDeque
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 /**
  * One regular file in the vault, relative to its root.
@@ -413,6 +416,14 @@ private class SafVaultRepository(
     private val buildLock = Any()
     private var generation = 0
 
+    @Volatile
+    private var scanPoolOrNull: ExecutorService? = null
+
+    private fun scanPool(): ExecutorService = scanPoolOrNull ?: synchronized(this) {
+        scanPoolOrNull ?: Executors.newFixedThreadPool(SAF_SCAN_CONCURRENCY)
+            .also { scanPoolOrNull = it }
+    }
+
     override val name: String = root.name?.takeIf { it.isNotBlank() } ?: "Vault"
     override val isScoped: Boolean = true
 
@@ -596,6 +607,7 @@ private class SafVaultRepository(
 
     override fun close() {
         searchIndexOrNull?.close()
+        scanPoolOrNull?.shutdownNow()
     }
 
     private fun snapshotFrom(value: SafIndex): VaultSnapshot = synchronized(indexLock) {
@@ -633,62 +645,85 @@ private class SafVaultRepository(
 
     private fun buildIndex(): SafIndex {
         val result = SafIndex()
-        val pending = ArrayDeque<Pair<Uri, String>>()
-        pending.add(treeBase to "")
-        val visited = HashSet<String>()
+        val visited = java.util.Collections.synchronizedSet(HashSet<String>())
+        // Breadth-first levels let sibling folders be queried concurrently:
+        // cloud SAF providers spend most of the walk in per-folder queries.
+        var level = listOf(treeBase to "")
+        while (level.isNotEmpty()) {
+            val tasks = level.map { (directoryUri, prefix) ->
+                Callable { scanDirectory(directoryUri, prefix, visited) }
+            }
+            val scans = scanPool().invokeAll(tasks).map { it.get() }
+            val next = ArrayList<Pair<Uri, String>>()
+            for (scan in scans) {
+                for (file in scan.files) result.files[file.path] = file
+                result.folders.addAll(scan.folders)
+                result.folderUris.putAll(scan.folderUris)
+                next.addAll(scan.children)
+            }
+            level = next
+        }
+        return result
+    }
 
-        while (pending.isNotEmpty()) {
-            val (directoryUri, prefix) = pending.removeLast()
-            val directoryId = runCatching { DocumentsContract.getDocumentId(directoryUri) }.getOrNull()
-                ?: continue
-            if (!visited.add(directoryId)) continue
-            val childrenUri = runCatching {
-                DocumentsContract.buildChildDocumentsUriUsingTree(directoryUri, directoryId)
-            }.getOrNull() ?: continue
-            val cursor = queryChildren(childrenUri) ?: continue
+    private fun scanDirectory(
+        directoryUri: Uri,
+        prefix: String,
+        visited: MutableSet<String>,
+    ): DirectoryScan {
+        val directoryId = runCatching { DocumentsContract.getDocumentId(directoryUri) }.getOrNull()
+            ?: return DirectoryScan()
+        if (!visited.add(directoryId)) return DirectoryScan()
+        val childrenUri = runCatching {
+            DocumentsContract.buildChildDocumentsUriUsingTree(directoryUri, directoryId)
+        }.getOrNull() ?: return DirectoryScan()
+        val cursor = queryChildren(childrenUri) ?: return DirectoryScan()
 
-            cursor.use {
-                val idColumn = it.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-                val nameColumn = it.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-                val mimeColumn = it.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
-                val modifiedColumn = it.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
-                val sizeColumn = it.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
-                while (it.moveToNext()) {
-                    val name = when {
-                        nameColumn >= 0 -> it.getString(nameColumn)
-                        else -> null
-                    } ?: continue
-                    if (name.startsWith(".")) continue
-                    val id = when {
-                        idColumn >= 0 -> it.getString(idColumn)
-                        else -> null
-                    } ?: continue
-                    val path = if (prefix.isEmpty()) name else "$prefix/$name"
-                    if (isServicePath(path)) continue
-                    val uri = DocumentsContract.buildDocumentUriUsingTree(directoryUri, id)
-                    val mime = when {
-                        mimeColumn >= 0 -> it.getString(mimeColumn)
-                        else -> null
+        val files = ArrayList<VaultFile>()
+        val folders = ArrayList<String>()
+        val folderUris = HashMap<String, Uri>()
+        val children = ArrayList<Pair<Uri, String>>()
+        cursor.use {
+            val idColumn = it.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val nameColumn = it.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            val mimeColumn = it.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+            val modifiedColumn = it.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+            val sizeColumn = it.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+            while (it.moveToNext()) {
+                val name = when {
+                    nameColumn >= 0 -> it.getString(nameColumn)
+                    else -> null
+                } ?: continue
+                if (name.startsWith(".")) continue
+                val id = when {
+                    idColumn >= 0 -> it.getString(idColumn)
+                    else -> null
+                } ?: continue
+                val path = if (prefix.isEmpty()) name else "$prefix/$name"
+                if (isServicePath(path)) continue
+                val uri = DocumentsContract.buildDocumentUriUsingTree(directoryUri, id)
+                val mime = when {
+                    mimeColumn >= 0 -> it.getString(mimeColumn)
+                    else -> null
+                }
+                if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                    folders.add(path)
+                    folderUris[path] = uri
+                    children.add(uri to path)
+                } else {
+                    val modified = when {
+                        modifiedColumn >= 0 && !it.isNull(modifiedColumn) -> it.getLong(modifiedColumn)
+                        else -> 0L
                     }
-                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                        result.folders.add(path)
-                        result.folderUris[path] = uri
-                        pending.add(uri to path)
-                    } else {
-                        val modified = when {
-                            modifiedColumn >= 0 && !it.isNull(modifiedColumn) -> it.getLong(modifiedColumn)
-                            else -> 0L
-                        }
-                        val size = when {
-                            sizeColumn >= 0 && !it.isNull(sizeColumn) -> it.getLong(sizeColumn)
-                            else -> 0L
-                        }
-                        result.files[path] = VaultFile(path, size, modified, uri.toString())
+                    val size = when {
+                        sizeColumn >= 0 && !it.isNull(sizeColumn) -> it.getLong(sizeColumn)
+                        else -> 0L
                     }
+                    files.add(VaultFile(path, size, modified, uri.toString()))
                 }
             }
         }
-        return result
+        return DirectoryScan(files, folders, folderUris, children)
     }
 
     private fun queryChildren(uri: Uri): Cursor? {
@@ -796,7 +831,15 @@ private class SafVaultRepository(
         var snapshotCache: VaultSnapshot? = null,
     )
 
+    private class DirectoryScan(
+        val files: List<VaultFile> = emptyList(),
+        val folders: List<String> = emptyList(),
+        val folderUris: Map<String, Uri> = emptyMap(),
+        val children: List<Pair<Uri, String>> = emptyList(),
+    )
+
     private companion object {
+        const val SAF_SCAN_CONCURRENCY = 4
         val CHILD_PROJECTION = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
