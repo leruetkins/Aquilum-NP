@@ -2068,8 +2068,8 @@ class NativeEditorView(
             }
         } else {
             val ins = insertionHandle ?: return -1
-            val left = ins.x - handleSize / 2f - reach
-            val right = ins.x + handleSize / 2f + reach
+            val left = ins.x - reach
+            val right = ins.x + handleSize + reach
             val top = ins.y - reach
             val bottom = ins.y + handleSize + reach
             return if (x in left..right && y in top..bottom) 2 else -1

@@ -1382,8 +1382,7 @@ fn rounded_rect(
 
 /// Material-style teardrop handle:
 /// - `kind == 0`: start handle (left). Sharp tip at (tip_x, tip_y) pointing up-right, circular bulb hangs down-left.
-/// - `kind == 1`: end handle (right). Sharp tip at (tip_x, tip_y) pointing up-left, circular bulb hangs down-right.
-/// - `kind == 2`: insertion handle (center). Sharp tip at (tip_x, tip_y) pointing straight up, circular bulb hangs centered below it.
+/// - `kind == 1` or `2`: end handle / insertion handle (right). Sharp tip at (tip_x, tip_y) pointing up-left, circular bulb hangs down-right.
 fn draw_teardrop_handle(
     pixels: &mut [u32],
     width: usize,
@@ -1394,11 +1393,10 @@ fn draw_teardrop_handle(
     kind: i32,
     rgb: u32,
 ) {
-    let radius = (if kind == 2 { 9.0 } else { 11.0 }) * density;
+    let radius = 11.0 * density;
     let (cx, cy) = match kind {
         0 => (tip_x - radius, tip_y + radius),
-        1 => (tip_x + radius, tip_y + radius),
-        _ => (tip_x, tip_y + radius + 1.0 * density),
+        _ => (tip_x + radius, tip_y + radius),
     };
 
     let min_x = ((cx - radius).min(tip_x)).floor().max(0.0) as usize;
@@ -1420,8 +1418,7 @@ fn draw_teardrop_handle(
 
             let in_point = match kind {
                 0 => (cx <= px && px <= tip_x) && (tip_y <= py && py <= cy),
-                1 => (tip_x <= px && px <= cx) && (tip_y <= py && py <= cy),
-                _ => (tip_y <= py && py <= cy) && (px - tip_x).abs() <= (py - tip_y) * (radius / (cy - tip_y).max(0.1)),
+                _ => (tip_x <= px && px <= cx) && (tip_y <= py && py <= cy),
             };
 
             let index = row_offset + col;
