@@ -810,6 +810,8 @@ class NativeEditorView(
     private var lineStarts = intArrayOf(0)
     private val longPress = Runnable {
         if (!dragged) {
+            draggingHandle = -1
+            dismissMagnifier()
             selecting = true
             selectingDrag = false
             CoreBridge.nativeEditorSetScroll(surfaceId, knownScroll, 0f)
@@ -1844,11 +1846,16 @@ class NativeEditorView(
                     if (point != null) {
                         dragOffsetX = event.x - point.x
                         dragOffsetY = event.y - point.y
-                        updateMagnifier(point.x, point.y - handleRowHeight / 2f)
+                        if (handle != 2) {
+                            updateMagnifier(point.x, point.y - handleRowHeight / 2f)
+                        }
                     }
                     actionMode?.finish()
                     insertionActionMode?.finish()
                     recycleVelocity()
+                    if (handle == 2) {
+                        postDelayed(longPress, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                    }
                     return true
                 }
                 postDelayed(longPress, android.view.ViewConfiguration.getLongPressTimeout().toLong())
@@ -1863,7 +1870,17 @@ class NativeEditorView(
                 val y = event.getY(pointerIndex)
 
                 if (draggingHandle >= 0) {
-                    dragged = true
+                    val threshold = 8f * resources.displayMetrics.density
+                    val totalDy = kotlin.math.abs(y - downY)
+                    val totalDx = kotlin.math.abs(x - downX)
+                    if (!dragged) {
+                        if (totalDx > threshold || totalDy > threshold) {
+                            dragged = true
+                            removeCallbacks(longPress)
+                        } else {
+                            return true
+                        }
+                    }
                     CoreBridge.nativeEditorDragHandle(
                         surfaceId,
                         draggingHandle,
@@ -2109,7 +2126,7 @@ class NativeEditorView(
             val ins = insertionHandle ?: return -1
             val left = ins.x - handleSize / 2f - reach
             val right = ins.x + handleSize / 2f + reach
-            val top = ins.y - reach
+            val top = ins.y - 4f * resources.displayMetrics.density
             val bottom = ins.y + handleSize + reach
             return if (x in left..right && y in top..bottom) 2 else -1
         }
