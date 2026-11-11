@@ -102,6 +102,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -2900,32 +2901,38 @@ private enum class SettingsSection(val title: String, val icon: ImageVector) {
 
 @Composable
 private fun SettingsScreen(state: UiState, controller: VibecodiumController, modifier: Modifier) {
-    val section = SettingsSection.entries.firstOrNull { it.name == state.settingsSection }
-    BackHandler(enabled = section != null) { controller.setSettingsSection(null) }
+    // Section navigation is local: changing a settings section must not
+    // replace the app-wide UiState and recompose the drawer/editor behind it.
+    var sectionName by rememberSaveable { mutableStateOf(state.settingsSection ?: "") }
+    LaunchedEffect(state.settingsSection) {
+        sectionName = state.settingsSection ?: ""
+    }
+    val section = SettingsSection.entries.firstOrNull { it.name == sectionName }
+    BackHandler(enabled = section != null) { sectionName = "" }
     Surface(modifier = modifier, color = MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxSize()) {
             SettingsHeader(
                 title = section?.title ?: "Settings",
                 showBack = section != null,
-                onBack = { controller.setSettingsSection(null) },
+                onBack = { sectionName = "" },
                 onClose = { controller.closeSettings() },
             )
             AnimatedContent(
                 targetState = section,
                 transitionSpec = {
                     if (targetState != null) {
-                        (slideInHorizontally(tween(180)) { it } + fadeIn(tween(180))) togetherWith
-                            (slideOutHorizontally(tween(180)) { -it / 4 } + fadeOut(tween(180)))
+                        (slideInHorizontally(tween(140)) { it } + fadeIn(tween(90))) togetherWith
+                            (slideOutHorizontally(tween(140)) { -it / 4 } + fadeOut(tween(90)))
                     } else {
-                        (slideInHorizontally(tween(180)) { -it / 4 } + fadeIn(tween(180))) togetherWith
-                            (slideOutHorizontally(tween(180)) { it } + fadeOut(tween(180)))
+                        (slideInHorizontally(tween(140)) { -it / 4 } + fadeIn(tween(90))) togetherWith
+                            (slideOutHorizontally(tween(140)) { it } + fadeOut(tween(90)))
                     }
                 },
                 label = "settings-section",
                 modifier = Modifier.fillMaxSize(),
             ) { current ->
                 if (current == null) {
-                    SettingsRoot(onOpen = { controller.setSettingsSection(it.name) })
+                    SettingsRoot(onOpen = { sectionName = it.name })
                 } else {
                     SettingsSectionContent(current, state, controller)
                 }

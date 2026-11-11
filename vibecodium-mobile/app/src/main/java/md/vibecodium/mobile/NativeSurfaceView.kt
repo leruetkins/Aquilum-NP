@@ -555,6 +555,11 @@ class NativeTreeView(
     }
 
     fun setRows(json: String) {
+        // Compose calls AndroidView.update on every recomposition of the
+        // drawer, including unrelated state (settings sections, sync
+        // progress). Re-parsing and re-sending a large tree costs more than
+        // the frame, so keep the last payload.
+        if (json == lastJson) return
         lastJson = json
         val parsed = runCatching {
             val array = JSONObject(json).optJSONArray("rows") ?: JSONArray()

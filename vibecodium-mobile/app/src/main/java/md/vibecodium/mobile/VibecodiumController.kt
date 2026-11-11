@@ -782,10 +782,6 @@ class VibecodiumController(context: Context) {
         )
     }
 
-    fun setSettingsSection(section: String?) {
-        state = state.copy(settingsSection = section)
-    }
-
     fun closeSettings() {
         val active = if (state.tabs.isNotEmpty() && state.activeTab !in state.tabs.indices) {
             0
