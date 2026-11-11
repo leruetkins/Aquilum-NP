@@ -1382,7 +1382,8 @@ fn rounded_rect(
 
 /// Material-style teardrop handle:
 /// - `kind == 0`: start handle (left). Sharp tip at (tip_x, tip_y) pointing up-right, circular bulb hangs down-left.
-/// - `kind == 1` or `2`: end handle / insertion handle (right). Sharp tip at (tip_x, tip_y) pointing up-left, circular bulb hangs down-right.
+/// - `kind == 1`: end handle (right). Sharp tip at (tip_x, tip_y) pointing up-left, circular bulb hangs down-right.
+/// - `kind == 2`: insertion handle (center). Sharp tip at (tip_x, tip_y) pointing up, vertical symmetric teardrop hangs straight down.
 fn draw_teardrop_handle(
     pixels: &mut [u32],
     width: usize,
@@ -1393,6 +1394,74 @@ fn draw_teardrop_handle(
     kind: i32,
     rgb: u32,
 ) {
+    if kind == 2 {
+        let radius = 10.0 * density;
+        let h_dist = 1.38 * radius;
+        let cx = tip_x;
+        let cy = tip_y + h_dist;
+        let l_tan = (h_dist * h_dist - radius * radius).sqrt();
+        let y_tan = cy - (radius * radius) / h_dist;
+        let sin_theta = radius / h_dist;
+        let cos_theta = l_tan / h_dist;
+        let aa = (0.75 * density).max(0.5);
+
+        let min_x = (cx - radius - aa).floor().max(0.0) as usize;
+        let max_x = (cx + radius + aa).ceil().min(width as f32) as usize;
+        let min_y = (tip_y - aa).floor().max(0.0) as usize;
+        let max_y = (cy + radius + aa).ceil().min(height as f32) as usize;
+
+        for row in min_y..max_y {
+            let py = row as f32 + 0.5;
+            let row_offset = row * width;
+            let dy = py - tip_y;
+
+            for col in min_x..max_x {
+                let px = col as f32 + 0.5;
+                let dx = (px - tip_x).abs();
+
+                let alpha = if dy < 0.0 {
+                    if dy <= -aa {
+                        0
+                    } else {
+                        let w = aa.max(density);
+                        if dx > w {
+                            0
+                        } else {
+                            let h_alpha = ((w - dx) / w).clamp(0.0, 1.0);
+                            let v_alpha = ((dy + aa) / aa).clamp(0.0, 1.0);
+                            (h_alpha * v_alpha * 255.0) as u8
+                        }
+                    }
+                } else if py <= y_tan {
+                    let dist = dy * sin_theta - dx * cos_theta;
+                    if dist >= aa {
+                        255
+                    } else if dist <= -aa {
+                        0
+                    } else {
+                        (((dist + aa) / (2.0 * aa)) * 255.0).clamp(0.0, 255.0) as u8
+                    }
+                } else {
+                    let d = ((px - cx) * (px - cx) + (py - cy) * (py - cy)).sqrt();
+                    let dist = radius - d;
+                    if dist >= aa {
+                        255
+                    } else if dist <= -aa {
+                        0
+                    } else {
+                        (((dist + aa) / (2.0 * aa)) * 255.0).clamp(0.0, 255.0) as u8
+                    }
+                };
+
+                if alpha > 0 {
+                    let index = row_offset + col;
+                    pixels[index] = blend(pixels[index], rgb, alpha);
+                }
+            }
+        }
+        return;
+    }
+
     let radius = 11.0 * density;
     let (cx, cy) = match kind {
         0 => (tip_x - radius, tip_y + radius),

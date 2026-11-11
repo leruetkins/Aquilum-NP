@@ -730,6 +730,9 @@ class NativeEditorView(
     private var activePointerId = android.view.MotionEvent.INVALID_POINTER_ID
     private var dragged = false
     private var selecting = false
+    private var selectingDrag = false
+    private var longPressWordStart = -1
+    private var longPressWordEnd = -1
     private var lastTapTime = 0L
     private var lastTapX = 0f
     private var lastTapY = 0f
@@ -808,9 +811,12 @@ class NativeEditorView(
     private val longPress = Runnable {
         if (!dragged) {
             selecting = true
+            selectingDrag = false
             CoreBridge.nativeEditorSetScroll(surfaceId, knownScroll, 0f)
             CoreBridge.nativeEditorSelectWord(surfaceId, downX, downY)
             syncFromNative(notify = true)
+            longPressWordStart = minOf(mirrorAnchor, mirrorSelection)
+            longPressWordEnd = maxOf(mirrorAnchor, mirrorSelection)
             requestRender()
             helper.invalidateRoot()
             showSelectionActions()
@@ -1817,6 +1823,9 @@ class NativeEditorView(
                 lastMotionY = event.y
                 dragged = false
                 selecting = false
+                selectingDrag = false
+                longPressWordStart = -1
+                longPressWordEnd = -1
                 removeCallbacks(longPress)
                 dragStartScroll = knownScroll
                 val scrollForRust = knownScroll
@@ -1869,8 +1878,23 @@ class NativeEditorView(
                     return true
                 }
                 if (selecting) {
+                    val threshold = 8f * resources.displayMetrics.density
+                    val totalDx = kotlin.math.abs(x - downX)
+                    val totalDy = kotlin.math.abs(y - downY)
+                    if (!selectingDrag) {
+                        if (totalDx < threshold && totalDy < threshold) {
+                            return true
+                        }
+                        selectingDrag = true
+                    }
                     CoreBridge.nativeEditorSelectAt(surfaceId, x, y, true)
                     refreshSelectionFromNative()
+                    if (longPressWordStart >= 0 && longPressWordEnd >= longPressWordStart) {
+                        val currSel = mirrorSelection
+                        if (currSel in (longPressWordStart + 1) until longPressWordEnd) {
+                            selectNative(longPressWordStart, longPressWordEnd)
+                        }
+                    }
                     updateMagnifier(x, y - handleRowHeight / 2f)
                     requestRender()
                     return true
@@ -1950,10 +1974,22 @@ class NativeEditorView(
                     return true
                 }
                 if (selecting) {
-                    CoreBridge.nativeEditorSelectAt(surfaceId, event.x, event.y, true)
+                    dismissMagnifier()
+                    val wasDragging = selectingDrag
+                    val wordStart = longPressWordStart
+                    val wordEnd = longPressWordEnd
                     selecting = false
+                    selectingDrag = false
+                    longPressWordStart = -1
+                    longPressWordEnd = -1
                     recycleVelocity()
-                    syncFromNative(notify = true)
+                    if (!wasDragging) {
+                        if (wordStart in 0..wordEnd && wordEnd <= mirrorText.length) {
+                            selectNative(wordStart, wordEnd)
+                        }
+                    } else {
+                        syncFromNative(notify = true)
+                    }
                     saveViewport()
                     requestRender()
                     showSelectionActions()
@@ -2029,6 +2065,9 @@ class NativeEditorView(
                 dismissMagnifier()
                 removeCallbacks(longPress)
                 selecting = false
+                selectingDrag = false
+                longPressWordStart = -1
+                longPressWordEnd = -1
                 draggingHandle = -1
                 recycleVelocity()
                 if (dragged) {
@@ -2068,8 +2107,8 @@ class NativeEditorView(
             }
         } else {
             val ins = insertionHandle ?: return -1
-            val left = ins.x - reach
-            val right = ins.x + handleSize + reach
+            val left = ins.x - handleSize / 2f - reach
+            val right = ins.x + handleSize / 2f + reach
             val top = ins.y - reach
             val bottom = ins.y + handleSize + reach
             return if (x in left..right && y in top..bottom) 2 else -1
