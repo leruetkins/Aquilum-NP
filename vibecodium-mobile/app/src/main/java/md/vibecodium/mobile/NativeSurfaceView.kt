@@ -1358,6 +1358,23 @@ class NativeEditorView(
         mainHandler.post { applyScrollTranslation() }
     }
 
+    /** Forces a complete viewport and render refresh when an overlay (like settings) is closed. */
+    fun onOverlayDismissed() {
+        if (!inPreview) {
+            requestFocus()
+        }
+        restoreViewport()
+        requestFullRender()
+        syncHandles()
+        if (!selectionNonEmpty()) {
+            startCaretBlink()
+        }
+        mainHandler.post {
+            applyScrollTranslation()
+            textureView.postInvalidateOnAnimation()
+        }
+    }
+
     private fun loadViewport(path: String): Pair<Float, Float>? {
         val raw = prefs.getString("viewport:$path", null) ?: return null
         val parts = raw.split(',')

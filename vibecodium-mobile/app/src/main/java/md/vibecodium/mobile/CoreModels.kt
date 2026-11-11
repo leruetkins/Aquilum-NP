@@ -120,6 +120,8 @@ data class UiState(
     val vaultName: String? = null,
     val vaultRoot: String? = null,
     val vaultKind: String? = null,
+    val knownVaults: List<KnownVault> = emptyList(),
+    val vaultChooserOpen: Boolean = false,
     val notes: List<NoteItem> = emptyList(),
     val entries: List<ExplorerEntry> = emptyList(),
     /** Prebuilt tree, so opening the Files drawer never rebuilds it. */

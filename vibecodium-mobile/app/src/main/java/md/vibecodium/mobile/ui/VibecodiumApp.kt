@@ -152,6 +152,8 @@ import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import kotlin.math.roundToInt
 import androidx.compose.ui.viewinterop.AndroidView
 import md.vibecodium.mobile.AppSettingsJson
@@ -159,6 +161,8 @@ import md.vibecodium.mobile.CoreBridge
 import md.vibecodium.mobile.CoreJson
 import md.vibecodium.mobile.Drawer
 import md.vibecodium.mobile.DrawerMode
+import md.vibecodium.mobile.KnownVault
+import md.vibecodium.mobile.VaultLocator
 import md.vibecodium.mobile.DocStats
 import md.vibecodium.mobile.EditorMode
 import md.vibecodium.mobile.CodeColors
@@ -444,8 +448,8 @@ fun VibecodiumApp(controller: VibecodiumController) {
             ),
         ) {
             BackHandler(
-                enabled = state.settingsOpen || state.drawer != null || state.tabSwitcher ||
-                    state.viewerPath != null || state.historyIndex > 0,
+                enabled = state.vaultChooserOpen || state.settingsOpen || state.drawer != null ||
+                    state.tabSwitcher || state.viewerPath != null || state.historyIndex > 0,
             ) {
                 controller.back()
             }
@@ -466,6 +470,9 @@ fun VibecodiumApp(controller: VibecodiumController) {
                 }
                 if (state.newFolderOpen) {
                     NewFolderDialog(state, controller)
+                }
+                if (state.vaultChooserOpen) {
+                    VaultChooserDialog(state, controller)
                 }
             }
         }
@@ -510,6 +517,16 @@ private fun StartScreen(state: UiState, controller: VibecodiumController) {
             fontSize = 13.sp,
         )
         Spacer(Modifier.height(28.dp))
+        if (state.knownVaults.isNotEmpty()) {
+            OutlinedButton(
+                onClick = { controller.openVaultChooser() },
+                enabled = !state.loading,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Choose existing vault")
+            }
+            Spacer(Modifier.height(8.dp))
+        }
         Button(
             onClick = { folderPicker.launch(null) },
             enabled = !state.loading,
@@ -552,6 +569,7 @@ private data class EditorSlice(
     val markdownText: String,
     val bookmarks: Set<String>,
     val stats: DocStats,
+    val settingsOpen: Boolean = false,
 )
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -568,6 +586,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 markdownText = current.markdownText,
                 bookmarks = current.bookmarks,
                 stats = current.stats,
+                settingsOpen = current.settingsOpen,
             )
         }
     }
@@ -601,6 +620,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
             state.drawer,
             state.tabSwitcher,
             state.viewerPath,
+            state.settingsOpen,
             editor.value.activeTab,
             editor.value.editorMode,
         ) {
@@ -781,11 +801,18 @@ private fun EditorArea(
         0f
     }
     val bottomInsetPx = if (imeBottomPx > 0) imeBottomPx.toFloat() else navInsetPx
-    if (editor.tabs.isEmpty()) {
+    val tab = editor.tabs.getOrNull(editor.activeTab)
+        ?: editor.tabs.firstOrNull()?.also {
+            LaunchedEffect(Unit) {
+                controller.selectTab(0)
+            }
+        }
+    if (tab == null) {
         EmptyEditor(controller)
     } else {
         EditorScreen(
             editor,
+            tab,
             controller,
             imeVisible,
             navbarEnabled,
@@ -806,6 +833,7 @@ private fun phoneDrawerWidth(maxWidth: Dp): Dp {
 @Composable
 private fun EditorScreen(
     state: EditorSlice,
+    tab: Tab,
     controller: VibecodiumController,
     imeVisible: Boolean,
     navbarEnabled: Boolean,
@@ -814,7 +842,6 @@ private fun EditorScreen(
     drawerOpen: Boolean,
     onEditorScroll: (Float, Float) -> Unit,
 ) {
-    val tab = state.tabs.getOrNull(state.activeTab) ?: return
     val bottomInset = if (imeVisible || !navbarEnabled) 0.dp else NavbarHeight + 12.dp
     val preview = state.editorMode == EditorMode.Preview
     val topInsetPx = with(LocalDensity.current) { (ViewHeaderTopPadding + ViewHeaderHeight + 10.dp).toPx() }
@@ -835,6 +862,13 @@ private fun EditorScreen(
             editorView?.onKeyboardDismissed()
         }
         prevImeVisible = imeVisible
+    }
+    var prevSettingsOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(state.settingsOpen) {
+        if (prevSettingsOpen && !state.settingsOpen) {
+            editorView?.onOverlayDismissed()
+        }
+        prevSettingsOpen = state.settingsOpen
     }
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         // Keep the native editor alive while preview is open so switching
@@ -1147,7 +1181,7 @@ private fun NoteActionsMenu(
         HorizontalDivider()
         DropdownMenuItem(
             text = { Text("Open another vault") },
-            onClick = { onDismiss(); controller.closeVault() },
+            onClick = { onDismiss(); controller.openVaultChooser() },
         )
         DropdownMenuItem(
             text = { Text("About") },
@@ -1744,6 +1778,168 @@ private fun BoxScope.DrawerBackdrop(onDismiss: () -> Unit) {
 }
 
 @Composable
+private fun VaultChooserDialog(state: UiState, controller: VibecodiumController) {
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) {
+            controller.openSafVault(uri)
+            controller.closeVaultChooser()
+        }
+    }
+    Dialog(
+        onDismissRequest = { controller.closeVaultChooser() },
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
+            modifier = Modifier
+                .padding(24.dp)
+                .widthIn(max = 440.dp)
+                .fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 6.dp,
+            shadowElevation = 8.dp,
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Vaults",
+                        modifier = Modifier.weight(1f),
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    IconButton(onClick = { controller.closeVaultChooser() }) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Close",
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+                if (state.knownVaults.isEmpty()) {
+                    Text(
+                        "No saved vaults yet. Open a folder to add one.",
+                        modifier = Modifier.padding(vertical = 16.dp),
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        items(state.knownVaults, key = { it.locator.value }) { vault ->
+                            VaultChooserRow(
+                                vault = vault,
+                                current = vault.locator.value == state.vaultRoot,
+                                onOpen = { controller.openKnownVault(vault) },
+                                onForget = { controller.forgetKnownVault(vault) },
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                Button(
+                    onClick = { picker.launch(null) },
+                    enabled = !state.loading,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Open folder")
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        controller.createDemoVault()
+                        controller.closeVaultChooser()
+                    },
+                    enabled = !state.loading,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Create demo vault")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VaultChooserRow(
+    vault: KnownVault,
+    current: Boolean,
+    onOpen: () -> Unit,
+    onForget: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                if (current) {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerLowest
+                },
+            )
+            .clickable(onClick = onOpen)
+            .padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            if (vault.locator is VaultLocator.Scoped) Icons.Default.List else Icons.Default.Home,
+            contentDescription = null,
+            modifier = Modifier.size(20.dp),
+            tint = if (current) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                vault.name,
+                fontSize = 14.sp,
+                fontWeight = if (current) FontWeight.SemiBold else FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                if (vault.locator is VaultLocator.Scoped) "SAF folder" else vault.locator.value,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (current) {
+            Icon(
+                Icons.Default.Check,
+                contentDescription = "Current vault",
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        } else {
+            IconButton(
+                onClick = onForget,
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = "Remove from list",
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun LeftDrawer(state: UiState, controller: VibecodiumController, modifier: Modifier) {
     var vaultMenuOpen by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
@@ -1752,7 +1948,7 @@ private fun LeftDrawer(state: UiState, controller: VibecodiumController, modifie
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .height(58.dp)
+                    .heightIn(min = 58.dp)
                     .padding(start = 16.dp, end = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -1761,12 +1957,13 @@ private fun LeftDrawer(state: UiState, controller: VibecodiumController, modifie
                         Modifier
                             .fillMaxWidth()
                             .clickable { vaultMenuOpen = true }
-                            .padding(vertical = 4.dp),
+                            .padding(vertical = 6.dp),
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 state.vaultName ?: "Vault",
                                 fontSize = 15.sp,
+                                lineHeight = 20.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
@@ -1781,6 +1978,7 @@ private fun LeftDrawer(state: UiState, controller: VibecodiumController, modifie
                         Text(
                             syncSubtitle(state),
                             fontSize = 11.sp,
+                            lineHeight = 14.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -1793,7 +1991,7 @@ private fun LeftDrawer(state: UiState, controller: VibecodiumController, modifie
                         )
                         DropdownMenuItem(
                             text = { Text("Open another vault") },
-                            onClick = { vaultMenuOpen = false; controller.closeVault() },
+                            onClick = { vaultMenuOpen = false; controller.openVaultChooser() },
                         )
                         DropdownMenuItem(
                             text = { Text("Close drawer") },

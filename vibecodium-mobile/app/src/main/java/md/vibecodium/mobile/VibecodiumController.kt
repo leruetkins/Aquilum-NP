@@ -60,7 +60,10 @@ class VibecodiumController(context: Context) {
     }
 
     init {
-        state = state.copy(settings = SettingsStore.load(appContext))
+        state = state.copy(
+            settings = SettingsStore.load(appContext),
+            knownVaults = VaultListStore.load(appContext),
+        )
         VaultLocatorStore.load(appContext)?.let { locator ->
             // Keep the launch spinner up until the repository and the saved
             // tabs are ready, instead of flashing the start and empty screens.
@@ -85,6 +88,31 @@ class VibecodiumController(context: Context) {
         openLocator(VaultLocator.Local(File(trimmed).absolutePath))
     }
 
+    fun openVaultChooser() {
+        state = state.copy(
+            vaultChooserOpen = true,
+            drawer = null,
+            tabSwitcher = false,
+            settingsOpen = false,
+            settingsSection = null,
+        )
+    }
+
+    fun closeVaultChooser() {
+        state = state.copy(vaultChooserOpen = false)
+    }
+
+    fun openKnownVault(vault: KnownVault) {
+        val current = state.vaultRoot
+        closeVaultChooser()
+        if (current != null && vault.locator.value == current) return
+        openLocator(vault.locator)
+    }
+
+    fun forgetKnownVault(vault: KnownVault) {
+        state = state.copy(knownVaults = VaultListStore.forget(appContext, vault.locator))
+    }
+
     fun createDemoVault() {
         scope.launch {
             state = state.copy(loading = true, booting = true, message = null)
@@ -98,6 +126,7 @@ class VibecodiumController(context: Context) {
                 error.rethrowIfCancelled()
                 state = UiState(
                     settings = state.settings,
+                    knownVaults = state.knownVaults,
                     loading = false,
                     message = error.message ?: "Could not create the vault",
                 )
@@ -118,6 +147,7 @@ class VibecodiumController(context: Context) {
                 error.rethrowIfCancelled()
                 state = UiState(
                     settings = state.settings,
+                    knownVaults = state.knownVaults,
                     loading = false,
                     message = error.message ?: "Could not open the vault",
                 )
@@ -130,6 +160,7 @@ class VibecodiumController(context: Context) {
         this.repository = repository
         this.locator = locator
         VaultLocatorStore.save(appContext, locator)
+        val knownVaults = VaultListStore.remember(appContext, locator, repository.name)
 
         val collapsedFolders = FolderStore.load(appContext, locator.value)
         val bookmarks = BookmarkStore.load(appContext, locator.value)
@@ -141,6 +172,7 @@ class VibecodiumController(context: Context) {
             vaultName = repository.name,
             vaultRoot = locator.value,
             vaultKind = if (repository.isScoped) "saf" else "file",
+            knownVaults = knownVaults,
             notes = emptyList(),
             entries = emptyList(),
             explorerTree = emptyList(),
@@ -755,7 +787,12 @@ class VibecodiumController(context: Context) {
     }
 
     fun closeSettings() {
-        state = state.copy(settingsOpen = false, settingsSection = null)
+        val active = if (state.tabs.isNotEmpty() && state.activeTab !in state.tabs.indices) {
+            0
+        } else {
+            state.activeTab
+        }
+        state = state.copy(settingsOpen = false, settingsSection = null, activeTab = active)
     }
 
     fun setTextScale(value: Float) = updateSettings {
@@ -1096,7 +1133,11 @@ class VibecodiumController(context: Context) {
             }
             val tabs = mutableListOf<Tab>()
             for (tab in state.tabs) {
-                if (lists.entries.none { it.path == tab.path }) continue
+                val existsLocally = lists.entries.any { it.path == tab.path }
+                if (!existsLocally && !tab.dirty) {
+                    val readable = runCatching { repository.readNote(tab.path) }.isSuccess
+                    if (!readable) continue
+                }
                 if (tab.dirty) {
                     tabs.add(tab)
                 } else {
@@ -1244,6 +1285,10 @@ class VibecodiumController(context: Context) {
     }
 
     fun back() {
+        if (state.vaultChooserOpen) {
+            state = state.copy(vaultChooserOpen = false)
+            return
+        }
         if (state.settingsOpen) {
             state = state.copy(settingsOpen = false, settingsSection = null)
             return
@@ -1292,7 +1337,7 @@ class VibecodiumController(context: Context) {
         scope.launch {
             closeRepository()
             VaultLocatorStore.clear(appContext)
-            state = UiState(settings = state.settings)
+            state = UiState(settings = state.settings, knownVaults = state.knownVaults)
         }
     }
 

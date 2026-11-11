@@ -125,6 +125,12 @@ vibecodium-mobile/
     it disappears while the field is focused and returns when focus is
     cleared; it matches names/paths without a content scan, and the tree
     itself is prebuilt when the file list changes.
+  - **Open another vault** opens a chooser modal instead of jumping straight
+    to the system folder picker: up to 20 remembered vaults (most recent
+    first, current one marked) plus **Open folder** and **Create demo vault**.
+    The list lives in `vaults:known`, so it is still there after closing the
+    current vault. The drawer header now grows with the font scale instead of
+    clipping the sync subtitle against a fixed 58 dp row.
   - the settings sheet is a full-screen Obsidian-style stack: a root list of
     six sections (Appearance, Editor, Files & links, Sync, Advanced, About)
     rendered as cards, pushed pages with a back chevron and Android back, and

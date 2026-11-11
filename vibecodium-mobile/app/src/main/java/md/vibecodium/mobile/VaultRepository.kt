@@ -120,6 +120,82 @@ object VaultLocatorStore {
     }
 }
 
+/** One vault remembered for the chooser, most recently opened first. */
+data class KnownVault(
+    val locator: VaultLocator,
+    val name: String,
+    val lastOpened: Long,
+)
+
+object VaultListStore {
+    private const val KEY = "vaults:known"
+    private const val LIMIT = 20
+
+    fun load(context: Context): List<KnownVault> {
+        val raw = prefs(context).getString(KEY, null) ?: return emptyList()
+        return runCatching {
+            val array = org.json.JSONArray(raw)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val value = array.optJSONObject(index) ?: continue
+                    val locator = when (value.optString("kind")) {
+                        "saf" -> VaultLocator.Scoped(value.optString("value"))
+                        "file" -> VaultLocator.Local(value.optString("value"))
+                        else -> null
+                    } ?: continue
+                    if (locator.value.isBlank()) continue
+                    add(
+                        KnownVault(
+                            locator = locator,
+                            name = value.optString("name").ifBlank {
+                                locator.value.substringAfterLast('/')
+                            },
+                            lastOpened = value.optLong("lastOpened"),
+                        ),
+                    )
+                }
+            }.sortedByDescending { it.lastOpened }.take(LIMIT)
+        }.getOrDefault(emptyList())
+    }
+
+    /** Adds or promotes [locator] after a successful open. */
+    fun remember(context: Context, locator: VaultLocator, name: String): List<KnownVault> {
+        val entry = KnownVault(
+            locator = locator,
+            name = name.ifBlank { locator.value.substringAfterLast('/') },
+            lastOpened = System.currentTimeMillis(),
+        )
+        val updated = (listOf(entry) + load(context).filterNot { same(it.locator, locator) })
+            .sortedByDescending { it.lastOpened }
+            .take(LIMIT)
+        save(context, updated)
+        return updated
+    }
+
+    fun forget(context: Context, locator: VaultLocator): List<KnownVault> {
+        val updated = load(context).filterNot { same(it.locator, locator) }
+        save(context, updated)
+        return updated
+    }
+
+    private fun same(left: VaultLocator, right: VaultLocator): Boolean =
+        left::class == right::class && left.value == right.value
+
+    private fun save(context: Context, vaults: List<KnownVault>) {
+        val array = org.json.JSONArray()
+        for (vault in vaults) {
+            array.put(
+                org.json.JSONObject()
+                    .put("kind", if (vault.locator is VaultLocator.Scoped) "saf" else "file")
+                    .put("value", vault.locator.value)
+                    .put("name", vault.name)
+                    .put("lastOpened", vault.lastOpened),
+            )
+        }
+        prefs(context).edit().putString(KEY, array.toString()).apply()
+    }
+}
+
 object VaultRepositories {
     const val DEMO_FOLDER = "vault"
 
