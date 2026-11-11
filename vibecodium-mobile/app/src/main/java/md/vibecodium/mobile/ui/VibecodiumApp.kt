@@ -189,6 +189,7 @@ import md.vibecodium.mobile.NativeEditorView
 import md.vibecodium.mobile.NativeTreeView
 import md.vibecodium.mobile.NoteItem
 import md.vibecodium.mobile.SyncFileCategory
+import md.vibecodium.mobile.SyncProgressKind
 import md.vibecodium.mobile.Tab
 import md.vibecodium.mobile.UiState
 import md.vibecodium.mobile.VibecodiumController
@@ -2123,17 +2124,7 @@ private fun LeftDrawer(state: UiState, controller: VibecodiumController, modifie
                 }
                 if (overlayMode) {
                     Surface(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .pointerInput(Unit) {
-                                // Swallow touches so they cannot reach the
-                                // still-attached native tree underneath.
-                                awaitPointerEventScope {
-                                    while (true) {
-                                        awaitPointerEvent().changes.forEach { it.consume() }
-                                    }
-                                }
-                            },
+                        modifier = Modifier.fillMaxSize(),
                         color = Color(0xFF282828),
                         tonalElevation = 0.dp,
                     ) {
@@ -2513,7 +2504,11 @@ private fun TreeList(state: UiState, controller: VibecodiumController) {
                 )
             },
             modifier = Modifier.weight(1f).fillMaxWidth(),
-            update = { it.setRows(treeJson); it.setDrawerVisible(state.drawer == Drawer.Left) },
+            update = {
+                it.setRows(treeJson)
+                it.setDrawerVisible(state.drawer == Drawer.Left)
+                it.setInteractive(state.drawerMode == DrawerMode.Files)
+            },
         )
     }
 }
@@ -2711,10 +2706,17 @@ private fun ThinScrollbar(state: LazyListState, modifier: Modifier = Modifier) {
     val total = layout.totalItemsCount
     val visible = layout.visibleItemsInfo
     if (total <= 0 || visible.isEmpty() || total <= visible.size) return
-    val first = visible.first().index.coerceAtLeast(0)
-    val maxFirst = (total - visible.size).coerceAtLeast(1)
-    val progress = (first.toFloat() / maxFirst).coerceIn(0f, 1f)
-    val fraction = (visible.size.toFloat() / total).coerceIn(0.08f, 1f)
+    // Median row height keeps the track scale stable while rows recycle.
+    // Deriving it from visible.size instead makes the thumb shift a notch
+    // every time a partially visible row enters or leaves the viewport.
+    val sizes = visible.map { it.size }.sorted()
+    val itemSize = sizes[sizes.size / 2].coerceAtLeast(1).toFloat()
+    val viewport = (layout.viewportEndOffset - layout.viewportStartOffset).toFloat()
+    val content = itemSize * total
+    val maxScroll = (content - viewport).coerceAtLeast(1f)
+    val scrolled = state.firstVisibleItemIndex * itemSize + state.firstVisibleItemScrollOffset
+    val progress = (scrolled / maxScroll).coerceIn(0f, 1f)
+    val fraction = (viewport / content).coerceIn(0.08f, 1f)
     BoxWithConstraints(modifier) {
         val thumbHeight = (maxHeight * fraction).coerceAtLeast(24.dp)
         val top = (maxHeight - thumbHeight) * progress
@@ -4025,10 +4027,12 @@ private fun SettingsFolderEditor(
 private fun syncSubtitle(state: UiState): String {
     val sync = state.sync
     return when {
-        sync.busy -> if (sync.progressTotal > 0) {
-            "Syncing ${sync.progressDone}/${sync.progressTotal}"
-        } else {
-            "Syncing…"
+        sync.busy -> when {
+            sync.progressKind == SyncProgressKind.ReadingLocal && sync.progressTotal > 0 ->
+                "Reading local files ${sync.progressDone}/${sync.progressTotal}"
+            sync.progressKind == SyncProgressKind.Transferring && sync.progressTotal > 0 ->
+                "Syncing cloud files ${sync.progressDone}/${sync.progressTotal}"
+            else -> "Syncing…"
         }
         sync.connected && sync.lastSync > 0 -> "Synced ${timeLabel(sync.lastSync)}"
         sync.connected -> "Dropbox connected"

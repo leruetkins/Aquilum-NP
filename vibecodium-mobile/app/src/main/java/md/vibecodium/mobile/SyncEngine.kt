@@ -22,6 +22,12 @@ data class SyncProgress(
     val localFiles: Int = 0,
     val remoteFiles: Int = 0,
     val planned: Int = 0,
+    /**
+     * Which counter [done]/[total] belongs to. Preparation totals (files
+     * scanned, hashes checked, plan size) are different units, so the UI must
+     * label them separately instead of showing one restarting sync number.
+     */
+    val kind: SyncProgressKind = SyncProgressKind.Preparing,
 )
 
 data class SyncOutcome(
@@ -205,11 +211,12 @@ class SyncEngine(
                 checked += chunk.size
                 progress(
                     SyncProgress(
-                        phase = "Checking local files",
+                        phase = "Reading local files",
                         done = checked,
                         total = hashCandidates.size,
                         localFiles = localFiles.size,
                         remoteFiles = remoteFiles,
+                        kind = SyncProgressKind.ReadingLocal,
                     ),
                 )
             }
@@ -261,12 +268,13 @@ class SyncEngine(
             done += 1
             progress(
                 SyncProgress(
-                    phase = "Syncing",
+                    phase = "Syncing cloud files",
                     done = done,
                     total = plan.size,
                     localFiles = localFiles.size,
                     remoteFiles = remoteFiles,
                     planned = plan.size,
+                    kind = SyncProgressKind.Transferring,
                 ),
             )
             when (decision) {

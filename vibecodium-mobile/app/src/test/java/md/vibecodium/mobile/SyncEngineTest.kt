@@ -140,7 +140,31 @@ class SyncEngineTest {
         repository: FakeRepository,
         records: FakeRecords,
         provider: FakeProvider,
-    ) = SyncEngine(repository, "vault", records, provider)
+        progress: suspend (SyncProgress) -> Unit = {},
+    ) = SyncEngine(repository, "vault", records, provider, progress = progress)
+
+    @Test
+    fun progressCountersAreLabelledPerPhase() = runBlocking {
+        val repository = FakeRepository()
+        repository.files["note.md"] = "hello".toByteArray()
+        val records = FakeRecords().apply {
+            put("vault", SyncRecord("note.md", "old", 5, 1L, "rev-1", "", 1L))
+        }
+        val provider = FakeProvider()
+        provider.remote["note.md"] = "hello".toByteArray()
+        provider.revs["note.md"] = 1
+        val events = mutableListOf<SyncProgress>()
+        engine(repository, records, provider) { events += it }.sync("/vault")
+
+        assertTrue(events.none { it.kind == SyncProgressKind.ReadingLocal && it.phase != "Reading local files" })
+        assertTrue(events.none { it.kind == SyncProgressKind.Transferring && it.phase != "Syncing cloud files" })
+        val reading = events.filter { it.kind == SyncProgressKind.ReadingLocal }
+        assertTrue(reading.isNotEmpty())
+        assertTrue(reading.all { it.total > 0 })
+        val transfers = events.filter { it.kind == SyncProgressKind.Transferring }
+        assertTrue(transfers.isNotEmpty())
+        assertTrue(transfers.all { it.total > 0 })
+    }
 
     @Test
     fun newLocalFileIsUploaded() = runBlocking {

@@ -104,12 +104,16 @@ enum class DrawerMode { Files, Search, Bookmarks, Recent }
 
 enum class EditorMode { Source, Preview }
 
+/** Which progress counter the UI should show while a sync is running. */
+enum class SyncProgressKind { Preparing, ReadingLocal, Transferring }
+
 data class SyncUiState(
     val connected: Boolean = false,
     val accountName: String = "",
     val clientId: String = "",
     val busy: Boolean = false,
     val progress: String = "",
+    val progressKind: SyncProgressKind = SyncProgressKind.Preparing,
     val progressDone: Int = 0,
     val progressTotal: Int = 0,
     val message: String = "",

@@ -439,6 +439,8 @@ class NativeTreeView(
 
     private var drawerVisible = false
     private var drawerTouchFloor = 0L
+    @Volatile
+    private var interactive = true
 
     init {
         textureView.isOpaque = false
@@ -450,6 +452,17 @@ class NativeTreeView(
      * warm). On the first open its surface can still be positioned off-screen,
      * so force a layout and a full redraw after it moves in.
      */
+    /** The native tree must not consume gestures while a Compose overlay
+     *  (Search/Bookmarks/Recent) covers it. */
+    fun setInteractive(value: Boolean) {
+        if (value == interactive) return
+        interactive = value
+        if (!value) {
+            stopTreeFling()
+            recycleTreeVelocity()
+        }
+    }
+
     fun setDrawerVisible(visible: Boolean) {
         if (visible == drawerVisible) return
         drawerVisible = visible
@@ -475,6 +488,7 @@ class NativeTreeView(
     }
 
     override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
+        if (!interactive) return false
         if (event.eventTime < drawerTouchFloor) {
             if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
                 stopTreeFling()

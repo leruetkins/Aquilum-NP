@@ -1125,6 +1125,7 @@ class VibecodiumController(context: Context) {
             sync = state.sync.copy(
                 busy = true,
                 progress = "Saving…",
+                progressKind = SyncProgressKind.Preparing,
                 progressDone = 0,
                 progressTotal = 0,
                 message = "",
@@ -1163,10 +1164,20 @@ class VibecodiumController(context: Context) {
                 val finished = progress.total == 0 || progress.done == progress.total
                 if (countsChanged || finished || now - syncProgressAt >= 100) {
                     syncProgressAt = now
-                    val hasTotal = progress.total > 0
+                    val hasTotal = progress.total > 0 &&
+                        progress.kind != SyncProgressKind.Preparing
+                    // Keep the last labelled counter through count-less phases
+                    // (planning, listing) so the sidebar never reverts to a
+                    // bare "Syncing…" after numbers have started.
+                    val kind = if (progress.kind != SyncProgressKind.Preparing) {
+                        progress.kind
+                    } else {
+                        state.sync.progressKind
+                    }
                     state = state.copy(
                         sync = state.sync.copy(
                             progress = formatSyncProgress(progress),
+                            progressKind = kind,
                             progressDone = if (hasTotal) progress.done else state.sync.progressDone,
                             progressTotal = if (hasTotal) progress.total else state.sync.progressTotal,
                             localFiles = progress.localFiles,
