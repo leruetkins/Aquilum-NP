@@ -799,6 +799,14 @@ private fun EditorScreen(
     LaunchedEffect(drawerOpen) {
         if (drawerOpen) editorView?.hideKeyboard()
     }
+    var prevImeVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(imeVisible) {
+        if (prevImeVisible && !imeVisible && !preview) {
+            keyboardPrompt = true
+            editorView?.onKeyboardDismissed()
+        }
+        prevImeVisible = imeVisible
+    }
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         // Keep the native editor alive while preview is open so switching
         // back does not recreate its SurfaceView or reload the note.
@@ -829,31 +837,28 @@ private fun EditorScreen(
             ViewHeader(state, tab, controller)
         }
         if (!preview && keyboardPrompt && !imeVisible) {
+            val bottomPadding = if (MobileNavbarEnabled) NavbarHeight + 16.dp else 16.dp
             Surface(
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = ViewHeaderTopPadding, end = 12.dp)
-                    .size(44.dp)
-                    .offset {
-                        IntOffset(
-                            0,
-                            ((ViewHeaderHeight + ViewHeaderTopPadding).toPx() * chromeProgress.value).roundToInt(),
-                        )
-                    },
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = bottomPadding)
+                    .size(48.dp),
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 tonalElevation = 3.dp,
-                shadowElevation = 4.dp,
+                shadowElevation = 6.dp,
             ) {
                 IconButton(
-                    onClick = { editorView?.showKeyboard() },
+                    onClick = {
+                        editorView?.showKeyboard()
+                    },
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     Icon(
                         KeyboardIcon,
                         contentDescription = "Show keyboard",
-                        modifier = Modifier.size(22.dp),
-                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(24.dp),
+                        tint = Color.White,
                     )
                 }
             }

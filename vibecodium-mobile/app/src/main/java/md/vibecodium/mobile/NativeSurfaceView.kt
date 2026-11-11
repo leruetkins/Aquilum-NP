@@ -1052,13 +1052,15 @@ class NativeEditorView(
     fun setBottomInset(inset: Float) {
         val next = inset.coerceAtLeast(0f)
         if (kotlin.math.abs(next - bottomInset) < 0.5f) return
+        val wasIncreased = next > bottomInset + 10f
         bottomInset = next
         postRenderTask {
             if (!isSurfaceAttached()) return@postRenderTask
             CoreBridge.nativeEditorSetBottomInset(surfaceId, next)
             val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
             scrollMaxY = info?.optDouble("max_y", 0.0)?.toFloat() ?: scrollMaxY
-            val nextScroll = knownScroll.coerceIn(0f, scrollMaxY)
+            val rustScroll = info?.optDouble("scroll", knownScroll.toDouble())?.toFloat() ?: knownScroll
+            val nextScroll = if (wasIncreased) rustScroll else knownScroll.coerceIn(0f, scrollMaxY)
             if (nextScroll != knownScroll) {
                 mainHandler.post {
                     knownScroll = nextScroll
@@ -1144,10 +1146,12 @@ class NativeEditorView(
         if (gainFocus || inPreview) {
             startCaretBlink()
         } else {
-            stopCaretBlink()
             actionMode?.finish()
             insertionActionMode?.finish()
-            applyInsertionHandleVisible(false)
+            if (inPreview) {
+                stopCaretBlink()
+                applyInsertionHandleVisible(false)
+            }
         }
     }
 
@@ -1267,7 +1271,7 @@ class NativeEditorView(
     fun setEditor(text: String, selection: Int, language: String?, path: String) {
         val nextLanguage = language.orEmpty()
         val pathChanged = lastPath != path
-        if (!pathChanged && mirrorText == text && mirrorSelection == selection && lastLanguage == nextLanguage) return
+        if (!pathChanged && mirrorText == text && lastLanguage == nextLanguage) return
         if (pathChanged) {
             saveViewport()
             lastPath = path
@@ -1768,14 +1772,13 @@ class NativeEditorView(
         insertionActionMode = runCatching { startActionMode(insertionCallback, ActionMode.TYPE_FLOATING) }.getOrNull()
     }
 
-    private fun applyInsertionHandleVisible(visible: Boolean) {
+    fun applyInsertionHandleVisible(visible: Boolean) {
         val targetVisible = if (inPreview) false else visible
         removeCallbacks(hideInsertionRunnable)
         CoreBridge.nativeEditorSetInsertionHandleVisible(surfaceId, targetVisible)
         requestRender()
         if (targetVisible) {
             syncHandles()
-            postDelayed(hideInsertionRunnable, 4000L)
         } else {
             insertionHandle = null
             insertionActionMode?.finish()
@@ -2044,6 +2047,7 @@ class NativeEditorView(
                                 requestFocus()
                                 startCaretBlink()
                                 applyInsertionHandleVisible(true)
+                                onTextChanged(mirrorText, mirrorSelection)
                                 onCaretPlaced?.invoke()
                             } else {
                                 startCaretBlink()
@@ -2152,9 +2156,16 @@ class NativeEditorView(
     }
 
     fun hideKeyboard() {
-        clearFocus()
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
         windowToken?.let { imm?.hideSoftInputFromWindow(it, 0) }
+    }
+
+    fun onKeyboardDismissed() {
+        if (inPreview) return
+        applyCaretVisible(true)
+        startCaretBlink()
+        applyInsertionHandleVisible(true)
+        requestRender()
     }
 
     fun setOnCaretPlaced(listener: (() -> Unit)?) {

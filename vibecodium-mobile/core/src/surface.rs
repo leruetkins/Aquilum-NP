@@ -2837,7 +2837,7 @@ impl SurfaceState {
         self.ensure_wrap(content);
         let (visual, _) = self.visual_for_position(&self.editor.starts, self.editor.selection);
         let top = visual as f32 * line_h;
-        let bottom = self.editor.top_inset + top + line_h;
+        let bottom = self.editor.top_inset + top + line_h + 24.0 * self.density;
         let visible = (self.viewport_height as f32 - self.editor.bottom_inset).max(line_h);
         if top < self.editor.scroll {
             self.editor.scroll = top;
@@ -3189,7 +3189,7 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetBotto
         let previous = state.editor.bottom_inset;
         let next = inset.max(0.0);
         state.editor.bottom_inset = next;
-        if next > previous + 0.5 && previous > 0.5 {
+        if next > previous + 0.5 {
             state.scroll_to_cursor();
         } else {
             let (_, _, max_y, _) = state.editor_scroll_metrics();
