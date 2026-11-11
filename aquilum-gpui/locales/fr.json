@@ -172,7 +172,12 @@
     "templates": {
       "title": "Modèles de notes",
       "folder": "Dossier de modèles",
-      "folder_desc": "Chemin relatif vers les modèles Markdown dans le coffre-fort"
+      "folder_desc": "Chemin relatif vers les modèles Markdown dans le coffre-fort",
+      "daily_title": "Note quotidienne",
+      "daily_format": "Format du nom de fichier",
+      "daily_format_desc": "Variables : {{YYYY}} année, {{YY}} année courte, {{MM}}/{{M}} mois, {{DD}}/{{D}} jour, {{HH}}/{{H}} heure, {{mm}}/{{m}} minute, {{ss}}/{{s}} seconde. Le reste du texte est repris tel quel.",
+      "daily_folder": "Dossier des notes quotidiennes",
+      "daily_folder_desc": "Relatif à la racine du coffre ; vide utilise la racine"
     },
     "files": {
       "title": "Fichiers et médias",

@@ -172,7 +172,12 @@
     "templates": {
       "title": "Šablony poznámek",
       "folder": "Složka šablony",
-      "folder_desc": "Relativní cesta k šablonám Markdown v úschovně"
+      "folder_desc": "Relativní cesta k šablonám Markdown v úschovně",
+      "daily_title": "Denní poznámka",
+      "daily_format": "Formát názvu souboru",
+      "daily_format_desc": "Zástupné symboly: {{YYYY}} rok, {{YY}} krátký rok, {{MM}}/{{M}} měsíc, {{DD}}/{{D}} den, {{HH}}/{{H}} hodina, {{mm}}/{{m}} minuta, {{ss}}/{{s}} sekunda. Ostatní text se použije beze změny.",
+      "daily_folder": "Složka denních poznámek",
+      "daily_folder_desc": "Relativně ke kořeni úložiště; prázdná použije kořen"
     },
     "files": {
       "title": "Soubory a média",

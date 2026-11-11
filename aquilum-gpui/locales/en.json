@@ -262,7 +262,12 @@
     "templates": {
       "title": "Note Templates",
       "folder": "Templates Folder",
-      "folder_desc": "Relative path to Markdown templates in vault"
+      "folder_desc": "Relative path to Markdown templates in vault",
+      "daily_title": "Daily Note",
+      "daily_format": "File name format",
+      "daily_format_desc": "Placeholders: {{YYYY}} year, {{YY}} short year, {{MM}}/{{M}} month, {{DD}}/{{D}} day, {{HH}}/{{H}} hour, {{mm}}/{{m}} minute, {{ss}}/{{s}} second. Other text is used as is.",
+      "daily_folder": "Daily notes folder",
+      "daily_folder_desc": "Relative to the vault root; leave empty to use the root"
     },
     "files": {
       "title": "Files & Media",

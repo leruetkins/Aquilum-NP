@@ -430,6 +430,104 @@ impl Default for TemplateSettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DailyNoteSettings {
+    /// File name format. `{{TOKEN}}` placeholders are replaced with the
+    /// current date and time; everything else is used literally.
+    pub format: String,
+    /// Folder relative to the vault root. Empty means the vault root.
+    pub folder: String,
+}
+
+impl Default for DailyNoteSettings {
+    fn default() -> Self {
+        Self {
+            format: "{{YYYY}}-{{MM}}-{{DD}}".to_string(),
+            folder: String::new(),
+        }
+    }
+}
+
+/// Expands `{{TOKEN}}` date/time placeholders in the daily-note name format.
+///
+/// Unknown placeholders are kept verbatim, so literal text stays untouched.
+pub fn expand_daily_note_format(format: &str, now: time::OffsetDateTime) -> String {
+    let token_value = |token: &str| -> Option<String> {
+        Some(match token {
+            "YYYY" => format!("{:04}", now.year()),
+            "YY" => format!("{:02}", now.year().rem_euclid(100)),
+            "MM" => format!("{:02}", u8::from(now.month())),
+            "M" => u8::from(now.month()).to_string(),
+            "DD" => format!("{:02}", now.day()),
+            "D" => now.day().to_string(),
+            "HH" => format!("{:02}", now.hour()),
+            "H" => now.hour().to_string(),
+            "mm" => format!("{:02}", now.minute()),
+            "m" => now.minute().to_string(),
+            "ss" => format!("{:02}", now.second()),
+            "s" => now.second().to_string(),
+            _ => return None,
+        })
+    };
+
+    let mut out = String::with_capacity(format.len());
+    let mut rest = format;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("}}") else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let token = &after[..end];
+        match token_value(token) {
+            Some(value) => out.push_str(&value),
+            None => {
+                out.push_str("{{");
+                out.push_str(token);
+                out.push_str("}}");
+            }
+        }
+        rest = &after[end + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Resolves the daily-note file stem for `now`.
+///
+/// Characters that are not allowed in file names are replaced with `-`, a
+/// trailing `.md` is dropped, and an empty result falls back to the ISO date.
+pub fn daily_note_file_stem(format: &str, now: time::OffsetDateTime) -> String {
+    let expanded = expand_daily_note_format(format, now);
+    let sanitized: String = expanded
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '-',
+            c if c.is_control() => '-',
+            c => c,
+        })
+        .collect();
+    let trimmed = sanitized.trim();
+    let without_ext = if trimmed.to_lowercase().ends_with(".md") {
+        &trimmed[..trimmed.len() - 3]
+    } else {
+        trimmed
+    };
+    let stem = without_ext.trim().trim_end_matches('.').trim();
+    if stem.is_empty() {
+        format!(
+            "{:04}-{:02}-{:02}",
+            now.year(),
+            u8::from(now.month()),
+            now.day()
+        )
+    } else {
+        stem.to_string()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ImagesSettings {
@@ -542,6 +640,7 @@ pub struct AppConfig {
     pub reader: ReaderSettings,
     pub ui: UiSettings,
     pub templates: TemplateSettings,
+    pub daily_notes: DailyNoteSettings,
     pub files: FilesSettings,
     pub images: ImagesSettings,
     pub community_plugins: CommunityPluginSettings,
@@ -1236,6 +1335,24 @@ pub static SETTINGS: &[SettingDescriptor] = &[
         desc_key: "settings.templates.folder_desc",
         keywords: &[],
         aliases: &[],
+        setting_type: SettingType::String,
+    },
+    SettingDescriptor {
+        id: "dailyNotes.format",
+        tab_id: "templates",
+        title_key: "settings.templates.daily_format",
+        desc_key: "settings.templates.daily_format_desc",
+        keywords: &["daily", "note", "format", "date", "time", "ежедневная", "заметка", "формат", "дата", "время"],
+        aliases: &["dailyNote.format"],
+        setting_type: SettingType::String,
+    },
+    SettingDescriptor {
+        id: "dailyNotes.folder",
+        tab_id: "templates",
+        title_key: "settings.templates.daily_folder",
+        desc_key: "settings.templates.daily_folder_desc",
+        keywords: &["daily", "note", "folder", "path", "ежедневная", "заметка", "папка", "путь"],
+        aliases: &["dailyNote.folder"],
         setting_type: SettingType::String,
     },
     SettingDescriptor {

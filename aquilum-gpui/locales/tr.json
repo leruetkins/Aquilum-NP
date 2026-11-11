@@ -172,7 +172,12 @@
     "templates": {
       "title": "Not Şablonları",
       "folder": "Şablonlar Klasörü",
-      "folder_desc": "Kasadaki Markdown şablonlarının göreceli yolu"
+      "folder_desc": "Kasadaki Markdown şablonlarının göreceli yolu",
+      "daily_title": "Günlük not",
+      "daily_format": "Dosya adı biçimi",
+      "daily_format_desc": "Yer tutucular: {{YYYY}} yıl, {{YY}} kısa yıl, {{MM}}/{{M}} ay, {{DD}}/{{D}} gün, {{HH}}/{{H}} saat, {{mm}}/{{m}} dakika, {{ss}}/{{s}} saniye. Diğer metin olduğu gibi kullanılır.",
+      "daily_folder": "Günlük notlar klasörü",
+      "daily_folder_desc": "Kasa köküne göre; boşsa kök kullanılır"
     },
     "files": {
       "title": "Dosyalar ve Medya",

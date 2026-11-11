@@ -130,7 +130,7 @@ impl AppView {
                 self.create_new_note(window, cx);
             }
             "ribbon-calendar" => {
-                self.create_new_note(window, cx);
+                self.open_daily_note(window, cx);
             }
             "ribbon-template" => {
                 self.state.status_text = self.t("settings.tabs.templates");

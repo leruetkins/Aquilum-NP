@@ -172,7 +172,12 @@
     "templates": {
       "title": "筆記模板",
       "folder": "模板資料夾",
-      "folder_desc": "Vault 中 Markdown 模板的相對路徑"
+      "folder_desc": "Vault 中 Markdown 模板的相對路徑",
+      "daily_title": "每日筆記",
+      "daily_format": "檔案名稱格式",
+      "daily_format_desc": "佔位符：{{YYYY}} 年、{{YY}} 簡短年份、{{MM}}/{{M}} 月、{{DD}}/{{D}} 日、{{HH}}/{{H}} 時、{{mm}}/{{m}} 分、{{ss}}/{{s}} 秒。其他文字依原樣使用。",
+      "daily_folder": "每日筆記資料夾",
+      "daily_folder_desc": "相對於儲存庫根目錄；留空則使用根目錄"
     },
     "files": {
       "title": "文件和媒體",

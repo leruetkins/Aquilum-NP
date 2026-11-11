@@ -1382,7 +1382,7 @@ impl SettingsView {
     // =========================================================================
 
     /// Renders note template configuration and generator tab.
-    pub(super) fn render_templates_tab(&self, cx: &Context<Self>) -> gpui::Div {
+    pub(super) fn render_templates_tab(&self, window: &Window, cx: &Context<Self>) -> gpui::Div {
         let theme = &self.theme;
         let config = &self.config;
 
@@ -1405,11 +1405,29 @@ impl SettingsView {
             ),
         ];
 
+        let daily_rows = vec![
+            self.render_setting_row_with_id(
+                Some("dailyNotes.format"),
+                &self.t("settings.templates.daily_format"),
+                Some(&self.t("settings.templates.daily_format_desc")),
+                self.render_daily_format_input(window, cx),
+                cx,
+            ),
+            self.render_setting_row_with_id(
+                Some("dailyNotes.folder"),
+                &self.t("settings.templates.daily_folder"),
+                Some(&self.t("settings.templates.daily_folder_desc")),
+                self.render_daily_folder_input(window, cx),
+                cx,
+            ),
+        ];
+
         div()
             .flex()
             .flex_col()
             .gap_5()
             .child(self.render_settings_card(&self.t("settings.templates.title"), template_rows))
+            .child(self.render_settings_card(&self.t("settings.templates.daily_title"), daily_rows))
     }
 
     // =========================================================================

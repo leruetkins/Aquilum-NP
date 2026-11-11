@@ -172,7 +172,12 @@
     "templates": {
       "title": "Modelli di nota",
       "folder": "Cartella dei modelli",
-      "folder_desc": "Percorso relativo ai modelli Markdown nel vault"
+      "folder_desc": "Percorso relativo ai modelli Markdown nel vault",
+      "daily_title": "Nota quotidiana",
+      "daily_format": "Formato del nome file",
+      "daily_format_desc": "Segnaposto: {{YYYY}} anno, {{YY}} anno breve, {{MM}}/{{M}} mese, {{DD}}/{{D}} giorno, {{HH}}/{{H}} ora, {{mm}}/{{m}} minuto, {{ss}}/{{s}} secondo. Il resto del testo viene usato così com'è.",
+      "daily_folder": "Cartella delle note quotidiane",
+      "daily_folder_desc": "Relativa alla radice dell'archivio; vuota usa la radice"
     },
     "files": {
       "title": "File e contenuti multimediali",

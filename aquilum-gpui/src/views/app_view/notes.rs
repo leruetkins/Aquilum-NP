@@ -154,6 +154,42 @@ impl AppView {
         self.create_new_note_placed(window, cx, false);
     }
 
+    /// Opens today's note: resolves the configured name format and folder,
+    /// creates the file when it does not exist yet, and focuses it either way.
+    pub(crate) fn open_daily_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.state.workspace_path.clone() else { return };
+        let settings = self.config.daily_notes.clone();
+        let now = time::OffsetDateTime::now_local()
+            .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+        let stem = crate::settings::daily_note_file_stem(&settings.format, now);
+
+        // Skip `.`, `..` and empty segments so the note can never land
+        // outside the vault.
+        let mut dir = root.clone();
+        for part in settings.folder.split(['/', '\\']) {
+            let part = part.trim();
+            if part.is_empty() || part == "." || part == ".." {
+                continue;
+            }
+            dir.push(part);
+        }
+
+        if let Err(error) = std::fs::create_dir_all(&dir) {
+            eprintln!("[daily-note] не удалось создать папку {}: {error}", dir.display());
+            return;
+        }
+
+        let path = dir.join(format!("{stem}.md"));
+        if !path.exists() {
+            if let Err(error) = std::fs::write(&path, "") {
+                eprintln!("[daily-note] не удалось создать {}: {error}", path.display());
+                return;
+            }
+            self.state.reload_file_tree();
+        }
+        self.select_note(path, true, window, cx);
+    }
+
     /// Same as [`create_new_note`], but the new tab opens first in the tab
     /// strip (used by the leading new-note button).
     #[allow(dead_code)]

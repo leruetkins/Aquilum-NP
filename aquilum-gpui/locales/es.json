@@ -172,7 +172,12 @@
     "templates": {
       "title": "Plantillas de notas",
       "folder": "Carpeta de plantillas",
-      "folder_desc": "Ruta relativa a las plantillas de Markdown en Vault"
+      "folder_desc": "Ruta relativa a las plantillas de Markdown en Vault",
+      "daily_title": "Nota diaria",
+      "daily_format": "Formato del nombre de archivo",
+      "daily_format_desc": "Marcadores: {{YYYY}} año, {{YY}} año corto, {{MM}}/{{M}} mes, {{DD}}/{{D}} día, {{HH}}/{{H}} hora, {{mm}}/{{m}} minuto, {{ss}}/{{s}} segundo. El resto del texto se usa tal cual.",
+      "daily_folder": "Carpeta de notas diarias",
+      "daily_folder_desc": "Relativa a la raíz del almacén; vacía usa la raíz"
     },
     "files": {
       "title": "Archivos y medios",

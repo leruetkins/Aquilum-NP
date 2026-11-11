@@ -172,7 +172,12 @@
     "templates": {
       "title": "Modelos de notas",
       "folder": "Pasta de modelos",
-      "folder_desc": "Caminho relativo para modelos Markdown no Vault"
+      "folder_desc": "Caminho relativo para modelos Markdown no Vault",
+      "daily_title": "Nota diária",
+      "daily_format": "Formato do nome do arquivo",
+      "daily_format_desc": "Marcadores: {{YYYY}} ano, {{YY}} ano curto, {{MM}}/{{M}} mês, {{DD}}/{{D}} dia, {{HH}}/{{H}} hora, {{mm}}/{{m}} minuto, {{ss}}/{{s}} segundo. O restante do texto é usado como está.",
+      "daily_folder": "Pasta das notas diárias",
+      "daily_folder_desc": "Relativa à raiz do cofre; vazia usa a raiz"
     },
     "files": {
       "title": "Arquivos e mídia",

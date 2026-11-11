@@ -172,7 +172,12 @@
     "templates": {
       "title": "Anteckningsmallar",
       "folder": "Mallmapp",
-      "folder_desc": "Relativ väg till Markdown-mallar i valv"
+      "folder_desc": "Relativ väg till Markdown-mallar i valv",
+      "daily_title": "Daglig anteckning",
+      "daily_format": "Filnamnsformat",
+      "daily_format_desc": "Platshållare: {{YYYY}} år, {{YY}} kort år, {{MM}}/{{M}} månad, {{DD}}/{{D}} dag, {{HH}}/{{H}} timme, {{mm}}/{{m}} minut, {{ss}}/{{s}} sekund. Övrig text används som den är.",
+      "daily_folder": "Mapp för dagliga anteckningar",
+      "daily_folder_desc": "Relativt valvets rot; tom använder roten"
     },
     "files": {
       "title": "Filer och media",

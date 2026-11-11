@@ -172,7 +172,12 @@
     "templates": {
       "title": "메모 템플릿",
       "folder": "템플릿 폴더",
-      "folder_desc": "Vault의 Markdown 템플릿에 대한 상대 경로"
+      "folder_desc": "Vault의 Markdown 템플릿에 대한 상대 경로",
+      "daily_title": "일일 노트",
+      "daily_format": "파일 이름 형식",
+      "daily_format_desc": "자리 표시자: {{YYYY}} 년, {{YY}} 짧은 연도, {{MM}}/{{M}} 월, {{DD}}/{{D}} 일, {{HH}}/{{H}} 시, {{mm}}/{{m}} 분, {{ss}}/{{s}} 초. 나머지 텍스트는 그대로 사용됩니다.",
+      "daily_folder": "일일 노트 폴더",
+      "daily_folder_desc": "보관소 루트 기준; 비어 있으면 루트 사용"
     },
     "files": {
       "title": "파일 및 미디어",

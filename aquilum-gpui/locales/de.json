@@ -172,7 +172,12 @@
     "templates": {
       "title": "Notizvorlagen",
       "folder": "Ordner „Vorlagen“.",
-      "folder_desc": "Relativer Pfad zu Markdown-Vorlagen im Tresor"
+      "folder_desc": "Relativer Pfad zu Markdown-Vorlagen im Tresor",
+      "daily_title": "Tägliche Notiz",
+      "daily_format": "Dateinamenformat",
+      "daily_format_desc": "Platzhalter: {{YYYY}} Jahr, {{YY}} kurzes Jahr, {{MM}}/{{M}} Monat, {{DD}}/{{D}} Tag, {{HH}}/{{H}} Stunde, {{mm}}/{{m}} Minute, {{ss}}/{{s}} Sekunde. Übriger Text wird unverändert übernommen.",
+      "daily_folder": "Ordner für tägliche Notizen",
+      "daily_folder_desc": "Relativ zum Stammverzeichnis; leer lässt das Stammverzeichnis verwenden"
     },
     "files": {
       "title": "Dateien und Medien",

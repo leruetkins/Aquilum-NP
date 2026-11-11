@@ -172,7 +172,12 @@
     "templates": {
       "title": "メモテンプレート",
       "folder": "テンプレートフォルダー",
-      "folder_desc": "Vault 内の Markdown テンプレートへの相対パス"
+      "folder_desc": "Vault 内の Markdown テンプレートへの相対パス",
+      "daily_title": "デイリーノート",
+      "daily_format": "ファイル名の形式",
+      "daily_format_desc": "プレースホルダー: {{YYYY}} 年、{{YY}} 短い年、{{MM}}/{{M}} 月、{{DD}}/{{D}} 日、{{HH}}/{{H}} 時、{{mm}}/{{m}} 分、{{ss}}/{{s}} 秒。その他のテキストはそのまま使用されます。",
+      "daily_folder": "デイリーノートのフォルダー",
+      "daily_folder_desc": "保管庫のルートからの相対パス。空欄ならルートを使用"
     },
     "files": {
       "title": "ファイルとメディア",

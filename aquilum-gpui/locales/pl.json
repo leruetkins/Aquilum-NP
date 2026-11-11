@@ -172,7 +172,12 @@
     "templates": {
       "title": "Szablony notatek",
       "folder": "Folder szablonów",
-      "folder_desc": "Ścieżka względna do szablonów Markdown w repozytorium"
+      "folder_desc": "Ścieżka względna do szablonów Markdown w repozytorium",
+      "daily_title": "Notatka dzienna",
+      "daily_format": "Format nazwy pliku",
+      "daily_format_desc": "Znaczniki: {{YYYY}} rok, {{YY}} krótki rok, {{MM}}/{{M}} miesiąc, {{DD}}/{{D}} dzień, {{HH}}/{{H}} godzina, {{mm}}/{{m}} minuta, {{ss}}/{{s}} sekunda. Pozostały tekst jest używany bez zmian.",
+      "daily_folder": "Folder notatek dziennych",
+      "daily_folder_desc": "Względem katalogu głównego; pusty oznacza katalog główny"
     },
     "files": {
       "title": "Pliki i multimedia",

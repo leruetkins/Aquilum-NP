@@ -234,3 +234,57 @@
         let serialized = serde_json::to_string(&off).unwrap();
         assert!(serialized.contains(r#""showWidthLimitZones":false"#));
     }
+
+    fn sample_time() -> time::OffsetDateTime {
+        time::Date::from_calendar_date(2026, time::Month::November, 11)
+            .and_then(|date| date.with_hms(9, 5, 7))
+            .unwrap()
+            .assume_utc()
+    }
+
+    #[test]
+    fn test_daily_note_settings_default_and_serde() {
+        let default_settings = DailyNoteSettings::default();
+        assert_eq!(default_settings.format, "{{YYYY}}-{{MM}}-{{DD}}");
+        assert!(default_settings.folder.is_empty());
+
+        let parsed: DailyNoteSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(parsed, default_settings);
+
+        let parsed: DailyNoteSettings =
+            serde_json::from_str(r#"{"format":"{{DD}}.{{MM}}","folder":"Journal"}"#).unwrap();
+        assert_eq!(parsed.format, "{{DD}}.{{MM}}");
+        assert_eq!(parsed.folder, "Journal");
+
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        assert!(serialized.contains(r#""folder":"Journal""#));
+    }
+
+    #[test]
+    fn test_expand_daily_note_format_tokens() {
+        let now = sample_time();
+        assert_eq!(expand_daily_note_format("{{YYYY}}-{{MM}}-{{DD}}", now), "2026-11-11");
+        assert_eq!(expand_daily_note_format("{{D}}.{{M}}.{{YY}}", now), "11.11.26");
+        assert_eq!(expand_daily_note_format("{{HH}}:{{mm}}:{{ss}}", now), "09:05:07");
+        assert_eq!(expand_daily_note_format("{{H}}-{{m}}-{{s}}", now), "9-5-7");
+
+        // Literal text is untouched and unknown placeholders stay verbatim.
+        assert_eq!(
+            expand_daily_note_format("План на {{DD}} {{MONTH}}", now),
+            "План на 11 {{MONTH}}"
+        );
+        assert_eq!(expand_daily_note_format("no tokens", now), "no tokens");
+        assert_eq!(expand_daily_note_format("open {{YYYY", now), "open {{YYYY");
+    }
+
+    #[test]
+    fn test_daily_note_file_stem_sanitizes() {
+        let now = sample_time();
+        assert_eq!(daily_note_file_stem("{{YYYY}}-{{MM}}-{{DD}}", now), "2026-11-11");
+        // Windows-forbidden characters and a duplicated extension are removed.
+        assert_eq!(daily_note_file_stem("{{HH}}:{{mm}}", now), "09-05");
+        assert_eq!(daily_note_file_stem("{{YYYY}}-{{MM}}-{{DD}}.md", now), "2026-11-11");
+        assert_eq!(daily_note_file_stem("  Заметка  ", now), "Заметка");
+        // A format that expands to nothing falls back to the ISO date.
+        assert_eq!(daily_note_file_stem("...", now), "2026-11-11");
+    }

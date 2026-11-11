@@ -172,7 +172,12 @@
     "templates": {
       "title": "Mẫu ghi chú",
       "folder": "Thư mục mẫu",
-      "folder_desc": "Đường dẫn tương đối đến các mẫu Markdown trong vault"
+      "folder_desc": "Đường dẫn tương đối đến các mẫu Markdown trong vault",
+      "daily_title": "Ghi chú hằng ngày",
+      "daily_format": "Định dạng tên tệp",
+      "daily_format_desc": "Biến: {{YYYY}} năm, {{YY}} năm rút gọn, {{MM}}/{{M}} tháng, {{DD}}/{{D}} ngày, {{HH}}/{{H}} giờ, {{mm}}/{{m}} phút, {{ss}}/{{s}} giây. Phần văn bản khác được dùng nguyên văn.",
+      "daily_folder": "Thư mục ghi chú hằng ngày",
+      "daily_folder_desc": "Tương đối với thư mục gốc của kho; để trống dùng thư mục gốc"
     },
     "files": {
       "title": "Tập tin & Phương tiện",

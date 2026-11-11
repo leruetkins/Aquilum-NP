@@ -172,7 +172,12 @@
     "templates": {
       "title": "Opmerking sjablonen",
       "folder": "Sjablonenmap",
-      "folder_desc": "Relatief pad naar Markdown-sjablonen in de kluis"
+      "folder_desc": "Relatief pad naar Markdown-sjablonen in de kluis",
+      "daily_title": "Dagelijkse notitie",
+      "daily_format": "Bestandsnaamformaat",
+      "daily_format_desc": "Plaatsaanduidingen: {{YYYY}} jaar, {{YY}} kort jaar, {{MM}}/{{M}} maand, {{DD}}/{{D}} dag, {{HH}}/{{H}} uur, {{mm}}/{{m}} minuut, {{ss}}/{{s}} seconde. Overige tekst wordt ongewijzigd gebruikt.",
+      "daily_folder": "Map voor dagelijkse notities",
+      "daily_folder_desc": "Relatief aan de kluisroot; leeg gebruikt de root"
     },
     "files": {
       "title": "Bestanden en media",

@@ -99,6 +99,14 @@ impl SettingsView {
                         this.files_folder_input
                             .set_text(this.config.files.folder.clone());
                     }
+                    if !this.daily_format_editing {
+                        this.daily_format_input
+                            .set_text(this.config.daily_notes.format.clone());
+                    }
+                    if !this.daily_folder_editing {
+                        this.daily_folder_input
+                            .set_text(this.config.daily_notes.folder.clone());
+                    }
                     cx.notify();
                 }
                 SettingsEvent::ThemeChanged => {
@@ -119,6 +127,14 @@ impl SettingsView {
         let mut files_folder_input =
             crate::views::text_input::TextInput::new(files_folder_focus_handle.clone());
         files_folder_input.set_text(config.files.folder.clone());
+        let daily_format_focus_handle = cx.focus_handle();
+        let mut daily_format_input =
+            crate::views::text_input::TextInput::new(daily_format_focus_handle.clone());
+        daily_format_input.set_text(config.daily_notes.format.clone());
+        let daily_folder_focus_handle = cx.focus_handle();
+        let mut daily_folder_input =
+            crate::views::text_input::TextInput::new(daily_folder_focus_handle.clone());
+        daily_folder_input.set_text(config.daily_notes.folder.clone());
         let sync_custom_focus_handle = cx.focus_handle();
         let mut sync_custom_input =
             crate::views::text_input::TextInput::new(sync_custom_focus_handle.clone());
@@ -199,6 +215,14 @@ impl SettingsView {
             files_folder_focus_handle,
             files_folder_edit_origin: String::new(),
             files_folder_editing: false,
+            daily_format_input,
+            daily_format_focus_handle,
+            daily_format_edit_origin: String::new(),
+            daily_format_editing: false,
+            daily_folder_input,
+            daily_folder_focus_handle,
+            daily_folder_edit_origin: String::new(),
+            daily_folder_editing: false,
         };
         // Sync status lives in a background service; keep the tab fresh while
         // the Settings window is open.
@@ -252,7 +276,7 @@ impl SettingsView {
     /// `remove_window()` alone does not trigger `on_window_should_close`.
     pub fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Commit an in-progress folder name before the window goes away.
-        self.commit_files_folder_if_editing(cx);
+        self.commit_text_fields_if_editing(cx);
         if let Some(app) = self.weak_app.upgrade() {
             let _ = app.update(cx, |this, cx| {
                 this.is_settings_open = false;
@@ -297,7 +321,7 @@ impl SettingsView {
     }
 
     pub fn navigate_to_setting(&mut self, setting_id: &str, cx: &mut Context<Self>) {
-        self.commit_files_folder_if_editing(cx);
+        self.commit_text_fields_if_editing(cx);
         if let Some(setting) = get_setting_by_id(setting_id) {
             match setting.tab_id {
                 "ui" => self.settings_tab = SettingsTab::Ui,
@@ -1440,31 +1464,64 @@ impl SettingsView {
             .text_color(theme.text_primary)
             .font_family("Segoe UI")
             .cursor(gpui::CursorStyle::Arrow)
-            // Continue the folder-input selection drag outside its small box, the same
-            // way the sidebar quick filter does from the app root.
+            // Continue a text-field selection drag outside its small box, the
+            // same way the sidebar quick filter does from the app root.
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                if this.files_folder_input.is_mouse_selecting {
-                    let before = this.files_folder_input.cursor_pos;
-                    this.files_folder_input
-                        .handle_mouse_move(event, window, 12.0, "Segoe UI");
-                    if this.files_folder_input.cursor_pos != before {
-                        this.files_folder_input.pause_and_show(
-                            |s: &mut SettingsView| &mut s.files_folder_input.blink,
-                            cx,
-                        );
-                    }
+                let mut moved = false;
+                moved |= SettingsView::drag_text_input(
+                    &mut this.files_folder_input,
+                    |s: &mut SettingsView| &mut s.files_folder_input.blink,
+                    event,
+                    window,
+                    cx,
+                );
+                moved |= SettingsView::drag_text_input(
+                    &mut this.daily_format_input,
+                    |s: &mut SettingsView| &mut s.daily_format_input.blink,
+                    event,
+                    window,
+                    cx,
+                );
+                moved |= SettingsView::drag_text_input(
+                    &mut this.daily_folder_input,
+                    |s: &mut SettingsView| &mut s.daily_folder_input.blink,
+                    event,
+                    window,
+                    cx,
+                );
+                if moved {
                     cx.notify();
                 }
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                if this.files_folder_input.is_mouse_selecting {
-                    this.files_folder_input.handle_mouse_up();
+                let mut released = false;
+                for input in [
+                    &mut this.files_folder_input,
+                    &mut this.daily_format_input,
+                    &mut this.daily_folder_input,
+                ] {
+                    if input.is_mouse_selecting {
+                        input.handle_mouse_up();
+                        released = true;
+                    }
+                }
+                if released {
                     cx.notify();
                 }
             }))
             .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                if this.files_folder_input.is_mouse_selecting {
-                    this.files_folder_input.handle_mouse_up();
+                let mut released = false;
+                for input in [
+                    &mut this.files_folder_input,
+                    &mut this.daily_format_input,
+                    &mut this.daily_folder_input,
+                ] {
+                    if input.is_mouse_selecting {
+                        input.handle_mouse_up();
+                        released = true;
+                    }
+                }
+                if released {
                     cx.notify();
                 }
             }))
@@ -2320,7 +2377,7 @@ impl SettingsView {
                                         .child(tab.title(&self.config.ui.language)),
                                 )
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.commit_files_folder_if_editing(cx);
+                                    this.commit_text_fields_if_editing(cx);
                                     this.settings_tab = tab_clone.clone();
                                     cx.notify();
                                 }))
@@ -2386,7 +2443,7 @@ impl SettingsView {
                 SettingsTab::Editor => self.render_editor_tab(cx),
                 SettingsTab::Reader => self.render_reader_tab(cx),
                 SettingsTab::Search => self.render_search_tab(cx),
-                SettingsTab::Templates => self.render_templates_tab(cx),
+                SettingsTab::Templates => self.render_templates_tab(window, cx),
                 SettingsTab::Files => self.render_files_tab(window, cx),
                 SettingsTab::Sync => self.render_sync_tab(window, cx),
                 SettingsTab::Trash => self.render_trash_tab(cx),
@@ -2676,15 +2733,48 @@ impl SettingsView {
             .child(plus_button)
     }
 
-    /// Renders the editable attachments/images folder name field.
-    pub(super) fn render_files_folder_input(
+    /// Extends a text-field selection drag by one mouse-move event.
+    /// Returns `true` when the cursor position changed.
+    fn drag_text_input(
+        input: &mut crate::views::text_input::TextInput,
+        get_blink: fn(&mut SettingsView) -> &mut BlinkManager,
+        event: &MouseMoveEvent,
+        window: &Window,
+        cx: &mut Context<SettingsView>,
+    ) -> bool {
+        if !input.is_mouse_selecting {
+            return false;
+        }
+        let before = input.cursor_pos;
+        input.handle_mouse_move(event, window, 12.0, "Segoe UI");
+        if input.cursor_pos == before {
+            return false;
+        }
+        input.pause_and_show(get_blink, cx);
+        true
+    }
+
+    /// Renders one inline editable field, shared by the attachments folder and
+    /// the daily-note name format/folder settings. Selection drags are
+    /// continued by the root handlers in `render_settings_modal`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn render_inline_text_input(
         &self,
+        id: &'static str,
+        input: &crate::views::text_input::TextInput,
+        focus_handle: &FocusHandle,
+        width: f32,
         window: &Window,
         cx: &Context<Self>,
+        get_input: fn(&mut SettingsView) -> &mut crate::views::text_input::TextInput,
+        get_blink: fn(&mut SettingsView) -> &mut BlinkManager,
+        begin_edit: fn(&mut SettingsView, &mut Context<SettingsView>),
+        commit: fn(&mut SettingsView, &mut Context<SettingsView>),
+        cancel: fn(&mut SettingsView, &mut Context<SettingsView>),
     ) -> gpui::Stateful<gpui::Div> {
         let theme = &self.theme;
-        let focused = self.files_folder_focus_handle.is_focused(window);
-        let input = self.files_folder_input.render(
+        let focused = focus_handle.is_focused(window);
+        let input_element = input.render(
             "",
             theme,
             window,
@@ -2692,14 +2782,15 @@ impl SettingsView {
             12.0,
             "Segoe UI",
         );
+        let focus_handle = focus_handle.clone();
 
         div()
-            .id("files-folder-input")
-            .track_focus(&self.files_folder_focus_handle)
+            .id(id)
+            .track_focus(&focus_handle)
             .flex()
             .flex_row()
             .items_center()
-            .w(px(220.0))
+            .w(px(width))
             .h(px(28.0))
             .px_2()
             .bg(theme.bg_sidebar)
@@ -2709,53 +2800,107 @@ impl SettingsView {
             .cursor(gpui::CursorStyle::IBeam)
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
-                    window.focus(&this.files_folder_focus_handle);
-                    this.files_folder_editing = true;
-                    this.files_folder_edit_origin = this.config.files.folder.clone();
-                    this.files_folder_input.handle_mouse_down(event, window, 12.0, "Segoe UI");
-                    this.files_folder_input.enable_blink(
-                        |s: &mut SettingsView| &mut s.files_folder_input.blink,
-                        cx,
-                    );
-                    this.files_folder_input.pause_and_show(
-                        |s: &mut SettingsView| &mut s.files_folder_input.blink,
-                        cx,
-                    );
+                    window.focus(&focus_handle);
+                    begin_edit(this, cx);
+                    get_input(this).handle_mouse_down(event, window, 12.0, "Segoe UI");
+                    get_input(this).enable_blink(get_blink, cx);
+                    get_input(this).pause_and_show(get_blink, cx);
                     cx.notify();
                 }),
             )
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                 cx.stop_propagation();
                 let key = event.keystroke.key.as_str();
                 if key == "enter" {
-                    this.commit_files_folder(cx);
+                    commit(this, cx);
                     window.focus(&this.focus_handle);
                     return;
                 }
                 if key == "escape" {
-                    let origin = this.files_folder_edit_origin.clone();
-                    this.config.files.folder = origin.clone();
-                    this.files_folder_input.set_text(origin);
-                    this.files_folder_input.selection_anchor = None;
-                    this.files_folder_input.is_mouse_selecting = false;
-                    this.files_folder_input.disable_blink(cx);
-                    this.files_folder_editing = false;
-                    this.save_settings(cx);
+                    cancel(this, cx);
                     window.focus(&this.focus_handle);
-                    cx.notify();
                     return;
                 }
-                if this.files_folder_input.handle_key_down(event, cx) {
-                    this.files_folder_input.pause_and_show(
-                        |s: &mut SettingsView| &mut s.files_folder_input.blink,
-                        cx,
-                    );
+                if get_input(this).handle_key_down(event, cx) {
+                    get_input(this).pause_and_show(get_blink, cx);
                 }
                 cx.notify();
             }))
-            .child(input)
+            .child(input_element)
+    }
+
+    /// Renders the editable attachments/images folder name field.
+    pub(super) fn render_files_folder_input(
+        &self,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        self.render_inline_text_input(
+            "files-folder-input",
+            &self.files_folder_input,
+            &self.files_folder_focus_handle,
+            220.0,
+            window,
+            cx,
+            |s| &mut s.files_folder_input,
+            |s| &mut s.files_folder_input.blink,
+            |s: &mut SettingsView, _cx: &mut Context<SettingsView>| {
+                s.files_folder_editing = true;
+                s.files_folder_edit_origin = s.config.files.folder.clone();
+            },
+            |s: &mut SettingsView, cx: &mut Context<SettingsView>| s.commit_files_folder(cx),
+            |s: &mut SettingsView, cx: &mut Context<SettingsView>| s.cancel_files_folder(cx),
+        )
+    }
+
+    /// Renders the daily-note file name format field.
+    pub(super) fn render_daily_format_input(
+        &self,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        self.render_inline_text_input(
+            "daily-format-input",
+            &self.daily_format_input,
+            &self.daily_format_focus_handle,
+            240.0,
+            window,
+            cx,
+            |s| &mut s.daily_format_input,
+            |s| &mut s.daily_format_input.blink,
+            |s: &mut SettingsView, _cx: &mut Context<SettingsView>| {
+                s.daily_format_editing = true;
+                s.daily_format_edit_origin = s.config.daily_notes.format.clone();
+            },
+            |s: &mut SettingsView, cx: &mut Context<SettingsView>| s.commit_daily_format(cx),
+            |s: &mut SettingsView, cx: &mut Context<SettingsView>| s.cancel_daily_format(cx),
+        )
+    }
+
+    /// Renders the daily-note folder field.
+    pub(super) fn render_daily_folder_input(
+        &self,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        self.render_inline_text_input(
+            "daily-folder-input",
+            &self.daily_folder_input,
+            &self.daily_folder_focus_handle,
+            240.0,
+            window,
+            cx,
+            |s| &mut s.daily_folder_input,
+            |s| &mut s.daily_folder_input.blink,
+            |s: &mut SettingsView, _cx: &mut Context<SettingsView>| {
+                s.daily_folder_editing = true;
+                s.daily_folder_edit_origin = s.config.daily_notes.folder.clone();
+            },
+            |s: &mut SettingsView, cx: &mut Context<SettingsView>| s.commit_daily_folder(cx),
+            |s: &mut SettingsView, cx: &mut Context<SettingsView>| s.cancel_daily_folder(cx),
+        )
     }
 
     /// A folder name must be a single, non-empty path segment.
@@ -2766,11 +2911,96 @@ impl SettingsView {
             && !name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
     }
 
-    /// Commits the folder field before leaving the Files section or closing settings.
-    pub(super) fn commit_files_folder_if_editing(&mut self, cx: &mut Context<Self>) {
+    /// Commits in-progress text fields before leaving a settings section, a
+    /// tab, or the window.
+    pub(super) fn commit_text_fields_if_editing(&mut self, cx: &mut Context<Self>) {
         if self.files_folder_editing {
             self.commit_files_folder(cx);
         }
+        if self.daily_format_editing {
+            self.commit_daily_format(cx);
+        }
+        if self.daily_folder_editing {
+            self.commit_daily_folder(cx);
+        }
+    }
+
+    /// Restores the attachments folder saved before editing started.
+    pub(super) fn cancel_files_folder(&mut self, cx: &mut Context<Self>) {
+        let origin = self.files_folder_edit_origin.clone();
+        self.config.files.folder = origin.clone();
+        self.files_folder_input.set_text(origin);
+        self.files_folder_input.selection_anchor = None;
+        self.files_folder_input.is_mouse_selecting = false;
+        self.files_folder_input.disable_blink(cx);
+        self.files_folder_editing = false;
+        self.save_settings(cx);
+        cx.notify();
+    }
+
+    /// Commits the daily-note name format. An empty format keeps the saved one.
+    pub(super) fn commit_daily_format(&mut self, cx: &mut Context<Self>) {
+        self.daily_format_editing = false;
+        self.daily_format_input.selection_anchor = None;
+        self.daily_format_input.is_mouse_selecting = false;
+        self.daily_format_input.disable_blink(cx);
+        let format = self.daily_format_input.text().trim().to_string();
+
+        if format.is_empty() {
+            self.daily_format_input
+                .set_text(self.config.daily_notes.format.clone());
+            cx.notify();
+            return;
+        }
+
+        if self.config.daily_notes.format != format {
+            self.config.daily_notes.format = format.clone();
+            self.save_settings(cx);
+        }
+        self.daily_format_input.set_text(format);
+        cx.notify();
+    }
+
+    /// Restores the daily-note name format saved before editing started.
+    pub(super) fn cancel_daily_format(&mut self, cx: &mut Context<Self>) {
+        let origin = self.daily_format_edit_origin.clone();
+        self.config.daily_notes.format = origin.clone();
+        self.daily_format_input.set_text(origin);
+        self.daily_format_input.selection_anchor = None;
+        self.daily_format_input.is_mouse_selecting = false;
+        self.daily_format_input.disable_blink(cx);
+        self.daily_format_editing = false;
+        self.save_settings(cx);
+        cx.notify();
+    }
+
+    /// Commits the daily-note folder. Empty means the vault root.
+    pub(super) fn commit_daily_folder(&mut self, cx: &mut Context<Self>) {
+        self.daily_folder_editing = false;
+        self.daily_folder_input.selection_anchor = None;
+        self.daily_folder_input.is_mouse_selecting = false;
+        self.daily_folder_input.disable_blink(cx);
+        let folder = self.daily_folder_input.text().trim().to_string();
+
+        if self.config.daily_notes.folder != folder {
+            self.config.daily_notes.folder = folder.clone();
+            self.save_settings(cx);
+        }
+        self.daily_folder_input.set_text(folder);
+        cx.notify();
+    }
+
+    /// Restores the daily-note folder saved before editing started.
+    pub(super) fn cancel_daily_folder(&mut self, cx: &mut Context<Self>) {
+        let origin = self.daily_folder_edit_origin.clone();
+        self.config.daily_notes.folder = origin.clone();
+        self.daily_folder_input.set_text(origin);
+        self.daily_folder_input.selection_anchor = None;
+        self.daily_folder_input.is_mouse_selecting = false;
+        self.daily_folder_input.disable_blink(cx);
+        self.daily_folder_editing = false;
+        self.save_settings(cx);
+        cx.notify();
     }
 
     /// Commits the folder-name input. Invalid names fall back to the saved value.
