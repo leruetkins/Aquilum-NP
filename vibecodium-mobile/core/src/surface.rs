@@ -44,6 +44,11 @@ extern "C" {
     fn ANativeWindow_unlockAndPost(window: *mut ANativeWindow) -> i32;
 }
 
+#[link(name = "log")]
+extern "C" {
+    fn __android_log_print(prio: i32, tag: *const u8, fmt: *const u8, ...) -> i32;
+}
+
 #[cfg(not(target_os = "android"))]
 #[allow(non_snake_case)]
 unsafe fn ANativeWindow_fromSurface(_env: *mut jni::sys::JNIEnv, _surface: jni::sys::jobject) -> *mut ANativeWindow { std::ptr::null_mut() }
@@ -76,25 +81,28 @@ fn blend(dst: u32, rgb: u32, alpha: u8) -> u32 {
     if alpha == 0 {
         return dst;
     }
+    let color = logical(rgb);
+    if alpha == 255 {
+        return color;
+    }
     let a = u32::from(alpha);
     let inv = 255 - a;
     let dr = dst & 0xff;
     let dg = (dst >> 8) & 0xff;
     let db = (dst >> 16) & 0xff;
-    let sr = (rgb >> 16) & 0xff;
-    let sg = (rgb >> 8) & 0xff;
-    let sb = rgb & 0xff;
-    let r = (sr * a + dr * inv) / 255;
-    let g = (sg * a + dg * inv) / 255;
-    let b = (sb * a + db * inv) / 255;
+    let sr = color & 0xff;
+    let sg = (color >> 8) & 0xff;
+    let sb = (color >> 16) & 0xff;
+    let r = (sr * a + dr * inv + 128) / 255;
+    let g = (sg * a + dg * inv + 128) / 255;
+    let b = (sb * a + db * inv + 128) / 255;
     r | (g << 8) | (b << 16) | (0xff << 24)
 }
 
 fn fill(pixels: &mut [u32], width: usize, height: usize, rgb: u32) {
     let color = logical(rgb);
-    for pixel in pixels.iter_mut().take(width * height) {
-        *pixel = color;
-    }
+    let count = (width * height).min(pixels.len());
+    pixels[..count].fill(color);
 }
 
 fn rect(pixels: &mut [u32], width: usize, height: usize, x: f32, y: f32, w: f32, h: f32, rgb: u32) {
@@ -754,6 +762,7 @@ struct Painter {
     glyphs: HashMap<(u8, char, u32), (fontdue::Metrics, Vec<u8>)>,
     icons: HashMap<(usize, u32, u32), IconRaster>,
     emojis: HashMap<(String, u32), EmojiRaster>,
+    metrics_cache: HashMap<(u32, bool), (f32, f32)>,
 }
 
 fn load_font(paths: &[&str]) -> Option<Font> {
@@ -800,6 +809,7 @@ impl Painter {
             glyphs: HashMap::new(),
             icons: HashMap::new(),
             emojis: HashMap::new(),
+            metrics_cache: HashMap::new(),
         }
     }
 
@@ -896,17 +906,35 @@ impl Painter {
         primary
     }
 
-    fn advance(&self, px: f32, mono: bool) -> f32 {
-        let Some(font) = self.font(mono) else {
-            return px * 0.6;
-        };
-        let metrics = font.metrics('M', px);
-        metrics.advance_width
+    fn font_metrics(&mut self, px: f32, mono: bool) -> (f32, f32) {
+        let key = (px.to_bits(), mono);
+        if let Some(&cached) = self.metrics_cache.get(&key) {
+            return cached;
+        }
+        let advance = self
+            .font(mono)
+            .map(|f| f.metrics('M', px).advance_width)
+            .unwrap_or(px * 0.6);
+        let ascent = self
+            .font(mono)
+            .and_then(|f| f.horizontal_line_metrics(px))
+            .map(|line| line.ascent)
+            .unwrap_or(px * 0.8)
+            .round();
+        self.metrics_cache.insert(key, (advance, ascent));
+        (advance, ascent)
     }
 
-    fn width(&self, text: &str, px: f32, mono: bool) -> f32 {
+    fn advance(&mut self, px: f32, mono: bool) -> f32 {
+        self.font_metrics(px, mono).0
+    }
+
+    fn width(&mut self, text: &str, px: f32, mono: bool) -> f32 {
         if mono {
             let advance = self.advance(px, true);
+            if text.is_ascii() {
+                return text.len() as f32 * advance;
+            }
             let chars: Vec<char> = text.chars().filter(|&c| c != '\r').collect();
             let offsets = line_cell_offsets(&chars, &[]);
             let total_cells = offsets.last().copied().unwrap_or(0);
@@ -937,14 +965,55 @@ impl Painter {
         rgb: u32,
         mono: bool,
     ) {
-        let cell_advance = self.advance(px, mono);
-        let ascent = self
-            .font(mono)
-            .and_then(|f| f.horizontal_line_metrics(px))
-            .map(|line| line.ascent)
-            .unwrap_or(px * 0.8);
+        let (cell_advance, ascent) = self.font_metrics(px, mono);
         let baseline = y + ascent;
         let mut cursor = x;
+
+        if text.is_ascii() {
+            let px_key = px.round() as u32;
+            for &byte in text.as_bytes() {
+                if byte == b'\r' {
+                    continue;
+                }
+                let character = byte as char;
+                let key = (u8::from(mono), character, px_key);
+                if !self.glyphs.contains_key(&key) {
+                    let raster = self
+                        .font_for_char(character, mono)
+                        .map(|font| font.rasterize(character, px))
+                        .unwrap_or_else(|| (fontdue::Metrics::default(), Vec::new()));
+                    self.glyphs.insert(key, raster);
+                }
+                let Some((metrics, bitmap)) = self.glyphs.get(&key) else {
+                    cursor += if mono { cell_advance } else { 0.0 };
+                    continue;
+                };
+                let gx = (cursor + metrics.xmin as f32).round() as i32;
+                let gy = (baseline - metrics.ymin as f32 - metrics.height as f32).round() as i32;
+                for row in 0..metrics.height {
+                    let py = gy + row as i32;
+                    if py < 0 || py >= height as i32 {
+                        continue;
+                    }
+                    let py = py as usize;
+                    for column in 0..metrics.width {
+                        let alpha = bitmap[row * metrics.width + column];
+                        if alpha == 0 {
+                            continue;
+                        }
+                        let px_x = gx + column as i32;
+                        if px_x < 0 || px_x >= width as i32 {
+                            continue;
+                        }
+                        let index = py * width + px_x as usize;
+                        pixels[index] = blend(pixels[index], rgb, alpha);
+                    }
+                }
+                cursor += if mono { cell_advance } else { metrics.advance_width };
+            }
+            return;
+        }
+
         let chars: Vec<char> = text.chars().collect();
         let mut i = 0usize;
         while i < chars.len() {
@@ -1097,6 +1166,7 @@ struct EditorState {
     anchor: usize,
     scroll: f32,
     scroll_x: f32,
+    band_origin: f32,
     language: String,
     drag: Option<(f32, f32, f32, f32, bool)>,
     model: Vec<crate::markdown::MarkdownLine>,
@@ -1111,6 +1181,7 @@ struct EditorState {
     caret_visible: bool,
     insertion_handle_visible: bool,
     starts: Vec<usize>,
+    byte_starts: Vec<usize>,
     starts_dirty: bool,
 }
 
@@ -1152,6 +1223,7 @@ struct InputState {
     moved: AtomicBool,
     start_x_bits: AtomicU32,
     start_y_bits: AtomicU32,
+    start_scroll_bits: AtomicU32,
     last_y_bits: AtomicU32,
     scroll_bits: AtomicU32,
     scroll_dirty: AtomicBool,
@@ -1167,6 +1239,7 @@ impl InputState {
             moved: AtomicBool::new(false),
             start_x_bits: AtomicU32::new(0),
             start_y_bits: AtomicU32::new(0),
+            start_scroll_bits: AtomicU32::new(0),
             last_y_bits: AtomicU32::new(0),
             scroll_bits: AtomicU32::new(0),
             scroll_dirty: AtomicBool::new(false),
@@ -1205,25 +1278,27 @@ fn drain_input(id: i32) {
 }
 
 fn row_height(density: f32) -> f32 {
-    36.0 * density
+    (36.0 * density).round().max(1.0)
 }
 
 fn line_height(density: f32) -> f32 {
-    22.0 * density
+    (22.0 * density).round().max(1.0)
 }
 
 fn editor_font(density: f32) -> f32 {
-    15.0 * density
+    (15.0 * density).round().max(1.0)
 }
 
-fn line_starts(text: &str) -> Vec<usize> {
-    let mut starts = vec![0];
-    for (index, character) in text.chars().enumerate() {
+fn line_starts(text: &str) -> (Vec<usize>, Vec<usize>) {
+    let mut char_starts = vec![0];
+    let mut byte_starts = vec![0];
+    for (char_idx, (byte_idx, character)) in text.char_indices().enumerate() {
         if character == '\n' {
-            starts.push(index + 1);
+            char_starts.push(char_idx + 1);
+            byte_starts.push(byte_idx + 1);
         }
     }
-    starts
+    (char_starts, byte_starts)
 }
 
 fn byte_at(text: &str, char_index: usize) -> usize {
@@ -1244,18 +1319,19 @@ fn line_of(starts: &[usize], selection: usize) -> usize {
     }
 }
 
-fn logical_line<'a>(text: &'a str, starts: &[usize], line: usize) -> &'a str {
-    let Some(&start) = starts.get(line) else {
+fn logical_line<'a>(text: &'a str, byte_starts: &[usize], line: usize) -> &'a str {
+    let Some(&start) = byte_starts.get(line) else {
         return "";
     };
-    let end = if line + 1 < starts.len() {
-        starts[line + 1].saturating_sub(1)
+    let mut end = if line + 1 < byte_starts.len() {
+        byte_starts[line + 1].saturating_sub(1)
     } else {
-        char_count(text)
+        text.len()
     };
-    let start_byte = byte_at(text, start);
-    let end_byte = byte_at(text, end);
-    &text[start_byte..end_byte]
+    if end > start && text.as_bytes().get(end - 1) == Some(&b'\r') {
+        end -= 1;
+    }
+    &text[start..end]
 }
 
 fn rounded_rect(
@@ -1675,16 +1751,32 @@ impl SurfaceState {
         if self.window.is_null() || self.width == 0 || self.height == 0 {
             return;
         }
+        let t0 = std::time::Instant::now();
         let mut buffer = ANativeWindowBuffer::default();
         let locked = unsafe {
             ANativeWindow_lock(self.window, &mut buffer, std::ptr::null_mut())
         };
+        let t_lock = t0.elapsed();
         if locked != 0 || buffer.bits.is_null() {
             return;
         }
+        let t1 = std::time::Instant::now();
         self.paint_locked(&buffer);
+        let t_paint = t1.elapsed();
+        let t2 = std::time::Instant::now();
         unsafe {
             ANativeWindow_unlockAndPost(self.window);
+        }
+        let t_post = t2.elapsed();
+        unsafe {
+            __android_log_print(
+                3, // DEBUG
+                b"VibecodiumRust\0".as_ptr(),
+                b"render breakdown: lock=%.2fms, paint=%.2fms, post=%.2fms\0".as_ptr(),
+                t_lock.as_secs_f64() * 1000.0,
+                t_paint.as_secs_f64() * 1000.0,
+                t_post.as_secs_f64() * 1000.0,
+            );
         }
     }
 
@@ -1712,13 +1804,6 @@ impl SurfaceState {
             _ => 0.0,
         };
         let length = self.width * self.height;
-        if self.pixels.len() != length {
-            self.pixels.resize(length, 0);
-        }
-        let mut pixels = std::mem::take(&mut self.pixels);
-        self.paint_full(&mut pixels, mode, target, self.height, true);
-        self.pixels = pixels;
-
         let stride = buffer.stride.max(0) as usize;
         let buffer_width = buffer.width.max(0) as usize;
         let buffer_height = buffer.height.max(0) as usize;
@@ -1727,10 +1812,15 @@ impl SurfaceState {
         let target_ptr = buffer.bits as *mut u32;
 
         if stride == self.width && copy_width == self.width && copy_height == self.height {
-            unsafe {
-                std::ptr::copy_nonoverlapping(self.pixels.as_ptr(), target_ptr, length);
-            }
+            let buffer_slice = unsafe { std::slice::from_raw_parts_mut(target_ptr, length) };
+            self.paint_full(buffer_slice, mode, target, self.height, mode != 2);
         } else {
+            if self.pixels.len() != length {
+                self.pixels.resize(length, 0);
+            }
+            let mut pixels = std::mem::take(&mut self.pixels);
+            self.paint_full(&mut pixels, mode, target, self.height, mode != 2);
+            self.pixels = pixels;
             unsafe {
                 for row in 0..copy_height {
                     std::ptr::copy_nonoverlapping(
@@ -1789,14 +1879,14 @@ impl SurfaceState {
             1 => {
                 let content = self.tree.doc.rows.len() as f32 * row_height(density);
                 let max = (content - self.height as f32).max(0.0);
-                (content, self.height as f32, self.tree.scroll, max)
+                (content, self.height as f32, self.tree.scroll.round(), max)
             }
             2 => {
-                let content = self.editor.top_inset
+                let content = self.editor.top_inset.round()
                     + self.editor.wrap.len() as f32 * line_height(density)
-                    + self.editor.bottom_inset;
+                    + self.editor.bottom_inset.round();
                 let max = (content - self.height as f32).max(0.0);
-                (content, self.height as f32, self.editor.scroll, max)
+                (content, self.height as f32, self.editor.scroll.round(), max)
             }
             _ => return,
         };
@@ -1844,13 +1934,13 @@ impl SurfaceState {
         let max_y = (self.tree.doc.rows.len() as f32 * row_height(self.density)
             - self.height as f32)
             .max(0.0);
-        self.tree.scroll = y.max(0.0).min(max_y);
+        self.tree.scroll = y.round().clamp(0.0, max_y);
     }
 
     fn draw_tree(&mut self, pixels: &mut [u32]) {
         let row_h = row_height(self.density);
         let density = self.density;
-        let scroll = self.tree.scroll;
+        let scroll = self.tree.scroll.round();
         let active = self.tree.doc.active.clone();
         let rows = std::mem::take(&mut self.tree.doc.rows);
         let mut painter = std::mem::take(&mut self.painter);
@@ -1953,7 +2043,9 @@ impl SurfaceState {
 
     fn ensure_starts(&mut self) {
         if self.editor.starts_dirty {
-            self.editor.starts = line_starts(&self.editor.text);
+            let (char_starts, byte_starts) = line_starts(&self.editor.text);
+            self.editor.starts = char_starts;
+            self.editor.byte_starts = byte_starts;
             self.editor.starts_dirty = false;
         }
     }
@@ -2050,16 +2142,23 @@ impl SurfaceState {
         let advance = self.painter.advance(font_px, true);
         self.ensure_starts();
         let gutter = (self.editor.starts.len().max(1).to_string().len() as f32 * advance
-            + 24.0 * density)
-            .max(34.0 * density);
-        let content_width = (self.width as f32 - gutter - 8.0 * density).max(advance);
+            + (24.0 * density).round())
+            .max((34.0 * density).round())
+            .round();
+        let content_width = (self.width as f32 - gutter - (8.0 * density).round()).max(advance);
         self.ensure_wrap(content_width);
         let starts = std::mem::take(&mut self.editor.starts);
+        let byte_starts = std::mem::take(&mut self.editor.byte_starts);
         self.editor.scroll_x = 0.0;
         let total_visual = self.editor.wrap.len();
         let text_x = gutter;
-        let scroll = self.editor.scroll;
-        let first = (((scroll - self.editor.top_inset) / line_h)
+        let scroll = if self.editor.band_origin >= 0.0 {
+            self.editor.band_origin.round()
+        } else {
+            self.editor.scroll.round()
+        };
+        let top_inset = self.editor.top_inset.round();
+        let first = (((scroll - top_inset) / line_h)
             .floor()
             .max(0.0) as usize)
             .min(total_visual.saturating_sub(1));
@@ -2085,13 +2184,15 @@ impl SurfaceState {
         let mut start_handle: Option<(f32, f32)> = None;
         let mut end_handle: Option<(f32, f32)> = None;
         let mut insertion_handle: Option<(f32, f32)> = None;
+        let text_pad_y = (3.0 * density).round();
+        let number_pad_y = (4.0 * density).round();
         for visual in first..last {
             let chunk = self.editor.wrap[visual];
-            let y = self.editor.top_inset + visual as f32 * line_h - scroll;
+            let y = top_inset + visual as f32 * line_h - scroll;
             if chunk.line != prepared_line {
                 prepared_line = chunk.line;
                 line_start = starts.get(chunk.line).copied().unwrap_or(0);
-                let raw = logical_line(&self.editor.text, &starts, chunk.line);
+                let raw = logical_line(&self.editor.text, &byte_starts, chunk.line);
                 chars.clear();
                 chars.extend(raw.chars());
                 colors.clear();
@@ -2291,7 +2392,7 @@ impl SurfaceState {
                     self.width,
                     self.height,
                     segment_x,
-                    y + 3.0 * density,
+                    y + text_pad_y,
                     &segment,
                     chunk.font,
                     color,
@@ -2302,8 +2403,8 @@ impl SurfaceState {
                         pixels,
                         self.width,
                         self.height,
-                        segment_x + 0.6 * density,
-                        y + 3.0 * density,
+                        segment_x + (0.6 * density).round(),
+                        y + text_pad_y,
                         &segment,
                         chunk.font,
                         color,
@@ -2363,22 +2464,23 @@ impl SurfaceState {
             }
         }
         rect(pixels, self.width, self.height, 0.0, 0.0, gutter, self.height as f32, 0x000000);
+        let number_font_px = (12.0 * density).round();
         for visual in first..last {
             let chunk = self.editor.wrap[visual];
             if chunk.start != 0 {
                 continue;
             }
-            let y = self.editor.top_inset + visual as f32 * line_h - scroll;
+            let y = top_inset + visual as f32 * line_h - scroll;
             let number = (chunk.line + 1).to_string();
-            let number_width = painter.width(&number, 12.0 * density, true);
+            let number_width = painter.width(&number, number_font_px, true);
             painter.draw(
                 pixels,
                 self.width,
                 self.height,
-                gutter - 8.0 * density - number_width,
-                y + 4.0 * density,
+                gutter - (8.0 * density).round() - number_width,
+                y + number_pad_y,
                 &number,
-                12.0 * density,
+                number_font_px,
                 0x666666,
                 true,
             );
@@ -2427,6 +2529,7 @@ impl SurfaceState {
         }
         self.editor.model = model;
         self.editor.starts = starts;
+        self.editor.byte_starts = byte_starts;
         self.painter = painter;
     }
 
@@ -2545,7 +2648,7 @@ impl SurfaceState {
 
     fn editor_set_scroll(&mut self, y: f32, _x: f32) {
         let (_, _, max_y, _) = self.editor_scroll_metrics();
-        self.editor.scroll = y.max(0.0).min(max_y);
+        self.editor.scroll = y.round().clamp(0.0, max_y);
         self.editor.scroll_x = 0.0;
     }
 
@@ -2664,7 +2767,7 @@ impl SurfaceState {
         let (visual, _) = self.visual_for_position(&self.editor.starts, self.editor.selection);
         let top = visual as f32 * line_h;
         let bottom = self.editor.top_inset + top + line_h;
-        let visible = (self.height as f32 - self.editor.bottom_inset).max(line_h);
+        let visible = (self.viewport_height as f32 - self.editor.bottom_inset).max(line_h);
         if top < self.editor.scroll {
             self.editor.scroll = top;
         } else if bottom > self.editor.scroll + visible {
@@ -2672,7 +2775,7 @@ impl SurfaceState {
         }
         let max_y = (self.editor.top_inset + self.editor.wrap.len() as f32 * line_h
             + self.editor.bottom_inset
-            - self.height as f32)
+            - self.viewport_height as f32)
             .max(0.0);
         self.editor.scroll = self.editor.scroll.clamp(0.0, max_y);
         self.editor.scroll_x = 0.0;
@@ -2725,7 +2828,7 @@ impl SurfaceState {
             return 0;
         };
         let line_start = self.editor.starts.get(chunk.line).copied().unwrap_or(0);
-        let raw = logical_line(&self.editor.text, &self.editor.starts, chunk.line);
+        let raw = logical_line(&self.editor.text, &self.editor.byte_starts, chunk.line);
         let chars: Vec<char> = raw.chars().collect();
         let mut hidden = vec![false; chars.len()];
         let cursor_line = line_of(&self.editor.starts, self.editor.selection);
@@ -2848,7 +2951,7 @@ impl SurfaceState {
             for position in [selection_start, selection_end] {
                 let (visual, offset) = self.visual_for_position(&self.editor.starts, position);
                 let (advance, cell) = if let Some(chunk) = self.editor.wrap.get(visual) {
-                    let raw = logical_line(&self.editor.text, &self.editor.starts, chunk.line);
+                    let raw = logical_line(&self.editor.text, &self.editor.byte_starts, chunk.line);
                     let chars: Vec<char> = raw.chars().collect();
                     let cell_offsets = line_cell_offsets(&chars, &[]);
                     let chunk_start = chunk.start.min(chars.len());
@@ -2874,7 +2977,7 @@ impl SurfaceState {
         } else {
             let (visual, offset) = self.visual_for_position(&self.editor.starts, self.editor.selection);
             let (advance, cell) = if let Some(chunk) = self.editor.wrap.get(visual) {
-                let raw = logical_line(&self.editor.text, &self.editor.starts, chunk.line);
+                let raw = logical_line(&self.editor.text, &self.editor.byte_starts, chunk.line);
                 let chars: Vec<char> = raw.chars().collect();
                 let cell_offsets = line_cell_offsets(&chars, &[]);
                 let chunk_start = chunk.start.min(chars.len());
@@ -3003,6 +3106,30 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetBotto
             let (_, _, max_y, _) = state.editor_scroll_metrics();
             state.editor.scroll = state.editor.scroll.min(max_y);
         }
+    });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetBand(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+    origin: jfloat,
+) {
+    let _ = with_surface(id, |state| {
+        state.editor.band_origin = origin.max(0.0);
+    });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceSetViewportHeight(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+    height: jint,
+) {
+    let _ = with_surface(id, |state| {
+        state.viewport_height = height.max(1) as usize;
     });
 }
 
@@ -3153,10 +3280,11 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceRender(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
     id: jint,
-) {
-    let window = with_surface(id, |state| state.window).unwrap_or(std::ptr::null_mut());
+) -> jfloat {
+    let (window, origin) = with_surface(id, |state| (state.window, state.editor.band_origin))
+        .unwrap_or((std::ptr::null_mut(), 0.0));
     if window.is_null() {
-        return;
+        return origin;
     }
     let input = input_of(id);
     let mut buffer = ANativeWindowBuffer::default();
@@ -3164,9 +3292,9 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceRender(
         ANativeWindow_lock(window, &mut buffer, std::ptr::null_mut())
     };
     if locked != 0 || buffer.bits.is_null() {
-        return;
+        return origin;
     }
-    let _ = with_surface(id, |state| {
+    let rendered_origin = with_surface(id, |state| {
         // Apply the newest touch position only once the buffer is available:
         // locking can wait for the compositor, and a frame drawn with the
         // position from before that wait reads as a missed scroll tick.
@@ -3186,10 +3314,13 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceRender(
             };
             input.max_y_bits.store(max_y.to_bits(), Ordering::Relaxed);
         }
-    });
+        state.editor.band_origin
+    })
+    .unwrap_or(origin);
     unsafe {
         ANativeWindow_unlockAndPost(window);
     }
+    rendered_origin
 }
 
 #[no_mangle]
@@ -3380,8 +3511,9 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceTouch(
                     input.moved.store(false, Ordering::Relaxed);
                     input.start_x_bits.store(x.to_bits(), Ordering::Relaxed);
                     input.start_y_bits.store(y.to_bits(), Ordering::Relaxed);
+                    input.start_scroll_bits.store(scroll.round().to_bits(), Ordering::Relaxed);
                     input.last_y_bits.store(y.to_bits(), Ordering::Relaxed);
-                    input.scroll_bits.store(scroll.to_bits(), Ordering::Relaxed);
+                    input.scroll_bits.store(scroll.round().to_bits(), Ordering::Relaxed);
                     input.scroll_dirty.store(false, Ordering::Relaxed);
                 }
                 touch
@@ -3403,23 +3535,16 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceTouch(
                 let dx = x - start_x;
                 let dy = y - start_y;
                 if !input.moved.load(Ordering::Relaxed) {
-                    if dy.abs() > threshold {
+                    if dy.abs() > threshold || dx.abs() > threshold {
                         input.moved.store(true, Ordering::Relaxed);
-                        let initial_last_y = start_y + dy.signum() * threshold;
-                        input.last_y_bits.store(initial_last_y.to_bits(), Ordering::Relaxed);
-                    } else if dx.abs() > threshold {
-                        input.moved.store(true, Ordering::Relaxed);
-                        input.last_y_bits.store(y.to_bits(), Ordering::Relaxed);
                     }
                 }
                 if input.moved.load(Ordering::Relaxed) {
-                    let last_y = f32::from_bits(input.last_y_bits.load(Ordering::Relaxed));
-                    let delta_y = y - last_y;
-                    input.last_y_bits.store(y.to_bits(), Ordering::Relaxed);
-                    let current_scroll = f32::from_bits(input.scroll_bits.load(Ordering::Relaxed));
+                    let start_scroll = f32::from_bits(input.start_scroll_bits.load(Ordering::Relaxed));
                     let max_y = f32::from_bits(input.max_y_bits.load(Ordering::Relaxed));
-                    let scroll = (current_scroll - delta_y).clamp(0.0, max_y);
-                    input.scroll_bits.store(scroll.to_bits(), Ordering::Relaxed);
+                    let adjusted = dy - dy.signum() * threshold;
+                    let scroll = (start_scroll - adjusted).clamp(0.0, max_y);
+                    input.scroll_bits.store(scroll.round().to_bits(), Ordering::Relaxed);
                     input.scroll_dirty.store(true, Ordering::Relaxed);
                 }
                 String::new()

@@ -78,7 +78,7 @@ public final class CoreBridge {
 
     public static native void nativeSurfaceEndUpdate(int id);
 
-    public static native void nativeSurfaceRender(int id);
+    public static native float nativeSurfaceRender(int id);
 
     public static native void nativeSurfaceInvalidate(int id);
 
@@ -132,6 +132,10 @@ public final class CoreBridge {
     public static native void nativeEditorSetInsertionHandleVisible(int id, boolean visible);
 
     public static native float nativeEditorScroll(int id);
+
+    public static native void nativeEditorSetBand(int id, float origin);
+
+    public static native void nativeSurfaceSetViewportHeight(int id, int height);
 
     public static native String nativeEditorViewport(int id);
 

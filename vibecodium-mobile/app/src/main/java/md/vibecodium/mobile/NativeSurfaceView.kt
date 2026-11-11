@@ -3,6 +3,8 @@ package md.vibecodium.mobile
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.graphics.PointF
 import android.graphics.Rect
 import android.graphics.SurfaceTexture
@@ -26,6 +28,7 @@ import android.view.TextureView
 import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
+import android.widget.FrameLayout
 import android.widget.Magnifier
 import android.widget.OverScroller
 import kotlin.math.roundToInt
@@ -44,6 +47,7 @@ import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import androidx.customview.widget.ExploreByTouchHelper
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -52,11 +56,11 @@ import java.util.concurrent.atomic.AtomicInteger
  * Shared TextureView plumbing: one native ANativeWindow per view and a single
  * render thread so JNI never blocks the UI thread with buffer locks.
  */
-abstract class NativeSurfaceView(context: Context) : TextureView(context), TextureView.SurfaceTextureListener {
+abstract class NativeSurfaceView(context: Context) : FrameLayout(context), TextureView.SurfaceTextureListener {
     val surfaceId: Int = NEXT_ID.incrementAndGet()
     private var currentSurface: Surface? = null
 
-    private val renderer: java.util.concurrent.Executor get() = RENDERER
+    protected val renderer: java.util.concurrent.Executor get() = RENDERER
 
     /** UI-thread handler used by callbacks that run on the render thread. */
     protected val mainHandler: Handler = Handler(Looper.getMainLooper())
@@ -67,10 +71,38 @@ abstract class NativeSurfaceView(context: Context) : TextureView(context), Textu
     @Volatile
     private var pendingState: (() -> Unit)? = null
 
+    protected val textureView: TextureView = TextureView(context)
+
+    protected open fun computeBandMargin(viewportHeight: Int): Int = 0
+
+    protected open fun onBandLayoutChanged() = Unit
+
     init {
-        surfaceTextureListener = this
+        textureView.surfaceTextureListener = this
+        addView(textureView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        clipChildren = true
         isFocusable = true
         isFocusableInTouchMode = true
+    }
+
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        val w = right - left
+        val h = bottom - top
+        val margin = computeBandMargin(h)
+        if (textureView.left != 0 || textureView.top != -margin || textureView.right != w || textureView.bottom != h + margin) {
+            textureView.layout(0, -margin, w, h + margin)
+        }
+        for (i in 0 until childCount) {
+            val child = getChildAt(i)
+            if (child != textureView) {
+                if (child.left != 0 || child.top != 0 || child.right != w || child.bottom != h) {
+                    child.layout(0, 0, w, h)
+                }
+            }
+        }
+        if (changed) {
+            onBandLayoutChanged()
+        }
     }
 
     override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
@@ -79,9 +111,11 @@ abstract class NativeSurfaceView(context: Context) : TextureView(context), Textu
         surfaceTexture.setDefaultBufferSize(w, h)
         val surface = Surface(surfaceTexture)
         currentSurface = surface
+        val viewportH = this.height.coerceAtLeast(1)
         renderer.execute {
             val density = resources.displayMetrics.density
             CoreBridge.nativeSurfaceAttach(surfaceId, surface, w, h, density)
+            CoreBridge.nativeSurfaceSetViewportHeight(surfaceId, viewportH)
             attached = true
             // Publish text, insets and the stored viewport before the first
             // frame, so a recreated Surface never flashes the top of the note.
@@ -100,10 +134,12 @@ abstract class NativeSurfaceView(context: Context) : TextureView(context), Textu
         val w = width.coerceAtLeast(1)
         val h = height.coerceAtLeast(1)
         surfaceTexture.setDefaultBufferSize(w, h)
+        val viewportH = this.height.coerceAtLeast(1)
         renderer.execute {
             if (!attached) return@execute
             CoreBridge.nativeSurfaceBeginUpdate(surfaceId)
             CoreBridge.nativeSurfaceResize(surfaceId, w, h)
+            CoreBridge.nativeSurfaceSetViewportHeight(surfaceId, viewportH)
             pendingState?.let { update ->
                 pendingState = null
                 update()
@@ -116,11 +152,14 @@ abstract class NativeSurfaceView(context: Context) : TextureView(context), Textu
     override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
         val s = currentSurface
         currentSurface = null
+        attached = false
+        vsyncScheduled.set(false)
+        renderDirty.set(false)
+        mainHandler.post {
+            Choreographer.getInstance().removeFrameCallback(vsyncRender)
+        }
         renderer.execute {
-            if (attached) {
-                CoreBridge.nativeSurfaceDetach(surfaceId)
-                attached = false
-            }
+            CoreBridge.nativeSurfaceDetach(surfaceId)
             s?.release()
         }
         return true
@@ -145,41 +184,61 @@ abstract class NativeSurfaceView(context: Context) : TextureView(context), Textu
 
     protected fun isSurfaceAttached(): Boolean = attached
 
+    private val vsyncScheduled = AtomicBoolean(false)
     private val renderDirty = AtomicBoolean(false)
     private val renderRunning = AtomicBoolean(false)
 
-    private val renderTask: Runnable = object : Runnable {
-        override fun run() {
-            try {
-                renderDirty.set(false)
-                if (attached) {
-                    CoreBridge.nativeSurfaceRender(surfaceId)
-                }
-            } finally {
-                renderRunning.set(false)
-                if (renderDirty.get() && attached) {
-                    if (renderRunning.compareAndSet(false, true)) {
-                        renderer.execute(this)
+    private val vsyncRender = Choreographer.FrameCallback {
+        vsyncScheduled.set(false)
+        if (!renderDirty.get()) return@FrameCallback
+        if (renderRunning.compareAndSet(false, true)) {
+            renderDirty.set(false)
+            renderer.execute {
+                try {
+                    if (attached) {
+                        val t0 = System.nanoTime()
+                        CoreBridge.nativeSurfaceRender(surfaceId)
+                        val dtMs = (System.nanoTime() - t0) / 1_000_000f
+                        android.util.Log.d("VibecodiumPaint", "nativeSurfaceRender took ${dtMs}ms")
                     }
+                } finally {
+                    renderRunning.set(false)
+                    if (renderDirty.get() && attached) {
+                        scheduleVsync()
+                    }
+                }
+            }
+        } else {
+            scheduleVsync()
+        }
+    }
+
+    private fun scheduleVsync() {
+        if (!vsyncScheduled.compareAndSet(false, true)) return
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            Choreographer.getInstance().postFrameCallback(vsyncRender)
+        } else {
+            mainHandler.post {
+                if (vsyncScheduled.get()) {
+                    Choreographer.getInstance().postFrameCallback(vsyncRender)
                 }
             }
         }
     }
 
     /**
-     * Renders on the dedicated render thread immediately. High-frequency touch moves update
-     * atomic scroll state and kick off background rendering without waiting for UI VSYNC,
-     * ensuring frames are always ready in TextureView when the compositor draws.
+     * Renders on the dedicated render thread synchronized with hardware VSYNC.
+     * High-frequency touch moves update atomic scroll state; UI-thread Choreographer
+     * guarantees at most one frame is rendered per display refresh interval, eliminating
+     * buffer queue congestion, thread blocking in ANativeWindow_lock, and stutter in TextureView.
      */
-    protected fun requestRender() {
+    protected open fun requestRender() {
         renderDirty.set(true)
-        if (renderRunning.compareAndSet(false, true)) {
-            renderer.execute(renderTask)
-        }
+        scheduleVsync()
     }
 
     /** Invalidates and repaints on the render thread. */
-    protected fun requestFullRender() {
+    protected open fun requestFullRender() {
         renderer.execute {
             if (!attached) return@execute
             CoreBridge.nativeSurfaceInvalidate(surfaceId)
@@ -215,6 +274,13 @@ abstract class NativeSurfaceView(context: Context) : TextureView(context), Textu
     }
 
     override fun onDetachedFromWindow() {
+        vsyncScheduled.set(false)
+        renderDirty.set(false)
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            Choreographer.getInstance().removeFrameCallback(vsyncRender)
+        } else {
+            mainHandler.post { Choreographer.getInstance().removeFrameCallback(vsyncRender) }
+        }
         super.onDetachedFromWindow()
         // surfaceDestroyed is responsible for the native window; the executor
         // is left alive until the view is fully detached so that queued state
@@ -265,7 +331,7 @@ class NativeTreeView(
 
     private val helper: ExploreByTouchHelper by lazy {
         object : ExploreByTouchHelper(this) {
-            private fun rowHeight() = 36f * resources.displayMetrics.density
+            private fun rowHeight() = (36f * resources.displayMetrics.density).roundToInt().toFloat()
 
             override fun getVirtualViewAt(x: Float, y: Float): Int {
                 val scroll = CoreBridge.nativeTreeScroll(surfaceId)
@@ -356,7 +422,7 @@ class NativeTreeView(
     private var drawerTouchFloor = 0L
 
     init {
-        isOpaque = false
+        textureView.isOpaque = false
         ViewCompat.setAccessibilityDelegate(this, helper)
     }
 
@@ -503,6 +569,127 @@ class NativeEditorView(
     private val onTextChanged: (String, Int) -> Unit,
     private val idleBottomInsetPx: Float = 64f * context.resources.displayMetrics.density,
 ) : NativeSurfaceView(context) {
+    override fun computeBandMargin(viewportHeight: Int): Int = (viewportHeight * 0.6f).roundToInt()
+
+    private var bandOrigin = 0f
+    private val bandQueue = ConcurrentLinkedQueue<Float>()
+    private val isRenderingBand = AtomicBoolean(false)
+    private var pendingBandOrigin: Float? = null
+
+    private inner class ScrollbarOverlayView(context: Context) : View(context) {
+        private val barPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0x55ffffff
+            style = Paint.Style.FILL
+        }
+        private var curScroll = 0f
+        private var curMax = 0f
+
+        fun update(scroll: Float, max: Float) {
+            if (curScroll != scroll || curMax != max) {
+                curScroll = scroll
+                curMax = max
+                postInvalidateOnAnimation()
+            }
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            if (curMax <= 0.5f) return
+            val w = width.toFloat()
+            val h = height.toFloat()
+            if (w <= 0f || h <= 0f) return
+            val density = resources.displayMetrics.density
+            val barW = 3f * density
+            val right = w - 2f * density
+            val left = right - barW
+            val trackTop = 6f * density
+            val trackH = (h - 12f * density).coerceAtLeast(1f)
+            val contentH = curMax + h
+            val ratio = (h / contentH).coerceIn(0f, 1f)
+            val thumbH = (trackH * ratio).coerceIn(28f * density, trackH)
+            val progress = (curScroll / curMax).coerceIn(0f, 1f)
+            val thumbTop = trackTop + (trackH - thumbH) * progress
+            canvas.drawRoundRect(left, thumbTop, right, thumbTop + thumbH, barW / 2f, barW / 2f, barPaint)
+        }
+    }
+
+    private val scrollbarOverlay = ScrollbarOverlayView(context).apply {
+        isClickable = false
+        isFocusable = false
+    }
+
+    private fun applyScrollTranslation() {
+        val h = height
+        val m = computeBandMargin(h)
+        textureView.translationY = ((bandOrigin + m) - knownScroll).roundToInt().toFloat()
+    }
+
+    override fun onBandLayoutChanged() {
+        applyScrollTranslation()
+    }
+
+    override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {
+        val rendered = bandQueue.poll()
+        if (rendered != null) {
+            bandOrigin = rendered.roundToInt().toFloat()
+            applyScrollTranslation()
+            isRenderingBand.set(false)
+            val pending = pendingBandOrigin
+            val m = computeBandMargin(height).toFloat()
+            if (pending != null && kotlin.math.abs(pending - bandOrigin) > m * 0.35f) {
+                if (isRenderingBand.compareAndSet(false, true)) {
+                    dispatchBandRender(pending)
+                }
+            }
+        }
+    }
+
+    private fun checkBandRender(scroll: Float) {
+        val h = height
+        if (h <= 0) return
+        val m = computeBandMargin(h).toFloat()
+        if (m <= 0f) return
+        val topHeadroom = scroll - bandOrigin
+        val bottomHeadroom = (bandOrigin + 2f * m) - scroll
+        val threshold = m * 0.35f
+        if ((topHeadroom < threshold && bandOrigin > 0.5f) ||
+            (bottomHeadroom < threshold && bandOrigin < scrollMaxY - 0.5f)) {
+            val targetOrigin = (scroll - m).coerceIn(0f, scrollMaxY).roundToInt().toFloat()
+            if (kotlin.math.abs(targetOrigin - bandOrigin) >= threshold) {
+                scheduleBandRender(targetOrigin)
+            }
+        }
+    }
+
+    private fun scheduleBandRender(targetOrigin: Float, force: Boolean = false) {
+        val origin = targetOrigin.coerceIn(0f, scrollMaxY).roundToInt().toFloat()
+        if (!force && kotlin.math.abs(origin - bandOrigin) < 1f && !isRenderingBand.get()) return
+        pendingBandOrigin = origin
+        if (isRenderingBand.compareAndSet(false, true)) {
+            dispatchBandRender(origin)
+        }
+    }
+
+    protected override fun requestRender() {
+        scheduleBandRender(bandOrigin, force = true)
+    }
+
+    protected override fun requestFullRender() {
+        scheduleBandRender(bandOrigin, force = true)
+    }
+
+    private fun dispatchBandRender(origin: Float) {
+        renderer.execute {
+            if (!isSurfaceAttached()) {
+                isRenderingBand.set(false)
+                return@execute
+            }
+            val roundedOrigin = origin.roundToInt().toFloat()
+            CoreBridge.nativeEditorSetBand(surfaceId, roundedOrigin)
+            val renderedOrigin = CoreBridge.nativeSurfaceRender(surfaceId)
+            bandQueue.add(renderedOrigin)
+        }
+    }
+
     private companion object {
         const val MENU_COPY = 1
         const val MENU_CUT = 2
@@ -519,12 +706,14 @@ class NativeEditorView(
     private val prefs = context.getSharedPreferences("vibecodium", Context.MODE_PRIVATE)
     private var downX = 0f
     private var downY = 0f
+    private var lastMotionY = 0f
+    private var activePointerId = android.view.MotionEvent.INVALID_POINTER_ID
     private var dragged = false
     private var selecting = false
     private var lastTapTime = 0L
     private var lastTapX = 0f
     private var lastTapY = 0f
-    private var layoutRowHeight = 22f * resources.displayMetrics.density
+    private var layoutRowHeight = (22f * resources.displayMetrics.density).roundToInt().toFloat()
     private var layoutTop = 0f
     private var visualFirst = IntArray(0)
     private var visualCount = IntArray(0)
@@ -532,7 +721,7 @@ class NativeEditorView(
     private var endHandle: PointF? = null
     private var insertionHandle: PointF? = null
     private var handleSize = 24f * resources.displayMetrics.density
-    private var handleRowHeight = 22f * resources.displayMetrics.density
+    private var handleRowHeight = (22f * resources.displayMetrics.density).roundToInt().toFloat()
     private var draggingHandle = -1
     private var dragOffsetX = 0f
     private var dragOffsetY = 0f
@@ -560,7 +749,6 @@ class NativeEditorView(
     private var velocityTracker: VelocityTracker? = null
     @Volatile private var scrollMaxY = 0f
     private var dragStartScroll = 0f
-    private var lastDragY = 0f
     private var onScrollChanged: ((Float, Float) -> Unit)? = null
     private var onCaretPlaced: (() -> Unit)? = null
     @Volatile private var knownScroll = 0f
@@ -569,15 +757,22 @@ class NativeEditorView(
         override fun doFrame(frameTimeNanos: Long) {
             if (!flinging) return
             val more = scroller.computeScrollOffset()
-            val currentY = scroller.currY.toFloat().coerceIn(0f, scrollMaxY)
+            val currentY = scroller.currY.toFloat().coerceIn(0f, scrollMaxY).roundToInt().toFloat()
             knownScroll = currentY
-            submitScroll(currentY)
-            requestRender()
-            mainHandler.post { onScrollChanged?.invoke(currentY, scrollMaxY) }
+            applyScrollTranslation()
+            onScrollChanged?.invoke(currentY, scrollMaxY)
+            scrollbarOverlay.update(currentY, scrollMaxY)
+            checkBandRender(currentY)
             if (more && !scroller.isFinished && currentY > 0f && currentY < scrollMaxY) {
                 postFrame(this)
             } else {
                 flinging = false
+                val settledScroll = knownScroll
+                postRenderTask {
+                    CoreBridge.nativeEditorSetScroll(surfaceId, settledScroll, 0f)
+                }
+                val m = computeBandMargin(height).toFloat()
+                scheduleBandRender((knownScroll - m).coerceIn(0f, scrollMaxY))
                 mainHandler.post {
                     resumeCaretBlink()
                     removeCallbacks(saveAfterFling)
@@ -593,6 +788,7 @@ class NativeEditorView(
     private val longPress = Runnable {
         if (!dragged) {
             selecting = true
+            CoreBridge.nativeEditorSetScroll(surfaceId, knownScroll, 0f)
             CoreBridge.nativeEditorSelectWord(surfaceId, downX, downY)
             syncFromNative(notify = true)
             requestRender()
@@ -810,21 +1006,36 @@ class NativeEditorView(
     }
 
     init {
-        isOpaque = true
+        textureView.isOpaque = true
         ViewCompat.setAccessibilityDelegate(this, helper)
+        addView(scrollbarOverlay, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         bottomInset = idleBottomInsetPx
     }
 
     fun setOnScrollChanged(listener: ((Float, Float) -> Unit)?) {
+        if (onScrollChanged === listener) return
         onScrollChanged = listener
     }
 
-    fun setBottomInset(inset: Float) {        val next = inset.coerceAtLeast(0f)
+    fun setBottomInset(inset: Float) {
+        val next = inset.coerceAtLeast(0f)
         if (kotlin.math.abs(next - bottomInset) < 0.5f) return
         bottomInset = next
-        CoreBridge.nativeEditorSetBottomInset(surfaceId, next)
-        knownScroll = CoreBridge.nativeEditorScroll(surfaceId)
-        requestRender()
+        postRenderTask {
+            if (!isSurfaceAttached()) return@postRenderTask
+            CoreBridge.nativeEditorSetBottomInset(surfaceId, next)
+            val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
+            scrollMaxY = info?.optDouble("max_y", 0.0)?.toFloat() ?: scrollMaxY
+            val nextScroll = knownScroll.coerceIn(0f, scrollMaxY)
+            if (nextScroll != knownScroll) {
+                mainHandler.post {
+                    knownScroll = nextScroll
+                    applyScrollTranslation()
+                    checkBandRender(knownScroll)
+                    requestRender()
+                }
+            }
+        }
     }
 
     fun setTopInset(inset: Float) {
@@ -942,7 +1153,7 @@ class NativeEditorView(
             .getOrNull() ?: return
         layoutRowHeight = info.optDouble(
             "row_height",
-            22.0 * resources.displayMetrics.density,
+            (22.0 * resources.displayMetrics.density).roundToInt().toDouble(),
         ).toFloat()
         layoutTop = info.optDouble("top", 0.0).toFloat()
         val first = info.optJSONArray("first") ?: JSONArray()
@@ -1000,9 +1211,15 @@ class NativeEditorView(
                 CoreBridge.nativeEditorSetScroll(surfaceId, scroll, scrollX)
             }
         }
-        knownScroll = CoreBridge.nativeEditorScroll(surfaceId)
+        val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
+        scrollMaxY = info?.optDouble("max_y", 0.0)?.toFloat() ?: 0f
+        knownScroll = CoreBridge.nativeEditorScroll(surfaceId).roundToInt().toFloat()
+        val m = computeBandMargin(height).toFloat()
+        bandOrigin = (knownScroll - m).coerceAtLeast(0f).roundToInt().toFloat()
+        CoreBridge.nativeEditorSetBand(surfaceId, bandOrigin)
         if (isFocused && !selectionNonEmpty()) startCaretBlink()
         syncHandles()
+        mainHandler.post { applyScrollTranslation() }
     }
 
     fun setEditor(text: String, selection: Int, language: String?, path: String) {
@@ -1053,7 +1270,15 @@ class NativeEditorView(
                     viewport?.second ?: 0f,
                 )
             }
-            knownScroll = CoreBridge.nativeEditorScroll(surfaceId)
+            val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
+            scrollMaxY = info?.optDouble("max_y", 0.0)?.toFloat() ?: 0f
+            if (pathChanged) {
+                knownScroll = CoreBridge.nativeEditorScroll(surfaceId).roundToInt().toFloat()
+                val m = computeBandMargin(height).toFloat()
+                bandOrigin = (knownScroll - m).coerceAtLeast(0f).roundToInt().toFloat()
+                CoreBridge.nativeEditorSetBand(surfaceId, bandOrigin)
+                mainHandler.post { applyScrollTranslation() }
+            }
         }
     }
 
@@ -1062,19 +1287,9 @@ class NativeEditorView(
         if (path.isEmpty()) return
         val viewport = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }
             .getOrNull()
-        val nativeScroll = viewport?.optDouble("scroll", 0.0)?.toFloat()
-        // When the app leaves the foreground the Surface can already be
-        // recreated with a fresh zero scroll. Keep the last real position
-        // instead of overwriting the stored viewport with that zero.
-        val scroll = when {
-            nativeScroll == null -> knownScroll
-            nativeScroll <= 0.5f && knownScroll > 0.5f -> knownScroll
-            else -> nativeScroll
-        }
         val scrollX = viewport?.optDouble("scroll_x", 0.0)?.toFloat() ?: 0f
-        knownScroll = scroll
         prefs.edit()
-            .putString("viewport:$path", "$scroll,$scrollX")
+            .putString("viewport:$path", "$knownScroll,$scrollX")
             .apply()
     }
 
@@ -1085,12 +1300,16 @@ class NativeEditorView(
         val viewport = loadViewport(path)
         val scroll = viewport?.first ?: knownScroll
         val scrollX = viewport?.second ?: 0f
-        knownScroll = scroll
+        knownScroll = scroll.roundToInt().toFloat()
+        val m = computeBandMargin(height).toFloat()
+        bandOrigin = (knownScroll - m).coerceAtLeast(0f).roundToInt().toFloat()
         postRenderTask {
             if (!isSurfaceAttached()) return@postRenderTask
+            CoreBridge.nativeEditorSetBand(surfaceId, bandOrigin)
             CoreBridge.nativeEditorSetScroll(surfaceId, scroll, scrollX)
             CoreBridge.nativeSurfaceRender(surfaceId)
         }
+        mainHandler.post { applyScrollTranslation() }
     }
 
     private fun loadViewport(path: String): Pair<Float, Float>? {
@@ -1550,34 +1769,24 @@ class NativeEditorView(
     }
 
     override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
-        val action = when (event.actionMasked) {
-            android.view.MotionEvent.ACTION_DOWN -> 0
-            android.view.MotionEvent.ACTION_MOVE -> 1
-            android.view.MotionEvent.ACTION_UP -> 2
-            android.view.MotionEvent.ACTION_CANCEL -> -1
-            else -> return true
-        }
         val slop = 8f * resources.displayMetrics.density
-        when (action) {
-            0 -> {
+        when (event.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                activePointerId = event.getPointerId(0)
                 stopFling()
                 suspendCaretBlink()
                 downX = event.x
                 downY = event.y
-                lastDragY = event.y
+                lastMotionY = event.y
                 dragged = false
                 selecting = false
                 removeCallbacks(longPress)
-                val viewport = runCatching {
-                    JSONObject(CoreBridge.nativeEditorViewport(surfaceId))
-                }.getOrNull()
-                scrollMaxY = viewport?.optDouble("max_y", 0.0)?.toFloat() ?: 0f
-                dragStartScroll = viewport
-                    ?.optDouble("scroll", knownScroll.toDouble())
-                    ?.toFloat()
-                    ?: knownScroll
+                dragStartScroll = knownScroll
+                val scrollForRust = knownScroll
+                postRenderTask {
+                    CoreBridge.nativeEditorSetScroll(surfaceId, scrollForRust, 0f)
+                }
                 insertionActionMode?.finish()
-                syncHandles()
                 val handle = handleAt(event.x, event.y)
                 if (handle >= 0) {
                     draggingHandle = handle
@@ -1593,49 +1802,92 @@ class NativeEditorView(
                     }
                     actionMode?.finish()
                     insertionActionMode?.finish()
-                    velocityTracker?.recycle()
-                    velocityTracker = null
+                    recycleVelocity()
                     return true
                 }
                 postDelayed(longPress, android.view.ViewConfiguration.getLongPressTimeout().toLong())
                 velocityTracker?.recycle()
                 velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
             }
-            1 -> {
+            android.view.MotionEvent.ACTION_MOVE -> {
                 velocityTracker?.addMovement(event)
+                val pointerIndex = event.findPointerIndex(activePointerId)
+                if (pointerIndex < 0) return true
+                val x = event.getX(pointerIndex)
+                val y = event.getY(pointerIndex)
+
                 if (draggingHandle >= 0) {
                     dragged = true
                     CoreBridge.nativeEditorDragHandle(
                         surfaceId,
                         draggingHandle,
-                        event.x - dragOffsetX,
-                        event.y - dragOffsetY,
+                        x - dragOffsetX,
+                        y - dragOffsetY,
                     )
                     refreshSelectionFromNative()
-                    val targetX = event.x - dragOffsetX
-                    val targetY = event.y - dragOffsetY - handleRowHeight / 2f
+                    val targetX = x - dragOffsetX
+                    val targetY = y - dragOffsetY - handleRowHeight / 2f
                     updateMagnifier(targetX, targetY)
                     saveViewport()
                     return true
                 }
                 if (selecting) {
-                    CoreBridge.nativeEditorSelectAt(surfaceId, event.x, event.y, true)
+                    CoreBridge.nativeEditorSelectAt(surfaceId, x, y, true)
                     refreshSelectionFromNative()
-                    updateMagnifier(event.x, event.y - handleRowHeight / 2f)
+                    updateMagnifier(x, y - handleRowHeight / 2f)
                     requestRender()
                     return true
                 }
-                if (kotlin.math.abs(event.y - downY) > slop ||
-                    kotlin.math.abs(event.x - downX) > slop
-                ) {
-                    dragged = true
-                    removeCallbacks(longPress)
+
+                val threshold = 8f * resources.displayMetrics.density
+                var deltaY = lastMotionY - y
+                if (!dragged) {
+                    val totalDy = y - downY
+                    val totalDx = x - downX
+                    if (kotlin.math.abs(totalDy) > threshold || kotlin.math.abs(totalDx) > threshold) {
+                        dragged = true
+                        removeCallbacks(longPress)
+                        if (deltaY > 0f) {
+                            deltaY = (deltaY - threshold).coerceAtLeast(0f)
+                        } else {
+                            deltaY = (deltaY + threshold).coerceAtMost(0f)
+                        }
+                    }
+                }
+                if (dragged) {
+                    lastMotionY = y
+                    val nextScroll = (knownScroll + deltaY).coerceIn(0f, scrollMaxY).roundToInt().toFloat()
+                    if (nextScroll != knownScroll) {
+                        knownScroll = nextScroll
+                        applyScrollTranslation()
+                        onScrollChanged?.invoke(knownScroll, scrollMaxY)
+                        scrollbarOverlay.update(knownScroll, scrollMaxY)
+                        checkBandRender(knownScroll)
+                    }
                 }
             }
-            2 -> {
+            android.view.MotionEvent.ACTION_POINTER_DOWN -> {
+                val index = event.actionIndex
+                activePointerId = event.getPointerId(index)
+                lastMotionY = event.getY(index)
+                downX = event.getX(index)
+                downY = lastMotionY
+            }
+            android.view.MotionEvent.ACTION_POINTER_UP -> {
+                val actionIndex = event.actionIndex
+                if (event.getPointerId(actionIndex) == activePointerId) {
+                    val newIndex = if (actionIndex == 0) 1 else 0
+                    activePointerId = event.getPointerId(newIndex)
+                    lastMotionY = event.getY(newIndex)
+                    downX = event.getX(newIndex)
+                    downY = lastMotionY
+                }
+            }
+            android.view.MotionEvent.ACTION_UP -> {
                 dismissMagnifier()
                 removeCallbacks(longPress)
                 velocityTracker?.addMovement(event)
+                activePointerId = android.view.MotionEvent.INVALID_POINTER_ID
                 if (draggingHandle >= 0) {
                     val releasedHandle = draggingHandle
                     val wasDragged = dragged
@@ -1670,91 +1922,80 @@ class NativeEditorView(
                     showSelectionActions()
                     return true
                 }
+                if (!dragged) {
+                    CoreBridge.nativeEditorSetScroll(surfaceId, knownScroll, 0f)
+                    val now = SystemClock.uptimeMillis()
+                    val doubleTap = now - lastTapTime < 320L &&
+                        kotlin.math.abs(event.x - lastTapX) < slop &&
+                        kotlin.math.abs(event.y - lastTapY) < slop
+                    lastTapTime = now
+                    lastTapX = event.x
+                    lastTapY = event.y
+                    if (doubleTap) {
+                        CoreBridge.nativeEditorSelectWord(surfaceId, event.x, event.y)
+                        syncFromNative(notify = true)
+                        requestFocus()
+                        requestRender()
+                        helper.invalidateRoot()
+                        showSelectionActions()
+                        return true
+                    } else {
+                        CoreBridge.nativeEditorSelectAt(surfaceId, event.x, event.y, false)
+                        syncFromNative(notify = true)
+                        saveViewport()
+                        if (selectionNonEmpty()) {
+                            showSelectionActions()
+                        } else {
+                            actionMode?.finish()
+                            insertionActionMode?.finish()
+                            requestFocus()
+                            startCaretBlink()
+                            applyInsertionHandleVisible(true)
+                            onCaretPlaced?.invoke()
+                        }
+                        requestRender()
+                        helper.invalidateRoot()
+                        return true
+                    }
+                } else {
+                    val tracker = velocityTracker
+                    tracker?.computeCurrentVelocity(1000)
+                    val vy = tracker?.yVelocity ?: 0f
+                    recycleVelocity()
+                    val minimum = ViewConfiguration.get(context).scaledMinimumFlingVelocity.toFloat()
+                    if (kotlin.math.abs(vy) > minimum) {
+                        startFling(vy)
+                    } else {
+                        resumeCaretBlink()
+                        val scrollForRust = knownScroll
+                        postRenderTask {
+                            CoreBridge.nativeEditorSetScroll(surfaceId, scrollForRust, 0f)
+                        }
+                        val m = computeBandMargin(height).toFloat()
+                        scheduleBandRender((knownScroll - m).coerceIn(0f, scrollMaxY))
+                        saveViewport()
+                        helper.invalidateRoot()
+                    }
+                }
             }
-            -1 -> {
+            android.view.MotionEvent.ACTION_CANCEL -> {
+                activePointerId = android.view.MotionEvent.INVALID_POINTER_ID
                 dismissMagnifier()
                 removeCallbacks(longPress)
                 selecting = false
                 draggingHandle = -1
                 recycleVelocity()
-            }
-        }
-        if (action in 0..2) {
-            CoreBridge.nativeSurfaceTouch(surfaceId, event.x, event.y, action)
-        }
-        if (action == 1 && draggingHandle < 0 && !selecting) {
-            val threshold = 8f * resources.displayMetrics.density
-            val dy = event.y - downY
-            val dx = event.x - downX
-            if (!dragged) {
-                if (kotlin.math.abs(dy) > threshold) {
-                    dragged = true
-                    lastDragY = downY + kotlin.math.sign(dy) * threshold
-                    removeCallbacks(longPress)
-                } else if (kotlin.math.abs(dx) > threshold) {
-                    dragged = true
-                    lastDragY = event.y
-                    removeCallbacks(longPress)
+                if (dragged) {
+                    resumeCaretBlink()
+                    val scrollForRust = knownScroll
+                    postRenderTask {
+                        CoreBridge.nativeEditorSetScroll(surfaceId, scrollForRust, 0f)
+                    }
+                    val m = computeBandMargin(height).toFloat()
+                    scheduleBandRender((knownScroll - m).coerceIn(0f, scrollMaxY))
+                    saveViewport()
                 }
             }
-            if (dragged) {
-                val deltaY = event.y - lastDragY
-                lastDragY = event.y
-                knownScroll = (knownScroll - deltaY).coerceIn(0f, scrollMaxY)
-                onScrollChanged?.invoke(knownScroll, scrollMaxY)
-            }
-        }
-        if (action == 2 && !dragged) {
-            val now = SystemClock.uptimeMillis()
-            val doubleTap = now - lastTapTime < 320L &&
-                kotlin.math.abs(event.x - lastTapX) < slop &&
-                kotlin.math.abs(event.y - lastTapY) < slop
-            lastTapTime = now
-            lastTapX = event.x
-            lastTapY = event.y
-            if (doubleTap) {
-                CoreBridge.nativeEditorSelectWord(surfaceId, event.x, event.y)
-                syncFromNative(notify = true)
-                requestFocus()
-                requestRender()
-                helper.invalidateRoot()
-                showSelectionActions()
-                return true
-            }
-            syncFromNative(notify = true)
-            saveViewport()
-            if (selectionNonEmpty()) {
-                showSelectionActions()
-            } else {
-                actionMode?.finish()
-                insertionActionMode?.finish()
-                requestFocus()
-                startCaretBlink()
-                applyInsertionHandleVisible(true)
-                onCaretPlaced?.invoke()
-            }
-        } else if (action == 2 && dragged) {
-            val tracker = velocityTracker
-            tracker?.computeCurrentVelocity(1000)
-            val vy = tracker?.yVelocity ?: 0f
-            recycleVelocity()
-            val minimum = ViewConfiguration.get(context).scaledMinimumFlingVelocity.toFloat()
-            if (kotlin.math.abs(vy) > minimum) {
-                startFling(vy)
-            }
-        }
-        if (action == 2) {
-            // Guarantee a complete frame after a drag or tap, even if an
-            // incremental scroll band was rendered from a stale buffer. The
-            // repaint itself runs on the render thread; a fresh fling already
-            // queued one, so do not stack a second full paint on top of it.
-            if (!flinging) {
-                resumeCaretBlink()
-                requestFullRender()
-            }
-            helper.invalidateRoot()
-        } else {
-            requestRender()
         }
         return true
     }
@@ -1814,6 +2055,7 @@ class NativeEditorView(
     }
 
     fun setOnCaretPlaced(listener: (() -> Unit)?) {
+        if (onCaretPlaced === listener) return
         onCaretPlaced = listener
     }
 
@@ -1830,9 +2072,7 @@ class NativeEditorView(
 
     private fun startFling(vy: Float) {
         val viewport = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
-            ?: return
-        val scroll = viewport.optDouble("scroll", 0.0).toFloat()
-        val maxY = viewport.optDouble("max_y", 0.0).toFloat()
+        val maxY = viewport?.optDouble("max_y", scrollMaxY.toDouble())?.toFloat() ?: scrollMaxY
         if (maxY <= 0f) return
         scrollMaxY = maxY
         removeCallbacks(saveAfterFling)
@@ -1840,7 +2080,7 @@ class NativeEditorView(
         scroller.abortAnimation()
         scroller.fling(
             0,
-            scroll.roundToInt(),
+            knownScroll.roundToInt(),
             0,
             (-vy).roundToInt(),
             0, 0,
@@ -1914,7 +2154,9 @@ class NativeEditorView(
         actionMode?.finish()
         startCaretBlink()
         onTextChanged(mirrorText, mirrorSelection)
-        knownScroll = CoreBridge.nativeEditorScroll(surfaceId)
+        knownScroll = CoreBridge.nativeEditorScroll(surfaceId).roundToInt().toFloat()
+        applyScrollTranslation()
+        checkBandRender(knownScroll)
         notifySelectionChanged()
         requestRender()
     }
@@ -1932,7 +2174,9 @@ class NativeEditorView(
         actionMode?.finish()
         startCaretBlink()
         onTextChanged(mirrorText, mirrorSelection)
-        knownScroll = CoreBridge.nativeEditorScroll(surfaceId)
+        knownScroll = CoreBridge.nativeEditorScroll(surfaceId).roundToInt().toFloat()
+        applyScrollTranslation()
+        checkBandRender(knownScroll)
         notifySelectionChanged()
         requestRender()
     }
@@ -1949,7 +2193,9 @@ class NativeEditorView(
         actionMode?.finish()
         startCaretBlink()
         onTextChanged(mirrorText, mirrorSelection)
-        knownScroll = CoreBridge.nativeEditorScroll(surfaceId)
+        knownScroll = CoreBridge.nativeEditorScroll(surfaceId).roundToInt().toFloat()
+        applyScrollTranslation()
+        checkBandRender(knownScroll)
         notifySelectionChanged()
         requestRender()
     }

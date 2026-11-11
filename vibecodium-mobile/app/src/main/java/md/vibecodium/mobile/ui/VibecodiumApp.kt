@@ -82,6 +82,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -561,7 +562,8 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
         val imeVisible = WindowInsets.isImeVisible
         val focusManager = LocalFocusManager.current
         var chromeHidden by remember { mutableStateOf(false) }
-        val lastEditorScroll = remember { floatArrayOf(0f) }
+        val lastAnchor = remember { floatArrayOf(0f) }
+        val lastScrollVal = remember { floatArrayOf(0f) }
         val chromeProgress = animateFloatAsState(
             targetValue = if (chromeHidden) 0f else 1f,
             animationSpec = tween(160),
@@ -583,25 +585,41 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
             editor.value.editorMode,
         ) {
             chromeHidden = false
-            lastEditorScroll[0] = 0f
+            lastAnchor[0] = 0f
+            lastScrollVal[0] = 0f
         }
-        val onEditorScroll: (Float, Float) -> Unit = { scroll, maxY ->
-            val previous = lastEditorScroll[0]
-            if (maxY <= 0f || scroll <= 2f) {
-                chromeHidden = false
-            } else if (scroll > previous + 24f) {
-                chromeHidden = true
-            } else if (scroll < previous - 24f) {
-                chromeHidden = false
+        val onEditorScroll: (Float, Float) -> Unit = remember {
+            { scroll, maxY ->
+                val anchor = lastAnchor[0]
+                val prev = lastScrollVal[0]
+                lastScrollVal[0] = scroll
+                if (maxY <= 0f || scroll <= 2f) {
+                    if (chromeHidden) chromeHidden = false
+                    lastAnchor[0] = 0f
+                } else {
+                    if (scroll > prev && prev < anchor) {
+                        lastAnchor[0] = prev
+                    } else if (scroll < prev && prev > anchor) {
+                        lastAnchor[0] = prev
+                    }
+                    val currentAnchor = lastAnchor[0]
+                    val delta = scroll - currentAnchor
+                    if (delta > 24f) {
+                        if (!chromeHidden) chromeHidden = true
+                        lastAnchor[0] = scroll
+                    } else if (delta < -24f) {
+                        if (chromeHidden) chromeHidden = false
+                        lastAnchor[0] = scroll
+                    }
+                }
             }
-            lastEditorScroll[0] = scroll
         }
         Box(Modifier.fillMaxSize()) {
             EditorArea(
                 editor.value,
                 controller,
                 imeVisible,
-                chromeHidden,
+                chromeProgress,
                 state.drawer != null,
                 onEditorScroll,
             )
@@ -613,9 +631,9 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                         alpha = chromeProgress.value
                         translationY = -(56.dp + ViewHeaderTopPadding).toPx() * (1f - chromeProgress.value)
                     }
-                    .then(
-                        if (chromeHidden) Modifier.semantics { invisibleToUser() } else Modifier,
-                    ),
+                    .semantics {
+                        if (chromeProgress.value < 0.05f) invisibleToUser()
+                    },
             ) {
                 FloatingIconButton(
                     icon = SidebarToggleIcon,
@@ -639,13 +657,11 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                         translationY =
                             (NavbarHeight.toPx() + 24.dp.toPx()) * (1f - navProgress.value)
                     }
-                    .then(
-                        if (MobileNavbarEnabled && !imeVisible && !chromeHidden) {
-                            Modifier
-                        } else {
-                            Modifier.semantics { invisibleToUser() }
-                        },
-                    ),
+                    .semantics {
+                        if (!MobileNavbarEnabled || imeVisible || navProgress.value < 0.05f) {
+                            invisibleToUser()
+                        }
+                    },
             ) {
                 MobileNavbar(
                     state,
@@ -726,7 +742,7 @@ private fun EditorArea(
     editor: EditorSlice,
     controller: VibecodiumController,
     imeVisible: Boolean,
-    chromeHidden: Boolean,
+    chromeProgress: State<Float>,
     drawerOpen: Boolean,
     onEditorScroll: (Float, Float) -> Unit,
 ) {
@@ -746,7 +762,7 @@ private fun EditorArea(
             controller,
             imeVisible,
             bottomInsetPx,
-            chromeHidden,
+            chromeProgress,
             drawerOpen,
             onEditorScroll,
         )
@@ -765,7 +781,7 @@ private fun EditorScreen(
     controller: VibecodiumController,
     imeVisible: Boolean,
     bottomInsetPx: Float,
-    chromeHidden: Boolean,
+    chromeProgress: State<Float>,
     drawerOpen: Boolean,
     onEditorScroll: (Float, Float) -> Unit,
 ) {
@@ -773,13 +789,10 @@ private fun EditorScreen(
     val bottomInset = if (imeVisible || !MobileNavbarEnabled) 0.dp else NavbarHeight + 12.dp
     val preview = state.editorMode == EditorMode.Preview
     val topInsetPx = with(LocalDensity.current) { (ViewHeaderTopPadding + ViewHeaderHeight + 10.dp).toPx() }
-    val headerProgress = animateFloatAsState(
-        targetValue = if (chromeHidden) 0f else 1f,
-        animationSpec = tween(160),
-        label = "header",
-    )
     var editorView by remember { mutableStateOf<NativeEditorView?>(null) }
     var keyboardPrompt by remember { mutableStateOf(false) }
+    val onViewReady: (NativeEditorView) -> Unit = remember { { editorView = it } }
+    val onCaretPlaced: () -> Unit = remember { { keyboardPrompt = true } }
     LaunchedEffect(tab.path, preview) {
         keyboardPrompt = false
     }
@@ -797,8 +810,8 @@ private fun EditorScreen(
             bottomInsetPx,
             preview,
             onEditorScroll,
-            onViewReady = { editorView = it },
-            onCaretPlaced = { keyboardPrompt = true },
+            onViewReady,
+            onCaretPlaced,
         )
         if (preview) {
             Surface(
@@ -839,12 +852,12 @@ private fun EditorScreen(
                 .fillMaxWidth()
                 .padding(top = ViewHeaderTopPadding)
                 .graphicsLayer {
-                    alpha = headerProgress.value
-                    translationY = -(ViewHeaderHeight + ViewHeaderTopPadding).toPx() * (1f - headerProgress.value)
+                    alpha = chromeProgress.value
+                    translationY = -(ViewHeaderHeight + ViewHeaderTopPadding).toPx() * (1f - chromeProgress.value)
                 }
-                .then(
-                    if (chromeHidden) Modifier.semantics { invisibleToUser() } else Modifier,
-                ),
+                .semantics {
+                    if (chromeProgress.value < 0.05f) invisibleToUser()
+                },
         ) {
             ViewHeader(state, tab, controller)
         }
@@ -857,7 +870,7 @@ private fun EditorScreen(
                     .offset {
                         IntOffset(
                             0,
-                            ((ViewHeaderHeight + ViewHeaderTopPadding).toPx() * headerProgress.value).roundToInt(),
+                            ((ViewHeaderHeight + ViewHeaderTopPadding).toPx() * chromeProgress.value).roundToInt(),
                         )
                     },
                 shape = CircleShape,
