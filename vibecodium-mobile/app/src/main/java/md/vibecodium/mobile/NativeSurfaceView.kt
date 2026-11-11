@@ -81,6 +81,7 @@ abstract class NativeSurfaceView(context: Context) : FrameLayout(context), Textu
         textureView.surfaceTextureListener = this
         addView(textureView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         clipChildren = true
+        clipToPadding = true
         isFocusable = true
         isFocusableInTouchMode = true
     }
@@ -126,7 +127,11 @@ abstract class NativeSurfaceView(context: Context) : FrameLayout(context), Textu
                 update()
             }
             CoreBridge.nativeSurfaceEndUpdate(surfaceId)
-            CoreBridge.nativeSurfaceRender(surfaceId)
+            val rendered = CoreBridge.nativeSurfaceRender(surfaceId)
+            onRenderFinished(rendered)
+            mainHandler.post {
+                textureView.postInvalidateOnAnimation()
+            }
         }
     }
 
@@ -145,7 +150,11 @@ abstract class NativeSurfaceView(context: Context) : FrameLayout(context), Textu
                 update()
             }
             CoreBridge.nativeSurfaceEndUpdate(surfaceId)
-            CoreBridge.nativeSurfaceRender(surfaceId)
+            val rendered = CoreBridge.nativeSurfaceRender(surfaceId)
+            onRenderFinished(rendered)
+            mainHandler.post {
+                textureView.postInvalidateOnAnimation()
+            }
         }
     }
 
@@ -167,12 +176,18 @@ abstract class NativeSurfaceView(context: Context) : FrameLayout(context), Textu
 
     override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) = Unit
 
+    protected open fun onRenderFinished(rendered: Float) = Unit
+
     protected fun postState(block: () -> Unit) {
         renderer.execute {
             if (attached) {
                 pendingState = null
                 block()
-                CoreBridge.nativeSurfaceRender(surfaceId)
+                val rendered = CoreBridge.nativeSurfaceRender(surfaceId)
+                onRenderFinished(rendered)
+                mainHandler.post {
+                    textureView.postInvalidateOnAnimation()
+                }
             } else {
                 pendingState = block
             }
@@ -570,6 +585,10 @@ class NativeEditorView(
     private val idleBottomInsetPx: Float = 64f * context.resources.displayMetrics.density,
 ) : NativeSurfaceView(context) {
     override fun computeBandMargin(viewportHeight: Int): Int = (viewportHeight * 0.6f).roundToInt()
+
+    override fun onRenderFinished(rendered: Float) {
+        bandQueue.add(rendered)
+    }
 
     private var bandOrigin = 0f
     private val bandQueue = ConcurrentLinkedQueue<Float>()
@@ -1159,6 +1178,14 @@ class NativeEditorView(
         super.onWindowFocusChanged(hasWindowFocus)
         if (!hasWindowFocus) {
             saveViewport()
+        } else {
+            if (!inPreview && !selectionNonEmpty()) {
+                startCaretBlink()
+            }
+            requestFullRender()
+            mainHandler.post {
+                textureView.postInvalidateOnAnimation()
+            }
         }
     }
 
@@ -1326,6 +1353,14 @@ class NativeEditorView(
                 mainHandler.post { applyScrollTranslation() }
             }
         }
+        if (pathChanged) {
+            mainHandler.post {
+                if (!selectionNonEmpty()) {
+                    startCaretBlink()
+                }
+                syncHandles()
+            }
+        }
     }
 
     private fun saveViewport() {
@@ -1353,9 +1388,13 @@ class NativeEditorView(
             if (!isSurfaceAttached()) return@postRenderTask
             CoreBridge.nativeEditorSetBand(surfaceId, bandOrigin)
             CoreBridge.nativeEditorSetScroll(surfaceId, scroll, scrollX)
-            CoreBridge.nativeSurfaceRender(surfaceId)
+            val rendered = CoreBridge.nativeSurfaceRender(surfaceId)
+            onRenderFinished(rendered)
+            mainHandler.post {
+                applyScrollTranslation()
+                textureView.postInvalidateOnAnimation()
+            }
         }
-        mainHandler.post { applyScrollTranslation() }
     }
 
     /** Forces a complete viewport and render refresh when an overlay (like settings) is closed. */

@@ -31,6 +31,8 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -43,6 +45,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -459,6 +462,13 @@ fun VibecodiumApp(controller: VibecodiumController) {
                     state.vaultName == null -> StartScreen(state, controller)
                     else -> PhoneShell(state, controller)
                 }
+                Box(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .windowInsetsBottomHeight(WindowInsets.navigationBars)
+                        .background(MaterialTheme.colorScheme.background),
+                )
                 state.message?.let { message ->
                     MessageBar(message) { controller.dismissMessage() }
                 }
@@ -570,6 +580,7 @@ private data class EditorSlice(
     val bookmarks: Set<String>,
     val stats: DocStats,
     val settingsOpen: Boolean = false,
+    val overlayOpen: Boolean = false,
 )
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -587,6 +598,9 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 bookmarks = current.bookmarks,
                 stats = current.stats,
                 settingsOpen = current.settingsOpen,
+                overlayOpen = current.settingsOpen || current.renamePath != null ||
+                    current.deletePath != null || current.newFolderOpen || current.vaultChooserOpen ||
+                    current.tabSwitcher,
             )
         }
     }
@@ -795,12 +809,10 @@ private fun EditorArea(
 ) {
     val density = LocalDensity.current
     val imeBottomPx = WindowInsets.ime.getBottom(density)
-    val navInsetPx = if (navbarEnabled) {
-        with(density) { (NavbarHeight + 12.dp).toPx() }
-    } else {
-        0f
+    val idleBottomInsetPx = with(density) {
+        if (navbarEnabled) (NavbarHeight + 12.dp).toPx() else 64.dp.toPx()
     }
-    val bottomInsetPx = if (imeBottomPx > 0) imeBottomPx.toFloat() else navInsetPx
+    val bottomInsetPx = if (imeBottomPx > 0) imeBottomPx.toFloat() else idleBottomInsetPx
     val tab = editor.tabs.getOrNull(editor.activeTab)
         ?: editor.tabs.firstOrNull()?.also {
             LaunchedEffect(Unit) {
@@ -851,6 +863,7 @@ private fun EditorScreen(
     val onCaretPlaced: () -> Unit = remember { { keyboardPrompt = true } }
     LaunchedEffect(tab.path, preview) {
         keyboardPrompt = false
+        editorView?.onOverlayDismissed()
     }
     LaunchedEffect(drawerOpen) {
         if (drawerOpen) editorView?.hideKeyboard()
@@ -863,12 +876,12 @@ private fun EditorScreen(
         }
         prevImeVisible = imeVisible
     }
-    var prevSettingsOpen by remember { mutableStateOf(false) }
-    LaunchedEffect(state.settingsOpen) {
-        if (prevSettingsOpen && !state.settingsOpen) {
+    var prevOverlayOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(state.overlayOpen) {
+        if (prevOverlayOpen && !state.overlayOpen) {
             editorView?.onOverlayDismissed()
         }
-        prevSettingsOpen = state.settingsOpen
+        prevOverlayOpen = state.overlayOpen
     }
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         // Keep the native editor alive while preview is open so switching
