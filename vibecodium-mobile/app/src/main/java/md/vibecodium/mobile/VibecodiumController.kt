@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.PowerManager
+import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -46,6 +47,7 @@ class VibecodiumController(context: Context) {
     private var searchJob: Job? = null
     private var tabPersistJob: Job? = null
     private var syncWakeLock: PowerManager.WakeLock? = null
+    private var syncProgressAt = 0L
 
     /**
      * Cancellation is not a failure. A superseded search or a vault switch
@@ -996,6 +998,33 @@ class VibecodiumController(context: Context) {
         syncJob = scope.launch { runSync() }
     }
 
+    /** The sidebar refresh button: sync when configured, otherwise rescan. */
+    fun refreshOrSync() {
+        when {
+            state.sync.busy -> showMessage("Sync is already running")
+            state.sync.connected && !state.vaultSync.paused -> syncNow()
+            else -> refreshNotes()
+        }
+    }
+
+    fun cancelSync() {
+        val job = syncJob ?: return
+        if (!job.isActive) {
+            syncJob = null
+            return
+        }
+        job.cancel()
+        syncJob = null
+        releaseSyncWakeLock()
+        state = state.copy(
+            sync = state.sync.copy(
+                busy = false,
+                progress = "",
+                message = "Sync cancelled",
+            ),
+        )
+    }
+
     private suspend fun runSync() {
         val repository = repository ?: return
         val key = locatorKey()
@@ -1005,7 +1034,17 @@ class VibecodiumController(context: Context) {
             return
         }
         acquireSyncWakeLock()
-        state = state.copy(sync = state.sync.copy(busy = true, progress = "Saving…", message = ""))
+        syncProgressAt = 0L
+        state = state.copy(
+            sync = state.sync.copy(
+                busy = true,
+                progress = "Saving…",
+                message = "",
+                localFiles = 0,
+                remoteFiles = 0,
+                planned = 0,
+            ),
+        )
         try {
             saveJob?.cancel()
             for (index in state.tabs.indices) {
@@ -1029,22 +1068,29 @@ class VibecodiumController(context: Context) {
                     excludedFolders = syncSettings.excludedFolders,
                 ),
             ) { progress ->
-                state = state.copy(
-                    sync = state.sync.copy(
-                        progress = if (progress.total > 0) {
-                            "${progress.phase} ${progress.done}/${progress.total}"
-                        } else {
-                            progress.phase
-                        },
-                    ),
-                )
+                val now = SystemClock.elapsedRealtime()
+                val countsChanged = progress.localFiles != state.sync.localFiles ||
+                    progress.remoteFiles != state.sync.remoteFiles ||
+                    progress.planned != state.sync.planned
+                val finished = progress.total == 0 || progress.done == progress.total
+                if (countsChanged || finished || now - syncProgressAt >= 100) {
+                    syncProgressAt = now
+                    state = state.copy(
+                        sync = state.sync.copy(
+                            progress = formatSyncProgress(progress),
+                            localFiles = progress.localFiles,
+                            remoteFiles = progress.remoteFiles,
+                            planned = progress.planned,
+                        ),
+                    )
+                }
             }
-            // Sync must see files changed or created outside the app, so drop
-            // the directory snapshot before scanning.
-            repository.invalidate()
-            val outcome = engine.sync(remoteRoot)
+            // One SAF walk feeds both the planner and the post-sync list; the
+            // engine receives the snapshot instead of scanning a second time.
+            val snapshot = repository.snapshot(refresh = true)
+            val outcome = engine.sync(remoteRoot, snapshot.files)
 
-            val lists = loadFileLists(repository, refresh = true)
+            val lists = loadFileLists(repository, refresh = false)
             val bookmarks = state.bookmarks.filterTo(mutableSetOf()) { path ->
                 lists.notes.any { it.path == path }
             }
@@ -1128,7 +1174,8 @@ class VibecodiumController(context: Context) {
         syncWakeLock = null
     }
 
-    private fun refreshSyncState() {        val key = locatorKey()
+    private fun refreshSyncState() {
+        val key = locatorKey()
         val stored = if (key.isEmpty()) null else syncRecords.state(key)
         state = state.copy(
             sync = SyncUiState(
@@ -1161,6 +1208,18 @@ class VibecodiumController(context: Context) {
         if (deleted > 0) parts.add("$deleted deleted")
         if (outcome.skipped > 0) parts.add("${outcome.skipped} skipped")
         return "Synced: " + parts.joinToString(", ")
+    }
+
+    private fun formatSyncProgress(progress: SyncProgress): String = when {
+        progress.total > 0 -> "${progress.phase} ${progress.done}/${progress.total}"
+        progress.planned > 0 ->
+            "Found ${progress.localFiles} local · ${progress.remoteFiles} remote · ${progress.planned} to sync"
+
+        progress.remoteFiles > 0 ->
+            "${progress.phase}: ${progress.localFiles} local · ${progress.remoteFiles} remote"
+
+        progress.localFiles > 0 -> "${progress.phase}: ${progress.localFiles} local"
+        else -> progress.phase
     }
 
     // --------------------------------------------------------------- overlays

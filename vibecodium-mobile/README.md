@@ -138,6 +138,17 @@ vibecodium-mobile/
     files; Advanced refreshes the search index and resets settings; About
     shows the app/core versions and the vault location. Sync filter and device
     settings are per vault (`sync-settings:<vault>`); the rest is app-wide.
+  - sync keeps a persisted Dropbox cursor and applies
+    `files/list_folder/continue` deltas; only the first pass (or a changed
+    filter) lists the whole remote folder. Local files are hashed only when
+    size or the modified stamp changed, and those hashes run on a small IO
+    pool. The UI reports local/remote file counts and transfer progress
+    instead of counting every unchanged path, and a SAF vault is traversed
+    once per pass; that snapshot is reused for the post-sync file list. The
+    manual sync control and its progress share one fixed-height card, so
+    starting or stopping a pass does not move the page; a running pass is
+    cancelled from that same card. The Files drawer's refresh button starts a
+    sync when Dropbox is connected (it rescans the tree otherwise).
 - `ui/Theme.kt` — Obsidian 1.15.0 **mobile dark** palette copied from
   `app.css` (background `#000000`, surface `#1E1E1E`, accent `#8A5CF5`,
   text `#DADADA`/`#B3B3B3`), with every Material 3 role set and a neutral

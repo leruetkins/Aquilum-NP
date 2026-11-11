@@ -80,6 +80,9 @@ class SyncEngineTest {
         val remote = mutableMapOf<String, ByteArray>()
         val revs = mutableMapOf<String, Int>()
         val root = "/vault"
+        var listCalls = 0
+        var latestCursorCalls = 0
+        var deltaPayload: RemoteDelta? = null
 
         private fun key(path: String): String =
             if (path == root) "" else path.removePrefix("$root/")
@@ -88,10 +91,25 @@ class SyncEngineTest {
 
         override suspend fun ensureFolder(path: String) = Unit
 
-        override suspend fun listFolder(root: String): List<RemoteEntry> =
-            remote.map { (path, bytes) ->
+        override suspend fun listFolder(root: String): List<RemoteEntry> {
+            listCalls += 1
+            return remote.map { (path, bytes) ->
                 RemoteEntry(path, "rev-${revs[path]}", "", bytes.size.toLong())
             }
+        }
+
+        override suspend fun latestCursor(root: String): String {
+            latestCursorCalls += 1
+            return "cursor-0"
+        }
+
+        override suspend fun delta(root: String, cursor: String): RemoteDelta? = deltaPayload
+
+        override suspend fun metadata(path: String): RemoteEntry? {
+            val relative = key(path)
+            val bytes = remote[relative] ?: return null
+            return RemoteEntry(relative, "rev-${revs[relative]}", "", bytes.size.toLong())
+        }
 
         override suspend fun download(path: String): RemoteDownload {
             val relative = key(path)
@@ -241,5 +259,75 @@ class SyncEngineTest {
         }
         assertTrue(aborted)
         assertEquals(12, provider.remote.size)
+    }
+
+    @Test
+    fun secondPassUsesDeltaInsteadOfListingEverything() = runBlocking {
+        val repository = FakeRepository()
+        repository.files["note.md"] = "one".toByteArray()
+        val records = FakeRecords()
+        val provider = FakeProvider()
+        val engine = engine(repository, records, provider)
+        engine.sync("/vault")
+        assertEquals(1, provider.listCalls)
+        assertEquals(1, provider.latestCursorCalls)
+
+        provider.remote["note.md"] = "remote two".toByteArray()
+        provider.revs["note.md"] = 2
+        provider.deltaPayload = RemoteDelta(
+            changed = listOf(RemoteEntry("note.md", "rev-2", "", 10)),
+            removed = emptyList(),
+            cursor = "cursor-1",
+        )
+
+        val outcome = engine.sync("/vault")
+
+        assertEquals(1, outcome.downloaded)
+        assertEquals("remote two", repository.files["note.md"]?.toString(Charsets.UTF_8))
+        assertEquals(1, provider.listCalls)
+        assertEquals(1, provider.latestCursorCalls)
+    }
+
+    @Test
+    fun changedFilterForcesAFullList() = runBlocking {
+        val repository = FakeRepository()
+        repository.files["note.md"] = "one".toByteArray()
+        val records = FakeRecords()
+        val provider = FakeProvider()
+        engine(repository, records, provider).sync("/vault")
+        assertEquals(1, provider.listCalls)
+
+        provider.deltaPayload = RemoteDelta(emptyList(), emptyList(), "cursor-1")
+        val filtered = SyncEngine(
+            repository,
+            "vault",
+            records,
+            provider,
+            filter = SyncFilter(allowImages = false),
+        )
+        filtered.sync("/vault")
+
+        assertEquals(2, provider.listCalls)
+    }
+
+    @Test
+    fun deltaFolderRemovalDeletesLocalChildren() = runBlocking {
+        val repository = FakeRepository()
+        repository.files["Archive/note.md"] = "old".toByteArray()
+        val records = FakeRecords()
+        val provider = FakeProvider()
+        val engine = engine(repository, records, provider)
+        engine.sync("/vault")
+        assertEquals(1, repository.files.size)
+
+        provider.deltaPayload = RemoteDelta(
+            changed = emptyList(),
+            removed = listOf("Archive"),
+            cursor = "cursor-1",
+        )
+        val outcome = engine.sync("/vault")
+
+        assertEquals(1, outcome.deletedLocal)
+        assertTrue(repository.files.isEmpty())
     }
 }

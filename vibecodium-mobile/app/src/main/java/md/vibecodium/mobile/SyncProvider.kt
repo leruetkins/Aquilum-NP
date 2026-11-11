@@ -35,10 +35,22 @@ data class RemoteDownload(
 class DropboxException(val status: Int, val summary: String, val endpoint: String = "") :
     IOException("Dropbox $status${if (endpoint.isNotBlank()) " ($endpoint)" else ""}: $summary")
 
+data class RemoteDelta(
+    val changed: List<RemoteEntry>,
+    val removed: List<String>,
+    val cursor: String,
+)
+
 interface SyncProvider {
     suspend fun accountName(): String
     suspend fun ensureFolder(path: String)
     suspend fun listFolder(root: String): List<RemoteEntry>
+    /** Cursor representing the current state of [root], used before a full list. */
+    suspend fun latestCursor(root: String): String
+    /** Changes since [cursor]; null means the cursor is stale and a full list is required. */
+    suspend fun delta(root: String, cursor: String): RemoteDelta?
+    /** Current metadata for [path]; used to repair an upload response without rev. */
+    suspend fun metadata(path: String): RemoteEntry?
     suspend fun download(path: String): RemoteDownload
     suspend fun upload(path: String, bytes: ByteArray, rev: String?): RemoteEntry
     suspend fun delete(path: String)
@@ -317,24 +329,8 @@ class DropboxProvider(private val tokens: DropboxTokenStore) : SyncProvider {
             for (index in 0 until array.length()) {
                 val entry = array.optJSONObject(index) ?: continue
                 if (entry.optString(".tag") != "file") continue
-                val display = entry.optString("path_display")
-                if (display.isBlank()) continue
-                val rootParts = normalizedRoot.trim('/').split('/').filter { it.isNotEmpty() }
-                val parts = display.trimStart('/').split('/')
-                if (parts.size <= rootParts.size) continue
-                val underRoot = rootParts.indices.all { index ->
-                    parts[index].equals(rootParts[index], ignoreCase = true)
-                }
-                if (!underRoot) continue
-                val relative = parts.drop(rootParts.size).joinToString("/")
-                entries.add(
-                    RemoteEntry(
-                        path = relative,
-                        rev = entry.optString("rev"),
-                        contentHash = entry.optString("content_hash"),
-                        size = entry.optLong("size"),
-                    ),
-                )
+                val relative = relativePath(entry.optString("path_display"), normalizedRoot) ?: continue
+                entries.add(remoteEntry(relative, entry))
             }
             if (!response.optBoolean("has_more")) break
             response = rpc(
@@ -345,6 +341,86 @@ class DropboxProvider(private val tokens: DropboxTokenStore) : SyncProvider {
         entries.sortedBy { it.path.lowercase() }
     }
 
+    override suspend fun latestCursor(root: String): String = withContext(Dispatchers.IO) {
+        val normalizedRoot = root.trimEnd('/').ifEmpty { "" }
+        val argument = JSONObject()
+            .put("path", normalizedRoot)
+            .put("recursive", true)
+        suspend fun latest(): String =
+            rpc("files/list_folder/get_latest_cursor", argument).optString("cursor")
+        try {
+            latest()
+        } catch (error: DropboxException) {
+            if (!error.summary.contains("path/not_found")) throw error
+            ensureFolder(normalizedRoot)
+            latest()
+        }
+    }
+
+    override suspend fun delta(root: String, cursor: String): RemoteDelta? = withContext(Dispatchers.IO) {
+        val normalizedRoot = root.trimEnd('/').ifEmpty { "" }
+        var response = try {
+            rpc("files/list_folder/continue", JSONObject().put("cursor", cursor))
+        } catch (error: DropboxException) {
+            // A reset or a deleted folder invalidates the cursor; the caller
+            // falls back to a full listing.
+            if (error.status == 409 || error.status == 410) return@withContext null
+            throw error
+        }
+        val changed = linkedMapOf<String, RemoteEntry>()
+        val removed = linkedSetOf<String>()
+        var next = response.optString("cursor", cursor)
+        while (true) {
+            val array = response.optJSONArray("entries") ?: JSONArray()
+            for (index in 0 until array.length()) {
+                val entry = array.optJSONObject(index) ?: continue
+                when (entry.optString(".tag")) {
+                    "file" -> {
+                        val relative = relativePath(entry.optString("path_display"), normalizedRoot)
+                        if (relative != null) changed[relative] = remoteEntry(relative, entry)
+                    }
+
+                    "deleted" -> {
+                        val display = entry.optString("path_display")
+                        val relative = relativePath(display, normalizedRoot)
+                        if (relative != null) {
+                            removed.add(relative)
+                        } else if (display.trimEnd('/').equals(normalizedRoot, ignoreCase = true)) {
+                            // The remote folder itself disappeared. Force a
+                            // full listing; the engine aborts if records exist.
+                            return@withContext null
+                        }
+                    }
+                }
+            }
+            next = response.optString("cursor", next)
+            if (!response.optBoolean("has_more")) break
+            response = rpc("files/list_folder/continue", JSONObject().put("cursor", next))
+        }
+        RemoteDelta(changed.values.toList(), removed.toList(), next)
+    }
+
+    private fun remoteEntry(relative: String, entry: JSONObject) = RemoteEntry(
+        path = relative,
+        rev = entry.optString("rev"),
+        contentHash = entry.optString("content_hash"),
+        size = entry.optLong("size"),
+    )
+
+    private fun relativePath(display: String, root: String): String? {
+        if (display.isBlank()) return null
+        val rootParts = root.trim('/').split('/').filter { it.isNotEmpty() }
+        val parts = display.trimStart('/').split('/')
+        if (parts.size <= rootParts.size) return null
+        val underRoot = rootParts.indices.all { index ->
+            parts[index].equals(rootParts[index], ignoreCase = true)
+        }
+        if (!underRoot) return null
+        val relative = parts.drop(rootParts.size).joinToString("/")
+        if (relative.isEmpty() || relative.split('/').any { it.isEmpty() || it == ".." }) return null
+        return relative
+    }
+
     override suspend fun download(path: String): RemoteDownload = withContext(Dispatchers.IO) {
         val response = content("files/download", JSONObject().put("path", path), null)
         val result = response.result
@@ -352,6 +428,21 @@ class DropboxProvider(private val tokens: DropboxTokenStore) : SyncProvider {
             bytes = response.bytes,
             rev = result?.optString("rev").orEmpty(),
             contentHash = result?.optString("content_hash").orEmpty(),
+        )
+    }
+
+    override suspend fun metadata(path: String): RemoteEntry? = withContext(Dispatchers.IO) {
+        val value = try {
+            rpc("files/get_metadata", JSONObject().put("path", path))
+        } catch (error: DropboxException) {
+            if (error.summary.contains("path/not_found")) return@withContext null
+            throw error
+        }
+        RemoteEntry(
+            path = path,
+            rev = value.optString("rev"),
+            contentHash = value.optString("content_hash"),
+            size = value.optLong("size"),
         )
     }
 

@@ -16,7 +16,12 @@ data class SyncRecord(
     val updatedAt: Long,
 )
 
-data class SyncState(val lastSync: Long, val remoteRoot: String)
+data class SyncState(
+    val lastSync: Long,
+    val remoteRoot: String,
+    val cursor: String = "",
+    val scope: String = "",
+)
 
 /** Storage contract; the Android implementation is [SyncDatabase]. */
 interface SyncRecords {
@@ -29,7 +34,7 @@ interface SyncRecords {
 }
 
 class SyncDatabase(context: Context) :
-    SQLiteOpenHelper(context, "sync.db", null, 1),
+    SQLiteOpenHelper(context, "sync.db", null, SCHEMA_VERSION),
     SyncRecords {
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -53,16 +58,21 @@ class SyncDatabase(context: Context) :
             CREATE TABLE state (
                 vault TEXT PRIMARY KEY,
                 last_sync INTEGER NOT NULL,
-                remote_root TEXT NOT NULL
+                remote_root TEXT NOT NULL,
+                cursor TEXT NOT NULL DEFAULT '',
+                scope TEXT NOT NULL DEFAULT ''
             )
             """.trimIndent(),
         )
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS records")
-        db.execSQL("DROP TABLE IF EXISTS state")
-        onCreate(db)
+        // Keep the records: they are the only local baseline for change
+        // detection. Version 1 only lacked the remote cursor and scope.
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE state ADD COLUMN cursor TEXT NOT NULL DEFAULT ''")
+            db.execSQL("ALTER TABLE state ADD COLUMN scope TEXT NOT NULL DEFAULT ''")
+        }
     }
 
     override fun get(vault: String, path: String): SyncRecord? {
@@ -141,7 +151,7 @@ class SyncDatabase(context: Context) :
     override fun state(vault: String): SyncState? {
         readableDatabase.query(
             "state",
-            arrayOf("last_sync", "remote_root"),
+            arrayOf("last_sync", "remote_root", "cursor", "scope"),
             "vault = ?",
             arrayOf(vault),
             null,
@@ -149,7 +159,12 @@ class SyncDatabase(context: Context) :
             null,
         ).use { cursor ->
             if (!cursor.moveToFirst()) return null
-            return SyncState(cursor.getLong(0), cursor.getString(1))
+            return SyncState(
+                lastSync = cursor.getLong(0),
+                remoteRoot = cursor.getString(1),
+                cursor = cursor.getString(2).orEmpty(),
+                scope = cursor.getString(3).orEmpty(),
+            )
         }
     }
 
@@ -158,6 +173,8 @@ class SyncDatabase(context: Context) :
             put("vault", vault)
             put("last_sync", state.lastSync)
             put("remote_root", state.remoteRoot)
+            put("cursor", state.cursor)
+            put("scope", state.scope)
         }
         writableDatabase.insertWithOnConflict(
             "state",
@@ -165,5 +182,9 @@ class SyncDatabase(context: Context) :
             values,
             SQLiteDatabase.CONFLICT_REPLACE,
         )
+    }
+
+    private companion object {
+        const val SCHEMA_VERSION = 2
     }
 }

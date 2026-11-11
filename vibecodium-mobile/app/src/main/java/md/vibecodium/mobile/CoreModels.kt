@@ -111,6 +111,9 @@ data class SyncUiState(
     val message: String = "",
     val lastSync: Long = 0L,
     val autoSync: Boolean = false,
+    val localFiles: Int = 0,
+    val remoteFiles: Int = 0,
+    val planned: Int = 0,
 )
 
 data class UiState(

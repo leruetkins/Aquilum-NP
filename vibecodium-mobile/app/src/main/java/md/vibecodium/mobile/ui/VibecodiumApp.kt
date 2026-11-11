@@ -2288,7 +2288,7 @@ private fun ExplorerToolbar(state: UiState, controller: VibecodiumController) {
             "Refresh files",
             modifier = Modifier.weight(1f).fillMaxHeight(),
         ) {
-            controller.refreshNotes()
+            controller.refreshOrSync()
         }
     }
 }
@@ -3242,22 +3242,15 @@ private fun SettingsInfoRow(
 private fun ColumnScope.SyncSettingsContent(state: UiState, controller: VibecodiumController) {
     val sync = state.sync
     val vaultSync = state.vaultSync
-    if (sync.busy) {
-        SettingsGroup("Progress") {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-            ) {
-                LinearProgressIndicator(Modifier.fillMaxWidth())
-                Text(
-                    sync.progress.ifBlank { "Working…" },
-                    modifier = Modifier.padding(top = 8.dp),
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
+    SettingsGroup("Sync") {
+        SyncRunCard(
+            busy = sync.busy,
+            connected = sync.connected,
+            paused = vaultSync.paused,
+            progress = sync.progress,
+            onSync = { controller.syncNow() },
+            onStop = { controller.cancelSync() },
+        )
     }
 
     SettingsGroup("Connection") {
@@ -3277,23 +3270,28 @@ private fun ColumnScope.SyncSettingsContent(state: UiState, controller: Vibecodi
             detail = "Dropbox folder for this vault",
         )
         SettingsInfoRow(
+            "Files",
+            if (sync.localFiles == 0 && sync.remoteFiles == 0) {
+                "—"
+            } else {
+                "${sync.localFiles} local · ${sync.remoteFiles} remote"
+            },
+        )
+        SettingsInfoRow(
+            "To sync",
+            if (sync.planned == 0) "—" else sync.planned.toString(),
+        )
+        SettingsInfoRow(
             "Last sync",
             if (sync.lastSync > 0) dateTimeLabel(sync.lastSync) else "Never",
-            showDivider = sync.message.isBlank(),
+            showDivider = sync.message.isNotBlank(),
         )
         if (sync.message.isNotBlank()) {
             SettingsInfoRow("Last result", sync.message, showDivider = false)
         }
     }
 
-    SettingsGroup("Actions") {
-        SettingsActionRow(
-            title = "Sync now",
-            description = if (vaultSync.paused) "Resume sync first" else "Run a sync pass now",
-            enabled = sync.connected && !sync.busy && !vaultSync.paused,
-            onClick = { controller.syncNow() },
-            showDivider = true,
-        )
+    SettingsGroup("Dropbox account") {
         if (sync.connected) {
             SettingsActionRow(
                 title = "Disconnect Dropbox",
@@ -3314,7 +3312,7 @@ private fun ColumnScope.SyncSettingsContent(state: UiState, controller: Vibecodi
     }
 
     if (!sync.connected) {
-        SettingsGroup("Account") {
+        SettingsGroup("Setup") {
             SettingsTextFieldRow(
                 title = "Dropbox app key",
                 description = "Loopback redirect: http://127.0.0.1:47219/",
@@ -3443,6 +3441,79 @@ private fun ColumnScope.SyncSettingsContent(state: UiState, controller: Vibecodi
             detail = "Plugins, hotkeys and themes are not synchronised by this build",
             showDivider = false,
         )
+    }
+}
+
+/**
+ * The manual sync control and its progress share one fixed-height card. The
+ * progress slot exists in both states, so starting or stopping a pass never
+ * moves the rest of the settings page.
+ */
+@Composable
+private fun SyncRunCard(
+    busy: Boolean,
+    connected: Boolean,
+    paused: Boolean,
+    progress: String,
+    onSync: () -> Unit,
+    onStop: () -> Unit,
+) {
+    val enabled = busy || (connected && !paused)
+    val title = if (busy) "Stop sync" else "Sync now"
+    val description = when {
+        busy -> progress.ifBlank { "Working…" }
+        paused -> "Sync is paused"
+        !connected -> "Connect Dropbox first"
+        else -> "Run a sync pass now"
+    }
+    val accent = when {
+        busy -> MaterialTheme.colorScheme.error
+        enabled -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 76.dp)
+            .alpha(if (enabled) 1f else 0.5f)
+            .clickable(enabled = enabled) { if (busy) onStop() else onSync() }
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    title,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = accent,
+                )
+                Text(
+                    description,
+                    modifier = Modifier.padding(top = 2.dp),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Icon(
+                if (busy) Icons.Default.Close else Icons.Default.Refresh,
+                contentDescription = if (busy) "Stop sync" else "Sync now",
+                modifier = Modifier.size(22.dp),
+                tint = accent,
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(4.dp),
+        ) {
+            if (busy) {
+                LinearProgressIndicator(Modifier.fillMaxSize())
+            }
+        }
     }
 }
 

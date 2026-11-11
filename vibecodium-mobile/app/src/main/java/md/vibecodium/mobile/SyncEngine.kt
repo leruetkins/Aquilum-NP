@@ -1,11 +1,38 @@
 package md.vibecodium.mobile
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
-data class SyncProgress(val phase: String, val done: Int, val total: Int)
+/**
+ * Counts are split so the UI can show how many files exist on each side and
+ * how many of them actually need a transfer. [total] is the transfer plan,
+ * not the number of paths scanned.
+ */
+data class SyncProgress(
+    val phase: String,
+    val done: Int = 0,
+    val total: Int = 0,
+    val localFiles: Int = 0,
+    val remoteFiles: Int = 0,
+    val planned: Int = 0,
+)
+
+data class SyncOutcome(
+    val uploaded: Int,
+    val downloaded: Int,
+    val deletedLocal: Int,
+    val deletedRemote: Int,
+    val conflicts: Int,
+    val skipped: Int,
+    val lastSync: Long,
+)
 
 /** Selective-sync policy: excluded folders and file families. Notes always sync. */
 data class SyncFilter(
@@ -31,6 +58,21 @@ data class SyncFilter(
         }
     }
 
+    /** Stable key for the remote cursor: a changed filter requires a full list. */
+    fun fingerprint(): String = buildString {
+        append("images=").append(allowImages)
+        append(";audio=").append(allowAudio)
+        append(";video=").append(allowVideo)
+        append(";pdf=").append(allowPdf)
+        append(";other=").append(allowOther)
+        append(";excluded=")
+        excludedFolders
+            .map { it.replace('\\', '/').trim('/') }
+            .filter { it.isNotEmpty() }
+            .sorted()
+            .joinTo(this, "|")
+    }
+
     private fun isExcluded(path: String): Boolean {
         for (folder in excludedFolders) {
             val clean = folder.replace('\\', '/').trim('/')
@@ -50,16 +92,6 @@ data class SyncFilter(
     }
 }
 
-data class SyncOutcome(
-    val uploaded: Int,
-    val downloaded: Int,
-    val deletedLocal: Int,
-    val deletedRemote: Int,
-    val conflicts: Int,
-    val skipped: Int,
-    val lastSync: Long,
-)
-
 class SyncAbortedException(message: String) : Exception(message)
 
 /**
@@ -67,6 +99,8 @@ class SyncAbortedException(message: String) : Exception(message)
  * file vault (JNI core) and a SAF tree.
  *
  * Policy follows the desktop engine's decisions:
+ * - the remote side is read through a persisted Dropbox cursor and a delta;
+ * - a local file is hashed only when its size or modified stamp changed;
  * - new local -> upload, new remote -> download;
  * - one side changed -> push/pull;
  * - both changed -> conflict copy (the local version stays at the original
@@ -82,53 +116,137 @@ class SyncEngine(
     private val filter: SyncFilter = SyncFilter(),
     private val progress: suspend (SyncProgress) -> Unit = {},
 ) {
-    private val bytesCache = mutableMapOf<String, ByteArray>()
-    private val hashCache = mutableMapOf<String, String>()
+    private val bytesCache = ConcurrentHashMap<String, ByteArray>()
+    private val hashCache = ConcurrentHashMap<String, String>()
 
-    suspend fun sync(remoteRoot: String): SyncOutcome {
+    suspend fun sync(remoteRoot: String, localSnapshot: List<VaultFile>? = null): SyncOutcome {
         // A pass must see the current disk; a previous pass may have cached
         // bytes before an external edit.
         bytesCache.clear()
         hashCache.clear()
-        progress(SyncProgress("Scanning local files", 0, 0))
-        val localFiles = repository.listFiles()
-            .filterNot { isServicePath(it.path) }
-            .filter { filter.accepts(it.path) }
-            .associateBy { it.path }
-        progress(SyncProgress("Listing Dropbox", 0, 0))
-        provider.ensureFolder(remoteRoot)
-        val remoteFiles = provider.listFolder(remoteRoot)
-            .filterNot { isServicePath(it.path) }
-            .filter { filter.accepts(it.path) }
-            .associateBy { it.path }
-        val existing = records.all(vaultKey).filterKeys { filter.accepts(it) }
-        val paths = (localFiles.keys + remoteFiles.keys + existing.keys).toSortedSet()
-        val usedPaths = paths.toMutableSet()
 
-        val decisions = mutableListOf<Decision>()
-        for (path in paths) {
-            decisions.add(
-                decide(
-                    path = path,
-                    local = localFiles[path],
-                    remote = remoteFiles[path],
-                    record = existing[path],
-                ),
-            )
+        progress(SyncProgress("Scanning local files"))
+        val localFiles = (localSnapshot ?: repository.snapshot(refresh = true).files)
+            .filterNot { isServicePath(it.path) }
+            .filter { filter.accepts(it.path) }
+            .associateBy { it.path }
+        progress(SyncProgress("Scanning local files", localFiles = localFiles.size))
+
+        val existing = records.all(vaultKey).filterKeys { filter.accepts(it) }
+        val previous = records.state(vaultKey)
+        val scope = filter.fingerprint()
+        // An upload whose response lacked metadata leaves an empty rev. A full
+        // listing repairs those records before a delta could hide them.
+        val needsRepair = existing.values.any { it.remoteRev.isBlank() }
+        val delta = if (
+            !needsRepair &&
+            previous != null &&
+            previous.remoteRoot == remoteRoot &&
+            previous.scope == scope &&
+            previous.cursor.isNotBlank()
+        ) {
+            progress(SyncProgress("Checking Dropbox", localFiles = localFiles.size))
+            provider.delta(remoteRoot, previous.cursor)
+        } else {
+            null
         }
 
-        val localDeletes = decisions.count { it is Decision.DeleteLocal }
-        val remoteDeletes = decisions.count { it is Decision.DeleteRemote }
+        val view: RemoteView
+        val nextCursor: String
+        if (delta != null) {
+            val removed = delta.removed.toSet()
+            val changed = delta.changed
+                .filter { filter.accepts(it.path) && !removedUnder(it.path, removed) }
+                .associateBy { it.path }
+            view = RemoteView.Delta(changed, removed)
+            nextCursor = delta.cursor
+        } else {
+            progress(SyncProgress("Listing Dropbox", localFiles = localFiles.size))
+            val cursor = provider.latestCursor(remoteRoot)
+            val listed = provider.listFolder(remoteRoot)
+                .filterNot { isServicePath(it.path) }
+            // Compare the raw listing: a filter that excludes every category
+            // must not look like a deleted remote folder.
+            if (listed.isEmpty() && existing.isNotEmpty()) {
+                throw SyncAbortedException(
+                    "The Dropbox folder is empty or missing while local sync records exist",
+                )
+            }
+            val remoteFiles = listed
+                .filter { filter.accepts(it.path) }
+                .associateBy { it.path }
+            view = RemoteView.Full(remoteFiles)
+            nextCursor = cursor
+        }
+
+        val remoteFiles = view.count(existing)
+        progress(
+            SyncProgress(
+                phase = "Checking local changes",
+                localFiles = localFiles.size,
+                remoteFiles = remoteFiles,
+            ),
+        )
+
+        // Hash same-size files whose modified stamp is missing or different.
+        // The reads run on a small IO pool, so a vault without reliable mtimes
+        // is verified in parallel instead of one file at a time.
+        val hashCandidates = localFiles.keys.filter { path ->
+            val local = localFiles[path]
+            val record = existing[path]
+            local != null && record != null && local.size == record.localSize && !sameStamp(local, record)
+        }
+        if (hashCandidates.isNotEmpty()) {
+            var checked = 0
+            for (chunk in hashCandidates.chunked(HASH_CONCURRENCY)) {
+                coroutineScope {
+                    chunk.map { path -> async(Dispatchers.IO) { hashOnly(path) } }.awaitAll()
+                }
+                checked += chunk.size
+                progress(
+                    SyncProgress(
+                        phase = "Checking local files",
+                        done = checked,
+                        total = hashCandidates.size,
+                        localFiles = localFiles.size,
+                        remoteFiles = remoteFiles,
+                    ),
+                )
+            }
+        }
+
+        val paths = (localFiles.keys + view.paths() + existing.keys)
+            .filter { filter.accepts(it) }
+            .toSortedSet()
+        val decisions = ArrayList<Decision>(paths.size)
+        for (path in paths) {
+            val local = localFiles[path]
+            val record = existing[path]
+            decisions.add(decide(path, local, view.get(path, record), record))
+        }
+        val plan = decisions.filter { it !is Decision.Noop && it !is Decision.Forget }
+
+        val localDeletes = plan.count { it is Decision.DeleteLocal }
+        val remoteDeletes = plan.count { it is Decision.DeleteRemote }
         if (localFiles.size >= 10 && localDeletes > localFiles.size / 2) {
             throw SyncAbortedException(
                 "Refusing to delete $localDeletes local files: more than half of ${localFiles.size}",
             )
         }
-        if (remoteFiles.size >= 10 && remoteDeletes > remoteFiles.size / 2) {
+        if (existing.size >= 10 && remoteDeletes > existing.size / 2) {
             throw SyncAbortedException(
-                "Refusing to delete $remoteDeletes remote files: more than half of ${remoteFiles.size}",
+                "Refusing to delete $remoteDeletes remote files: more than half of ${existing.size}",
             )
         }
+
+        progress(
+            SyncProgress(
+                phase = "Planning",
+                localFiles = localFiles.size,
+                remoteFiles = remoteFiles,
+                planned = plan.size,
+            ),
+        )
 
         var uploaded = 0
         var downloaded = 0
@@ -136,15 +254,26 @@ class SyncEngine(
         var deletedRemote = 0
         var conflicts = 0
         var skipped = 0
+        val usedPaths = paths.toMutableSet()
         var done = 0
 
-        for (decision in decisions) {
+        for (decision in plan) {
             done += 1
-            progress(SyncProgress("Syncing", done, decisions.size))
+            progress(
+                SyncProgress(
+                    phase = "Syncing",
+                    done = done,
+                    total = plan.size,
+                    localFiles = localFiles.size,
+                    remoteFiles = remoteFiles,
+                    planned = plan.size,
+                ),
+            )
             when (decision) {
                 is Decision.Forget -> records.remove(vaultKey, decision.path)
                 is Decision.Noop -> Unit
                 is Decision.Skip -> skipped += 1
+
                 is Decision.DeleteLocal -> {
                     repository.deleteFile(decision.path)
                     records.remove(vaultKey, decision.path)
@@ -170,11 +299,8 @@ class SyncEngine(
                     }
                     val hash = sha256(bytes)
                     try {
-                        val entry = provider.upload(
-                            remotePath(remoteRoot, decision.path),
-                            bytes,
-                            decision.rev,
-                        )
+                        val target = remotePath(remoteRoot, decision.path)
+                        val entry = uploadWithMetadata(target, bytes, decision.rev)
                         records.put(
                             vaultKey,
                             record(local, hash, entry.rev, entry.contentHash),
@@ -200,7 +326,7 @@ class SyncEngine(
                 }
 
                 is Decision.Download -> {
-                    val remote = remoteFiles[decision.path] ?: continue
+                    val remote = decision.remote
                     if (remote.size > MAX_SYNC_FILE) {
                         skipped += 1
                         continue
@@ -234,7 +360,7 @@ class SyncEngine(
                         continue
                     }
                     val hash = sha256(bytes)
-                    val remote = provider.download(remotePath(remoteRoot, local.path))
+                    val remote = provider.download(remotePath(remoteRoot, decision.remote.path))
                     resolveConflict(
                         remoteRoot = remoteRoot,
                         path = local.path,
@@ -250,7 +376,15 @@ class SyncEngine(
         }
 
         val now = System.currentTimeMillis()
-        records.saveState(vaultKey, SyncState(now, remoteRoot))
+        records.saveState(
+            vaultKey,
+            SyncState(
+                lastSync = now,
+                remoteRoot = remoteRoot,
+                cursor = nextCursor,
+                scope = scope,
+            ),
+        )
         return SyncOutcome(
             uploaded = uploaded,
             downloaded = downloaded,
@@ -273,8 +407,8 @@ class SyncEngine(
 
             local == null && remote != null -> {
                 when {
-                    record == null -> Decision.Download(path)
-                    remoteChanged(remote, record) -> Decision.Download(path)
+                    record == null -> Decision.Download(path, remote)
+                    remoteChanged(remote, record) -> Decision.Download(path, remote)
                     else -> Decision.DeleteRemote(path)
                 }
             }
@@ -282,18 +416,21 @@ class SyncEngine(
             local != null && remote == null -> {
                 when {
                     record == null -> Decision.Upload(path, null)
+                    // An incomplete upload record is not a deletion baseline;
+                    // re-upload instead of deleting the local file.
+                    record.remoteRev.isBlank() -> Decision.Upload(path, null)
                     localChanged(local, record) -> Decision.Upload(path, null)
                     else -> Decision.DeleteLocal(path)
                 }
             }
 
             local != null && remote != null -> {
-                val localChanged = record?.let { localChanged(local, it) } ?: true
-                val remoteChanged = record?.let { remoteChanged(remote, it) } ?: true
+                val localDiffers = record?.let { localChanged(local, it) } ?: true
+                val remoteDiffers = record?.let { remoteChanged(remote, it) } ?: true
                 when {
-                    !localChanged && !remoteChanged -> Decision.Noop(path)
-                    localChanged && !remoteChanged -> Decision.Upload(path, remote.rev)
-                    !localChanged && remoteChanged -> Decision.Download(path)
+                    !localDiffers && !remoteDiffers -> Decision.Noop(path)
+                    localDiffers && !remoteDiffers -> Decision.Upload(path, remote.rev)
+                    !localDiffers && remoteDiffers -> Decision.Download(path, remote)
                     sameContent(local, remote) -> {
                         val bytes = bytes(local.path)
                         if (bytes != null) {
@@ -305,7 +442,7 @@ class SyncEngine(
                         Decision.Noop(path)
                     }
 
-                    else -> Decision.Conflict(path)
+                    else -> Decision.Conflict(path, remote)
                 }
             }
 
@@ -314,16 +451,20 @@ class SyncEngine(
     }
 
     private suspend fun localChanged(local: VaultFile, record: SyncRecord): Boolean {
-        val sameSize = local.size == record.localSize
-        // An unknown mtime (0, common for some SAF providers) cannot prove the
-        // file is unchanged; hash it instead of trusting the size alone.
-        val sameModified = local.lastModified != 0L &&
-            record.localModified != 0L &&
-            local.lastModified == record.localModified
-        if (sameSize && sameModified) return false
+        if (local.size != record.localSize) return true
+        if (sameStamp(local, record)) return false
         val hash = hash(local.path) ?: return true
         return hash != record.localHash
     }
+
+    /**
+     * A missing modified stamp (0, common for some SAF providers) cannot prove
+     * that a file is unchanged, so those files are hashed instead.
+     */
+    private fun sameStamp(local: VaultFile, record: SyncRecord): Boolean =
+        local.lastModified != 0L &&
+            record.localModified != 0L &&
+            local.lastModified == record.localModified
 
     private fun remoteChanged(remote: RemoteEntry, record: SyncRecord): Boolean =
         remote.rev != record.remoteRev
@@ -347,7 +488,7 @@ class SyncEngine(
         usedPaths.add(conflictPath)
         repository.writeBytes(conflictPath, remote.bytes)
         val conflictRemotePath = remotePath(remoteRoot, conflictPath)
-        val conflictEntry = provider.upload(conflictRemotePath, remote.bytes, null)
+        val conflictEntry = uploadWithMetadata(conflictRemotePath, remote.bytes, null)
         records.put(
             vaultKey,
             SyncRecord(
@@ -361,7 +502,7 @@ class SyncEngine(
             ),
         )
 
-        val updated = provider.upload(
+        val updated = uploadWithMetadata(
             remotePath(remoteRoot, path),
             localBytes,
             remote.rev,
@@ -369,11 +510,38 @@ class SyncEngine(
         records.put(vaultKey, record(local, localHash, updated.rev, updated.contentHash))
     }
 
+    /**
+     * Some upload responses arrive without the metadata header. Asking
+     * `files/get_metadata` keeps the baseline complete so the next delta does
+     * not turn a normal edit into a conflict.
+     */
+    private suspend fun uploadWithMetadata(
+        path: String,
+        bytes: ByteArray,
+        rev: String?,
+    ): RemoteEntry {
+        val entry = provider.upload(path, bytes, rev)
+        if (entry.rev.isNotBlank() && entry.contentHash.isNotBlank()) return entry
+        val repaired = provider.metadata(path) ?: return entry
+        return entry.copy(
+            rev = entry.rev.ifBlank { repaired.rev },
+            contentHash = entry.contentHash.ifBlank { repaired.contentHash },
+            size = if (entry.size > 0) entry.size else repaired.size,
+        )
+    }
+
     private suspend fun bytes(path: String): ByteArray? =
         bytesCache[path] ?: repository.readBytes(path)?.also { bytesCache[path] = it }
 
-    private suspend fun hash(path: String): String? =
-        hashCache[path] ?: bytes(path)?.let(::sha256)?.also { hashCache[path] = it }
+    private suspend fun hashOnly(path: String): String? {
+        hashCache[path]?.let { return it }
+        val bytes = repository.readBytes(path) ?: return null
+        val value = sha256(bytes)
+        hashCache[path] = value
+        return value
+    }
+
+    private suspend fun hash(path: String): String? = hashCache[path] ?: hashOnly(path)
 
     private fun record(local: VaultFile, hash: String, rev: String, remoteHash: String) =
         SyncRecord(
@@ -409,17 +577,51 @@ class SyncEngine(
 
     private sealed interface Decision {
         data class Upload(val path: String, val rev: String?) : Decision
-        data class Download(val path: String) : Decision
+        data class Download(val path: String, val remote: RemoteEntry) : Decision
         data class DeleteLocal(val path: String) : Decision
         data class DeleteRemote(val path: String) : Decision
-        data class Conflict(val path: String) : Decision
+        data class Conflict(val path: String, val remote: RemoteEntry) : Decision
         data class Forget(val path: String) : Decision
         data class Noop(val path: String) : Decision
         data class Skip(val path: String) : Decision
     }
 
+    private sealed interface RemoteView {
+        fun paths(): Set<String>
+        fun get(path: String, record: SyncRecord?): RemoteEntry?
+        fun count(records: Map<String, SyncRecord>): Int
+
+        class Full(private val files: Map<String, RemoteEntry>) : RemoteView {
+            override fun paths(): Set<String> = files.keys
+            override fun get(path: String, record: SyncRecord?): RemoteEntry? = files[path]
+            override fun count(records: Map<String, SyncRecord>): Int = files.size
+        }
+
+        class Delta(
+            private val changed: Map<String, RemoteEntry>,
+            private val removed: Set<String>,
+        ) : RemoteView {
+            override fun paths(): Set<String> = changed.keys
+
+            override fun get(path: String, record: SyncRecord?): RemoteEntry? {
+                changed[path]?.let { return it }
+                if (removedUnder(path, removed)) return null
+                return record?.let { RemoteEntry(path, it.remoteRev, it.remoteHash, 0L) }
+            }
+
+            override fun count(records: Map<String, SyncRecord>): Int {
+                var total = changed.size
+                for (path in records.keys) {
+                    if (path !in changed && !removedUnder(path, removed)) total += 1
+                }
+                return total
+            }
+        }
+    }
+
     private companion object {
         const val MAX_SYNC_FILE = 10L * 1024 * 1024
+        const val HASH_CONCURRENCY = 4
 
         fun remotePath(root: String, relative: String): String =
             root.trimEnd('/') + "/" + relative.trimStart('/')
@@ -453,4 +655,15 @@ class SyncEngine(
             return output.toString()
         }
     }
+}
+
+private fun removedUnder(path: String, removed: Set<String>): Boolean {
+    if (removed.isEmpty()) return false
+    if (path in removed) return true
+    var index = path.indexOf('/')
+    while (index >= 0) {
+        if (path.substring(0, index) in removed) return true
+        index = path.indexOf('/', index + 1)
+    }
+    return false
 }
