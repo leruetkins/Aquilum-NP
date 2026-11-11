@@ -113,6 +113,12 @@ class VibecodiumController(context: Context) {
         state = state.copy(knownVaults = VaultListStore.forget(appContext, vault.locator))
     }
 
+    fun clearRecent() {
+        val key = locatorKey()
+        if (key.isNotEmpty()) RecentStore.clear(appContext, key)
+        state = state.copy(recentFiles = emptyList())
+    }
+
     fun createDemoVault() {
         scope.launch {
             state = state.copy(loading = true, booting = true, message = null)
@@ -1157,11 +1163,12 @@ class VibecodiumController(context: Context) {
                 val finished = progress.total == 0 || progress.done == progress.total
                 if (countsChanged || finished || now - syncProgressAt >= 100) {
                     syncProgressAt = now
+                    val hasTotal = progress.total > 0
                     state = state.copy(
                         sync = state.sync.copy(
                             progress = formatSyncProgress(progress),
-                            progressDone = progress.done,
-                            progressTotal = progress.total,
+                            progressDone = if (hasTotal) progress.done else state.sync.progressDone,
+                            progressTotal = if (hasTotal) progress.total else state.sync.progressTotal,
                             localFiles = progress.localFiles,
                             remoteFiles = progress.remoteFiles,
                             planned = progress.planned,

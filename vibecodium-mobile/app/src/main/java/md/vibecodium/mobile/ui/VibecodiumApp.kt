@@ -54,6 +54,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -103,6 +104,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.Immutable
@@ -2030,7 +2032,6 @@ private fun VaultChooserRow(
 
 @Composable
 private fun LeftDrawer(state: UiState, controller: VibecodiumController, modifier: Modifier) {
-    var vaultMenuOpen by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     Surface(modifier = modifier, color = Color(0xFF282828), tonalElevation = 0.dp) {
         Column(Modifier.fillMaxSize()) {
@@ -2045,7 +2046,7 @@ private fun LeftDrawer(state: UiState, controller: VibecodiumController, modifie
                     Column(
                         Modifier
                             .fillMaxWidth()
-                            .clickable { vaultMenuOpen = true }
+                            .clickable { controller.openVaultChooser() }
                             .padding(vertical = 6.dp),
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2059,7 +2060,7 @@ private fun LeftDrawer(state: UiState, controller: VibecodiumController, modifie
                             )
                             Icon(
                                 Icons.Default.KeyboardArrowDown,
-                                contentDescription = "Vault options",
+                                contentDescription = "Choose vault",
                                 modifier = Modifier.size(20.dp),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -2071,20 +2072,6 @@ private fun LeftDrawer(state: UiState, controller: VibecodiumController, modifie
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    DropdownMenu(expanded = vaultMenuOpen, onDismissRequest = { vaultMenuOpen = false }) {
-                        DropdownMenuItem(
-                            text = { Text("Refresh files") },
-                            onClick = { vaultMenuOpen = false; controller.refreshNotes() },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Open another vault") },
-                            onClick = { vaultMenuOpen = false; controller.openVaultChooser() },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Close drawer") },
-                            onClick = { vaultMenuOpen = false; controller.closeOverlays() },
                         )
                     }
                 }
@@ -2152,8 +2139,12 @@ private fun LeftDrawer(state: UiState, controller: VibecodiumController, modifie
                     ) {
                         when (state.drawerMode) {
                             DrawerMode.Search -> SearchPanel(state, controller)
-                            DrawerMode.Bookmarks -> BookmarkedList(state, controller)
-                            DrawerMode.Recent -> RecentList(state, controller)
+                            DrawerMode.Bookmarks -> key(state.bookmarks, state.notes) {
+                                BookmarkedList(state, controller)
+                            }
+                            DrawerMode.Recent -> key(state.recentFiles, state.notes) {
+                                RecentList(state, controller)
+                            }
                             DrawerMode.Files -> Unit
                         }
                     }
@@ -2630,40 +2621,113 @@ private fun BookmarkedList(state: UiState, controller: VibecodiumController) {
         Placeholder("No bookmarked notes yet.\nUse the star in the note header.")
         return
     }
-    LazyColumn(Modifier.fillMaxSize()) {
-        items(notes, key = { it.path }) { note ->
-            NoteRow(
-                note,
-                active = state.tabs.getOrNull(state.activeTab)?.path == note.path,
-                bookmarked = true,
-            ) {
-                controller.openNote(note.path)
-                controller.closeOverlays()
+    val listState = rememberLazyListState()
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+            items(notes, key = { it.path }) { note ->
+                NoteRow(
+                    note,
+                    active = state.tabs.getOrNull(state.activeTab)?.path == note.path,
+                    bookmarked = true,
+                    detail = note.path,
+                ) {
+                    controller.openNote(note.path)
+                    controller.closeOverlays()
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
         }
+        ThinScrollbar(
+            listState,
+            Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .padding(end = 2.dp)
+                .width(3.dp),
+        )
     }
 }
 
 @Composable
 private fun RecentList(state: UiState, controller: VibecodiumController) {
     val byPath = state.notes.associateBy { it.path }
-    val recent = state.recentFiles.mapNotNull { byPath[it] }.take(30)
+    val recent = state.recentFiles
+        .mapNotNull { entry -> byPath[entry.path]?.let { it to entry.openedAt } }
+        .take(30)
     if (recent.isEmpty()) {
         Placeholder("Notes you open will appear here.")
         return
     }
-    LazyColumn(Modifier.fillMaxSize()) {
-        items(recent, key = { it.path }) { note ->
-            NoteRow(
-                note,
-                active = false,
-                bookmarked = note.path in state.bookmarks,
-            ) {
-                controller.openNote(note.path)
-                controller.closeOverlays()
+    val listState = rememberLazyListState()
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(40.dp)
+                .padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Recent",
+                modifier = Modifier.weight(1f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(onClick = { controller.clearRecent() }) {
+                Text("Clear all", fontSize = 12.sp)
             }
         }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                items(recent, key = { it.first.path }) { (note, openedAt) ->
+                    NoteRow(
+                        note,
+                        active = false,
+                        bookmarked = note.path in state.bookmarks,
+                        detail = if (openedAt > 0) dateTimeLabel(openedAt) else "—",
+                    ) {
+                        controller.openNote(note.path)
+                        controller.closeOverlays()
+                    }
+                }
+            }
+            ThinScrollbar(
+                listState,
+                Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .padding(end = 2.dp)
+                    .width(3.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ThinScrollbar(state: LazyListState, modifier: Modifier = Modifier) {
+    val layout = state.layoutInfo
+    val total = layout.totalItemsCount
+    val visible = layout.visibleItemsInfo
+    if (total <= 0 || visible.isEmpty() || total <= visible.size) return
+    val first = visible.first().index.coerceAtLeast(0)
+    val maxFirst = (total - visible.size).coerceAtLeast(1)
+    val progress = (first.toFloat() / maxFirst).coerceIn(0f, 1f)
+    val fraction = (visible.size.toFloat() / total).coerceIn(0.08f, 1f)
+    BoxWithConstraints(modifier) {
+        val thumbHeight = (maxHeight * fraction).coerceAtLeast(24.dp)
+        val top = (maxHeight - thumbHeight) * progress
+        Box(
+            Modifier
+                .offset(y = top)
+                .fillMaxWidth()
+                .height(thumbHeight)
+                .background(
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                    RoundedCornerShape(2.dp),
+                ),
+        )
     }
 }
 
@@ -2672,6 +2736,7 @@ private fun NoteRow(
     note: NoteItem,
     active: Boolean,
     bookmarked: Boolean,
+    detail: String? = null,
     onClick: () -> Unit,
 ) {
     Row(
@@ -2699,10 +2764,10 @@ private fun NoteRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            val folder = note.path.substringBeforeLast('/', "")
-            if (folder.isNotEmpty()) {
+            val subtitle = detail ?: note.path.substringBeforeLast('/', "")
+            if (subtitle.isNotEmpty()) {
                 Text(
-                    folder,
+                    subtitle,
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -3960,10 +4025,10 @@ private fun SettingsFolderEditor(
 private fun syncSubtitle(state: UiState): String {
     val sync = state.sync
     return when {
-        sync.busy -> when {
-            sync.progressTotal > 0 -> "Syncing ${sync.progressDone}/${sync.progressTotal}"
-            sync.localFiles > 0 -> "Syncing ${sync.localFiles} files"
-            else -> "Syncing…"
+        sync.busy -> if (sync.progressTotal > 0) {
+            "Syncing ${sync.progressDone}/${sync.progressTotal}"
+        } else {
+            "Syncing…"
         }
         sync.connected && sync.lastSync > 0 -> "Synced ${timeLabel(sync.lastSync)}"
         sync.connected -> "Dropbox connected"

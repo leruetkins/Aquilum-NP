@@ -98,43 +98,66 @@ object FolderStore {
     }
 }
 
+/** One recently opened note and when it was last opened. */
+data class RecentEntry(val path: String, val openedAt: Long)
+
 /** Recently opened notes, most recent first, persisted per vault. */
 object RecentStore {
     private const val PREFIX = "recent:"
     private const val LIMIT = 50
 
-    fun load(context: Context, key: String): List<String> {
+    fun load(context: Context, key: String): List<RecentEntry> {
         val raw = prefs(context).getString(PREFIX + key, null) ?: return emptyList()
         return runCatching {
             val array = JSONArray(raw)
-            buildList {
+            buildList<RecentEntry> {
                 for (index in 0 until array.length()) {
-                    val path = array.optString(index)
-                    if (path.isNotBlank() && path !in this) add(path)
+                    val item = array.opt(index)
+                    val entry = when (item) {
+                        is JSONObject -> {
+                            val path = item.optString("path")
+                            if (path.isNotBlank()) RecentEntry(path, item.optLong("openedAt")) else null
+                        }
+
+                        is String -> item.takeIf { it.isNotBlank() }?.let { RecentEntry(it, 0L) }
+                        else -> null
+                    } ?: continue
+                    if (this.none { it.path == entry.path }) add(entry)
                 }
             }.take(LIMIT)
         }.getOrDefault(emptyList())
     }
 
-    fun remember(context: Context, key: String, path: String): List<String> {
+    fun remember(context: Context, key: String, path: String): List<RecentEntry> {
         if (path.isBlank()) return load(context, key)
-        val updated = (listOf(path) + load(context, key).filterNot { it == path }).take(LIMIT)
+        val entry = RecentEntry(path, System.currentTimeMillis())
+        val updated = (listOf(entry) + load(context, key).filterNot { it.path == path }).take(LIMIT)
         save(context, key, updated)
         return updated
     }
 
-    fun rename(context: Context, key: String, oldPath: String, newPath: String): List<String> {
+    fun rename(context: Context, key: String, oldPath: String, newPath: String): List<RecentEntry> {
         val updated = load(context, key)
-            .map { if (it == oldPath) newPath else it }
-            .distinct()
+            .map { if (it.path == oldPath) it.copy(path = newPath) else it }
+            .distinctBy { it.path }
             .take(LIMIT)
         save(context, key, updated)
         return updated
     }
 
-    private fun save(context: Context, key: String, paths: List<String>) {
+    fun clear(context: Context, key: String) {
+        prefs(context).edit().remove(PREFIX + key).apply()
+    }
+
+    private fun save(context: Context, key: String, entries: List<RecentEntry>) {
         val array = JSONArray()
-        for (path in paths) array.put(path)
+        for (entry in entries) {
+            array.put(
+                JSONObject()
+                    .put("path", entry.path)
+                    .put("openedAt", entry.openedAt),
+            )
+        }
         prefs(context).edit().putString(PREFIX + key, array.toString()).apply()
     }
 }

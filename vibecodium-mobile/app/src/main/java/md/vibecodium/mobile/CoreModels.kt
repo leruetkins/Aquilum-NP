@@ -153,8 +153,8 @@ data class UiState(
     val searchHits: List<SearchHit> = emptyList(),
     val headings: List<Heading> = emptyList(),
     val stats: DocStats = DocStats(0, 0, 0),
-    /** Recently opened note paths, most recent first, persisted per vault. */
-    val recentFiles: List<String> = emptyList(),
+    /** Recently opened notes, most recent first, persisted per vault. */
+    val recentFiles: List<RecentEntry> = emptyList(),
     val history: List<String> = emptyList(),
     val historyIndex: Int = -1,
     val deletePath: String? = null,
