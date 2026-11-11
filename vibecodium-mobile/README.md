@@ -155,8 +155,11 @@ vibecodium-mobile/
     once per pass; that snapshot is reused for the post-sync file list. The
     manual sync control and its progress share one fixed-height card, so
     starting or stopping a pass does not move the page; a running pass is
-    cancelled from that same card. The Files drawer's refresh button starts a
-    sync when Dropbox is connected (it rescans the tree otherwise).
+    cancelled from that same card. The Files drawer's toolbar has a two-arrow
+    sync button that rotates while a pass runs; a second tap cancels it. It
+    starts a sync when Dropbox is connected (it rescans the tree otherwise).
+    The Status row and the drawer subtitle show done/total counts, or the
+    local file count while the vault is still being scanned.
 - `ui/Theme.kt` — Obsidian 1.15.0 **mobile dark** palette copied from
   `app.css` (background `#000000`, surface `#1E1E1E`, accent `#8A5CF5`,
   text `#DADADA`/`#B3B3B3`), with every Material 3 role set and a neutral

@@ -110,6 +110,8 @@ data class SyncUiState(
     val clientId: String = "",
     val busy: Boolean = false,
     val progress: String = "",
+    val progressDone: Int = 0,
+    val progressTotal: Int = 0,
     val message: String = "",
     val lastSync: Long = 0L,
     val autoSync: Boolean = false,
@@ -164,6 +166,7 @@ data class UiState(
     val loading: Boolean = false,
     /** True from process start until the vault and saved tabs are ready. */
     val booting: Boolean = false,
+    val focusRequestId: Long = 0L,
     val message: String? = null,
 )
 

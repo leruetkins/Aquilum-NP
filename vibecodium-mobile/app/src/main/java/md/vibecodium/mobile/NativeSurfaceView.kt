@@ -1,8 +1,10 @@
 package md.vibecodium.mobile
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.ContextWrapper
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.PointF
@@ -43,6 +45,8 @@ import android.view.inputmethod.InputMethodManager
 import android.view.inputmethod.SurroundingText
 import androidx.annotation.RequiresApi
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import androidx.customview.widget.ExploreByTouchHelper
 import org.json.JSONArray
@@ -589,7 +593,25 @@ class NativeEditorView(
     private val onTextChanged: (String, Int) -> Unit,
     private val idleBottomInsetPx: Float = 64f * context.resources.displayMetrics.density,
 ) : NativeSurfaceView(context) {
-    override fun computeBandMargin(viewportHeight: Int): Int = (viewportHeight * 0.6f).roundToInt()
+    override fun computeBandMargin(viewportHeight: Int): Int {
+        val h = if (viewportHeight > 0) viewportHeight else safeViewportHeight()
+        return (h * 0.6f).roundToInt()
+    }
+
+    private fun safeViewportHeight(): Int {
+        if (height > 0) return height
+        if (measuredHeight > 0) return measuredHeight
+        return resources.displayMetrics.heightPixels
+    }
+
+    private fun ensureScrollMaxY(): Float {
+        val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
+        val maxY = info?.optDouble("max_y", scrollMaxY.toDouble())?.toFloat() ?: scrollMaxY
+        if (maxY > 0f) {
+            scrollMaxY = maxY
+        }
+        return maxOf(scrollMaxY, knownScroll)
+    }
 
     override fun onRenderFinished(rendered: Float) {
         bandQueue.add(rendered)
@@ -644,7 +666,7 @@ class NativeEditorView(
     }
 
     private fun applyScrollTranslation() {
-        val h = height
+        val h = safeViewportHeight()
         val m = computeBandMargin(h)
         textureView.translationY = ((bandOrigin + m) - knownScroll).roundToInt().toFloat()
     }
@@ -668,16 +690,17 @@ class NativeEditorView(
     }
 
     private fun checkBandRender(scroll: Float) {
-        val h = height
+        val h = safeViewportHeight()
         if (h <= 0) return
         val m = computeBandMargin(h).toFloat()
         if (m <= 0f) return
         val topHeadroom = scroll - bandOrigin
         val bottomHeadroom = (bandOrigin + 2f * m) - scroll
         val threshold = m * 0.35f
+        val maxOrigin = maxOf(scrollMaxY, knownScroll)
         if ((topHeadroom < threshold && bandOrigin > 0.5f) ||
-            (bottomHeadroom < threshold && bandOrigin < scrollMaxY - 0.5f)) {
-            val targetOrigin = (scroll - m).coerceIn(0f, scrollMaxY).roundToInt().toFloat()
+            (bottomHeadroom < threshold && bandOrigin < maxOrigin - 0.5f)) {
+            val targetOrigin = (scroll - m).coerceIn(0f, maxOrigin).roundToInt().toFloat()
             if (kotlin.math.abs(targetOrigin - bandOrigin) >= threshold) {
                 scheduleBandRender(targetOrigin)
             }
@@ -685,7 +708,8 @@ class NativeEditorView(
     }
 
     private fun scheduleBandRender(targetOrigin: Float, force: Boolean = false) {
-        val origin = targetOrigin.coerceIn(0f, scrollMaxY).roundToInt().toFloat()
+        val maxOrigin = maxOf(ensureScrollMaxY(), knownScroll)
+        val origin = targetOrigin.coerceIn(0f, maxOrigin).roundToInt().toFloat()
         if (force) {
             forcePendingBandRender = true
         } else if (kotlin.math.abs(origin - bandOrigin) < 1f && !isRenderingBand.get()) {
@@ -717,13 +741,15 @@ class NativeEditorView(
                 val renderedOrigin = CoreBridge.nativeSurfaceRender(surfaceId)
                 bandQueue.add(renderedOrigin)
                 mainHandler.post {
+                    applyScrollTranslation()
                     textureView.postInvalidateOnAnimation()
                 }
             } finally {
                 isRenderingBand.set(false)
                 mainHandler.post {
                     val pending = pendingBandOrigin
-                    val m = computeBandMargin(height).toFloat()
+                    val m = computeBandMargin(safeViewportHeight()).toFloat()
+                    val maxOrigin = maxOf(scrollMaxY, knownScroll)
                     val shouldRender = forcePendingBandRender ||
                         (pending != null && kotlin.math.abs(pending - bandOrigin) > m * 0.35f)
                     if (shouldRender && pending != null) {
@@ -818,8 +844,9 @@ class NativeEditorView(
                 postRenderTask {
                     CoreBridge.nativeEditorSetScroll(surfaceId, settledScroll, 0f)
                 }
-                val m = computeBandMargin(height).toFloat()
-                scheduleBandRender((knownScroll - m).coerceIn(0f, scrollMaxY))
+                val m = computeBandMargin(safeViewportHeight()).toFloat()
+                val maxOrigin = maxOf(scrollMaxY, knownScroll)
+                scheduleBandRender((knownScroll - m).coerceIn(0f, maxOrigin))
                 mainHandler.post {
                     resumeCaretBlink()
                     removeCallbacks(saveAfterFling)
@@ -1184,11 +1211,17 @@ class NativeEditorView(
         if (!hasWindowFocus) {
             saveViewport()
         } else {
-            if (!inPreview && !selectionNonEmpty()) {
+            ensureScrollMaxY()
+            restoreViewport()
+            if (!inPreview) {
+                focusEditor()
+                hideKeyboard()
+            } else if (!selectionNonEmpty()) {
                 startCaretBlink()
             }
             requestFullRender()
             mainHandler.post {
+                applyScrollTranslation()
                 textureView.postInvalidateOnAnimation()
             }
         }
@@ -1202,11 +1235,20 @@ class NativeEditorView(
             actionMode?.finish()
             removeCallbacks(caretBlink)
             clearFocus()
-            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-            windowToken?.let { imm?.hideSoftInputFromWindow(it, 0) }
+            hideKeyboard()
         } else if (wasHidden) {
             wasHidden = false
+            ensureScrollMaxY()
             restoreViewport()
+            if (!inPreview) {
+                focusEditor()
+                hideKeyboard()
+            }
+            requestFullRender()
+            mainHandler.post {
+                applyScrollTranslation()
+                textureView.postInvalidateOnAnimation()
+            }
         }
     }
 
@@ -1292,12 +1334,19 @@ class NativeEditorView(
         val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
         scrollMaxY = info?.optDouble("max_y", 0.0)?.toFloat() ?: 0f
         knownScroll = CoreBridge.nativeEditorScroll(surfaceId).roundToInt().toFloat()
-        val m = computeBandMargin(height).toFloat()
-        bandOrigin = (knownScroll - m).coerceAtLeast(0f).roundToInt().toFloat()
+        val m = computeBandMargin(safeViewportHeight()).toFloat()
+        val maxOrigin = maxOf(scrollMaxY, knownScroll)
+        bandOrigin = (knownScroll - m).coerceIn(0f, maxOrigin).roundToInt().toFloat()
         CoreBridge.nativeEditorSetBand(surfaceId, bandOrigin)
-        if (!selectionNonEmpty()) startCaretBlink()
-        syncHandles()
-        mainHandler.post { applyScrollTranslation() }
+        mainHandler.post {
+            applyScrollTranslation()
+            if (!inPreview) {
+                focusEditor()
+            } else if (!selectionNonEmpty()) {
+                startCaretBlink()
+            }
+            syncHandles()
+        }
     }
 
     fun setEditor(text: String, selection: Int, language: String?, path: String) {
@@ -1322,6 +1371,9 @@ class NativeEditorView(
         val viewport = if (pathChanged) loadViewport(path) else null
         if (pathChanged) {
             knownScroll = viewport?.first ?: 0f
+            val m = computeBandMargin(safeViewportHeight()).toFloat()
+            bandOrigin = (knownScroll - m).coerceAtLeast(0f).roundToInt().toFloat()
+            applyScrollTranslation()
         }
         contentDescription = if (nextLanguage.isEmpty()) {
             "Markdown source editor, ${text.count { it == '\n' } + 1} lines"
@@ -1352,8 +1404,9 @@ class NativeEditorView(
             scrollMaxY = info?.optDouble("max_y", 0.0)?.toFloat() ?: 0f
             if (pathChanged) {
                 knownScroll = CoreBridge.nativeEditorScroll(surfaceId).roundToInt().toFloat()
-                val m = computeBandMargin(height).toFloat()
-                bandOrigin = (knownScroll - m).coerceAtLeast(0f).roundToInt().toFloat()
+                val m = computeBandMargin(safeViewportHeight()).toFloat()
+                val maxOrigin = maxOf(scrollMaxY, knownScroll)
+                bandOrigin = (knownScroll - m).coerceIn(0f, maxOrigin).roundToInt().toFloat()
                 CoreBridge.nativeEditorSetBand(surfaceId, bandOrigin)
                 mainHandler.post { applyScrollTranslation() }
             }
@@ -1387,8 +1440,10 @@ class NativeEditorView(
         val scroll = viewport?.first ?: knownScroll
         val scrollX = viewport?.second ?: 0f
         knownScroll = scroll.roundToInt().toFloat()
-        val m = computeBandMargin(height).toFloat()
-        bandOrigin = (knownScroll - m).coerceAtLeast(0f).roundToInt().toFloat()
+        val maxOrigin = maxOf(ensureScrollMaxY(), knownScroll)
+        val m = computeBandMargin(safeViewportHeight()).toFloat()
+        bandOrigin = (knownScroll - m).coerceIn(0f, maxOrigin).roundToInt().toFloat()
+        applyScrollTranslation()
         postRenderTask {
             if (!isSurfaceAttached()) return@postRenderTask
             CoreBridge.nativeEditorSetBand(surfaceId, bandOrigin)
@@ -1405,8 +1460,9 @@ class NativeEditorView(
     /** Forces a complete viewport and render refresh when an overlay (like settings) is closed. */
     fun onOverlayDismissed() {
         if (!inPreview) {
-            requestFocus()
+            focusEditor()
         }
+        ensureScrollMaxY()
         restoreViewport()
         requestFullRender()
         syncHandles()
@@ -1998,7 +2054,8 @@ class NativeEditorView(
                 }
                 if (dragged) {
                     lastMotionY = y
-                    val nextScroll = (knownScroll + deltaY).coerceIn(0f, scrollMaxY).roundToInt().toFloat()
+                    val maxScroll = maxOf(scrollMaxY, knownScroll)
+                    val nextScroll = (knownScroll + deltaY).coerceIn(0f, maxScroll).roundToInt().toFloat()
                     if (nextScroll != knownScroll) {
                         knownScroll = nextScroll
                         applyScrollTranslation()
@@ -2135,8 +2192,9 @@ class NativeEditorView(
                         postRenderTask {
                             CoreBridge.nativeEditorSetScroll(surfaceId, scrollForRust, 0f)
                         }
-                        val m = computeBandMargin(height).toFloat()
-                        scheduleBandRender((knownScroll - m).coerceIn(0f, scrollMaxY))
+                        val m = computeBandMargin(safeViewportHeight()).toFloat()
+                        val maxOrigin = maxOf(scrollMaxY, knownScroll)
+                        scheduleBandRender((knownScroll - m).coerceIn(0f, maxOrigin))
                         saveViewport()
                         helper.invalidateRoot()
                     }
@@ -2158,8 +2216,9 @@ class NativeEditorView(
                     postRenderTask {
                         CoreBridge.nativeEditorSetScroll(surfaceId, scrollForRust, 0f)
                     }
-                    val m = computeBandMargin(height).toFloat()
-                    scheduleBandRender((knownScroll - m).coerceIn(0f, scrollMaxY))
+                    val m = computeBandMargin(safeViewportHeight()).toFloat()
+                    val maxOrigin = maxOf(scrollMaxY, knownScroll)
+                    scheduleBandRender((knownScroll - m).coerceIn(0f, maxOrigin))
                     saveViewport()
                 }
             }
@@ -2209,16 +2268,65 @@ class NativeEditorView(
         helper.invalidateRoot()
     }
 
-    fun showKeyboard() {
+    private fun findActivity(): Activity? {
+        var ctx: Context? = context
+        while (ctx is ContextWrapper) {
+            if (ctx is Activity) return ctx
+            ctx = ctx.baseContext
+        }
+        return null
+    }
+
+    fun focusEditor() {
         if (inPreview) return
         requestFocus()
+        applyCaretVisible(true)
+        startCaretBlink()
+        applyInsertionHandleVisible(true)
+        syncHandles()
+        requestRender()
+        post {
+            if (inPreview) return@post
+            requestFocus()
+            applyCaretVisible(true)
+            startCaretBlink()
+            applyInsertionHandleVisible(true)
+            syncHandles()
+            requestRender()
+        }
+    }
+
+    fun showKeyboard() {
+        if (inPreview) return
+        focusEditor()
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-        imm?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+        val window = findActivity()?.window
+        if (window != null) {
+            WindowCompat.getInsetsController(window, this).show(WindowInsetsCompat.Type.ime())
+        }
+        imm?.showSoftInput(this, 0)
+        post {
+            if (inPreview) return@post
+            if (window != null) {
+                WindowCompat.getInsetsController(window, this).show(WindowInsetsCompat.Type.ime())
+            }
+            imm?.showSoftInput(this, 0)
+        }
     }
 
     fun hideKeyboard() {
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
         windowToken?.let { imm?.hideSoftInputFromWindow(it, 0) }
+        val window = findActivity()?.window
+        if (window != null) {
+            WindowCompat.getInsetsController(window, this).hide(WindowInsetsCompat.Type.ime())
+        }
+        post {
+            windowToken?.let { imm?.hideSoftInputFromWindow(it, 0) }
+            if (window != null) {
+                WindowCompat.getInsetsController(window, this).hide(WindowInsetsCompat.Type.ime())
+            }
+        }
     }
 
     fun onKeyboardDismissed() {

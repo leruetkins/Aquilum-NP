@@ -5,7 +5,12 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -94,6 +99,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
@@ -105,6 +111,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -279,6 +286,39 @@ private val CollapseAllIcon: ImageVector = ImageVector.Builder(
         moveTo(7f, 9f)
         lineTo(12f, 4f)
         lineTo(17f, 9f)
+    }
+}.build()
+
+/** Material `sync`: two circular arrows. */
+private val SyncArrowsIcon: ImageVector = ImageVector.Builder(
+    name = "sync",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(fill = SolidColor(Color.Black)) {
+        moveTo(12f, 4f)
+        verticalLineTo(1f)
+        lineTo(8f, 5f)
+        lineTo(12f, 9f)
+        verticalLineTo(6f)
+        curveTo(15.31f, 6f, 18f, 8.69f, 18f, 12f)
+        curveTo(18f, 13.01f, 17.75f, 13.97f, 17.3f, 14.8f)
+        lineTo(18.76f, 16.26f)
+        curveTo(19.54f, 15.03f, 20f, 13.57f, 20f, 12f)
+        curveTo(20f, 7.58f, 16.42f, 4f, 12f, 4f)
+        close()
+        moveTo(12f, 18f)
+        curveTo(8.69f, 18f, 6f, 15.31f, 6f, 12f)
+        curveTo(6f, 10.99f, 6.25f, 10.03f, 6.7f, 9.2f)
+        lineTo(5.24f, 7.74f)
+        curveTo(4.46f, 8.97f, 4f, 10.43f, 4f, 12f)
+        curveTo(4f, 16.42f, 7.58f, 20f, 12f, 20f)
+        verticalLineTo(23f)
+        lineTo(16f, 19f)
+        lineTo(12f, 15f)
+        close()
     }
 }.build()
 
@@ -582,6 +622,7 @@ private data class EditorSlice(
     val stats: DocStats,
     val settingsOpen: Boolean = false,
     val overlayOpen: Boolean = false,
+    val focusRequestId: Long = 0L,
 )
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -602,6 +643,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 overlayOpen = current.settingsOpen || current.renamePath != null ||
                     current.deletePath != null || current.newFolderOpen || current.vaultChooserOpen ||
                     current.tabSwitcher,
+                focusRequestId = current.focusRequestId,
             )
         }
     }
@@ -859,15 +901,33 @@ private fun EditorScreen(
     val preview = state.editorMode == EditorMode.Preview
     val topInsetPx = with(LocalDensity.current) { (ViewHeaderTopPadding + ViewHeaderHeight + 10.dp).toPx() }
     var editorView by remember { mutableStateOf<NativeEditorView?>(null) }
-    var keyboardPrompt by remember { mutableStateOf(false) }
+    var keyboardPrompt by remember { mutableStateOf(!preview) }
     val onViewReady: (NativeEditorView) -> Unit = remember { { editorView = it } }
     val onCaretPlaced: () -> Unit = remember { { keyboardPrompt = true } }
-    LaunchedEffect(tab.path, preview) {
-        keyboardPrompt = false
-        editorView?.onOverlayDismissed()
+    LaunchedEffect(editorView, tab.path, state.activeTab, preview, state.focusRequestId) {
+        val view = editorView ?: return@LaunchedEffect
+        if (preview) {
+            keyboardPrompt = false
+            view.clearFocus()
+            view.hideKeyboard()
+        } else {
+            withFrameMillis { }
+            if (state.focusRequestId > 0L) {
+                keyboardPrompt = false
+                view.showKeyboard()
+                controller.consumeFocusRequest()
+            } else {
+                keyboardPrompt = true
+                view.focusEditor()
+            }
+        }
     }
     LaunchedEffect(drawerOpen) {
-        if (drawerOpen) editorView?.hideKeyboard()
+        if (drawerOpen) {
+            editorView?.hideKeyboard()
+        } else if (!preview) {
+            editorView?.focusEditor()
+        }
     }
     var prevImeVisible by remember { mutableStateOf(false) }
     LaunchedEffect(imeVisible) {
@@ -883,6 +943,21 @@ private fun EditorScreen(
             editorView?.onOverlayDismissed()
         }
         prevOverlayOpen = state.overlayOpen
+    }
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                if (!preview) {
+                    keyboardPrompt = true
+                    editorView?.hideKeyboard()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         // Keep the native editor alive while preview is open so switching
@@ -2471,6 +2546,26 @@ private fun handleTreeAction(action: String, controller: VibecodiumController) {
 private fun ExplorerToolbar(state: UiState, controller: VibecodiumController) {
     val allCollapsed = state.folders.isNotEmpty() &&
         state.folders.all { it in state.collapsedFolders }
+    val syncLabel = when {
+        state.sync.busy -> "Stop sync"
+        state.sync.connected && !state.vaultSync.paused -> "Sync"
+        else -> "Refresh files"
+    }
+    val syncAngle = if (state.sync.busy) {
+        val transition = rememberInfiniteTransition(label = "sync-rotation")
+        val angle by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(900, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "sync-angle",
+        )
+        angle
+    } else {
+        0f
+    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -2496,8 +2591,9 @@ private fun ExplorerToolbar(state: UiState, controller: VibecodiumController) {
             modifier = Modifier.weight(1f).fillMaxHeight(),
         ) { controller.toggleAllFolders() }
         CompactToolbarButton(
-            Icons.Default.Refresh,
-            "Refresh files",
+            SyncArrowsIcon,
+            syncLabel,
+            rotation = syncAngle,
             modifier = Modifier.weight(1f).fillMaxHeight(),
         ) {
             controller.refreshOrSync()
@@ -2511,6 +2607,7 @@ private fun CompactToolbarButton(
     description: String,
     enabled: Boolean = true,
     tint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    rotation: Float = 0f,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
@@ -2518,7 +2615,9 @@ private fun CompactToolbarButton(
         Icon(
             icon,
             contentDescription = description,
-            modifier = Modifier.size(26.dp),
+            modifier = Modifier
+                .size(26.dp)
+                .graphicsLayer { rotationZ = rotation },
             tint = if (enabled) tint else tint.copy(alpha = 0.35f),
         )
     }
@@ -3475,12 +3574,16 @@ private fun ColumnScope.SyncSettingsContent(state: UiState, controller: Vibecodi
         SettingsInfoRow(
             "Status",
             when {
-                sync.busy -> "Syncing"
+                sync.busy -> when {
+                    sync.progressTotal > 0 -> "${sync.progressDone}/${sync.progressTotal}"
+                    sync.localFiles > 0 -> "${sync.localFiles} files"
+                    else -> "Syncing"
+                }
                 vaultSync.paused -> "Paused"
                 sync.connected -> "Connected"
                 else -> "Not connected"
             },
-            detail = sync.accountName,
+            detail = if (sync.busy) "Syncing" else sync.accountName,
         )
         SettingsInfoRow(
             "Remote folder",
@@ -3857,8 +3960,12 @@ private fun SettingsFolderEditor(
 private fun syncSubtitle(state: UiState): String {
     val sync = state.sync
     return when {
-        sync.busy -> "syncing…"
-        sync.connected && sync.lastSync > 0 -> "synced ${timeLabel(sync.lastSync)}"
+        sync.busy -> when {
+            sync.progressTotal > 0 -> "Syncing ${sync.progressDone}/${sync.progressTotal}"
+            sync.localFiles > 0 -> "Syncing ${sync.localFiles} files"
+            else -> "Syncing…"
+        }
+        sync.connected && sync.lastSync > 0 -> "Synced ${timeLabel(sync.lastSync)}"
         sync.connected -> "Dropbox connected"
         state.vaultKind == "saf" -> "SAF vault"
         else -> "vibecodium"

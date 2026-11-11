@@ -300,10 +300,21 @@ class VibecodiumController(context: Context) {
 
     // ------------------------------------------------------------------ notes
 
-    fun openNote(path: String, pushHistory: Boolean = true) {
+    fun openNote(
+        path: String,
+        pushHistory: Boolean = true,
+        modeOverride: EditorMode? = null,
+        focusEditor: Boolean = false,
+    ) {
         val existing = state.tabs.indexOfFirst { it.path == path }
         if (existing >= 0) {
             selectTab(existing)
+            if (modeOverride != null) {
+                setEditorMode(modeOverride)
+            }
+            if (focusEditor) {
+                state = state.copy(focusRequestId = state.focusRequestId + 1)
+            }
             if (pushHistory) pushHistory(path)
             return
         }
@@ -311,7 +322,7 @@ class VibecodiumController(context: Context) {
         scope.launch {
             try {
                 val text = repository.readNote(path)
-                val mode = state.settings.defaultEditorMode
+                val mode = modeOverride ?: state.settings.defaultEditorMode
                 val tab = Tab(
                     path = path,
                     title = titleOf(path),
@@ -329,6 +340,7 @@ class VibecodiumController(context: Context) {
                     viewerPath = null,
                     editorMode = mode,
                     recentFiles = RecentStore.remember(appContext, locatorKey(), path),
+                    focusRequestId = if (focusEditor) state.focusRequestId + 1 else state.focusRequestId,
                 )
                 if (pushHistory) pushHistory(path)
                 refreshDerived(text, force = mode == EditorMode.Preview)
@@ -343,6 +355,9 @@ class VibecodiumController(context: Context) {
     fun newNote() {
         val repository = repository ?: return
         val existing = state.notes.mapTo(HashSet()) { it.path }
+        for (tab in state.tabs) {
+            existing.add(tab.path)
+        }
         var counter = 1
         var path = "Untitled.md"
         while (path in existing) {
@@ -359,11 +374,17 @@ class VibecodiumController(context: Context) {
                     folders = lists.folders,
                     explorerTree = lists.tree,
                 )
-                openNote(note.path)
+                openNote(note.path, modeOverride = EditorMode.Source, focusEditor = true)
             } catch (error: Throwable) {
                 error.rethrowIfCancelled()
                 state = state.copy(message = error.message ?: "Could not create a note")
             }
+        }
+    }
+
+    fun consumeFocusRequest() {
+        if (state.focusRequestId != 0L) {
+            state = state.copy(focusRequestId = 0L)
         }
     }
 
@@ -1057,10 +1078,10 @@ class VibecodiumController(context: Context) {
         syncJob = scope.launch { runSync() }
     }
 
-    /** The sidebar refresh button: sync when configured, otherwise rescan. */
+    /** The sidebar sync button: start, stop, or rescan when not configured. */
     fun refreshOrSync() {
         when {
-            state.sync.busy -> showMessage("Sync is already running")
+            state.sync.busy -> cancelSync()
             state.sync.connected && !state.vaultSync.paused -> syncNow()
             else -> refreshNotes()
         }
@@ -1098,6 +1119,8 @@ class VibecodiumController(context: Context) {
             sync = state.sync.copy(
                 busy = true,
                 progress = "Saving…",
+                progressDone = 0,
+                progressTotal = 0,
                 message = "",
                 localFiles = 0,
                 remoteFiles = 0,
@@ -1137,6 +1160,8 @@ class VibecodiumController(context: Context) {
                     state = state.copy(
                         sync = state.sync.copy(
                             progress = formatSyncProgress(progress),
+                            progressDone = progress.done,
+                            progressTotal = progress.total,
                             localFiles = progress.localFiles,
                             remoteFiles = progress.remoteFiles,
                             planned = progress.planned,
