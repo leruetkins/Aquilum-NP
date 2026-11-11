@@ -3,6 +3,7 @@ package md.vibecodium.mobile
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.PowerManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -44,6 +45,7 @@ class VibecodiumController(context: Context) {
     private var derivedJob: Job? = null
     private var searchJob: Job? = null
     private var tabPersistJob: Job? = null
+    private var syncWakeLock: PowerManager.WakeLock? = null
 
     /**
      * Cancellation is not a failure. A superseded search or a vault switch
@@ -129,6 +131,7 @@ class VibecodiumController(context: Context) {
 
         val collapsedFolders = FolderStore.load(appContext, locator.value)
         val bookmarks = BookmarkStore.load(appContext, locator.value)
+        val vaultSync = VaultSyncStore.load(appContext, locator.value)
         // Publish the shell before touching the tree. The full snapshot is
         // filled in by [refreshLists] on IO; a large vault must not hold the
         // first frame behind a recursive walk.
@@ -141,6 +144,7 @@ class VibecodiumController(context: Context) {
             explorerTree = emptyList(),
             folders = emptyList(),
             collapsedFolders = collapsedFolders,
+            vaultSync = vaultSync,
             fileQuery = "",
             bookmarks = bookmarks,
             tabs = emptyList(),
@@ -229,7 +233,7 @@ class VibecodiumController(context: Context) {
                 tabs = tabs,
             )
             if (state.tabs.isNotEmpty()) persistTabs()
-            if (state.sync.autoSync && state.sync.connected) {
+            if (state.sync.autoSync && state.sync.connected && !state.vaultSync.paused) {
                 delay(700)
                 syncNow()
             }
@@ -731,22 +735,25 @@ class VibecodiumController(context: Context) {
 
     // -------------------------------------------------------------------- sync
 
-    fun openSync() {
-        state = state.copy(syncOpen = true, settingsOpen = false)
-    }
+    fun syncRemoteFolder(): String = remoteRootFor(state.vaultName ?: "vibecodium")
 
     // ---------------------------------------------------------------- settings
 
-    fun openSettings() {
+    fun openSettings(section: String? = null) {
         state = state.copy(
             settingsOpen = true,
+            settingsSection = section,
             drawer = null,
             tabSwitcher = false,
         )
     }
 
+    fun setSettingsSection(section: String?) {
+        state = state.copy(settingsSection = section)
+    }
+
     fun closeSettings() {
-        state = state.copy(settingsOpen = false)
+        state = state.copy(settingsOpen = false, settingsSection = null)
     }
 
     fun setTextScale(value: Float) = updateSettings {
@@ -775,6 +782,33 @@ class VibecodiumController(context: Context) {
         state = state.copy(collapsedFolders = emptySet())
         persistCollapsedFolders(emptySet())
         showMessage("Folder state reset")
+    }
+
+    fun setSyncPaused(paused: Boolean) = updateVaultSync { it.copy(paused = paused) }
+
+    fun setPreventSleep(enabled: Boolean) = updateVaultSync { it.copy(preventSleep = enabled) }
+
+    fun setSyncDeviceName(name: String) = updateVaultSync { it.copy(deviceName = name.take(64)) }
+
+    fun setSyncCategory(category: SyncFileCategory, enabled: Boolean) =
+        updateVaultSync { it.withCategory(category, enabled) }
+
+    fun addSyncExcludedFolder(folder: String) {
+        val clean = folder.trim().replace('\\', '/').trim('/')
+        if (clean.isEmpty()) return
+        updateVaultSync {
+            if (clean in it.excludedFolders) it else it.copy(excludedFolders = it.excludedFolders + clean)
+        }
+    }
+
+    fun removeSyncExcludedFolder(folder: String) =
+        updateVaultSync { it.copy(excludedFolders = it.excludedFolders - folder) }
+
+    private inline fun updateVaultSync(transform: (VaultSyncSettings) -> VaultSyncSettings) {
+        val next = transform(state.vaultSync)
+        state = state.copy(vaultSync = next)
+        val key = locatorKey()
+        if (key.isNotEmpty()) VaultSyncStore.save(appContext, key, next)
     }
 
     fun rebuildSearchIndex() {
@@ -853,7 +887,6 @@ class VibecodiumController(context: Context) {
                 viewerPath = path,
                 drawer = null,
                 tabSwitcher = false,
-                syncOpen = false,
             )
         } else {
             state = state.copy(
@@ -867,10 +900,6 @@ class VibecodiumController(context: Context) {
     }
 
     suspend fun loadFile(path: String): ByteArray? = repository?.readBytes(path)
-
-    fun closeSync() {
-        state = state.copy(syncOpen = false)
-    }
 
     fun updateSyncClientId(value: String) {
         dropboxTokens.clientId = value
@@ -917,7 +946,13 @@ class VibecodiumController(context: Context) {
                         message = "Connected to Dropbox",
                     ),
                 )
-                runSync()
+                if (state.vaultSync.paused) {
+                    state = state.copy(
+                        sync = state.sync.copy(message = "Connected to Dropbox. Sync is paused"),
+                    )
+                } else {
+                    runSync()
+                }
             } catch (error: Throwable) {
                 error.rethrowIfCancelled()
                 state = state.copy(
@@ -949,6 +984,10 @@ class VibecodiumController(context: Context) {
 
     fun syncNow() {
         if (state.sync.busy) return
+        if (state.vaultSync.paused) {
+            state = state.copy(sync = state.sync.copy(message = "Sync is paused"))
+            return
+        }
         if (!dropboxTokens.connected) {
             state = state.copy(sync = state.sync.copy(message = "Connect Dropbox first"))
             return
@@ -961,6 +1000,11 @@ class VibecodiumController(context: Context) {
         val repository = repository ?: return
         val key = locatorKey()
         if (key.isEmpty()) return
+        if (state.vaultSync.paused) {
+            state = state.copy(sync = state.sync.copy(busy = false, progress = "", message = "Sync is paused"))
+            return
+        }
+        acquireSyncWakeLock()
         state = state.copy(sync = state.sync.copy(busy = true, progress = "Saving…", message = ""))
         try {
             saveJob?.cancel()
@@ -970,7 +1014,21 @@ class VibecodiumController(context: Context) {
             val provider = DropboxProvider(dropboxTokens)
             val account = runCatching { provider.accountName() }.getOrDefault("Dropbox")
             val remoteRoot = remoteRootFor(state.vaultName ?: "vibecodium")
-            val engine = SyncEngine(repository, key, syncRecords, provider) { progress ->
+            val syncSettings = state.vaultSync
+            val engine = SyncEngine(
+                repository,
+                key,
+                syncRecords,
+                provider,
+                filter = SyncFilter(
+                    allowImages = syncSettings.allowImages,
+                    allowAudio = syncSettings.allowAudio,
+                    allowVideo = syncSettings.allowVideo,
+                    allowPdf = syncSettings.allowPdf,
+                    allowOther = syncSettings.allowOther,
+                    excludedFolders = syncSettings.excludedFolders,
+                ),
+            ) { progress ->
                 state = state.copy(
                     sync = state.sync.copy(
                         progress = if (progress.total > 0) {
@@ -1047,11 +1105,30 @@ class VibecodiumController(context: Context) {
                     message = error.message ?: "Sync failed",
                 ),
             )
+        } finally {
+            releaseSyncWakeLock()
         }
     }
 
-    private fun refreshSyncState() {
-        val key = locatorKey()
+    private fun acquireSyncWakeLock() {
+        if (!state.vaultSync.preventSleep || syncWakeLock != null) return
+        val manager = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+        syncWakeLock = manager
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "vibecodium:sync")
+            .apply {
+                setReferenceCounted(false)
+                acquire(10 * 60 * 1000L)
+            }
+    }
+
+    private fun releaseSyncWakeLock() {
+        syncWakeLock?.let { lock ->
+            if (lock.isHeld) lock.release()
+        }
+        syncWakeLock = null
+    }
+
+    private fun refreshSyncState() {        val key = locatorKey()
         val stored = if (key.isEmpty()) null else syncRecords.state(key)
         state = state.copy(
             sync = SyncUiState(
@@ -1109,11 +1186,7 @@ class VibecodiumController(context: Context) {
 
     fun back() {
         if (state.settingsOpen) {
-            state = state.copy(settingsOpen = false)
-            return
-        }
-        if (state.syncOpen) {
-            state = state.copy(syncOpen = false)
+            state = state.copy(settingsOpen = false, settingsSection = null)
             return
         }
         if (state.viewerPath != null) {
@@ -1156,6 +1229,7 @@ class VibecodiumController(context: Context) {
         flushBlocking()
         syncJob?.cancel()
         syncServer?.close()
+        releaseSyncWakeLock()
         scope.launch {
             closeRepository()
             VaultLocatorStore.clear(appContext)
@@ -1186,6 +1260,7 @@ class VibecodiumController(context: Context) {
         flushBlocking()
         syncJob?.cancel()
         syncServer?.close()
+        releaseSyncWakeLock()
         scope.cancel()
         closeRepository()
     }

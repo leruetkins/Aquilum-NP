@@ -47,4 +47,54 @@ class SettingsTest {
         val settings = AppSettingsJson.decode("""{"defaultEditorMode":"Sideways"}""")
         assertEquals(EditorMode.Source, settings.defaultEditorMode)
     }
+
+    @Test
+    fun vaultSyncRoundTripKeepsEveryField() {
+        val original = VaultSyncSettings(
+            paused = true,
+            deviceName = "Pixel",
+            allowImages = false,
+            allowAudio = false,
+            allowVideo = true,
+            allowPdf = false,
+            allowOther = false,
+            excludedFolders = listOf("Archive", "work/private"),
+            preventSleep = true,
+        )
+        assertEquals(original, VaultSyncJson.decode(VaultSyncJson.encode(original)))
+    }
+
+    @Test
+    fun vaultSyncFoldersAreNormalizedAndDeduplicated() {
+        val settings = VaultSyncJson.decode(
+            """{"excludedFolders":["/Archive/","Archive","  work/private  ",""]}""",
+        )
+        assertEquals(listOf("Archive", "work/private"), settings.excludedFolders)
+    }
+
+    @Test
+    fun filterExcludesOnlyTheFolderOrItsChildren() {
+        val filter = SyncFilter(excludedFolders = listOf("Archive"))
+        assertEquals(false, filter.accepts("Archive/note.md"))
+        assertEquals(false, filter.accepts("Archive"))
+        assertEquals(true, filter.accepts("Archives/note.md"))
+        assertEquals(true, filter.accepts("note.md"))
+    }
+
+    @Test
+    fun filterSwitchesFileFamiliesButAlwaysAllowsNotes() {
+        val filter = SyncFilter(
+            allowImages = false,
+            allowAudio = false,
+            allowVideo = true,
+            allowPdf = false,
+            allowOther = false,
+        )
+        assertEquals(false, filter.accepts("pic.png"))
+        assertEquals(false, filter.accepts("clip.mp3"))
+        assertEquals(true, filter.accepts("clip.mp4"))
+        assertEquals(false, filter.accepts("doc.pdf"))
+        assertEquals(false, filter.accepts("script.kts"))
+        assertEquals(true, filter.accepts("note.md"))
+    }
 }

@@ -99,5 +99,17 @@ object SettingsStore {
     }
 }
 
+/** Per-vault sync filter and device preferences. */
+object VaultSyncStore {
+    private const val PREFIX = "sync-settings:"
+
+    fun load(context: Context, key: String): VaultSyncSettings =
+        VaultSyncJson.decode(prefs(context).getString(PREFIX + key, null))
+
+    fun save(context: Context, key: String, settings: VaultSyncSettings) {
+        prefs(context).edit().putString(PREFIX + key, VaultSyncJson.encode(settings)).apply()
+    }
+}
+
 internal fun prefs(context: Context) =
     context.getSharedPreferences("vibecodium", Context.MODE_PRIVATE)

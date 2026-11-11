@@ -131,9 +131,13 @@ vibecodium-mobile/
     every control writes straight to `SharedPreferences` (`settings:global`).
     Appearance scales Compose text, toggles auto-hiding chrome and the
     experimental bottom navbar; Editor sets the default view and autosave
-    delay; Files refreshes the tree and resets folder state; Sync links to the
-    existing screen; Advanced refreshes the search index and resets settings;
-    About shows the app/core versions and the vault location.
+    delay; Files refreshes the tree and resets folder state; Sync is the full
+    Dropbox panel — account/status, remote folder, sync now, pause,
+    sync-on-open, prevent-sleep, selective sync by file family and excluded
+    folders, plus read-only notes for Dropbox-managed history and deleted
+    files; Advanced refreshes the search index and resets settings; About
+    shows the app/core versions and the vault location. Sync filter and device
+    settings are per vault (`sync-settings:<vault>`); the rest is app-wide.
 - `ui/Theme.kt` — Obsidian 1.15.0 **mobile dark** palette copied from
   `app.css` (background `#000000`, surface `#1E1E1E`, accent `#8A5CF5`,
   text `#DADADA`/`#B3B3B3`), with every Material 3 role set and a neutral

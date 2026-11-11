@@ -7,6 +7,49 @@ import java.util.Locale
 
 data class SyncProgress(val phase: String, val done: Int, val total: Int)
 
+/** Selective-sync policy: excluded folders and file families. Notes always sync. */
+data class SyncFilter(
+    val allowImages: Boolean = true,
+    val allowAudio: Boolean = true,
+    val allowVideo: Boolean = true,
+    val allowPdf: Boolean = true,
+    val allowOther: Boolean = true,
+    val excludedFolders: List<String> = emptyList(),
+) {
+    fun accepts(path: String): Boolean {
+        val normalized = path.replace('\\', '/').trim('/')
+        if (normalized.isEmpty()) return false
+        if (isExcluded(normalized)) return false
+        if (isMarkdownName(normalized)) return true
+        val extension = normalized.substringAfterLast('/').substringAfterLast('.', "").lowercase()
+        return when (extension) {
+            in IMAGE_EXTENSIONS -> allowImages
+            in AUDIO_EXTENSIONS -> allowAudio
+            in VIDEO_EXTENSIONS -> allowVideo
+            "pdf" -> allowPdf
+            else -> allowOther
+        }
+    }
+
+    private fun isExcluded(path: String): Boolean {
+        for (folder in excludedFolders) {
+            val clean = folder.replace('\\', '/').trim('/')
+            if (clean.isEmpty()) continue
+            if (path == clean || path.startsWith("$clean/")) return true
+        }
+        return false
+    }
+
+    companion object {
+        private val IMAGE_EXTENSIONS =
+            setOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "heic", "heif")
+        private val AUDIO_EXTENSIONS =
+            setOf("mp3", "wav", "flac", "ogg", "oga", "m4a", "aac", "opus", "wma")
+        private val VIDEO_EXTENSIONS =
+            setOf("mp4", "mov", "webm", "mkv", "avi", "m4v", "3gp", "ogv")
+    }
+}
+
 data class SyncOutcome(
     val uploaded: Int,
     val downloaded: Int,
@@ -36,6 +79,7 @@ class SyncEngine(
     private val vaultKey: String,
     private val records: SyncRecords,
     private val provider: SyncProvider,
+    private val filter: SyncFilter = SyncFilter(),
     private val progress: suspend (SyncProgress) -> Unit = {},
 ) {
     private val bytesCache = mutableMapOf<String, ByteArray>()
@@ -49,13 +93,15 @@ class SyncEngine(
         progress(SyncProgress("Scanning local files", 0, 0))
         val localFiles = repository.listFiles()
             .filterNot { isServicePath(it.path) }
+            .filter { filter.accepts(it.path) }
             .associateBy { it.path }
         progress(SyncProgress("Listing Dropbox", 0, 0))
         provider.ensureFolder(remoteRoot)
         val remoteFiles = provider.listFolder(remoteRoot)
             .filterNot { isServicePath(it.path) }
+            .filter { filter.accepts(it.path) }
             .associateBy { it.path }
-        val existing = records.all(vaultKey)
+        val existing = records.all(vaultKey).filterKeys { filter.accepts(it) }
         val paths = (localFiles.keys + remoteFiles.keys + existing.keys).toSortedSet()
         val usedPaths = paths.toMutableSet()
 

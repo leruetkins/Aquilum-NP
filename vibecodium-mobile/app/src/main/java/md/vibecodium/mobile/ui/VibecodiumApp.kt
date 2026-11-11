@@ -99,11 +99,11 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -171,6 +171,7 @@ import org.json.JSONObject
 import md.vibecodium.mobile.NativeEditorView
 import md.vibecodium.mobile.NativeTreeView
 import md.vibecodium.mobile.NoteItem
+import md.vibecodium.mobile.SyncFileCategory
 import md.vibecodium.mobile.Tab
 import md.vibecodium.mobile.UiState
 import md.vibecodium.mobile.VibecodiumController
@@ -443,8 +444,8 @@ fun VibecodiumApp(controller: VibecodiumController) {
             ),
         ) {
             BackHandler(
-                enabled = state.settingsOpen || state.syncOpen || state.drawer != null ||
-                    state.tabSwitcher || state.viewerPath != null || state.historyIndex > 0,
+                enabled = state.settingsOpen || state.drawer != null || state.tabSwitcher ||
+                    state.viewerPath != null || state.historyIndex > 0,
             ) {
                 controller.back()
             }
@@ -745,10 +746,6 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
 
             if (state.tabSwitcher) {
                 TabSwitcher(state, controller, Modifier.fillMaxSize())
-            }
-
-            if (state.syncOpen) {
-                SyncScreen(state, controller, Modifier.fillMaxSize())
             }
 
             if (state.viewerPath != null) {
@@ -1137,7 +1134,7 @@ private fun NoteActionsMenu(
         }
         DropdownMenuItem(
             text = { Text("Sync") },
-            onClick = { onDismiss(); controller.openSync() },
+            onClick = { onDismiss(); controller.openSettings("Sync") },
         )
         DropdownMenuItem(
             text = { Text("Close tab") },
@@ -2692,15 +2689,14 @@ private enum class SettingsSection(val title: String, val icon: ImageVector) {
 
 @Composable
 private fun SettingsScreen(state: UiState, controller: VibecodiumController, modifier: Modifier) {
-    var sectionName by rememberSaveable { mutableStateOf("") }
-    val section = SettingsSection.entries.firstOrNull { it.name == sectionName }
-    BackHandler(enabled = section != null) { sectionName = "" }
+    val section = SettingsSection.entries.firstOrNull { it.name == state.settingsSection }
+    BackHandler(enabled = section != null) { controller.setSettingsSection(null) }
     Surface(modifier = modifier, color = MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxSize()) {
             SettingsHeader(
                 title = section?.title ?: "Settings",
                 showBack = section != null,
-                onBack = { sectionName = "" },
+                onBack = { controller.setSettingsSection(null) },
                 onClose = { controller.closeSettings() },
             )
             AnimatedContent(
@@ -2718,7 +2714,7 @@ private fun SettingsScreen(state: UiState, controller: VibecodiumController, mod
                 modifier = Modifier.fillMaxSize(),
             ) { current ->
                 if (current == null) {
-                    SettingsRoot(onOpen = { sectionName = it.name })
+                    SettingsRoot(onOpen = { controller.setSettingsSection(it.name) })
                 } else {
                     SettingsSectionContent(current, state, controller)
                 }
@@ -2892,30 +2888,7 @@ private fun SettingsSectionContent(
                 }
             }
 
-            SettingsSection.Sync -> {
-                val sync = state.sync
-                SettingsGroup("Dropbox") {
-                    SettingsInfoRow(
-                        "Status",
-                        if (sync.connected) "Connected" else "Not connected",
-                        detail = sync.accountName,
-                    )
-                    SettingsInfoRow(
-                        "Last sync",
-                        if (sync.lastSync > 0) dateTimeLabel(sync.lastSync) else "Never",
-                        detail = if (sync.autoSync) "Sync on open is on" else "Sync on open is off",
-                        showDivider = false,
-                    )
-                }
-                SettingsGroup("Actions") {
-                    SettingsActionRow(
-                        title = "Open sync settings",
-                        description = "Account, auto-sync and conflict rules",
-                        onClick = { controller.openSync() },
-                        showDivider = false,
-                    )
-                }
-            }
+            SettingsSection.Sync -> SyncSettingsContent(state, controller)
 
             SettingsSection.Advanced -> {
                 SettingsGroup("Preferences") {
@@ -3033,10 +3006,12 @@ private fun SettingsSwitchRow(
     checked: Boolean,
     onChange: (Boolean) -> Unit,
     showDivider: Boolean,
+    enabled: Boolean = true,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
+            .alpha(if (enabled) 1f else 0.5f)
             .heightIn(min = 60.dp)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -3053,7 +3028,7 @@ private fun SettingsSwitchRow(
             }
         }
         Spacer(Modifier.width(12.dp))
-        Switch(checked = checked, onCheckedChange = onChange)
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
     if (showDivider) {
         HorizontalDivider(
@@ -3181,11 +3156,13 @@ private fun SettingsActionRow(
     description: String,
     onClick: () -> Unit,
     showDivider: Boolean,
+    enabled: Boolean = true,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .alpha(if (enabled) 1f else 0.5f)
+            .clickable(enabled = enabled, onClick = onClick)
             .heightIn(min = 56.dp)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -3262,143 +3239,327 @@ private fun SettingsInfoRow(
 }
 
 @Composable
-private fun SyncScreen(state: UiState, controller: VibecodiumController, modifier: Modifier) {
+private fun ColumnScope.SyncSettingsContent(state: UiState, controller: VibecodiumController) {
     val sync = state.sync
-    val muted = MaterialTheme.colorScheme.onSurfaceVariant
-    Surface(modifier = modifier, color = MaterialTheme.colorScheme.background) {
-        Column(Modifier.fillMaxSize()) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .padding(start = 14.dp, end = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "Sync",
-                    modifier = Modifier.weight(1f),
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                IconButton(onClick = { controller.closeSync() }) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", modifier = Modifier.size(20.dp))
-                }
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+    val vaultSync = state.vaultSync
+    if (sync.busy) {
+        SettingsGroup("Progress") {
             Column(
                 Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
+                    .fillMaxWidth()
                     .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                if (sync.connected) {
-                    Text(
-                        "Connected as ${sync.accountName.ifBlank { "Dropbox" }}",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                    )
-                    if (sync.lastSync > 0) {
-                        Text("Last sync: ${dateTimeLabel(sync.lastSync)}", fontSize = 12.sp, color = muted)
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Text(
+                    sync.progress.ifBlank { "Working…" },
+                    modifier = Modifier.padding(top = 8.dp),
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+
+    SettingsGroup("Connection") {
+        SettingsInfoRow(
+            "Status",
+            when {
+                sync.busy -> "Syncing"
+                vaultSync.paused -> "Paused"
+                sync.connected -> "Connected"
+                else -> "Not connected"
+            },
+            detail = sync.accountName,
+        )
+        SettingsInfoRow(
+            "Remote folder",
+            controller.syncRemoteFolder(),
+            detail = "Dropbox folder for this vault",
+        )
+        SettingsInfoRow(
+            "Last sync",
+            if (sync.lastSync > 0) dateTimeLabel(sync.lastSync) else "Never",
+            showDivider = sync.message.isBlank(),
+        )
+        if (sync.message.isNotBlank()) {
+            SettingsInfoRow("Last result", sync.message, showDivider = false)
+        }
+    }
+
+    SettingsGroup("Actions") {
+        SettingsActionRow(
+            title = "Sync now",
+            description = if (vaultSync.paused) "Resume sync first" else "Run a sync pass now",
+            enabled = sync.connected && !sync.busy && !vaultSync.paused,
+            onClick = { controller.syncNow() },
+            showDivider = true,
+        )
+        if (sync.connected) {
+            SettingsActionRow(
+                title = "Disconnect Dropbox",
+                description = "Remove the stored Dropbox token from this device",
+                enabled = !sync.busy,
+                onClick = { controller.disconnectDropbox() },
+                showDivider = false,
+            )
+        } else {
+            SettingsActionRow(
+                title = "Connect Dropbox",
+                description = "Sign in and start syncing this vault",
+                enabled = !sync.busy,
+                onClick = { controller.connectDropbox() },
+                showDivider = false,
+            )
+        }
+    }
+
+    if (!sync.connected) {
+        SettingsGroup("Account") {
+            SettingsTextFieldRow(
+                title = "Dropbox app key",
+                description = "Loopback redirect: http://127.0.0.1:47219/",
+                value = sync.clientId,
+                placeholder = "Dropbox app key",
+                onValueChange = controller::updateSyncClientId,
+                showDivider = false,
+            )
+        }
+    }
+
+    SettingsGroup("Automatic") {
+        SettingsSwitchRow(
+            title = "Sync on open",
+            description = "Run a pass when this vault opens",
+            checked = sync.autoSync,
+            onChange = controller::setAutoSync,
+            showDivider = true,
+        )
+        SettingsSwitchRow(
+            title = "Pause sync",
+            description = "Block manual and automatic passes",
+            checked = vaultSync.paused,
+            onChange = controller::setSyncPaused,
+            showDivider = true,
+        )
+        SettingsSwitchRow(
+            title = "Prevent sleep",
+            description = "Keep the device awake while a sync pass runs",
+            checked = vaultSync.preventSleep,
+            onChange = controller::setPreventSleep,
+            showDivider = false,
+        )
+    }
+
+    SettingsGroup("Selective sync") {
+        SettingsSwitchRow(
+            title = "Notes",
+            description = "Markdown notes always sync",
+            checked = true,
+            onChange = {},
+            enabled = false,
+            showDivider = true,
+        )
+        SettingsSwitchRow(
+            title = "Images",
+            description = "PNG, JPEG, GIF, WebP, SVG",
+            checked = vaultSync.allowImages,
+            onChange = { controller.setSyncCategory(SyncFileCategory.Images, it) },
+            showDivider = true,
+        )
+        SettingsSwitchRow(
+            title = "Audio",
+            description = "MP3, WAV, FLAC, OGG, M4A",
+            checked = vaultSync.allowAudio,
+            onChange = { controller.setSyncCategory(SyncFileCategory.Audio, it) },
+            showDivider = true,
+        )
+        SettingsSwitchRow(
+            title = "Video",
+            description = "MP4, MOV, WebM, MKV",
+            checked = vaultSync.allowVideo,
+            onChange = { controller.setSyncCategory(SyncFileCategory.Video, it) },
+            showDivider = true,
+        )
+        SettingsSwitchRow(
+            title = "PDFs",
+            description = "Portable document files",
+            checked = vaultSync.allowPdf,
+            onChange = { controller.setSyncCategory(SyncFileCategory.Pdf, it) },
+            showDivider = true,
+        )
+        SettingsSwitchRow(
+            title = "Other files",
+            description = "Code, documents and extensions not listed above",
+            checked = vaultSync.allowOther,
+            onChange = { controller.setSyncCategory(SyncFileCategory.Other, it) },
+            showDivider = false,
+        )
+    }
+
+    SettingsGroup("Excluded folders") {
+        SettingsFolderEditor(
+            folders = vaultSync.excludedFolders,
+            onAdd = controller::addSyncExcludedFolder,
+            onRemove = controller::removeSyncExcludedFolder,
+        )
+    }
+
+    SettingsGroup("Advanced") {
+        SettingsTextFieldRow(
+            title = "Device name",
+            description = "Stored with this vault's sync profile",
+            value = vaultSync.deviceName,
+            placeholder = "Android device",
+            onValueChange = controller::setSyncDeviceName,
+            showDivider = true,
+        )
+        SettingsInfoRow(
+            "Conflict handling",
+            "Conflict copy",
+            detail = "Automatic merge is not available for Dropbox sync",
+        )
+        SettingsInfoRow(
+            "Version history",
+            "Dropbox",
+            detail = "Use the Dropbox app to restore previous versions",
+        )
+        SettingsInfoRow(
+            "Deleted files",
+            "Dropbox",
+            detail = "Use the Dropbox app to restore deleted files",
+        )
+        SettingsInfoRow(
+            "Vault size",
+            "Dropbox",
+            detail = "Storage usage is shown in the Dropbox account",
+            showDivider = false,
+        )
+    }
+
+    SettingsGroup("Vault configuration") {
+        SettingsInfoRow(
+            "App settings",
+            "Local only",
+            detail = "Plugins, hotkeys and themes are not synchronised by this build",
+            showDivider = false,
+        )
+    }
+}
+
+@Composable
+private fun SettingsTextFieldRow(
+    title: String,
+    description: String,
+    value: String,
+    placeholder: String,
+    onValueChange: (String) -> Unit,
+    showDivider: Boolean,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+        Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        if (description.isNotBlank()) {
+            Text(
+                description,
+                modifier = Modifier.padding(top = 2.dp),
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            placeholder = { Text(placeholder, fontSize = 13.sp) },
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp),
+        )
+    }
+    if (showDivider) {
+        HorizontalDivider(
+            modifier = Modifier.padding(start = 16.dp),
+            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+        )
+    }
+}
+
+@Composable
+private fun SettingsFolderEditor(
+    folders: List<String>,
+    onAdd: (String) -> Unit,
+    onRemove: (String) -> Unit,
+) {
+    var draft by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                placeholder = { Text("folder/path", fontSize = 13.sp) },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            IconButton(
+                onClick = {
+                    if (draft.isNotBlank()) {
+                        onAdd(draft)
+                        draft = ""
                     }
-                } else {
-                    Text("Connect Dropbox to sync this vault.", fontSize = 14.sp)
-                    OutlinedTextField(
-                        value = sync.clientId,
-                        onValueChange = controller::updateSyncClientId,
-                        label = { Text("Dropbox app key") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Text(
-                        "The app uses the loopback redirect http://127.0.0.1:47219/ " +
-                            "registered for this key. Provide your own app key if the default one " +
-                            "is not available to you.",
-                        fontSize = 11.sp,
-                        color = muted,
-                    )
-                    Button(
-                        onClick = { controller.connectDropbox() },
-                        enabled = !sync.busy,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Connect Dropbox")
-                    }
-                }
-
-                if (sync.connected) {
-                    Button(
-                        onClick = { controller.syncNow() },
-                        enabled = !sync.busy,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Sync now")
-                    }
-                    OutlinedButton(
-                        onClick = { controller.disconnectDropbox() },
-                        enabled = !sync.busy,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Disconnect")
-                    }
-                }
-
-                if (sync.busy) {
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                    Text(
-                        sync.progress.ifBlank { "Working…" },
-                        fontSize = 12.sp,
-                        color = muted,
-                    )
-                }
-
-                if (sync.message.isNotBlank()) {
-                    val isError = sync.message.contains("fail", ignoreCase = true) ||
-                        sync.message.contains("Refusing", ignoreCase = true) ||
-                        sync.message.contains("not connected", ignoreCase = true)
-                    Text(
-                        sync.message,
-                        fontSize = 12.sp,
-                        color = if (isError) MaterialTheme.colorScheme.error else muted,
-                    )
-                }
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
-
+                },
+                enabled = draft.isNotBlank(),
+                modifier = Modifier.size(44.dp),
+            ) {
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = "Add excluded folder",
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+        if (folders.isEmpty()) {
+            Text(
+                "No folders excluded",
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            folders.forEachIndexed { index, folder ->
                 Row(
-                    Modifier.fillMaxWidth(),
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 44.dp)
+                        .padding(start = 16.dp, end = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Sync on open", fontSize = 14.sp)
-                        Text("Run a pass when this vault opens", fontSize = 11.sp, color = muted)
+                    Text(folder, modifier = Modifier.weight(1f), fontSize = 13.sp)
+                    IconButton(
+                        onClick = { onRemove(folder) },
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Remove $folder",
+                            modifier = Modifier.size(16.dp),
+                        )
                     }
-                    Switch(
-                        checked = sync.autoSync,
-                        onCheckedChange = controller::setAutoSync,
-                        enabled = !sync.busy,
+                }
+                if (index != folders.lastIndex) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 16.dp),
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
                     )
                 }
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
-                Text("What syncs", fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                Text(
-                    "Markdown notes and attachments. Hidden service folders " +
-                        "(.vault, .git, .trash, node_modules, target) stay local.",
-                    fontSize = 12.sp,
-                    color = muted,
-                )
-                Text(
-                    "Conflicts keep the local version at the original path and preserve " +
-                        "the remote version as \u201cname (conflict date).ext\u201d, locally and on Dropbox.",
-                    fontSize = 12.sp,
-                    color = muted,
-                )
-                Text(
-                    "Deleting more than half of 10+ files aborts the pass instead of propagating a wipe.",
-                    fontSize = 12.sp,
-                    color = muted,
-                )
             }
         }
     }
