@@ -1005,6 +1005,7 @@ impl AppView {
                                                     .justify_between()
                                                     .px_3()
                                                     .py_1p5()
+                                                    .mr(px(PALETTE_ROW_SCROLLBAR_GAP))
                                                     .rounded_md()
                                                     .cursor_pointer()
                                                     .when(is_selected, |d| d.bg(theme.bg_hover))
