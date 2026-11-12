@@ -1048,31 +1048,18 @@ fn the_next_pass_waits_for_the_vault_interval() {
 }
 
 #[test]
-fn only_real_edits_count_as_touched() {
+fn a_zero_interval_cancels_automatic_passes() {
     let remote = std::sync::Arc::new(Fake::default());
     let device = Device::new();
-    device.write("Заметка.md", "из облака");
-    device.write("Удалить.md", "лишнее");
-    device.sync(remote.as_ref(), false).unwrap();
+    device.write("Заметка.md", "текст");
     let folder = tempfile::tempdir().unwrap();
     let service = started_service(std::sync::Arc::clone(&remote), folder.path());
     service.set_vault(Some((device.root.clone(), SCOPE)), "ru");
     until("the first pass finished", || synced(&service));
+    assert!(service.due().is_some(), "a positive interval schedules the next pass");
 
-    let touched = |name: &str| service.touched(&[device.root.join(name)], false);
-    assert!(!touched("Заметка.md"), "a file written by sync is not a local edit");
-    device.write(".obsidian/Заметка.md", "hidden");
-    device.write(".trash/Старое.md", "trash");
-    assert!(!touched(".obsidian/Заметка.md"));
-    assert!(!touched(".trash/Старое.md"));
-    device.write("Заметка.md", "правка здесь");
-    device.write("Новая.md", "новая");
-    device.delete("Удалить.md");
-    std::fs::remove_dir_all(device.root.join("Папка")).ok();
-    assert!(touched("Заметка.md"), "edited note");
-    assert!(touched("Новая.md"), "new note");
-    assert!(touched("Удалить.md"), "deleted note");
-    assert!(service.touched(&[], true), "a rescan always requests a pass");
+    service.set_vault(Some((device.root.clone(), SyncSettings { interval: 0, ..SCOPE })), "ru");
+    assert!(service.due().is_none(), "interval 0 must cancel the scheduled pass");
     finish(service);
 }
 

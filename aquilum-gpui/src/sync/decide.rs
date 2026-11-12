@@ -1,11 +1,9 @@
-use crate::settings::SyncSettings;
 use crate::sync::cycle::{Facts, Vault};
 use crate::sync::hash::hash_file;
-use crate::sync::records::{Record, Records};
+use crate::sync::records::Record;
 use crate::sync::remote::{FileContent, RemoteFile};
-use crate::sync::scan::{absolute, stat, LocalFile, UNKNOWN};
+use crate::sync::scan::{absolute, LocalFile};
 use crate::sync::SyncError;
-use std::fs;
 use std::path::Path;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -68,34 +66,6 @@ fn local_change(
     }
     let hash = hash_file(&absolute(root, path))?;
     Ok((if hash == record.hash { Side::Same } else { Side::Changed }, Some(hash)))
-}
-
-/// Local-change predicate used by the fs watcher. A file written by sync
-/// itself matches the recorded hash and is not treated as a user edit.
-pub fn edited(
-    root: &Path,
-    scope: &SyncSettings,
-    records: &Records,
-    path: &str,
-) -> bool {
-    if !scope.included(path) {
-        return false;
-    }
-    let local = fs::metadata(absolute(root, path))
-        .ok()
-        .filter(|metadata| metadata.is_file())
-        .and_then(|metadata| stat(&metadata).ok());
-    let record = records.get(path).ok().flatten();
-    if let (Some(local), Some(record)) = (local, &record) {
-        if record.modified != UNKNOWN.modified && local.size != record.size {
-            return true;
-        }
-    }
-    match local_change(root, path, local, record.as_ref()) {
-        Ok((Side::Same, _)) => false,
-        Ok((Side::Absent, _)) => record.is_some() || records.holds_under(path).unwrap_or(true),
-        _ => true,
-    }
 }
 
 fn remote_side(facts: &Facts<'_>) -> Side {

@@ -87,7 +87,8 @@ fn wait(shared: &Shared) -> Option<Job> {
         let now = Instant::now();
         match (state.vault.clone(), state.due) {
             (Some((root, scope)), Some(due)) if due <= now && shared.connected() => {
-                state.due = Some(now + Duration::from_secs(scope.interval.max(5)));
+                state.due = (scope.interval > 0)
+                    .then(|| now + Duration::from_secs(scope.interval.max(5)));
                 state.running = Some(Progress::default());
                 let (allowed, allow_deletions) = (state.memory.allowed.clone(), std::mem::take(&mut state.allow_deletions));
                 let ignored = state.memory.ignored.clone();

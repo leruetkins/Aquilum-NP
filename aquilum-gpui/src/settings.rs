@@ -610,7 +610,8 @@ pub struct SyncSettings {
     /// Include `.vault/history` in sync when the vault has one.
     #[serde(default = "default_true")]
     pub history: bool,
-    /// Automatic pass interval in seconds. `0` means "only manual/event-driven".
+    /// Automatic pass interval in seconds. `0` disables automatic passes;
+    /// synchronization then runs only when triggered manually.
     pub interval: u64,
     /// Optional Dropbox app-folder name for this workspace. `None` uses the
     /// workspace directory name.

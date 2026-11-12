@@ -1,9 +1,7 @@
 use crate::settings::SyncSettings;
 use crate::sync::account::Account;
-use crate::sync::decide::edited;
 use crate::sync::dropbox::CLIENT;
 use crate::sync::records::{Large, Size};
-use crate::sync::scan::relative;
 use crate::sync::shared::{Open, Shared};
 use crate::sync::state::SyncStatus;
 use crate::sync::oauth::Tokens;
@@ -118,33 +116,22 @@ impl SyncService {
         if current.as_path() != root || same_scope != sync {
             return false;
         }
+        let interval_changed = scope.interval != sync.interval;
         scope.interval = sync.interval;
         state.language = language.to_owned();
+        if interval_changed && sync.interval == 0 {
+            state.due = None;
+        }
         drop(state);
         self.shared.bump();
-        self.request(Duration::from_secs(sync.interval.max(5)));
+        if sync.interval == 0 {
+            if interval_changed {
+                self.shared.signal.notify_all();
+            }
+        } else {
+            self.request(Duration::from_secs(sync.interval.max(5)));
+        }
         true
-    }
-
-    pub fn touched(&self, paths: &[PathBuf], rescan: bool) -> bool {
-        if paths.is_empty() && !rescan {
-            return false;
-        }
-        let Some((root, scope)) = self.shared.lock().vault.clone() else {
-            return false;
-        };
-        let Some(records) = self.shared.records(&root) else {
-            return false;
-        };
-        if rescan {
-            return true;
-        }
-        let watched = crate::sync::shared::normalize(&root);
-        paths.iter().any(|path| {
-            let path = crate::sync::shared::normalize(path);
-            path.starts_with(&watched)
-                && edited(&root, &scope, &records, &relative(&watched, &path))
-        })
     }
 
     pub fn request(&self, delay: Duration) {
