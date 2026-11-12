@@ -948,6 +948,22 @@
       "table_delete_row": "Satırı sil",
       "table_delete_column": "Sütunu sil",
       "table_delete_table": "Tabloyu sil"
+    },
+    "toolbar": {
+      "undo": "Geri al",
+      "redo": "Yinele",
+      "clear_formatting": "Biçimlendirmeyi temizle",
+      "underline": "Altı çizili",
+      "attach_file": "Dosya ekle",
+      "toggle_task": "Görev",
+      "indent": "Girintiyi artır",
+      "outdent": "Girintiyi azalt",
+      "fullscreen": "Tam ekran",
+      "more_headings": "Diğer başlıklar",
+      "lists": "Listeler",
+      "alignment": "Hizalama",
+      "more_actions": "Diğer işlemler",
+      "submenu": "Alt menü"
     }
   },
   "search": {

@@ -934,6 +934,22 @@
       "table_delete_row": "Удалить строку",
       "table_delete_column": "Удалить столбец",
       "table_delete_table": "Удалить таблицу"
+    },
+    "toolbar": {
+      "undo": "Отменить",
+      "redo": "Повторить",
+      "clear_formatting": "Очистить форматирование",
+      "underline": "Подчёркнутый",
+      "attach_file": "Вложить файл",
+      "toggle_task": "Задача",
+      "indent": "Увеличить отступ",
+      "outdent": "Уменьшить отступ",
+      "fullscreen": "Полноэкранный режим",
+      "more_headings": "Другие заголовки",
+      "lists": "Списки",
+      "alignment": "Выравнивание",
+      "more_actions": "Ещё действия",
+      "submenu": "Подменю"
     }
   },
   "search": {

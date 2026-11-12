@@ -948,6 +948,22 @@
       "table_delete_row": "حذف الصف",
       "table_delete_column": "حذف العمود",
       "table_delete_table": "حذف الجدول"
+    },
+    "toolbar": {
+      "undo": "تراجع",
+      "redo": "إعادة",
+      "clear_formatting": "مسح التنسيق",
+      "underline": "تسطير",
+      "attach_file": "إرفاق ملف",
+      "toggle_task": "مهمة",
+      "indent": "زيادة المسافة البادئة",
+      "outdent": "تقليل المسافة البادئة",
+      "fullscreen": "ملء الشاشة",
+      "more_headings": "مزيد من العناوين",
+      "lists": "قوائم",
+      "alignment": "محاذاة",
+      "more_actions": "مزيد من الإجراءات",
+      "submenu": "قائمة فرعية"
     }
   },
   "search": {

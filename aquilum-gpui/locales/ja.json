@@ -948,6 +948,22 @@
       "table_delete_row": "行の削除",
       "table_delete_column": "列の削除",
       "table_delete_table": "テーブルの削除"
+    },
+    "toolbar": {
+      "undo": "元に戻す",
+      "redo": "やり直し",
+      "clear_formatting": "書式をクリア",
+      "underline": "下線",
+      "attach_file": "ファイルを添付",
+      "toggle_task": "タスク",
+      "indent": "インデントを増やす",
+      "outdent": "インデントを減らす",
+      "fullscreen": "全画面表示",
+      "more_headings": "その他の見出し",
+      "lists": "リスト",
+      "alignment": "配置",
+      "more_actions": "その他の操作",
+      "submenu": "サブメニュー"
     }
   },
   "search": {

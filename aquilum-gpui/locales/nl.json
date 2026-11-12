@@ -948,6 +948,22 @@
       "table_delete_row": "Rij verwijderen",
       "table_delete_column": "Kolom verwijderen",
       "table_delete_table": "Tabel verwijderen"
+    },
+    "toolbar": {
+      "undo": "Ongedaan maken",
+      "redo": "Opnieuw",
+      "clear_formatting": "Opmaak wissen",
+      "underline": "Onderstreept",
+      "attach_file": "Bestand bijvoegen",
+      "toggle_task": "Taak",
+      "indent": "Inspringing vergroten",
+      "outdent": "Inspringing verkleinen",
+      "fullscreen": "Volledig scherm",
+      "more_headings": "Meer kopteksten",
+      "lists": "Lijsten",
+      "alignment": "Uitlijning",
+      "more_actions": "Meer acties",
+      "submenu": "Submenu"
     }
   },
   "search": {

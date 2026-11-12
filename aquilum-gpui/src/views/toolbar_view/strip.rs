@@ -208,7 +208,7 @@ impl AppView {
                 id: overflow_id,
                 kind: ToolbarItemKind::Dropdown {
                     icon: "more-horizontal".to_string(),
-                    tooltip: Some("More actions".to_string()),
+                    tooltip: Some(self.t("editor.toolbar.more_actions")),
                     command: None,
                     items: overflow_items,
                 },
@@ -381,13 +381,13 @@ impl AppView {
             .is_some_and(|drag| drag.is_dragging);
 
         match &item.kind {
-            ToolbarItemKind::Button { command_id, icon, tooltip } => {
+            ToolbarItemKind::Button { command_id, icon, .. } => {
                 let cmd_id = command_id.clone();
                 let is_disabled = is_command_disabled(&cmd_id, fmt);
 
                 let icon_asset = icons::resolve_toolbar_icon(icon);
                 let hotkey = self.get_command_hotkey(&cmd_id);
-                let tooltip_text = tooltip.clone().or_else(|| self.get_command_name(&cmd_id));
+                let tooltip_text = self.toolbar_item_label(item);
 
                 let tb_id = toolbar_id.to_string();
                 let it_id = item.id.clone();
@@ -491,7 +491,7 @@ impl AppView {
                         .flex_shrink_0()
                 )
             }
-            ToolbarItemKind::Dropdown { icon, tooltip, command, items } => {
+            ToolbarItemKind::Dropdown { icon, command, items, .. } => {
                 let tb_id = toolbar_id.to_string();
                 let it_id = item.id.clone();
                 let dropdown_items = items.clone();
@@ -507,7 +507,7 @@ impl AppView {
 
                 let icon_color = theme.text_primary;
 
-                let tooltip_text = tooltip.clone();
+                let tooltip_text = self.toolbar_item_label(item);
 
                 if let Some(cmd_id) = command {
                     // Split button: main button executes command, arrow part opens menu

@@ -45,6 +45,16 @@ fn items_at_path_mut<'a>(
     }
 }
 
+/// Toolbar label in the current interface language. Settings rows have no
+/// command registry of their own, so unknown commands fall back to their id at
+/// the call site.
+fn toolbar_item_label(
+    lang: &str,
+    item: &crate::toolbar::ToolbarItem,
+) -> Option<String> {
+    crate::toolbar_i18n::resolve_label(lang, &item.id, item.command_id(), item.tooltip(), None)
+}
+
 impl UiSink for SettingsView {
     fn send_plugin_ui_event(
         &mut self,
@@ -800,9 +810,10 @@ impl SettingsView {
                     );
                 row_container = row_container.child(main_row);
             }
-            crate::toolbar::ToolbarItemKind::Button { command_id, icon, tooltip } => {
+            crate::toolbar::ToolbarItemKind::Button { command_id, icon, .. } => {
                 let icon_asset = icons::resolve_toolbar_icon(icon);
-                let label = tooltip.clone().unwrap_or_else(|| command_id.clone());
+                let label = toolbar_item_label(&self.config.ui.language, item)
+                    .unwrap_or_else(|| command_id.clone());
                 let is_plugin = self
                     .weak_app
                     .upgrade()
@@ -873,10 +884,9 @@ impl SettingsView {
                     );
                 row_container = row_container.child(main_row);
             }
-            crate::toolbar::ToolbarItemKind::Dropdown { icon, tooltip, command, items: sub_items } => {
+            crate::toolbar::ToolbarItemKind::Dropdown { icon, command, items: sub_items, .. } => {
                 let icon_asset = icons::resolve_toolbar_icon(icon);
-                let title = tooltip
-                    .clone()
+                let title = toolbar_item_label(&self.config.ui.language, item)
                     .unwrap_or_else(|| self.t("settings.toolbar.dropdown_fallback"));
                 let target_dd_id = item.id.clone();
                 let split_type_icon = command.as_ref().map(|cmd_id| {
@@ -1088,7 +1098,8 @@ impl SettingsView {
                     TabListEvent::Activate(id) => {
                         if let Some(cmd) = cmds_for_sub.get(*id) {
                             this.toolbar_selected_command = Some(cmd.id.clone());
-                            this.toolbar_custom_tooltip = cmd.name.clone();
+                            // Tooltips are resolved from the command id at render time.
+                            this.toolbar_custom_tooltip.clear();
                             if let Some(ref ic) = cmd.icon {
                                 this.toolbar_selected_icon = Some(ic.clone());
                             }
@@ -2066,10 +2077,7 @@ impl SettingsView {
             .and_then(|a| a.read(cx).state.vault.as_ref().map(|v| v.root.clone()));
         let items = crate::plugins::editor_toolbar::load_toolbar_config(vault_root.as_deref());
         let item = item_at_path(&items, &drag.source_path)?;
-        let label = item
-            .tooltip()
-            .map(|title| title.to_string())
-            .or_else(|| item.command_id().map(|cmd| cmd.to_string()))
+        let label = toolbar_item_label(&self.config.ui.language, item)
             .unwrap_or_else(|| self.t("settings.toolbar.separator"));
 
         let mut chip = div()

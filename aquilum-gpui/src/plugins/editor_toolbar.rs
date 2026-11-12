@@ -7,7 +7,8 @@
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use crate::toolbar::{
-    validate_and_prune_items, ToolbarAlignment, ToolbarItem, ToolbarPlacement, ToolbarSpec,
+    validate_and_prune_items, ToolbarAlignment, ToolbarItem, ToolbarItemKind, ToolbarPlacement,
+    ToolbarSpec,
 };
 use crate::vault::VaultCore;
 
@@ -24,53 +25,71 @@ pub struct ToolbarConfigFile {
 }
 
 fn default_config_version() -> u32 {
-    1
+    2
+}
+
+/// Drops every stored tooltip. Version 1 of `data.json` kept labels that were
+/// generated in one language; from version 2 they are resolved at render time.
+fn drop_all_tooltips(items: &mut [ToolbarItem]) {
+    for item in items {
+        match &mut item.kind {
+            ToolbarItemKind::Button { tooltip, .. } => *tooltip = None,
+            ToolbarItemKind::Dropdown { tooltip, items, .. } => {
+                *tooltip = None;
+                drop_all_tooltips(items);
+            }
+            ToolbarItemKind::Separator => {}
+        }
+    }
 }
 
 /// Generates the default set of toolbar items matching the user specification:
 /// undo, redo, eraser | H1, H2, H3, Hn▾ | B, I, S, U, highlight | attachment, table, task, code block, inline code | callout▾, text formatting▾, lists▾, alignment▾ | fullscreen.
+///
+/// Tooltips are not stored: `toolbar_i18n` resolves the label from the command
+/// or item id at render time, so the toolbar follows the interface language.
 pub fn default_toolbar_items() -> Vec<ToolbarItem> {
     vec![
         // 1. History & Cleansers
-        ToolbarItem::button("tb-undo", "editor:undo", "undo", Some("Отменить")),
-        ToolbarItem::button("tb-redo", "editor:redo", "redo", Some("Повторить")),
-        ToolbarItem::button("tb-clear", "editor:clear-formatting", "eraser", Some("Очистить форматирование")),
+        ToolbarItem::button("tb-undo", "editor:undo", "undo", None),
+        ToolbarItem::button("tb-redo", "editor:redo", "redo", None),
+        ToolbarItem::button("tb-clear", "editor:clear-formatting", "eraser", None),
 
         ToolbarItem::separator_with_id("tb-sep-1"),
 
         // 2. Headings
-        ToolbarItem::button("tb-h1", "editor:heading-1", "h1", Some("Заголовок 1")),
-        ToolbarItem::button("tb-h2", "editor:heading-2", "h2", Some("Заголовок 2")),
-        ToolbarItem::button("tb-h3", "editor:heading-3", "h3", Some("Заголовок 3")),
+        ToolbarItem::button("tb-h1", "editor:heading-1", "h1", None),
+        ToolbarItem::button("tb-h2", "editor:heading-2", "h2", None),
+        ToolbarItem::button("tb-h3", "editor:heading-3", "h3", None),
         ToolbarItem::dropdown(
             "tb-hn-dropdown",
             "heading-n",
-            Some("Другие заголовки"),
+            None,
             None,
             vec![
-                ToolbarItem::button("tb-h4", "editor:heading-4", "h4", Some("Заголовок 4")),
-                ToolbarItem::button("tb-h5", "editor:heading-5", "h5", Some("Заголовок 5")),
-                ToolbarItem::button("tb-h6", "editor:heading-6", "h6", Some("Заголовок 6")),
+                ToolbarItem::button("tb-h4", "editor:heading-4", "h4", None),
+                ToolbarItem::button("tb-h5", "editor:heading-5", "h5", None),
+                ToolbarItem::button("tb-h6", "editor:heading-6", "h6", None),
             ],
         ),
 
         ToolbarItem::separator_with_id("tb-sep-2"),
 
         // 3. Inline formatting
-        ToolbarItem::button("tb-bold", "editor:bold", "bold", Some("Полужирный")),
-        ToolbarItem::button("tb-italic", "editor:italic", "italic", Some("Курсив")),
-        ToolbarItem::button("tb-strike", "editor:strikethrough", "strikethrough", Some("Зачёркнутый")),
-        ToolbarItem::button("tb-underline", "editor:underline", "underline", Some("Подчёркнутый")),
-        ToolbarItem::button("tb-highlight", "editor:highlight", "highlighter", Some("Выделение")),
+        ToolbarItem::button("tb-bold", "editor:bold", "bold", None),
+        ToolbarItem::button("tb-italic", "editor:italic", "italic", None),
+        ToolbarItem::button("tb-strike", "editor:strikethrough", "strikethrough", None),
+        ToolbarItem::button("tb-underline", "editor:underline", "underline", None),
+        ToolbarItem::button("tb-highlight", "editor:highlight", "highlighter", None),
 
         ToolbarItem::separator_with_id("tb-sep-3"),
 
         // 4. Content blocks
-        ToolbarItem::button("tb-attach", "editor:attach-file", "paperclip", Some("Вложить файл")),
-        ToolbarItem::button("tb-table", "editor:insert-table", "table", Some("Вставить таблицу")),
-        ToolbarItem::button("tb-task", "editor:toggle-task", "check", Some("Задача")),
-        ToolbarItem::button("tb-code-block", "editor:code-block", "code-block", Some("Блок кода")),
-        ToolbarItem::button("tb-inline-code", "editor:inline-code", "inline-code", Some("Встроенный код")),
+        ToolbarItem::button("tb-attach", "editor:attach-file", "paperclip", None),
+        ToolbarItem::button("tb-table", "editor:insert-table", "table", None),
+        ToolbarItem::button("tb-task", "editor:toggle-task", "check", None),
+        ToolbarItem::button("tb-code-block", "editor:code-block", "code-block", None),
+        ToolbarItem::button("tb-inline-code", "editor:inline-code", "inline-code", None),
 
         ToolbarItem::separator_with_id("tb-sep-4"),
 
@@ -78,49 +97,49 @@ pub fn default_toolbar_items() -> Vec<ToolbarItem> {
         ToolbarItem::dropdown(
             "tb-callout-dropdown",
             "message-square",
-            Some("Callout блоки"),
+            None,
             None,
             vec![
-                ToolbarItem::button("tb-callout-note", "editor:insert-callout", "message-square", Some("Вставить Callout")),
+                ToolbarItem::button("tb-callout-note", "editor:insert-callout", "message-square", None),
             ],
         ),
         ToolbarItem::dropdown(
             "tb-indent-dropdown",
             "type",
-            Some("Форматирование текста"),
+            None,
             None,
             vec![
-                ToolbarItem::button("tb-indent", "editor:indent", "indent", Some("Увеличить отступ")),
-                ToolbarItem::button("tb-outdent", "editor:outdent", "outdent", Some("Уменьшить отступ")),
+                ToolbarItem::button("tb-indent", "editor:indent", "indent", None),
+                ToolbarItem::button("tb-outdent", "editor:outdent", "outdent", None),
             ],
         ),
         ToolbarItem::dropdown(
             "tb-lists-dropdown",
             "list-bullet",
-            Some("Списки"),
+            None,
             None,
             vec![
-                ToolbarItem::button("tb-list-bullet", "editor:list-bullet", "list-bullet", Some("Маркированный список")),
-                ToolbarItem::button("tb-list-numbered", "editor:list-numbered", "list-numbered", Some("Нумерованный список")),
-                ToolbarItem::button("tb-list-task", "editor:list-task", "list-task", Some("Список задач")),
+                ToolbarItem::button("tb-list-bullet", "editor:list-bullet", "list-bullet", None),
+                ToolbarItem::button("tb-list-numbered", "editor:list-numbered", "list-numbered", None),
+                ToolbarItem::button("tb-list-task", "editor:list-task", "list-task", None),
             ],
         ),
         ToolbarItem::dropdown(
             "tb-align-dropdown",
             "align-left",
-            Some("Выравнивание"),
+            None,
             None,
             vec![
-                ToolbarItem::button("tb-align-left", "editor:align-left", "align-left", Some("По левому краю")),
-                ToolbarItem::button("tb-align-center", "editor:align-center", "align-center", Some("По центру")),
-                ToolbarItem::button("tb-align-right", "editor:align-right", "align-right", Some("По правому краю")),
+                ToolbarItem::button("tb-align-left", "editor:align-left", "align-left", None),
+                ToolbarItem::button("tb-align-center", "editor:align-center", "align-center", None),
+                ToolbarItem::button("tb-align-right", "editor:align-right", "align-right", None),
             ],
         ),
 
         ToolbarItem::separator_with_id("tb-sep-5"),
 
         // 6. View toggles
-        ToolbarItem::button("tb-fullscreen", "editor:toggle-fullscreen", "fullscreen", Some("Полноэкранный режим")),
+        ToolbarItem::button("tb-fullscreen", "editor:toggle-fullscreen", "fullscreen", None),
     ]
 }
 
@@ -151,6 +170,10 @@ pub fn load_toolbar_config_file(vault_root: Option<&Path>) -> ToolbarConfigFile 
 
     match serde_json::from_str::<ToolbarConfigFile>(&content) {
         Ok(mut config) => {
+            if config.version < default_config_version() {
+                drop_all_tooltips(&mut config.items);
+                config.version = default_config_version();
+            }
             config.items = validate_and_prune_items(config.items, 1);
             if config.items.is_empty() {
                 eprintln!(
@@ -192,7 +215,7 @@ fn write_toolbar_config(
     }
 
     let config = ToolbarConfigFile {
-        version: 1,
+        version: default_config_version(),
         items: items.to_vec(),
         alignment,
     };

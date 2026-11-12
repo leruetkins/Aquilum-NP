@@ -948,6 +948,22 @@
       "table_delete_row": "刪除行",
       "table_delete_column": "刪除列",
       "table_delete_table": "刪除表"
+    },
+    "toolbar": {
+      "undo": "撤銷",
+      "redo": "重做",
+      "clear_formatting": "清除格式",
+      "underline": "底線",
+      "attach_file": "附加檔案",
+      "toggle_task": "任務",
+      "indent": "增加縮排",
+      "outdent": "減少縮排",
+      "fullscreen": "全螢幕",
+      "more_headings": "更多標題",
+      "lists": "清單",
+      "alignment": "對齊",
+      "more_actions": "更多操作",
+      "submenu": "子功能表"
     }
   },
   "search": {

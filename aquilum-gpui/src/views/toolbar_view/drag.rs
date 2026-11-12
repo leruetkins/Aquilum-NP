@@ -54,11 +54,7 @@ impl AppView {
         let spec = self.state.toolbars.get_toolbar(&drag.toolbar_id)?;
         let item = spec.items.iter().find(|item| item.id == drag.source_id)?;
         let icon = item.icon()?;
-        let title = item
-            .tooltip()
-            .map(|title| title.to_string())
-            .or_else(|| item.command_id().and_then(|cmd| self.get_command_name(cmd)))
-            .unwrap_or_default();
+        let title = self.toolbar_item_label(item).unwrap_or_default();
         let icon_asset = icons::resolve_toolbar_icon(icon);
 
         Some(

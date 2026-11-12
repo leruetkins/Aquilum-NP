@@ -948,6 +948,22 @@
       "table_delete_row": "Видалити рядок",
       "table_delete_column": "Видалити стовпець",
       "table_delete_table": "Видалити таблицю"
+    },
+    "toolbar": {
+      "undo": "Скасувати",
+      "redo": "Повторити",
+      "clear_formatting": "Очистити форматування",
+      "underline": "Підкреслений",
+      "attach_file": "Прикріпити файл",
+      "toggle_task": "Завдання",
+      "indent": "Збільшити відступ",
+      "outdent": "Зменшити відступ",
+      "fullscreen": "Повноекранний режим",
+      "more_headings": "Інші заголовки",
+      "lists": "Списки",
+      "alignment": "Вирівнювання",
+      "more_actions": "Більше дій",
+      "submenu": "Підменю"
     }
   },
   "search": {

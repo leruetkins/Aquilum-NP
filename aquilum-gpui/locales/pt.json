@@ -948,6 +948,22 @@
       "table_delete_row": "Excluir linha",
       "table_delete_column": "Excluir coluna",
       "table_delete_table": "Excluir tabela"
+    },
+    "toolbar": {
+      "undo": "Desfazer",
+      "redo": "Refazer",
+      "clear_formatting": "Limpar formatação",
+      "underline": "Sublinhado",
+      "attach_file": "Anexar arquivo",
+      "toggle_task": "Tarefa",
+      "indent": "Aumentar recuo",
+      "outdent": "Diminuir recuo",
+      "fullscreen": "Tela cheia",
+      "more_headings": "Mais títulos",
+      "lists": "Listas",
+      "alignment": "Alinhamento",
+      "more_actions": "Mais ações",
+      "submenu": "Submenu"
     }
   },
   "search": {

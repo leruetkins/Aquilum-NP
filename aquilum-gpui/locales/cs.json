@@ -948,6 +948,22 @@
       "table_delete_row": "Smazat řádek",
       "table_delete_column": "Smazat sloupec",
       "table_delete_table": "Smazat tabulku"
+    },
+    "toolbar": {
+      "undo": "Zpět",
+      "redo": "Znovu",
+      "clear_formatting": "Vymazat formátování",
+      "underline": "Podtržené",
+      "attach_file": "Připojit soubor",
+      "toggle_task": "Úkol",
+      "indent": "Zvětšit odsazení",
+      "outdent": "Zmenšit odsazení",
+      "fullscreen": "Celá obrazovka",
+      "more_headings": "Další nadpisy",
+      "lists": "Seznamy",
+      "alignment": "Zarovnání",
+      "more_actions": "Další akce",
+      "submenu": "Podnabídka"
     }
   },
   "search": {

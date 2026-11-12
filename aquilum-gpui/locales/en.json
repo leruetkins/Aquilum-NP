@@ -934,6 +934,22 @@
       "table_delete_row": "Delete row",
       "table_delete_column": "Delete column",
       "table_delete_table": "Delete table"
+    },
+    "toolbar": {
+      "undo": "Undo",
+      "redo": "Redo",
+      "clear_formatting": "Clear formatting",
+      "underline": "Underline",
+      "attach_file": "Attach file",
+      "toggle_task": "Task",
+      "indent": "Increase indent",
+      "outdent": "Decrease indent",
+      "fullscreen": "Fullscreen",
+      "more_headings": "More headings",
+      "lists": "Lists",
+      "alignment": "Alignment",
+      "more_actions": "More actions",
+      "submenu": "Submenu"
     }
   },
   "search": {

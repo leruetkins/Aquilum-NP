@@ -948,6 +948,22 @@
       "table_delete_row": "Ta bort rad",
       "table_delete_column": "Ta bort kolumn",
       "table_delete_table": "Ta bort tabell"
+    },
+    "toolbar": {
+      "undo": "Ångra",
+      "redo": "Gör om",
+      "clear_formatting": "Rensa formatering",
+      "underline": "Understruken",
+      "attach_file": "Bifoga fil",
+      "toggle_task": "Uppgift",
+      "indent": "Öka indrag",
+      "outdent": "Minska indrag",
+      "fullscreen": "Helskärm",
+      "more_headings": "Fler rubriker",
+      "lists": "Listor",
+      "alignment": "Justering",
+      "more_actions": "Fler åtgärder",
+      "submenu": "Undermeny"
     }
   },
   "search": {

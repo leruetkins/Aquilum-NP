@@ -130,6 +130,77 @@
     }
 
     #[test]
+    fn test_default_toolbar_items_have_no_stored_tooltips() {
+        fn assert_no_tooltips(items: &[ToolbarItem]) {
+            for item in items {
+                assert_eq!(
+                    item.tooltip(),
+                    None,
+                    "default item {} must not store a tooltip",
+                    item.id
+                );
+                if let ToolbarItemKind::Dropdown { items, .. } = &item.kind {
+                    assert_no_tooltips(items);
+                }
+            }
+        }
+
+        assert_no_tooltips(&default_toolbar_items());
+    }
+
+    #[test]
+    fn test_version_1_config_drops_stored_tooltips_on_load() {
+        let temp_dir = std::env::temp_dir().join(format!("vibe_test_tb_v1_{}", uuid::Uuid::new_v4().simple()));
+        let path = get_config_path(&temp_dir);
+        if let Some(p) = path.parent() {
+            let _ = std::fs::create_dir_all(p);
+        }
+        let legacy = r#"{
+          "version": 1,
+          "items": [
+            { "type": "button", "id": "tb-bold", "command": "editor:bold", "icon": "bold", "tooltip": "Полужирный" },
+            { "type": "dropdown", "id": "tb-lists", "icon": "list", "tooltip": "Списки", "items": [
+              { "type": "button", "id": "tb-li", "command": "editor:list-bullet", "icon": "list", "tooltip": "Маркированный список" }
+            ] }
+          ]
+        }"#;
+        std::fs::write(&path, legacy).expect("Write v1 config");
+
+        let config = load_toolbar_config_file(Some(&temp_dir));
+        assert_eq!(config.version, 2);
+        assert_eq!(config.items[0].tooltip(), None);
+        assert_eq!(config.items[1].tooltip(), None);
+        if let ToolbarItemKind::Dropdown { items, .. } = &config.items[1].kind {
+            assert_eq!(items[0].tooltip(), None);
+        } else {
+            panic!("Expected dropdown");
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_version_2_config_keeps_custom_tooltips() {
+        let temp_dir = std::env::temp_dir().join(format!("vibe_test_tb_v2_{}", uuid::Uuid::new_v4().simple()));
+        let path = get_config_path(&temp_dir);
+        if let Some(p) = path.parent() {
+            let _ = std::fs::create_dir_all(p);
+        }
+        let current = r#"{
+          "version": 2,
+          "items": [
+            { "type": "button", "id": "tb-custom", "command": "plugin:action", "icon": "star", "tooltip": "Custom label" }
+          ]
+        }"#;
+        std::fs::write(&path, current).expect("Write v2 config");
+
+        let config = load_toolbar_config_file(Some(&temp_dir));
+        assert_eq!(config.items[0].tooltip(), Some("Custom label"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
     fn test_depth_pruning_protects_against_deeply_nested_json() {
         // Build a chain with depth 7
         let level6 = vec![ToolbarItem::button("leaf", "editor:bold", "bold", None)];

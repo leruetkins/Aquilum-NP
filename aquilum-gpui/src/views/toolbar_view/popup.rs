@@ -323,12 +323,11 @@ impl AppView {
                 .w_full()
                 .bg(theme.border_subtle)
                 .my(px(3.0)),
-            ToolbarItemKind::Button { command_id, icon, tooltip } => {
+            ToolbarItemKind::Button { command_id, icon, .. } => {
                 let cmd_id = command_id.clone();
                 let icon_asset = icons::resolve_toolbar_icon(icon);
-                let label = tooltip
-                    .clone()
-                    .or_else(|| self.get_command_name(&cmd_id))
+                let label = self
+                    .toolbar_item_label(item)
                     .unwrap_or_else(|| cmd_id.clone());
                 let hotkey = self.get_command_hotkey(&cmd_id);
 
@@ -411,9 +410,11 @@ impl AppView {
 
                 row.child(left_side).child(right_side)
             }
-            ToolbarItemKind::Dropdown { icon, tooltip, command, items } => {
+            ToolbarItemKind::Dropdown { icon, command, items, .. } => {
                 let icon_asset = icons::resolve_toolbar_icon(icon);
-                let label = tooltip.clone().unwrap_or_else(|| "Submenu".to_string());
+                let label = self
+                    .toolbar_item_label(item)
+                    .unwrap_or_else(|| self.t("editor.toolbar.submenu"));
                 let has_children = !items.is_empty();
                 let split_command = command.clone();
 

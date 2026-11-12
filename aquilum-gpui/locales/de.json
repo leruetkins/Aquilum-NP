@@ -948,6 +948,22 @@
       "table_delete_row": "Zeile löschen",
       "table_delete_column": "Spalte löschen",
       "table_delete_table": "Tabelle löschen"
+    },
+    "toolbar": {
+      "undo": "Rückgängig",
+      "redo": "Wiederholen",
+      "clear_formatting": "Formatierung löschen",
+      "underline": "Unterstrichen",
+      "attach_file": "Datei anhängen",
+      "toggle_task": "Aufgabe",
+      "indent": "Einzug vergrößern",
+      "outdent": "Einzug verkleinern",
+      "fullscreen": "Vollbild",
+      "more_headings": "Weitere Überschriften",
+      "lists": "Listen",
+      "alignment": "Ausrichtung",
+      "more_actions": "Weitere Aktionen",
+      "submenu": "Untermenü"
     }
   },
   "search": {

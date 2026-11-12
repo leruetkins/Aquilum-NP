@@ -35,6 +35,7 @@ pub mod formatting;
 pub mod table;
 pub mod theme;
 pub mod toolbar;
+pub mod toolbar_i18n;
 pub mod vault;
 pub mod views;
 pub mod window_ops;

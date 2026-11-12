@@ -948,6 +948,22 @@
       "table_delete_row": "Xóa hàng",
       "table_delete_column": "Xóa cột",
       "table_delete_table": "Xóa bảng"
+    },
+    "toolbar": {
+      "undo": "Hoàn tác",
+      "redo": "Làm lại",
+      "clear_formatting": "Xóa định dạng",
+      "underline": "Gạch chân",
+      "attach_file": "Đính kèm tệp",
+      "toggle_task": "Nhiệm vụ",
+      "indent": "Tăng thụt lề",
+      "outdent": "Giảm thụt lề",
+      "fullscreen": "Toàn màn hình",
+      "more_headings": "Thêm tiêu đề",
+      "lists": "Danh sách",
+      "alignment": "Căn chỉnh",
+      "more_actions": "Thêm hành động",
+      "submenu": "Menu con"
     }
   },
   "search": {

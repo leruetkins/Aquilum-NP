@@ -948,6 +948,22 @@
       "table_delete_row": "पंक्ति को हटाएं",
       "table_delete_column": "कॉलम हटाएं",
       "table_delete_table": "तालिका हटाएँ"
+    },
+    "toolbar": {
+      "undo": "पूर्ववत करें",
+      "redo": "फिर से करें",
+      "clear_formatting": "स्वरूपण साफ़ करें",
+      "underline": "रेखांकित",
+      "attach_file": "फ़ाइल संलग्न करें",
+      "toggle_task": "कार्य",
+      "indent": "इंडेंट बढ़ाएँ",
+      "outdent": "इंडेंट घटाएँ",
+      "fullscreen": "पूर्ण स्क्रीन",
+      "more_headings": "अधिक शीर्षक",
+      "lists": "सूचियाँ",
+      "alignment": "संरेखण",
+      "more_actions": "अधिक क्रियाएँ",
+      "submenu": "उपमेनू"
     }
   },
   "search": {

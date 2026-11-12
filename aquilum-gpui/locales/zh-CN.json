@@ -948,6 +948,22 @@
       "table_delete_row": "删除行",
       "table_delete_column": "删除列",
       "table_delete_table": "删除表"
+    },
+    "toolbar": {
+      "undo": "撤消",
+      "redo": "重做",
+      "clear_formatting": "清除格式",
+      "underline": "下划线",
+      "attach_file": "附加文件",
+      "toggle_task": "任务",
+      "indent": "增加缩进",
+      "outdent": "减少缩进",
+      "fullscreen": "全屏",
+      "more_headings": "更多标题",
+      "lists": "列表",
+      "alignment": "对齐",
+      "more_actions": "更多操作",
+      "submenu": "子菜单"
     }
   },
   "search": {
