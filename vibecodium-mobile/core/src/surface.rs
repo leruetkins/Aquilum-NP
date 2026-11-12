@@ -3683,17 +3683,32 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceTouch(
                 let start_y = f32::from_bits(input.start_y_bits.load(Ordering::Relaxed));
                 let dx = x - start_x;
                 let dy = y - start_y;
-                if !input.moved.load(Ordering::Relaxed) {
+                let was_moved = input.moved.load(Ordering::Relaxed);
+                if !was_moved {
                     if dy.abs() > threshold || dx.abs() > threshold {
                         input.moved.store(true, Ordering::Relaxed);
+                        let delta_y = if dy.abs() > threshold {
+                            dy - dy.signum() * threshold
+                        } else {
+                            0.0
+                        };
+                        let last_scroll =
+                            f32::from_bits(input.scroll_bits.load(Ordering::Relaxed));
+                        let max_y = f32::from_bits(input.max_y_bits.load(Ordering::Relaxed));
+                        let next_scroll = (last_scroll - delta_y).clamp(0.0, max_y);
+                        input.scroll_bits.store(next_scroll.to_bits(), Ordering::Relaxed);
+                        input.last_y_bits.store(y.to_bits(), Ordering::Relaxed);
+                        input.scroll_dirty.store(true, Ordering::Relaxed);
                     }
-                }
-                if input.moved.load(Ordering::Relaxed) {
-                    let start_scroll = f32::from_bits(input.start_scroll_bits.load(Ordering::Relaxed));
+                } else {
+                    let last_y = f32::from_bits(input.last_y_bits.load(Ordering::Relaxed));
+                    let delta_y = y - last_y;
+                    let last_scroll =
+                        f32::from_bits(input.scroll_bits.load(Ordering::Relaxed));
                     let max_y = f32::from_bits(input.max_y_bits.load(Ordering::Relaxed));
-                    let adjusted = dy - dy.signum() * threshold;
-                    let scroll = (start_scroll - adjusted).clamp(0.0, max_y);
-                    input.scroll_bits.store(scroll.round().to_bits(), Ordering::Relaxed);
+                    let next_scroll = (last_scroll - delta_y).clamp(0.0, max_y);
+                    input.scroll_bits.store(next_scroll.to_bits(), Ordering::Relaxed);
+                    input.last_y_bits.store(y.to_bits(), Ordering::Relaxed);
                     input.scroll_dirty.store(true, Ordering::Relaxed);
                 }
                 String::new()
