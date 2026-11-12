@@ -69,6 +69,7 @@ import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
@@ -193,12 +194,14 @@ import md.vibecodium.mobile.SyncProgressKind
 import md.vibecodium.mobile.Tab
 import md.vibecodium.mobile.UiState
 import md.vibecodium.mobile.VibecodiumController
+import md.vibecodium.mobile.expandDailyNoteFormat
 import md.vibecodium.mobile.filterExplorerTree
 import md.vibecodium.mobile.flattenExplorerTree
 import md.vibecodium.mobile.indentAtCursor
 import md.vibecodium.mobile.outdentAtCursor
 import kotlinx.coroutines.flow.collect
 import java.text.SimpleDateFormat
+import java.time.LocalDateTime
 import java.util.Date
 import java.util.Locale
 
@@ -271,6 +274,33 @@ private val NewNoteIcon: ImageVector = ImageVector.Builder(
         lineTo(9.3f, 12.8f)
         curveTo(9.4f, 12.5f, 9.6f, 12.2f, 9.8f, 12f)
         close()
+    }
+}.build()
+
+/** `lucide-calendar`, the daily-note action. */
+private val CalendarIcon: ImageVector = ImageVector.Builder(
+    name = "calendar",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f) {
+        moveTo(5f, 4f)
+        curveTo(3.9f, 4f, 3f, 4.9f, 3f, 6f)
+        lineTo(3f, 20f)
+        curveTo(3f, 21.1f, 3.9f, 22f, 5f, 22f)
+        lineTo(19f, 22f)
+        curveTo(20.1f, 22f, 21f, 21.1f, 21f, 20f)
+        lineTo(21f, 6f)
+        curveTo(21f, 4.9f, 20.1f, 4f, 19f, 4f)
+        close()
+        moveTo(16f, 2f)
+        lineTo(16f, 6f)
+        moveTo(8f, 2f)
+        lineTo(8f, 6f)
+        moveTo(3f, 10f)
+        lineTo(21f, 10f)
     }
 }.build()
 
@@ -2572,6 +2602,13 @@ private fun ExplorerToolbar(state: UiState, controller: VibecodiumController) {
             "New note",
             modifier = Modifier.weight(1f).fillMaxHeight(),
         ) { controller.newNote() }
+        if (state.settings.dailyNotes.enabled) {
+            CompactToolbarButton(
+                CalendarIcon,
+                "Daily note",
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+            ) { controller.openDailyNote() }
+        }
         CompactToolbarButton(
             NewFolderIcon,
             "New folder",
@@ -3067,6 +3104,7 @@ private enum class SettingsSection(val title: String, val icon: ImageVector) {
     Appearance("Appearance", Icons.Default.Settings),
     Editor("Editor", Icons.Default.Edit),
     Files("Files & links", Icons.Default.List),
+    DailyNotes("Daily notes", Icons.Default.DateRange),
     Sync("Sync", Icons.Default.Refresh),
     Advanced("Advanced", Icons.Default.Build),
     About("About", Icons.Default.Info),
@@ -3275,6 +3313,52 @@ private fun SettingsSectionContent(
                         description = "Expand every folder again",
                         onClick = { controller.resetCollapsedFolders() },
                         showDivider = false,
+                    )
+                }
+            }
+
+            SettingsSection.DailyNotes -> {
+                val daily = settings.dailyNotes
+                SettingsGroup("Daily notes") {
+                    SettingsSwitchRow(
+                        title = "Enable daily notes",
+                        description = "Show the calendar button in the sidebar",
+                        checked = daily.enabled,
+                        onChange = controller::setDailyNotesEnabled,
+                        showDivider = false,
+                    )
+                }
+                SettingsGroup("Note") {
+                    SettingsChoiceRow(
+                        title = "Date format",
+                        description = "Preset examples; the custom format below stays editable",
+                        value = daily.format,
+                        options = dailyFormatOptions(daily.format),
+                        onSelect = controller::setDailyNoteFormat,
+                    )
+                    SettingsTextFieldRow(
+                        title = "File name format",
+                        description = "Placeholders: {{YYYY}} year, {{YY}} short year, " +
+                            "{{MM}}/{{M}} month, {{DD}}/{{D}} day, {{HH}}/{{H}} hour, " +
+                            "{{mm}}/{{m}} minute, {{ss}}/{{s}} second. Other text is used as is.",
+                        value = daily.format,
+                        placeholder = "{{YYYY}}-{{MM}}-{{DD}}",
+                        onValueChange = controller::setDailyNoteFormat,
+                        showDivider = true,
+                    )
+                    SettingsChoiceRow(
+                        title = "Folder",
+                        description = "Relative to the vault root; the note folder is created when needed",
+                        value = daily.folder,
+                        options = dailyFolderOptions(state, daily.folder),
+                        onSelect = controller::setDailyNoteFolder,
+                    )
+                    SettingsChoiceRow(
+                        title = "Template",
+                        description = "Markdown note copied into a new daily note",
+                        value = daily.template,
+                        options = dailyTemplateOptions(state, daily.template),
+                        onSelect = controller::setDailyNoteTemplate,
                     )
                 }
             }
@@ -3537,6 +3621,66 @@ private fun <T> SettingsChoiceRow(
                     },
                 )
             }
+        }
+    }
+}
+
+private data class DailyFormatPreset(val title: String?, val format: String)
+
+private val DAILY_FORMAT_PRESETS = listOf(
+    DailyFormatPreset("Y-M-D", "{{YYYY}}-{{MM}}-{{DD}}"),
+    DailyFormatPreset("D-M-Y", "{{DD}}-{{MM}}-{{YYYY}}"),
+    DailyFormatPreset("D.M.Y", "{{DD}}.{{MM}}.{{YYYY}}"),
+    DailyFormatPreset("D/M/Y", "{{DD}}/{{MM}}/{{YYYY}}"),
+    DailyFormatPreset("Y.M.D", "{{YYYY}}.{{MM}}.{{DD}}"),
+    DailyFormatPreset("Y M D", "{{YYYY}} {{MM}} {{DD}}"),
+    DailyFormatPreset(null, "{{D}} {{MMMM}} {{YYYY}}"),
+    DailyFormatPreset(null, "{{D}} {{MMM}} {{YYYY}}"),
+    DailyFormatPreset(null, "{{MMMM}} {{D}}, {{YYYY}}"),
+    DailyFormatPreset(null, "{{MMM}} {{D}}, {{YYYY}}"),
+)
+
+private fun dailyFormatOptions(current: String): List<Pair<String, String>> {
+    val sample = LocalDateTime.of(2026, 11, 12, 0, 0)
+    val options = DAILY_FORMAT_PRESETS.map { preset ->
+        val example = expandDailyNoteFormat(preset.format, sample)
+        val label = if (preset.title == null) example else "$example · ${preset.title}"
+        label to preset.format
+    }
+    if (options.none { it.second == current }) {
+        val label = if (current.isEmpty()) {
+            "ISO date fallback · custom"
+        } else {
+            "${expandDailyNoteFormat(current, sample)} · custom"
+        }
+        return listOf(label to current) + options
+    }
+    return options
+}
+
+private fun dailyFolderOptions(state: UiState, current: String): List<Pair<String, String>> =
+    buildList {
+        add("Vault root" to "")
+        for (folder in state.folders) {
+            add(folder to folder)
+        }
+        if (current.isNotEmpty() && current !in state.folders) {
+            add(current to current)
+        }
+    }
+
+private fun dailyTemplateOptions(state: UiState, current: String): List<Pair<String, String>> {
+    val notes = state.notes
+        .map { it.path }
+        .filter { it.endsWith(".md", ignoreCase = true) }
+        .sortedBy { it.lowercase(Locale.ROOT) }
+    return buildList {
+        add("No template" to "")
+        for (path in notes) {
+            add(path to path)
+        }
+        if (current.isNotEmpty() && notes.none { it == current }) {
+            add(current to current)
         }
     }
 }

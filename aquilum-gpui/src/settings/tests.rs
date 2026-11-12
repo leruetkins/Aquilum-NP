@@ -267,6 +267,14 @@
         assert_eq!(expand_daily_note_format("{{D}}.{{M}}.{{YY}}", now), "11.11.26");
         assert_eq!(expand_daily_note_format("{{HH}}:{{mm}}:{{ss}}", now), "09:05:07");
         assert_eq!(expand_daily_note_format("{{H}}-{{m}}-{{s}}", now), "9-5-7");
+        assert_eq!(
+            expand_daily_note_format("{{D}} {{MMMM}} {{YYYY}}", now),
+            "11 November 2026"
+        );
+        assert_eq!(
+            expand_daily_note_format("{{MMM}} {{D}}, {{YYYY}}", now),
+            "Nov 11, 2026"
+        );
 
         // Literal text is untouched and unknown placeholders stay verbatim.
         assert_eq!(

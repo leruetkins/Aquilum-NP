@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.time.LocalDateTime
 
 /**
  * Holds the phone shell state, owns the active [VaultRepository] and every JNI
@@ -374,6 +375,51 @@ class VibecodiumController(context: Context) {
             }
         }
     }
+
+    /**
+     * Opens today's note, creating it with the configured template when it does
+     * not exist yet. The name format and folder mirror the desktop settings.
+     */
+    fun openDailyNote() {
+        val repository = repository ?: return
+        val daily = state.settings.dailyNotes
+        if (!daily.enabled) return
+        val path = dailyNotePath(daily, LocalDateTime.now())
+        scope.launch {
+            try {
+                if (readNoteOrNull(repository, path) != null) {
+                    openNote(path)
+                    return@launch
+                }
+                val template = daily.template.trim()
+                val text = if (template.isEmpty() || template == path) {
+                    ""
+                } else {
+                    readNoteOrNull(repository, template) ?: ""
+                }
+                val note = repository.createNote(path, text)
+                val lists = loadFileLists(repository)
+                state = state.copy(
+                    notes = lists.notes,
+                    entries = lists.entries,
+                    folders = lists.folders,
+                    explorerTree = lists.tree,
+                )
+                openNote(note.path, modeOverride = EditorMode.Source, focusEditor = true)
+            } catch (error: Throwable) {
+                error.rethrowIfCancelled()
+                state = state.copy(message = error.message ?: "Could not open the daily note")
+            }
+        }
+    }
+
+    private suspend fun readNoteOrNull(repository: VaultRepository, path: String): String? =
+        try {
+            repository.readNote(path)
+        } catch (error: Throwable) {
+            error.rethrowIfCancelled()
+            null
+        }
 
     fun newNote() {
         val repository = repository ?: return
@@ -969,6 +1015,22 @@ class VibecodiumController(context: Context) {
     fun setDefaultEditorMode(mode: EditorMode) = updateSettings { it.copy(defaultEditorMode = mode) }
 
     fun setAutoSaveDelay(millis: Int) = updateSettings { it.copy(autoSaveDelayMs = millis) }
+
+    fun setDailyNotesEnabled(enabled: Boolean) = updateSettings {
+        it.copy(dailyNotes = it.dailyNotes.copy(enabled = enabled))
+    }
+
+    fun setDailyNoteFormat(format: String) = updateSettings {
+        it.copy(dailyNotes = it.dailyNotes.copy(format = format.trim()))
+    }
+
+    fun setDailyNoteFolder(folder: String) = updateSettings {
+        it.copy(dailyNotes = it.dailyNotes.copy(folder = normalizeDailyNoteFolder(folder)))
+    }
+
+    fun setDailyNoteTemplate(path: String) = updateSettings {
+        it.copy(dailyNotes = it.dailyNotes.copy(template = path.trim()))
+    }
 
     fun resetSettings() {
         updateSettings { AppSettings() }
