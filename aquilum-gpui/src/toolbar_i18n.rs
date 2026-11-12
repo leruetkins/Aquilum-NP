@@ -2,45 +2,8 @@
 //!
 //! Toolbar tooltips are not persisted in `.vault/plugins/editor-toolbar/data.json`;
 //! they are resolved from the command (or item) id at render time, so tooltips
-//! follow the current interface language on every locale switch. Commands that
-//! already have a label in the editor context menu reuse those keys instead of
-//! duplicating the translations.
-
-/// Locale key for the tooltip of a built-in toolbar command.
-pub fn command_label_key(command_id: &str) -> Option<&'static str> {
-    Some(match command_id {
-        "editor:undo" => "editor.toolbar.undo",
-        "editor:redo" => "editor.toolbar.redo",
-        "editor:clear-formatting" => "editor.toolbar.clear_formatting",
-        "editor:heading-1" => "editor.context.heading_1",
-        "editor:heading-2" => "editor.context.heading_2",
-        "editor:heading-3" => "editor.context.heading_3",
-        "editor:heading-4" => "editor.context.heading_4",
-        "editor:heading-5" => "editor.context.heading_5",
-        "editor:heading-6" => "editor.context.heading_6",
-        "editor:bold" => "editor.context.bold",
-        "editor:italic" => "editor.context.italic",
-        "editor:strikethrough" => "editor.context.strikethrough",
-        "editor:underline" => "editor.toolbar.underline",
-        "editor:highlight" => "editor.context.highlight",
-        "editor:attach-file" => "editor.toolbar.attach_file",
-        "editor:insert-table" => "editor.context.insert_table",
-        "editor:toggle-task" => "editor.toolbar.toggle_task",
-        "editor:code-block" => "editor.context.insert_code_block",
-        "editor:inline-code" => "editor.context.inline_code",
-        "editor:insert-callout" => "editor.context.insert_callout",
-        "editor:indent" => "editor.toolbar.indent",
-        "editor:outdent" => "editor.toolbar.outdent",
-        "editor:list-bullet" => "editor.context.bullet_list",
-        "editor:list-numbered" => "editor.context.numbered_list",
-        "editor:list-task" => "editor.context.task_list",
-        "editor:align-left" => "editor.context.table_align_left",
-        "editor:align-center" => "editor.context.table_align_center",
-        "editor:align-right" => "editor.context.table_align_right",
-        "editor:toggle-fullscreen" => "editor.toolbar.fullscreen",
-        _ => return None,
-    })
-}
+//! follow the current interface language on every locale switch. Command labels
+//! come from `command_i18n`, so the toolbar and the command palette share them.
 
 /// Locale key for the label of a built-in toolbar dropdown group, keyed by its
 /// stable item id (group dropdowns have no command of their own).
@@ -69,7 +32,7 @@ pub fn resolve_label(
     if let Some(tooltip) = stored_tooltip.map(str::trim).filter(|tip| !tip.is_empty()) {
         return Some(tooltip.to_string());
     }
-    if let Some(key) = command_id.and_then(command_label_key) {
+    if let Some(key) = command_id.and_then(crate::command_i18n::label_key) {
         return Some(crate::i18n::t(key, lang));
     }
     if let Some(key) = item_label_key(item_id) {

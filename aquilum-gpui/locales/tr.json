@@ -1051,5 +1051,16 @@
       "trash": "Çöp",
       "hide_panel": "Dikey paneli gizle"
     }
+  },
+  "command": {
+    "close_tab": "Sekmeyi kapat",
+    "toggle_right_sidebar": "Sağ kenar çubuğunu aç/kapat",
+    "toggle_ribbon": "Şeridi aç/kapat",
+    "quick_switcher": "Hızlı geçiş",
+    "split_right": "Sağa böl",
+    "split_down": "Aşağı böl",
+    "export_pdf": "PDF olarak dışa aktar",
+    "unused_attachments": "Kullanılmayan ekleri bul",
+    "export_markdown_zip": "Notu Markdown (zip) olarak dışa aktar"
   }
 }

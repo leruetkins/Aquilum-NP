@@ -1051,5 +1051,16 @@
       "trash": "Papelera",
       "hide_panel": "Ocultar panel vertical"
     }
+  },
+  "command": {
+    "close_tab": "Cerrar pestaña",
+    "toggle_right_sidebar": "Mostrar/ocultar barra lateral derecha",
+    "toggle_ribbon": "Mostrar/ocultar cinta",
+    "quick_switcher": "Selector rápido",
+    "split_right": "Dividir a la derecha",
+    "split_down": "Dividir abajo",
+    "export_pdf": "Exportar a PDF",
+    "unused_attachments": "Buscar adjuntos sin usar",
+    "export_markdown_zip": "Exportar nota a Markdown (zip)"
   }
 }

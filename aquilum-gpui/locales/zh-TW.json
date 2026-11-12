@@ -1051,5 +1051,16 @@
       "trash": "垃圾",
       "hide_panel": "隱藏垂直面板"
     }
+  },
+  "command": {
+    "close_tab": "關閉分頁",
+    "toggle_right_sidebar": "切換右側邊欄",
+    "toggle_ribbon": "切換功能區",
+    "quick_switcher": "快速切換",
+    "split_right": "向右分割",
+    "split_down": "向下分割",
+    "export_pdf": "匯出為 PDF",
+    "unused_attachments": "尋找未使用的附件",
+    "export_markdown_zip": "將筆記匯出為 Markdown（zip）"
   }
 }

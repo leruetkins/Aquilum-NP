@@ -1051,5 +1051,16 @@
       "trash": "Kosz",
       "hide_panel": "Ukryj panel pionowy"
     }
+  },
+  "command": {
+    "close_tab": "Zamknij kartę",
+    "toggle_right_sidebar": "Pokaż/ukryj prawy panel",
+    "toggle_ribbon": "Pokaż/ukryj wstążkę",
+    "quick_switcher": "Szybkie przełączanie",
+    "split_right": "Podziel w prawo",
+    "split_down": "Podziel w dół",
+    "export_pdf": "Eksportuj do PDF",
+    "unused_attachments": "Znajdź nieużywane załączniki",
+    "export_markdown_zip": "Eksportuj notatkę do Markdown (zip)"
   }
 }

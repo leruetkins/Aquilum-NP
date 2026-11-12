@@ -1042,10 +1042,11 @@ impl SettingsView {
 
     pub fn open_toolbar_command_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_toolbar_icon_popup(cx);
+        let lang = self.config.ui.language.clone();
         let all_commands = self
             .weak_app
             .upgrade()
-            .map(|a| a.read(cx).state.commands.all())
+            .map(|a| a.read(cx).state.commands.search("", &lang))
             .unwrap_or_default();
 
         let active_ix = self
@@ -1061,7 +1062,11 @@ impl SettingsView {
                 let type_icon = command_type_icon(is_plugin);
                 TabEntry {
                     id,
-                    title: SharedString::from(cmd.name.clone()),
+                    title: SharedString::from(crate::command_i18n::display_name(
+                        &cmd.id,
+                        &cmd.name,
+                        &lang,
+                    )),
                     subtitle: Some(SharedString::from(cmd.id.clone())),
                     icon: type_icon,
                     font_family: None,
@@ -1227,7 +1232,7 @@ impl SettingsView {
         let all_commands = self
             .weak_app
             .upgrade()
-            .map(|a| a.read(cx).state.commands.all())
+            .map(|a| a.read(cx).state.commands.search("", &self.config.ui.language))
             .unwrap_or_default();
 
         let selected_cmd = self
@@ -1274,7 +1279,11 @@ impl SettingsView {
                                 div()
                                     .truncate()
                                     .text_color(theme.text_primary)
-                                    .child(cmd.name.clone()),
+                                    .child(crate::command_i18n::display_name(
+                                        &cmd.id,
+                                        &cmd.name,
+                                        &self.config.ui.language,
+                                    )),
                             )
                     } else if let Some(ref sel_id) = self.toolbar_selected_command {
                         let is_plugin = is_plugin_command(sel_id, None);

@@ -447,19 +447,34 @@ mod tests {
         let commands = registry.all();
         assert!(commands.len() >= 9);
 
-        assert!(registry.search("save").iter().any(|c| c.id == "editor:save"));
-        assert!(registry.search("settings").iter().any(|c| c.id == "app:open-settings"));
-        assert!(registry.search("sidebar").iter().any(|c| c.id == "view:toggle-left-sidebar"));
-        assert!(registry.search("sidebar").iter().any(|c| c.id == "view:toggle-right-sidebar"));
-        assert!(registry.search("new tab").iter().any(|c| c.id == "workspace:new-tab"));
-        assert!(registry.search("palette").iter().any(|c| c.id == "app:open-command-palette"));
-        assert!(registry.search("switcher").iter().any(|c| c.id == "app:open-search-dialog"));
-        assert!(registry.search("pdf").iter().any(|c| c.id == "app:export-pdf"));
-        assert!(registry.search("bold").iter().any(|c| c.id == "editor:bold"));
-        assert!(registry.search("italic").iter().any(|c| c.id == "editor:italic"));
-        assert!(registry.search("undo").iter().any(|c| c.id == "editor:undo"));
-        assert!(registry.search("heading").iter().any(|c| c.id == "editor:heading-1"));
-        assert!(registry.search("table").iter().any(|c| c.id == "editor:insert-table"));
-        assert!(registry.search("invisibles").iter().any(|c| c.id == "editor:toggle-invisibles"));
+        assert!(registry.search("save", "en").iter().any(|c| c.id == "editor:save"));
+        assert!(registry.search("settings", "en").iter().any(|c| c.id == "app:open-settings"));
+        assert!(registry.search("sidebar", "en").iter().any(|c| c.id == "view:toggle-left-sidebar"));
+        assert!(registry.search("sidebar", "en").iter().any(|c| c.id == "view:toggle-right-sidebar"));
+        assert!(registry.search("new tab", "en").iter().any(|c| c.id == "workspace:new-tab"));
+        assert!(registry.search("palette", "en").iter().any(|c| c.id == "app:open-command-palette"));
+        assert!(registry.search("switcher", "en").iter().any(|c| c.id == "app:open-search-dialog"));
+        assert!(registry.search("pdf", "en").iter().any(|c| c.id == "app:export-pdf"));
+        assert!(registry.search("bold", "en").iter().any(|c| c.id == "editor:bold"));
+        assert!(registry.search("italic", "en").iter().any(|c| c.id == "editor:italic"));
+        assert!(registry.search("undo", "en").iter().any(|c| c.id == "editor:undo"));
+        assert!(registry.search("heading", "en").iter().any(|c| c.id == "editor:heading-1"));
+        assert!(registry.search("table", "en").iter().any(|c| c.id == "editor:insert-table"));
+        assert!(registry.search("invisibles", "en").iter().any(|c| c.id == "editor:toggle-invisibles"));
+
+        // The palette searches the interface language as well as English.
+        assert!(registry.search("жирный", "ru").iter().any(|c| c.id == "editor:bold"));
+        assert!(registry.search("заголовок", "ru").iter().any(|c| c.id == "editor:heading-1"));
+        assert!(registry.search("вкладку", "ru").iter().any(|c| c.id == "workspace:close-tab"));
+        assert!(registry.search("bold", "ru").iter().any(|c| c.id == "editor:bold"));
+
+        // Built-in commands are searchable by their palette number.
+        let numbered_id = registry
+            .numbers()
+            .iter()
+            .find(|(_, number)| **number == 14)
+            .map(|(id, _)| id.clone())
+            .expect("built-in command #14");
+        assert!(registry.search("14", "en").iter().any(|c| c.id == numbered_id));
     }
 }

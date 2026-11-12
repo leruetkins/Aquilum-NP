@@ -1051,5 +1051,16 @@
       "trash": "कचरा",
       "hide_panel": "लंबवत पैनल छिपाएँ"
     }
+  },
+  "command": {
+    "close_tab": "टैब बंद करें",
+    "toggle_right_sidebar": "दायाँ साइडबार टॉगल करें",
+    "toggle_ribbon": "रिबन टॉगल करें",
+    "quick_switcher": "त्वरित स्विचर",
+    "split_right": "दाईं ओर विभाजित करें",
+    "split_down": "नीचे विभाजित करें",
+    "export_pdf": "PDF में निर्यात करें",
+    "unused_attachments": "अप्रयुक्त अनुलग्नक खोजें",
+    "export_markdown_zip": "नोट को Markdown (zip) में निर्यात करें"
   }
 }

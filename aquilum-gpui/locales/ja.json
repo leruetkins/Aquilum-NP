@@ -1051,5 +1051,16 @@
       "trash": "ごみ",
       "hide_panel": "垂直パネルを非表示にする"
     }
+  },
+  "command": {
+    "close_tab": "タブを閉じる",
+    "toggle_right_sidebar": "右サイドバーを切り替え",
+    "toggle_ribbon": "リボンを切り替え",
+    "quick_switcher": "クイックスイッチャー",
+    "split_right": "右に分割",
+    "split_down": "下に分割",
+    "export_pdf": "PDF にエクスポート",
+    "unused_attachments": "未使用の添付ファイルを検索",
+    "export_markdown_zip": "ノートを Markdown（zip）にエクスポート"
   }
 }

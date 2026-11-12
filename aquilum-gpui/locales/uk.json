@@ -1051,5 +1051,16 @@
       "trash": "Кошик",
       "hide_panel": "Приховати вертикальну панель"
     }
+  },
+  "command": {
+    "close_tab": "Закрити вкладку",
+    "toggle_right_sidebar": "Показати/приховати праву панель",
+    "toggle_ribbon": "Показати/приховати стрічку",
+    "quick_switcher": "Швидкий перехід",
+    "split_right": "Розділити праворуч",
+    "split_down": "Розділити знизу",
+    "export_pdf": "Експорт у PDF",
+    "unused_attachments": "Знайти невикористані вкладення",
+    "export_markdown_zip": "Експорт нотатки в Markdown (zip)"
   }
 }

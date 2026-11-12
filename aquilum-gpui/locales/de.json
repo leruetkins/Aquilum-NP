@@ -1051,5 +1051,16 @@
       "trash": "Papierkorb",
       "hide_panel": "Vertikales Feld ausblenden"
     }
+  },
+  "command": {
+    "close_tab": "Tab schließen",
+    "toggle_right_sidebar": "Rechte Seitenleiste umschalten",
+    "toggle_ribbon": "Menüband umschalten",
+    "quick_switcher": "Schnellwechsler",
+    "split_right": "Rechts teilen",
+    "split_down": "Unten teilen",
+    "export_pdf": "Als PDF exportieren",
+    "unused_attachments": "Ungenutzte Anhänge finden",
+    "export_markdown_zip": "Notiz als Markdown-ZIP exportieren"
   }
 }

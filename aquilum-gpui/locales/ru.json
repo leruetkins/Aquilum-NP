@@ -1037,5 +1037,16 @@
       "trash": "Корзина",
       "hide_panel": "Скрыть вертикальную панель"
     }
+  },
+  "command": {
+    "close_tab": "Закрыть вкладку",
+    "toggle_right_sidebar": "Показать/скрыть правую панель",
+    "toggle_ribbon": "Показать/скрыть ленту",
+    "quick_switcher": "Быстрый переход",
+    "split_right": "Разделить справа",
+    "split_down": "Разделить снизу",
+    "export_pdf": "Экспорт в PDF",
+    "unused_attachments": "Найти неиспользуемые вложения",
+    "export_markdown_zip": "Экспорт заметки в Markdown (zip)"
   }
 }

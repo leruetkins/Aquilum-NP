@@ -1051,5 +1051,16 @@
       "trash": "Afval",
       "hide_panel": "Verticaal paneel verbergen"
     }
+  },
+  "command": {
+    "close_tab": "Tabblad sluiten",
+    "toggle_right_sidebar": "Rechterzijbalk wisselen",
+    "toggle_ribbon": "Lint wisselen",
+    "quick_switcher": "Snelwisselaar",
+    "split_right": "Rechts splitsen",
+    "split_down": "Onder splitsen",
+    "export_pdf": "Exporteren naar PDF",
+    "unused_attachments": "Ongebruikte bijlagen zoeken",
+    "export_markdown_zip": "Notitie exporteren naar Markdown (zip)"
   }
 }

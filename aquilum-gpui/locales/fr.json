@@ -1051,5 +1051,16 @@
       "trash": "Corbeille",
       "hide_panel": "Masquer le panneau vertical"
     }
+  },
+  "command": {
+    "close_tab": "Fermer l'onglet",
+    "toggle_right_sidebar": "Afficher/masquer la barre latérale droite",
+    "toggle_ribbon": "Afficher/masquer le ruban",
+    "quick_switcher": "Sélecteur rapide",
+    "split_right": "Diviser à droite",
+    "split_down": "Diviser en bas",
+    "export_pdf": "Exporter en PDF",
+    "unused_attachments": "Rechercher les pièces jointes inutilisées",
+    "export_markdown_zip": "Exporter la note en Markdown (zip)"
   }
 }

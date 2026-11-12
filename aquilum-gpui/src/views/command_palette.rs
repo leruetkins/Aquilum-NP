@@ -8,6 +8,7 @@
 //! - Up/Down arrow wrap navigation, Enter to run, Escape to dismiss.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::{
@@ -34,6 +35,8 @@ pub struct CommandPaletteState {
     pub selection_anchor: Option<usize>,
     pub is_mouse_selecting: bool,
     pub filtered_commands: Vec<Command>,
+    /// Stable numbers shown in the left column of each row.
+    pub command_numbers: HashMap<String, usize>,
     pub selected_ix: usize,
     /// Overlay scrollbar drag state for the command list.
     pub scrollbar_drag: ScrollbarDrag,
@@ -73,10 +76,12 @@ impl AppView {
             self.close_plugin_catalog(window, cx);
         }
 
-        let all_commands = self.state.commands.all();
+        let all_commands = self.state.commands.search("", &self.config.ui.language);
+        let command_numbers = self.state.commands.numbers();
         self.command_palette = CommandPaletteState {
             is_open: true,
             filtered_commands: all_commands,
+            command_numbers,
             selected_ix: 0,
             box_origin_x: self.command_palette.box_origin_x.clone(),
             ..Default::default()
@@ -100,9 +105,14 @@ impl AppView {
         cx.notify();
     }
 
-    /// Re-filters commands according to the current query.
+    /// Re-filters commands according to the current query,
+    /// matching both the interface language and English.
     pub fn run_command_palette_filter(&mut self) {
-        let hits = self.state.commands.search(&self.command_palette.query);
+        let hits = self
+            .state
+            .commands
+            .search(&self.command_palette.query, &self.config.ui.language);
+        self.command_palette.command_numbers = self.state.commands.numbers();
         self.command_palette.filtered_commands = hits;
         self.command_palette.selected_ix = self
             .command_palette
@@ -923,7 +933,20 @@ impl AppView {
                                             .children(self.command_palette.filtered_commands.iter().enumerate().map(|(ix, cmd)| {
                                                 let is_selected = ix == selected_ix;
                                                 let cmd_id_click = cmd.id.clone();
-                                                let cmd_name = cmd.name.clone();
+                                                let (cmd_label, cmd_original) = crate::command_i18n::display_labels(
+                                                    &cmd.id,
+                                                    &cmd.name,
+                                                    &self.config.ui.language,
+                                                );
+                                                let cmd_meta = crate::command_i18n::secondary_line(
+                                                    cmd_original.as_deref(),
+                                                    &cmd.id,
+                                                );
+                                                let cmd_number = self
+                                                    .command_palette
+                                                    .command_numbers
+                                                    .get(&cmd.id)
+                                                    .copied();
                                                 let hotkey_opt = cmd.hotkey.clone();
 
                                                 div()
@@ -952,14 +975,51 @@ impl AppView {
                                                         this.close_command_palette(window, cx);
                                                         this.execute_command(&cmd_id_click, window, cx);
                                                     }))
-                                                    // Command name on left with term highlighting
+                                                    // Localized name on top; English name and id below
                                                     .child(
                                                         div()
                                                             .flex_1()
                                                             .min_w_0()
-                                                            .truncate()
-                                                            .text_sm()
-                                                            .child(highlight_terms(&cmd_name, &terms, theme.text_primary, is_selected, theme)),
+                                                            .flex()
+                                                            .flex_col()
+                                                            .child(
+                                                                div()
+                                                                    .flex()
+                                                                    .flex_row()
+                                                                    .items_center()
+                                                                    .min_w_0()
+                                                                    .child(
+                                                                        div()
+                                                                            .w(px(26.0))
+                                                                            .flex_shrink_0()
+                                                                            .mr_1p5()
+                                                                            .flex()
+                                                                            .justify_end()
+                                                                            .text_sm()
+                                                                            .text_color(theme.text_primary)
+                                                                            .child(
+                                                                                cmd_number
+                                                                                    .map(|number| number.to_string())
+                                                                                    .unwrap_or_default(),
+                                                                            ),
+                                                                    )
+                                                                    .child(
+                                                                        div()
+                                                                            .flex_1()
+                                                                            .min_w_0()
+                                                                            .truncate()
+                                                                            .text_sm()
+                                                                            .child(highlight_terms(&cmd_label, &terms, theme.text_primary, is_selected, theme)),
+                                                                    ),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .truncate()
+                                                                    .pl(px(32.0))
+                                                                    .text_xs()
+                                                                    .text_color(theme.text_muted)
+                                                                    .child(highlight_terms(&cmd_meta, &terms, theme.text_muted, is_selected, theme)),
+                                                            ),
                                                     )
                                                     // Hotkey badge / pill on right if present
                                                     .when_some(hotkey_opt, |row, hotkey| {

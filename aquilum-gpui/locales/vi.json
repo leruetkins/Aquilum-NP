@@ -1051,5 +1051,16 @@
       "trash": "Rác",
       "hide_panel": "Ẩn bảng dọc"
     }
+  },
+  "command": {
+    "close_tab": "Đóng thẻ",
+    "toggle_right_sidebar": "Bật/tắt thanh bên phải",
+    "toggle_ribbon": "Bật/tắt dải lệnh",
+    "quick_switcher": "Chuyển nhanh",
+    "split_right": "Chia sang phải",
+    "split_down": "Chia xuống dưới",
+    "export_pdf": "Xuất sang PDF",
+    "unused_attachments": "Tìm tệp đính kèm không dùng",
+    "export_markdown_zip": "Xuất ghi chú sang Markdown (zip)"
   }
 }

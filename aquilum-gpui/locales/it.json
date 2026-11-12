@@ -1051,5 +1051,16 @@
       "trash": "Spazzatura",
       "hide_panel": "Nascondi il pannello verticale"
     }
+  },
+  "command": {
+    "close_tab": "Chiudi scheda",
+    "toggle_right_sidebar": "Mostra/nascondi barra laterale destra",
+    "toggle_ribbon": "Mostra/nascondi barra multifunzione",
+    "quick_switcher": "Selettore rapido",
+    "split_right": "Dividi a destra",
+    "split_down": "Dividi in basso",
+    "export_pdf": "Esporta in PDF",
+    "unused_attachments": "Trova allegati non utilizzati",
+    "export_markdown_zip": "Esporta nota in Markdown (zip)"
   }
 }

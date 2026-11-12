@@ -1051,5 +1051,16 @@
       "trash": "回收站",
       "hide_panel": "隐藏垂直面板"
     }
+  },
+  "command": {
+    "close_tab": "关闭标签页",
+    "toggle_right_sidebar": "切换右侧边栏",
+    "toggle_ribbon": "切换功能区",
+    "quick_switcher": "快速切换",
+    "split_right": "向右拆分",
+    "split_down": "向下拆分",
+    "export_pdf": "导出为 PDF",
+    "unused_attachments": "查找未使用的附件",
+    "export_markdown_zip": "将笔记导出为 Markdown（zip）"
   }
 }

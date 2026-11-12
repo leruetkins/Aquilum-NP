@@ -1051,5 +1051,16 @@
       "trash": "Odpadky",
       "hide_panel": "Skrýt vertikální panel"
     }
+  },
+  "command": {
+    "close_tab": "Zavřít kartu",
+    "toggle_right_sidebar": "Přepnout pravý postranní panel",
+    "toggle_ribbon": "Přepnout pás karet",
+    "quick_switcher": "Rychlé přepínání",
+    "split_right": "Rozdělit vpravo",
+    "split_down": "Rozdělit dolů",
+    "export_pdf": "Exportovat do PDF",
+    "unused_attachments": "Najít nepoužité přílohy",
+    "export_markdown_zip": "Exportovat poznámku do Markdown (zip)"
   }
 }

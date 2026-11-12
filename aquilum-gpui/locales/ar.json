@@ -1051,5 +1051,16 @@
       "trash": "نفاية",
       "hide_panel": "إخفاء اللوحة العمودية"
     }
+  },
+  "command": {
+    "close_tab": "إغلاق علامة التبويب",
+    "toggle_right_sidebar": "تبديل الشريط الجانبي الأيمن",
+    "toggle_ribbon": "تبديل الشريط",
+    "quick_switcher": "مبدّل سريع",
+    "split_right": "تقسيم إلى اليمين",
+    "split_down": "تقسيم للأسفل",
+    "export_pdf": "تصدير إلى PDF",
+    "unused_attachments": "بحث عن المرفقات غير المستخدمة",
+    "export_markdown_zip": "تصدير الملاحظة إلى Markdown (zip)"
   }
 }

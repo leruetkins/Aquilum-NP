@@ -80,25 +80,88 @@ impl CommandRegistry {
         list
     }
 
-    /// Filter commands by search query (every query word must appear in the name or id).
-    pub fn search(&self, query: &str) -> Vec<Command> {
+    /// Stable palette numbers for built-in commands, in id order. Plugin
+    /// commands are not numbered: their set changes at runtime, so a number
+    /// would not stay meaningful.
+    pub fn numbers(&self) -> HashMap<String, usize> {
+        let mut ids: Vec<String> = {
+            let cmds = self.commands.lock().unwrap();
+            cmds.values()
+                .filter(|cmd| cmd.owner.is_none())
+                .map(|cmd| cmd.id.clone())
+                .collect()
+        };
+        ids.sort();
+        ids.into_iter()
+            .enumerate()
+            .map(|(index, id)| (id, index + 1))
+            .collect()
+    }
+
+    /// Filter commands by search query. Every query word must appear in the
+    /// localized command name, the registered English name, the id, or the
+    /// built-in command number, so the palette matches both the interface
+    /// language and English and can be used by number.
+    pub fn search(&self, query: &str, lang: &str) -> Vec<Command> {
         let q = query.trim().to_lowercase();
-        if q.is_empty() {
-            return self.all();
-        }
-        let words: Vec<&str> = q.split_whitespace().collect();
-        let cmds = self.commands.lock().unwrap();
-        let mut list: Vec<Command> = cmds
-            .values()
-            .filter(|cmd| {
+        let commands: Vec<Command> = {
+            let cmds = self.commands.lock().unwrap();
+            cmds.values().cloned().collect()
+        };
+        let numbers = self.numbers();
+        let mut list: Vec<(Command, String, String)> = commands
+            .into_iter()
+            .map(|cmd| {
+                let label = crate::command_i18n::display_name(&cmd.id, &cmd.name, lang);
+                let number = numbers
+                    .get(&cmd.id)
+                    .map(|number| number.to_string())
+                    .unwrap_or_default();
+                (cmd, label, number)
+            })
+            .collect();
+        if !q.is_empty() {
+            let words: Vec<&str> = q.split_whitespace().collect();
+            let numeric_query = q.chars().all(|c| c.is_ascii_digit());
+            list.retain(|(cmd, label, number)| {
+                let label = label.to_lowercase();
                 let name = cmd.name.to_lowercase();
                 let id = cmd.id.to_lowercase();
-                words.iter().all(|w| name.contains(w) || id.contains(w))
-            })
-            .cloned()
-            .collect();
-        list.sort_by(|a, b| a.name.cmp(&b.name));
-        list
+                let number_matches = |word: &str| {
+                    numeric_query
+                        && !number.is_empty()
+                        && number.chars().all(|c| c.is_ascii_digit())
+                        && number.starts_with(word)
+                };
+                words.iter().all(|w| {
+                    label.contains(w) || name.contains(w) || id.contains(w) || number_matches(w)
+                })
+            });
+        }
+        let numeric_query = !q.is_empty() && q.chars().all(|c| c.is_ascii_digit());
+        if numeric_query {
+            // Number matches first, then the remaining name/id matches.
+            list.sort_by(|(a, a_label, a_number), (b, b_label, b_number)| {
+                a_number
+                    .is_empty()
+                    .cmp(&b_number.is_empty())
+                    .then_with(|| {
+                        let a_num = a_number.parse::<usize>().unwrap_or(usize::MAX);
+                        let b_num = b_number.parse::<usize>().unwrap_or(usize::MAX);
+                        a_num.cmp(&b_num)
+                    })
+                    .then_with(|| a_label.to_lowercase().cmp(&b_label.to_lowercase()))
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+        } else {
+            list.sort_by(|(a, a_label, _), (b, b_label, _)| {
+                a_label
+                    .to_lowercase()
+                    .cmp(&b_label.to_lowercase())
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+        }
+        list.into_iter().map(|(cmd, _, _)| cmd).collect()
     }
 
     /// Execute a command by its identifier. Returns true if the command was found and invoked.
@@ -139,8 +202,8 @@ mod tests {
         });
 
         assert_eq!(registry.all().len(), 1);
-        assert_eq!(registry.search("action").len(), 1);
-        assert_eq!(registry.search("missing").len(), 0);
+        assert_eq!(registry.search("action", "en").len(), 1);
+        assert_eq!(registry.search("missing", "en").len(), 0);
 
         assert!(!executed.load(Ordering::SeqCst));
         assert!(registry.execute("test:action"));
@@ -148,6 +211,27 @@ mod tests {
 
         // Calling a nonexistent one
         assert!(!registry.execute("non:existent"));
+    }
+
+    #[test]
+    fn test_search_matches_command_numbers() {
+        let registry = CommandRegistry::new();
+        for (id, owner) in [("core:a", None), ("core:b", None), ("aaa:plugin", Some("p"))] {
+            registry.register(Command {
+                id: id.into(),
+                name: id.into(),
+                owner: owner.map(str::to_string),
+                callback: Arc::new(|| {}),
+                hotkey: None,
+                icon: None,
+            });
+        }
+
+        // core:a is #1, core:b is #2; plugin commands are not numbered.
+        let hits = registry.search("2", "en");
+        assert_eq!(hits.first().map(|cmd| cmd.id.as_str()), Some("core:b"));
+        assert!(!hits.iter().any(|cmd| cmd.id == "aaa:plugin"));
+        assert!(registry.search("3", "en").is_empty());
     }
 
     #[test]
@@ -189,5 +273,32 @@ mod tests {
         assert!(registry.commands.lock().unwrap().contains_key("builtin:save"));
         assert!(registry.commands.lock().unwrap().contains_key("plugin:cmd2"));
         assert!(!registry.commands.lock().unwrap().contains_key("plugin:cmd1"));
+    }
+
+    #[test]
+    fn test_palette_numbers_cover_only_builtins() {
+        let registry = CommandRegistry::new();
+        for (id, owner) in [
+            ("zzz:plugin", Some("p")),
+            ("core:b", None),
+            ("aaa:plugin", Some("p")),
+            ("core:a", None),
+        ] {
+            registry.register(Command {
+                id: id.into(),
+                name: id.into(),
+                owner: owner.map(str::to_string),
+                callback: Arc::new(|| {}),
+                hotkey: None,
+                icon: None,
+            });
+        }
+
+        let numbers = registry.numbers();
+        assert_eq!(numbers.len(), 2);
+        assert_eq!(numbers["core:a"], 1);
+        assert_eq!(numbers["core:b"], 2);
+        assert!(!numbers.contains_key("aaa:plugin"));
+        assert!(!numbers.contains_key("zzz:plugin"));
     }
 }

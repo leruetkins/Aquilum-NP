@@ -1051,5 +1051,16 @@
       "trash": "Skräp",
       "hide_panel": "Dölj vertikal panel"
     }
+  },
+  "command": {
+    "close_tab": "Stäng fliken",
+    "toggle_right_sidebar": "Växla höger sidofält",
+    "toggle_ribbon": "Växla menyband",
+    "quick_switcher": "Snabbväxlare",
+    "split_right": "Dela åt höger",
+    "split_down": "Dela nedåt",
+    "export_pdf": "Exportera till PDF",
+    "unused_attachments": "Hitta oanvända bilagor",
+    "export_markdown_zip": "Exportera anteckning till Markdown (zip)"
   }
 }

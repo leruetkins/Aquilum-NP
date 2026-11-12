@@ -1051,5 +1051,16 @@
       "trash": "쓰레기",
       "hide_panel": "수직 패널 숨기기"
     }
+  },
+  "command": {
+    "close_tab": "탭 닫기",
+    "toggle_right_sidebar": "오른쪽 사이드바 전환",
+    "toggle_ribbon": "리본 전환",
+    "quick_switcher": "빠른 전환",
+    "split_right": "오른쪽으로 분할",
+    "split_down": "아래로 분할",
+    "export_pdf": "PDF로 내보내기",
+    "unused_attachments": "사용하지 않는 첨부 파일 찾기",
+    "export_markdown_zip": "노트를 Markdown(zip)으로 내보내기"
   }
 }

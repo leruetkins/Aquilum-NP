@@ -1037,5 +1037,16 @@
       "trash": "Trash",
       "hide_panel": "Hide vertical panel"
     }
+  },
+  "command": {
+    "close_tab": "Close tab",
+    "toggle_right_sidebar": "Toggle right sidebar",
+    "toggle_ribbon": "Toggle ribbon rail",
+    "quick_switcher": "Quick switcher",
+    "split_right": "Split right",
+    "split_down": "Split down",
+    "export_pdf": "Export to PDF",
+    "unused_attachments": "Find unused attachments",
+    "export_markdown_zip": "Export note to Markdown zip"
   }
 }
