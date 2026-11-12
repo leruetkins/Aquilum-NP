@@ -96,6 +96,7 @@ data class Tab(
     val mode: EditorMode = EditorMode.Source,
     /** SAF document URI, persisted so a tab reopens without walking the tree. */
     val uri: String? = null,
+    val isLoaded: Boolean = true,
 )
 
 enum class Drawer { Left, Right }

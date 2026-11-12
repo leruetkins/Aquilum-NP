@@ -867,6 +867,13 @@ private fun EditorArea(
         }
     if (tab == null) {
         EmptyEditor(controller)
+    } else if (!tab.isLoaded) {
+        Box(
+            modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+            contentAlignment = Alignment.Center,
+        ) {
+            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+        }
     } else {
         EditorScreen(
             editor,

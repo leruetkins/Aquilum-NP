@@ -227,40 +227,59 @@ class VibecodiumController(context: Context) {
         }
     }
 
-    /** Returns true when at least one saved tab was reopened. */
+    /** Returns true when at least one saved tab was reopened. Only the active document is loaded into memory. */
     private suspend fun restoreTabs(repository: VaultRepository): Boolean {
         val saved = TabStore.load(appContext, locatorKey()) ?: return false
         if (saved.tabs.isEmpty()) return false
-        val tabs = mutableListOf<Tab>()
-        for (savedTab in saved.tabs) {
-            // A persisted SAF URI reopens the note without resolving every
-            // path segment through the provider.
-            val text = savedTab.uri?.let { repository.readDocument(it) }
-                ?: runCatching { repository.readNote(savedTab.path) }.getOrNull()
-                ?: continue
-            tabs.add(
-                Tab(
-                    path = savedTab.path,
-                    title = titleOf(savedTab.path),
-                    text = text,
-                    selection = savedTab.selection.coerceIn(0, text.length),
-                    language = codeLanguageFor(savedTab.path),
-                    mode = savedTab.mode,
-                    uri = savedTab.uri ?: repository.uriFor(savedTab.path),
-                ),
+
+        var activeIndex = saved.active.coerceIn(0, saved.tabs.lastIndex)
+        var activeSaved = saved.tabs[activeIndex]
+
+        // Load content ONLY for the active document.
+        var activeText = activeSaved.uri?.let { repository.readDocument(it) }
+            ?: runCatching { repository.readNote(activeSaved.path) }.getOrNull()
+
+        // If the active tab could not be read, look for the first readable tab in saved tabs
+        if (activeText == null) {
+            for ((idx, candidate) in saved.tabs.withIndex()) {
+                if (idx == activeIndex) continue
+                val text = candidate.uri?.let { repository.readDocument(it) }
+                    ?: runCatching { repository.readNote(candidate.path) }.getOrNull()
+                if (text != null) {
+                    activeIndex = idx
+                    activeSaved = candidate
+                    activeText = text
+                    break
+                }
+            }
+        }
+
+        if (activeText == null) return false
+
+        val tabs = saved.tabs.mapIndexed { index, savedTab ->
+            val isActive = (index == activeIndex)
+            val text = if (isActive) activeText else ""
+            Tab(
+                path = savedTab.path,
+                title = titleOf(savedTab.path),
+                text = text,
+                selection = if (isActive) savedTab.selection.coerceIn(0, text.length) else savedTab.selection,
+                language = codeLanguageFor(savedTab.path),
+                mode = savedTab.mode,
+                uri = savedTab.uri ?: repository.uriFor(savedTab.path),
+                isLoaded = isActive,
             )
         }
-        if (tabs.isEmpty()) return false
-        val active = saved.active.coerceIn(0, tabs.lastIndex)
+
         state = state.copy(
             tabs = tabs,
-            activeTab = active,
-            editorMode = tabs[active].mode,
-            recentFiles = RecentStore.remember(appContext, locatorKey(), tabs[active].path),
-            history = listOf(tabs[active].path),
+            activeTab = activeIndex,
+            editorMode = tabs[activeIndex].mode,
+            recentFiles = RecentStore.remember(appContext, locatorKey(), tabs[activeIndex].path),
+            history = listOf(tabs[activeIndex].path),
             historyIndex = 0,
         )
-        refreshDerived(tabs[active].text, force = tabs[active].mode == EditorMode.Preview)
+        refreshDerived(tabs[activeIndex].text, force = tabs[activeIndex].mode == EditorMode.Preview)
         return true
     }
 
@@ -314,14 +333,12 @@ class VibecodiumController(context: Context) {
     ) {
         val existing = state.tabs.indexOfFirst { it.path == path }
         if (existing >= 0) {
-            selectTab(existing)
-            if (modeOverride != null) {
-                setEditorMode(modeOverride)
-            }
-            if (focusEditor) {
-                state = state.copy(focusRequestId = state.focusRequestId + 1)
-            }
-            if (pushHistory) pushHistory(path)
+            selectTab(
+                index = existing,
+                modeOverride = modeOverride,
+                focusEditor = focusEditor,
+                pushHistory = pushHistory,
+            )
             return
         }
         val repository = repository ?: return
@@ -397,7 +414,9 @@ class VibecodiumController(context: Context) {
     fun updateEditor(value: TextFieldValue) {
         val index = state.activeTab
         if (index !in state.tabs.indices) return
-        val adjusted = autoIndent(state.tabs[index].text, value)
+        val currentTab = state.tabs[index]
+        if (!currentTab.isLoaded) return
+        val adjusted = autoIndent(currentTab.text, value)
         val tabs = state.tabs.toMutableList()
         tabs[index] = tabs[index].copy(
             text = adjusted.text,
@@ -423,6 +442,7 @@ class VibecodiumController(context: Context) {
     fun updateNativeEditor(text: String, selection: Int) {
         val index = state.activeTab
         val tab = state.tabs.getOrNull(index) ?: return
+        if (!tab.isLoaded) return
         if (text == tab.text) {
             val tabs = state.tabs.toMutableList()
             tabs[index] = tab.copy(selection = selection.coerceIn(0, tab.text.length))
@@ -441,6 +461,8 @@ class VibecodiumController(context: Context) {
     fun saveActiveNow() {
         saveJob?.cancel()
         val index = state.activeTab
+        val tab = state.tabs.getOrNull(index)
+        if (tab == null || !tab.isLoaded) return
         scope.launch {
             persistTab(index)
             persistTabs()
@@ -450,7 +472,7 @@ class VibecodiumController(context: Context) {
     private suspend fun persistTab(index: Int) {
         val repository = repository ?: return
         val tab = state.tabs.getOrNull(index) ?: return
-        if (!tab.dirty) return
+        if (!tab.dirty || !tab.isLoaded) return
         try {
             repository.writeNote(tab.path, tab.text)
             val tabs = state.tabs.toMutableList()
@@ -522,35 +544,112 @@ class VibecodiumController(context: Context) {
         }
     }
 
-    fun selectTab(index: Int) {
+    fun selectTab(
+        index: Int,
+        modeOverride: EditorMode? = null,
+        focusEditor: Boolean = false,
+        pushHistory: Boolean = false,
+    ) {
         if (index !in state.tabs.indices) {
             state = state.copy(drawer = null, tabSwitcher = false)
             return
         }
         saveActiveNow()
-        val tab = state.tabs[index]
+        val target = state.tabs[index]
+        val mode = modeOverride ?: target.mode
+        val focusReq = if (focusEditor) state.focusRequestId + 1 else state.focusRequestId
+
+        if (!target.isLoaded) {
+            loadTabContent(index, modeOverride, focusEditor, pushHistory)
+            return
+        }
+
+        val tabs = if (mode != target.mode) {
+            val list = state.tabs.toMutableList()
+            list[index] = target.copy(mode = mode)
+            list
+        } else {
+            state.tabs
+        }
         state = state.copy(
+            tabs = tabs,
             activeTab = index,
-            editorMode = tab.mode,
-            recentFiles = RecentStore.remember(appContext, locatorKey(), tab.path),
+            editorMode = mode,
+            recentFiles = RecentStore.remember(appContext, locatorKey(), target.path),
             drawer = null,
             tabSwitcher = false,
             viewerPath = null,
+            focusRequestId = focusReq,
         )
+        if (pushHistory) pushHistory(target.path)
         scope.launch {
             refreshDerived(
-                tab.text,
-                force = tab.mode == EditorMode.Preview,
+                target.text,
+                force = mode == EditorMode.Preview,
             )
         }
         persistTabs()
+    }
+
+    /** Loads an unloaded tab's body into memory and triggers outline/stats derivation. */
+    private fun loadTabContent(
+        index: Int,
+        modeOverride: EditorMode? = null,
+        focusEditor: Boolean = false,
+        pushHistory: Boolean = false,
+    ) {
+        val repository = repository ?: return
+        val target = state.tabs.getOrNull(index) ?: return
+        val mode = modeOverride ?: target.mode
+        val focusReq = if (focusEditor) state.focusRequestId + 1 else state.focusRequestId
+
+        scope.launch {
+            try {
+                val text = target.uri?.let { repository.readDocument(it) }
+                    ?: repository.readNote(target.path)
+                val loaded = target.copy(
+                    text = text,
+                    selection = target.selection.coerceIn(0, text.length),
+                    mode = mode,
+                    isLoaded = true,
+                )
+                val tabs = state.tabs.toMutableList()
+                val cur = tabs.indexOfFirst { it.path == target.path }
+                if (cur >= 0) {
+                    tabs[cur] = loaded
+                    state = state.copy(
+                        tabs = tabs,
+                        activeTab = cur,
+                        editorMode = mode,
+                        recentFiles = RecentStore.remember(appContext, locatorKey(), loaded.path),
+                        drawer = null,
+                        tabSwitcher = false,
+                        viewerPath = null,
+                        focusRequestId = focusReq,
+                    )
+                    if (pushHistory) pushHistory(loaded.path)
+                    refreshDerived(
+                        loaded.text,
+                        force = mode == EditorMode.Preview,
+                    )
+                    persistTabs()
+                }
+            } catch (error: Throwable) {
+                error.rethrowIfCancelled()
+                state = state.copy(
+                    message = error.message ?: "Could not read the note",
+                    drawer = null,
+                    tabSwitcher = false,
+                )
+            }
+        }
     }
 
     fun closeTab(index: Int) {
         if (index !in state.tabs.indices) return
         saveJob?.cancel()
         val closing = state.tabs[index]
-        if (closing.dirty) {
+        if (closing.dirty && closing.isLoaded) {
             val repository = repository
             if (repository != null) {
                 scope.launch {
@@ -560,13 +659,18 @@ class VibecodiumController(context: Context) {
         }
         val active = removeTabState(index)
         if (active >= 0) {
-            val mode = state.tabs[active].mode
-            state = state.copy(editorMode = mode)
-            scope.launch {
-                refreshDerived(
-                    state.tabs[active].text,
-                    force = mode == EditorMode.Preview,
-                )
+            val target = state.tabs[active]
+            if (!target.isLoaded) {
+                loadTabContent(active)
+            } else {
+                val mode = target.mode
+                state = state.copy(editorMode = mode)
+                scope.launch {
+                    refreshDerived(
+                        target.text,
+                        force = mode == EditorMode.Preview,
+                    )
+                }
             }
         } else {
             state = state.copy(headings = emptyList(), stats = DocStats(0, 0, 0), lines = emptyList(), markdownText = "")
@@ -608,10 +712,15 @@ class VibecodiumController(context: Context) {
                 if (index >= 0) {
                     val active = removeTabState(index)
                     if (active >= 0) {
-                        refreshDerived(
-                state.tabs[active].text,
-                force = state.editorMode == EditorMode.Preview,
-            )
+                        val target = state.tabs[active]
+                        if (!target.isLoaded) {
+                            loadTabContent(active)
+                        } else {
+                            refreshDerived(
+                                target.text,
+                                force = state.editorMode == EditorMode.Preview,
+                            )
+                        }
                     } else {
                         state = state.copy(
                             headings = emptyList(),
@@ -743,7 +852,7 @@ class VibecodiumController(context: Context) {
                 )
                 persistTabs()
                 persistBookmarks()
-                if (index >= 0 && index == state.activeTab) {
+                if (index >= 0 && index == state.activeTab && tabs[index].isLoaded) {
                     refreshDerived(
                         state.tabs[index].text,
                         force = state.tabs[index].mode == EditorMode.Preview,
@@ -811,7 +920,7 @@ class VibecodiumController(context: Context) {
         }
         if (mode == EditorMode.Preview && previous != EditorMode.Preview) {
             val tab = state.tabs.getOrNull(index) ?: return
-            if (tab.language == null && tab.text.isNotBlank() && state.lines.isEmpty()) {
+            if (tab.isLoaded && tab.language == null && tab.text.isNotBlank() && state.lines.isEmpty()) {
                 scope.launch { refreshDerived(tab.text, force = true) }
             }
         }
@@ -1203,7 +1312,9 @@ class VibecodiumController(context: Context) {
                     val readable = runCatching { repository.readNote(tab.path) }.isSuccess
                     if (!readable) continue
                 }
-                if (tab.dirty) {
+                if (!tab.isLoaded) {
+                    tabs.add(tab)
+                } else if (tab.dirty) {
                     tabs.add(tab)
                 } else {
                     val text = runCatching { repository.readNote(tab.path) }.getOrNull() ?: tab.text
@@ -1234,7 +1345,7 @@ class VibecodiumController(context: Context) {
                     message = describe(outcome),
                 ),
             )
-            if (active >= 0) {
+            if (active >= 0 && state.tabs[active].isLoaded) {
                 refreshDerived(
                 state.tabs[active].text,
                 force = state.tabs[active].mode == EditorMode.Preview,
@@ -1412,7 +1523,7 @@ class VibecodiumController(context: Context) {
     fun flushBlocking() {
         val tab = state.tabs.getOrNull(state.activeTab)
         val repository = repository
-        if (tab != null && tab.dirty && repository != null) {
+        if (tab != null && tab.dirty && tab.isLoaded && repository != null) {
             runBlocking { runCatching { repository.writeNote(tab.path, tab.text) } }
         }
         persistTabs()
