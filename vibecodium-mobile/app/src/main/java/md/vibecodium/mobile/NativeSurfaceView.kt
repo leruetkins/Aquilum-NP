@@ -619,9 +619,8 @@ class NativeEditorView(
 
     private fun ensureScrollMaxY(): Float {
         val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
-        val maxY = info?.optDouble("max_y", scrollMaxY.toDouble())?.toFloat() ?: scrollMaxY
-        if (maxY > 0f) {
-            scrollMaxY = maxY
+        if (info != null && info.has("max_y")) {
+            scrollMaxY = info.optDouble("max_y", 0.0).toFloat().coerceAtLeast(0f)
         }
         return maxOf(scrollMaxY, knownScroll)
     }
@@ -642,11 +641,9 @@ class NativeEditorView(
         private var curMax = 0f
 
         fun update(scroll: Float, max: Float) {
-            if (curScroll != scroll || curMax != max) {
-                curScroll = scroll
-                curMax = max
-                postInvalidateOnAnimation()
-            }
+            curScroll = scroll
+            curMax = max
+            postInvalidateOnAnimation()
         }
 
         override fun onDraw(canvas: Canvas) {
@@ -659,10 +656,13 @@ class NativeEditorView(
             val right = w - 2f * density
             val left = right - barW
             val trackTop = 6f * density
-            val trackH = (h - 12f * density).coerceAtLeast(1f)
-            val contentH = curMax + h
-            val ratio = (h / contentH).coerceIn(0f, 1f)
-            val thumbH = (trackH * ratio).coerceIn(28f * density, trackH)
+            val bottomOffset = if (bottomInset > idleBottomInsetPx + 10f) bottomInset + 6f * density else 6f * density
+            val trackH = (h - trackTop - bottomOffset).coerceAtLeast(1f)
+            val visibleH = (h - (if (bottomInset > idleBottomInsetPx + 10f) bottomInset else 0f)).coerceAtLeast(1f)
+            val contentH = curMax + visibleH
+            val ratio = (visibleH / contentH).coerceIn(0f, 1f)
+            val minThumb = minOf(28f * density, trackH)
+            val thumbH = (trackH * ratio).coerceIn(minThumb, trackH)
             val progress = (curScroll / curMax).coerceIn(0f, 1f)
             val thumbTop = trackTop + (trackH - thumbH) * progress
             canvas.drawRoundRect(left, thumbTop, right, thumbTop + thumbH, barW / 2f, barW / 2f, barPaint)
@@ -1113,6 +1113,9 @@ class NativeEditorView(
     fun setOnScrollChanged(listener: ((Float, Float) -> Unit)?) {
         if (onScrollChanged === listener) return
         onScrollChanged = listener
+        if (listener != null) {
+            listener.invoke(knownScroll, scrollMaxY)
+        }
     }
 
     fun setBottomInset(inset: Float) {
@@ -1124,16 +1127,20 @@ class NativeEditorView(
             if (!isSurfaceAttached()) return@postRenderTask
             CoreBridge.nativeEditorSetBottomInset(surfaceId, next)
             val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
-            scrollMaxY = info?.optDouble("max_y", 0.0)?.toFloat() ?: scrollMaxY
+            val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: scrollMaxY
             val rustScroll = info?.optDouble("scroll", knownScroll.toDouble())?.toFloat() ?: knownScroll
-            val nextScroll = if (wasIncreased) rustScroll else knownScroll.coerceIn(0f, scrollMaxY)
-            if (nextScroll != knownScroll) {
-                mainHandler.post {
-                    knownScroll = nextScroll
-                    applyScrollTranslation()
+            val nextScroll = if (wasIncreased) rustScroll else knownScroll.coerceIn(0f, newMaxY)
+            mainHandler.post {
+                val scrollChanged = nextScroll != knownScroll
+                knownScroll = nextScroll
+                scrollMaxY = newMaxY
+                applyScrollTranslation()
+                if (scrollChanged) {
                     checkBandRender(knownScroll)
                     requestRender()
                 }
+                scrollbarOverlay.update(knownScroll, scrollMaxY)
+                onScrollChanged?.invoke(knownScroll, scrollMaxY)
             }
         }
     }
@@ -1142,7 +1149,18 @@ class NativeEditorView(
         val next = inset.coerceAtLeast(0f)
         if (kotlin.math.abs(next - topInset) < 0.5f) return
         topInset = next
-        CoreBridge.nativeEditorSetTopInset(surfaceId, next)
+        postRenderTask {
+            if (!isSurfaceAttached()) return@postRenderTask
+            CoreBridge.nativeEditorSetTopInset(surfaceId, next)
+            val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
+            val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: scrollMaxY
+            mainHandler.post {
+                scrollMaxY = newMaxY
+                applyScrollTranslation()
+                scrollbarOverlay.update(knownScroll, scrollMaxY)
+                onScrollChanged?.invoke(knownScroll, scrollMaxY)
+            }
+        }
         requestRender()
     }
 
@@ -1347,7 +1365,7 @@ class NativeEditorView(
             }
         }
         val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
-        scrollMaxY = info?.optDouble("max_y", 0.0)?.toFloat() ?: 0f
+        scrollMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: 0f
         knownScroll = CoreBridge.nativeEditorScroll(surfaceId).roundToInt().toFloat()
         val m = computeBandMargin(safeViewportHeight()).toFloat()
         val maxOrigin = maxOf(scrollMaxY, knownScroll)
@@ -1355,6 +1373,8 @@ class NativeEditorView(
         CoreBridge.nativeEditorSetBand(surfaceId, bandOrigin)
         mainHandler.post {
             applyScrollTranslation()
+            scrollbarOverlay.update(knownScroll, scrollMaxY)
+            onScrollChanged?.invoke(knownScroll, scrollMaxY)
             if (!inPreview) {
                 focusEditor()
             } else if (!selectionNonEmpty()) {
@@ -1371,6 +1391,8 @@ class NativeEditorView(
         if (pathChanged) {
             saveViewport()
             lastPath = path
+            scrollMaxY = 0f
+            scrollbarOverlay.update(knownScroll, 0f)
         }
         val previous = mirrorSelection
         val previousText = mirrorText
@@ -1416,14 +1438,18 @@ class NativeEditorView(
                 )
             }
             val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
-            scrollMaxY = info?.optDouble("max_y", 0.0)?.toFloat() ?: 0f
-            if (pathChanged) {
-                knownScroll = CoreBridge.nativeEditorScroll(surfaceId).roundToInt().toFloat()
-                val m = computeBandMargin(safeViewportHeight()).toFloat()
-                val maxOrigin = maxOf(scrollMaxY, knownScroll)
-                bandOrigin = (knownScroll - m).coerceIn(0f, maxOrigin).roundToInt().toFloat()
-                CoreBridge.nativeEditorSetBand(surfaceId, bandOrigin)
-                mainHandler.post { applyScrollTranslation() }
+            val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: 0f
+            val newScroll = CoreBridge.nativeEditorScroll(surfaceId).roundToInt().toFloat()
+            scrollMaxY = newMaxY
+            knownScroll = newScroll
+            val m = computeBandMargin(safeViewportHeight()).toFloat()
+            val maxOrigin = maxOf(scrollMaxY, knownScroll)
+            bandOrigin = (knownScroll - m).coerceIn(0f, maxOrigin).roundToInt().toFloat()
+            CoreBridge.nativeEditorSetBand(surfaceId, bandOrigin)
+            mainHandler.post {
+                applyScrollTranslation()
+                scrollbarOverlay.update(knownScroll, scrollMaxY)
+                onScrollChanged?.invoke(knownScroll, scrollMaxY)
             }
         }
         if (pathChanged) {
@@ -2344,12 +2370,30 @@ class NativeEditorView(
         }
     }
 
+    fun recalculateScrollMetrics() {
+        postRenderTask {
+            if (!isSurfaceAttached()) return@postRenderTask
+            val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
+            val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: scrollMaxY
+            val rustScroll = info?.optDouble("scroll", knownScroll.toDouble())?.toFloat() ?: knownScroll
+            val targetScroll = rustScroll.coerceIn(0f, newMaxY)
+            mainHandler.post {
+                knownScroll = targetScroll
+                scrollMaxY = newMaxY
+                applyScrollTranslation()
+                scrollbarOverlay.update(knownScroll, scrollMaxY)
+                onScrollChanged?.invoke(knownScroll, scrollMaxY)
+            }
+        }
+    }
+
     fun onKeyboardDismissed() {
         if (inPreview) return
         applyCaretVisible(true)
         startCaretBlink()
         applyInsertionHandleVisible(true)
         requestRender()
+        recalculateScrollMetrics()
     }
 
     fun setOnCaretPlaced(listener: (() -> Unit)?) {
@@ -2447,6 +2491,14 @@ class NativeEditorView(
         if (notify) onTextChanged(text, selection)
     }
 
+    private fun updateScrollMetricsFromNative() {
+        val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
+        val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: scrollMaxY
+        scrollMaxY = newMaxY
+        scrollbarOverlay.update(knownScroll, scrollMaxY)
+        onScrollChanged?.invoke(knownScroll, scrollMaxY)
+    }
+
     private fun applyInsert(text: String) {
         applyInsertionHandleVisible(false)
         if (text.isEmpty()) {
@@ -2465,6 +2517,7 @@ class NativeEditorView(
         onTextChanged(mirrorText, mirrorSelection)
         knownScroll = CoreBridge.nativeEditorScroll(surfaceId).roundToInt().toFloat()
         applyScrollTranslation()
+        updateScrollMetricsFromNative()
         checkBandRender(knownScroll)
         notifySelectionChanged()
         requestRender()
@@ -2485,6 +2538,7 @@ class NativeEditorView(
         onTextChanged(mirrorText, mirrorSelection)
         knownScroll = CoreBridge.nativeEditorScroll(surfaceId).roundToInt().toFloat()
         applyScrollTranslation()
+        updateScrollMetricsFromNative()
         checkBandRender(knownScroll)
         notifySelectionChanged()
         requestRender()
@@ -2504,6 +2558,7 @@ class NativeEditorView(
         onTextChanged(mirrorText, mirrorSelection)
         knownScroll = CoreBridge.nativeEditorScroll(surfaceId).roundToInt().toFloat()
         applyScrollTranslation()
+        updateScrollMetricsFromNative()
         checkBandRender(knownScroll)
         notifySelectionChanged()
         requestRender()

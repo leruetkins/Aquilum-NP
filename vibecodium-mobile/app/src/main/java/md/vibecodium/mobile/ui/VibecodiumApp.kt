@@ -731,7 +731,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                     val anchor = lastAnchor[0]
                     val prev = lastScrollVal[0]
                     lastScrollVal[0] = scroll
-                    if (maxY <= 0f || scroll <= 2f) {
+                    if (maxY <= 0.5f || scroll <= 2f) {
                         if (chromeHidden) chromeHidden = false
                         lastAnchor[0] = 0f
                     } else {
@@ -946,6 +946,7 @@ private fun EditorScreen(
     val onCaretPlaced: () -> Unit = remember { { keyboardPrompt = true } }
     LaunchedEffect(editorView, tab.path, state.activeTab, preview, state.focusRequestId) {
         val view = editorView ?: return@LaunchedEffect
+        view.recalculateScrollMetrics()
         if (preview) {
             keyboardPrompt = false
             view.clearFocus()
@@ -976,6 +977,7 @@ private fun EditorScreen(
             editorView?.onKeyboardDismissed()
         }
         prevImeVisible = imeVisible
+        editorView?.recalculateScrollMetrics()
     }
     var prevOverlayOpen by remember { mutableStateOf(false) }
     LaunchedEffect(state.overlayOpen) {
