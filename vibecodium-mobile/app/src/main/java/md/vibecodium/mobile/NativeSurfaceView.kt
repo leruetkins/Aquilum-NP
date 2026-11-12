@@ -51,7 +51,6 @@ import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import androidx.customview.widget.ExploreByTouchHelper
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -627,12 +626,8 @@ class NativeEditorView(
         return maxOf(scrollMaxY, knownScroll)
     }
 
-    override fun onRenderFinished(rendered: Float) {
-        bandQueue.add(rendered)
-    }
-
     private var bandOrigin = 0f
-    private val bandQueue = ConcurrentLinkedQueue<Float>()
+    private val pendingRenderedOrigin = java.util.concurrent.atomic.AtomicReference<Float?>(null)
     private val isRenderingBand = AtomicBoolean(false)
     @Volatile
     private var forcePendingBandRender = false
@@ -690,16 +685,10 @@ class NativeEditorView(
     }
 
     override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {
-        val tNow = SystemClock.uptimeMillis()
-        var latest: Float? = null
-        while (true) {
-            val r = bandQueue.poll() ?: break
-            latest = r
-        }
-        if (latest != null) {
-            bandOrigin = latest.roundToInt().toFloat()
+        val pending = pendingRenderedOrigin.getAndSet(null)
+        if (pending != null) {
+            bandOrigin = pending.roundToInt().toFloat()
             applyScrollTranslation()
-            android.util.Log.d("VibecodiumRender", "onSurfaceTextureUpdated: bandOrigin=$bandOrigin at $tNow")
         }
     }
 
@@ -747,27 +736,36 @@ class NativeEditorView(
     private fun dispatchBandRender(origin: Float) {
         val roundedOrigin = origin.roundToInt().toFloat()
         renderer.execute {
+            var renderedOrigin: Float? = null
             try {
                 if (!isSurfaceAttached()) {
                     return@execute
                 }
                 CoreBridge.nativeEditorSetBand(surfaceId, roundedOrigin)
-                val renderedOrigin = CoreBridge.nativeSurfaceRender(surfaceId)
-                bandQueue.add(renderedOrigin)
-                mainHandler.post {
-                    applyScrollTranslation()
-                    textureView.postInvalidateOnAnimation()
-                }
+                val rendered = CoreBridge.nativeSurfaceRender(surfaceId)
+                renderedOrigin = rendered
+                pendingRenderedOrigin.set(rendered)
             } finally {
+                val finalRendered = renderedOrigin
                 isRenderingBand.set(false)
                 mainHandler.post {
+                    val pendingRendered = pendingRenderedOrigin.getAndSet(null)
+                    if (pendingRendered != null) {
+                        bandOrigin = pendingRendered.roundToInt().toFloat()
+                        applyScrollTranslation()
+                        textureView.postInvalidateOnAnimation()
+                    }
                     val pending = pendingBandOrigin
                     val m = computeBandMargin(safeViewportHeight()).toFloat()
-                    val maxOrigin = maxOf(scrollMaxY, knownScroll)
-                    val shouldRender = forcePendingBandRender ||
-                        (pending != null && kotlin.math.abs(pending - bandOrigin) > m * 0.35f)
+                    val force = forcePendingBandRender
+                    forcePendingBandRender = false
+                    val lastOrigin = finalRendered ?: bandOrigin
+                    val shouldRender = force ||
+                        (pending != null && kotlin.math.abs(pending - lastOrigin) > m * 0.35f)
                     if (shouldRender && pending != null) {
-                        scheduleBandRender(pending, force = forcePendingBandRender)
+                        scheduleBandRender(pending, force = force)
+                    } else {
+                        pendingBandOrigin = null
                     }
                 }
             }
