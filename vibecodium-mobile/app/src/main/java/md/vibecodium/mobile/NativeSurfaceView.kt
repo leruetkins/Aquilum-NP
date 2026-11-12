@@ -689,6 +689,7 @@ class NativeEditorView(
         if (pending != null) {
             bandOrigin = pending.roundToInt().toFloat()
             applyScrollTranslation()
+            android.util.Log.d("VibecodiumRender", "onSurfaceTextureUpdated bandOrigin=$bandOrigin transY=${textureView.translationY}")
         }
     }
 
@@ -745,6 +746,7 @@ class NativeEditorView(
                 val rendered = CoreBridge.nativeSurfaceRender(surfaceId)
                 renderedOrigin = rendered
                 pendingRenderedOrigin.set(rendered)
+                android.util.Log.d("VibecodiumRender", "nativeSurfaceRender done rendered=$rendered")
             } finally {
                 val finalRendered = renderedOrigin
                 isRenderingBand.set(false)
@@ -754,6 +756,7 @@ class NativeEditorView(
                         bandOrigin = pendingRendered.roundToInt().toFloat()
                         applyScrollTranslation()
                         textureView.postInvalidateOnAnimation()
+                        android.util.Log.d("VibecodiumRender", "mainHandler applied bandOrigin=$bandOrigin transY=${textureView.translationY}")
                     }
                     val pending = pendingBandOrigin
                     val m = computeBandMargin(safeViewportHeight()).toFloat()
