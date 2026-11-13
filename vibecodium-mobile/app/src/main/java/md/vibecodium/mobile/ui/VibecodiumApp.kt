@@ -133,6 +133,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -243,6 +244,12 @@ private val ViewHeaderHeight = 44.dp
 
 /** Top margin for the floating header pills so they hover below the status bar. */
 private val ViewHeaderTopPadding = 0.dp
+
+/** Second floating action in the header gutter, right under the explorer toggle. */
+private val NoteActionTop = 48.dp
+
+/** Pitch between stacked floating actions: 44 dp button plus a 4 dp gap. */
+private val NoteActionStep = 48.dp
 
 /** `lucide-folder-plus`, Obsidian's new-folder nav action. */
 private val NewFolderIcon: ImageVector = ImageVector.Builder(
@@ -864,6 +871,8 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
             .padding(bottom = stableNavBottom),
     ) {
         val drawerWidth = phoneDrawerWidth(maxWidth)
+        val leftDrawerWidth = leftDrawerWidth(maxWidth)
+        val closeButtonX = leftDrawerWidth.coerceAtMost((maxWidth - CloseButtonSlot).coerceAtLeast(0.dp))
         val navbarEnabled = state.settings.navbarEnabled
         val focusManager = LocalFocusManager.current
         var chromeHidden by remember { mutableStateOf(false) }
@@ -998,7 +1007,8 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
             }
 
             if (state.drawer == Drawer.Left) {
-                DrawerBackdrop {
+                // Opaque: the editor behind the explorer must not show through.
+                DrawerBackdrop(alpha = 1f) {
                     focusManager.clearFocus()
                     controller.closeOverlays()
                 }
@@ -1013,9 +1023,9 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 navigationBottomPx = stableNavBarBottomPx,
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .width(drawerWidth)
+                    .width(leftDrawerWidth)
                     .fillMaxHeight()
-                    .offset(x = if (state.drawer == Drawer.Left) 0.dp else -drawerWidth)
+                    .offset(x = if (state.drawer == Drawer.Left) 0.dp else -leftDrawerWidth)
                     .then(
                         if (state.drawer == Drawer.Left) {
                             Modifier
@@ -1024,6 +1034,35 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                         },
                     ),
             )
+            // The close button sits outside the drawer's right edge, in the
+            // strip the drawer width reserves for it. Its top edge lines up
+            // with the top of the drawer and of the note header, so it reads
+            // as part of the same toolbar row.
+            Box(
+                Modifier
+                    .align(Alignment.TopStart)
+                    .offset(x = closeButtonX)
+                    .size(CloseButtonSlot, CloseButtonSize)
+                    .then(
+                        if (state.drawer == Drawer.Left) {
+                            Modifier
+                        } else {
+                            Modifier.semantics { invisibleToUser() }
+                        },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (state.drawer == Drawer.Left) {
+                    FloatingIconButton(
+                        icon = Icons.Default.Close,
+                        description = "Close explorer",
+                        modifier = Modifier.size(CloseButtonSize),
+                    ) {
+                        focusManager.clearFocus()
+                        controller.closeOverlays()
+                    }
+                }
+            }
 
             if (state.drawer == Drawer.Right) {
                 DrawerBackdrop {
@@ -1109,6 +1148,31 @@ private fun EditorArea(
 private fun phoneDrawerWidth(maxWidth: Dp): Dp {
     if (maxWidth <= 300.dp) return maxWidth
     return (maxWidth * 0.84f).coerceIn(300.dp, minOf(420.dp, maxWidth))
+}
+
+/** Width of the strip right of the left drawer that holds its close button. */
+private val CloseButtonSlot = 56.dp
+
+/** Height of the drawer's top section bar, matching the note header actions. */
+private val DrawerTopBarHeight = 44.dp
+
+/** Same 44 dp circle as the open note's header actions. */
+private val CloseButtonSize = DrawerTopBarHeight
+
+/** Drawer and panel surface tone, the dark scheme's `surfaceContainerHigh`. */
+private val DrawerSurfaceColor = Color(0xFF282828)
+
+/** Right-hand corners of the explorer drawer, curved like the note header pills. */
+private val DrawerCornerRadius = ViewHeaderHeight / 2
+
+/** Height of the dissolve scrim at the top and bottom of the file tree. */
+private val TreeEdgeFade = 20.dp
+
+/** Left drawer keeps a gutter on the right so the close button never covers it. */
+private fun leftDrawerWidth(maxWidth: Dp): Dp {
+    val gutter = CloseButtonSlot
+    if (maxWidth <= gutter + 200.dp) return maxWidth
+    return phoneDrawerWidth(maxWidth).coerceAtMost(maxWidth - gutter)
 }
 
 @Composable
@@ -1320,7 +1384,7 @@ private fun TabsDropdown(
             .coerceAtLeast(140.dp.toPx())
             .toDp()
     }
-    val headerHeight = 52.dp
+    val headerHeight = 44.dp
     val listMaxHeight = (maxMenuHeight - headerHeight - 1.dp).coerceAtLeast(72.dp)
     val listState = rememberLazyListState()
     val tabOrder = remember(state.tabs) { newestFirstTabOrder(state.tabs) }
@@ -1334,15 +1398,44 @@ private fun TabsDropdown(
         ),
     ) {
         Box(Modifier.fillMaxSize().clickable(onClick = onDismiss)) {
-            // Dim only the note area; the toolbar above stays bright.
+            // Opaque below the toolbar: the note disappears behind the menu,
+            // the same way it does behind the explorer drawer.
             Box(
                 Modifier
                     .fillMaxSize()
                     .padding(top = with(density) {
                         (anchorBottomPx - statusBarTopPx).coerceAtLeast(0).toDp()
                     })
-                    .background(Color.Black.copy(alpha = 0.7f)),
+                    .background(Color.Black),
             )
+            // New note sits in the header gutter, left of the menu and under
+            // the explorer toggle, so it only shows while this menu is open.
+            FloatingIconButton(
+                icon = NewNoteIcon,
+                description = "New note",
+                tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 12.dp, top = NoteActionTop)
+                    .size(44.dp),
+            ) {
+                onDismiss()
+                controller.newNote()
+            }
+            if (controller.state.settings.dailyNotes.enabled) {
+                FloatingIconButton(
+                    icon = CalendarIcon,
+                    description = "Daily note",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = 12.dp, top = NoteActionTop + NoteActionStep)
+                        .size(44.dp),
+                ) {
+                    onDismiss()
+                    controller.openDailyNote()
+                }
+            }
             Surface(
                 modifier = Modifier
                     .offset(x = leftInset, y = menuOffsetY)
@@ -1358,23 +1451,10 @@ private fun TabsDropdown(
                     Modifier
                         .fillMaxWidth()
                         .height(headerHeight)
-                        .padding(start = 4.dp, end = 8.dp),
+                        .padding(start = 8.dp, end = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.End,
                 ) {
-                    IconButton(
-                        onClick = {
-                            onDismiss()
-                            controller.newNote()
-                        },
-                        modifier = Modifier.size(44.dp),
-                    ) {
-                        Icon(
-                            NewNoteIcon,
-                            contentDescription = "New note",
-                            modifier = Modifier.size(24.dp),
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
                     Text(
                         "Close all (${state.tabs.size})",
                         modifier = Modifier
@@ -2350,11 +2430,11 @@ private fun RowScope.ModeTab(
 }
 
 @Composable
-private fun BoxScope.DrawerBackdrop(onDismiss: () -> Unit) {
+private fun BoxScope.DrawerBackdrop(alpha: Float = 0.5f, onDismiss: () -> Unit) {
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.5f))
+            .background(Color.Black.copy(alpha = alpha))
             .clickable(onClick = onDismiss),
     )
 }
@@ -2545,8 +2625,93 @@ private fun LeftDrawer(
             0.dp
         }
     }
-    Surface(modifier = modifier, color = Color(0xFF282828), tonalElevation = 0.dp) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(topEnd = DrawerCornerRadius, bottomEnd = DrawerCornerRadius),
+        color = DrawerSurfaceColor,
+        tonalElevation = 0.dp,
+    ) {
         Column(Modifier.fillMaxSize().padding(bottom = contentBottom)) {
+            // The bar is toolbar height, but the tiles stay inset from its
+            // edges so their rounded highlight never touches the dividers.
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(DrawerTopBarHeight)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                for (mode in DrawerMode.entries) {
+                    val active = state.drawerMode == mode
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(
+                                if (active) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                                } else {
+                                    Color.Transparent
+                                },
+                            )
+                            .clickable {
+                                focusManager.clearFocus()
+                                controller.setDrawerMode(mode)
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            drawerModeIcon(mode),
+                            contentDescription = drawerModeLabel(mode),
+                            modifier = Modifier.size(26.dp),
+                            tint = if (active) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                // Keep the native tree composed while another section is open.
+                // Recreating its SurfaceView on every tab switch tore the
+                // surface down and flashed the editor through the drawer.
+                val overlayMode = state.drawerMode != DrawerMode.Files
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .then(
+                            if (overlayMode) {
+                                Modifier.semantics { invisibleToUser() }
+                            } else {
+                                Modifier
+                            },
+                        ),
+                ) {
+                    TreeList(state, controller)
+                }
+                if (overlayMode) {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = DrawerSurfaceColor,
+                        tonalElevation = 0.dp,
+                    ) {
+                        when (state.drawerMode) {
+                            DrawerMode.Search -> SearchPanel(state, controller)
+                            DrawerMode.Bookmarks -> key(state.bookmarks, state.notes) {
+                                BookmarkedList(state, controller)
+                            }
+                            DrawerMode.Recent -> key(state.recentFiles, state.notes) {
+                                RecentList(state, controller)
+                            }
+                            DrawerMode.Files -> Unit
+                        }
+                    }
+                }
+            }
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -2587,6 +2752,7 @@ private fun LeftDrawer(
                         )
                     }
                 }
+                DrawerSyncButton(state, controller)
                 IconButton(
                     onClick = {
                         focusManager.clearFocus()
@@ -2599,98 +2765,6 @@ private fun LeftDrawer(
                         contentDescription = "Settings",
                         modifier = Modifier.size(24.dp),
                     )
-                }
-                IconButton(
-                    onClick = {
-                        focusManager.clearFocus()
-                        controller.closeOverlays()
-                    },
-                    modifier = Modifier.size(44.dp),
-                ) {
-                    Icon(
-                        Icons.Default.Close,
-                        contentDescription = "Close",
-                        modifier = Modifier.size(24.dp),
-                    )
-                }
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                // Keep the native tree composed while another section is open.
-                // Recreating its SurfaceView on every tab switch tore the
-                // surface down and flashed the editor through the drawer.
-                val overlayMode = state.drawerMode != DrawerMode.Files
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .then(
-                            if (overlayMode) {
-                                Modifier.semantics { invisibleToUser() }
-                            } else {
-                                Modifier
-                            },
-                        ),
-                ) {
-                    TreeList(state, controller)
-                }
-                if (overlayMode) {
-                    Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        color = Color(0xFF282828),
-                        tonalElevation = 0.dp,
-                    ) {
-                        when (state.drawerMode) {
-                            DrawerMode.Search -> SearchPanel(state, controller)
-                            DrawerMode.Bookmarks -> key(state.bookmarks, state.notes) {
-                                BookmarkedList(state, controller)
-                            }
-                            DrawerMode.Recent -> key(state.recentFiles, state.notes) {
-                                RecentList(state, controller)
-                            }
-                            DrawerMode.Files -> Unit
-                        }
-                    }
-                }
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                for (mode in DrawerMode.entries) {
-                    val active = state.drawerMode == mode
-                    Box(
-                        Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(
-                                if (active) {
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-                                } else {
-                                    Color.Transparent
-                                },
-                            )
-                            .clickable {
-                                focusManager.clearFocus()
-                                controller.setDrawerMode(mode)
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            drawerModeIcon(mode),
-                            contentDescription = drawerModeLabel(mode),
-                            modifier = Modifier.size(26.dp),
-                            tint = if (active) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                        )
-                    }
                 }
             }
         }
@@ -3165,6 +3239,20 @@ private fun TreeList(state: UiState, controller: VibecodiumController) {
                     it.setRenaming(renameRow != null)
                 },
             )
+            // Rows dissolve into the drawer surface at the bottom edge, where
+            // the tree meets the vault footer without a divider.
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(TreeEdgeFade)
+                    .background(
+                        Brush.verticalGradient(
+                            0f to DrawerSurfaceColor.copy(alpha = 0f),
+                            1f to DrawerSurfaceColor,
+                        ),
+                    ),
+            )
             val pressed = pressedPath.value
             val pressedIndex = pressed?.let { path -> rows.indexOfFirst { it.node.path == path } } ?: -1
             if (pressedIndex >= 0) {
@@ -3333,26 +3421,6 @@ private fun handleTreeAction(
 private fun ExplorerToolbar(state: UiState, controller: VibecodiumController) {
     val allCollapsed = state.folders.isNotEmpty() &&
         state.folders.all { it in state.collapsedFolders }
-    val syncLabel = when {
-        state.sync.busy -> "Stop sync"
-        state.sync.connected && !state.vaultSync.paused -> "Sync"
-        else -> "Refresh files"
-    }
-    val syncAngle = if (state.sync.busy) {
-        val transition = rememberInfiniteTransition(label = "sync-rotation")
-        val angle by transition.animateFloat(
-            initialValue = 0f,
-            targetValue = 360f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(900, easing = LinearEasing),
-                repeatMode = RepeatMode.Restart,
-            ),
-            label = "sync-angle",
-        )
-        angle
-    } else {
-        0f
-    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -3384,14 +3452,47 @@ private fun ExplorerToolbar(state: UiState, controller: VibecodiumController) {
             enabled = state.folders.isNotEmpty(),
             modifier = Modifier.weight(1f).fillMaxHeight(),
         ) { controller.toggleAllFolders() }
-        CompactToolbarButton(
+    }
+}
+
+/**
+ * Drawer footer sync action: syncs while connected, spins while running and
+ * falls back to a plain refresh. Sized like the settings button beside it.
+ */
+@Composable
+private fun DrawerSyncButton(state: UiState, controller: VibecodiumController) {
+    val label = when {
+        state.sync.busy -> "Stop sync"
+        state.sync.connected && !state.vaultSync.paused -> "Sync"
+        else -> "Refresh files"
+    }
+    val angle = if (state.sync.busy) {
+        val transition = rememberInfiniteTransition(label = "sync-rotation")
+        val spinning by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(900, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "sync-angle",
+        )
+        spinning
+    } else {
+        0f
+    }
+    IconButton(
+        onClick = { controller.refreshOrSync() },
+        modifier = Modifier.size(44.dp),
+    ) {
+        Icon(
             SyncArrowsIcon,
-            syncLabel,
-            rotation = syncAngle,
-            modifier = Modifier.weight(1f).fillMaxHeight(),
-        ) {
-            controller.refreshOrSync()
-        }
+            contentDescription = label,
+            modifier = Modifier
+                .size(24.dp)
+                .graphicsLayer { rotationZ = angle },
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -3401,7 +3502,6 @@ private fun CompactToolbarButton(
     description: String,
     enabled: Boolean = true,
     tint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
-    rotation: Float = 0f,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
@@ -3409,9 +3509,7 @@ private fun CompactToolbarButton(
         Icon(
             icon,
             contentDescription = description,
-            modifier = Modifier
-                .size(26.dp)
-                .graphicsLayer { rotationZ = rotation },
+            modifier = Modifier.size(26.dp),
             tint = if (enabled) tint else tint.copy(alpha = 0.35f),
         )
     }
