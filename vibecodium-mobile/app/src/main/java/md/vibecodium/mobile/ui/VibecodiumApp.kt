@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
@@ -54,6 +55,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -1261,6 +1263,16 @@ private class TabMenuPositionProvider(
     }
 }
 
+/** Positions the full-screen dim layer used by the tab menu. */
+private object FullScreenPositionProvider : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset = IntOffset.Zero
+}
+
 /**
  * Obsidian-style tab dropdown: a boundeded full-width LazyColumn under the
  * title pill with its own scrollbar (the stock DropdownMenu cannot host one).
@@ -1275,24 +1287,32 @@ private fun TabsDropdown(
     val density = LocalDensity.current
     val screenHeight = LocalConfiguration.current.screenHeightDp.dp
     val screenWidth = LocalConfiguration.current.screenWidthDp.dp
-    // Same side gutters as the header toolbar.
-    val sideInset = 12.dp
-    val menuWidth = (screenWidth - sideInset * 2).coerceAtLeast(200.dp)
-    val leftInsetPx = with(density) { sideInset.roundToPx() }
-    val anchorBottom = with(density) { anchorBottomPx.toDp() }
+    // The list starts where the file-name pill starts; the dimmed note stays
+    // visible in the empty gutter on the left.
+    val leftInset = 60.dp
+    val rightInset = 12.dp
+    val menuWidth = (screenWidth - leftInset - rightInset).coerceAtLeast(200.dp)
+    // The Popup window starts below the status bar, while the anchor is in
+    // window coordinates, so subtract the status-bar inset for the offset.
+    val statusBarTopPx = WindowInsets.statusBars.getTop(density)
+    val navBarBottomPx = WindowInsets.navigationBars.getBottom(density)
+    val gapPx = with(density) { 4.dp.roundToPx() }
+    val menuTopScreenPx = anchorBottomPx + gapPx
+    val menuOffsetY = with(density) {
+        (menuTopScreenPx - statusBarTopPx).coerceAtLeast(0).toDp()
+    }
     // The keyboard is hidden before the menu opens; keep room for the system
     // navigation bar so the last row is never covered.
-    val maxMenuHeight = (screenHeight - anchorBottom - 48.dp - 8.dp).coerceAtLeast(140.dp)
+    val maxMenuHeight = with(density) {
+        (screenHeight.toPx() - menuTopScreenPx - navBarBottomPx - 8.dp.toPx())
+            .coerceAtLeast(140.dp.toPx())
+            .toDp()
+    }
     val headerHeight = 52.dp
     val listMaxHeight = (maxMenuHeight - headerHeight - 1.dp).coerceAtLeast(72.dp)
     val listState = rememberLazyListState()
     Popup(
-        popupPositionProvider = remember(density, leftInsetPx) {
-            TabMenuPositionProvider(
-                gap = with(density) { 4.dp.roundToPx() },
-                left = leftInsetPx,
-            )
-        },
+        popupPositionProvider = FullScreenPositionProvider,
         onDismissRequest = onDismiss,
         properties = PopupProperties(
             focusable = true,
@@ -1300,13 +1320,26 @@ private fun TabsDropdown(
             dismissOnClickOutside = true,
         ),
     ) {
-        Surface(
-            modifier = Modifier.width(menuWidth).heightIn(max = maxMenuHeight),
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            tonalElevation = 3.dp,
-            shadowElevation = 6.dp,
-        ) {
+        Box(Modifier.fillMaxSize().clickable(onClick = onDismiss)) {
+            // Dim only the note area; the toolbar above stays bright.
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .padding(top = with(density) {
+                        (anchorBottomPx - statusBarTopPx).coerceAtLeast(0).toDp()
+                    })
+                    .background(Color.Black.copy(alpha = 0.7f)),
+            )
+            Surface(
+                modifier = Modifier
+                    .offset(x = leftInset, y = menuOffsetY)
+                    .width(menuWidth)
+                    .heightIn(max = maxMenuHeight),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                tonalElevation = 3.dp,
+                shadowElevation = 6.dp,
+            ) {
             Column {
                 Row(
                     Modifier
@@ -1381,6 +1414,7 @@ private fun TabsDropdown(
             }
         }
     }
+}
 }
 
 @Composable
@@ -1474,7 +1508,7 @@ private fun ViewHeader(
                         onHideKeyboard()
                         menuOpen = true
                     }
-                    NoteActionsMenu(
+                    HeaderNoteMenu(
                         expanded = menuOpen,
                         onDismiss = { menuOpen = false },
                         tab = tab,
@@ -1483,8 +1517,7 @@ private fun ViewHeader(
                         activeTab = state.activeTab,
                         controller = controller,
                         anchorBottomPx = titleBottomPx,
-                    )
-                }
+                    )                }
             }
         }
     }
@@ -1533,6 +1566,81 @@ private fun HeaderActionButton(
     }
 }
 
+/**
+ * Toolbar "three dots" menu: dims the note, stays under the toolbar, and is
+ * only as wide as its longest row.
+ */
+@Composable
+private fun HeaderNoteMenu(
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    tab: Tab,
+    editorMode: EditorMode,
+    bookmarked: Boolean,
+    activeTab: Int,
+    controller: VibecodiumController,
+    anchorBottomPx: Int,
+) {
+    if (!expanded) return
+    val density = LocalDensity.current
+    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    val statusBarTopPx = WindowInsets.statusBars.getTop(density)
+    val navBarBottomPx = WindowInsets.navigationBars.getBottom(density)
+    val gapPx = with(density) { 4.dp.roundToPx() }
+    val menuTopScreenPx = anchorBottomPx + gapPx
+    val menuOffsetY = with(density) {
+        (menuTopScreenPx - statusBarTopPx).coerceAtLeast(0).toDp()
+    }
+    val maxMenuHeight = with(density) {
+        (screenHeight.toPx() - menuTopScreenPx - navBarBottomPx - 8.dp.toPx())
+            .coerceAtLeast(160.dp.toPx())
+            .toDp()
+    }
+    Popup(
+        popupPositionProvider = FullScreenPositionProvider,
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(
+            focusable = true,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
+        ),
+    ) {
+        Box(Modifier.fillMaxSize().clickable(onClick = onDismiss)) {
+            // Dim only the note area; the toolbar above stays bright.
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .padding(top = with(density) {
+                        (anchorBottomPx - statusBarTopPx).coerceAtLeast(0).toDp()
+                    })
+                    .background(Color.Black.copy(alpha = 0.7f)),
+            )
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(end = 12.dp, top = menuOffsetY)
+                    .width(IntrinsicSize.Max)
+                    .heightIn(max = maxMenuHeight),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                tonalElevation = 3.dp,
+                shadowElevation = 6.dp,
+            ) {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    NoteActionItems(
+                        tab = tab,
+                        editorMode = editorMode,
+                        bookmarked = bookmarked,
+                        activeTab = activeTab,
+                        controller = controller,
+                        onDismiss = onDismiss,
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun NoteActionsMenu(
     expanded: Boolean,
@@ -1576,60 +1684,80 @@ private fun NoteActionsMenu(
             shadowElevation = 6.dp,
         ) {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                DropdownMenuItem(
-                    text = { Text(if (editorMode == EditorMode.Source) "Reading view" else "Edit view") },
-                    onClick = {
-                        onDismiss()
-                        controller.setEditorMode(
-                            if (editorMode == EditorMode.Source) EditorMode.Preview else EditorMode.Source,
-                        )
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("Save note") },
-                    onClick = { onDismiss(); controller.saveActiveNow() },
-                )
-                DropdownMenuItem(
-                    text = { Text("Rename note") },
-                    onClick = { onDismiss(); controller.beginRename() },
-                )
-                DropdownMenuItem(
-                    text = { Text(if (bookmarked) "Remove bookmark" else "Toggle bookmark") },
-                    onClick = { onDismiss(); controller.toggleBookmarkActive() },
-                )
-                if (tab.language == null) {
-                    DropdownMenuItem(
-                        text = { Text("Outline") },
-                        onClick = { onDismiss(); controller.toggleDrawer(Drawer.Right) },
-                    )
-                }
-                DropdownMenuItem(
-                    text = { Text("Sync") },
-                    onClick = { onDismiss(); controller.openSettings("Sync") },
-                )
-                DropdownMenuItem(
-                    text = { Text("Close tab") },
-                    onClick = { onDismiss(); controller.closeTab(activeTab) },
-                )
-                DropdownMenuItem(
-                    text = { Text("Delete note") },
-                    onClick = { onDismiss(); controller.confirmDeleteActive() },
-                )
-                HorizontalDivider()
-                DropdownMenuItem(
-                    text = { Text("Open another vault") },
-                    onClick = { onDismiss(); controller.openVaultChooser() },
-                )
-                DropdownMenuItem(
-                    text = { Text("About") },
-                    onClick = {
-                        onDismiss()
-                        controller.showMessage("vibecodium · Rust core 0.1.0")
-                    },
+                NoteActionItems(
+                    tab = tab,
+                    editorMode = editorMode,
+                    bookmarked = bookmarked,
+                    activeTab = activeTab,
+                    controller = controller,
+                    onDismiss = onDismiss,
                 )
             }
         }
     }
+}
+
+/** Menu rows shared by the toolbar menu and the bottom-nav menu. */
+@Composable
+private fun NoteActionItems(
+    tab: Tab,
+    editorMode: EditorMode,
+    bookmarked: Boolean,
+    activeTab: Int,
+    controller: VibecodiumController,
+    onDismiss: () -> Unit,
+) {
+    DropdownMenuItem(
+        text = { Text(if (editorMode == EditorMode.Source) "Reading view" else "Edit view") },
+        onClick = {
+            onDismiss()
+            controller.setEditorMode(
+                if (editorMode == EditorMode.Source) EditorMode.Preview else EditorMode.Source,
+            )
+        },
+    )
+    DropdownMenuItem(
+        text = { Text("Save note") },
+        onClick = { onDismiss(); controller.saveActiveNow() },
+    )
+    DropdownMenuItem(
+        text = { Text("Rename note") },
+        onClick = { onDismiss(); controller.beginRename() },
+    )
+    DropdownMenuItem(
+        text = { Text(if (bookmarked) "Remove bookmark" else "Toggle bookmark") },
+        onClick = { onDismiss(); controller.toggleBookmarkActive() },
+    )
+    if (tab.language == null) {
+        DropdownMenuItem(
+            text = { Text("Outline") },
+            onClick = { onDismiss(); controller.toggleDrawer(Drawer.Right) },
+        )
+    }
+    DropdownMenuItem(
+        text = { Text("Sync") },
+        onClick = { onDismiss(); controller.openSettings("Sync") },
+    )
+    DropdownMenuItem(
+        text = { Text("Close tab") },
+        onClick = { onDismiss(); controller.closeTab(activeTab) },
+    )
+    DropdownMenuItem(
+        text = { Text("Delete note") },
+        onClick = { onDismiss(); controller.confirmDeleteActive() },
+    )
+    HorizontalDivider()
+    DropdownMenuItem(
+        text = { Text("Open another vault") },
+        onClick = { onDismiss(); controller.openVaultChooser() },
+    )
+    DropdownMenuItem(
+        text = { Text("About") },
+        onClick = {
+            onDismiss()
+            controller.showMessage("vibecodium · Rust core 0.1.0")
+        },
+    )
 }
 
 // --------------------------------------------------------------------- source
