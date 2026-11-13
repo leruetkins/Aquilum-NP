@@ -697,7 +697,38 @@ class VibecodiumController(context: Context) {
         } else {
             state = state.copy(headings = emptyList(), stats = DocStats(0, 0, 0), lines = emptyList(), markdownText = "")
         }
+        // Keep the tab list open so several tabs can be closed in a row; only
+        // leave it when there is nothing left to show.
+        if (state.tabs.isEmpty()) state = state.copy(tabSwitcher = false)
         persistTabs()
+    }
+
+    /** Closes every open tab; dirty documents are saved first. */
+    fun closeAllTabs() {
+        if (state.tabs.isEmpty()) {
+            state = state.copy(tabSwitcher = false)
+            return
+        }
+        saveJob?.cancel()
+        val dirty = state.tabs.filter { it.dirty && it.isLoaded }
+        val repository = repository
+        state = state.copy(
+            tabs = emptyList(),
+            activeTab = -1,
+            tabSwitcher = false,
+            headings = emptyList(),
+            stats = DocStats(0, 0, 0),
+            lines = emptyList(),
+            markdownText = "",
+        )
+        persistTabs()
+        if (repository != null && dirty.isNotEmpty()) {
+            scope.launch {
+                for (tab in dirty) {
+                    runCatching { repository.writeNote(tab.path, tab.text) }
+                }
+            }
+        }
     }
 
     private fun removeTabState(index: Int): Int {
@@ -709,7 +740,7 @@ class VibecodiumController(context: Context) {
             index == state.activeTab -> index.coerceAtMost(tabs.lastIndex)
             else -> state.activeTab
         }
-        state = state.copy(tabs = tabs, activeTab = active, tabSwitcher = false)
+        state = state.copy(tabs = tabs, activeTab = active)
         return active
     }
 

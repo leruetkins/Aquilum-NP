@@ -484,6 +484,32 @@ private val TrashIcon: ImageVector = ImageVector.Builder(
     }
 }.build()
 
+/** A tab with a cross: "close all tabs". */
+private val CloseTabsIcon: ImageVector = ImageVector.Builder(
+    name = "close-tabs",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f) {
+        moveTo(5f, 4f)
+        lineTo(19f, 4f)
+        quadTo(21f, 4f, 21f, 6f)
+        lineTo(21f, 18f)
+        quadTo(21f, 20f, 19f, 20f)
+        lineTo(5f, 20f)
+        quadTo(3f, 20f, 3f, 18f)
+        lineTo(3f, 6f)
+        quadTo(3f, 4f, 5f, 4f)
+        close()
+        moveTo(9f, 9f)
+        lineTo(15f, 15f)
+        moveTo(15f, 9f)
+        lineTo(9f, 15f)
+    }
+}.build()
+
 /** `lucide-keyboard`, shown after placing the caret before the IME opens. */
 private val KeyboardIcon: ImageVector = ImageVector.Builder(
     name = "keyboard",
@@ -804,6 +830,10 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
         if (navBarBottomPx > 0) stableNavBarBottomPx = navBarBottomPx
     }
     val stableNavBottom = with(density) { stableNavBarBottomPx.toDp() }
+    // While the keyboard is visible it already covers the navigation bar area;
+    // reserving the nav inset would leave a black strip under the tab list.
+    val imeVisible = WindowInsets.isImeVisible
+    val bottomInset = if (imeVisible) 0.dp else stableNavBottom
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
@@ -812,11 +842,10 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
             .windowInsetsPadding(
                 WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal),
             )
-            .padding(bottom = stableNavBottom),
+            .padding(bottom = bottomInset),
     ) {
         val drawerWidth = phoneDrawerWidth(maxWidth)
         val navbarEnabled = state.settings.navbarEnabled
-        val imeVisible = WindowInsets.isImeVisible
         val focusManager = LocalFocusManager.current
         var chromeHidden by remember { mutableStateOf(false) }
         val lastAnchor = remember { floatArrayOf(0f) }
@@ -894,7 +923,9 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 imeVisible,
                 navbarEnabled,
                 chromeProgress,
-                state.drawer != null,
+                // Drawers and the tab switcher are full-screen browsing
+                // surfaces; the keyboard must not cover them.
+                state.drawer != null || state.tabSwitcher,
                 onEditorScroll,
             )
 
@@ -1021,7 +1052,7 @@ private fun EditorArea(
     imeVisible: Boolean,
     navbarEnabled: Boolean,
     chromeProgress: State<Float>,
-    drawerOpen: Boolean,
+    keyboardHidden: Boolean,
     onEditorScroll: (Float, Float, Boolean) -> Unit,
 ) {
     val density = LocalDensity.current
@@ -1054,7 +1085,7 @@ private fun EditorArea(
             navbarEnabled,
             bottomInsetPx,
             chromeProgress,
-            drawerOpen,
+            keyboardHidden,
             onEditorScroll,
         )
     }
@@ -1075,7 +1106,7 @@ private fun EditorScreen(
     navbarEnabled: Boolean,
     bottomInsetPx: Float,
     chromeProgress: State<Float>,
-    drawerOpen: Boolean,
+    keyboardHidden: Boolean,
     onEditorScroll: (Float, Float, Boolean) -> Unit,
 ) {
     val bottomInset = if (imeVisible || !navbarEnabled) 0.dp else NavbarHeight + 12.dp
@@ -1104,8 +1135,8 @@ private fun EditorScreen(
             }
         }
     }
-    LaunchedEffect(drawerOpen) {
-        if (drawerOpen) {
+    LaunchedEffect(keyboardHidden) {
+        if (keyboardHidden) {
             editorView?.hideKeyboard()
         } else if (!preview) {
             editorView?.focusEditor()
@@ -1206,7 +1237,6 @@ private fun ViewHeader(state: EditorSlice, tab: Tab, controller: VibecodiumContr
     val bookmarked = tab.path in state.bookmarks
     val preview = state.editorMode == EditorMode.Preview
     var menuOpen by remember { mutableStateOf(false) }
-    var tabsMenuOpen by remember { mutableStateOf(false) }
     Row(
         Modifier
             .fillMaxWidth()
@@ -1216,14 +1246,13 @@ private fun ViewHeader(state: EditorSlice, tab: Tab, controller: VibecodiumContr
     ) {
         // The floating explorer button is rendered by PhoneShell at the
         // same top-left position for both empty and open states.
-        BoxWithConstraints(
+        Box(
             Modifier
                 .weight(1f)
                 .fillMaxHeight(),
         ) {
-            val titleWidth = maxWidth
             Surface(
-                onClick = { tabsMenuOpen = true },
+                onClick = { controller.toggleTabSwitcher() },
                 modifier = Modifier.fillMaxSize(),
                 shape = RoundedCornerShape(percent = 50),
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -1250,76 +1279,6 @@ private fun ViewHeader(state: EditorSlice, tab: Tab, controller: VibecodiumContr
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                }
-            }
-            // The menu follows the title button: same width, same corner
-            // radius, and a small gap underneath it.
-            DropdownMenu(
-                expanded = tabsMenuOpen,
-                onDismissRequest = { tabsMenuOpen = false },
-                modifier = Modifier.width(titleWidth),
-                offset = DpOffset(0.dp, 4.dp),
-                shape = RoundedCornerShape(22.dp),
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                tonalElevation = 3.dp,
-                shadowElevation = 4.dp,
-            ) {
-                state.tabs.forEachIndexed { index, item ->
-                    val active = index == state.activeTab
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(40.dp)
-                            .clickable {
-                                tabsMenuOpen = false
-                                controller.selectTab(index)
-                            }
-                            .padding(start = 8.dp, end = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            Icons.Default.Check,
-                            contentDescription = null,
-                            modifier = Modifier.size(15.dp),
-                            tint = if (active) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                Color.Transparent
-                            },
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            item.title + if (item.dirty) " •" else "",
-                            modifier = Modifier.weight(1f),
-                            fontSize = 13.sp,
-                            fontWeight = if (active) {
-                                FontWeight.SemiBold
-                            } else {
-                                FontWeight.Normal
-                            },
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            color = if (active) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
-                            },
-                        )
-                        IconButton(
-                            onClick = {
-                                controller.closeTab(index)
-                                if (state.tabs.size <= 1) tabsMenuOpen = false
-                            },
-                            modifier = Modifier.size(30.dp),
-                        ) {
-                            Icon(
-                                Icons.Default.Close,
-                                contentDescription = "Close tab",
-                                modifier = Modifier.size(15.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
                 }
             }
         }
@@ -2444,7 +2403,11 @@ private fun RightDrawer(state: UiState, controller: VibecodiumController, modifi
 
 @Composable
 private fun TabSwitcher(state: UiState, controller: VibecodiumController, modifier: Modifier) {
-    Surface(modifier = modifier, color = MaterialTheme.colorScheme.background) {
+    val listState = rememberLazyListState()
+    Surface(
+        modifier = modifier.imePadding(),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
         Column(Modifier.fillMaxSize()) {
             Row(
                 Modifier
@@ -2462,68 +2425,132 @@ private fun TabSwitcher(state: UiState, controller: VibecodiumController, modifi
                 IconButton(onClick = { controller.newNote() }) {
                     Icon(Icons.Default.Add, contentDescription = "New note", modifier = Modifier.size(20.dp))
                 }
+                IconButton(
+                    onClick = { controller.closeAllTabs() },
+                    enabled = state.tabs.isNotEmpty(),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            CloseTabsIcon,
+                            contentDescription = "Close all tabs",
+                            modifier = Modifier.size(20.dp),
+                            tint = if (state.tabs.isNotEmpty()) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                            },
+                        )
+                        if (state.tabs.isNotEmpty()) {
+                            Spacer(Modifier.width(3.dp))
+                            Text(
+                                state.tabs.size.toString(),
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
                 IconButton(onClick = { controller.toggleTabSwitcher() }) {
                     Icon(Icons.Default.Close, contentDescription = "Close", modifier = Modifier.size(20.dp))
                 }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
-            LazyColumn(Modifier.fillMaxSize().padding(8.dp)) {
-                itemsIndexed(state.tabs) { index, tab ->
-                    val active = index == state.activeTab
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .background(
-                                if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                                else Color.Transparent,
-                                RoundedCornerShape(8.dp),
-                            )
-                            .clickable { controller.selectTab(index) }
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                tab.title + if (tab.dirty) " •" else "",
-                                fontSize = 14.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                tab.path,
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        if (tab.path in state.bookmarks) {
-                            Icon(
-                                Icons.Default.Star,
-                                contentDescription = "Bookmarked",
-                                modifier = Modifier.size(14.dp),
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                        if (active) {
-                            Icon(
-                                Icons.Default.Check,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                        IconButton(onClick = { controller.closeTab(index) }) {
-                            Icon(
-                                Icons.Default.Close,
-                                contentDescription = "Close tab",
-                                modifier = Modifier.size(16.dp),
-                            )
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(start = 8.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+                ) {
+                    itemsIndexed(state.tabs, key = { _, tab -> tab.path }) { index, tab ->
+                        val active = index == state.activeTab
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                    else Color.Transparent,
+                                    RoundedCornerShape(8.dp),
+                                )
+                                .clickable { controller.selectTab(index) }
+                                .padding(horizontal = 12.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    tab.title + if (tab.dirty) " •" else "",
+                                    fontSize = 14.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    tab.path,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            if (tab.path in state.bookmarks) {
+                                Icon(
+                                    Icons.Default.Star,
+                                    contentDescription = "Bookmarked",
+                                    modifier = Modifier.size(14.dp),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                            if (active) {
+                                Icon(
+                                    Icons.Default.Check,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                            IconButton(onClick = { controller.closeTab(index) }) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Close tab",
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
                         }
                     }
                 }
+                TabScrollBar(
+                    state = listState,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                        .padding(end = 3.dp, top = 6.dp, bottom = 6.dp),
+                )
             }
         }
+    }
+}
+
+/** Minimal vertical scrollbar for a Compose list; drawn only when it overflows. */
+@Composable
+private fun TabScrollBar(state: LazyListState, modifier: Modifier = Modifier) {
+    val layout = state.layoutInfo
+    val visible = layout.visibleItemsInfo
+    val total = layout.totalItemsCount
+    if (visible.isEmpty() || total <= visible.size) return
+    BoxWithConstraints(modifier) {
+        val track = maxHeight
+        val fraction = visible.size.toFloat() / total
+        val thumb = (track * fraction).coerceAtLeast(24.dp).coerceAtMost(track)
+        val maxOffset = (track - thumb).coerceAtLeast(0.dp)
+        val scrollable = (total - visible.size).coerceAtLeast(1)
+        val offset = maxOffset * (visible.first().index.toFloat() / scrollable)
+        Box(
+            Modifier
+                .offset(y = offset)
+                .width(3.dp)
+                .height(thumb)
+                .clip(RoundedCornerShape(2.dp))
+                .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)),
+        )
     }
 }
 
