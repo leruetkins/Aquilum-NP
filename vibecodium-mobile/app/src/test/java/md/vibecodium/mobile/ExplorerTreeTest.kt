@@ -56,7 +56,7 @@ class ExplorerTreeTest {
     }
 
     @Test
-    fun filterKeepsAncestorsAndMatchingFolderSubtrees() {
+    fun filterKeepsMatchesAndTheirAncestorsOnly() {
         val tree = buildExplorerTree(
             entries = listOf(
                 entry("root-note.md"),
@@ -71,13 +71,22 @@ class ExplorerTreeTest {
         assertEquals(listOf("Sub"), byFile[0].children.map { it.name })
         assertEquals(listOf("beta.md"), byFile[0].children[0].children.map { it.name })
 
+        // A matching folder is shown as a row; unrelated children stay hidden.
         val byFolder = filterExplorerTree(tree, "projects")
         assertEquals(listOf("Projects"), byFolder.map { it.name })
-        assertEquals(
-            listOf("Sub", "alpha.md"),
-            byFolder[0].children.map { it.name },
-        )
+        assertEquals(emptyList<String>(), byFolder[0].children.map { it.name })
         assertFalse(byFolder.any { it.name == "root-note.md" })
+
+        val byChild = filterExplorerTree(tree, "alpha")
+        assertEquals(listOf("Projects"), byChild.map { it.name })
+        assertEquals(listOf("alpha.md"), byChild[0].children.map { it.name })
+
+        assertEquals(
+            setOf("Projects", "Projects/Sub"),
+            filteredAncestors(byFile),
+        )
+        assertEquals(emptySet<String>(), filteredAncestors(byFolder))
+        assertEquals(setOf("Projects"), filteredAncestors(byChild))
     }
 
     @Test

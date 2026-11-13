@@ -1133,6 +1133,11 @@ struct TreeRow {
     note: bool,
     #[serde(default)]
     extension: String,
+    /// First matching character in the displayed name; `match_len` 0 = none.
+    #[serde(default)]
+    match_start: usize,
+    #[serde(default)]
+    match_len: usize,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -2099,17 +2104,59 @@ impl SurfaceState {
                 }
                 name.push('…');
             }
-            painter.draw(
-                pixels,
-                self.width,
-                self.height,
-                text_x,
-                y + (row_h - name_font) / 2.0,
-                &name,
-                name_font,
-                if row.folder || row.note { 0xdadada } else { 0xb3b3b3 },
-                false,
-            );
+            let name_color = if row.folder || row.note { 0xdadada } else { 0xb3b3b3 };
+            let name_y = y + (row_h - name_font) / 2.0;
+            let chars: Vec<char> = name.chars().collect();
+            let start = row.match_start.min(chars.len());
+            let end = (start + row.match_len).min(chars.len());
+            if row.match_len > 0 && start < end {
+                let prefix: String = chars[..start].iter().collect();
+                let matched: String = chars[start..end].iter().collect();
+                let suffix: String = chars[end..].iter().collect();
+                let mut x = text_x;
+                if !prefix.is_empty() {
+                    painter.draw(pixels, self.width, self.height, x, name_y, &prefix, name_font, name_color, false);
+                    x += painter.width(&prefix, name_font, false);
+                }
+                let matched_width = painter.width(&matched, name_font, false);
+                rect(
+                    pixels,
+                    self.width,
+                    self.height,
+                    x,
+                    name_y,
+                    matched_width,
+                    name_font,
+                    0x4a3a5e,
+                );
+                painter.draw(
+                    pixels,
+                    self.width,
+                    self.height,
+                    x,
+                    name_y,
+                    &matched,
+                    name_font,
+                    0xffffff,
+                    false,
+                );
+                x += matched_width;
+                if !suffix.is_empty() {
+                    painter.draw(pixels, self.width, self.height, x, name_y, &suffix, name_font, name_color, false);
+                }
+            } else {
+                painter.draw(
+                    pixels,
+                    self.width,
+                    self.height,
+                    text_x,
+                    name_y,
+                    &name,
+                    name_font,
+                    name_color,
+                    false,
+                );
+            }
             if show_tag {
                 let tag_x = self.width as f32 - tag_width - 8.0 * density;
                 rect(

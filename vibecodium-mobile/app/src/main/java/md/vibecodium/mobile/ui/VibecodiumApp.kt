@@ -222,7 +222,9 @@ import md.vibecodium.mobile.UiState
 import md.vibecodium.mobile.VibecodiumController
 import md.vibecodium.mobile.ExplorerRow
 import md.vibecodium.mobile.expandDailyNoteFormat
+import md.vibecodium.mobile.explorerDisplayName
 import md.vibecodium.mobile.filterExplorerTree
+import md.vibecodium.mobile.filteredAncestors
 import md.vibecodium.mobile.flattenExplorerTree
 import md.vibecodium.mobile.indentAtCursor
 import md.vibecodium.mobile.outdentAtCursor
@@ -3023,35 +3025,64 @@ private fun TreeList(state: UiState, controller: VibecodiumController) {
         val filtered = remember(state.explorerTree, state.fileQuery) {
             filterExplorerTree(state.explorerTree, state.fileQuery)
         }
-        val collapsed = if (state.fileQuery.isBlank()) state.collapsedFolders else emptySet()
+        val filterActive = state.fileQuery.isNotBlank()
+        // Folders on the way to a matching file open automatically; the user
+        // can still collapse them for this filter pass.
+        val matchAncestors = remember(filtered) { filteredAncestors(filtered) }
+        var filterOverrides by remember(state.fileQuery) {
+            mutableStateOf<Map<String, Boolean>>(emptyMap())
+        }
+        val collapsed = remember(state.collapsedFolders, matchAncestors, filterOverrides, filterActive) {
+            if (!filterActive) {
+                state.collapsedFolders
+            } else {
+                val result = (state.collapsedFolders - matchAncestors).toMutableSet()
+                for ((path, expanded) in filterOverrides) {
+                    if (expanded) result.remove(path) else result.add(path)
+                }
+                result
+            }
+        }
         val rows = remember(filtered, collapsed) {
             flattenExplorerTree(filtered, collapsed)
         }
+        val toggle: (String) -> Unit = { path ->
+            if (!filterActive) {
+                controller.toggleFolder(path)
+            } else {
+                // false = collapsed, true = expanded for this filter pass.
+                val currentlyCollapsed = path in collapsed
+                filterOverrides = filterOverrides + (path to currentlyCollapsed)
+            }
+        }
+        val toggleState = rememberUpdatedState(toggle)
         if (rows.isEmpty()) {
             Placeholder("No matching files.")
             return@Column
         }
         val activePath = state.tabs.getOrNull(state.activeTab)?.path
-        val treeJson = remember(rows, activePath, state.collapsedFolders) {
+        val treeJson = remember(rows, activePath, collapsed, state.fileQuery) {
+            val query = state.fileQuery.trim()
             val array = JSONArray()
             for (row in rows) {
+                val displayName = explorerDisplayName(row.node)
+                val matchIndex = if (query.isEmpty()) {
+                    -1
+                } else {
+                    displayName.indexOf(query, ignoreCase = true)
+                }
                 array.put(
                     JSONObject()
-                        .put(
-                            "name",
-                            if (row.node.isFolder) {
-                                row.node.name
-                            } else {
-                                row.node.name.substringBeforeLast('.', row.node.name)
-                            },
-                        )
+                        .put("name", displayName)
                         .put("path", row.node.path)
                         .put("folder", row.node.isFolder)
                         .put("depth", row.depth)
-                        .put("expanded", row.node.path !in state.collapsedFolders)
+                        .put("expanded", row.node.path !in collapsed)
                         .put("has_children", row.node.children.isNotEmpty())
                         .put("note", row.node.entry?.isNote == true)
-                        .put("extension", row.node.entry?.extension.orEmpty()),
+                        .put("extension", row.node.entry?.extension.orEmpty())
+                        .put("match_start", if (matchIndex >= 0) displayName.codePointCount(0, matchIndex) else 0)
+                        .put("match_len", if (matchIndex >= 0) query.codePointCount(0, query.length) else 0),
                 )
             }
             JSONObject()
@@ -3084,7 +3115,9 @@ private fun TreeList(state: UiState, controller: VibecodiumController) {
                 factory = { context ->
                     NativeTreeView(
                         context,
-                        onAction = { action -> handleTreeAction(action, controller) },
+                        onAction = { action ->
+                            handleTreeAction(action, controller) { path -> toggleState.value(path) }
+                        },
                         onTouchStart = { if (!renamingNow) focusManager.clearFocus() },
                         onPress = { path -> pressedPath.value = path },
                     ).also { treeView = it }
@@ -3235,7 +3268,11 @@ private fun BoxScope.TreeInlineRename(
     }
 }
 
-private fun handleTreeAction(action: String, controller: VibecodiumController) {
+private fun handleTreeAction(
+    action: String,
+    controller: VibecodiumController,
+    onToggle: (String) -> Unit = { controller.toggleFolder(it) },
+) {
     val value = runCatching { JSONObject(action) }.getOrNull() ?: return
     val kind = value.optString("kind")
     if (kind == "commit_rename") {
@@ -3245,7 +3282,7 @@ private fun handleTreeAction(action: String, controller: VibecodiumController) {
     val path = value.optString("path")
     if (path.isEmpty()) return
     when (kind) {
-        "toggle" -> controller.toggleFolder(path)
+        "toggle" -> onToggle(path)
         "open_note" -> {
             controller.openNote(path)
             controller.closeOverlays()

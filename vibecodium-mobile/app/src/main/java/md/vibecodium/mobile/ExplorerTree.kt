@@ -90,22 +90,23 @@ fun buildExplorerTree(
     return root.freeze()
 }
 
+/** Name shown in the explorer: folders keep it, files lose the extension. */
+fun explorerDisplayName(node: ExplorerNode): String =
+    if (node.isFolder) node.name else node.name.substringBeforeLast('.', node.name)
+
 /**
- * Keeps files whose name or path matches [query] plus the folders needed to
- * reach them. A matching folder keeps its whole subtree, which is what a file
- * picker normally does when the user searches for a folder.
+ * Keeps nodes whose displayed name matches [query] plus the folders needed to
+ * reach them. A matching folder is kept as a row only; its children are shown
+ * only when they match themselves, and the user's collapse state decides
+ * whether they are visible.
  */
 fun filterExplorerTree(tree: List<ExplorerNode>, query: String): List<ExplorerNode> {
     val needle = query.trim().lowercase()
     if (needle.isEmpty()) return tree
 
     fun filter(nodes: List<ExplorerNode>): List<ExplorerNode> = nodes.mapNotNull { node ->
-        val selfMatch = if (node.isFolder) {
-            node.name.lowercase().contains(needle)
-        } else {
-            node.path.lowercase().contains(needle)
-        }
-        val children = if (selfMatch && node.isFolder) node.children else filter(node.children)
+        val selfMatch = explorerDisplayName(node).lowercase().contains(needle)
+        val children = filter(node.children)
         if (selfMatch || children.isNotEmpty()) {
             node.copy(children = children)
         } else {
@@ -114,6 +115,25 @@ fun filterExplorerTree(tree: List<ExplorerNode>, query: String): List<ExplorerNo
     }
 
     return filter(tree)
+}
+
+/**
+ * Folders that should be expanded so matches from [filterExplorerTree] are
+ * visible. A folder whose own name matched but has no matching children is
+ * not included, so it does not reveal unrelated contents.
+ */
+fun filteredAncestors(tree: List<ExplorerNode>): Set<String> {
+    val result = mutableSetOf<String>()
+    fun visit(nodes: List<ExplorerNode>) {
+        for (node in nodes) {
+            if (node.isFolder && node.children.isNotEmpty()) {
+                result.add(node.path)
+                visit(node.children)
+            }
+        }
+    }
+    visit(tree)
+    return result
 }
 
 /** Depth-first rows, skipping children of collapsed folders. */
