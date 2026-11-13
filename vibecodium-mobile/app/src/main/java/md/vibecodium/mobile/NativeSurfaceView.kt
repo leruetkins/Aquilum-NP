@@ -450,9 +450,19 @@ class NativeTreeView(
 
     fun setRenaming(value: Boolean) {
         renaming = value
+        // The inline editor is positioned without a horizontal offset; bring
+        // the row back to its left edge when renaming starts.
+        if (value) {
+            CoreBridge.nativeTreeSetScrollX(surfaceId, 0f)
+            requestRender()
+        }
     }
 
     private val touchSlopPx = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+    private var downX = 0f
+    private var downY = 0f
+    /** True once the current gesture clearly moves horizontally. */
+    private var horizontalDrag = false
     private var longPressRow: TreeRowInfo? = null
     private var longPressAtX = 0f
     private var longPressAtY = 0f
@@ -542,11 +552,19 @@ class NativeTreeView(
             stopTreeFling()
             velocityTracker?.recycle()
             velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
+            downX = event.x
+            downY = event.y
+            horizontalDrag = false
             beginLongPress(event.x, event.y)
         } else if (action == 1 || action == 2) {
             velocityTracker?.addMovement(event)
         }
         if (action == 1) {
+            val dx = event.x - downX
+            val dy = event.y - downY
+            if (kotlin.math.abs(dx) > touchSlopPx && kotlin.math.abs(dx) > kotlin.math.abs(dy)) {
+                horizontalDrag = true
+            }
             val moved = movedPastLongPressSlop(event)
             if (longPressRow != null && moved) {
                 // Still waiting for the threshold: this gesture is a scroll.
@@ -587,7 +605,7 @@ class NativeTreeView(
                 val vy = tracker?.yVelocity ?: 0f
                 recycleTreeVelocity()
                 val minimum = ViewConfiguration.get(context).scaledMinimumFlingVelocity.toFloat()
-                if (kotlin.math.abs(vy) > minimum) startTreeFling(vy)
+                if (!horizontalDrag && kotlin.math.abs(vy) > minimum) startTreeFling(vy)
             }
         } else if (action == -1) {
             recycleTreeVelocity()

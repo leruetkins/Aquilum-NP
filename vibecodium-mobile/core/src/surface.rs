@@ -1152,7 +1152,18 @@ struct TreeDoc {
 struct TreeState {
     doc: TreeDoc,
     scroll: f32,
-    drag: Option<(f32, f32, bool)>,
+    scroll_x: f32,
+    drag: Option<TreeDrag>,
+}
+
+#[derive(Clone, Copy)]
+struct TreeDrag {
+    start_x: f32,
+    start_y: f32,
+    start_scroll_x: f32,
+    start_scroll: f32,
+    tap: bool,
+    horizontal: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1230,10 +1241,17 @@ struct InputState {
     start_x_bits: AtomicU32,
     start_y_bits: AtomicU32,
     start_scroll_bits: AtomicU32,
+    start_scroll_x_bits: AtomicU32,
     last_y_bits: AtomicU32,
+    last_x_bits: AtomicU32,
     scroll_bits: AtomicU32,
+    scroll_x_bits: AtomicU32,
     scroll_dirty: AtomicBool,
+    scroll_x_dirty: AtomicBool,
     max_y_bits: AtomicU32,
+    max_x_bits: AtomicU32,
+    /// 0 = undecided, 1 = vertical, 2 = horizontal.
+    axis: AtomicU8,
 }
 
 impl InputState {
@@ -1246,10 +1264,16 @@ impl InputState {
             start_x_bits: AtomicU32::new(0),
             start_y_bits: AtomicU32::new(0),
             start_scroll_bits: AtomicU32::new(0),
+            start_scroll_x_bits: AtomicU32::new(0),
             last_y_bits: AtomicU32::new(0),
+            last_x_bits: AtomicU32::new(0),
             scroll_bits: AtomicU32::new(0),
+            scroll_x_bits: AtomicU32::new(0),
             scroll_dirty: AtomicBool::new(false),
+            scroll_x_dirty: AtomicBool::new(false),
             max_y_bits: AtomicU32::new(0),
+            max_x_bits: AtomicU32::new(0),
+            axis: AtomicU8::new(0),
         }
     }
 }
@@ -1265,14 +1289,17 @@ fn input_of(id: i32) -> Option<Arc<InputState>> {
 
 /// Applies a pending lock-free scroll request into the state, if any.
 fn apply_pending_scroll(input: &InputState, state: &mut SurfaceState) {
-    if !input.scroll_dirty.swap(false, Ordering::Relaxed) {
-        return;
-    }
-    let y = f32::from_bits(input.scroll_bits.load(Ordering::Relaxed));
     let mode = input.mode.load(Ordering::Relaxed);
-    match mode {
-        1 => state.tree_set_scroll(y),
-        _ => state.editor_set_scroll(y, 0.0),
+    if input.scroll_dirty.swap(false, Ordering::Relaxed) {
+        let y = f32::from_bits(input.scroll_bits.load(Ordering::Relaxed));
+        match mode {
+            1 => state.tree_set_scroll(y),
+            _ => state.editor_set_scroll(y, 0.0),
+        }
+    }
+    if mode == 1 && input.scroll_x_dirty.swap(false, Ordering::Relaxed) {
+        let x = f32::from_bits(input.scroll_x_bits.load(Ordering::Relaxed));
+        state.tree_set_scroll_x(x);
     }
 }
 
@@ -2040,10 +2067,41 @@ impl SurfaceState {
         self.tree.scroll = y.round().clamp(0.0, max_y);
     }
 
+    fn tree_set_scroll_x(&mut self, x: f32) {
+        let max_x = self.tree_max_x();
+        self.tree.scroll_x = x.round().clamp(0.0, max_x);
+    }
+
+    /// Widest visible row content beyond the viewport. Rows off-screen are
+    /// ignored so a long name elsewhere in the tree cannot shift the whole
+    /// list out of view.
+    fn tree_max_x(&mut self) -> f32 {
+        let density = self.density;
+        let name_font = 17.0 * density;
+        let row_h = row_height(density);
+        let rows_len = self.tree.doc.rows.len();
+        let first = ((self.tree.scroll / row_h).floor().max(0.0) as usize).min(rows_len);
+        let last = (((self.tree.scroll + self.height as f32) / row_h).ceil() as usize)
+            .min(rows_len);
+        let mut painter = std::mem::take(&mut self.painter);
+        let mut max_x: f32 = 0.0;
+        for row in &self.tree.doc.rows[first..last] {
+            let indent = 10.0 * density + row.depth as f32 * 16.0 * density;
+            let text_x = indent + 35.0 * density;
+            let name_width = painter.width(&row.name, name_font, false);
+            max_x = max_x.max(text_x + name_width + 8.0 * density - self.width as f32);
+        }
+        self.painter = painter;
+        max_x.max(0.0)
+    }
+
     fn draw_tree(&mut self, pixels: &mut [u32]) {
         let row_h = row_height(self.density);
         let density = self.density;
+        let max_x = self.tree_max_x();
+        self.tree.scroll_x = self.tree.scroll_x.clamp(0.0, max_x);
         let scroll = self.tree.scroll.round();
+        let scroll_x = self.tree.scroll_x.round();
         let active = self.tree.doc.active.clone();
         let rows = std::mem::take(&mut self.tree.doc.rows);
         let mut painter = std::mem::take(&mut self.painter);
@@ -2061,7 +2119,7 @@ impl SurfaceState {
                 rect(pixels, self.width, self.height, 0.0, y, self.width as f32, row_h, 0x333333);
             }
             let center_y = y + row_h / 2.0;
-            let indent = 10.0 * density + row.depth as f32 * 16.0 * density;
+            let indent = 10.0 * density + row.depth as f32 * 16.0 * density - scroll_x;
             let chevron_x = indent;
             let icon_x = indent + 13.0 * density;
             let text_x = indent + 35.0 * density;
@@ -2096,14 +2154,7 @@ impl SurfaceState {
             } else {
                 0.0
             };
-            let max_width = (self.width as f32 - text_x - tag_width - 8.0 * density).max(0.0);
-            let mut name = row.name.clone();
-            if painter.width(&name, name_font, false) > max_width && max_width > 0.0 {
-                while name.chars().count() > 1 && painter.width(&name, name_font, false) > max_width {
-                    name.pop();
-                }
-                name.push('…');
-            }
+            let name = row.name.clone();
             let name_color = if row.folder || row.note { 0xdadada } else { 0xb3b3b3 };
             let name_y = y + (row_h - name_font) / 2.0;
             let chars: Vec<char> = name.chars().collect();
@@ -2682,33 +2733,48 @@ impl SurfaceState {
         self.painter = painter;
     }
 
-    fn tree_touch(&mut self, _x: f32, y: f32, action: i32) -> Option<String> {
+    fn tree_touch(&mut self, x: f32, y: f32, action: i32) -> Option<String> {
         let row_h = row_height(self.density);
         match action {
             0 => {
-                self.tree.drag = Some((y, self.tree.scroll, true));
+                self.tree.drag = Some(TreeDrag {
+                    start_x: x,
+                    start_y: y,
+                    start_scroll_x: self.tree.scroll_x,
+                    start_scroll: self.tree.scroll,
+                    tap: true,
+                    horizontal: None,
+                });
                 None
             }
             1 => {
-                if let Some((start_y, start_scroll, tap)) = self.tree.drag {
-                    let distance = y - start_y;
+                if let Some(mut drag) = self.tree.drag {
+                    let dx = x - drag.start_x;
+                    let dy = y - drag.start_y;
                     let threshold = 8.0 * self.density;
-                    if distance.abs() > threshold || !tap {
-                        let delta_y = if tap {
-                            distance - distance.signum() * threshold
-                        } else {
-                            distance
-                        };
-                        self.tree.drag = Some((y, start_scroll, false));
-                        let max_y = (self.tree.doc.rows.len() as f32 * row_h - self.height as f32).max(0.0);
-                        self.tree.scroll = (self.tree.scroll - delta_y).clamp(0.0, max_y);
+                    if drag.horizontal.is_none() && (dx.abs() > threshold || dy.abs() > threshold) {
+                        drag.horizontal = Some(dx.abs() > dy.abs());
                     }
+                    if let Some(horizontal) = drag.horizontal {
+                        let was_tap = drag.tap;
+                        drag.tap = false;
+                        if horizontal {
+                            let delta = if was_tap { dx - dx.signum() * threshold } else { dx };
+                            let max_x = self.tree_max_x();
+                            self.tree.scroll_x = (drag.start_scroll_x - delta).clamp(0.0, max_x);
+                        } else {
+                            let delta = if was_tap { dy - dy.signum() * threshold } else { dy };
+                            let max_y = (self.tree.doc.rows.len() as f32 * row_h - self.height as f32).max(0.0);
+                            self.tree.scroll = (drag.start_scroll - delta).clamp(0.0, max_y);
+                        }
+                    }
+                    self.tree.drag = Some(drag);
                 }
                 None
             }
             2 => {
                 let drag = self.tree.drag.take()?;
-                if !drag.2 {
+                if !drag.tap {
                     return None;
                 }
                 let index = ((y + self.tree.scroll) / row_h).floor().max(0.0) as usize;
@@ -3579,6 +3645,16 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeTreeSetScroll(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeTreeSetScrollX(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+    x: jfloat,
+) {
+    let _ = with_surface(id, |state| state.tree_set_scroll_x(x));
+}
+
+#[no_mangle]
 pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeTreeScroll(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -3701,16 +3777,33 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceTouch(
                     } else {
                         state.tree.scroll
                     };
+                    let max_x = if state.tree.doc.rows.is_empty() {
+                        0.0
+                    } else {
+                        state.tree_max_x()
+                    };
+                    let scroll_x = if state.tree.doc.rows.is_empty() {
+                        0.0
+                    } else {
+                        state.tree.scroll_x
+                    };
                     input.mode.store(mode, Ordering::Relaxed);
                     input.max_y_bits.store(max_y.to_bits(), Ordering::Relaxed);
+                    input.max_x_bits.store(max_x.to_bits(), Ordering::Relaxed);
                     input.drag_active.store(true, Ordering::Relaxed);
                     input.moved.store(false, Ordering::Relaxed);
+                    input.axis.store(0, Ordering::Relaxed);
                     input.start_x_bits.store(x.to_bits(), Ordering::Relaxed);
                     input.start_y_bits.store(y.to_bits(), Ordering::Relaxed);
                     input.start_scroll_bits.store(scroll.round().to_bits(), Ordering::Relaxed);
+                    input.start_scroll_x_bits
+                        .store(scroll_x.round().to_bits(), Ordering::Relaxed);
                     input.last_y_bits.store(y.to_bits(), Ordering::Relaxed);
+                    input.last_x_bits.store(x.to_bits(), Ordering::Relaxed);
                     input.scroll_bits.store(scroll.round().to_bits(), Ordering::Relaxed);
+                    input.scroll_x_bits.store(scroll_x.round().to_bits(), Ordering::Relaxed);
                     input.scroll_dirty.store(false, Ordering::Relaxed);
+                    input.scroll_x_dirty.store(false, Ordering::Relaxed);
                 }
                 touch
             })
@@ -3734,19 +3827,44 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceTouch(
                 if !was_moved {
                     if dy.abs() > threshold || dx.abs() > threshold {
                         input.moved.store(true, Ordering::Relaxed);
-                        let delta_y = if dy.abs() > threshold {
-                            dy - dy.signum() * threshold
+                        let horizontal = input.mode.load(Ordering::Relaxed) == 1
+                            && dx.abs() > dy.abs();
+                        input.axis.store(if horizontal { 2 } else { 1 }, Ordering::Relaxed);
+                        if horizontal {
+                            let delta_x = dx - dx.signum() * threshold;
+                            let start_scroll_x = f32::from_bits(
+                                input.start_scroll_x_bits.load(Ordering::Relaxed),
+                            );
+                            let max_x = f32::from_bits(input.max_x_bits.load(Ordering::Relaxed));
+                            let next_scroll = (start_scroll_x - delta_x).clamp(0.0, max_x);
+                            input.scroll_x_bits.store(next_scroll.to_bits(), Ordering::Relaxed);
+                            input.last_x_bits.store(x.to_bits(), Ordering::Relaxed);
+                            input.scroll_x_dirty.store(true, Ordering::Relaxed);
                         } else {
-                            0.0
-                        };
-                        let last_scroll =
-                            f32::from_bits(input.scroll_bits.load(Ordering::Relaxed));
-                        let max_y = f32::from_bits(input.max_y_bits.load(Ordering::Relaxed));
-                        let next_scroll = (last_scroll - delta_y).clamp(0.0, max_y);
-                        input.scroll_bits.store(next_scroll.to_bits(), Ordering::Relaxed);
-                        input.last_y_bits.store(y.to_bits(), Ordering::Relaxed);
-                        input.scroll_dirty.store(true, Ordering::Relaxed);
+                            let delta_y = if dy.abs() > threshold {
+                                dy - dy.signum() * threshold
+                            } else {
+                                0.0
+                            };
+                            let last_scroll =
+                                f32::from_bits(input.scroll_bits.load(Ordering::Relaxed));
+                            let max_y = f32::from_bits(input.max_y_bits.load(Ordering::Relaxed));
+                            let next_scroll = (last_scroll - delta_y).clamp(0.0, max_y);
+                            input.scroll_bits.store(next_scroll.to_bits(), Ordering::Relaxed);
+                            input.last_y_bits.store(y.to_bits(), Ordering::Relaxed);
+                            input.scroll_dirty.store(true, Ordering::Relaxed);
+                        }
                     }
+                } else if input.axis.load(Ordering::Relaxed) == 2 {
+                    let last_x = f32::from_bits(input.last_x_bits.load(Ordering::Relaxed));
+                    let delta_x = x - last_x;
+                    let last_scroll_x =
+                        f32::from_bits(input.scroll_x_bits.load(Ordering::Relaxed));
+                    let max_x = f32::from_bits(input.max_x_bits.load(Ordering::Relaxed));
+                    let next_scroll = (last_scroll_x - delta_x).clamp(0.0, max_x);
+                    input.scroll_x_bits.store(next_scroll.to_bits(), Ordering::Relaxed);
+                    input.last_x_bits.store(x.to_bits(), Ordering::Relaxed);
+                    input.scroll_x_dirty.store(true, Ordering::Relaxed);
                 } else {
                     let last_y = f32::from_bits(input.last_y_bits.load(Ordering::Relaxed));
                     let delta_y = y - last_y;
@@ -3774,18 +3892,10 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceTouch(
                             drag.4 = false;
                         }
                         if let Some(drag) = state.tree.drag.as_mut() {
-                            drag.2 = false;
+                            drag.tap = false;
                         }
                     }
-                    if input.scroll_dirty.swap(false, Ordering::Relaxed) {
-                        let scroll =
-                            f32::from_bits(input.scroll_bits.load(Ordering::Relaxed));
-                        if state.tree.doc.rows.is_empty() {
-                            state.editor_set_scroll(scroll, 0.0);
-                        } else {
-                            state.tree_set_scroll(scroll);
-                        }
-                    }
+                    apply_pending_scroll(&input, state);
                 }
                 if state.tree.doc.rows.is_empty() {
                     state.editor_touch(x, y, action);

@@ -101,6 +101,8 @@ public final class CoreBridge {
 
     public static native void nativeTreeSetScroll(int id, float y);
 
+    public static native void nativeTreeSetScrollX(int id, float x);
+
     public static native String nativeEditorInsert(int id, String text);
 
     public static native String nativeEditorReplace(int id, int start, int end, String text);
