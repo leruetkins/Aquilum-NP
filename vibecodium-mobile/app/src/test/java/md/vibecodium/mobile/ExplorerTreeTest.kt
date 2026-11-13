@@ -79,4 +79,13 @@ class ExplorerTreeTest {
         )
         assertFalse(byFolder.any { it.name == "root-note.md" })
     }
+
+    @Test
+    fun renamePathUnderMovesOnlyTheRenamedFolderSubtree() {
+        assertEquals("Archive", renamePathUnder("Projects", "Projects", "Archive"))
+        assertEquals("Archive/Sub/note.md", renamePathUnder("Projects/Sub/note.md", "Projects", "Archive"))
+        assertEquals("Drafts/note.md", renamePathUnder("Drafts/note.md", "Projects", "Archive"))
+        assertEquals("Projects2/note.md", renamePathUnder("Projects2/note.md", "Projects", "Archive"))
+        assertEquals("renamed.md", renamePathUnder("note.md", "note.md", "renamed.md"))
+    }
 }

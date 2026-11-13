@@ -90,6 +90,7 @@ class VibecodiumController(context: Context) {
     }
 
     fun openVaultChooser() {
+        dismissExplorerRename()
         state = state.copy(
             vaultChooserOpen = true,
             drawer = null,
@@ -208,8 +209,9 @@ class VibecodiumController(context: Context) {
             viewerPath = null,
             renamePath = null,
             renameValue = "",
-            newFolderOpen = false,
-            newFolderValue = "",
+            explorerRenamePath = null,
+            explorerRenameValue = "",
+            explorerRenameFolder = false,
         )
         if (restoreTabs(repository)) persistTabs()
         // Saved tabs are now in memory. Only at this point may the shell show
@@ -809,29 +811,148 @@ class VibecodiumController(context: Context) {
         state = state.copy(renamePath = null, renameValue = "")
     }
 
-    // ------------------------------------------------------------- new folder
+    // ------------------------------------------------------------ explorer rename
 
-    fun beginNewFolder() {
-        state = state.copy(newFolderOpen = true, newFolderValue = "")
+    /** Starts inline rename of a tree row; works for folders and files. */
+    fun beginExplorerRename(path: String, isFolder: Boolean) {
+        if (path.isBlank()) return
+        state = state.copy(
+            explorerRenamePath = path,
+            explorerRenameValue = path.substringAfterLast('/'),
+            explorerRenameFolder = isFolder,
+            // The row must be visible for the editor to sit on it.
+            fileQuery = "",
+        )
     }
 
-    fun updateNewFolderValue(value: String) {
-        state = state.copy(newFolderValue = value)
+    fun dismissExplorerRename() {
+        state = state.copy(
+            explorerRenamePath = null,
+            explorerRenameValue = "",
+            explorerRenameFolder = false,
+        )
     }
 
-    fun dismissNewFolder() {
-        state = state.copy(newFolderOpen = false, newFolderValue = "")
+    /** Mirrors the inline editor text so a tap in the tree can commit it. */
+    fun updateExplorerRenameValue(value: String) {
+        if (state.explorerRenamePath == null) return
+        state = state.copy(explorerRenameValue = value)
     }
 
-    fun confirmNewFolder() {
+    fun confirmExplorerRename(value: String? = null) {
+        val oldPath = state.explorerRenamePath ?: return
         val repository = repository ?: return
-        val name = state.newFolderValue.trim()
-        if (name.isEmpty() || name == "." || name == ".." || name.contains('/') || name.contains('\\')) {
-            state = state.copy(message = "Invalid folder name")
+        val isFolder = state.explorerRenameFolder
+        val typed = (value ?: state.explorerRenameValue).trim()
+        if (typed.isEmpty()) {
+            dismissExplorerRename()
             return
         }
+        if (typed == "." || typed == ".." || typed.contains('/') || typed.contains('\\')) {
+            state = state.copy(message = if (isFolder) "Invalid folder name" else "Invalid note name")
+            return
+        }
+        val parent = oldPath.substringBeforeLast('/', "")
+        val fileName = if (isFolder) {
+            typed
+        } else {
+            val oldExtension = oldPath.substringAfterLast('.', "")
+            val newHasExtension = typed.substringAfterLast('.', "").isNotEmpty()
+            when {
+                isMarkdownName(oldPath) -> if (isMarkdownName(typed)) typed else "$typed.md"
+                oldExtension.isNotEmpty() && !newHasExtension -> "$typed.$oldExtension"
+                else -> typed
+            }
+        }
+        val newPath = if (parent.isEmpty()) fileName else "$parent/$fileName"
+        if (newPath == oldPath) {
+            dismissExplorerRename()
+            return
+        }
+        // Close the editor before the IO round trip; otherwise IME "done" and
+        // a tap outside could submit the same rename twice.
+        dismissExplorerRename()
         scope.launch {
             try {
+                if (isFolder) {
+                    repository.renameFolder(oldPath, newPath)
+                } else {
+                    repository.renameNote(oldPath, newPath)
+                }
+                val syncKey = locatorKey()
+                if (syncKey.isNotEmpty()) syncRecords.renameTree(syncKey, oldPath, newPath)
+                val tabs = state.tabs.map { tab ->
+                    if (tab.path == oldPath || tab.path.startsWith("$oldPath/")) {
+                        val path = renamePathUnder(tab.path, oldPath, newPath)
+                        tab.copy(
+                            path = path,
+                            title = if (isFolder) tab.title else titleOf(path),
+                            language = if (isFolder) tab.language else codeLanguageFor(path),
+                        )
+                    } else {
+                        tab
+                    }
+                }
+                val bookmarks = state.bookmarks.mapTo(mutableSetOf()) {
+                    renamePathUnder(it, oldPath, newPath)
+                }
+                val history = state.history.map { renamePathUnder(it, oldPath, newPath) }
+                val collapsed = state.collapsedFolders.mapTo(mutableSetOf()) {
+                    renamePathUnder(it, oldPath, newPath)
+                }
+                val lists = loadFileLists(repository)
+                state = state.copy(
+                    tabs = tabs,
+                    notes = lists.notes,
+                    entries = lists.entries,
+                    folders = lists.folders,
+                    explorerTree = lists.tree,
+                    bookmarks = bookmarks,
+                    history = history,
+                    collapsedFolders = collapsed,
+                    recentFiles = RecentStore.renameTree(appContext, locatorKey(), oldPath, newPath),
+                    explorerRenamePath = null,
+                    explorerRenameValue = "",
+                    explorerRenameFolder = false,
+                )
+                persistTabs()
+                persistBookmarks()
+                val active = state.activeTab
+                if (active in tabs.indices && tabs[active].isLoaded) {
+                    refreshDerived(
+                        tabs[active].text,
+                        force = tabs[active].mode == EditorMode.Preview,
+                    )
+                }
+            } catch (error: Throwable) {
+                error.rethrowIfCancelled()
+                state = state.copy(message = error.message ?: "Rename failed")
+            }
+        }
+    }
+
+    // ------------------------------------------------------------- new folder
+
+    /**
+     * Creates the folder first and then renames it inline, like Obsidian: the
+     * tree always has a real row for the editor and an abandoned rename leaves
+     * an "Untitled" folder instead of discarding the action.
+     */
+    fun beginNewFolder() {
+        val repository = repository ?: return
+        scope.launch {
+            try {
+                // Root-level folders and files share one namespace, so a new
+                // folder must not collide with either kind of entry.
+                val existing = (state.folders + state.entries.map { it.path })
+                    .filter { '/' !in it }
+                    .toHashSet()
+                var counter = 0
+                var name = "Untitled"
+                while (name in existing) {
+                    counter += 1
+                    name = "Untitled $counter"
+                }
                 repository.createFolder(name)
                 val lists = loadFileLists(repository)
                 state = state.copy(
@@ -839,8 +960,12 @@ class VibecodiumController(context: Context) {
                     entries = lists.entries,
                     folders = lists.folders,
                     explorerTree = lists.tree,
-                    newFolderOpen = false,
-                    newFolderValue = "",
+                    drawer = Drawer.Left,
+                    drawerMode = DrawerMode.Files,
+                    fileQuery = "",
+                    explorerRenamePath = name,
+                    explorerRenameValue = name,
+                    explorerRenameFolder = true,
                 )
             } catch (error: Throwable) {
                 error.rethrowIfCancelled()
@@ -982,6 +1107,7 @@ class VibecodiumController(context: Context) {
     // ---------------------------------------------------------------- settings
 
     fun openSettings(section: String? = null) {
+        dismissExplorerRename()
         state = state.copy(
             settingsOpen = true,
             settingsSection = section,
@@ -1505,6 +1631,7 @@ class VibecodiumController(context: Context) {
     // --------------------------------------------------------------- overlays
 
     fun toggleDrawer(drawer: Drawer) {
+        if (state.drawer != null) dismissExplorerRename()
         state = state.copy(
             drawer = if (state.drawer == drawer) null else drawer,
             tabSwitcher = false,
@@ -1512,14 +1639,17 @@ class VibecodiumController(context: Context) {
     }
 
     fun setDrawerMode(mode: DrawerMode) {
+        dismissExplorerRename()
         state = state.copy(drawer = Drawer.Left, drawerMode = mode, tabSwitcher = false)
     }
 
     fun toggleTabSwitcher() {
+        dismissExplorerRename()
         state = state.copy(tabSwitcher = !state.tabSwitcher, drawer = null)
     }
 
     fun closeOverlays() {
+        dismissExplorerRename()
         state = state.copy(drawer = null, tabSwitcher = false)
     }
 
@@ -1538,6 +1668,10 @@ class VibecodiumController(context: Context) {
         }
         if (state.tabSwitcher) {
             state = state.copy(tabSwitcher = false)
+            return
+        }
+        if (state.explorerRenamePath != null) {
+            dismissExplorerRename()
             return
         }
         if (state.drawer != null) {

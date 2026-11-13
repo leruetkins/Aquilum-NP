@@ -44,6 +44,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -60,6 +61,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -111,10 +114,12 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameMillis
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -139,10 +144,12 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.invisibleToUser
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -153,7 +160,9 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -194,6 +203,7 @@ import md.vibecodium.mobile.SyncProgressKind
 import md.vibecodium.mobile.Tab
 import md.vibecodium.mobile.UiState
 import md.vibecodium.mobile.VibecodiumController
+import md.vibecodium.mobile.ExplorerRow
 import md.vibecodium.mobile.expandDailyNoteFormat
 import md.vibecodium.mobile.filterExplorerTree
 import md.vibecodium.mobile.flattenExplorerTree
@@ -552,9 +562,6 @@ fun VibecodiumApp(controller: VibecodiumController) {
                 state.renamePath?.let {
                     RenameDialog(state, controller)
                 }
-                if (state.newFolderOpen) {
-                    NewFolderDialog(state, controller)
-                }
                 if (state.vaultChooserOpen) {
                     VaultChooserDialog(state, controller)
                 }
@@ -674,7 +681,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                 stats = current.stats,
                 settingsOpen = current.settingsOpen,
                 overlayOpen = current.settingsOpen || current.renamePath != null ||
-                    current.deletePath != null || current.newFolderOpen || current.vaultChooserOpen ||
+                    current.deletePath != null || current.vaultChooserOpen ||
                     current.tabSwitcher,
                 focusRequestId = current.focusRequestId,
             )
@@ -835,6 +842,9 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                     .align(Alignment.CenterStart)
                     .width(drawerWidth)
                     .fillMaxHeight()
+                    // With edge-to-edge windows the IME does not resize the
+                    // activity, so the drawer must stay above the keyboard.
+                    .imePadding()
                     .offset(x = if (state.drawer == Drawer.Left) 0.dp else -drawerWidth)
                     .then(
                         if (state.drawer == Drawer.Left) {
@@ -2540,35 +2550,182 @@ private fun TreeList(state: UiState, controller: VibecodiumController) {
                 .put("active", activePath ?: JSONObject.NULL)
                 .toString()
         }
-        AndroidView(
-            factory = { context ->
-                NativeTreeView(
-                    context,
-                    onAction = { action -> handleTreeAction(action, controller) },
-                    onTouchStart = { focusManager.clearFocus() },
+        var treeView by remember { mutableStateOf<NativeTreeView?>(null) }
+        var treeHeight by remember { mutableStateOf(0) }
+        val renamePath = state.explorerRenamePath
+        // A path can disappear while its editor is open (external delete,
+        // refresh). Never freeze the tree for an editor that cannot render.
+        val renameRow = renamePath?.takeIf { path -> rows.any { it.node.path == path } }
+        // Touching the tree while renaming scrolls it; clearing focus here
+        // would dismiss the keyboard and break that flow.
+        val renamingNow by rememberUpdatedState(renameRow != null)
+        LaunchedEffect(renamePath, rows) {
+            if (renamePath != null && renameRow == null) controller.dismissExplorerRename()
+        }
+        Box(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .clipToBounds()
+                .onSizeChanged { treeHeight = it.height },
+        ) {
+            AndroidView(
+                factory = { context ->
+                    NativeTreeView(
+                        context,
+                        onAction = { action -> handleTreeAction(action, controller) },
+                        onTouchStart = { if (!renamingNow) focusManager.clearFocus() },
+                    ).also { treeView = it }
+                },
+                modifier = Modifier.fillMaxSize(),
+                update = {
+                    it.setRows(treeJson)
+                    it.setDrawerVisible(state.drawer == Drawer.Left)
+                    it.setInteractive(state.drawerMode == DrawerMode.Files)
+                    it.setRenaming(renameRow != null)
+                },
+            )
+            if (renameRow != null) {
+                TreeInlineRename(
+                    rows = rows,
+                    path = renameRow,
+                    initialValue = state.explorerRenameValue,
+                    isFolder = state.explorerRenameFolder,
+                    view = treeView,
+                    viewportHeight = treeHeight,
+                    onValueChange = controller::updateExplorerRenameValue,
+                    onCommit = { controller.confirmExplorerRename(it) },
                 )
+            }
+        }
+    }
+}
+
+/**
+ * Inline name editor for one explorer row. Kotlin knows the row order, the
+ * native tree owns the scroll, so the field is positioned from both. The tree
+ * keeps scrolling while the keyboard is open; a short tap commits the name.
+ */
+@Composable
+private fun BoxScope.TreeInlineRename(
+    rows: List<ExplorerRow>,
+    path: String,
+    initialValue: String,
+    isFolder: Boolean,
+    view: NativeTreeView?,
+    viewportHeight: Int,
+    onValueChange: (String) -> Unit,
+    onCommit: (String) -> Unit,
+) {
+    val rowIndex = rows.indexOfFirst { it.node.path == path }
+    if (rowIndex < 0) return
+    val depth = rows[rowIndex].depth
+    val density = LocalDensity.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusRequester = remember { FocusRequester() }
+    val initialSelection = remember(path) {
+        val end = if (isFolder) {
+            initialValue.length
+        } else {
+            initialValue.lastIndexOf('.').takeIf { it > 0 } ?: initialValue.length
+        }
+        TextRange(0, end)
+    }
+    var scroll by remember(path) { mutableStateOf(0f) }
+    var value by remember(path) {
+        mutableStateOf(TextFieldValue(initialValue, initialSelection))
+    }
+    LaunchedEffect(path, view, viewportHeight) {
+        val target = view ?: return@LaunchedEffect
+        // Runs again when the keyboard resizes the tree, so the row never
+        // ends up hidden behind the IME.
+        target.revealRow(rowIndex)
+        scroll = CoreBridge.nativeTreeScroll(target.surfaceId)
+    }
+    // The tree scrolls natively, so follow its scroll while the editor sits
+    // on a row: finger drags with the keyboard open keep the field aligned.
+    LaunchedEffect(path, view) {
+        val target = view ?: return@LaunchedEffect
+        var last = Float.NaN
+        while (true) {
+            val current = CoreBridge.nativeTreeScroll(target.surfaceId)
+            if (current != last) {
+                last = current
+                scroll = current
+            }
+            withFrameNanos { }
+        }
+    }
+    LaunchedEffect(path) {
+        focusRequester.requestFocus()
+        // Some IMEs collapse the preselection when the input connection is
+        // created, so apply it again once focus has settled.
+        withFrameNanos { }
+        value = value.copy(selection = initialSelection)
+        keyboard?.show()
+    }
+    DisposableEffect(Unit) {
+        onDispose { keyboard?.hide() }
+    }
+    fun commit() {
+        keyboard?.hide()
+        onCommit(value.text)
+    }
+    val shape = RoundedCornerShape(4.dp)
+    val rowHeight = 36.dp
+    // Match the native row height exactly: Rust rounds 36dp to whole pixels.
+    val rowHeightPx = with(density) { rowHeight.roundToPx() }.toFloat()
+    val top = with(density) { (rowIndex * rowHeightPx - scroll).toDp() }
+    Row(
+        Modifier
+            .offset(y = top)
+            .padding(start = 10.dp + 16.dp * depth + 35.dp, end = 8.dp)
+            .fillMaxWidth()
+            .height(rowHeight)
+            .clip(shape)
+            .background(Color(0xFF1B1B1B))
+            .border(1.5.dp, MaterialTheme.colorScheme.primary, shape)
+            .padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        BasicTextField(
+            value = value,
+            onValueChange = {
+                value = it
+                onValueChange(it.text)
             },
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            update = {
-                it.setRows(treeJson)
-                it.setDrawerVisible(state.drawer == Drawer.Left)
-                it.setInteractive(state.drawerMode == DrawerMode.Files)
-            },
+            modifier = Modifier
+                .weight(1f)
+                .focusRequester(focusRequester),
+            singleLine = true,
+            textStyle = TextStyle(
+                fontSize = with(density) { 17.dp.toSp() },
+                color = Color(0xFFDADADA),
+            ),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { commit() }),
         )
     }
 }
 
 private fun handleTreeAction(action: String, controller: VibecodiumController) {
     val value = runCatching { JSONObject(action) }.getOrNull() ?: return
+    val kind = value.optString("kind")
+    if (kind == "commit_rename") {
+        controller.confirmExplorerRename()
+        return
+    }
     val path = value.optString("path")
     if (path.isEmpty()) return
-    when (value.optString("kind")) {
+    when (kind) {
         "toggle" -> controller.toggleFolder(path)
         "open_note" -> {
             controller.openNote(path)
             controller.closeOverlays()
         }
         "open_file" -> controller.openAttachment(path)
+        "rename" -> controller.beginExplorerRename(path, controller.state.folders.contains(path))
     }
 }
 
@@ -3075,33 +3232,6 @@ private fun RenameDialog(state: UiState, controller: VibecodiumController) {
         },
         dismissButton = {
             TextButton(onClick = { controller.dismissRename() }) {
-                Text("Cancel")
-            }
-        },
-    )
-}
-
-@Composable
-private fun NewFolderDialog(state: UiState, controller: VibecodiumController) {
-    AlertDialog(
-        onDismissRequest = { controller.dismissNewFolder() },
-        title = { Text("New folder") },
-        text = {
-            OutlinedTextField(
-                value = state.newFolderValue,
-                onValueChange = controller::updateNewFolderValue,
-                singleLine = true,
-                label = { Text("Folder name") },
-                modifier = Modifier.fillMaxWidth(),
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = { controller.confirmNewFolder() }) {
-                Text("Create")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = { controller.dismissNewFolder() }) {
                 Text("Cancel")
             }
         },

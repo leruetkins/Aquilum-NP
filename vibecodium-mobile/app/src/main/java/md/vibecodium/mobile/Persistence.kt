@@ -145,6 +145,16 @@ object RecentStore {
         return updated
     }
 
+    /** Rewrites recent entries for a folder rename, including its descendants. */
+    fun renameTree(context: Context, key: String, oldPath: String, newPath: String): List<RecentEntry> {
+        val updated = load(context, key)
+            .map { it.copy(path = renamePathUnder(it.path, oldPath, newPath)) }
+            .distinctBy { it.path }
+            .take(LIMIT)
+        save(context, key, updated)
+        return updated
+    }
+
     fun clear(context: Context, key: String) {
         prefs(context).edit().remove(PREFIX + key).apply()
     }

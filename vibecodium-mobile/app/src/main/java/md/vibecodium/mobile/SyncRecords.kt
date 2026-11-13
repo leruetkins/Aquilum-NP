@@ -29,6 +29,8 @@ interface SyncRecords {
     fun all(vault: String): Map<String, SyncRecord>
     fun put(vault: String, record: SyncRecord)
     fun remove(vault: String, path: String)
+    /** Moves records for a renamed file or folder subtree without a resync. */
+    fun renameTree(vault: String, oldPath: String, newPath: String)
     fun state(vault: String): SyncState?
     fun saveState(vault: String, state: SyncState)
 }
@@ -146,6 +148,24 @@ class SyncDatabase(context: Context) :
 
     override fun remove(vault: String, path: String) {
         writableDatabase.delete("records", "vault = ? AND path = ?", arrayOf(vault, path))
+    }
+
+    override fun renameTree(vault: String, oldPath: String, newPath: String) {
+        val moved = all(vault).values.filter {
+            it.path == oldPath || it.path.startsWith("$oldPath/")
+        }
+        if (moved.isEmpty()) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for (record in moved) {
+                db.delete("records", "vault = ? AND path = ?", arrayOf(vault, record.path))
+                put(vault, record.copy(path = renamePathUnder(record.path, oldPath, newPath)))
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     override fun state(vault: String): SyncState? {

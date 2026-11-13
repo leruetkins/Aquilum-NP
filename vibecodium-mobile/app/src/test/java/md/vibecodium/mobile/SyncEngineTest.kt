@@ -32,6 +32,8 @@ class SyncEngineTest {
             return noteItem(newPath, newPath)
         }
 
+        override suspend fun renameFolder(oldPath: String, newPath: String) = Unit
+
         override suspend fun search(query: String, limit: Int): List<SearchHit> = emptyList()
 
         override suspend fun readAttachment(target: String, notePath: String): ByteArray? = files[target]
@@ -69,6 +71,17 @@ class SyncEngineTest {
 
         override fun remove(vault: String, path: String) {
             records.remove(vault to path)
+        }
+
+        override fun renameTree(vault: String, oldPath: String, newPath: String) {
+            val moved = records.filterKeys {
+                it.first == vault && (it.second == oldPath || it.second.startsWith("$oldPath/"))
+            }
+            for ((key, record) in moved) {
+                records.remove(key)
+                records[vault to renamePathUnder(record.path, oldPath, newPath)] =
+                    record.copy(path = renamePathUnder(record.path, oldPath, newPath))
+            }
         }
 
         override fun state(vault: String): SyncState? = states[vault]

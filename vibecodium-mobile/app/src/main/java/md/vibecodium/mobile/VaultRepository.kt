@@ -48,6 +48,8 @@ interface VaultRepository {
     suspend fun createFolder(path: String)
     suspend fun deleteNote(path: String)
     suspend fun renameNote(oldPath: String, newPath: String): NoteItem
+    /** Renames a folder in place; its children move with it. */
+    suspend fun renameFolder(oldPath: String, newPath: String)
     suspend fun search(query: String, limit: Int): List<SearchHit>
 
     /**
@@ -299,6 +301,13 @@ private class FileVaultRepository(
         noteItem(path, path.substringAfterLast('/'))
     }
 
+    override suspend fun renameFolder(oldPath: String, newPath: String) = withContext(Dispatchers.IO) {
+        // The core rename moves a directory like any other entry; attachment
+        // bookkeeping only applies to notes, and folder contents move too.
+        CoreJson.data(CoreBridge.nativeRenameNote(oldPath, newPath))
+        Unit
+    }
+
     override suspend fun search(query: String, limit: Int): List<SearchHit> = withContext(Dispatchers.IO) {
         searchIndex().search(query, limit)
     }
@@ -517,6 +526,25 @@ private class SafVaultRepository(
             index?.snapshotCache = null
         }
         noteItem(newPath, newName)
+    }
+
+    override suspend fun renameFolder(oldPath: String, newPath: String) = withContext(Dispatchers.IO) {
+        val oldParent = oldPath.substringBeforeLast('/', "")
+        val newParent = newPath.substringBeforeLast('/', "")
+        if (oldParent != newParent) error("Rename across folders is not supported")
+        val current = ensureIndex()
+        if (current.files.containsKey(newPath) || current.folders.contains(newPath)) {
+            error("Already exists: $newPath")
+        }
+        val uri = folderUri(oldPath, create = false) ?: error("Not found: $oldPath")
+        DocumentsContract.renameDocument(resolver, uri, newPath.substringAfterLast('/'))
+            ?: error("Cannot rename: $oldPath")
+        // Some providers derive child document IDs from the folder path, so a
+        // fresh scan is safer than patching every descendant URI by hand.
+        synchronized(buildLock) {
+            generation += 1
+            index = null
+        }
     }
 
     override suspend fun search(query: String, limit: Int): List<SearchHit> = withContext(Dispatchers.IO) {

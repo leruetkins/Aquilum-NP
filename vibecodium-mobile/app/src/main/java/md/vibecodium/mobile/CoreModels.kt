@@ -166,8 +166,10 @@ data class UiState(
     val viewerPath: String? = null,
     val renamePath: String? = null,
     val renameValue: String = "",
-    val newFolderOpen: Boolean = false,
-    val newFolderValue: String = "",
+    /** Explorer row being renamed inline, and its current name. */
+    val explorerRenamePath: String? = null,
+    val explorerRenameValue: String = "",
+    val explorerRenameFolder: Boolean = false,
     val loading: Boolean = false,
     /** True from process start until the vault and saved tabs are ready. */
     val booting: Boolean = false,

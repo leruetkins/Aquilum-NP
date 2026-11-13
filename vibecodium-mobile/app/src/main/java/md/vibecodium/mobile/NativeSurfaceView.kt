@@ -331,13 +331,14 @@ abstract class NativeSurfaceView(context: Context) : FrameLayout(context), Textu
 
 
 
+private const val COMMIT_RENAME_ACTION = "{\"kind\":\"commit_rename\"}"
+
 /** Native explorer. Kotlin computes the visible rows; Rust paints and hit-tests. */
 class NativeTreeView(
     context: Context,
     private val onAction: (String) -> Unit,
     private val onTouchStart: () -> Unit = {},
-) : NativeSurfaceView(context) {
-    private data class TreeRowInfo(
+) : NativeSurfaceView(context) {    private data class TreeRowInfo(
         val name: String,
         val path: String,
         val folder: Boolean,
@@ -440,6 +441,28 @@ class NativeTreeView(
     private var drawerTouchFloor = 0L
     @Volatile
     private var interactive = true
+    /** While true, a completed tap commits the inline editor instead of acting on the row. */
+    @Volatile
+    private var renaming = false
+
+    fun setRenaming(value: Boolean) {
+        renaming = value
+    }
+
+    private val touchSlopPx = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+    private var longPressRow: TreeRowInfo? = null
+    private var longPressAtX = 0f
+    private var longPressAtY = 0f
+    private var longPressFired = false
+    private val longPressAction = Runnable {
+        val row = longPressRow ?: return@Runnable
+        longPressRow = null
+        longPressFired = true
+        performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+        post {
+            onAction(JSONObject().put("kind", "rename").put("path", row.path).toString())
+        }
+    }
 
     init {
         textureView.isOpaque = false
@@ -507,8 +530,22 @@ class NativeTreeView(
             stopTreeFling()
             velocityTracker?.recycle()
             velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
+            beginLongPress(event.x, event.y)
         } else if (action == 1 || action == 2) {
             velocityTracker?.addMovement(event)
+        }
+        if (action == 1 && longPressRow != null && movedPastLongPressSlop(event)) {
+            cancelRenameLongPress()
+        }
+        if (action == 2 || action == -1) {
+            val rename = longPressFired
+            cancelRenameLongPress()
+            longPressFired = false
+            if (rename && action == 2) {
+                recycleTreeVelocity()
+                requestRender()
+                return true
+            }
         }
         val result = if (action in 0..2) {
             CoreBridge.nativeSurfaceTouch(surfaceId, event.x, event.y, action)
@@ -517,7 +554,7 @@ class NativeTreeView(
         }
         if (action == 2) {
             if (result.isNotEmpty()) {
-                post { onAction(result) }
+                post { onAction(if (renaming) COMMIT_RENAME_ACTION else result) }
             } else {
                 val tracker = velocityTracker
                 tracker?.computeCurrentVelocity(1000)
@@ -537,6 +574,56 @@ class NativeTreeView(
     private fun recycleTreeVelocity() {
         velocityTracker?.recycle()
         velocityTracker = null
+    }
+
+    private fun treeRowHeightPx(): Float =
+        (36f * resources.displayMetrics.density).roundToInt().toFloat()
+
+    private fun beginLongPress(x: Float, y: Float) {
+        cancelRenameLongPress()
+        longPressFired = false
+        if (!interactive) return
+        val scroll = CoreBridge.nativeTreeScroll(surfaceId)
+        val index = ((y + scroll) / treeRowHeightPx()).toInt()
+        val row = rows.getOrNull(index) ?: return
+        longPressRow = row
+        longPressAtX = x
+        longPressAtY = y
+        mainHandler.postDelayed(longPressAction, ViewConfiguration.getLongPressTimeout().toLong())
+    }
+
+    private fun cancelRenameLongPress() {
+        mainHandler.removeCallbacks(longPressAction)
+        longPressRow = null
+    }
+
+    private fun movedPastLongPressSlop(event: android.view.MotionEvent): Boolean {
+        val dx = event.x - longPressAtX
+        val dy = event.y - longPressAtY
+        return dx * dx + dy * dy > touchSlopPx * touchSlopPx
+    }
+
+    /** Scrolls the tree so row [index] is fully visible; used by inline rename. */
+    fun revealRow(index: Int) {
+        if (index !in rows.indices) return
+        val rowHeight = treeRowHeightPx()
+        val viewport = runCatching { JSONObject(CoreBridge.nativeTreeViewport(surfaceId)) }.getOrNull()
+            ?: return
+        val scroll = viewport.optDouble("scroll", 0.0).toFloat()
+        val maxScroll = viewport.optDouble("max_y", 0.0).toFloat()
+        val heightF = height.toFloat()
+        if (heightF <= 0f) return
+        val top = index * rowHeight
+        val bottom = top + rowHeight
+        val target = when {
+            top < scroll -> top
+            bottom > scroll + heightF -> bottom - heightF
+            else -> return
+        }.coerceIn(0f, maxScroll)
+        if (target != scroll) {
+            CoreBridge.nativeTreeSetScroll(surfaceId, target)
+            requestRender()
+        }
     }
 
     private fun stopTreeFling() {

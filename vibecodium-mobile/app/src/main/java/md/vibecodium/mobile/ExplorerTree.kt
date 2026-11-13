@@ -13,6 +13,16 @@ data class ExplorerNode(
 data class ExplorerRow(val node: ExplorerNode, val depth: Int)
 
 /**
+ * Rewrites [path] for a rename of [oldPath] to [newPath]. A folder rename
+ * moves every descendant path with it; unrelated paths are returned as is.
+ */
+fun renamePathUnder(path: String, oldPath: String, newPath: String): String = when {
+    path == oldPath -> newPath
+    path.startsWith("$oldPath/") -> newPath + path.removePrefix(oldPath)
+    else -> path
+}
+
+/**
  * Builds the folder tree from flat repository data. Folders are included even
  * when they contain no files, and folders sort before files at every level.
  */
