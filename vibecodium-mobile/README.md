@@ -2,6 +2,10 @@
 
 Android client: a Kotlin/Compose shell over a platform-independent Rust core.
 
+<p align="center">
+  <img src="vibecodium-mobile.jpg" alt="Vibecodium Mobile" width="320">
+</p>
+
 ## Architecture
 
 - **`core/`**: Rust cdylib with the vault, trash, JSON API (open, read, write, search, outline, stats), markdown parser, JNI bridge, and native `SurfaceView` renderers for the editor and file tree.

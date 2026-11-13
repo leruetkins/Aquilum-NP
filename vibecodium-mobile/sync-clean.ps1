@@ -102,7 +102,8 @@ $rootFiles = @(
     'gradle.properties',
     'gradlew',
     'gradlew.bat',
-    'keystore.properties.example'
+    'keystore.properties.example',
+    'vibecodium-mobile.jpg'
 )
 foreach ($name in $rootFiles) {
     $from = Join-Path $Source $name
