@@ -54,6 +54,7 @@ import org.json.JSONObject
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Shared TextureView plumbing: one native ANativeWindow per view and a single
@@ -757,11 +758,16 @@ class NativeEditorView(
     }
 
     private var bandOrigin = 0f
-    private val pendingRenderedOrigin = java.util.concurrent.atomic.AtomicReference<Float?>(null)
+    /** Version of the viewport the queued band requests belong to. */
+    private val bandGeneration = AtomicInteger(0)
+    private data class RenderedBand(val origin: Float, val generation: Int)
+    private data class PendingBand(val origin: Float, val generation: Int)
+    private val pendingRenderedOrigin = AtomicReference<RenderedBand?>(null)
     private val isRenderingBand = AtomicBoolean(false)
     @Volatile
     private var forcePendingBandRender = false
-    private var pendingBandOrigin: Float? = null
+    @Volatile
+    private var pendingBandOrigin: PendingBand? = null
 
     private inner class ScrollbarOverlayView(context: Context) : View(context) {
         private val barPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -811,14 +817,21 @@ class NativeEditorView(
         textureView.translationY = ((bandOrigin + m) - knownScroll).roundToInt().toFloat()
     }
 
+    /** Drops band frames queued for a previous viewport position. */
+    private fun invalidateBandGeneration() {
+        bandGeneration.incrementAndGet()
+        pendingRenderedOrigin.set(null)
+        pendingBandOrigin = null
+    }
+
     override fun onBandLayoutChanged() {
         applyScrollTranslation()
     }
 
     override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {
         val pending = pendingRenderedOrigin.getAndSet(null)
-        if (pending != null) {
-            bandOrigin = pending.roundToInt().toFloat()
+        if (pending != null && pending.generation == bandGeneration.get()) {
+            bandOrigin = pending.origin.roundToInt().toFloat()
             applyScrollTranslation()
             android.util.Log.d("VibecodiumRender", "onSurfaceTextureUpdated bandOrigin=$bandOrigin transY=${textureView.translationY}")
         }
@@ -850,10 +863,11 @@ class NativeEditorView(
         } else if (kotlin.math.abs(origin - bandOrigin) < 1f && !isRenderingBand.get()) {
             return
         }
-        pendingBandOrigin = origin
+        val generation = bandGeneration.get()
+        pendingBandOrigin = PendingBand(origin, generation)
         if (isRenderingBand.compareAndSet(false, true)) {
             forcePendingBandRender = false
-            dispatchBandRender(origin)
+            dispatchBandRender(origin, generation)
         }
     }
 
@@ -865,7 +879,7 @@ class NativeEditorView(
         scheduleBandRender(bandOrigin, force = true)
     }
 
-    private fun dispatchBandRender(origin: Float) {
+    private fun dispatchBandRender(origin: Float, generation: Int = bandGeneration.get()) {
         val roundedOrigin = origin.roundToInt().toFloat()
         renderer.execute {
             var renderedOrigin: Float? = null
@@ -873,18 +887,21 @@ class NativeEditorView(
                 if (!isSurfaceAttached()) {
                     return@execute
                 }
+                if (generation != bandGeneration.get()) {
+                    return@execute
+                }
                 CoreBridge.nativeEditorSetBand(surfaceId, roundedOrigin)
                 val rendered = CoreBridge.nativeSurfaceRender(surfaceId)
                 renderedOrigin = rendered
-                pendingRenderedOrigin.set(rendered)
+                pendingRenderedOrigin.set(RenderedBand(rendered, generation))
                 android.util.Log.d("VibecodiumRender", "nativeSurfaceRender done rendered=$rendered")
             } finally {
                 val finalRendered = renderedOrigin
                 isRenderingBand.set(false)
                 mainHandler.post {
                     val pendingRendered = pendingRenderedOrigin.getAndSet(null)
-                    if (pendingRendered != null) {
-                        bandOrigin = pendingRendered.roundToInt().toFloat()
+                    if (pendingRendered != null && pendingRendered.generation == bandGeneration.get()) {
+                        bandOrigin = pendingRendered.origin.roundToInt().toFloat()
                         applyScrollTranslation()
                         textureView.postInvalidateOnAnimation()
                         android.util.Log.d("VibecodiumRender", "mainHandler applied bandOrigin=$bandOrigin transY=${textureView.translationY}")
@@ -894,10 +911,11 @@ class NativeEditorView(
                     val force = forcePendingBandRender
                     forcePendingBandRender = false
                     val lastOrigin = finalRendered ?: bandOrigin
-                    val shouldRender = force ||
-                        (pending != null && kotlin.math.abs(pending - lastOrigin) > m * 0.35f)
+                    val shouldRender = pending != null &&
+                        pending.generation == bandGeneration.get() &&
+                        (force || kotlin.math.abs(pending.origin - lastOrigin) > m * 0.35f)
                     if (shouldRender && pending != null) {
-                        scheduleBandRender(pending, force = force)
+                        scheduleBandRender(pending.origin, force = force)
                     } else {
                         pendingBandOrigin = null
                     }
@@ -1253,23 +1271,47 @@ class NativeEditorView(
         val next = inset.coerceAtLeast(0f)
         if (kotlin.math.abs(next - bottomInset) < 0.5f) return
         val wasIncreased = next > bottomInset + 10f
+        // When the keyboard animates away, Compose replaces the shrinking IME
+        // inset with the idle (navigation-bar) inset. That value is larger than
+        // the last few animation frames but the keyboard is no longer visible,
+        // so this is not an opening: do not scroll back to the caret.
+        val imeVisibleNow = ViewCompat.getRootWindowInsets(this)
+            ?.isVisible(WindowInsetsCompat.Type.ime()) == true
+        val idleTransition = wasIncreased && !imeVisibleNow
         bottomInset = next
         postRenderTask {
             if (!isSurfaceAttached()) return@postRenderTask
             CoreBridge.nativeEditorSetBottomInset(surfaceId, next)
+            if (idleTransition) {
+                CoreBridge.nativeEditorSetScroll(surfaceId, knownScroll, 0f)
+            }
             val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
             val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: scrollMaxY
             val rustScroll = info?.optDouble("scroll", knownScroll.toDouble())?.toFloat() ?: knownScroll
-            val nextScroll = if (wasIncreased) rustScroll else knownScroll.coerceIn(0f, newMaxY)
+            val nextScroll = if (wasIncreased && !idleTransition) {
+                rustScroll
+            } else {
+                knownScroll.coerceIn(0f, newMaxY)
+            }
             mainHandler.post {
                 val scrollChanged = nextScroll != knownScroll
                 knownScroll = nextScroll
                 scrollMaxY = newMaxY
-                applyScrollTranslation()
                 if (scrollChanged) {
-                    checkBandRender(knownScroll)
-                    requestRender()
+                    // The native editor scrolls to the caret when the keyboard
+                    // opens. Adopt the new position as the band to render:
+                    // requestRender() would reuse the old band and shift the
+                    // text off-screen.
+                    invalidateBandGeneration()
+                    val m = computeBandMargin(safeViewportHeight()).toFloat()
+                    val targetOrigin = (knownScroll - m)
+                        .coerceIn(0f, maxOf(scrollMaxY, knownScroll))
+                        .roundToInt()
+                        .toFloat()
+                    bandOrigin = targetOrigin
+                    scheduleBandRender(targetOrigin, force = true)
                 }
+                applyScrollTranslation()
                 scrollbarOverlay.update(knownScroll, scrollMaxY)
                 onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
             }
@@ -1472,6 +1514,7 @@ class NativeEditorView(
         visualCount.getOrElse(index) { 1 } * layoutRowHeight
 
     override fun onSurfaceReady() {
+        invalidateBandGeneration()
         CoreBridge.nativeSurfaceSetEditor(
             surfaceId,
             mirrorText,
@@ -1521,6 +1564,7 @@ class NativeEditorView(
         if (!pathChanged && mirrorText == text && lastLanguage == nextLanguage) return
         if (pathChanged) {
             saveViewport()
+            invalidateBandGeneration()
             lastPath = path
             scrollMaxY = 0f
             scrollbarOverlay.update(knownScroll, 0f)
@@ -1614,6 +1658,7 @@ class NativeEditorView(
         knownScroll = scroll.roundToInt().toFloat()
         val maxOrigin = maxOf(ensureScrollMaxY(), knownScroll)
         val m = computeBandMargin(safeViewportHeight()).toFloat()
+        invalidateBandGeneration()
         bandOrigin = (knownScroll - m).coerceIn(0f, maxOrigin).roundToInt().toFloat()
         applyScrollTranslation()
         postRenderTask {
