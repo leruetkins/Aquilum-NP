@@ -999,17 +999,12 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
             LeftDrawer(
                 state,
                 controller,
-                Modifier
+                renameActive = state.explorerRenamePath != null,
+                navigationBottomPx = stableNavBarBottomPx,
+                modifier = Modifier
                     .align(Alignment.CenterStart)
                     .width(drawerWidth)
                     .fillMaxHeight()
-                    // Keep the drawer above the IME only while the inline
-                    // rename field is visible. Applying it all the time made
-                    // the tree resize (squeeze/expand) whenever the keyboard
-                    // hid after opening the drawer.
-                    .then(
-                        if (state.explorerRenamePath != null) Modifier.imePadding() else Modifier,
-                    )
                     .offset(x = if (state.drawer == Drawer.Left) 0.dp else -drawerWidth)
                     .then(
                         if (state.drawer == Drawer.Left) {
@@ -2509,11 +2504,32 @@ private fun VaultChooserRow(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun LeftDrawer(state: UiState, controller: VibecodiumController, modifier: Modifier) {
+private fun LeftDrawer(
+    state: UiState,
+    controller: VibecodiumController,
+    renameActive: Boolean,
+    navigationBottomPx: Int,
+    modifier: Modifier,
+) {
     val focusManager = LocalFocusManager.current
+    val density = LocalDensity.current
+    // The shell already keeps the drawer above the navigation bar. While the
+    // inline rename field is open, shrink the content by the keyboard height
+    // minus that navigation inset; imePadding() alone would leave a strip the
+    // height of the navigation bar between the section bar and the keyboard.
+    val contentBottom = with(density) {
+        if (renameActive) {
+            (WindowInsets.ime.getBottom(density) - navigationBottomPx)
+                .coerceAtLeast(0)
+                .toDp()
+        } else {
+            0.dp
+        }
+    }
     Surface(modifier = modifier, color = Color(0xFF282828), tonalElevation = 0.dp) {
-        Column(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().padding(bottom = contentBottom)) {
             Row(
                 Modifier
                     .fillMaxWidth()
