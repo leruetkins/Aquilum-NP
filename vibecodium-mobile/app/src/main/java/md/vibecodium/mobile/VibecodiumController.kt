@@ -1,5 +1,7 @@
 package md.vibecodium.mobile
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -90,7 +92,7 @@ class VibecodiumController(context: Context) {
     }
 
     fun openVaultChooser() {
-        dismissExplorerRename()
+        closeExplorerActions()
         state = state.copy(
             vaultChooserOpen = true,
             drawer = null,
@@ -423,35 +425,7 @@ class VibecodiumController(context: Context) {
             null
         }
 
-    fun newNote() {
-        val repository = repository ?: return
-        val existing = state.notes.mapTo(HashSet()) { it.path }
-        for (tab in state.tabs) {
-            existing.add(tab.path)
-        }
-        var counter = 1
-        var path = "Untitled.md"
-        while (path in existing) {
-            counter += 1
-            path = "Untitled $counter.md"
-        }
-        scope.launch {
-            try {
-                val note = repository.createNote(path, "")
-                val lists = loadFileLists(repository)
-                state = state.copy(
-                    notes = lists.notes,
-                    entries = lists.entries,
-                    folders = lists.folders,
-                    explorerTree = lists.tree,
-                )
-                openNote(note.path, modeOverride = EditorMode.Source, focusEditor = true)
-            } catch (error: Throwable) {
-                error.rethrowIfCancelled()
-                state = state.copy(message = error.message ?: "Could not create a note")
-            }
-        }
-    }
+    fun newNote() = createNoteUnder("", open = true)
 
     fun consumeFocusRequest() {
         if (state.focusRequestId != 0L) {
@@ -752,33 +726,49 @@ class VibecodiumController(context: Context) {
     fun deleteConfirmed() {
         val path = state.deletePath ?: return
         val repository = repository ?: return
-        val index = state.tabs.indexOfFirst { it.path == path }
+        val isFolder = isFolderPath(path)
+        // A folder delete also closes every tab below it.
+        val affected = state.tabs.indices
+            .filter { index ->
+                val tab = state.tabs[index]
+                tab.path == path || tab.path.startsWith("$path/")
+            }
+            .sortedDescending()
         state = state.copy(deletePath = null)
         scope.launch {
             try {
-                repository.deleteNote(path)
-                if (index >= 0) {
-                    val active = removeTabState(index)
-                    if (active >= 0) {
-                        val target = state.tabs[active]
-                        if (!target.isLoaded) {
-                            loadTabContent(active)
-                        } else {
-                            refreshDerived(
-                                target.text,
-                                force = state.editorMode == EditorMode.Preview,
-                            )
-                        }
+                repository.deleteEntry(path, isFolder)
+                val syncKey = locatorKey()
+                if (syncKey.isNotEmpty()) syncRecords.removeTree(syncKey, path)
+                for (index in affected) removeTabState(index)
+                val active = state.activeTab
+                if (active in state.tabs.indices) {
+                    val target = state.tabs[active]
+                    if (!target.isLoaded) {
+                        loadTabContent(active)
                     } else {
-                        state = state.copy(
-                            headings = emptyList(),
-                            stats = DocStats(0, 0, 0),
-                            lines = emptyList(),
-                            markdownText = "",
+                        refreshDerived(
+                            target.text,
+                            force = state.editorMode == EditorMode.Preview,
                         )
                     }
+                } else {
+                    state = state.copy(
+                        headings = emptyList(),
+                        stats = DocStats(0, 0, 0),
+                        lines = emptyList(),
+                        markdownText = "",
+                    )
                 }
-                val bookmarks = state.bookmarks.toMutableSet().also { it.remove(path) }
+                val bookmarks = state.bookmarks.filterNot {
+                    it == path || it.startsWith("$path/")
+                }.toSet()
+                val history = state.history.filterNot {
+                    it == path || it.startsWith("$path/")
+                }
+                val collapsed = state.collapsedFolders.filterNot {
+                    it == path || it.startsWith("$path/")
+                }.toSet()
                 val lists = loadFileLists(repository)
                 state = state.copy(
                     notes = lists.notes,
@@ -786,12 +776,16 @@ class VibecodiumController(context: Context) {
                     folders = lists.folders,
                     explorerTree = lists.tree,
                     bookmarks = bookmarks,
+                    history = history,
+                    collapsedFolders = collapsed,
+                    recentFiles = RecentStore.removeTree(appContext, syncKey, path),
                 )
                 persistTabs()
                 persistBookmarks()
+                persistCollapsedFolders(collapsed)
             } catch (error: Throwable) {
                 error.rethrowIfCancelled()
-                state = state.copy(message = error.message ?: "Could not delete the note")
+                state = state.copy(message = error.message ?: "Could not delete")
             }
         }
     }
@@ -830,6 +824,17 @@ class VibecodiumController(context: Context) {
             explorerRenamePath = null,
             explorerRenameValue = "",
             explorerRenameFolder = false,
+        )
+    }
+
+    /** Closes every explorer popup (inline rename, action menu, move picker). */
+    private fun closeExplorerActions() {
+        state = state.copy(
+            explorerRenamePath = null,
+            explorerRenameValue = "",
+            explorerRenameFolder = false,
+            explorerMenuPath = null,
+            movePath = null,
         )
     }
 
@@ -879,54 +884,229 @@ class VibecodiumController(context: Context) {
                 } else {
                     repository.renameNote(oldPath, newPath)
                 }
-                val syncKey = locatorKey()
-                if (syncKey.isNotEmpty()) syncRecords.renameTree(syncKey, oldPath, newPath)
-                val tabs = state.tabs.map { tab ->
-                    if (tab.path == oldPath || tab.path.startsWith("$oldPath/")) {
-                        val path = renamePathUnder(tab.path, oldPath, newPath)
-                        tab.copy(
-                            path = path,
-                            title = if (isFolder) tab.title else titleOf(path),
-                            language = if (isFolder) tab.language else codeLanguageFor(path),
-                        )
-                    } else {
-                        tab
-                    }
-                }
-                val bookmarks = state.bookmarks.mapTo(mutableSetOf()) {
-                    renamePathUnder(it, oldPath, newPath)
-                }
-                val history = state.history.map { renamePathUnder(it, oldPath, newPath) }
-                val collapsed = state.collapsedFolders.mapTo(mutableSetOf()) {
-                    renamePathUnder(it, oldPath, newPath)
-                }
+                applyPathChange(oldPath, newPath)
+            } catch (error: Throwable) {
+                error.rethrowIfCancelled()
+                state = state.copy(message = error.message ?: "Rename failed")
+            }
+        }
+    }
+
+    /** Rewrites every path-bearing piece of UI state after a rename or move. */
+    private suspend fun applyPathChange(oldPath: String, newPath: String) {
+        val repository = repository ?: return
+        val syncKey = locatorKey()
+        if (syncKey.isNotEmpty()) syncRecords.renameTree(syncKey, oldPath, newPath)
+        val tabs = state.tabs.map { tab ->
+            if (tab.path == oldPath || tab.path.startsWith("$oldPath/")) {
+                val path = renamePathUnder(tab.path, oldPath, newPath)
+                tab.copy(path = path, title = titleOf(path), language = codeLanguageFor(path))
+            } else {
+                tab
+            }
+        }
+        val bookmarks = state.bookmarks.mapTo(mutableSetOf()) {
+            renamePathUnder(it, oldPath, newPath)
+        }
+        val history = state.history.map { renamePathUnder(it, oldPath, newPath) }
+        val collapsed = state.collapsedFolders.mapTo(mutableSetOf()) {
+            renamePathUnder(it, oldPath, newPath)
+        }
+        val lists = loadFileLists(repository)
+        state = state.copy(
+            tabs = tabs,
+            notes = lists.notes,
+            entries = lists.entries,
+            folders = lists.folders,
+            explorerTree = lists.tree,
+            bookmarks = bookmarks,
+            history = history,
+            collapsedFolders = collapsed,
+            recentFiles = RecentStore.renameTree(appContext, syncKey, oldPath, newPath),
+        )
+        persistTabs()
+        persistBookmarks()
+        persistCollapsedFolders(collapsed)
+        val active = state.activeTab
+        if (active in tabs.indices && tabs[active].isLoaded) {
+            refreshDerived(
+                tabs[active].text,
+                force = tabs[active].mode == EditorMode.Preview,
+            )
+        }
+    }
+
+    // ------------------------------------------------------------ explorer menu
+
+    /** Opens the action sheet for a tree row (long press). */
+    fun openExplorerMenu(path: String) {
+        if (path.isBlank()) return
+        val known = isFolderPath(path) || state.entries.any { it.path == path }
+        if (!known) return
+        dismissExplorerRename()
+        state = state.copy(explorerMenuPath = path, movePath = null)
+    }
+
+    fun dismissExplorerMenu() {
+        state = state.copy(explorerMenuPath = null)
+    }
+
+    fun menuNewNote(path: String) = createNoteUnder(parentFolderOf(path), open = true)
+
+    fun menuNewFolder(path: String) = createFolderUnder(parentFolderOf(path))
+
+    fun menuRename(path: String) {
+        state = state.copy(explorerMenuPath = null)
+        beginExplorerRename(path, isFolderPath(path))
+    }
+
+    fun menuDuplicate(path: String) {
+        val repository = repository ?: return
+        val isFolder = isFolderPath(path)
+        val used = (state.folders + state.entries.map { it.path }).toHashSet()
+        val target = uniquePath(duplicatePath(path), used)
+        state = state.copy(explorerMenuPath = null)
+        scope.launch {
+            try {
+                repository.copyEntry(path, target, isFolder)
                 val lists = loadFileLists(repository)
                 state = state.copy(
-                    tabs = tabs,
                     notes = lists.notes,
                     entries = lists.entries,
                     folders = lists.folders,
                     explorerTree = lists.tree,
-                    bookmarks = bookmarks,
-                    history = history,
-                    collapsedFolders = collapsed,
-                    recentFiles = RecentStore.renameTree(appContext, locatorKey(), oldPath, newPath),
-                    explorerRenamePath = null,
-                    explorerRenameValue = "",
-                    explorerRenameFolder = false,
+                    message = "Copied to ${target.substringAfterLast('/')}",
                 )
-                persistTabs()
-                persistBookmarks()
-                val active = state.activeTab
-                if (active in tabs.indices && tabs[active].isLoaded) {
-                    refreshDerived(
-                        tabs[active].text,
-                        force = tabs[active].mode == EditorMode.Preview,
-                    )
+            } catch (error: Throwable) {
+                error.rethrowIfCancelled()
+                state = state.copy(message = error.message ?: "Could not copy")
+            }
+        }
+    }
+
+    fun menuCopyPath(path: String) {
+        state = state.copy(explorerMenuPath = null)
+        val clipboard = appContext.getSystemService(ClipboardManager::class.java)
+        if (clipboard == null) {
+            state = state.copy(message = "Clipboard is unavailable")
+            return
+        }
+        clipboard.setPrimaryClip(ClipData.newPlainText("Vault path", path))
+        state = state.copy(message = "Path copied")
+    }
+
+    fun menuMove(path: String) {
+        state = state.copy(explorerMenuPath = null, movePath = path)
+    }
+
+    fun dismissMove() {
+        state = state.copy(movePath = null)
+    }
+
+    fun moveTo(targetFolder: String) {
+        val path = state.movePath ?: return
+        val repository = repository ?: return
+        val isFolder = isFolderPath(path)
+        val parent = path.substringBeforeLast('/', "")
+        if (parent == targetFolder) {
+            dismissMove()
+            return
+        }
+        if (isFolder && (targetFolder == path || targetFolder.startsWith("$path/"))) {
+            state = state.copy(message = "Cannot move a folder into itself")
+            return
+        }
+        val newPath = movePathTo(path, targetFolder)
+        if (isFolderPath(newPath) || state.entries.any { it.path == newPath }) {
+            state = state.copy(message = "Already exists: $newPath")
+            return
+        }
+        state = state.copy(movePath = null)
+        scope.launch {
+            try {
+                repository.moveEntry(path, newPath, isFolder)
+                applyPathChange(path, newPath)
+                expandAncestors(targetFolder)
+            } catch (error: Throwable) {
+                error.rethrowIfCancelled()
+                state = state.copy(message = error.message ?: "Move failed")
+            }
+        }
+    }
+
+    fun menuDelete(path: String) {
+        state = state.copy(explorerMenuPath = null, deletePath = path)
+    }
+
+    private fun isFolderPath(path: String): Boolean = state.folders.contains(path)
+
+    private fun parentFolderOf(path: String): String =
+        if (isFolderPath(path)) path else path.substringBeforeLast('/', "")
+
+    /** File and folder names directly inside [parent]. */
+    private fun childNames(parent: String): Set<String> {
+        val prefix = if (parent.isEmpty()) "" else "$parent/"
+        val used = HashSet<String>()
+        for (folder in state.folders) {
+            if (folder.startsWith(prefix)) {
+                val rest = folder.substring(prefix.length)
+                if (rest.isNotEmpty() && '/' !in rest) used.add(rest)
+            }
+        }
+        for (entry in state.entries) {
+            if (entry.path.startsWith(prefix)) {
+                val rest = entry.path.substring(prefix.length)
+                if (rest.isNotEmpty() && '/' !in rest) used.add(rest)
+            }
+        }
+        return used
+    }
+
+    private fun uniqueUntitled(parent: String, extension: String = ""): String {
+        val used = childNames(parent)
+        var counter = 0
+        var stem = "Untitled"
+        while ("$stem$extension" in used) {
+            counter += 1
+            stem = "Untitled $counter"
+        }
+        return "$stem$extension"
+    }
+
+    private fun expandAncestors(path: String) {
+        if (path.isEmpty()) return
+        val collapsed = state.collapsedFolders.toMutableSet()
+        var current = path
+        while (current.isNotEmpty()) {
+            collapsed.remove(current)
+            current = current.substringBeforeLast('/', "")
+        }
+        state = state.copy(collapsedFolders = collapsed)
+        persistCollapsedFolders(collapsed)
+    }
+
+    /** Creates "Untitled.md" inside [parent] and opens it. */
+    private fun createNoteUnder(parent: String, open: Boolean) {
+        val repository = repository ?: return
+        scope.launch {
+            try {
+                val name = uniqueUntitled(parent, ".md")
+                val path = if (parent.isEmpty()) name else "$parent/$name"
+                repository.createNote(path, "")
+                val lists = loadFileLists(repository)
+                state = state.copy(
+                    notes = lists.notes,
+                    entries = lists.entries,
+                    folders = lists.folders,
+                    explorerTree = lists.tree,
+                )
+                if (open) {
+                    openNote(path, modeOverride = EditorMode.Source, focusEditor = true)
+                    closeOverlays()
                 }
             } catch (error: Throwable) {
                 error.rethrowIfCancelled()
-                state = state.copy(message = error.message ?: "Rename failed")
+                state = state.copy(message = error.message ?: "Could not create a note")
             }
         }
     }
@@ -938,35 +1118,37 @@ class VibecodiumController(context: Context) {
      * tree always has a real row for the editor and an abandoned rename leaves
      * an "Untitled" folder instead of discarding the action.
      */
-    fun beginNewFolder() {
+    fun beginNewFolder() = createFolderUnder("")
+
+    private fun createFolderUnder(parent: String) {
         val repository = repository ?: return
         scope.launch {
             try {
-                // Root-level folders and files share one namespace, so a new
-                // folder must not collide with either kind of entry.
-                val existing = (state.folders + state.entries.map { it.path })
-                    .filter { '/' !in it }
-                    .toHashSet()
-                var counter = 0
-                var name = "Untitled"
-                while (name in existing) {
-                    counter += 1
-                    name = "Untitled $counter"
-                }
-                repository.createFolder(name)
+                val name = uniqueUntitled(parent)
+                val path = if (parent.isEmpty()) name else "$parent/$name"
+                repository.createFolder(path)
                 val lists = loadFileLists(repository)
+                val collapsed = state.collapsedFolders.toMutableSet().also { set ->
+                    var current = parent
+                    while (current.isNotEmpty()) {
+                        set.remove(current)
+                        current = current.substringBeforeLast('/', "")
+                    }
+                }
                 state = state.copy(
                     notes = lists.notes,
                     entries = lists.entries,
                     folders = lists.folders,
                     explorerTree = lists.tree,
+                    collapsedFolders = collapsed,
                     drawer = Drawer.Left,
                     drawerMode = DrawerMode.Files,
                     fileQuery = "",
-                    explorerRenamePath = name,
+                    explorerRenamePath = path,
                     explorerRenameValue = name,
                     explorerRenameFolder = true,
                 )
+                persistCollapsedFolders(collapsed)
             } catch (error: Throwable) {
                 error.rethrowIfCancelled()
                 state = state.copy(message = error.message ?: "Could not create the folder")
@@ -1107,7 +1289,7 @@ class VibecodiumController(context: Context) {
     // ---------------------------------------------------------------- settings
 
     fun openSettings(section: String? = null) {
-        dismissExplorerRename()
+        closeExplorerActions()
         state = state.copy(
             settingsOpen = true,
             settingsSection = section,
@@ -1631,7 +1813,7 @@ class VibecodiumController(context: Context) {
     // --------------------------------------------------------------- overlays
 
     fun toggleDrawer(drawer: Drawer) {
-        if (state.drawer != null) dismissExplorerRename()
+        if (state.drawer != null) closeExplorerActions()
         state = state.copy(
             drawer = if (state.drawer == drawer) null else drawer,
             tabSwitcher = false,
@@ -1639,17 +1821,17 @@ class VibecodiumController(context: Context) {
     }
 
     fun setDrawerMode(mode: DrawerMode) {
-        dismissExplorerRename()
+        closeExplorerActions()
         state = state.copy(drawer = Drawer.Left, drawerMode = mode, tabSwitcher = false)
     }
 
     fun toggleTabSwitcher() {
-        dismissExplorerRename()
+        closeExplorerActions()
         state = state.copy(tabSwitcher = !state.tabSwitcher, drawer = null)
     }
 
     fun closeOverlays() {
-        dismissExplorerRename()
+        closeExplorerActions()
         state = state.copy(drawer = null, tabSwitcher = false)
     }
 
@@ -1668,6 +1850,14 @@ class VibecodiumController(context: Context) {
         }
         if (state.tabSwitcher) {
             state = state.copy(tabSwitcher = false)
+            return
+        }
+        if (state.explorerMenuPath != null) {
+            dismissExplorerMenu()
+            return
+        }
+        if (state.movePath != null) {
+            dismissMove()
             return
         }
         if (state.explorerRenamePath != null) {

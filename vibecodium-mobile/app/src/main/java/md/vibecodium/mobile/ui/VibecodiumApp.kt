@@ -22,6 +22,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,6 +38,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -49,6 +51,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.draw.clipToBounds
@@ -387,6 +390,96 @@ private val HistoryIcon: ImageVector = ImageVector.Builder(
     }
 }.build()
 
+/** `lucide-arrow-right`, the "move to folder" action. */
+private val MoveIcon: ImageVector = ImageVector.Builder(
+    name = "move-right",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f) {
+        moveTo(4f, 12f)
+        lineTo(20f, 12f)
+        moveTo(14f, 6f)
+        lineTo(20f, 12f)
+        lineTo(14f, 18f)
+    }
+}.build()
+
+/** `lucide-copy`, used for "make a copy". */
+private val CopyIcon: ImageVector = ImageVector.Builder(
+    name = "copy",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f) {
+        moveTo(9f, 9f)
+        lineTo(20f, 9f)
+        lineTo(20f, 20f)
+        lineTo(9f, 20f)
+        close()
+        moveTo(15f, 5f)
+        lineTo(15f, 4f)
+        lineTo(4f, 4f)
+        lineTo(4f, 15f)
+        lineTo(5f, 15f)
+    }
+}.build()
+
+/** `lucide-clipboard`, used for "copy path". */
+private val ClipboardIcon: ImageVector = ImageVector.Builder(
+    name = "clipboard",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f) {
+        moveTo(9f, 4f)
+        lineTo(15f, 4f)
+        moveTo(9f, 2f)
+        lineTo(15f, 2f)
+        lineTo(15f, 6f)
+        lineTo(9f, 6f)
+        close()
+        moveTo(7f, 4f)
+        lineTo(5f, 4f)
+        lineTo(5f, 21f)
+        lineTo(19f, 21f)
+        lineTo(19f, 4f)
+        lineTo(17f, 4f)
+    }
+}.build()
+
+/** `lucide-trash-2`, the destructive action. */
+private val TrashIcon: ImageVector = ImageVector.Builder(
+    name = "trash",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f) {
+        moveTo(4f, 7f)
+        lineTo(20f, 7f)
+        moveTo(10f, 7f)
+        lineTo(10f, 4f)
+        lineTo(14f, 4f)
+        lineTo(14f, 7f)
+        moveTo(6f, 7f)
+        lineTo(7f, 20f)
+        lineTo(17f, 20f)
+        lineTo(18f, 7f)
+        moveTo(10f, 11f)
+        lineTo(10f, 16f)
+        moveTo(14f, 11f)
+        lineTo(14f, 16f)
+    }
+}.build()
+
 /** `lucide-keyboard`, shown after placing the caret before the IME opens. */
 private val KeyboardIcon: ImageVector = ImageVector.Builder(
     name = "keyboard",
@@ -536,7 +629,9 @@ fun VibecodiumApp(controller: VibecodiumController) {
         ) {
             BackHandler(
                 enabled = state.vaultChooserOpen || state.settingsOpen || state.drawer != null ||
-                    state.tabSwitcher || state.viewerPath != null || state.historyIndex > 0,
+                    state.tabSwitcher || state.viewerPath != null || state.historyIndex > 0 ||
+                    state.explorerMenuPath != null || state.movePath != null ||
+                    state.explorerRenamePath != null,
             ) {
                 controller.back()
             }
@@ -557,13 +652,19 @@ fun VibecodiumApp(controller: VibecodiumController) {
                     MessageBar(message) { controller.dismissMessage() }
                 }
                 state.deletePath?.let { path ->
-                    DeleteDialog(path, controller)
+                    DeleteDialog(path, state.folders.contains(path), controller)
                 }
                 state.renamePath?.let {
                     RenameDialog(state, controller)
                 }
+                if (state.movePath != null) {
+                    MoveDialog(state, controller)
+                }
                 if (state.vaultChooserOpen) {
                     VaultChooserDialog(state, controller)
+                }
+                if (state.explorerMenuPath != null) {
+                    ExplorerContextMenu(state, controller)
                 }
             }
         }
@@ -2552,6 +2653,8 @@ private fun TreeList(state: UiState, controller: VibecodiumController) {
         }
         var treeView by remember { mutableStateOf<NativeTreeView?>(null) }
         var treeHeight by remember { mutableStateOf(0) }
+        // Long-press highlights the row immediately; the menu opens on release.
+        val pressedPath = remember { mutableStateOf<String?>(null) }
         val renamePath = state.explorerRenamePath
         // A path can disappear while its editor is open (external delete,
         // refresh). Never freeze the tree for an editor that cannot render.
@@ -2575,6 +2678,7 @@ private fun TreeList(state: UiState, controller: VibecodiumController) {
                         context,
                         onAction = { action -> handleTreeAction(action, controller) },
                         onTouchStart = { if (!renamingNow) focusManager.clearFocus() },
+                        onPress = { path -> pressedPath.value = path },
                     ).also { treeView = it }
                 },
                 modifier = Modifier.fillMaxSize(),
@@ -2585,6 +2689,20 @@ private fun TreeList(state: UiState, controller: VibecodiumController) {
                     it.setRenaming(renameRow != null)
                 },
             )
+            val pressed = pressedPath.value
+            val pressedIndex = pressed?.let { path -> rows.indexOfFirst { it.node.path == path } } ?: -1
+            if (pressedIndex >= 0) {
+                val density = LocalDensity.current
+                val rowHeightPx = with(density) { 36.dp.roundToPx() }.toFloat()
+                val scroll = treeView?.let { CoreBridge.nativeTreeScroll(it.surfaceId) } ?: 0f
+                Box(
+                    Modifier
+                        .offset(y = with(density) { (pressedIndex * rowHeightPx - scroll).toDp() })
+                        .fillMaxWidth()
+                        .height(36.dp)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.24f)),
+                )
+            }
             if (renameRow != null) {
                 TreeInlineRename(
                     rows = rows,
@@ -2726,6 +2844,7 @@ private fun handleTreeAction(action: String, controller: VibecodiumController) {
         }
         "open_file" -> controller.openAttachment(path)
         "rename" -> controller.beginExplorerRename(path, controller.state.folders.contains(path))
+        "menu" -> controller.openExplorerMenu(path)
     }
 }
 
@@ -3173,7 +3292,8 @@ private fun Placeholder(text: String) {
 private fun BoxScope.MessageBar(message: String, onDismiss: () -> Unit) {
     Surface(
         modifier = Modifier
-            .align(Alignment.BottomCenter)
+            .align(Alignment.TopCenter)
+            .statusBarsPadding()
             .padding(16.dp)
             .fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -3192,12 +3312,188 @@ private fun BoxScope.MessageBar(message: String, onDismiss: () -> Unit) {
     }
 }
 
+/**
+ * Obsidian's file explorer action menu: folder rows get "New note" and
+ * "New folder", every row gets rename/move/copy/delete actions.
+ */
 @Composable
-private fun DeleteDialog(path: String, controller: VibecodiumController) {
+private fun ExplorerContextMenu(state: UiState, controller: VibecodiumController) {
+    val path = state.explorerMenuPath ?: return
+    val isFolder = state.folders.contains(path)
+    val name = path.substringAfterLast('/')
+    val files = if (isFolder) state.entries.count { it.path.startsWith("$path/") } else 0
+    val folders = if (isFolder) state.folders.count { it.startsWith("$path/") } else 0
+    val subtitle = if (isFolder) {
+        "$files ${if (files == 1) "file" else "files"} · " +
+            "$folders ${if (folders == 1) "folder" else "folders"}"
+    } else {
+        val extension = state.entries.firstOrNull { it.path == path }?.extension.orEmpty()
+        when {
+            extension.isBlank() -> "File"
+            extension.equals("md", ignoreCase = true) -> "Note"
+            else -> extension.uppercase(Locale.US) + " file"
+        }
+    }
+    BackHandler { controller.dismissExplorerMenu() }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.45f))
+            .pointerInput(path) {
+                detectTapGestures(onTap = { controller.dismissExplorerMenu() })
+            },
+    ) {
+        Column(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) {}
+                .padding(vertical = 8.dp),
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    if (isFolder) NewFolderIcon else Icons.Default.List,
+                    contentDescription = null,
+                    modifier = Modifier.size(22.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        name,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        subtitle,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+            if (isFolder) {
+                ActionMenuRow(NewNoteIcon, "New note") { controller.menuNewNote(path) }
+                ActionMenuRow(NewFolderIcon, "New folder") { controller.menuNewFolder(path) }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+            }
+            ActionMenuRow(Icons.Default.Edit, "Rename") { controller.menuRename(path) }
+            ActionMenuRow(MoveIcon, "Move to…") { controller.menuMove(path) }
+            ActionMenuRow(CopyIcon, "Make a copy") { controller.menuDuplicate(path) }
+            ActionMenuRow(ClipboardIcon, "Copy path") { controller.menuCopyPath(path) }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+            ActionMenuRow(TrashIcon, "Delete", danger = true) { controller.menuDelete(path) }
+        }
+    }
+}
+
+@Composable
+private fun ActionMenuRow(
+    icon: ImageVector,
+    label: String,
+    danger: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val color = if (danger) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .heightIn(min = 52.dp)
+            .padding(horizontal = 18.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            modifier = Modifier.size(20.dp),
+            tint = color,
+        )
+        Spacer(Modifier.width(14.dp))
+        Text(label, fontSize = 14.sp, color = color)
+    }
+}
+
+@Composable
+private fun MoveDialog(state: UiState, controller: VibecodiumController) {
+    val path = state.movePath ?: return
+    val isFolder = state.folders.contains(path)
+    val current = path.substringBeforeLast('/', "")
+    val destinations = buildList {
+        add("" to "Vault root")
+        for (folder in state.folders) {
+            if (isFolder && (folder == path || folder.startsWith("$path/"))) continue
+            add(folder to folder)
+        }
+    }
+    AlertDialog(
+        onDismissRequest = { controller.dismissMove() },
+        title = { Text("Move “${path.substringAfterLast('/')}”") },
+        text = {
+            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 360.dp)) {
+                items(destinations, key = { it.first }) { (folder, label) ->
+                    val here = folder == current
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !here) { controller.moveTo(folder) }
+                            .padding(horizontal = 8.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            label,
+                            modifier = Modifier.weight(1f),
+                            fontSize = 14.sp,
+                            color = if (here) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (here) {
+                            Text(
+                                "Current",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { controller.dismissMove() }) {
+                Text("Cancel")
+            }
+        },
+    )
+}
+
+@Composable
+private fun DeleteDialog(path: String, isFolder: Boolean, controller: VibecodiumController) {
     AlertDialog(
         onDismissRequest = { controller.dismissDelete() },
-        title = { Text("Delete note?") },
-        text = { Text(path) },
+        title = { Text(if (isFolder) "Delete folder?" else "Delete file?") },
+        text = {
+            Text(if (isFolder) "$path\n\nAll files inside it will be deleted." else path)
+        },
         confirmButton = {
             TextButton(onClick = { controller.deleteConfirmed() }) {
                 Text("Delete")

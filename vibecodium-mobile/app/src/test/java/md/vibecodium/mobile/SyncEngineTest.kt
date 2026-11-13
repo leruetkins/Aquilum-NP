@@ -33,6 +33,9 @@ class SyncEngineTest {
         }
 
         override suspend fun renameFolder(oldPath: String, newPath: String) = Unit
+        override suspend fun moveEntry(oldPath: String, newPath: String, isFolder: Boolean) = Unit
+        override suspend fun copyEntry(oldPath: String, newPath: String, isFolder: Boolean) = Unit
+        override suspend fun deleteEntry(path: String, isFolder: Boolean) = Unit
 
         override suspend fun search(query: String, limit: Int): List<SearchHit> = emptyList()
 
@@ -82,6 +85,12 @@ class SyncEngineTest {
                 records[vault to renamePathUnder(record.path, oldPath, newPath)] =
                     record.copy(path = renamePathUnder(record.path, oldPath, newPath))
             }
+        }
+
+        override fun removeTree(vault: String, path: String) {
+            records.keys
+                .filter { it.first == vault && (it.second == path || it.second.startsWith("$path/")) }
+                .forEach(records::remove)
         }
 
         override fun state(vault: String): SyncState? = states[vault]

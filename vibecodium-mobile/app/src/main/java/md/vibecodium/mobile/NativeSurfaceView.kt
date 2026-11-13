@@ -338,7 +338,10 @@ class NativeTreeView(
     context: Context,
     private val onAction: (String) -> Unit,
     private val onTouchStart: () -> Unit = {},
-) : NativeSurfaceView(context) {    private data class TreeRowInfo(
+    /** Reports the row held under the finger, or null when the hold ends. */
+    private val onPress: (String?) -> Unit = {},
+) : NativeSurfaceView(context) {
+    private data class TreeRowInfo(
         val name: String,
         val path: String,
         val folder: Boolean,
@@ -454,14 +457,15 @@ class NativeTreeView(
     private var longPressAtX = 0f
     private var longPressAtY = 0f
     private var longPressFired = false
+    /** Row highlighted while the finger is down; the menu opens on release. */
+    private var pressedPath: String? = null
     private val longPressAction = Runnable {
         val row = longPressRow ?: return@Runnable
         longPressRow = null
         longPressFired = true
+        pressedPath = row.path
         performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-        post {
-            onAction(JSONObject().put("kind", "rename").put("path", row.path).toString())
-        }
+        post { onPress(row.path) }
     }
 
     init {
@@ -482,6 +486,14 @@ class NativeTreeView(
         if (!value) {
             stopTreeFling()
             recycleTreeVelocity()
+            clearPressFeedback()
+        }
+    }
+
+    private fun clearPressFeedback() {
+        pressedPath?.let { path ->
+            pressedPath = null
+            post { onPress(null) }
         }
     }
 
@@ -534,14 +546,28 @@ class NativeTreeView(
         } else if (action == 1 || action == 2) {
             velocityTracker?.addMovement(event)
         }
-        if (action == 1 && longPressRow != null && movedPastLongPressSlop(event)) {
-            cancelRenameLongPress()
+        if (action == 1) {
+            val moved = movedPastLongPressSlop(event)
+            if (longPressRow != null && moved) {
+                // Still waiting for the threshold: this gesture is a scroll.
+                cancelRenameLongPress()
+            } else if (longPressFired && moved) {
+                // The row was highlighted; dragging it turns into a scroll.
+                longPressFired = false
+                clearPressFeedback()
+            }
         }
         if (action == 2 || action == -1) {
-            val rename = longPressFired
+            val menuPath = if (longPressFired) pressedPath else null
             cancelRenameLongPress()
             longPressFired = false
-            if (rename && action == 2) {
+            if (menuPath != null) {
+                clearPressFeedback()
+                if (action == 2) {
+                    post {
+                        onAction(JSONObject().put("kind", "menu").put("path", menuPath).toString())
+                    }
+                }
                 recycleTreeVelocity()
                 requestRender()
                 return true

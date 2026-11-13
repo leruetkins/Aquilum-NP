@@ -22,6 +22,40 @@ fun renamePathUnder(path: String, oldPath: String, newPath: String): String = wh
     else -> path
 }
 
+/** "Note (copy).md" / "Folder (copy)" name used by the duplicate action. */
+fun duplicatePath(path: String): String {
+    val slash = path.lastIndexOf('/')
+    val directory = if (slash >= 0) path.substring(0, slash + 1) else ""
+    val name = path.substring(slash + 1)
+    val dot = name.lastIndexOf('.')
+    val stem = if (dot > 0) name.substring(0, dot) else name
+    val extension = if (dot > 0) name.substring(dot) else ""
+    return "$directory$stem (copy)$extension"
+}
+
+/** Appends " 2", " 3"... until [path] does not collide with [used] paths. */
+fun uniquePath(path: String, used: Set<String>): String {
+    if (path !in used) return path
+    val slash = path.lastIndexOf('/')
+    val directory = if (slash >= 0) path.substring(0, slash + 1) else ""
+    val name = path.substring(slash + 1)
+    val dot = name.lastIndexOf('.')
+    val stem = if (dot > 0) name.substring(0, dot) else name
+    val extension = if (dot > 0) name.substring(dot) else ""
+    var counter = 2
+    while (true) {
+        val candidate = "$directory$stem $counter$extension"
+        if (candidate !in used) return candidate
+        counter += 1
+    }
+}
+
+/** Keeps the entry name but places it directly inside [targetFolder]. */
+fun movePathTo(path: String, targetFolder: String): String {
+    val name = path.substringAfterLast('/')
+    return if (targetFolder.isEmpty()) name else "$targetFolder/$name"
+}
+
 /**
  * Builds the folder tree from flat repository data. Folders are included even
  * when they contain no files, and folders sort before files at every level.

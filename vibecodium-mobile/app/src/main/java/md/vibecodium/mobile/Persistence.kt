@@ -155,6 +155,15 @@ object RecentStore {
         return updated
     }
 
+    /** Drops recent entries for a deleted file or folder subtree. */
+    fun removeTree(context: Context, key: String, path: String): List<RecentEntry> {
+        val updated = load(context, key)
+            .filterNot { it.path == path || it.path.startsWith("$path/") }
+            .take(LIMIT)
+        save(context, key, updated)
+        return updated
+    }
+
     fun clear(context: Context, key: String) {
         prefs(context).edit().remove(PREFIX + key).apply()
     }

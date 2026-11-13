@@ -88,4 +88,25 @@ class ExplorerTreeTest {
         assertEquals("Projects2/note.md", renamePathUnder("Projects2/note.md", "Projects", "Archive"))
         assertEquals("renamed.md", renamePathUnder("note.md", "note.md", "renamed.md"))
     }
+
+    @Test
+    fun duplicateNamesStayInTheSameFolderAndKeepExtensions() {
+        assertEquals("note (copy).md", duplicatePath("note.md"))
+        assertEquals("Archive/note (copy).md", duplicatePath("Archive/note.md"))
+        assertEquals("Projects (copy)", duplicatePath("Projects"))
+        assertEquals("noext (copy)", duplicatePath("noext"))
+
+        assertEquals(
+            "Archive/note (copy) 2.md",
+            uniquePath("Archive/note (copy).md", setOf("Archive/note (copy).md")),
+        )
+        assertEquals("note.md", uniquePath("note.md", emptySet()))
+    }
+
+    @Test
+    fun moveKeepsTheNameInTheTargetFolder() {
+        assertEquals("Archive/note.md", movePathTo("Projects/note.md", "Archive"))
+        assertEquals("note.md", movePathTo("Projects/note.md", ""))
+        assertEquals("Archive/Projects", movePathTo("Projects", "Archive"))
+    }
 }

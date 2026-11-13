@@ -1,15 +1,33 @@
+# Gradle / Android build output
 .gradle/
 .kotlin/
 build/
 app/build/
+.cxx/
+.externalNativeBuild/
+captures/
+*.apk
+*.aab
+*.hprof
+
+# Local SDK and signing configuration
 local.properties
 keystore.properties
 keystore/
 *.jks
 *.keystore
+
+# Rust core build output and machine-specific NDK linker paths
 target/
-screenshots/
+core/.cargo/config.toml
+
+# IDE
 .idea/
 *.iml
+
+# OS, logs and captured diagnostics
 .DS_Store
+Thumbs.db
+*.log
+screenshots/
 r*.xml

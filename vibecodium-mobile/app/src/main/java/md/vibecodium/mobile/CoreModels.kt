@@ -170,6 +170,10 @@ data class UiState(
     val explorerRenamePath: String? = null,
     val explorerRenameValue: String = "",
     val explorerRenameFolder: Boolean = false,
+    /** Explorer row whose action menu is open. */
+    val explorerMenuPath: String? = null,
+    /** Explorer row waiting for a destination folder for the move action. */
+    val movePath: String? = null,
     val loading: Boolean = false,
     /** True from process start until the vault and saved tabs are ready. */
     val booting: Boolean = false,

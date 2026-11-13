@@ -1,6 +1,6 @@
-[package]
+﻿[package]
 name = "vibecodium"
-version = "0.1.1"
+version = "0.1.3"
 edition = "2021"
 
 [dependencies]
@@ -92,13 +92,13 @@ tempfile = "3"
 #
 # 4. Cursor style: `WM_GPUI_CURSOR_STYLE_CHANGED` now calls `SetCursor` immediately.
 # The old presence-only check never applied a change between two non-null cursors,
-# so the icon kept the previous style until the next mouse move — visible when
+# so the icon kept the previous style until the next mouse move вЂ” visible when
 # crossing a pointer/I-beam boundary, such as the inline rename field.
 #
 # 5. Text ellipsis: the text layout cache now keys on the truncation width as well,
 # and every measure pass starts from the original runs. A nowrap label measured
-# narrow before flex grew it kept that truncation forever — cut short and without
-# the "…" — and re-measuring it with the final width sliced the runs at a
+# narrow before flex grew it kept that truncation forever вЂ” cut short and without
+# the "вЂ¦" вЂ” and re-measuring it with the final width sliced the runs at a
 # non-char boundary (panic in the DirectWrite shaper).
 #
 # 6. X11 raw window handle: `HasWindowHandle` / `HasDisplayHandle` for `X11Window`

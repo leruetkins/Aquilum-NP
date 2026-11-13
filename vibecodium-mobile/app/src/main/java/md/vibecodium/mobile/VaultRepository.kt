@@ -50,6 +50,12 @@ interface VaultRepository {
     suspend fun renameNote(oldPath: String, newPath: String): NoteItem
     /** Renames a folder in place; its children move with it. */
     suspend fun renameFolder(oldPath: String, newPath: String)
+    /** Moves a file or folder to another folder, keeping its name. */
+    suspend fun moveEntry(oldPath: String, newPath: String, isFolder: Boolean)
+    /** Duplicates a file, or a folder with its whole subtree, to [newPath]. */
+    suspend fun copyEntry(oldPath: String, newPath: String, isFolder: Boolean)
+    /** Deletes a file or a whole folder subtree; notes go to the vault trash where available. */
+    suspend fun deleteEntry(path: String, isFolder: Boolean)
     suspend fun search(query: String, limit: Int): List<SearchHit>
 
     /**
@@ -308,6 +314,43 @@ private class FileVaultRepository(
         Unit
     }
 
+    override suspend fun moveEntry(oldPath: String, newPath: String, isFolder: Boolean) =
+        withContext(Dispatchers.IO) {
+            // The core rename resolves and moves files and directories alike.
+            CoreJson.data(CoreBridge.nativeRenameNote(oldPath, newPath))
+            Unit
+        }
+
+    override suspend fun copyEntry(oldPath: String, newPath: String, isFolder: Boolean) =
+        withContext(Dispatchers.IO) {
+            val source = File(root, oldPath)
+            val target = File(root, newPath)
+            if (!source.exists()) error("Not found: $oldPath")
+            if (target.exists()) error("Already exists: $newPath")
+            target.parentFile?.mkdirs()
+            if (isFolder) {
+                source.walkTopDown().forEach { entry ->
+                    val relative = entry.relativeTo(source).path
+                    val destination = File(target, relative)
+                    if (entry.isDirectory) {
+                        destination.mkdirs()
+                    } else {
+                        destination.parentFile?.mkdirs()
+                        entry.copyTo(destination, overwrite = false)
+                    }
+                }
+            } else {
+                source.copyTo(target, overwrite = false)
+            }
+            Unit
+        }
+
+    override suspend fun deleteEntry(path: String, isFolder: Boolean) = withContext(Dispatchers.IO) {
+        // The shared core moves any entry, directories included, into .trash.
+        CoreJson.data(CoreBridge.nativeDeleteNote(path))
+        Unit
+    }
+
     override suspend fun search(query: String, limit: Int): List<SearchHit> = withContext(Dispatchers.IO) {
         searchIndex().search(query, limit)
     }
@@ -541,6 +584,83 @@ private class SafVaultRepository(
             ?: error("Cannot rename: $oldPath")
         // Some providers derive child document IDs from the folder path, so a
         // fresh scan is safer than patching every descendant URI by hand.
+        invalidateIndex()
+    }
+
+    override suspend fun moveEntry(oldPath: String, newPath: String, isFolder: Boolean) =
+        withContext(Dispatchers.IO) {
+            val current = ensureIndex()
+            if (current.files.containsKey(newPath) || current.folders.contains(newPath)) {
+                error("Already exists: $newPath")
+            }
+            val sourceUri = documentUri(oldPath, isFolder) ?: error("Not found: $oldPath")
+            val targetParent = folderUri(newPath.substringBeforeLast('/', ""), create = true)
+                ?: error("Cannot create folder: ${newPath.substringBeforeLast('/', "")}")
+            DocumentsContract.moveDocument(resolver, sourceUri, sourceParentUri(oldPath), targetParent)
+                ?: error("Cannot move: $oldPath")
+            invalidateIndex()
+        }
+
+    override suspend fun copyEntry(oldPath: String, newPath: String, isFolder: Boolean) =
+        withContext(Dispatchers.IO) {
+            val current = ensureIndex()
+            if (current.files.containsKey(newPath) || current.folders.contains(newPath)) {
+                error("Already exists: $newPath")
+            }
+            if (!isFolder) {
+                val source = documentUri(oldPath, isFolder = false) ?: error("Not found: $oldPath")
+                val targetParent = folderUri(newPath.substringBeforeLast('/', ""), create = true)
+                    ?: error("Cannot create folder: ${newPath.substringBeforeLast('/', "")}")
+                val copied = DocumentsContract.copyDocument(resolver, source, targetParent)
+                    ?: error("Cannot copy: $oldPath")
+                // copyDocument keeps the source name (or auto-renames on a
+                // conflict); force the unique target name chosen by the caller.
+                DocumentsContract.renameDocument(resolver, copied, newPath.substringAfterLast('/'))
+                    ?: error("Cannot rename the copy of $oldPath")
+            } else {
+                val snapshot = snapshot()
+                val prefix = "$oldPath/"
+                createFolder(newPath)
+                val folders = snapshot.folders
+                    .filter { it.startsWith(prefix) }
+                    .sortedBy { it.count { character -> character == '/' } }
+                for (folder in folders) {
+                    createFolder(newPath + folder.removePrefix(oldPath))
+                }
+                for (file in snapshot.files.filter { it.path.startsWith(prefix) }) {
+                    val targetFolder = newPath +
+                        file.path.substring(oldPath.length, file.path.lastIndexOf('/'))
+                    val targetParent = folderUri(targetFolder, create = false)
+                        ?: error("Cannot create folder: $targetFolder")
+                    val source = documentUri(file.path, isFolder = false)
+                        ?: error("Not found: ${file.path}")
+                    val copied = DocumentsContract.copyDocument(resolver, source, targetParent)
+                        ?: error("Cannot copy: ${file.path}")
+                    DocumentsContract.renameDocument(
+                        resolver,
+                        copied,
+                        file.path.substringAfterLast('/'),
+                    ) ?: error("Cannot rename the copy of ${file.path}")
+                }
+            }
+            invalidateIndex()
+        }
+
+    override suspend fun deleteEntry(path: String, isFolder: Boolean) = withContext(Dispatchers.IO) {
+        val uri = documentUri(path, isFolder) ?: error("Not found: $path")
+        if (!DocumentsContract.deleteDocument(resolver, uri)) {
+            error("Cannot delete: $path")
+        }
+        invalidateIndex()
+    }
+
+    private fun documentUri(path: String, isFolder: Boolean): Uri? =
+        if (isFolder) folderUri(path, create = false) else fileFor(path)?.uri(path)
+
+    private fun sourceParentUri(path: String): Uri =
+        folderUri(path.substringBeforeLast('/', ""), create = false) ?: treeBase
+
+    private fun invalidateIndex() {
         synchronized(buildLock) {
             generation += 1
             index = null
