@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -854,7 +855,9 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
         Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .statusBarsPadding()
+            // safeDrawing also covers display cutouts and caption bars that
+            // tablets report instead of a plain status-bar inset.
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
             .windowInsetsPadding(
                 WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal),
             )
@@ -1155,6 +1158,11 @@ private fun EditorScreen(
     }
     var prevImeVisible by remember { mutableStateOf(false) }
     LaunchedEffect(imeVisible) {
+        if (imeVisible && !prevImeVisible && !preview) {
+            // A floating keyboard does not change the window insets, so the
+            // native inset handler cannot reveal the caret for it.
+            editorView?.onKeyboardShown()
+        }
         if (prevImeVisible && !imeVisible && !preview) {
             keyboardPrompt = true
             editorView?.onKeyboardDismissed()
@@ -1790,7 +1798,7 @@ private fun SourceEditor(
                 idleBottomInsetPx = bottomInsetPx,
             ).also(onViewReady)
         },
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().clipToBounds(),
         update = { view ->
             view.setTopInset(topInsetPx)
             view.setBottomInset(bottomInsetPx)

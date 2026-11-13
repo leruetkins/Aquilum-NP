@@ -3342,6 +3342,20 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetBotto
     });
 }
 
+/// Reveals the caret without changing the viewport. Floating keyboards do not
+/// report an IME inset, so the regular inset-driven reveal never runs for them.
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorScrollToCursor(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+) {
+    let _ = with_surface(id, |state| {
+        state.invalidate();
+        state.scroll_to_cursor();
+    });
+}
+
 #[no_mangle]
 pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetBand(
     _env: JNIEnv<'_>,

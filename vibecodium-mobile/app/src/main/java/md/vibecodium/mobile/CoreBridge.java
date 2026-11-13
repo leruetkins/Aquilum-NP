@@ -129,6 +129,8 @@ public final class CoreBridge {
 
     public static native void nativeEditorSetBottomInset(int id, float inset);
 
+    public static native void nativeEditorScrollToCursor(int id);
+
     public static native void nativeEditorSetTopInset(int id, float inset);
 
     public static native void nativeEditorSetCaretVisible(int id, boolean visible);

@@ -2516,6 +2516,9 @@ class NativeEditorView(
     fun showKeyboard() {
         if (inPreview) return
         focusEditor()
+        // Floating keyboards may not report IME visibility at all, so reveal
+        // the caret from the explicit "show keyboard" action itself.
+        onKeyboardShown()
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
         val window = findActivity()?.window
         if (window != null) {
@@ -2570,6 +2573,38 @@ class NativeEditorView(
         applyInsertionHandleVisible(true)
         requestRender()
         recalculateScrollMetrics()
+    }
+
+    /**
+     * Reveals the caret when the IME becomes visible. A docked keyboard also
+     * does this through the bottom inset, but floating keyboards report no
+     * inset at all, so this path is required for them.
+     */
+    fun onKeyboardShown() {
+        if (inPreview) return
+        postRenderTask {
+            if (!isSurfaceAttached()) return@postRenderTask
+            CoreBridge.nativeEditorScrollToCursor(surfaceId)
+            val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
+            val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: scrollMaxY
+            val newScroll = info?.optDouble("scroll", knownScroll.toDouble())?.toFloat()
+                ?.coerceIn(0f, newMaxY) ?: knownScroll
+            mainHandler.post {
+                invalidateBandGeneration()
+                knownScroll = newScroll
+                scrollMaxY = newMaxY
+                val m = computeBandMargin(safeViewportHeight()).toFloat()
+                val targetOrigin = (knownScroll - m)
+                    .coerceIn(0f, maxOf(scrollMaxY, knownScroll))
+                    .roundToInt()
+                    .toFloat()
+                bandOrigin = targetOrigin
+                scheduleBandRender(targetOrigin, force = true)
+                applyScrollTranslation()
+                scrollbarOverlay.update(knownScroll, scrollMaxY)
+                onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
+            }
+        }
     }
 
     fun setOnCaretPlaced(listener: (() -> Unit)?) {
