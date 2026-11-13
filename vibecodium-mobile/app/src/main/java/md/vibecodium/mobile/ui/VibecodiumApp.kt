@@ -36,9 +36,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -51,6 +53,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -149,6 +152,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -788,11 +792,27 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
             )
         }
     }
+    // MIUI briefly reports no navigation bar while the screen wakes up. If the
+    // layout follows that transient, both native surfaces resize twice (the
+    // visible "squeeze"). Own the bottom inset here, with the last real height,
+    // instead of letting systemBarsPadding apply an animated value.
+    val density = LocalDensity.current
+    val orientation = LocalConfiguration.current.orientation
+    val navBarBottomPx = WindowInsets.navigationBars.getBottom(density)
+    var stableNavBarBottomPx by rememberSaveable(orientation) { mutableStateOf(navBarBottomPx) }
+    LaunchedEffect(navBarBottomPx, orientation) {
+        if (navBarBottomPx > 0) stableNavBarBottomPx = navBarBottomPx
+    }
+    val stableNavBottom = with(density) { stableNavBarBottomPx.toDp() }
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .systemBarsPadding(),
+            .statusBarsPadding()
+            .windowInsetsPadding(
+                WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal),
+            )
+            .padding(bottom = stableNavBottom),
     ) {
         val drawerWidth = phoneDrawerWidth(maxWidth)
         val navbarEnabled = state.settings.navbarEnabled
@@ -943,9 +963,13 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
                     .align(Alignment.CenterStart)
                     .width(drawerWidth)
                     .fillMaxHeight()
-                    // With edge-to-edge windows the IME does not resize the
-                    // activity, so the drawer must stay above the keyboard.
-                    .imePadding()
+                    // Keep the drawer above the IME only while the inline
+                    // rename field is visible. Applying it all the time made
+                    // the tree resize (squeeze/expand) whenever the keyboard
+                    // hid after opening the drawer.
+                    .then(
+                        if (state.explorerRenamePath != null) Modifier.imePadding() else Modifier,
+                    )
                     .offset(x = if (state.drawer == Drawer.Left) 0.dp else -drawerWidth)
                     .then(
                         if (state.drawer == Drawer.Left) {
