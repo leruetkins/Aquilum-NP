@@ -3128,7 +3128,7 @@ private fun SettingsScreen(state: UiState, controller: VibecodiumController, mod
     }
     val section = SettingsSection.entries.firstOrNull { it.name == sectionName }
     BackHandler(enabled = section != null) { sectionName = "" }
-    Surface(modifier = modifier, color = MaterialTheme.colorScheme.surface) {
+    Surface(modifier = modifier, color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize()) {
             SettingsHeader(
                 title = section?.title ?: "Settings",
@@ -3433,7 +3433,7 @@ private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> 
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(16.dp))
-                .background(MaterialTheme.colorScheme.background),
+                .background(MaterialTheme.colorScheme.surface),
             content = content,
         )
     }
