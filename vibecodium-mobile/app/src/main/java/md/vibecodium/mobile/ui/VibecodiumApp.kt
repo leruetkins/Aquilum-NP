@@ -1162,8 +1162,8 @@ private val CloseButtonSize = DrawerTopBarHeight
 /** Drawer and panel surface tone, the dark scheme's `surfaceContainerHigh`. */
 private val DrawerSurfaceColor = Color(0xFF282828)
 
-/** Right-hand corners of the explorer drawer, curved like the note header pills. */
-private val DrawerCornerRadius = ViewHeaderHeight / 2
+/** Panel corners, curved like the note header pills: half the 44 dp header. */
+private val PanelCornerRadius = ViewHeaderHeight / 2
 
 /** Height of the dissolve scrim at the top and bottom of the file tree. */
 private val TreeEdgeFade = 20.dp
@@ -1441,7 +1441,7 @@ private fun TabsDropdown(
                     .offset(x = leftInset, y = menuOffsetY)
                     .width(menuWidth)
                     .heightIn(max = maxMenuHeight),
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(PanelCornerRadius),
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 tonalElevation = 3.dp,
                 shadowElevation = 6.dp,
@@ -2627,7 +2627,7 @@ private fun LeftDrawer(
     }
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(topEnd = DrawerCornerRadius, bottomEnd = DrawerCornerRadius),
+        shape = RoundedCornerShape(topEnd = PanelCornerRadius, bottomEnd = PanelCornerRadius),
         color = DrawerSurfaceColor,
         tonalElevation = 0.dp,
     ) {
