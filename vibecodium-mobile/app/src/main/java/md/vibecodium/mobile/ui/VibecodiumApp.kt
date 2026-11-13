@@ -150,6 +150,8 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
@@ -180,10 +182,16 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import kotlin.math.roundToInt
 import androidx.compose.ui.viewinterop.AndroidView
 import md.vibecodium.mobile.AppSettingsJson
@@ -229,7 +237,7 @@ private val NavbarHeight = 52.dp
 private val ViewHeaderHeight = 44.dp
 
 /** Top margin for the floating header pills so they hover below the status bar. */
-private val ViewHeaderTopPadding = 8.dp
+private val ViewHeaderTopPadding = 0.dp
 
 /** `lucide-folder-plus`, Obsidian's new-folder nav action. */
 private val NewFolderIcon: ImageVector = ImageVector.Builder(
@@ -1200,7 +1208,7 @@ private fun EditorScreen(
                     if (chromeProgress.value < 0.05f) invisibleToUser()
                 },
         ) {
-            ViewHeader(state, tab, controller)
+            ViewHeader(state, tab, controller, onHideKeyboard = { editorView?.hideKeyboard() })
         }
         if (!preview && keyboardPrompt && !imeVisible) {
             val bottomPadding = if (navbarEnabled) NavbarHeight + 16.dp else 16.dp
@@ -1232,11 +1240,164 @@ private fun EditorScreen(
     }
 }
 
+/** Places the full-width tab menu right below its anchor, flipping when needed. */
+private class TabMenuPositionProvider(
+    private val gap: Int,
+    private val left: Int,
+) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val below = windowSize.height - (anchorBounds.bottom + gap)
+        val above = anchorBounds.top - gap
+        return if (popupContentSize.height <= below || below >= above) {
+            IntOffset(left, anchorBounds.bottom + gap)
+        } else {
+            IntOffset(
+                left,
+                (anchorBounds.top - gap - popupContentSize.height).coerceAtLeast(0),
+            )
+        }
+    }
+}
+
+/**
+ * Obsidian-style tab dropdown: a boundeded full-width LazyColumn under the
+ * title pill with its own scrollbar (the stock DropdownMenu cannot host one).
+ */
 @Composable
-private fun ViewHeader(state: EditorSlice, tab: Tab, controller: VibecodiumController) {
+private fun TabsDropdown(
+    state: EditorSlice,
+    controller: VibecodiumController,
+    anchorBottomPx: Int,
+    onDismiss: () -> Unit,
+) {
+    val density = LocalDensity.current
+    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
+    // Same side gutters as the header toolbar.
+    val sideInset = 12.dp
+    val menuWidth = (screenWidth - sideInset * 2).coerceAtLeast(200.dp)
+    val leftInsetPx = with(density) { sideInset.roundToPx() }
+    val anchorBottom = with(density) { anchorBottomPx.toDp() }
+    // The keyboard is hidden before the menu opens; keep room for the system
+    // navigation bar so the last row is never covered.
+    val maxMenuHeight = (screenHeight - anchorBottom - 48.dp - 8.dp).coerceAtLeast(140.dp)
+    val headerHeight = 52.dp
+    val listMaxHeight = (maxMenuHeight - headerHeight - 1.dp).coerceAtLeast(72.dp)
+    val listState = rememberLazyListState()
+    Popup(
+        popupPositionProvider = remember(density, leftInsetPx) {
+            TabMenuPositionProvider(
+                gap = with(density) { 4.dp.roundToPx() },
+                left = leftInsetPx,
+            )
+        },
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(
+            focusable = true,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
+        ),
+    ) {
+        Surface(
+            modifier = Modifier.width(menuWidth).heightIn(max = maxMenuHeight),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 3.dp,
+            shadowElevation = 6.dp,
+        ) {
+            Column {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(headerHeight)
+                        .padding(start = 4.dp, end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(
+                        onClick = {
+                            onDismiss()
+                            controller.newNote()
+                        },
+                        modifier = Modifier.size(44.dp),
+                    ) {
+                        Icon(
+                            NewNoteIcon,
+                            contentDescription = "New note",
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "Close all (${state.tabs.size})",
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(
+                                enabled = state.tabs.isNotEmpty(),
+                                onClick = {
+                                    onDismiss()
+                                    controller.closeAllTabs()
+                                },
+                            )
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                        fontSize = 12.sp,
+                        color = if (state.tabs.isNotEmpty()) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                        },
+                    )
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                Box(Modifier.fillMaxWidth().heightIn(max = listMaxHeight)) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                    ) {
+                        itemsIndexed(state.tabs, key = { _, item -> item.path }) { index, item ->
+                            TabListRow(
+                                tab = item,
+                                active = index == state.activeTab,
+                                bookmarked = item.path in state.bookmarks,
+                                onSelect = {
+                                    onDismiss()
+                                    controller.selectTab(index)
+                                },
+                                onClose = { controller.closeTab(index) },
+                            )
+                        }
+                    }
+                    TabScrollBar(
+                        state = listState,
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .fillMaxHeight()
+                            .padding(end = 1.dp, top = 2.dp, bottom = 2.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ViewHeader(
+    state: EditorSlice,
+    tab: Tab,
+    controller: VibecodiumController,
+    onHideKeyboard: () -> Unit,
+) {
     val bookmarked = tab.path in state.bookmarks
     val preview = state.editorMode == EditorMode.Preview
     var menuOpen by remember { mutableStateOf(false) }
+    var tabsMenuOpen by remember { mutableStateOf(false) }
+    var titleBottomPx by remember { mutableStateOf(0) }
     Row(
         Modifier
             .fillMaxWidth()
@@ -1249,10 +1410,14 @@ private fun ViewHeader(state: EditorSlice, tab: Tab, controller: VibecodiumContr
         Box(
             Modifier
                 .weight(1f)
-                .fillMaxHeight(),
+                .fillMaxHeight()
+                .onGloballyPositioned { titleBottomPx = it.boundsInWindow().bottom.roundToInt() },
         ) {
             Surface(
-                onClick = { controller.toggleTabSwitcher() },
+                onClick = {
+                    onHideKeyboard()
+                    tabsMenuOpen = true
+                },
                 modifier = Modifier.fillMaxSize(),
                 shape = RoundedCornerShape(percent = 50),
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -1280,6 +1445,14 @@ private fun ViewHeader(state: EditorSlice, tab: Tab, controller: VibecodiumContr
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            }
+            if (tabsMenuOpen) {
+                TabsDropdown(
+                    state = state,
+                    controller = controller,
+                    anchorBottomPx = titleBottomPx,
+                    onDismiss = { tabsMenuOpen = false },
+                )
             }
         }
         Spacer(Modifier.width(8.dp))
@@ -2423,7 +2596,7 @@ private fun TabSwitcher(state: UiState, controller: VibecodiumController, modifi
                     fontWeight = FontWeight.SemiBold,
                 )
                 IconButton(onClick = { controller.newNote() }) {
-                    Icon(Icons.Default.Add, contentDescription = "New note", modifier = Modifier.size(20.dp))
+                    Icon(NewNoteIcon, contentDescription = "New note", modifier = Modifier.size(20.dp))
                 }
                 IconButton(
                     onClick = { controller.closeAllTabs() },
@@ -2463,58 +2636,13 @@ private fun TabSwitcher(state: UiState, controller: VibecodiumController, modifi
                         .padding(start = 8.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
                 ) {
                     itemsIndexed(state.tabs, key = { _, tab -> tab.path }) { index, tab ->
-                        val active = index == state.activeTab
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .background(
-                                    if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                                    else Color.Transparent,
-                                    RoundedCornerShape(8.dp),
-                                )
-                                .clickable { controller.selectTab(index) }
-                                .padding(horizontal = 12.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    tab.title + if (tab.dirty) " •" else "",
-                                    fontSize = 14.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    tab.path,
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                            if (tab.path in state.bookmarks) {
-                                Icon(
-                                    Icons.Default.Star,
-                                    contentDescription = "Bookmarked",
-                                    modifier = Modifier.size(14.dp),
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
-                            }
-                            if (active) {
-                                Icon(
-                                    Icons.Default.Check,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
-                            }
-                            IconButton(onClick = { controller.closeTab(index) }) {
-                                Icon(
-                                    Icons.Default.Close,
-                                    contentDescription = "Close tab",
-                                    modifier = Modifier.size(16.dp),
-                                )
-                            }
-                        }
+                        TabListRow(
+                            tab = tab,
+                            active = index == state.activeTab,
+                            bookmarked = tab.path in state.bookmarks,
+                            onSelect = { controller.selectTab(index) },
+                            onClose = { controller.closeTab(index) },
+                        )
                     }
                 }
                 TabScrollBar(
@@ -2526,6 +2654,71 @@ private fun TabSwitcher(state: UiState, controller: VibecodiumController, modifi
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun TabListRow(
+    tab: Tab,
+    active: Boolean,
+    bookmarked: Boolean,
+    onSelect: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(
+                if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                else Color.Transparent,
+                RoundedCornerShape(8.dp),
+            )
+            .clickable(onClick = onSelect)
+            .padding(start = 8.dp, top = 4.dp, end = 4.dp, bottom = 4.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
+                if (active) {
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                tab.title + if (tab.dirty) " •" else "",
+                modifier = Modifier.weight(1f),
+                fontSize = 14.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (bookmarked) {
+                Icon(
+                    Icons.Default.Star,
+                    contentDescription = "Bookmarked",
+                    modifier = Modifier.size(14.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+            IconButton(onClick = onClose, modifier = Modifier.size(40.dp)) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = "Close tab",
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+        Text(
+            tab.path,
+            modifier = Modifier.padding(start = 24.dp),
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
