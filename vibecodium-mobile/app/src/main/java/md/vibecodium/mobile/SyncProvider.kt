@@ -35,6 +35,16 @@ data class RemoteDownload(
 class DropboxException(val status: Int, val summary: String, val endpoint: String = "") :
     IOException("Dropbox $status${if (endpoint.isNotBlank()) " ($endpoint)" else ""}: $summary")
 
+/**
+ * Dropbox reports a missing path with endpoint-specific summaries:
+ * `files/get_metadata` and `files/list_folder` answer `path/not_found/`,
+ * while `files/delete_v2` answers `path_lookup/not_found/`. The desktop
+ * client treats every `not_found` summary as "missing", so the mobile
+ * provider does the same instead of matching one exact prefix.
+ */
+internal fun DropboxException.isMissing(): Boolean =
+    status == 409 && summary.contains("not_found", ignoreCase = true)
+
 data class RemoteDelta(
     val changed: List<RemoteEntry>,
     val removed: List<String>,
@@ -319,7 +329,7 @@ class DropboxProvider(private val tokens: DropboxTokenStore) : SyncProvider {
                     .put("recursive", true),
             )
         } catch (error: DropboxException) {
-            if (error.summary.contains("path/not_found")) return@withContext emptyList()
+            if (error.isMissing()) return@withContext emptyList()
             throw error
         }
 
@@ -351,7 +361,7 @@ class DropboxProvider(private val tokens: DropboxTokenStore) : SyncProvider {
         try {
             latest()
         } catch (error: DropboxException) {
-            if (!error.summary.contains("path/not_found")) throw error
+            if (!error.isMissing()) throw error
             ensureFolder(normalizedRoot)
             latest()
         }
@@ -435,7 +445,7 @@ class DropboxProvider(private val tokens: DropboxTokenStore) : SyncProvider {
         val value = try {
             rpc("files/get_metadata", JSONObject().put("path", path))
         } catch (error: DropboxException) {
-            if (error.summary.contains("path/not_found")) return@withContext null
+            if (error.isMissing()) return@withContext null
             throw error
         }
         RemoteEntry(
@@ -474,7 +484,10 @@ class DropboxProvider(private val tokens: DropboxTokenStore) : SyncProvider {
         try {
             rpc("files/delete_v2", JSONObject().put("path", path))
         } catch (error: DropboxException) {
-            if (!error.summary.contains("path/not_found")) throw error
+            // delete_v2 reports a missing target as `path_lookup/not_found/`,
+            // while reads use `path/not_found/`. Either way the file is
+            // already gone, so the delete succeeded.
+            if (!error.isMissing()) throw error
         }
     }
 

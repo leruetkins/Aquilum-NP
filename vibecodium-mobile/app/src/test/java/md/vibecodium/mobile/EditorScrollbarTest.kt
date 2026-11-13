@@ -61,10 +61,16 @@ class EditorScrollbarTest {
         private var lastAnchor = 0f
         private var lastScrollVal = 0f
 
-        fun onEditorScroll(scroll: Float, maxY: Float) {
+        fun onEditorScroll(scroll: Float, maxY: Float, isUserGesture: Boolean = true) {
             if (!autoHideChrome) {
                 if (chromeHidden) chromeHidden = false
                 lastAnchor = 0f
+                lastScrollVal = scroll
+            } else if (!isUserGesture) {
+                if (maxY <= 0.5f || !chromeHidden) {
+                    chromeHidden = false
+                }
+                lastAnchor = scroll
                 lastScrollVal = scroll
             } else {
                 val anchor = lastAnchor
@@ -155,24 +161,24 @@ class EditorScrollbarTest {
         val sim = ChromeStateSimulator(autoHideChrome = true)
 
         // User was scrolled down in a long note, so chrome became hidden
-        sim.onEditorScroll(scroll = 50f, maxY = 500f)
-        sim.onEditorScroll(scroll = 150f, maxY = 500f)
+        sim.onEditorScroll(scroll = 50f, maxY = 500f, isUserGesture = true)
+        sim.onEditorScroll(scroll = 150f, maxY = 500f, isUserGesture = true)
         assertTrue("Chrome should be hidden after scrolling down", sim.chromeHidden)
 
         // Keyboard dismissed or note switched to a short note (maxY <= 0.5f)
-        sim.onEditorScroll(scroll = 0f, maxY = 0f)
+        sim.onEditorScroll(scroll = 0f, maxY = 0f, isUserGesture = false)
         assertFalse("Toolbar must be shown whenever scrollbar is absent (maxY <= 0.5f)", sim.chromeHidden)
 
         // Scrollbar appears again with keyboard (maxY = 200f)
-        sim.onEditorScroll(scroll = 0f, maxY = 200f)
+        sim.onEditorScroll(scroll = 0f, maxY = 200f, isUserGesture = false)
         assertFalse("Toolbar remains visible at scroll = 0", sim.chromeHidden)
 
         // User scrolls down again with keyboard
-        sim.onEditorScroll(scroll = 40f, maxY = 200f)
+        sim.onEditorScroll(scroll = 40f, maxY = 200f, isUserGesture = true)
         assertTrue("Toolbar hides after scrolling down", sim.chromeHidden)
 
         // Keyboard closes, note now fits on screen -> recalculate yields maxY = 0f
-        sim.onEditorScroll(scroll = 0f, maxY = 0f)
+        sim.onEditorScroll(scroll = 0f, maxY = 0f, isUserGesture = false)
         assertFalse("Toolbar must be shown immediately after keyboard dismissal if content fits", sim.chromeHidden)
     }
 
@@ -181,11 +187,11 @@ class EditorScrollbarTest {
         val sim = ChromeStateSimulator(autoHideChrome = true)
 
         // In long note, toolbar hidden after scroll
-        sim.onEditorScroll(scroll = 100f, maxY = 800f)
+        sim.onEditorScroll(scroll = 100f, maxY = 800f, isUserGesture = true)
         assertTrue(sim.chromeHidden)
 
         // Switch to short note (maxY = 0f)
-        sim.onEditorScroll(scroll = 0f, maxY = 0f)
+        sim.onEditorScroll(scroll = 0f, maxY = 0f, isUserGesture = false)
         assertFalse("Toolbar must be shown immediately upon switching to note with no scrollbar", sim.chromeHidden)
 
         val layout = computeScrollbarLayout(
@@ -197,5 +203,32 @@ class EditorScrollbarTest {
             curMax = 0f,
         )
         assertFalse("Scrollbar must not be visible for short note", layout.visible)
+    }
+
+    @Test
+    fun switchingToScrolledTabLeavesToolbarVisibleUntilUserScrolls() {
+        val sim = ChromeStateSimulator(autoHideChrome = true)
+
+        // 1. Initial state on tab switch: toolbar is reset to shown
+        sim.chromeHidden = false
+
+        // 2. Note loads and restores scroll position where cursor was (e.g. scroll = 500f, in middle of text)
+        // This is a programmatic scroll (isUserGesture = false)
+        sim.onEditorScroll(scroll = 500f, maxY = 1500f, isUserGesture = false)
+
+        // Top toolbar MUST remain visible after document loads!
+        assertFalse("Top toolbar must stay visible after loading note with restored cursor/scroll", sim.chromeHidden)
+
+        // 3. User performs a tiny jitter / tap (less than 24px threshold)
+        sim.onEditorScroll(scroll = 510f, maxY = 1500f, isUserGesture = true)
+        assertFalse("Top toolbar must remain visible for tiny gestures below threshold", sim.chromeHidden)
+
+        // 4. User actively scrolls down by > 24px
+        sim.onEditorScroll(scroll = 540f, maxY = 1500f, isUserGesture = true)
+        assertTrue("Top toolbar must hide only when user manually scrolls down", sim.chromeHidden)
+
+        // 5. User scrolls back up
+        sim.onEditorScroll(scroll = 500f, maxY = 1500f, isUserGesture = true)
+        assertFalse("Top toolbar must reappear when scrolling back up", sim.chromeHidden)
     }
 }

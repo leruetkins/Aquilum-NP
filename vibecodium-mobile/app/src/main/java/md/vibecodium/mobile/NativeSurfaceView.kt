@@ -837,7 +837,7 @@ class NativeEditorView(
     private var velocityTracker: VelocityTracker? = null
     @Volatile private var scrollMaxY = 0f
     private var dragStartScroll = 0f
-    private var onScrollChanged: ((Float, Float) -> Unit)? = null
+    private var onScrollChanged: ((Float, Float, Boolean) -> Unit)? = null
     private var onCaretPlaced: (() -> Unit)? = null
     @Volatile private var knownScroll = 0f
     private var wasHidden = false
@@ -848,7 +848,7 @@ class NativeEditorView(
             val currentY = scroller.currY.toFloat().coerceIn(0f, scrollMaxY).roundToInt().toFloat()
             knownScroll = currentY
             applyScrollTranslation()
-            onScrollChanged?.invoke(currentY, scrollMaxY)
+            onScrollChanged?.invoke(currentY, scrollMaxY, true)
             scrollbarOverlay.update(currentY, scrollMaxY)
             checkBandRender(currentY)
             if (more && !scroller.isFinished && currentY > 0f && currentY < scrollMaxY) {
@@ -1110,11 +1110,11 @@ class NativeEditorView(
         bottomInset = idleBottomInsetPx
     }
 
-    fun setOnScrollChanged(listener: ((Float, Float) -> Unit)?) {
+    fun setOnScrollChanged(listener: ((Float, Float, Boolean) -> Unit)?) {
         if (onScrollChanged === listener) return
         onScrollChanged = listener
         if (listener != null) {
-            listener.invoke(knownScroll, scrollMaxY)
+            listener.invoke(knownScroll, scrollMaxY, false)
         }
     }
 
@@ -1140,7 +1140,7 @@ class NativeEditorView(
                     requestRender()
                 }
                 scrollbarOverlay.update(knownScroll, scrollMaxY)
-                onScrollChanged?.invoke(knownScroll, scrollMaxY)
+                onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
             }
         }
     }
@@ -1158,7 +1158,7 @@ class NativeEditorView(
                 scrollMaxY = newMaxY
                 applyScrollTranslation()
                 scrollbarOverlay.update(knownScroll, scrollMaxY)
-                onScrollChanged?.invoke(knownScroll, scrollMaxY)
+                onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
             }
         }
         requestRender()
@@ -1374,7 +1374,7 @@ class NativeEditorView(
         mainHandler.post {
             applyScrollTranslation()
             scrollbarOverlay.update(knownScroll, scrollMaxY)
-            onScrollChanged?.invoke(knownScroll, scrollMaxY)
+            onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
             if (!inPreview) {
                 focusEditor()
             } else if (!selectionNonEmpty()) {
@@ -1449,7 +1449,7 @@ class NativeEditorView(
             mainHandler.post {
                 applyScrollTranslation()
                 scrollbarOverlay.update(knownScroll, scrollMaxY)
-                onScrollChanged?.invoke(knownScroll, scrollMaxY)
+                onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
             }
         }
         if (pathChanged) {
@@ -2100,7 +2100,7 @@ class NativeEditorView(
                     if (nextScroll != knownScroll) {
                         knownScroll = nextScroll
                         applyScrollTranslation()
-                        onScrollChanged?.invoke(knownScroll, scrollMaxY)
+                        onScrollChanged?.invoke(knownScroll, scrollMaxY, true)
                         scrollbarOverlay.update(knownScroll, scrollMaxY)
                         checkBandRender(knownScroll)
                     }
@@ -2382,7 +2382,7 @@ class NativeEditorView(
                 scrollMaxY = newMaxY
                 applyScrollTranslation()
                 scrollbarOverlay.update(knownScroll, scrollMaxY)
-                onScrollChanged?.invoke(knownScroll, scrollMaxY)
+                onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
             }
         }
     }
@@ -2496,7 +2496,7 @@ class NativeEditorView(
         val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: scrollMaxY
         scrollMaxY = newMaxY
         scrollbarOverlay.update(knownScroll, scrollMaxY)
-        onScrollChanged?.invoke(knownScroll, scrollMaxY)
+        onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
     }
 
     private fun applyInsert(text: String) {

@@ -721,11 +721,17 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
         LaunchedEffect(state.settings.autoHideChrome) {
             if (!state.settings.autoHideChrome) chromeHidden = false
         }
-        val onEditorScroll: (Float, Float) -> Unit = remember {
-            { scroll, maxY ->
+        val onEditorScroll: (Float, Float, Boolean) -> Unit = remember {
+            { scroll, maxY, isUserGesture ->
                 if (!controller.state.settings.autoHideChrome) {
                     if (chromeHidden) chromeHidden = false
                     lastAnchor[0] = 0f
+                    lastScrollVal[0] = scroll
+                } else if (!isUserGesture) {
+                    if (maxY <= 0.5f || !chromeHidden) {
+                        chromeHidden = false
+                    }
+                    lastAnchor[0] = scroll
                     lastScrollVal[0] = scroll
                 } else {
                     val anchor = lastAnchor[0]
@@ -881,7 +887,7 @@ private fun EditorArea(
     navbarEnabled: Boolean,
     chromeProgress: State<Float>,
     drawerOpen: Boolean,
-    onEditorScroll: (Float, Float) -> Unit,
+    onEditorScroll: (Float, Float, Boolean) -> Unit,
 ) {
     val density = LocalDensity.current
     val imeBottomPx = WindowInsets.ime.getBottom(density)
@@ -935,7 +941,7 @@ private fun EditorScreen(
     bottomInsetPx: Float,
     chromeProgress: State<Float>,
     drawerOpen: Boolean,
-    onEditorScroll: (Float, Float) -> Unit,
+    onEditorScroll: (Float, Float, Boolean) -> Unit,
 ) {
     val bottomInset = if (imeVisible || !navbarEnabled) 0.dp else NavbarHeight + 12.dp
     val preview = state.editorMode == EditorMode.Preview
@@ -1334,7 +1340,7 @@ private fun SourceEditor(
     topInsetPx: Float,
     bottomInsetPx: Float,
     preview: Boolean,
-    onScroll: (Float, Float) -> Unit,
+    onScroll: (Float, Float, Boolean) -> Unit,
     onViewReady: (NativeEditorView) -> Unit,
     onCaretPlaced: () -> Unit,
 ) {
@@ -3735,26 +3741,42 @@ private fun SettingsInfoRow(
     value: String,
     detail: String = "",
     showDivider: Boolean = true,
+    /** Long values (error messages) need the full row and wrap instead of squeezing the title. */
+    multiline: Boolean = false,
 ) {
     Column(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 14.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        if (multiline) {
             Text(
                 title,
-                modifier = Modifier.weight(1f),
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
             )
             Text(
                 value,
+                modifier = Modifier.padding(top = 4.dp),
                 fontSize = 13.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
             )
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    title,
+                    modifier = Modifier.weight(1f),
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    value,
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
         if (detail.isNotBlank()) {
             Text(
@@ -3828,7 +3850,7 @@ private fun ColumnScope.SyncSettingsContent(state: UiState, controller: Vibecodi
             showDivider = sync.message.isNotBlank(),
         )
         if (sync.message.isNotBlank()) {
-            SettingsInfoRow("Last result", sync.message, showDivider = false)
+            SettingsInfoRow("Last result", sync.message, showDivider = false, multiline = true)
         }
     }
 
