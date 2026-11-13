@@ -838,10 +838,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
         if (navBarBottomPx > 0) stableNavBarBottomPx = navBarBottomPx
     }
     val stableNavBottom = with(density) { stableNavBarBottomPx.toDp() }
-    // While the keyboard is visible it already covers the navigation bar area;
-    // reserving the nav inset would leave a black strip under the tab list.
     val imeVisible = WindowInsets.isImeVisible
-    val bottomInset = if (imeVisible) 0.dp else stableNavBottom
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
@@ -850,7 +847,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
             .windowInsetsPadding(
                 WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal),
             )
-            .padding(bottom = bottomInset),
+            .padding(bottom = stableNavBottom),
     ) {
         val drawerWidth = phoneDrawerWidth(maxWidth)
         val navbarEnabled = state.settings.navbarEnabled
@@ -1473,7 +1470,10 @@ private fun ViewHeader(
                     HeaderActionButton(
                         icon = Icons.Default.MoreVert,
                         description = "More options",
-                    ) { menuOpen = true }
+                    ) {
+                        onHideKeyboard()
+                        menuOpen = true
+                    }
                     NoteActionsMenu(
                         expanded = menuOpen,
                         onDismiss = { menuOpen = false },
@@ -1482,6 +1482,7 @@ private fun ViewHeader(
                         bookmarked = bookmarked,
                         activeTab = state.activeTab,
                         controller = controller,
+                        anchorBottomPx = titleBottomPx,
                     )
                 }
             }
@@ -1541,59 +1542,93 @@ private fun NoteActionsMenu(
     bookmarked: Boolean,
     activeTab: Int,
     controller: VibecodiumController,
+    anchorBottomPx: Int,
 ) {
-    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
-        DropdownMenuItem(
-            text = { Text(if (editorMode == EditorMode.Source) "Reading view" else "Edit view") },
-            onClick = {
-                onDismiss()
-                controller.setEditorMode(
-                    if (editorMode == EditorMode.Source) EditorMode.Preview else EditorMode.Source,
-                )
-            },
-        )
-        DropdownMenuItem(
-            text = { Text("Save note") },
-            onClick = { onDismiss(); controller.saveActiveNow() },
-        )
-        DropdownMenuItem(
-            text = { Text("Rename note") },
-            onClick = { onDismiss(); controller.beginRename() },
-        )
-        DropdownMenuItem(
-            text = { Text(if (bookmarked) "Remove bookmark" else "Toggle bookmark") },
-            onClick = { onDismiss(); controller.toggleBookmarkActive() },
-        )
-        if (tab.language == null) {
-            DropdownMenuItem(
-                text = { Text("Outline") },
-                onClick = { onDismiss(); controller.toggleDrawer(Drawer.Right) },
+    if (!expanded) return
+    val density = LocalDensity.current
+    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
+    // Match the tab menu: same gutters, rounding and position below the bar.
+    val sideInset = 12.dp
+    val menuWidth = (screenWidth - sideInset * 2).coerceAtLeast(200.dp)
+    val leftInsetPx = with(density) { sideInset.roundToPx() }
+    val anchorBottom = with(density) { anchorBottomPx.toDp() }
+    val maxMenuHeight = (screenHeight - anchorBottom - 48.dp - 8.dp).coerceAtLeast(160.dp)
+    Popup(
+        popupPositionProvider = remember(density, leftInsetPx) {
+            TabMenuPositionProvider(
+                gap = with(density) { 4.dp.roundToPx() },
+                left = leftInsetPx,
             )
+        },
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(
+            focusable = true,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
+        ),
+    ) {
+        Surface(
+            modifier = Modifier.width(menuWidth).heightIn(max = maxMenuHeight),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 3.dp,
+            shadowElevation = 6.dp,
+        ) {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                DropdownMenuItem(
+                    text = { Text(if (editorMode == EditorMode.Source) "Reading view" else "Edit view") },
+                    onClick = {
+                        onDismiss()
+                        controller.setEditorMode(
+                            if (editorMode == EditorMode.Source) EditorMode.Preview else EditorMode.Source,
+                        )
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Save note") },
+                    onClick = { onDismiss(); controller.saveActiveNow() },
+                )
+                DropdownMenuItem(
+                    text = { Text("Rename note") },
+                    onClick = { onDismiss(); controller.beginRename() },
+                )
+                DropdownMenuItem(
+                    text = { Text(if (bookmarked) "Remove bookmark" else "Toggle bookmark") },
+                    onClick = { onDismiss(); controller.toggleBookmarkActive() },
+                )
+                if (tab.language == null) {
+                    DropdownMenuItem(
+                        text = { Text("Outline") },
+                        onClick = { onDismiss(); controller.toggleDrawer(Drawer.Right) },
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text("Sync") },
+                    onClick = { onDismiss(); controller.openSettings("Sync") },
+                )
+                DropdownMenuItem(
+                    text = { Text("Close tab") },
+                    onClick = { onDismiss(); controller.closeTab(activeTab) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Delete note") },
+                    onClick = { onDismiss(); controller.confirmDeleteActive() },
+                )
+                HorizontalDivider()
+                DropdownMenuItem(
+                    text = { Text("Open another vault") },
+                    onClick = { onDismiss(); controller.openVaultChooser() },
+                )
+                DropdownMenuItem(
+                    text = { Text("About") },
+                    onClick = {
+                        onDismiss()
+                        controller.showMessage("vibecodium · Rust core 0.1.0")
+                    },
+                )
+            }
         }
-        DropdownMenuItem(
-            text = { Text("Sync") },
-            onClick = { onDismiss(); controller.openSettings("Sync") },
-        )
-        DropdownMenuItem(
-            text = { Text("Close tab") },
-            onClick = { onDismiss(); controller.closeTab(activeTab) },
-        )
-        DropdownMenuItem(
-            text = { Text("Delete note") },
-            onClick = { onDismiss(); controller.confirmDeleteActive() },
-        )
-        HorizontalDivider()
-        DropdownMenuItem(
-            text = { Text("Open another vault") },
-            onClick = { onDismiss(); controller.openVaultChooser() },
-        )
-        DropdownMenuItem(
-            text = { Text("About") },
-            onClick = {
-                onDismiss()
-                controller.showMessage("vibecodium · Rust core 0.1.0")
-            },
-        )
     }
 }
 
@@ -2107,6 +2142,7 @@ private fun MobileNavbar(
                     bookmarked = tab.path.isNotEmpty() && tab.path in state.bookmarks,
                     activeTab = state.activeTab,
                     controller = controller,
+                    anchorBottomPx = 0,
                 )
             }
         }
