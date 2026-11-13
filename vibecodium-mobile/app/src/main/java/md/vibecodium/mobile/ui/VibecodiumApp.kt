@@ -808,6 +808,13 @@ private data class EditorSlice(
     val focusRequestId: Long = 0L,
 )
 
+/**
+ * New tabs are appended to [tabs], so the reversed indices show the most
+ * recently opened or created note at the top. Switching between existing tabs
+ * does not change their position.
+ */
+internal fun newestFirstTabOrder(tabs: List<Tab>): List<Int> = tabs.indices.reversed().toList()
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PhoneShell(state: UiState, controller: VibecodiumController) {
@@ -1308,6 +1315,7 @@ private fun TabsDropdown(
     val headerHeight = 52.dp
     val listMaxHeight = (maxMenuHeight - headerHeight - 1.dp).coerceAtLeast(72.dp)
     val listState = rememberLazyListState()
+    val tabOrder = remember(state.tabs) { newestFirstTabOrder(state.tabs) }
     Popup(
         popupPositionProvider = FullScreenPositionProvider,
         onDismissRequest = onDismiss,
@@ -1387,7 +1395,8 @@ private fun TabsDropdown(
                             .fillMaxWidth()
                             .padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
                     ) {
-                        itemsIndexed(state.tabs, key = { _, item -> item.path }) { index, item ->
+                        itemsIndexed(tabOrder, key = { _, index -> state.tabs[index].path }) { _, index ->
+                            val item = state.tabs[index]
                             TabListRow(
                                 tab = item,
                                 active = index == state.activeTab,
@@ -2759,6 +2768,7 @@ private fun RightDrawer(state: UiState, controller: VibecodiumController, modifi
 @Composable
 private fun TabSwitcher(state: UiState, controller: VibecodiumController, modifier: Modifier) {
     val listState = rememberLazyListState()
+    val tabOrder = remember(state.tabs) { newestFirstTabOrder(state.tabs) }
     Surface(
         modifier = modifier.imePadding(),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -2817,7 +2827,8 @@ private fun TabSwitcher(state: UiState, controller: VibecodiumController, modifi
                         .fillMaxSize()
                         .padding(start = 8.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
                 ) {
-                    itemsIndexed(state.tabs, key = { _, tab -> tab.path }) { index, tab ->
+                    itemsIndexed(tabOrder, key = { _, index -> state.tabs[index].path }) { _, index ->
+                        val tab = state.tabs[index]
                         TabListRow(
                             tab = tab,
                             active = index == state.activeTab,
