@@ -1210,6 +1210,10 @@ struct SurfaceState {
     /// band is painted, so layout math must not read it.
     viewport_height: usize,
     density: f32,
+    /// Editor body text size in dp, scaled by [`SurfaceState::density`].
+    editor_font_dp: f32,
+    /// Editor line pitch in dp; derived from the font size when it changes.
+    editor_line_dp: f32,
     background: u32,
     painter: Painter,
     tree: TreeState,
@@ -1314,13 +1318,17 @@ fn row_height(density: f32) -> f32 {
     (36.0 * density).round().max(1.0)
 }
 
-fn line_height(density: f32) -> f32 {
-    (22.0 * density).round().max(1.0)
-}
+/// Body text size the editor layout was tuned at; settings scale from this.
+const EDITOR_FONT_DP: f32 = 15.0;
 
-fn editor_font(density: f32) -> f32 {
-    (15.0 * density).round().max(1.0)
-}
+/// Line pitch that goes with [`EDITOR_FONT_DP`].
+const EDITOR_LINE_DP: f32 = 22.0;
+
+/// Empty space on each side of the line-number column, in dp.
+const GUTTER_PAD_DP: f32 = 8.0;
+
+/// Smallest line-number column, so a one-digit file still has room to breathe.
+const GUTTER_MIN_DP: f32 = 24.0;
 
 fn line_starts(text: &str) -> (Vec<usize>, Vec<usize>) {
     let mut char_starts = vec![0];
@@ -1828,6 +1836,8 @@ impl SurfaceState {
             height,
             viewport_height: height,
             density: if density > 0.0 { density } else { 1.0 },
+            editor_font_dp: EDITOR_FONT_DP,
+            editor_line_dp: EDITOR_LINE_DP,
             background: 0x000000,
             painter: Painter::new(),
             tree: TreeState::default(),
@@ -1850,6 +1860,40 @@ impl SurfaceState {
 
     fn invalidate(&mut self) {
         self.frame_valid = false;
+    }
+
+    /// Body text size in device pixels. Every editor glyph, caret and gutter
+    /// metric derives from this one number.
+    fn font_px(&self) -> f32 {
+        (self.editor_font_dp * self.density).round().max(6.0)
+    }
+
+    /// Line pitch in device pixels.
+    fn line_px(&self) -> f32 {
+        (self.editor_line_dp * self.density).round().max(6.0)
+    }
+
+    /// Line-number type size in device pixels. It keeps the 12/15 proportion
+    /// to the body text that the layout was tuned at.
+    fn number_font_px(&self) -> f32 {
+        (12.0 * self.font_px() / EDITOR_FONT_DP).round().max(8.0)
+    }
+
+    /// Width of the line-number column in device pixels. Only the widest label
+    /// and its padding are reserved, so short files get a narrow gutter
+    /// instead of a full monospace cell for every potential digit.
+    fn gutter_width(&mut self) -> f32 {
+        self.ensure_starts();
+        let px = self.number_font_px();
+        let mut digit = 0.0f32;
+        for character in '0'..='9' {
+            let mut buf = [0u8; 4];
+            digit = digit.max(self.painter.width(character.encode_utf8(&mut buf), px, false));
+        }
+        let digits = self.editor.starts.len().max(1).to_string().len() as f32;
+        (digits * digit + 2.0 * GUTTER_PAD_DP * self.density)
+            .max(GUTTER_MIN_DP * self.density)
+            .round()
     }
 
     /// Defers the frame until the caller has published all state for a new surface.
@@ -2013,7 +2057,7 @@ impl SurfaceState {
             }
             2 => {
                 let content = self.editor.top_inset.round()
-                    + self.editor.wrap.len() as f32 * line_height(density)
+                    + self.editor.wrap.len() as f32 * self.line_px()
                     + self.editor.bottom_inset.round();
                 let max = (content - self.height as f32).max(0.0);
                 (content, self.height as f32, self.editor.scroll.round(), max)
@@ -2247,11 +2291,8 @@ impl SurfaceState {
     }
 
     fn editor_metrics(&mut self) -> (f32, f32, f32) {
-        let advance = self.painter.advance(editor_font(self.density), true);
-        self.ensure_starts();
-        let gutter = (self.editor.starts.len().max(1).to_string().len() as f32 * advance
-            + 24.0 * self.density)
-            .max(34.0 * self.density);
+        let advance = self.painter.advance(self.font_px(), true);
+        let gutter = self.gutter_width();
         let content = (self.width as f32 - gutter - 8.0 * self.density).max(advance);
         (advance, gutter, content)
     }
@@ -2276,7 +2317,7 @@ impl SurfaceState {
         {
             return;
         }
-        let base = editor_font(self.density);
+        let base = self.font_px();
         let metrics: Vec<(f32, f32)> = (0..self.editor.starts.len())
             .map(|line| {
                 let font = heading_font(self.editor.model.get(line), base);
@@ -2325,8 +2366,8 @@ impl SurfaceState {
 
     fn draw_editor(&mut self, pixels: &mut [u32]) {
         let density = self.density;
-        let line_h = line_height(density);
-        let font_px = editor_font(density);
+        let line_h = self.line_px();
+        let font_px = self.font_px();
         if self.editor.model_dirty {
             self.editor.model = if self.editor.language.is_empty() {
                 model_for_editor(&self.editor.text)
@@ -2336,12 +2377,9 @@ impl SurfaceState {
             self.editor.model_dirty = false;
         }
         let advance = self.painter.advance(font_px, true);
-        self.ensure_starts();
-        let gutter = (self.editor.starts.len().max(1).to_string().len() as f32 * advance
-            + (24.0 * density).round())
-            .max((34.0 * density).round())
-            .round();
-        let content_width = (self.width as f32 - gutter - (8.0 * density).round()).max(advance);
+        let number_font_px = self.number_font_px();
+        let gutter = self.gutter_width();
+        let content_width = (self.width as f32 - gutter - 8.0 * density).max(advance);
         self.ensure_wrap(content_width);
         let starts = std::mem::take(&mut self.editor.starts);
         let byte_starts = std::mem::take(&mut self.editor.byte_starts);
@@ -2664,7 +2702,6 @@ impl SurfaceState {
             }
         }
         rect(pixels, self.width, self.height, 0.0, 0.0, gutter, self.height as f32, 0x000000);
-        let number_font_px = (12.0 * density).round();
         for visual in first..last {
             let chunk = self.editor.wrap[visual];
             if chunk.start != 0 {
@@ -2672,17 +2709,17 @@ impl SurfaceState {
             }
             let y = top_inset + visual as f32 * line_h - scroll;
             let number = (chunk.line + 1).to_string();
-            let number_width = painter.width(&number, number_font_px, true);
+            let number_width = painter.width(&number, number_font_px, false);
             painter.draw(
                 pixels,
                 self.width,
                 self.height,
-                gutter - (8.0 * density).round() - number_width,
+                gutter - (GUTTER_PAD_DP * density).round() - number_width,
                 y + number_pad_y,
                 &number,
                 number_font_px,
                 0x666666,
-                true,
+                false,
             );
         }
         if let Some((x, y)) = insertion_handle {
@@ -2793,7 +2830,7 @@ impl SurfaceState {
     }
 
     fn editor_touch(&mut self, x: f32, y: f32, action: i32) -> bool {
-        let line_h = line_height(self.density);
+        let line_h = self.line_px();
         match action {
             0 => {
                 self.editor.drag = Some((x, y, self.editor.scroll_x, self.editor.scroll, true));
@@ -2851,7 +2888,7 @@ impl SurfaceState {
     }
 
     fn editor_scroll_metrics(&mut self) -> (f32, f32, f32, f32) {
-        let line_h = line_height(self.density);
+        let line_h = self.line_px();
         let (advance, gutter, content) = self.editor_metrics();
         self.ensure_wrap(content);
         let max_y = (self.editor.top_inset + self.editor.wrap.len() as f32 * line_h
@@ -2976,7 +3013,7 @@ impl SurfaceState {
     }
 
     fn scroll_to_cursor(&mut self) {
-        let line_h = line_height(self.density);
+        let line_h = self.line_px();
         let (_, _, content) = self.editor_metrics();
         self.ensure_wrap(content);
         let (visual, _) = self.visual_for_position(&self.editor.starts, self.editor.selection);
@@ -3032,7 +3069,7 @@ impl SurfaceState {
     }
 
     fn editor_position_at(&mut self, x: f32, y: f32) -> usize {
-        let line_h = line_height(self.density);
+        let line_h = self.line_px();
         let (_, gutter, content) = self.editor_metrics();
         self.ensure_wrap(content);
         let visual = (((y + self.editor.scroll - self.editor.top_inset) / line_h)
@@ -3149,7 +3186,7 @@ impl SurfaceState {
         let (_advance, _, content) = self.editor_metrics();
         self.ensure_wrap(content);
         json!({
-            "row_height": line_height(self.density),
+            "row_height": self.line_px(),
             "top": self.editor.top_inset,
             "first": self.editor.wrap_first,
             "count": self.editor.wrap_count,
@@ -3160,7 +3197,7 @@ impl SurfaceState {
 
     fn editor_selection_handles(&mut self) -> String {
         let (selection_start, selection_end) = self.selected_range();
-        let line_h = line_height(self.density);
+        let line_h = self.line_px();
         let (_, gutter, content) = self.editor_metrics();
         self.ensure_wrap(content);
         let text_x = gutter;
@@ -3353,6 +3390,40 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorScrollTo
     let _ = with_surface(id, |state| {
         state.invalidate();
         state.scroll_to_cursor();
+    });
+}
+
+/// Changes the editor's type size. Called from the settings screen, never
+/// during a scroll: wrap and scroll metrics are rewritten here once, so the
+/// next band paint stays a plain blit.
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorSetFontSize(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+    font_dp: jfloat,
+    line_dp: jfloat,
+) {
+    let _ = with_surface(id, |state| {
+        let font = font_dp.clamp(8.0, 32.0);
+        let line = line_dp.clamp(8.0, 64.0);
+        if (state.editor_font_dp - font).abs() < 0.01
+            && (state.editor_line_dp - line).abs() < 0.01
+        {
+            return;
+        }
+        state.editor_font_dp = font;
+        state.editor_line_dp = line;
+        // Glyph rasters and metrics are keyed by pixel size; the old set would
+        // otherwise stay resident next to the new one.
+        state.painter.glyphs.clear();
+        state.painter.metrics_cache.clear();
+        state.editor.wrap_dirty = true;
+        let content = state.editor_metrics().2;
+        state.ensure_wrap(content);
+        let (_, _, max_y, _) = state.editor_scroll_metrics();
+        state.editor.scroll = state.editor.scroll.min(max_y);
+        state.invalidate();
     });
 }
 

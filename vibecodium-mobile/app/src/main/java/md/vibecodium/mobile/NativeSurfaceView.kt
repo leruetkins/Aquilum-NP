@@ -822,7 +822,19 @@ class NativeEditorView(
         // While a rebased band is still rendering, keep the old texture's
         // translation so the screen does not flash empty.
         val scroll = rebaseDisplayScroll ?: knownScroll
-        textureView.translationY = ((bandOrigin + m) - scroll).roundToInt().toFloat()
+        val translation = ((bandOrigin + m) - scroll).roundToInt().toFloat()
+        textureView.translationY = translation
+        // The band texture is taller than the view and may be translated
+        // outside it. Clip the TextureView itself so the margin cannot paint
+        // over the toolbar or the system status bar.
+        val textureH = textureView.height
+        val textureW = textureView.width
+        if (textureH > 0 && textureW > 0) {
+            val top = (m - translation).roundToInt().coerceIn(0, textureH)
+            val bottom = (top + h).coerceIn(top, textureH)
+            val clip = Rect(0, top, textureW, bottom)
+            if (textureView.clipBounds != clip) textureView.clipBounds = clip
+        }
     }
 
     /** Drops band frames queued for a previous viewport position. */
@@ -887,14 +899,18 @@ class NativeEditorView(
         if (h <= 0) return
         val m = computeBandMargin(h).toFloat()
         if (m <= 0f) return
-        val topHeadroom = scroll - bandOrigin
-        val bottomHeadroom = (bandOrigin + 2f * m) - scroll
         val threshold = m * 0.35f
         val maxOrigin = maxOf(scrollMaxY, knownScroll)
-        if ((topHeadroom < threshold && bandOrigin > 0.5f) ||
-            (bottomHeadroom < threshold && bandOrigin < maxOrigin - 0.5f)) {
+        // Compare against the newest requested band, not only the last applied
+        // one: while a swap is in flight, the old origin makes the next check
+        // queue a second, nearly identical render (visible as a small jump).
+        val reference = pendingBandOrigin?.origin ?: bandOrigin
+        val topHeadroom = scroll - reference
+        val bottomHeadroom = (reference + 2f * m) - scroll
+        if ((topHeadroom < threshold && reference > 0.5f) ||
+            (bottomHeadroom < threshold && reference < maxOrigin - 0.5f)) {
             val targetOrigin = (scroll - m).coerceIn(0f, maxOrigin).roundToInt().toFloat()
-            if (kotlin.math.abs(targetOrigin - bandOrigin) >= threshold) {
+            if (kotlin.math.abs(targetOrigin - reference) >= threshold) {
                 scheduleBandRender(targetOrigin)
             }
         }
@@ -1016,6 +1032,10 @@ class NativeEditorView(
     private var bottomInset = -1f
     private var topInset = -1f
     private var inPreview = false
+    /** Type size the core holds; `MIN_VALUE` forces the first send. */
+    private var editorFontDp = Int.MIN_VALUE
+    private var editorLineDp = Float.MIN_VALUE
+    private var fontRequestInFlight = false
     private var caretVisible = true
     private val caretBlink = object : Runnable {
         override fun run() {
@@ -1055,9 +1075,7 @@ class NativeEditorView(
                 postRenderTask {
                     CoreBridge.nativeEditorSetScroll(surfaceId, settledScroll, 0f)
                 }
-                val m = computeBandMargin(safeViewportHeight()).toFloat()
-                val maxOrigin = maxOf(scrollMaxY, knownScroll)
-                scheduleBandRender((knownScroll - m).coerceIn(0f, maxOrigin))
+                checkBandRender(knownScroll)
                 mainHandler.post {
                     resumeCaretBlink()
                     removeCallbacks(saveAfterFling)
@@ -1396,6 +1414,52 @@ class NativeEditorView(
     }
 
     /**
+     * Applies an editor type size. Metrics, wrap and scroll range are rewritten
+     * once on the render thread; the visible band is re-rendered a single time
+     * afterwards, so an ongoing scroll keeps its pre-rendered texture path.
+     */
+    fun setEditorFont(fontDp: Int, lineDp: Float) {
+        if (fontDp == editorFontDp && kotlin.math.abs(lineDp - editorLineDp) < 0.01f) return
+        if (fontRequestInFlight) return
+        fontRequestInFlight = true
+        editorFontDp = fontDp
+        editorLineDp = lineDp
+        postRenderTask {
+            if (!isSurfaceAttached()) {
+                // Nothing was applied; retry on the next update pass.
+                mainHandler.post {
+                    fontRequestInFlight = false
+                    editorFontDp = Int.MIN_VALUE
+                    editorLineDp = Float.MIN_VALUE
+                }
+                return@postRenderTask
+            }
+            CoreBridge.nativeEditorSetFontSize(surfaceId, fontDp.toFloat(), lineDp)
+            val info = runCatching { JSONObject(CoreBridge.nativeEditorViewport(surfaceId)) }.getOrNull()
+            val newMaxY = info?.optDouble("max_y", 0.0)?.toFloat()?.coerceAtLeast(0f) ?: 0f
+            mainHandler.post {
+                fontRequestInFlight = false
+                scrollMaxY = maxOf(newMaxY, 0f)
+                val m = computeBandMargin(safeViewportHeight()).toFloat()
+                val target = (knownScroll - m)
+                    .coerceIn(0f, maxOf(scrollMaxY, knownScroll))
+                    .roundToInt()
+                    .toFloat()
+                // Keep the old texture translated in place until the band in the
+                // new metrics arrives, exactly like a programmatic scroll jump.
+                invalidateBandGeneration()
+                rebaseDisplayScroll = knownScroll
+                rebaseOrigin = target
+                scheduleBandRender(target, force = true)
+                scrollbarOverlay.update(knownScroll, scrollMaxY)
+                onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
+                refreshLayoutInfo()
+                syncHandles()
+            }
+        }
+    }
+
+    /**
      * Pushes a caret visibility change only when it actually flips. The
      * repaint is queued on the render thread, so the blink no longer paints a
      * whole frame on the UI thread (which used to stall an ongoing scroll).
@@ -1454,21 +1518,12 @@ class NativeEditorView(
         super.onWindowFocusChanged(hasWindowFocus)
         if (!hasWindowFocus) {
             saveViewport()
-        } else {
-            ensureScrollMaxY()
-            restoreViewport()
-            if (!inPreview) {
-                focusEditor()
-                hideKeyboard()
-            } else if (!selectionNonEmpty()) {
-                startCaretBlink()
-            }
-            requestFullRender()
-            mainHandler.post {
-                applyScrollTranslation()
-                textureView.postInvalidateOnAnimation()
-            }
         }
+        // Do not restore or repaint when focus returns: Compose popups (the
+        // tab list, menus) are separate windows, so closing one re-focuses the
+        // activity and a full restore here visibly re-draws/ghosts the editor.
+        // Real background/foreground transitions are handled by
+        // onWindowVisibilityChanged and the surface callbacks.
     }
 
     override fun onWindowVisibilityChanged(visibility: Int) {
@@ -2312,6 +2367,10 @@ class NativeEditorView(
                     val maxScroll = maxOf(scrollMaxY, knownScroll)
                     val nextScroll = (knownScroll + deltaY).coerceIn(0f, maxScroll).roundToInt().toFloat()
                     if (nextScroll != knownScroll) {
+                        // A queued caret-reveal band must not fight the user's
+                        // scroll; the regular band scheduling takes over.
+                        if (rebaseOrigin != null) invalidateBandGeneration()
+                        rebaseDisplayScroll = null
                         knownScroll = nextScroll
                         applyScrollTranslation()
                         onScrollChanged?.invoke(knownScroll, scrollMaxY, true)
@@ -2447,9 +2506,7 @@ class NativeEditorView(
                         postRenderTask {
                             CoreBridge.nativeEditorSetScroll(surfaceId, scrollForRust, 0f)
                         }
-                        val m = computeBandMargin(safeViewportHeight()).toFloat()
-                        val maxOrigin = maxOf(scrollMaxY, knownScroll)
-                        scheduleBandRender((knownScroll - m).coerceIn(0f, maxOrigin))
+                        checkBandRender(knownScroll)
                         saveViewport()
                         helper.invalidateRoot()
                     }
@@ -2471,9 +2528,7 @@ class NativeEditorView(
                     postRenderTask {
                         CoreBridge.nativeEditorSetScroll(surfaceId, scrollForRust, 0f)
                     }
-                    val m = computeBandMargin(safeViewportHeight()).toFloat()
-                    val maxOrigin = maxOf(scrollMaxY, knownScroll)
-                    scheduleBandRender((knownScroll - m).coerceIn(0f, maxOrigin))
+                    checkBandRender(knownScroll)
                     saveViewport()
                 }
             }

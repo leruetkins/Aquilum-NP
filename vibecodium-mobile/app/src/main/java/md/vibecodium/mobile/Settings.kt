@@ -25,6 +25,8 @@ data class DailyNoteSettings(
  */
 data class AppSettings(
     val textScale: Float = 1f,
+    /** Editor body text size in dp; its line pitch is derived from it. */
+    val editorFontDp: Int = AppSettingsJson.DEFAULT_EDITOR_FONT_DP,
     val autoHideChrome: Boolean = true,
     val navbarEnabled: Boolean = false,
     val defaultEditorMode: EditorMode = EditorMode.Source,
@@ -40,6 +42,18 @@ object AppSettingsJson {
     const val MIN_TEXT_SCALE = 0.85f
     const val MAX_TEXT_SCALE = 1.3f
 
+    /** Editor text size range, matching the desktop `editor.fontSizeBase` steps. */
+    const val MIN_EDITOR_FONT_DP = 12
+    const val MAX_EDITOR_FONT_DP = 24
+    const val DEFAULT_EDITOR_FONT_DP = 15
+
+    /** Line pitch the editor uses at [DEFAULT_EDITOR_FONT_DP]. */
+    private const val DEFAULT_EDITOR_LINE_DP = 22f
+
+    /** Line pitch that keeps the text/line proportion when the size changes. */
+    fun editorLineDp(fontDp: Int): Float =
+        DEFAULT_EDITOR_LINE_DP * fontDp / DEFAULT_EDITOR_FONT_DP
+
     fun encode(settings: AppSettings): String {
         val dailyNotes = JSONObject()
             .put("enabled", settings.dailyNotes.enabled)
@@ -48,6 +62,7 @@ object AppSettingsJson {
             .put("template", settings.dailyNotes.template)
         return JSONObject()
             .put("textScale", settings.textScale.toDouble())
+            .put("editorFontDp", settings.editorFontDp)
             .put("autoHideChrome", settings.autoHideChrome)
             .put("navbarEnabled", settings.navbarEnabled)
             .put("defaultEditorMode", settings.defaultEditorMode.name)
@@ -66,6 +81,8 @@ object AppSettingsJson {
                     .takeIf { it.isFinite() }
                     ?.coerceIn(MIN_TEXT_SCALE, MAX_TEXT_SCALE)
                     ?: 1f,
+                editorFontDp = value.optInt("editorFontDp", DEFAULT_EDITOR_FONT_DP)
+                    .coerceIn(MIN_EDITOR_FONT_DP, MAX_EDITOR_FONT_DP),
                 autoHideChrome = value.optBoolean("autoHideChrome", true),
                 navbarEnabled = value.optBoolean("navbarEnabled", false),
                 defaultEditorMode = runCatching {

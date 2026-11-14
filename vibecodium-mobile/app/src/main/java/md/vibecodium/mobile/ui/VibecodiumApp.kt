@@ -573,6 +573,23 @@ private val KeyboardIcon: ImageVector = ImageVector.Builder(
     }
 }.build()
 
+/** Material `remove`: the bar of `add` without the upright stroke. */
+private val MinusIcon: ImageVector = ImageVector.Builder(
+    name = "remove",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(fill = SolidColor(Color.Black)) {
+        moveTo(5f, 11f)
+        lineTo(19f, 11f)
+        lineTo(19f, 13f)
+        lineTo(5f, 13f)
+        close()
+    }
+}.build()
+
 /** Obsidian sidebar-toggle: outer rect (1,2,22,20,r4) + inner rect (4,5,2,14,r2). */
 private val SidebarToggleIcon: ImageVector = ImageVector.Builder(
     name = "sidebar-toggle",
@@ -948,6 +965,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
             EditorArea(
                 editor.value,
                 controller,
+                state.settings.editorFontDp,
                 imeVisible,
                 navbarEnabled,
                 chromeProgress,
@@ -1102,6 +1120,7 @@ private fun PhoneShell(state: UiState, controller: VibecodiumController) {
 private fun EditorArea(
     editor: EditorSlice,
     controller: VibecodiumController,
+    editorFontDp: Int,
     imeVisible: Boolean,
     navbarEnabled: Boolean,
     chromeProgress: State<Float>,
@@ -1134,6 +1153,7 @@ private fun EditorArea(
             editor,
             tab,
             controller,
+            editorFontDp,
             imeVisible,
             navbarEnabled,
             bottomInsetPx,
@@ -1180,6 +1200,7 @@ private fun EditorScreen(
     state: EditorSlice,
     tab: Tab,
     controller: VibecodiumController,
+    editorFontDp: Int,
     imeVisible: Boolean,
     navbarEnabled: Boolean,
     bottomInsetPx: Float,
@@ -1263,6 +1284,7 @@ private fun EditorScreen(
             state,
             controller,
             tab,
+            editorFontDp,
             topInsetPx,
             bottomInsetPx,
             preview,
@@ -1861,6 +1883,7 @@ private fun SourceEditor(
     state: EditorSlice,
     controller: VibecodiumController,
     tab: Tab,
+    editorFontDp: Int,
     topInsetPx: Float,
     bottomInsetPx: Float,
     preview: Boolean,
@@ -1878,13 +1901,14 @@ private fun SourceEditor(
                 idleBottomInsetPx = bottomInsetPx,
             ).also(onViewReady)
         },
-        modifier = Modifier.fillMaxSize().clipToBounds(),
+        modifier = Modifier.fillMaxSize(),
         update = { view ->
             view.setTopInset(topInsetPx)
             view.setBottomInset(bottomInsetPx)
             view.setOnScrollChanged(onScroll)
             view.setOnCaretPlaced(onCaretPlaced)
             view.setEditorPreview(preview)
+            view.setEditorFont(editorFontDp, AppSettingsJson.editorLineDp(editorFontDp))
             view.setEditor(tab.text, tab.selection, tab.language, tab.path)
         },
     )
@@ -4248,11 +4272,19 @@ private fun SettingsSectionContent(
                 SettingsGroup("Text") {
                     SettingsSliderRow(
                         title = "Text scale",
-                        description = "Scales interface text. The native editor keeps its own font size.",
+                        description = "Scales interface text.",
                         value = settings.textScale,
                         range = AppSettingsJson.MIN_TEXT_SCALE..AppSettingsJson.MAX_TEXT_SCALE,
                         format = { "${(it * 100).roundToInt()}%" },
                         onCommit = controller::setTextScale,
+                    )
+                    SettingsStepperRow(
+                        title = "Editor font size",
+                        description = "Body text in the source editor. Line spacing follows it.",
+                        value = settings.editorFontDp,
+                        range = AppSettingsJson.MIN_EDITOR_FONT_DP..AppSettingsJson.MAX_EDITOR_FONT_DP,
+                        format = { "$it dp" },
+                        onChange = controller::setEditorFontSize,
                     )
                 }
                 SettingsGroup("Interface") {
@@ -4566,6 +4598,73 @@ private fun SettingsSliderRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 2.dp),
+        )
+    }
+}
+
+@Composable
+private fun SettingsStepperRow(
+    title: String,
+    description: String,
+    value: Int,
+    range: IntRange,
+    format: (Int) -> String,
+    onChange: (Int) -> Unit,
+    showDivider: Boolean = false,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 60.dp)
+            .padding(start = 16.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            if (description.isNotBlank()) {
+                Text(
+                    description,
+                    modifier = Modifier.padding(top = 2.dp),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        IconButton(
+            onClick = { onChange(value - 1) },
+            enabled = value > range.first,
+            modifier = Modifier.size(40.dp),
+        ) {
+            Icon(
+                MinusIcon,
+                contentDescription = "Decrease $title",
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        Text(
+            format(value),
+            modifier = Modifier.widthIn(min = 44.dp),
+            textAlign = TextAlign.Center,
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        IconButton(
+            onClick = { onChange(value + 1) },
+            enabled = value < range.last,
+            modifier = Modifier.size(40.dp),
+        ) {
+            Icon(
+                Icons.Default.Add,
+                contentDescription = "Increase $title",
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
+    if (showDivider) {
+        HorizontalDivider(
+            modifier = Modifier.padding(start = 16.dp),
+            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
         )
     }
 }

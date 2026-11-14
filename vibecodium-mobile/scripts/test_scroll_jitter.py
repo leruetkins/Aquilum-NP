@@ -30,6 +30,12 @@ except ImportError:
 PACKAGE = "md.vibecodium.mobile"
 ACTIVITY = "md.vibecodium.mobile/.MainActivity"
 
+# Full-screen passes, repeated to exercise band boundaries on every gesture.
+SWIPE_COUNT = 10
+SWIPE_START_Y = "2200"
+SWIPE_END_Y = "200"
+SWIPE_MS = "2000"
+
 def find_adb():
     sdk_adb = os.path.expanduser("~/AppData/Local/Android/Sdk/platform-tools/adb.exe")
     if os.path.exists(sdk_adb):
@@ -80,13 +86,25 @@ def get_logs():
     _, out, _ = run_cmd(["adb", "logcat", "-d", "-s", "VibecodiumRender", "VibecodiumRust", "VibecodiumTest"])
     return out
 
+def perform_swipes(count=SWIPE_COUNT):
+    for i in range(count):
+        # Alternate directions so every pass crosses the document instead of
+        # stopping at the end and doing nothing.
+        if i % 2 == 0:
+            y1, y2 = SWIPE_START_Y, SWIPE_END_Y
+        else:
+            y1, y2 = SWIPE_END_Y, SWIPE_START_Y
+        print(f"[INFO] Full-screen swipe {i + 1}/{count} ({'up' if i % 2 == 0 else 'down'})...")
+        run_cmd([
+            "adb", "shell", "input", "swipe", "540", y1,
+            "540", y2, SWIPE_MS,
+        ])
+        time.sleep(0.4)
+
+
 def perform_drag_test():
-    print("[INFO] Performing drag gestures across band boundaries...")
-    # Drag upward (scroll down)
-    run_cmd(["adb", "shell", "input", "swipe", "500", "1500", "500", "800", "1200"])
-    time.sleep(0.3)
-    # Drag downward (scroll up)
-    run_cmd(["adb", "shell", "input", "swipe", "500", "800", "500", "1500", "1200"])
+    print("[INFO] Performing full-screen drag gestures across band boundaries...")
+    perform_swipes()
     time.sleep(0.5)
 
 def analyze_logs(logs):
@@ -132,13 +150,14 @@ def analyze_visual_smoothness():
     remote_video = "/sdcard/vibe_test_scroll.mp4"
 
     try:
-        proc = popen_cmd(["adb", "shell", "screenrecord", "--size", "720x1280", remote_video])
+        proc = popen_cmd([
+            "adb", "shell", "screenrecord", "--time-limit", "40",
+            "--size", "720x1280", remote_video,
+        ])
         time.sleep(0.8)
 
-        # Smooth drag gestures
-        run_cmd(["adb", "shell", "input", "swipe", "500", "1500", "500", "700", "1000"])
-        time.sleep(0.3)
-        run_cmd(["adb", "shell", "input", "swipe", "500", "700", "500", "1500", "1000"])
+        # Ten full-screen passes give ten opportunities to cross bands.
+        perform_swipes()
         time.sleep(0.5)
 
         run_cmd(["adb", "shell", "pkill", "-2", "screenrecord"])
@@ -177,6 +196,12 @@ def analyze_visual_smoothness():
         for i in range(len(frames) - 1):
             shift, resp = cv2.phaseCorrelate(frames[i], frames[i+1])
             shifts.append(shift[1])
+
+        median_shift = float(np.median(np.abs(shifts))) if shifts else 0.0
+        print(f"[INFO] {len(frames)} frames, median |dy| = {median_shift:.2f}px")
+        if median_shift < 1.0:
+            print("[FAIL] No scrolling motion captured; the visual check is invalid.")
+            return False
 
         # Analyze acceleration / jumps:
         # During uniform swipe, second derivative (jerk) should be low.
