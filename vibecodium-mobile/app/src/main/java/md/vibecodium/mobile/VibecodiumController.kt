@@ -461,8 +461,27 @@ class VibecodiumController(context: Context) {
     }
 
     /** Text coming from the native SurfaceView editor. */
-    fun updateNativeEditor(text: String, selection: Int) {
-        val index = state.activeTab
+    /** The editor view currently on screen, used by the bottom toolbar. */
+    private var activeEditorView: NativeEditorView? = null
+
+    fun attachEditorView(view: NativeEditorView?) {
+        activeEditorView = view
+    }
+
+    fun undoEditor() {
+        activeEditorView?.undo()
+    }
+
+    fun redoEditor() {
+        activeEditorView?.redo()
+    }
+
+    fun setEditorHistoryState(canUndo: Boolean, canRedo: Boolean) {
+        if (state.editorCanUndo == canUndo && state.editorCanRedo == canRedo) return
+        state = state.copy(editorCanUndo = canUndo, editorCanRedo = canRedo)
+    }
+
+    fun updateNativeEditor(text: String, selection: Int) {        val index = state.activeTab
         val tab = state.tabs.getOrNull(index) ?: return
         if (!tab.isLoaded) return
         if (text == tab.text) {

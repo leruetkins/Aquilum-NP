@@ -109,6 +109,14 @@ public final class CoreBridge {
 
     public static native String nativeEditorDelete(int id, int before, int after);
 
+    public static native String nativeEditorUndo(int id);
+
+    public static native String nativeEditorRedo(int id);
+
+    public static native boolean nativeEditorCanUndo(int id);
+
+    public static native boolean nativeEditorCanRedo(int id);
+
     public static native void nativeEditorSelection(int id, int start, int end);
 
     public static native void nativeEditorSelectAt(int id, float x, float y, boolean extend);

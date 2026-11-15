@@ -1131,6 +1131,9 @@ class NativeEditorView(
     private var textFace: EditorFontFace? = null
     private var codeFace: EditorFontFace? = null
     private var faceRequestInFlight = false
+    private var onHistoryChanged: ((Boolean, Boolean) -> Unit)? = null
+    private var reportedCanUndo = false
+    private var reportedCanRedo = false
     private var caretVisible = true
     private val caretBlink = object : Runnable {
         override fun run() {
@@ -1786,6 +1789,7 @@ class NativeEditorView(
                 startCaretBlink()
             }
             syncHandles()
+            reportHistoryState()
         }
     }
 
@@ -1854,6 +1858,7 @@ class NativeEditorView(
                 applyScrollTranslation()
                 scrollbarOverlay.update(knownScroll, scrollMaxY)
                 onScrollChanged?.invoke(knownScroll, scrollMaxY, false)
+                reportHistoryState()
             }
         }
         if (pathChanged) {
@@ -2954,10 +2959,60 @@ class NativeEditorView(
 
     private fun syncAfterEdit() {
         syncScrollFromNative()
+        reportHistoryState()
     }
 
-    private fun applyInsert(text: String, showHandle: Boolean = false) {
-        if (text.isEmpty()) {
+    fun setOnHistoryChanged(listener: ((Boolean, Boolean) -> Unit)?) {
+        onHistoryChanged = listener
+        reportHistoryState()
+    }
+
+    fun undo() = applyHistory(undo = true)
+
+    fun redo() = applyHistory(undo = false)
+
+    fun canUndo(): Boolean = runCatching { CoreBridge.nativeEditorCanUndo(surfaceId) }.getOrDefault(false)
+
+    fun canRedo(): Boolean = runCatching { CoreBridge.nativeEditorCanRedo(surfaceId) }.getOrDefault(false)
+
+    /** Applies one core undo/redo step and mirrors the result like an edit. */
+    private fun applyHistory(undo: Boolean) {
+        if (undo) {
+            if (!canUndo()) return
+        } else if (!canRedo()) return
+        applyInsertionHandleVisible(false)
+        val state = runCatching {
+            JSONObject(
+                if (undo) CoreBridge.nativeEditorUndo(surfaceId)
+                else CoreBridge.nativeEditorRedo(surfaceId),
+            )
+        }.getOrNull() ?: return
+        mirrorText = state.optString("text")
+        mirrorSelection = state.optInt("selection", 0).coerceIn(0, mirrorText.length)
+        mirrorAnchor = state.optInt("anchor", mirrorSelection).coerceIn(0, mirrorText.length)
+        refreshLines()
+        syncAfterEdit()
+        syncHandles()
+        actionMode?.finish()
+        startCaretBlink()
+        onTextChanged(mirrorText, mirrorSelection)
+        notifySelectionChanged()
+        requestRender()
+        reportHistoryState()
+    }
+
+    private fun reportHistoryState() {
+        val canUndo = canUndo()
+        val canRedo = canRedo()
+        mainHandler.post {
+            if (canUndo == reportedCanUndo && canRedo == reportedCanRedo) return@post
+            reportedCanUndo = canUndo
+            reportedCanRedo = canRedo
+            onHistoryChanged?.invoke(canUndo, canRedo)
+        }
+    }
+
+    private fun applyInsert(text: String, showHandle: Boolean = false) {        if (text.isEmpty()) {
             if (selectionNonEmpty()) applyDelete(0, 0)
             return
         }

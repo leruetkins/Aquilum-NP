@@ -146,6 +146,9 @@ data class UiState(
     val activeTab: Int = -1,
     val bookmarks: Set<String> = emptySet(),
     val editorMode: EditorMode = EditorMode.Source,
+    /** Whether the native editor has undo/redo steps available. */
+    val editorCanUndo: Boolean = false,
+    val editorCanRedo: Boolean = false,
     val lines: List<MarkdownLine> = emptyList(),
     val markdownText: String = "",
     val drawer: Drawer? = null,

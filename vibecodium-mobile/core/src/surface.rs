@@ -5,7 +5,7 @@
 //! `ANativeWindow` owned by a `SurfaceView`, and reports taps back as a small
 //! JSON action. It deliberately has no Compose/View dependency.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
@@ -1312,6 +1312,88 @@ struct WrapLine {
     font: f32,
 }
 
+const HISTORY_CAP: usize = 10_000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EditSelection {
+    cursor: usize,
+    anchor: usize,
+}
+
+/// One atomic text mutation in char offsets.
+#[derive(Clone, Debug)]
+struct TextChange {
+    at: usize,
+    removed: String,
+    inserted: String,
+}
+
+#[derive(Clone, Debug)]
+struct UndoStep {
+    changes: Vec<TextChange>,
+    sel_before: EditSelection,
+    sel_after: EditSelection,
+}
+
+/// Undo/redo stacks mirroring the desktop `session_core::undo`: atomic steps
+/// without coalescing, redo cleared on a new edit, and a pure deletion that
+/// exactly reverts the last insertion annuls both steps.
+#[derive(Default)]
+struct History {
+    undo: VecDeque<UndoStep>,
+    redo: VecDeque<UndoStep>,
+}
+
+impl History {
+    fn clear(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+    }
+
+    fn record(&mut self, step: UndoStep) {
+        if let (Some(last), [change]) = (self.undo.back(), step.changes.as_slice()) {
+            if last.changes.len() == 1 {
+                let previous = &last.changes[0];
+                if previous.removed.is_empty()
+                    && !previous.inserted.is_empty()
+                    && change.inserted.is_empty()
+                    && !change.removed.is_empty()
+                    && change.at == previous.at
+                    && change.removed == previous.inserted
+                {
+                    self.undo.pop_back();
+                    self.redo.clear();
+                    return;
+                }
+            }
+        }
+        self.redo.clear();
+        self.undo.push_back(step);
+        while self.undo.len() > HISTORY_CAP {
+            self.undo.pop_front();
+        }
+    }
+
+    fn take(&mut self, redo: bool) -> Option<UndoStep> {
+        let (from, to) = if redo {
+            (&mut self.redo, &mut self.undo)
+        } else {
+            (&mut self.undo, &mut self.redo)
+        };
+        let step = from.pop_back()?;
+        to.push_back(step.clone());
+        Some(step)
+    }
+
+    fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+}
+
 #[derive(Default)]
 struct EditorState {
     text: String,
@@ -1345,6 +1427,7 @@ struct EditorState {
     starts: Vec<usize>,
     byte_starts: Vec<usize>,
     starts_dirty: bool,
+    history: History,
 }
 
 struct SurfaceState {
@@ -3540,31 +3623,44 @@ impl SurfaceState {
         if text.is_empty() {
             return;
         }
+        let sel_before = self.selection_now();
         let (start, end) = self.selected_range();
-        if end > start {
-            self.delete_range(start, end);
-        }
-        let byte = byte_at(&self.editor.text, self.editor.selection);
+        let removed = self.remove_range(start, end);
+        let at = self.editor.selection;
+        let byte = byte_at(&self.editor.text, at);
         self.editor.text.insert_str(byte, text);
         self.editor.selection += text.chars().count();
         self.editor.anchor = self.editor.selection;
-        self.editor.model_dirty = true;
-        self.editor.wrap_dirty = true;
-        self.editor.starts_dirty = true;
+        self.record_edit(
+            vec![TextChange {
+                at,
+                removed,
+                inserted: text.to_string(),
+            }],
+            sel_before,
+        );
+        self.mark_edited();
         self.scroll_to_cursor();
     }
 
     fn delete(&mut self, before: usize, after: usize) {
         self.invalidate();
         self.editor.insertion_handle_visible = false;
+        let sel_before = self.selection_now();
         let (selection_start, selection_end) = self.selected_range();
         if selection_end > selection_start {
-            self.delete_range(selection_start, selection_end);
+            let removed = self.remove_range(selection_start, selection_end);
             self.editor.selection = selection_start;
             self.editor.anchor = selection_start;
-            self.editor.model_dirty = true;
-            self.editor.wrap_dirty = true;
-            self.editor.starts_dirty = true;
+            self.record_edit(
+                vec![TextChange {
+                    at: selection_start,
+                    removed,
+                    inserted: String::new(),
+                }],
+                sel_before,
+            );
+            self.mark_edited();
             self.scroll_to_cursor();
             return;
         }
@@ -3584,12 +3680,18 @@ impl SurfaceState {
         if start >= end {
             return;
         }
-        self.delete_range(start, end);
+        let removed = self.remove_range(start, end);
         self.editor.selection = start;
         self.editor.anchor = start;
-        self.editor.model_dirty = true;
-        self.editor.wrap_dirty = true;
-        self.editor.starts_dirty = true;
+        self.record_edit(
+            vec![TextChange {
+                at: start,
+                removed,
+                inserted: String::new(),
+            }],
+            sel_before,
+        );
+        self.mark_edited();
         self.scroll_to_cursor();
     }
 
@@ -3599,16 +3701,25 @@ impl SurfaceState {
         let length = char_count(&self.editor.text);
         let start = start.min(length);
         let end = end.max(start).min(length);
-        self.delete_range(start, end);
+        let sel_before = self.selection_now();
+        let removed = self.remove_range(start, end);
         if !text.is_empty() {
             let byte = byte_at(&self.editor.text, start);
             self.editor.text.insert_str(byte, text);
         }
         self.editor.selection = start + char_count(text);
         self.editor.anchor = self.editor.selection;
-        self.editor.model_dirty = true;
-        self.editor.wrap_dirty = true;
-        self.editor.starts_dirty = true;
+        if !removed.is_empty() || !text.is_empty() {
+            self.record_edit(
+                vec![TextChange {
+                    at: start,
+                    removed,
+                    inserted: text.to_string(),
+                }],
+                sel_before,
+            );
+        }
+        self.mark_edited();
         self.scroll_to_cursor();
     }
 
@@ -3621,14 +3732,99 @@ impl SurfaceState {
     }
 
     fn delete_range(&mut self, start: usize, end: usize) {
+        let _ = self.remove_range(start, end);
+    }
+
+    /// Removes chars `start..end` and returns them, leaving the caret at `start`.
+    fn remove_range(&mut self, start: usize, end: usize) -> String {
         if start >= end {
-            return;
+            return String::new();
         }
+        let removed = self.slice_chars(start, end);
         let start_byte = byte_at(&self.editor.text, start);
         let end_byte = byte_at(&self.editor.text, end);
         self.editor.text.replace_range(start_byte..end_byte, "");
         self.editor.selection = start;
         self.editor.anchor = start;
+        removed
+    }
+
+    fn slice_chars(&self, start: usize, end: usize) -> String {
+        let length = char_count(&self.editor.text);
+        let start = start.min(length);
+        let end = end.min(length).max(start);
+        let start_byte = byte_at(&self.editor.text, start);
+        let end_byte = byte_at(&self.editor.text, end);
+        self.editor.text[start_byte..end_byte].to_string()
+    }
+
+    fn selection_now(&self) -> EditSelection {
+        EditSelection {
+            cursor: self.editor.selection,
+            anchor: self.editor.anchor,
+        }
+    }
+
+    fn record_edit(&mut self, changes: Vec<TextChange>, sel_before: EditSelection) {
+        if changes.is_empty() {
+            return;
+        }
+        self.editor.history.record(UndoStep {
+            changes,
+            sel_before,
+            sel_after: self.selection_now(),
+        });
+    }
+
+    fn mark_edited(&mut self) {
+        self.editor.model_dirty = true;
+        self.editor.wrap_dirty = true;
+        self.editor.starts_dirty = true;
+    }
+
+    /// Applies one recorded change. Undo restores `removed`, redo `inserted`.
+    fn apply_change(&mut self, change: &TextChange, redo: bool) {
+        let length = char_count(&self.editor.text);
+        let at = change.at.min(length);
+        let replaced = if redo { &change.removed } else { &change.inserted };
+        let replacement = if redo { &change.inserted } else { &change.removed };
+        let replaced_len = char_count(replaced);
+        let start_byte = byte_at(&self.editor.text, at);
+        let end_byte = byte_at(&self.editor.text, (at + replaced_len).min(length));
+        self.editor.text.replace_range(start_byte..end_byte, replacement);
+    }
+
+    fn after_history_change(&mut self) {
+        self.editor.insertion_handle_visible = false;
+        self.mark_edited();
+        self.invalidate();
+        self.scroll_to_cursor();
+    }
+
+    fn undo(&mut self) -> bool {
+        let Some(step) = self.editor.history.take(false) else {
+            return false;
+        };
+        for change in step.changes.iter().rev() {
+            self.apply_change(change, false);
+        }
+        self.editor.selection = step.sel_before.cursor;
+        self.editor.anchor = step.sel_before.anchor;
+        self.after_history_change();
+        true
+    }
+
+    fn redo(&mut self) -> bool {
+        let Some(step) = self.editor.history.take(true) else {
+            return false;
+        };
+        for change in step.changes.iter() {
+            self.apply_change(change, true);
+        }
+        self.editor.selection = step.sel_after.cursor;
+        self.editor.anchor = step.sel_after.anchor;
+        self.after_history_change();
+        true
     }
 
     fn scroll_to_cursor(&mut self) {
@@ -4425,6 +4621,8 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeSurfaceSetEdit
             state.editor.model_dirty = true;
             state.editor.wrap_dirty = true;
             state.editor.starts_dirty = true;
+            // A different document was loaded: its undo history is separate.
+            state.editor.history.clear();
         }
         if state.editor.language != language {
             state.editor.language = language;
@@ -4703,6 +4901,52 @@ pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorDelete(
     })
     .unwrap_or_default();
     to_java(&mut env, result)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorUndo(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+) -> jstring {
+    let result = with_surface(id, |state| {
+        state.undo();
+        state.editor_state()
+    })
+    .unwrap_or_default();
+    to_java(&mut env, result)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorRedo(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+) -> jstring {
+    let result = with_surface(id, |state| {
+        state.redo();
+        state.editor_state()
+    })
+    .unwrap_or_default();
+    to_java(&mut env, result)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorCanUndo(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+) -> jboolean {
+    with_surface(id, |state| state.editor.history.can_undo()).unwrap_or(false) as jboolean
+}
+
+#[no_mangle]
+pub extern "system" fn Java_md_vibecodium_mobile_CoreBridge_nativeEditorCanRedo(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jint,
+) -> jboolean {
+    with_surface(id, |state| state.editor.history.can_redo()).unwrap_or(false) as jboolean
 }
 
 #[no_mangle]

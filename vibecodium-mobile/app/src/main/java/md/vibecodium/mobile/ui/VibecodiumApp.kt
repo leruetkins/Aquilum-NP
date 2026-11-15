@@ -143,6 +143,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -392,6 +393,36 @@ private val SyncArrowsIcon: ImageVector = ImageVector.Builder(
         close()
     }
 }.build()
+
+/** Material `undo`, matching the desktop toolbar action. */
+private val UndoIcon: ImageVector = ImageVector.Builder(
+    name = "undo",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).addPath(
+    pathData = addPathNodes(
+        "M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 " +
+            "5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z",
+    ),
+    fill = SolidColor(Color.Black),
+).build()
+
+/** Material `redo`, the counterpart of [UndoIcon]. */
+private val RedoIcon: ImageVector = ImageVector.Builder(
+    name = "redo",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).addPath(
+    pathData = addPathNodes(
+        "M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16c1.05-3.19 " +
+            "4.05-5.5 7.6-5.5 1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z",
+    ),
+    fill = SolidColor(Color.Black),
+).build()
 
 /** `lucide-history`, the desktop client's recent-files icon. */
 private val HistoryIcon: ImageVector = ImageVector.Builder(
@@ -1912,9 +1943,16 @@ private fun SourceEditor(
                     controller.updateNativeEditor(text, selection)
                 },
                 idleBottomInsetPx = bottomInsetPx,
-            ).also(onViewReady)
+            ).also { view ->
+                controller.attachEditorView(view)
+                view.setOnHistoryChanged { canUndo, canRedo ->
+                    controller.setEditorHistoryState(canUndo, canRedo)
+                }
+                onViewReady(view)
+            }
         },
         modifier = Modifier.fillMaxSize(),
+        onRelease = { controller.attachEditorView(null) },
         update = { view ->
             view.setTopInset(topInsetPx)
             view.setBottomInset(bottomInsetPx)
@@ -2357,15 +2395,15 @@ private fun MobileNavbar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             NavButton(
-                icon = Icons.Default.ArrowBack,
-                label = "Back",
-                enabled = state.historyIndex > 0,
-            ) { controller.back() }
+                icon = UndoIcon,
+                label = "Undo",
+                enabled = state.editorCanUndo,
+            ) { controller.undoEditor() }
             NavButton(
-                icon = Icons.Default.ArrowForward,
-                label = "Forward",
-                enabled = state.historyIndex in 0 until state.history.lastIndex,
-            ) { controller.forward() }
+                icon = RedoIcon,
+                label = "Redo",
+                enabled = state.editorCanRedo,
+            ) { controller.redoEditor() }
             NavButton(
                 icon = Icons.Default.Search,
                 label = "Search",
